@@ -2,6 +2,8 @@ import React from "react"
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
+import { NavigationProvider } from "@/contexts/NavigationContext"
+import { BrandColorProvider } from "@/contexts/BrandColorContext"
 
 const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
@@ -44,7 +46,11 @@ export default function RootLayout({
   return (
     <html lang="en" className="bg-transparent">
       <body className="font-sans antialiased bg-transparent text-foreground">
-        {children}
+        <BrandColorProvider>
+          <NavigationProvider>
+            {children}
+          </NavigationProvider>
+        </BrandColorProvider>
       </body>
     </html>
   )

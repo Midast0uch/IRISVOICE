@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useRef, useCallback } from "react"
 
 // WebSocket connection states
@@ -8,11 +9,16 @@ interface ColorTheme {
   primary: string
   glow: string
   font: string
+  state_colors_enabled?: boolean
+  idle_color?: string
+  listening_color?: string
+  processing_color?: string
+  error_color?: string
 }
 
-// Field values by category
+// Field values by subnode ID (flat structure)
 interface FieldValues {
-  [category: string]: {
+  [subnodeId: string]: {
     [fieldId: string]: string | number | boolean
   }
 }
@@ -47,9 +53,9 @@ interface UseIRISWebSocketReturn {
   currentSubnode: string | null
   selectCategory: (category: string) => void
   selectSubnode: (subnodeId: string | null) => void
-  updateField: (category: string, fieldId: string, value: string | number | boolean) => void
-  confirmMiniNode: (category: string, subnodeId: string, values: Record<string, string | number | boolean>) => void
-  updateTheme: (glowColor?: string, fontColor?: string) => void
+  updateField: (subnodeId: string, fieldId: string, value: string | number | boolean) => void
+  confirmMiniNode: (subnodeId: string, values: Record<string, string | number | boolean>) => void
+  updateTheme: (glowColor?: string, fontColor?: string, stateColors?: { enabled?: boolean; idle?: string; listening?: string; processing?: string; error?: string }) => void
   requestState: () => void
   lastError: string | null
 }
@@ -126,9 +132,10 @@ export function useIRISWebSocket(
       }
 
       ws.onerror = (error) => {
-        console.error("[IRIS WebSocket] Error:", error)
+        // WebSocket errors don't contain detailed info - just log connection failed
+        console.warn("[IRIS WebSocket] Connection failed - backend may be offline")
         setConnectionState("error")
-        setLastError("Connection error")
+        setLastError("Backend offline - running in standalone mode")
       }
 
       ws.onclose = (event) => {
@@ -186,12 +193,12 @@ export function useIRISWebSocket(
 
       case "field_updated": {
         // Optimistic update confirmed by server
-        const { category, field_id, value } = payload
-        if (category && field_id !== undefined) {
+        const { subnode_id, field_id, value } = payload
+        if (subnode_id && field_id !== undefined) {
           setFieldValues((prev) => ({
             ...prev,
-            [category]: {
-              ...prev[category],
+            [subnode_id]: {
+              ...prev[subnode_id],
               [field_id]: value,
             },
           }))
@@ -211,11 +218,16 @@ export function useIRISWebSocket(
       }
 
       case "theme_updated": {
-        if (payload.glow || payload.font) {
+        if (payload.glow || payload.font || payload.state_colors_enabled !== undefined) {
           setTheme((prev) => ({
             ...prev,
             ...(payload.glow && { glow: payload.glow, primary: payload.glow }),
             ...(payload.font && { font: payload.font }),
+            ...(payload.state_colors_enabled !== undefined && { state_colors_enabled: payload.state_colors_enabled }),
+            ...(payload.idle_color && { idle_color: payload.idle_color }),
+            ...(payload.listening_color && { listening_color: payload.listening_color }),
+            ...(payload.processing_color && { processing_color: payload.processing_color }),
+            ...(payload.error_color && { error_color: payload.error_color }),
           }))
         }
         break
@@ -255,34 +267,39 @@ export function useIRISWebSocket(
     }
   }, [sendMessage])
 
-  const updateField = useCallback((category: string, fieldId: string, value: string | number | boolean) => {
+  const updateField = useCallback((subnodeId: string, fieldId: string, value: string | number | boolean) => {
     // Optimistic local update
     setFieldValues((prev) => ({
       ...prev,
-      [category]: {
-        ...prev[category],
+      [subnodeId]: {
+        ...prev[subnodeId],
         [fieldId]: value,
       },
     }))
 
     // Send to server
-    sendMessage("field_update", { category, field_id: fieldId, value })
+    sendMessage("field_update", { subnode_id: subnodeId, field_id: fieldId, value })
   }, [sendMessage])
 
-  const confirmMiniNode = useCallback((category: string, subnodeId: string, values: Record<string, string | number | boolean>) => {
-    sendMessage("confirm_mini_node", { category, subnode_id: subnodeId, values })
+  const confirmMiniNode = useCallback((subnodeId: string, values: Record<string, string | number | boolean>) => {
+    sendMessage("confirm_mini_node", { subnode_id: subnodeId, values })
   }, [sendMessage])
 
-  const updateTheme = useCallback((glowColor?: string, fontColor?: string) => {
+  const updateTheme = useCallback((glowColor?: string, fontColor?: string, stateColors?: { enabled?: boolean; idle?: string; listening?: string; processing?: string; error?: string }) => {
     // Optimistic local update
     setTheme((prev) => ({
       ...prev,
       ...(glowColor && { glow: glowColor, primary: glowColor }),
       ...(fontColor && { font: fontColor }),
+      ...(stateColors?.enabled !== undefined && { state_colors_enabled: stateColors.enabled }),
+      ...(stateColors?.idle && { idle_color: stateColors.idle }),
+      ...(stateColors?.listening && { listening_color: stateColors.listening }),
+      ...(stateColors?.processing && { processing_color: stateColors.processing }),
+      ...(stateColors?.error && { error_color: stateColors.error }),
     }))
 
     // Send to server
-    sendMessage("update_theme", { glow_color: glowColor, font_color: fontColor })
+    sendMessage("update_theme", { glow_color: glowColor, font_color: fontColor, state_colors: stateColors })
   }, [sendMessage])
 
   const requestState = useCallback(() => {

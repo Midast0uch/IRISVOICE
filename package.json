@@ -12,6 +12,7 @@
     "dev:all": "concurrently \"pnpm dev:backend\" \"pnpm dev\" \"wait-on tcp:3000 && tauri dev\""
   },
   "dependencies": {
+    "@magicuidesign/cli": "^1.0.3",
     "@tauri-apps/api": "^2.9.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

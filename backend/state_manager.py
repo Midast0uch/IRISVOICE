@@ -4,6 +4,7 @@ Singleton pattern for managing application state with JSON persistence
 """
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
 from datetime import datetime
@@ -72,47 +73,66 @@ class StateManager:
         """Set current subnode"""
         self._state.current_subnode = subnode_id
     
-    def update_field(self, category: str, field_id: str, value: Any) -> bool:
+    def update_field(self, subnode_id: str, field_id: str, value: Any) -> bool:
         """
-        Update a field value.
-        Returns True if valid, False if validation failed.
+        Update a field value using subnode_id as primary key.
+        Category is derived from subnode_id for organizational purposes only.
         """
         # Validate the value based on field type
-        if not self._validate_field_value(category, field_id, value):
+        if not self._validate_field_value(subnode_id, field_id, value):
             return False
         
-        self._state.set_field_value(category, field_id, value)
+        # Store flat by subnode_id
+        self._state.set_field_value(subnode_id, field_id, value)
         return True
     
-    def _validate_field_value(self, category: str, field_id: str, value: Any) -> bool:
+    def _get_category_for_subnode(self, subnode_id: str) -> str:
+        """Derive category from subnode_id for file organization."""
+        category_map = {
+            "input": "voice", "output": "voice", "processing": "voice", "model": "voice",
+            "identity": "agent", "wake": "agent", "speech": "agent", "memory": "agent",
+            "tools": "automate", "workflows": "automate", "favorites": "automate", "shortcuts": "automate",
+            "power": "system", "display": "system", "storage": "system", "network": "system",
+            "theme": "customize", "startup": "customize", "behavior": "customize", "notifications": "customize",
+            "analytics": "monitor", "logs": "monitor", "diagnostics": "monitor", "updates": "monitor",
+        }
+        return category_map.get(subnode_id, "misc")
+    
+    def _validate_field_value(self, subnode_id: str, field_id: str, value: Any) -> bool:
         """Validate a field value against its configuration"""
+        # Get category for this subnode
+        category = self._get_category_for_subnode(subnode_id)
+        
         # Get subnode config for this category
         subnodes = get_subnodes_for_category(category)
         
-        for subnode in subnodes:
-            for field in subnode.fields:
-                if field.id == field_id:
-                    # Type-specific validation
-                    if field.type.value == "slider":
-                        if not isinstance(value, (int, float)):
-                            return False
-                        if field.min is not None and value < field.min:
-                            return False
-                        if field.max is not None and value > field.max:
-                            return False
-                    elif field.type.value == "toggle":
-                        if not isinstance(value, bool):
-                            return False
-                    elif field.type.value == "color":
-                        if not isinstance(value, str):
-                            return False
-                        if not value.startswith('#') or len(value) != 7:
-                            return False
-                    elif field.type.value == "dropdown":
-                        if field.options and value not in field.options:
-                            return False
-                    
-                    return True
+        subnode = next((s for s in subnodes if s.id == subnode_id), None)
+        if not subnode:
+            return True  # Unknown subnode, allow it
+        
+        for field in subnode.fields:
+            if field.id == field_id:
+                # Type-specific validation
+                if field.type.value == "slider":
+                    if not isinstance(value, (int, float)):
+                        return False
+                    if field.min is not None and value < field.min:
+                        return False
+                    if field.max is not None and value > field.max:
+                        return False
+                elif field.type.value == "toggle":
+                    if not isinstance(value, bool):
+                        return False
+                elif field.type.value == "color":
+                    if not isinstance(value, str):
+                        return False
+                    if not value.startswith('#') or len(value) != 7:
+                        return False
+                elif field.type.value == "dropdown":
+                    if field.options and value not in field.options:
+                        return False
+                
+                return True
         
         return True  # Unknown field, allow it
     
@@ -142,13 +162,24 @@ class StateManager:
         
         return orbit_angle
     
-    def update_theme(self, glow_color: Optional[str] = None, font_color: Optional[str] = None) -> None:
-        """Update theme colors"""
+    def update_theme(self, glow_color: Optional[str] = None, font_color: Optional[str] = None, state_colors: Optional[dict] = None) -> None:
+        """Update theme colors and state colors"""
         if glow_color:
             self._state.active_theme.glow = glow_color
             self._state.active_theme.primary = glow_color
         if font_color:
             self._state.active_theme.font = font_color
+        if state_colors:
+            if "enabled" in state_colors:
+                self._state.active_theme.state_colors_enabled = state_colors["enabled"]
+            if "idle" in state_colors:
+                self._state.active_theme.idle_color = state_colors["idle"]
+            if "listening" in state_colors:
+                self._state.active_theme.listening_color = state_colors["listening"]
+            if "processing" in state_colors:
+                self._state.active_theme.processing_color = state_colors["processing"]
+            if "error" in state_colors:
+                self._state.active_theme.error_color = state_colors["error"]
     
     def clear_confirmed_nodes(self) -> None:
         """Clear all confirmed nodes (e.g., when going back to main menu)"""
@@ -161,6 +192,7 @@ class StateManager:
     async def load_all(self) -> None:
         """Load all persisted state from JSON files"""
         try:
+            self._migrate_legacy_category_files()
             # Load theme
             theme_data = await self._load_json("theme.json")
             if theme_data:
@@ -170,7 +202,16 @@ class StateManager:
             for category in SUBNODE_CONFIGS.keys():
                 category_data = await self._load_json(f"{category}.json")
                 if category_data:
-                    self._state.field_values[category] = category_data.get('fields', {})
+                    fields = category_data.get('fields', {})
+                    
+                    # MIGRATION: Check if fields are stored under category key (old format)
+                    # or subnode_id keys (new format)
+                    if category in fields and isinstance(fields[category], dict):
+                        # Old format: fields[category] = {field_id: value}
+                        # Convert to new format by detecting subnode from field_id
+                        fields = self._migrate_category_fields(category, fields)
+                    
+                    self._state.field_values.update(fields)
                     
                     # Restore confirmed nodes
                     confirmed = category_data.get('confirmed', [])
@@ -182,15 +223,76 @@ class StateManager:
         except Exception as e:
             print(f"Error loading state: {e}")
             # Continue with default state
+
+    def _migrate_category_fields(self, category: str, fields: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """
+        Migrate old category-based field structure to subnodeId-based.
+        Old: {category: {field_id: value}}
+        New: {subnode_id: {field_id: value}}
+        """
+        migrated = {}
+        category_fields = fields.get(category, {})
+        
+        # Get subnode configs for this category
+        subnodes = get_subnodes_for_category(category)
+        subnode_field_map = {}
+        for subnode in subnodes:
+            for field in subnode.fields:
+                subnode_field_map[field.id] = subnode.id
+        
+        # Migrate each field to its subnode
+        for field_id, value in category_fields.items():
+            subnode_id = subnode_field_map.get(field_id)
+            if subnode_id:
+                if subnode_id not in migrated:
+                    migrated[subnode_id] = {}
+                migrated[subnode_id][field_id] = value
+            else:
+                # Unknown field, put under category as fallback
+                if category not in migrated:
+                    migrated[category] = {}
+                migrated[category][field_id] = value
+        
+        print(f"[Migration] Converted {len(category_fields)} fields from category '{category}' to subnode structure")
+        return migrated
+
+    def _migrate_legacy_category_files(self) -> None:
+        """Rename legacy category files to new names with .bak backups."""
+        legacy_map = {
+            "ai_model": "voice",
+            "memory": "agent",
+            "analytics": "monitor",
+            "system": "customize",
+        }
+
+        for legacy, current in legacy_map.items():
+            legacy_path = self.settings_dir / f"{legacy}.json"
+            current_path = self.settings_dir / f"{current}.json"
+
+            if not legacy_path.exists() or current_path.exists():
+                continue
+
+            backup_path = legacy_path.with_suffix(".json.bak")
+            try:
+                shutil.copy2(legacy_path, backup_path)
+                os.replace(str(legacy_path), str(current_path))
+            except Exception as e:
+                print(f"Error migrating {legacy_path.name}: {e}")
     
     async def save_category(self, category: str) -> bool:
         """
         Persist a category's state to JSON.
-        Uses atomic write pattern for safety.
+        Gathers all subnodes that belong to this category.
         """
         try:
+            # Collect field values for all subnodes in this category
+            category_fields = {}
+            for subnode_id in self._state.field_values:
+                if self._get_category_for_subnode(subnode_id) == category:
+                    category_fields[subnode_id] = self._state.field_values[subnode_id]
+            
             data = {
-                'fields': self._state.field_values.get(category, {}),
+                'fields': category_fields,
                 'confirmed': [
                     {
                         'id': n.id,
@@ -201,7 +303,7 @@ class StateManager:
                         'category': n.category
                     }
                     for n in self._state.confirmed_nodes 
-                    if n.category == category
+                    if self._get_category_for_subnode(n.id) == category
                 ],
                 'last_updated': datetime.now().isoformat()
             }
@@ -272,26 +374,21 @@ class StateManager:
     # Utility Methods
     # ========================================================================
     
-    def get_field_value(self, category: str, field_id: str, default: Any = None) -> Any:
-        """Get a specific field value"""
-        return self._state.field_values.get(category, {}).get(field_id, default)
+    def get_field_value(self, subnode_id: str, field_id: str, default: Any = None) -> Any:
+        """Get a specific field value by subnode_id"""
+        return self._state.field_values.get(subnode_id, {}).get(field_id, default)
     
-    def get_category_field_values(self, category: str) -> Dict[str, Any]:
-        """Get all field values for a category"""
-        return self._state.field_values.get(category, {})
+    def get_subnode_field_values(self, subnode_id: str) -> Dict[str, Any]:
+        """Get all field values for a subnode"""
+        return self._state.field_values.get(subnode_id, {})
     
-    def get_subnode_values(self, category: str, subnode_id: str) -> Dict[str, Any]:
-        """Get field values for a specific subnode"""
-        values = {}
-        subnodes = get_subnodes_for_category(category)
-        
-        subnode = next((s for s in subnodes if s.id == subnode_id), None)
-        if subnode:
-            category_values = self._state.field_values.get(category, {})
-            for field in subnode.fields:
-                values[field.id] = category_values.get(field.id, field.value)
-        
-        return values
+    def get_category_field_values(self, category: str) -> Dict[str, Dict[str, Any]]:
+        """Get all field values for all subnodes in a category"""
+        result = {}
+        for subnode_id, values in self._state.field_values.items():
+            if self._get_category_for_subnode(subnode_id) == category:
+                result[subnode_id] = values
+        return result
 
 
 # Global instance getter
