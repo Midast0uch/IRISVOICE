@@ -270,21 +270,38 @@ const ICON_MAP: Record<string, ElementType> = {
 // MANUAL DRAG HOOK (Replaces useDragOrClick)
 // Uses setPosition instead of startDragging to bypass Windows Snap Assist
 // ===========================================
-function useManualDragWindow(onClickAction: () => void) {
+function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObject<HTMLElement | null>) {
   const isDragging = useRef(false)
   const dragStartPos = useRef({ x: 0, y: 0 })
   const windowStartPos = useRef({ x: 0, y: 0 })
   const hasDragged = useRef(false)
+  const isDraggingThisElement = useRef(false)
+  const mouseDownTarget = useRef<EventTarget | null>(null)
 
   const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
     if (e.button !== 0) return
     
-    // Only enable dragging in Tauri app
-    if (!getCurrentWindow) return
+    // Get fresh ref value - don't rely on closure
+    const currentElement = elementRef.current
+    const target = e.target as Node
     
+    // CRITICAL FIX: Only start drag if clicking directly on this element or its children
+    const shouldStartDrag = currentElement && currentElement.contains(target)
+    
+    if (!shouldStartDrag) {
+      console.log('[Nav System] handleMouseDown: REJECTED - click not on iris orb')
+      return
+    }
+
+    console.log('[Nav System] handleMouseDown: ACCEPTED - starting drag')
+    mouseDownTarget.current = e.target
     isDragging.current = true
+    isDraggingThisElement.current = true
     hasDragged.current = false
     dragStartPos.current = { x: e.screenX, y: e.screenY }
+    
+    // Only enable dragging in Tauri app
+    if (!getCurrentWindow) return
     
     const win = getCurrentWindow()
     const pos = await win.outerPosition()
@@ -295,7 +312,7 @@ function useManualDragWindow(onClickAction: () => void) {
   }, [])
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isDragging.current) return
+    if (!isDragging.current || !isDraggingThisElement.current) return
     
     // Only enable dragging in Tauri app
     if (!getCurrentWindow || !PhysicalPosition) return
@@ -311,15 +328,57 @@ function useManualDragWindow(onClickAction: () => void) {
     win.setPosition(new PhysicalPosition(windowStartPos.current.x + dx, windowStartPos.current.y + dy))
   }, [])
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: MouseEvent) => {
+    // Get fresh ref values - don't rely on closure
+    const currentElement = elementRef.current
+    const draggingThis = isDraggingThisElement.current
+    const didDrag = hasDragged.current
+    const downTarget = mouseDownTarget.current
+    
+    console.log('[Nav System] handleMouseUp:', { 
+      draggingThis, 
+      didDrag,
+      hasElement: !!currentElement,
+      downTarget,
+      upTarget: e.target
+    })
+    
     isDragging.current = false
     document.body.style.cursor = 'default'
     document.body.style.userSelect = ''
     
-    // If we didn't drag significantly, it was a click
-    if (!hasDragged.current) {
-      onClickAction()
+    // CRITICAL FIX: Only trigger click if:
+    // 1. We started dragging on this element
+    // 2. We didn't actually drag (just clicked)
+    // 3. BOTH mousedown AND mouseup targets are inside the iris orb element
+    if (draggingThis && !didDrag && currentElement) {
+      const upTarget = e.target as Node
+      const downTargetNode = downTarget as Node
+      
+      // Check if mouseup target is inside the iris orb element
+      const upInIris = currentElement.contains(upTarget)
+      // Check if mousedown target was in iris
+      const downInOrb = downTargetNode && currentElement.contains(downTargetNode)
+      
+      console.log('[Nav System] Click check:', { 
+        upInIris, 
+        downInOrb,
+        shouldTrigger: upInIris && downInOrb
+      })
+      
+      // Only click if BOTH mousedown AND mouseup happened on the iris orb
+      if (upInIris && downInOrb) {
+        console.log('[Nav System] Triggering onClickAction')
+        onClickAction()
+      } else {
+        console.log('[Nav System] Click rejected - not in iris orb')
+      }
     }
+    
+    // Always reset state
+    isDraggingThisElement.current = false
+    mouseDownTarget.current = null
+    hasDragged.current = false
   }, [onClickAction])
 
   useEffect(() => {
@@ -344,11 +403,13 @@ interface IrisOrbProps {
 }
 
 function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbProps) {
-  const { handleMouseDown } = useManualDragWindow(onClick)
+  const orbRef = useRef<HTMLDivElement>(null)
+  const { handleMouseDown } = useManualDragWindow(onClick, orbRef)
   const [isWaking, setIsWaking] = useState(false)
 
   return (
     <motion.div
+      ref={orbRef}
       className="relative flex items-center justify-center rounded-full cursor-grab active:cursor-grabbing z-50 pointer-events-auto"
       style={{ width: size, height: size }}
       onMouseDown={handleMouseDown}
@@ -1008,7 +1069,7 @@ export function HexagonalControlCenter() {
                   onClick={(e) => {
                     // Track click timestamp to prevent iris orb toggle
                     nodeClickTimestampRef.current = Date.now()
-                    // Stop event from bubbling to iris orb handler
+                    // Stop event from bubbling
                     e?.stopPropagation()
                     currentView
                       ? handleSubnodeClick(node.id)

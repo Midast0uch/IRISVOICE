@@ -31,6 +31,33 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
   const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
     if (e.button !== 0) return
 
+    // Get fresh ref value - don't rely on closure
+    const currentElement = elementRef.current
+    const target = e.target as Node
+    
+    // CRITICAL FIX: Only start drag if clicking directly on this element or its children
+    const shouldStartDrag = currentElement && currentElement.contains(target)
+    
+    console.log('[Nav System] handleMouseDown:', {
+      targetTagName: (e.target as Element)?.tagName,
+      targetClass: (e.target as Element)?.className?.substring(0, 50),
+      shouldStartDrag,
+      hasElement: !!currentElement,
+      contains: currentElement?.contains(target)
+    })
+    
+    // SAFETY: Always reset state at the start of a new interaction
+    isDraggingThisElement.current = false
+    isDragging.current = false
+    hasDragged.current = false
+    mouseDownTarget.current = null
+    
+    if (!shouldStartDrag) {
+      console.log('[Nav System] handleMouseDown: REJECTED - click not on iris orb')
+      return
+    }
+
+    console.log('[Nav System] handleMouseDown: ACCEPTED - starting drag')
     mouseDownTarget.current = e.target
     isDragging.current = true
     isDraggingThisElement.current = true
@@ -68,12 +95,19 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
   }, [])
 
   const handleMouseUp = useCallback((e: MouseEvent) => {
+    // Get fresh ref values - don't rely on closure
+    const currentElement = elementRef.current
+    const draggingThis = isDraggingThisElement.current
+    const didDrag = hasDragged.current
+    const downTarget = mouseDownTarget.current
+    
     console.log('[Nav System] handleMouseUp:', { 
-      isDraggingThisElement: isDraggingThisElement.current, 
-      hasDragged: hasDragged.current,
-      elementRefExists: !!elementRef.current,
-      mouseDownTarget: mouseDownTarget.current,
-      mouseUpTarget: e.target
+      draggingThis, 
+      didDrag,
+      hasElement: !!currentElement,
+      downTarget,
+      upTarget: e.target,
+      upTargetTag: (e.target as Element)?.tagName
     })
     
     isDragging.current = false
@@ -83,25 +117,36 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     // Only trigger click if:
     // 1. We started dragging on this element
     // 2. We didn't actually drag (just clicked)
-    // 3. The mouseup target is the same as mousedown target (or inside the iris orb)
-    if (isDraggingThisElement.current && !hasDragged.current && elementRef.current) {
-      const mouseUpTarget = e.target
-      // Check if both mousedown and mouseup happened on or within the iris orb element
-      const mouseDownInOrb = mouseDownTarget.current && elementRef.current.contains(mouseDownTarget.current as Node)
-      const mouseUpInOrb = elementRef.current.contains(mouseUpTarget as Node)
+    // 3. The mouseup target IS the iris orb element or its children
+    if (draggingThis && !didDrag && currentElement) {
+      const upTarget = e.target as Node
+      const downTargetNode = downTarget as Node
       
-      console.log('[Nav System] Click check:', { mouseDownInOrb, mouseUpInOrb })
+      // Check if mouseup target is inside the iris orb element
+      const upInIris = currentElement.contains(upTarget)
+      // Check if mousedown target was in iris
+      const downInOrb = downTargetNode && currentElement.contains(downTargetNode)
       
-      if (mouseDownInOrb && mouseUpInOrb) {
+      console.log('[Nav System] Click check:', { 
+        upInIris, 
+        downInOrb,
+        shouldTrigger: upInIris && downInOrb
+      })
+      
+      // Only click if BOTH mousedown AND mouseup happened on the iris orb
+      if (upInIris && downInOrb) {
         console.log('[Nav System] Triggering onClickAction')
         onClickAction()
       } else {
         console.log('[Nav System] Click rejected - not in iris orb')
       }
     }
+    
+    // Always reset state
     isDraggingThisElement.current = false
     mouseDownTarget.current = null
-  }, [onClickAction, elementRef])
+    hasDragged.current = false
+  }, [onClickAction])
 
   useEffect(() => {
     window.addEventListener("mousemove", handleMouseMove)
@@ -159,6 +204,8 @@ export function IrisOrb({
 
   const [isWaking, setIsWaking] = useState(false)
   const prefersReducedMotion = useReducedMotion()
+  const orbRef = useRef<HTMLDivElement>(null)
+  const { handleMouseDown } = useManualDragWindow(onClick, orbRef)
 
   const renderIcon = () => {
     if (!showBackIndicator) return null
@@ -191,9 +238,10 @@ export function IrisOrb({
 
   return (
     <motion.div
+      ref={orbRef}
       className="relative flex items-center justify-center rounded-full cursor-pointer z-50 pointer-events-auto"
       style={{ width: size, height: size }}
-      onClick={handleClick}
+      onMouseDown={handleMouseDown}
       animate={{ scale: isPressed ? 0.95 : 1 }}
       transition={{ type: "spring", stiffness: 400, damping: 25 }}
     >

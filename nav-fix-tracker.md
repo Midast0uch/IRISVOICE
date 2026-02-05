@@ -289,6 +289,94 @@ getEventListeners($0)
 
 ## FIX IMPLEMENTED - Feb 5, 2026
 
+---
+
+## ✅ FIX IMPLEMENTED - Feb 5, 2026
+
+### Attempt #7: Element Reference Verification (SUCCESS!)
+**Date:** Feb 5, 2026 8:02pm
+**Status:** ✅ **PASSED ALL TESTS**
+
+**Root Cause Discovered:** There was a **local** `useManualDragWindow` hook inside `hexagonal-control-center.tsx` (lines 273-336) that was completely separate from the one in `iris-orb.tsx`. This local version:
+- Did NOT verify if clicks were on the iris orb element before triggering `onClickAction()`
+- Called `onClickAction()` for ANY mouseup event that didn't drag, regardless of where the click happened
+- Was being used by the local `IrisOrb` component in the same file
+
+**The Fix:**
+Modified the local `useManualDragWindow` hook in `hexagonal-control-center.tsx`:
+
+1. **Added `elementRef` parameter** - Track the iris orb DOM element
+2. **Added `isDraggingThisElement` ref** - Track if drag started on this element
+3. **Added `mouseDownTarget` ref** - Remember where mousedown occurred
+4. **Modified `handleMouseDown`** - Only start drag if `elementRef.current.contains(target)`
+5. **Modified `handleMouseUp`** - Only trigger click if BOTH mousedown AND mouseup targets are inside the iris orb element
+6. **Added `orbRef` to IrisOrb** - Pass ref to the hook for element verification
+
+**Code Changes:**
+```typescript
+// Before (broken):
+function useManualDragWindow(onClickAction: () => void) {
+  const handleMouseUp = useCallback(() => {
+    if (!hasDragged.current) {
+      onClickAction()  // Fires for ANY click anywhere!
+    }
+  }, [onClickAction])
+}
+
+// After (fixed):
+function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObject<HTMLElement | null>) {
+  const isDraggingThisElement = useRef(false)
+  const mouseDownTarget = useRef<EventTarget | null>(null)
+  
+  const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
+    // Only start drag if clicking on iris orb element
+    const shouldStartDrag = elementRef.current && elementRef.current.contains(target)
+    if (!shouldStartDrag) return
+    
+    isDraggingThisElement.current = true
+    mouseDownTarget.current = e.target
+    // ... rest of drag setup
+  }, [])
+  
+  const handleMouseUp = useCallback((e: MouseEvent) => {
+    // Only click if BOTH down AND up are in iris orb
+    const upInIris = currentElement.contains(upTarget)
+    const downInOrb = downTargetNode && currentElement.contains(downTargetNode)
+    
+    if (upInIris && downInOrb) {
+      onClickAction()  // Now only fires for actual iris orb clicks!
+    }
+  }, [onClickAction])
+}
+```
+
+**Files Modified:** 
+- `components/hexagonal-control-center.tsx` lines 273-415
+
+**Test Results - ALL PASSED:**
+- ✅ L1→L2: IRIS click expands to main nodes
+- ✅ L2→L3: Main node click shows subnodes (VOICE → INPUT/OUTPUT/PROCESSING/MODEL)
+- ✅ L3→L4: Subnode click shows mini-stack
+- ✅ L4→L3: IRIS click returns to subnodes (CRITICAL TEST - was failing before)
+- ✅ L3→L2: IRIS click returns to main nodes
+- ✅ L2→L1: IRIS click collapses to idle
+
+**Console Verification:**
+```
+[Nav System] handleMouseDown: ACCEPTED - starting drag
+[Nav System] handleMouseUp: {draggingThis: true, didDrag: false, ...}
+[Nav System] Click check: {upInIris: true, downInOrb: true, shouldTrigger: true}
+[Nav System] Triggering onClickAction
+[Nav System] handleIrisClick: Level 4->3, deselecting subnode
+```
+
+When clicking subnodes:
+```
+[Nav System] handleMouseDown: REJECTED - click not on iris orb
+[Nav System] handleMouseUp: {draggingThis: false, ...}
+// No click triggered - correct behavior!
+```
+
 ### Fix #1: Subnodes Not Appearing (COMPLETED)
 **Root Cause:** The render condition used `isExpanded` state which was getting out of sync with `nav.state.level`
 **Solution:** Changed render conditions from:

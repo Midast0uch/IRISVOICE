@@ -10,10 +10,18 @@ Tracking implementation status for Level 4 Mini Node Stack and related component
 ### ✅ RESOLVED: Iris Orb Click Interference
 **Problem:** ~~Any clicks around the mini-node stack widget trigger the Iris Orb click handler, even when clicking on mini-node cards.~~
 
+**Root Cause:** Local `useManualDragWindow` hook in `hexagonal-control-center.tsx` (lines 273-336) didn't verify if clicks were actually on the iris orb element before triggering navigation.
+
 **Resolution (Feb 5, 2026):**
+- Fixed local `useManualDragWindow` hook to track iris orb element via `elementRef`
+- Added `isDraggingThisElement` and `mouseDownTarget` refs to track drag state
+- Modified `handleMouseDown` to only start drag if `elementRef.current.contains(target)`
+- Modified `handleMouseUp` to only trigger click if BOTH mousedown AND mouseup targets are inside the iris orb element
+- Added `orbRef` to local `IrisOrb` component and passed to hook
 - Navigation flow tested and verified working via automated browser testing
-- `userNavigatedRef` and `isTransitioning` flags properly block unwanted iris clicks during transitions
-- Level 4→3 navigation confirmed working correctly (console shows `handleIrisClick: Level 4->3, deselecting subnode`)
+- All levels L1→L2→L3→L4→L3→L2→L1 working correctly
+
+**Files Modified:** `components/hexagonal-control-center.tsx` lines 273-415
 
 **Status:** ✅ RESOLVED
 
@@ -31,7 +39,7 @@ Tracking implementation status for Level 4 Mini Node Stack and related component
 | Save button | ✅ Implemented | Appears only on active card |
 | Confirm animation | ✅ Implemented | Scale pulse [1, 1.1, 1] on save |
 | Value persistence | ✅ Implemented | Updates NavigationContext state |
-| **Card click isolation** | 🔴 **BROKEN** | Clicks trigger Iris Orb - CRITICAL |
+| **Card click isolation** | ✅ **FIXED** | Clicks no longer trigger Iris Orb - FIXED via elementRef verification in drag hook |
 
 ### Iris Orb (Level 4 State)
 | Feature | Status | Notes |
@@ -40,7 +48,7 @@ Tracking implementation status for Level 4 Mini Node Stack and related component
 | Grow animation | ✅ Implemented | Scale 0.45 → 1, 400ms |
 | Backdrop blur | ✅ Implemented | 8px blur on container |
 | Glow pulse indicator | ✅ Implemented | Pulsing glow when shrunk |
-| **Click target restriction** | 🔴 **NEEDS WORK** | Should only click at very center |
+| **Click target restriction** | ✅ **FIXED** | Element ref verification ensures only iris orb clicks trigger navigation |
 
 ### Orbit System
 | Feature | Status | Notes |
@@ -80,7 +88,7 @@ Tracking implementation status for Level 4 Mini Node Stack and related component
 - [ ] Performance profile (target 60fps)
 - [ ] Keyboard navigation (arrow keys, enter)
 - [ ] Create MINI_NODE_STACK.md documentation
-- [ ] Final navigation test (L2→L3→L4→L3→L2)
+- [x] Final navigation test (L2→L3→L4→L3→L2→L1) ✅ COMPLETED - All navigation levels working
 
 ---
 
