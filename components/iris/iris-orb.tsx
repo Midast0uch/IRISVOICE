@@ -20,16 +20,18 @@ interface IrisOrbProps {
 
 const DEBOUNCE_MS = 150
 
-function useManualDragWindow(onClickAction: () => void) {
+function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObject<HTMLElement | null>) {
   const isDragging = useRef(false)
   const dragStartPos = useRef({ x: 0, y: 0 })
   const windowStartPos = useRef({ x: 0, y: 0 })
   const hasDragged = useRef(false)
   const isDraggingThisElement = useRef(false)
+  const mouseDownTarget = useRef<EventTarget | null>(null)
 
   const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
     if (e.button !== 0) return
 
+    mouseDownTarget.current = e.target
     isDragging.current = true
     isDraggingThisElement.current = true
     hasDragged.current = false
@@ -65,17 +67,41 @@ function useManualDragWindow(onClickAction: () => void) {
     }
   }, [])
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: MouseEvent) => {
+    console.log('[Nav System] handleMouseUp:', { 
+      isDraggingThisElement: isDraggingThisElement.current, 
+      hasDragged: hasDragged.current,
+      elementRefExists: !!elementRef.current,
+      mouseDownTarget: mouseDownTarget.current,
+      mouseUpTarget: e.target
+    })
+    
     isDragging.current = false
     document.body.style.cursor = "default"
     document.body.style.userSelect = ""
 
-    // Only trigger click if we actually started dragging on this element
-    if (isDraggingThisElement.current && !hasDragged.current) {
-      onClickAction()
+    // Only trigger click if:
+    // 1. We started dragging on this element
+    // 2. We didn't actually drag (just clicked)
+    // 3. The mouseup target is the same as mousedown target (or inside the iris orb)
+    if (isDraggingThisElement.current && !hasDragged.current && elementRef.current) {
+      const mouseUpTarget = e.target
+      // Check if both mousedown and mouseup happened on or within the iris orb element
+      const mouseDownInOrb = mouseDownTarget.current && elementRef.current.contains(mouseDownTarget.current as Node)
+      const mouseUpInOrb = elementRef.current.contains(mouseUpTarget as Node)
+      
+      console.log('[Nav System] Click check:', { mouseDownInOrb, mouseUpInOrb })
+      
+      if (mouseDownInOrb && mouseUpInOrb) {
+        console.log('[Nav System] Triggering onClickAction')
+        onClickAction()
+      } else {
+        console.log('[Nav System] Click rejected - not in iris orb')
+      }
     }
     isDraggingThisElement.current = false
-  }, [onClickAction])
+    mouseDownTarget.current = null
+  }, [onClickAction, elementRef])
 
   useEffect(() => {
     window.addEventListener("mousemove", handleMouseMove)
@@ -103,10 +129,10 @@ export function IrisOrb({
   const [isPressed, setIsPressed] = useState(false)
   const debounceRef = useRef<NodeJS.Timeout | null>(null)
 
-  const handleClick = useCallback(() => {
-    console.log('[DEBUG] IrisOrb handleClick called', { isDebouncing })
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    console.log('[Nav System] IrisOrb handleClick called', { isDebouncing, target: e.target })
     if (isDebouncing) {
-      console.log('[DEBUG] IrisOrb click blocked by debounce')
+      console.log('[Nav System] IrisOrb click blocked by debounce')
       return
     }
     
@@ -115,17 +141,13 @@ export function IrisOrb({
     
     setTimeout(() => setIsPressed(false), 150)
     
-    console.log('[DEBUG] IrisOrb calling onClick')
+    console.log('[Nav System] IrisOrb calling onClick')
     onClick()
     
     debounceRef.current = setTimeout(() => {
       setIsDebouncing(false)
     }, DEBOUNCE_MS)
   }, [isDebouncing, onClick])
-
-  const handleDirectClick = useCallback((e: React.MouseEvent) => {
-    console.log('[DEBUG] IrisOrb direct onClick fired', { button: e.button, target: e.target })
-  }, [])
 
   useEffect(() => {
     return () => {
@@ -135,7 +157,6 @@ export function IrisOrb({
     }
   }, [])
 
-  const { handleMouseDown } = useManualDragWindow(handleClick)
   const [isWaking, setIsWaking] = useState(false)
   const prefersReducedMotion = useReducedMotion()
 
@@ -170,10 +191,9 @@ export function IrisOrb({
 
   return (
     <motion.div
-      className="relative flex items-center justify-center rounded-full cursor-grab active:cursor-grabbing z-50 pointer-events-auto"
+      className="relative flex items-center justify-center rounded-full cursor-pointer z-50 pointer-events-auto"
       style={{ width: size, height: size }}
-      onMouseDown={handleMouseDown}
-      onClick={handleDirectClick}
+      onClick={handleClick}
       animate={{ scale: isPressed ? 0.95 : 1 }}
       transition={{ type: "spring", stiffness: 400, damping: 25 }}
     >

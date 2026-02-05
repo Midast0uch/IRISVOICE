@@ -49,6 +49,15 @@ function ThemePreviewCard({ themeType, brandHue, brandSat, brandLight, isActive 
           metalGradient: `conic-gradient(from 0deg, ${aurumColors.primary}, ${aurumColors.highlight}, ${aurumColors.secondary}, ${aurumColors.primary})`,
           ambient: aurumColors.ambient,
         }
+      default:
+        // Fallback for verdant, nebula, crimson - use aurum as base
+        return {
+          background: '#0a0a0a',
+          cardBg: '#161616',
+          accent: aurumColors.primary,
+          metalGradient: `conic-gradient(from 0deg, ${aurumColors.primary}, ${aurumColors.highlight}, ${aurumColors.secondary}, ${aurumColors.primary})`,
+          ambient: aurumColors.ambient,
+        }
     }
   }
   

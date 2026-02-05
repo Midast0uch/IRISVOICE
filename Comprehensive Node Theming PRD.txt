@@ -1,0 +1,824 @@
+---
+
+# IRIS Control Center: Comprehensive Node Theming PRD (Final)
+
+## 1. Executive Summary
+
+This PRD introduces **full-spectrum node theming** where theme colors permeate every visual element, plus a **standalone Theme Test Switcher** for rapid visual QA. The test switcher operates independently from the main `HexagonalControlCenter`, enabling theme review without triggering flyout animations or navigation state changes.
+
+---
+
+## 2. Architecture: Main UI vs Test Switcher
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Tauri Window Layer                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  ThemeTestSwitcher (Standalone, fixed position)     │   │
+│  │  • Always visible                                   │   │
+│  │  • Isolated from NavigationContext                  │   │
+│  │  • Direct BrandColorContext access                  │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  HexagonalControlCenter (Main UI)                   │   │
+│  │  • Respects NavigationContext state machine         │   │
+│  │  • Flyout animations on interaction                 │   │
+│  │  • Window drag functionality                        │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key Separation:**
+| Aspect | Main UI | Test Switcher |
+|--------|---------|---------------|
+| **Context** | `NavigationContext` + `BrandColorContext` | `BrandColorContext` only |
+| **Position** | Center of window | Fixed corner (bottom-right) |
+| **Interactions** | Triggers flyout animations | Instant theme preview |
+| **Drag** | Full window drag | None (fixed) |
+| **State** | 5-level state machine | Simple theme + intensity |
+
+---
+
+## 3. Theme Test Switcher Component
+
+### 3.1 File: `ThemeTestSwitcher.tsx`
+
+```typescript
+// components/testing/ThemeTestSwitcher.tsx
+"use client"
+
+import React, { useState } from "react"
+import { motion, AnimatePresence } from "framer-motion"
+import { useBrandColor, ThemeType, THEME_DEFAULTS } from "@/contexts/BrandColorContext"
+import { Palette, ChevronUp, ChevronDown, RotateCcw, Eye, EyeOff } from "lucide-react"
+
+type TestIntensity = "subtle" | "medium" | "strong"
+type TestNodeType = "main" | "subnode" | "mini" | "iris" | "confirmed"
+
+const INTENSITY_CONFIG = {
+  subtle: { bgSaturation: 0.15, bgLightness: 6, glowOpacity: 0.1, iconMix: 0.3, label: "Subtle" },
+  medium: { bgSaturation: 0.25, bgLightness: 8, glowOpacity: 0.2, iconMix: 0.6, label: "Medium" },
+  strong: { bgSaturation: 0.4, bgLightness: 12, glowOpacity: 0.35, iconMix: 1.0, label: "Strong" },
+}
+
+const NODE_TYPE_LABELS: Record<TestNodeType, string> = {
+  main: "Main Node",
+  subnode: "Subnode",
+  mini: "Mini Stack",
+  iris: "Iris Orb",
+  confirmed: "Confirmed",
+}
+
+export function ThemeTestSwitcher() {
+  const { 
+    brandColor, 
+    theme, 
+    setHue, 
+    setSaturation, 
+    setLightness, 
+    setTheme, 
+    resetToThemeDefault,
+    getHSLString 
+  } = useBrandColor()
+
+  const [isExpanded, setIsExpanded] = useState(true)
+  const [intensity, setIntensity] = useState<TestIntensity>("medium")
+  const [previewNodeType, setPreviewNodeType] = useState<TestNodeType>("main")
+  const [showAllNodes, setShowAllNodes] = useState(false)
+
+  const glowColor = getHSLString()
+  const config = INTENSITY_CONFIG[intensity]
+
+  // Compute themed colors
+  const themedBg = `hsl(${brandColor.hue}, ${brandColor.saturation * config.bgSaturation}%, ${config.bgLightness}%)`
+  const themedLabel = `hsl(${brandColor.hue}, 10%, 70%)`
+  const themedIcon = config.iconMix === 1 
+    ? glowColor 
+    : `color-mix(in hsl, ${glowColor} ${config.iconMix * 100}%, #c0c0c0)`
+
+  const handleThemeSelect = (t: ThemeType) => {
+    setTheme(t)
+    // Auto-adjust intensity based on theme personality
+    if (t === "ember") setIntensity("strong")
+    if (t === "aurum") setIntensity("subtle")
+    if (t === "aether") setIntensity("medium")
+  }
+
+  return (
+    <motion.div
+      className="fixed z-[9999] pointer-events-auto"
+      style={{ 
+        bottom: 24, 
+        right: 24,
+        // Ensure click-through to desktop except on switcher
+      }}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+    >
+      {/* Collapsed State - Mini Pill */}
+      <AnimatePresence mode="wait">
+        {!isExpanded && (
+          <motion.button
+            key="collapsed"
+            onClick={() => setIsExpanded(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-xl border border-white/10 shadow-2xl"
+            style={{ 
+              background: `hsl(${brandColor.hue}, 20%, 10%)`,
+              borderColor: `${glowColor}40`,
+            }}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+          >
+            <div 
+              className="w-3 h-3 rounded-full"
+              style={{ 
+                background: glowColor,
+                boxShadow: `0 0 8px ${glowColor}`,
+              }} 
+            />
+            <span className="text-xs font-medium text-white/80 uppercase tracking-wider">
+              Theme Test
+            </span>
+            <ChevronUp className="w-3 h-3 text-white/60" />
+          </motion.button>
+        )}
+
+        {/* Expanded State - Full Panel */}
+        {isExpanded && (
+          <motion.div
+            key="expanded"
+            className="w-80 rounded-2xl backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden"
+            style={{ 
+              background: `hsl(${brandColor.hue}, 15%, 6%)`,
+              borderColor: `${glowColor}30`,
+            }}
+            initial={{ opacity: 0, scale: 0.95, height: 0 }}
+            animate={{ opacity: 1, scale: 1, height: "auto" }}
+            exit={{ opacity: 0, scale: 0.95, height: 0 }}
+          >
+            {/* Header */}
+            <div 
+              className="flex items-center justify-between px-4 py-3 border-b"
+              style={{ borderColor: `${glowColor}20` }}
+            >
+              <div className="flex items-center gap-2">
+                <Palette className="w-4 h-4" style={{ color: glowColor }} />
+                <span className="text-sm font-semibold text-white/90">Theme Test Lab</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowAllNodes(!showAllNodes)}
+                  className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                  title={showAllNodes ? "Show single preview" : "Show all node types"}
+                >
+                  {showAllNodes ? (
+                    <EyeOff className="w-3.5 h-3.5 text-white/60" />
+                  ) : (
+                    <Eye className="w-3.5 h-3.5 text-white/60" />
+                  )}
+                </button>
+                <button
+                  onClick={() => setIsExpanded(false)}
+                  className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                >
+                  <ChevronDown className="w-3.5 h-3.5 text-white/60" />
+                </button>
+              </div>
+            </div>
+
+            {/* Preview Area */}
+            <div 
+              className="p-6 flex items-center justify-center min-h-[140px]"
+              style={{
+                background: `radial-gradient(circle at center, ${glowColor}10 0%, transparent 70%)`,
+              }}
+            >
+              {showAllNodes ? (
+                <div className="flex flex-wrap gap-4 justify-center">
+                  {(Object.keys(NODE_TYPE_LABELS) as TestNodeType[]).map((type) => (
+                    <TestNodePreview
+                      key={type}
+                      type={type}
+                      glowColor={glowColor}
+                      themedBg={themedBg}
+                      themedIcon={themedIcon}
+                      themedLabel={themedLabel}
+                      intensity={intensity}
+                      isActive={previewNodeType === type}
+                      onClick={() => setPreviewNodeType(type)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <TestNodePreview
+                  type={previewNodeType}
+                  glowColor={glowColor}
+                  themedBg={themedBg}
+                  themedIcon={themedIcon}
+                  themedLabel={themedLabel}
+                  intensity={intensity}
+                  isActive={true}
+                  size="large"
+                />
+              )}
+            </div>
+
+            {/* Theme Presets */}
+            <div className="px-4 py-3 border-t border-white/10">
+              <div className="flex gap-2">
+                {(['aether', 'ember', 'aurum'] as ThemeType[]).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => handleThemeSelect(t)}
+                    className={`flex-1 flex flex-col items-center gap-1.5 p-2 rounded-xl border transition-all ${
+                      theme === t ? 'border-white/30 bg-white/10' : 'border-white/5 hover:border-white/20'
+                    }`}
+                  >
+                    <div 
+                      className="w-6 h-6 rounded-full border-2 border-white/20"
+                      style={{ 
+                        background: `hsl(${THEME_DEFAULTS[t].hue}, ${THEME_DEFAULTS[t].saturation}%, ${THEME_DEFAULTS[t].lightness}%)`,
+                        boxShadow: theme === t ? `0 0 12px hsl(${THEME_DEFAULTS[t].hue}, ${THEME_DEFAULTS[t].saturation}%, ${THEME_DEFAULTS[t].lightness}%)` : 'none',
+                      }}
+                    />
+                    <span className="text-[10px] uppercase tracking-wider text-white/70">
+                      {t}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Intensity Control */}
+            <div className="px-4 py-3 border-t border-white/10">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-white/60 uppercase tracking-wider">Intensity</span>
+                <span className="text-xs text-white/40">{INTENSITY_CONFIG[intensity].label}</span>
+              </div>
+              <div className="flex gap-1 bg-white/5 rounded-lg p-1">
+                {(['subtle', 'medium', 'strong'] as TestIntensity[]).map((i) => (
+                  <button
+                    key={i}
+                    onClick={() => setIntensity(i)}
+                    className={`flex-1 py-1.5 text-xs rounded-md transition-all ${
+                      intensity === i 
+                        ? 'bg-white/20 text-white font-medium' 
+                        : 'text-white/50 hover:text-white/70'
+                    }`}
+                  >
+                    {i.charAt(0).toUpperCase() + i.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Node Type Selector (when not showing all) */}
+            {!showAllNodes && (
+              <div className="px-4 py-3 border-t border-white/10">
+                <span className="text-xs text-white/60 uppercase tracking-wider block mb-2">Preview Node</span>
+                <div className="grid grid-cols-3 gap-1">
+                  {(Object.keys(NODE_TYPE_LABELS) as TestNodeType[]).map((type) => (
+                    <button
+                      key={type}
+                      onClick={() => setPreviewNodeType(type)}
+                      className={`py-1.5 px-2 text-[10px] rounded-md transition-all ${
+                        previewNodeType === type
+                          ? 'bg-white/15 text-white'
+                          : 'text-white/50 hover:text-white/70 hover:bg-white/5'
+                      }`}
+                    >
+                      {NODE_TYPE_LABELS[type]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Fine Controls */}
+            <div className="px-4 py-3 border-t border-white/10 space-y-3">
+              <TestSlider
+                label="Hue"
+                value={brandColor.hue}
+                min={0}
+                max={360}
+                onChange={setHue}
+                glowColor={glowColor}
+                displayValue={`${brandColor.hue}°`}
+              />
+              <TestSlider
+                label="Sat"
+                value={brandColor.saturation}
+                min={0}
+                max={100}
+                onChange={setSaturation}
+                glowColor={glowColor}
+                displayValue={`${brandColor.saturation}%`}
+              />
+              <TestSlider
+                label="Light"
+                value={brandColor.lightness}
+                min={20}
+                max={80}
+                onChange={setLightness}
+                glowColor={glowColor}
+                displayValue={`${brandColor.lightness}%`}
+              />
+            </div>
+
+            {/* Reset */}
+            <div className="px-4 py-3 border-t border-white/10">
+              <button
+                onClick={resetToThemeDefault}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs text-white/60 hover:text-white/90 hover:bg-white/5 transition-colors"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset to {theme} Default
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  )
+}
+
+// Sub-component: Individual node preview
+interface TestNodePreviewProps {
+  type: TestNodeType
+  glowColor: string
+  themedBg: string
+  themedIcon: string
+  themedLabel: string
+  intensity: TestIntensity
+  isActive: boolean
+  onClick?: () => void
+  size?: "normal" | "large"
+}
+
+function TestNodePreview({ 
+  type, 
+  glowColor, 
+  themedBg, 
+  themedIcon, 
+  themedLabel,
+  intensity,
+  isActive,
+  onClick,
+  size = "normal"
+}: TestNodePreviewProps) {
+  const isLarge = size === "large"
+  const config = INTENSITY_CONFIG[intensity]
+
+  const baseSize = isLarge ? 120 : 64
+  const iconSize = isLarge ? 32 : 20
+
+  // Render different node types
+  switch (type) {
+    case "iris":
+      return (
+        <motion.div
+          onClick={onClick}
+          className={`relative flex items-center justify-center rounded-full cursor-pointer ${isLarge ? 'scale-125' : ''}`}
+          style={{ width: baseSize, height: baseSize }}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+        >
+          {/* Outer glow */}
+          <div 
+            className="absolute rounded-full"
+            style={{
+              inset: -20,
+              background: `radial-gradient(circle, ${glowColor}60 0%, ${glowColor}30 30%, transparent 70%)`,
+              filter: "blur(20px)",
+              opacity: 0.8,
+            }}
+          />
+          {/* Inner core */}
+          <div 
+            className="absolute rounded-full"
+            style={{
+              inset: -4,
+              background: `radial-gradient(circle, ${glowColor}90 0%, ${glowColor}50 40%, transparent 80%)`,
+              filter: "blur(8px)",
+            }}
+          />
+          {/* Body */}
+          <div 
+            className="relative w-full h-full rounded-full flex items-center justify-center"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              backdropFilter: "blur(20px)",
+              border: `1px solid ${glowColor}30`,
+            }}
+          >
+            <span className="text-lg font-light tracking-widest text-white/90">IRIS</span>
+          </div>
+        </motion.div>
+      )
+
+    case "main":
+    case "subnode":
+      return (
+        <motion.button
+          onClick={onClick}
+          className={`relative flex flex-col items-center justify-center rounded-2xl ${isLarge ? 'scale-150' : ''}`}
+          style={{ 
+            width: baseSize, 
+            height: baseSize,
+            background: themedBg,
+            backdropFilter: "blur(12px)",
+            border: `1px solid ${isActive ? glowColor : 'rgba(255,255,255,0.08)'}`,
+            boxShadow: isActive ? `0 0 20px ${glowColor}30` : 'none',
+          }}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+        >
+          {/* Rotating border effect */}
+          <div 
+            className="absolute -inset-0.5 rounded-2xl"
+            style={{
+              padding: "2px",
+              background: `conic-gradient(from 0deg, transparent, ${glowColor}20, ${glowColor}, ${glowColor}20, transparent)`,
+              WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+              WebkitMaskComposite: "xor",
+              opacity: isActive ? 1 : 0.5,
+            }}
+          />
+          {/* Ambient glow */}
+          <div 
+            className="absolute -inset-2 rounded-2xl -z-10"
+            style={{
+              background: `radial-gradient(circle, ${glowColor}${Math.round(config.glowOpacity * 255).toString(16)} 0%, transparent 70%)`,
+              filter: "blur(8px)",
+            }}
+          />
+          {/* Content */}
+          <div className="relative flex flex-col items-center gap-1">
+            <div style={{ color: themedIcon, width: iconSize, height: iconSize }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 6v6l4 2" />
+              </svg>
+            </div>
+            <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: themedLabel }}>
+              {type === "main" ? "VOICE" : "INPUT"}
+            </span>
+            {isActive && (
+              <span className="text-[8px]" style={{ color: glowColor }}>Active</span>
+            )}
+          </div>
+        </motion.button>
+      )
+
+    case "mini":
+      return (
+        <motion.div
+          onClick={onClick}
+          className={`relative rounded-xl overflow-hidden ${isLarge ? 'scale-125 w-40' : 'w-24'}`}
+          style={{
+            background: `hsl(${parseInt(glowColor.match(/\d+/)?.[0] || '0')}, 15%, 6%)`,
+            border: `1px solid ${glowColor}30`,
+          }}
+        >
+          {/* Header */}
+          <div 
+            className="flex items-center gap-2 px-3 py-2 border-b"
+            style={{ borderColor: `${glowColor}20` }}
+          >
+            <div style={{ color: glowColor, width: 16, height: 16 }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+              </svg>
+            </div>
+            <span className="text-xs font-medium text-white/90">INPUT</span>
+          </div>
+          {/* Mock field */}
+          <div className="p-3 space-y-2">
+            <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+              <div 
+                className="h-full rounded-full"
+                style={{ 
+                  width: "60%", 
+                  background: glowColor,
+                  boxShadow: `0 0 6px ${glowColor}`,
+                }} 
+              />
+            </div>
+            <div className="flex justify-between text-[8px] text-white/40">
+              <span>Gain</span>
+              <span style={{ color: glowColor }}>60%</span>
+            </div>
+          </div>
+        </motion.div>
+      )
+
+    case "confirmed":
+      return (
+        <motion.div
+          onClick={onClick}
+          className={`relative flex flex-col items-center justify-center rounded-xl ${isLarge ? 'scale-125' : ''}`}
+          style={{ 
+            width: baseSize, 
+            height: baseSize,
+            background: "rgba(255,255,255,0.08)",
+            backdropFilter: "blur(12px)",
+            border: `1px solid ${glowColor}20`,
+          }}
+          whileHover={{ scale: 1.05 }}
+        >
+          <div style={{ color: glowColor, width: iconSize * 0.8, height: iconSize * 0.8 }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
+          </div>
+          <span className="text-[8px] font-medium text-white/60 mt-1">DONE</span>
+        </motion.div>
+      )
+
+    default:
+      return null
+  }
+}
+
+// Sub-component: Compact slider for test panel
+interface TestSliderProps {
+  label: string
+  value: number
+  min: number
+  max: number
+  onChange: (val: number) => void
+  glowColor: string
+  displayValue: string
+}
+
+function TestSlider({ label, value, min, max, onChange, glowColor, displayValue }: TestSliderProps) {
+  const percentage = ((value - min) / (max - min)) * 100
+
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-[10px]">
+        <span className="text-white/50 uppercase tracking-wider">{label}</span>
+        <span className="text-white/70 font-mono">{displayValue}</span>
+      </div>
+      <div 
+        className="relative h-1.5 bg-white/10 rounded-full cursor-pointer"
+        onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect()
+          const pct = (e.clientX - rect.left) / rect.width
+          onChange(Math.round(min + pct * (max - min)))
+        }}
+      >
+        <div 
+          className="absolute left-0 top-0 h-full rounded-full"
+          style={{ 
+            width: `${percentage}%`,
+            background: glowColor,
+            boxShadow: `0 0 6px ${glowColor}`,
+          }}
+        />
+        <div 
+          className="absolute top-1/2 w-3 h-3 bg-white rounded-full shadow-md -translate-y-1/2 -translate-x-1/2"
+          style={{ left: `${percentage}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+```
+
+### 3.2 Integration: App-Level Placement
+
+```typescript
+// app/page.tsx or app/layout.tsx
+import { BrandColorProvider } from "@/contexts/BrandColorContext"
+import { HexagonalControlCenter } from "@/components/hexagonal-control-center"
+import { ThemeTestSwitcher } from "@/components/testing/ThemeTestSwitcher"
+import { NavigationProvider } from "@/contexts/NavigationContext"
+
+export default function Home() {
+  return (
+    <BrandColorProvider>
+      <NavigationProvider>
+        {/* Main UI - respects navigation state */}
+        <HexagonalControlCenter />
+        
+        {/* Test Switcher - independent, always accessible */}
+        <ThemeTestSwitcher />
+      </NavigationProvider>
+    </BrandColorProvider>
+  )
+}
+```
+
+---
+
+## 4. Themed Node Specifications (Updated)
+
+### 4.1 Color Application Matrix (Final)
+
+| Element | Property | Formula | Notes |
+|---------|----------|---------|-------|
+| **Node Background** | `background` | `hsl(hue, sat*0.25, 8%)` | Theme-tinted glass |
+| **Node Border** | `border-color` | `rgba(255,255,255,0.08)` + theme accent when active | Static + dynamic |
+| **Rotating Border** | `background` | `conic-gradient(transparent, glowColor20, glowColor, glowColor20, transparent)` | Existing, keep |
+| **Ambient Glow** | `box-shadow` / pseudo-element | `radial-gradient(glowColor@20%, transparent)` | New layer |
+| **Icon Color** | `color` | `color-mix(glowColor@60%, silver)` | Themed but readable |
+| **Label Text** | `color` | `hsl(hue, 10%, 70%)` | Subtle theme tint |
+| **Preview Value** | `color` | `glowColor` | Full saturation |
+| **Active Glow** | `background` (pseudo) | `radial-gradient(glowColor@30%, transparent)` | Pulsing animation |
+| **Hover Background** | `background` | `hsl(hue, sat*0.3, 12%)` | Lighter tint |
+
+### 4.2 HexagonalNode Implementation
+
+```typescript
+// components/hexagonal-node.tsx
+interface HexagonalNodeProps {
+  // ... existing props
+  themeIntensity?: 'subtle' | 'medium' | 'strong'
+}
+
+export function HexagonalNode({
+  node,
+  angle,
+  radius,
+  // ...
+  themeIntensity = 'medium',
+}: HexagonalNodeProps) {
+  const { brandColor, getHSLString } = useBrandColor()
+  const glowColor = getHSLString()
+  
+  // Theme calculations
+  const intensity = {
+    subtle: { bgSat: 0.15, bgLight: 6, glowOp: 0.1, iconMix: 0.3 },
+    medium: { bgSat: 0.25, bgLight: 8, glowOp: 0.2, iconMix: 0.6 },
+    strong: { bgSat: 0.4, bgLight: 12, glowOp: 0.35, iconMix: 1.0 },
+  }[themeIntensity]
+
+  const bgColor = `hsl(${brandColor.hue}, ${brandColor.saturation * intensity.bgSat}%, ${intensity.bgLight}%)`
+  const iconColor = intensity.iconMix === 1 
+    ? glowColor 
+    : `color-mix(in hsl, ${glowColor} ${intensity.iconMix * 100}%, #c0c0c0)`
+  const labelColor = `hsl(${brandColor.hue}, 10%, 70%)`
+
+  return (
+    <motion.button
+      style={{
+        background: bgColor,  // THEME: Was rgba(255,255,255,0.06)
+        backdropFilter: "blur(12px)",
+        border: `1px solid ${isActive ? glowColor : 'rgba(255,255,255,0.08)'}`,
+      }}
+    >
+      {/* Ambient glow - NEW */}
+      <div 
+        className="absolute -inset-2 -z-10 rounded-2xl"
+        style={{
+          background: `radial-gradient(circle, ${glowColor}${Math.round(intensity.glowOp * 255).toString(16)} 0%, transparent 70%)`,
+          filter: "blur(8px)",
+        }}
+      />
+
+      {/* Rotating border - EXISTING */}
+      <motion.div
+        style={{
+          background: `conic-gradient(from 0deg, transparent, ${glowColor}1a, ${isActive ? glowColor : `${glowColor}e6`}, ${glowColor}1a, transparent)`,
+        }}
+        animate={{ rotate: 360 }}
+        transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
+      />
+
+      {/* Active glow - ENHANCED */}
+      {isActive && (
+        <motion.div
+          className="absolute -inset-2 rounded-2xl"
+          style={{
+            background: `radial-gradient(circle, ${glowColor}40 0%, transparent 60%)`,
+            filter: "blur(12px)",
+          }}
+          animate={{ opacity: [0.5, 1, 0.5] }}
+          transition={{ duration: 2, repeat: Infinity }}
+        />
+      )}
+
+      {/* Content - THEME UPDATED */}
+      <div className="flex flex-col items-center gap-1">
+        <Icon style={{ color: iconColor }} />  {/* THEME: Was fixed "silver" */}
+        <span style={{ color: labelColor }}>{node.label}</span>  {/* THEME: Was muted-foreground */}
+        {previewValue && <span style={{ color: glowColor }}>{previewValue}</span>}
+      </div>
+    </motion.button>
+  )
+}
+```
+
+---
+
+## 5. Testing Protocol with Theme Switcher
+
+### 5.1 Visual QA Checklist
+
+| Test | Aether (210°) | Ember (30°) | Aurum (45°) |
+|------|-------------|-------------|-------------|
+| **Node BG Tint** | Cyan-Blue @ 8% | Orange @ 6% | Gold @ 10% |
+| **Icon Visibility** | High contrast | Warm tint | Rich metallic |
+| **Label Readability** | Cool gray | Warm gray | Neutral gray |
+| **Glow Intensity** | Tech pulse | Energy pulse | Luxury pulse |
+| **Active State** | Bright cyan glow | Warm orange glow | Subtle gold glow |
+| **Mini Stack** | Cool header | Warm header | Rich header |
+| **Slider Fill** | Cyan glow | Orange glow | Gold glow |
+| **Toggle On** | Cyan thumb | Orange thumb | Gold thumb |
+
+### 5.2 Interaction Tests
+
+| Action | Expected Result |
+|--------|----------------|
+| Click Aether preset | Hue→210, Sat→80, Light→55, Intensity→Medium |
+| Click Ember preset | Hue→30, Sat→70, Light→50, Intensity→Strong |
+| Click Aurum preset | Hue→45, Sat→90, Light→55, Intensity→Subtle |
+| Drag hue slider | Real-time node preview updates, 0-360° |
+| Drag sat slider | Icon color intensity changes visibly |
+| Drag light slider | Background lightness shifts |
+| Toggle Intensity | Subtle/Medium/Strong instantly applied |
+| Click node type | Preview switches (Main/Subnode/Mini/Iris/Confirmed) |
+| Show All Nodes | Grid view of all 5 node types |
+| Collapse panel | Mini pill shows current theme color |
+| Reset button | Returns to current theme defaults |
+
+### 5.3 Contrast Verification
+
+```typescript
+// Automated checks via ThemeTestSwitcher
+const contrastChecks = {
+  nodeBg_to_label: { bg: themedBg, fg: themedLabel, min: 4.5 },
+  nodeBg_to_icon: { bg: themedBg, fg: themedIcon, min: 3.0 },
+  nodeBg_to_glow: { bg: themedBg, fg: glowColor, min: 3.0 },
+  miniBg_to_text: { bg: miniBg, fg: labelColor, min: 4.5 },
+}
+
+// Visual indicator in test panel
+<div className="flex gap-1 mt-2">
+  {Object.entries(contrastChecks).map(([name, check]) => (
+    <div 
+      key={name}
+      className="w-2 h-2 rounded-full"
+      style={{ 
+        background: calculateContrast(check.bg, check.fg) >= check.min ? '#4ade80' : '#ef4444'
+      }}
+      title={`${name}: ${calculateContrast(check.bg, check.fg).toFixed(2)}:1`}
+    />
+  ))}
+</div>
+```
+
+---
+
+## 6. Implementation Phases
+
+### Phase 1: Test Switcher (Immediate)
+- [ ] Create `ThemeTestSwitcher.tsx`
+- [ ] Add to app layout (outside main UI)
+- [ ] Verify isolation from NavigationContext
+- [ ] Test all preset buttons
+
+### Phase 2: Node Theming (Parallel)
+- [ ] Update `HexagonalNode` with `themeIntensity` prop
+- [ ] Add ambient glow pseudo-element
+- [ ] Theme icon colors via `color-mix`
+- [ ] Theme label colors
+
+### Phase 3: Component Theming
+- [ ] `MiniNodeStack`: themed backgrounds, headers
+- [ ] `SliderField`: glow fill + shadow
+- [ ] `ToggleField`: theme-colored active state
+- [ ] `DropdownField`: theme highlight
+- [ ] `TextField`: theme focus ring
+
+### Phase 4: Iris Orb Personality
+- [ ] Theme-specific pulse speeds
+- [ ] Layer count variation
+- [ ] Shimmer adjustments
+
+### Phase 5: Polish
+- [ ] Contrast verification UI
+- [ ] Performance optimization
+- [ ] Accessibility audit
+
+---
+
+## 7. Key Files Summary
+
+| File | Purpose |
+|------|---------|
+| `ThemeTestSwitcher.tsx` | Standalone test UI (NEW) |
+| `BrandColorContext.tsx` | Theme state (EXISTING, no changes) |
+| `hexagonal-node.tsx` | Themed nodes (UPDATE) |
+| `mini-node-stack.tsx` | Themed mini panels (UPDATE) |
+| `SliderField.tsx` | Themed slider (UPDATE) |
+| `ToggleField.tsx` | Themed toggle (UPDATE) |
+| `DropdownField.tsx` | Themed dropdown (UPDATE) |
+| `TextField.tsx` | Themed input (UPDATE) |
+| `iris-orb.tsx` | Personality profiles (UPDATE) |
+
+---
+

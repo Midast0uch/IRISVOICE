@@ -3,7 +3,7 @@ Diagnostics Manager - Health checks, LFM benchmark, MCP tests
 """
 import time
 import platform
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
 

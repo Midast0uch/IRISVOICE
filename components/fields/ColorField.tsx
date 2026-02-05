@@ -37,6 +37,7 @@ export function ColorField({
             type="color"
             value={currentValue}
             onChange={(e) => onChange(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
             className="w-10 h-8 rounded bg-transparent border border-white/20 cursor-pointer"
             style={{ padding: 0 }}
           />
@@ -49,6 +50,7 @@ export function ColorField({
           type="text"
           value={currentValue}
           onChange={(e) => handleTextChange(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
           className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white/90 font-mono uppercase focus:outline-none focus:border-white/30 transition-colors"
           maxLength={7}
         />

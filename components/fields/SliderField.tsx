@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react"
 import { FieldWrapper } from "./FieldWrapper"
+import { useBrandColor } from "@/contexts/BrandColorContext"
 
 interface SliderFieldProps {
   label: string
@@ -29,6 +30,8 @@ export function SliderField({
   const [isDragging, setIsDragging] = useState(false)
   const [showTooltip, setShowTooltip] = useState(false)
   const trackRef = useRef<HTMLDivElement>(null)
+  const { getHSLString } = useBrandColor()
+  const glowColor = getHSLString()
 
   const currentValue = value ?? min
   const percentage = ((currentValue - min) / (max - min)) * 100
@@ -52,6 +55,7 @@ export function SliderField({
   )
 
   const handleMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation()
     setIsDragging(true)
     handleInteraction(e.clientX, e.shiftKey)
   }
@@ -97,8 +101,8 @@ export function SliderField({
             className="absolute left-0 top-0 h-full rounded-full transition-all duration-75"
             style={{
               width: `${percentage}%`,
-              background: "var(--glow-color, #00ff88)",
-              boxShadow: `0 0 8px var(--glow-color, #00ff88)`,
+              background: glowColor,
+              boxShadow: `0 0 8px ${glowColor}`,
             }}
           />
 

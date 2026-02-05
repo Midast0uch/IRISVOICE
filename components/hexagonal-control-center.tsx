@@ -496,8 +496,8 @@ export function HexagonalControlCenter() {
   
   // DEBUG: Log theme state
   useEffect(() => {
-    console.log('[DEBUG] BrandColorContext theme:', brandTheme)
-    console.log('[DEBUG] Computed theme config:', theme.name, 'glow:', themeGlowColor)
+    console.log('[Nav System] BrandColorContext theme:', brandTheme)
+    console.log('[Nav System] Computed theme config:', theme.name, 'glow:', themeGlowColor)
   }, [brandTheme, theme, themeGlowColor])
   
   const {
@@ -519,6 +519,16 @@ export function HexagonalControlCenter() {
   const [activeMiniNodeIndex, setActiveMiniNodeIndex] = useState<number | null>(null)
   const isMobile = useIsMobile()
 
+  // Refs for tracking navigation state and preventing stale closures
+  const userNavigatedRef = useRef(false)
+  const navLevelRef = useRef(nav.state.level)
+  const nodeClickTimestampRef = useRef<number | null>(null)
+
+  // Update navLevelRef on every render to keep it fresh
+  useEffect(() => {
+    navLevelRef.current = nav.state.level
+  }, [nav.state.level])
+
   // Ensure window starts interactive (solid, not click-through) - Tauri only
   useEffect(() => {
     if (!getCurrentWindow) return
@@ -533,54 +543,45 @@ export function HexagonalControlCenter() {
   useEffect(() => {
     // Skip backend sync if user has manually navigated
     if (userNavigatedRef.current) {
-      console.log('[DEBUG] Skipping backend sync - user has manually navigated')
+      console.log('[Nav System] Skipping backend sync - user has manually navigated')
       return
     }
     
     // Skip if category is empty (user just cleared it)
     if (!currentCategory) {
-      console.log('[DEBUG] Skipping backend sync - currentCategory is empty')
+      console.log('[Nav System] Skipping backend sync - currentCategory is empty')
       return
     }
     
-    console.log('[DEBUG] Backend sync useEffect running:', {
+    console.log('[Nav System] Backend sync useEffect running:', {
       currentCategory,
       currentView,
       isTransitioning,
       pendingView,
       exitingView,
       navLevel: nav.state.level,
+      isExpanded,
       condition: !isTransitioning && !pendingView && currentCategory !== currentView && !exitingView
     })
     
+    // CRITICAL FIX: Don't auto-navigate to Level 3 on initial load/refresh
+    // Only sync the view without advancing navigation level automatically
+    // This prevents the "random main node on refresh" issue
     if (!isTransitioning && !pendingView && currentCategory !== currentView && !exitingView) {
-      console.log('[DEBUG] Setting currentView to currentCategory:', currentCategory)
+      console.log('[Nav System] Setting currentView to currentCategory (without auto-navigating):', currentCategory)
       setCurrentView(currentCategory)
-      // When backend sends a category, ensure UI is expanded and nav level is synced
-      if (currentCategory) {
-        console.log('[DEBUG] Backend has category, syncing navigation level')
-        if (!isExpanded) {
-          setIsExpanded(true)
-        }
-        // Sync navigation level based on category
-        if (nav.state.level === 1) {
-          // Need to go to level 2 first, then level 3 if category has subnodes
-          console.log('[DEBUG] nav.expandToMain() called from backend sync')
-          nav.expandToMain()
-          if (SUB_NODES[currentCategory]?.length > 0) {
-            // Advance to level 3 to show subnodes
-            setTimeout(() => {
-              console.log('[DEBUG] nav.selectMain() called from backend sync timeout')
-              nav.selectMain(currentCategory)
-            }, 100)
-          }
-        } else if (nav.state.level === 2 && SUB_NODES[currentCategory]?.length > 0) {
-          // Already at level 2, advance to level 3
-          console.log('[DEBUG] nav.selectMain() called from backend sync (level 2)')
-          nav.selectMain(currentCategory)
-        }
+      
+      // Only expand to show main nodes (Level 2), don't auto-select a main node
+      // This prevents the backend from forcing Level 3 on refresh
+      if (!isExpanded && nav.state.level === 1) {
+        console.log('[Nav System] Expanding to main nodes (Level 2) from backend category')
+        setIsExpanded(true)
+        nav.expandToMain()
       }
+      // Note: We intentionally do NOT call nav.selectMain() here
+      // User must explicitly click a main node to reach Level 3
     }
+    
     if (pendingView && currentCategory === pendingView) {
       setPendingView(null)
     }
@@ -611,7 +612,7 @@ export function HexagonalControlCenter() {
     (nodeId: string, nodeLabel: string, hasSubnodes: boolean) => {
       const currentNavLevel = nav.state.level
       
-      console.log('[DEBUG] handleNodeClick START:', { 
+      console.log('[Nav System] handleNodeClick START:', { 
         nodeId, 
         nodeLabel, 
         hasSubnodes, 
@@ -622,7 +623,7 @@ export function HexagonalControlCenter() {
       })
       
       if (isTransitioning) {
-        console.log('[DEBUG] handleNodeClick blocked - isTransitioning')
+        console.log('[Nav System] handleNodeClick blocked - isTransitioning')
         return
       }
 
@@ -633,9 +634,9 @@ export function HexagonalControlCenter() {
         (currentNavLevel === 3 && nav.state.selectedMain !== nodeId)
 
       if (shouldNavigate) {
-        console.log('[DEBUG] Should navigate to subnodes:', { nodeId, fromLevel: currentNavLevel })
+        console.log('[Nav System] Should navigate to subnodes:', { nodeId, fromLevel: currentNavLevel })
         if (SUB_NODES[nodeId]?.length > 0) {
-          console.log('[DEBUG] Found subnodes, proceeding with navigation')
+          console.log('[Nav System] Found subnodes, proceeding with navigation')
           userNavigatedRef.current = true
           setExitingView(currentNavLevel === 3 ? nav.state.selectedMain : "__main__")
           setIsTransitioning(true)
@@ -649,12 +650,12 @@ export function HexagonalControlCenter() {
           }
 
           // Use NavigationContext to advance to Level 3
-          console.log('[DEBUG] Calling nav.selectMain() for nodeId:', nodeId)
+          console.log('[Nav System] Calling nav.selectMain() for nodeId:', nodeId)
           nav.selectMain(nodeId)
-          console.log('[DEBUG] nav.selectMain() called')
+          console.log('[Nav System] selectMain called:', { nodeId, level: nav.state.level })
 
           setTimeout(() => {
-            console.log('[DEBUG] Transition timeout completed')
+            console.log('[Nav System] Transition timeout completed')
             setExitingView(null)
             setIsTransitioning(false)
             selectCategory(nodeId)
@@ -662,10 +663,10 @@ export function HexagonalControlCenter() {
             userNavigatedRef.current = false
           }, SPIN_CONFIG.spinDuration)
         } else {
-          console.log('[DEBUG] No subnodes found for nodeId:', nodeId)
+          console.log('[Nav System] No subnodes found for nodeId:', nodeId)
         }
       } else {
-        console.log('[DEBUG] Skipping navigation:', { currentNavLevel, nodeId })
+        console.log('[Nav System] Skipping navigation:', { currentNavLevel, nodeId })
       }
     },
     [isTransitioning, selectCategory, nav, currentView]
@@ -675,7 +676,7 @@ export function HexagonalControlCenter() {
     // Read nav.state.level fresh to avoid stale closure
     const currentNavLevel = nav.state.level
     
-    console.log('[DEBUG] handleSubnodeClick START:', { 
+    console.log('[Nav System] handleSubnodeClick START:', { 
       subnodeId, 
       activeSubnodeId,
       currentView,
@@ -685,7 +686,7 @@ export function HexagonalControlCenter() {
     })
 
     if (activeSubnodeId === subnodeId) {
-      console.log('[DEBUG] Deselecting subnode, going back to Level 3')
+      console.log('[Nav System] Deselecting subnode, going back to Level 3')
       selectSubnode(null)
       nav.goBack()
       setActiveMiniNodeIndex(null)
@@ -701,57 +702,76 @@ export function HexagonalControlCenter() {
         fields: [field]
       }))
 
-      console.log('[DEBUG] Attempting Level 4 navigation:', { 
+      console.log('[Nav System] Attempting Level 4 navigation:', { 
         subnodeId, 
         subnodeFound: !!subnodeData,
         miniNodesCount: miniNodes.length,
         miniNodes: miniNodes,
-        currentNavLevel,
-        canNavigate: true
       })
-
-      console.log('[DEBUG] Calling nav.selectSub()')
+      
+      // CRITICAL: Call nav.selectSub() FIRST to trigger Level 4 navigation
+      // This updates the navigation state and sets miniNodeStack
       nav.selectSub(subnodeId, miniNodes)
-      console.log('[DEBUG] After selectSub, nav level should be 4')
-
+      
+      // Update backend state
       selectSubnode(subnodeId)
-      setActiveMiniNodeIndex(null)
     }
-  }, [activeSubnodeId, selectSubnode, nav, currentView])
-
-  // Track recent node clicks to prevent iris toggle
-  const nodeClickTimestampRef = useRef<number>(0)
-  // Track user-initiated navigation to prevent backend sync from overriding
-  const userNavigatedRef = useRef<boolean>(false)
+  }, [activeSubnodeId, currentView, nav, selectSubnode])
 
   const handleIrisClick = useCallback((e?: React.MouseEvent) => {
-    console.log('[DEBUG] handleIrisClick START:', { isTransitioning, activeSubnodeId, currentView, isExpanded, navLevel: nav.state.level, target: e?.target })
+    // CRITICAL FIX: Read nav level from the ref which is updated every render
+    const freshNavLevel = navLevelRef.current
+    
+    console.log('[Nav System] handleIrisClick START:', { isTransitioning, activeSubnodeId, currentView, isExpanded, freshNavLevel, target: e?.target })
 
     // Check if a node was just clicked (within last 300ms) - prevents iris toggle when clicking nodes
     const timeSinceNodeClick = Date.now() - (nodeClickTimestampRef.current || 0)
     if (timeSinceNodeClick < 300) {
-      console.log('[DEBUG] handleIrisClick blocked - node was just clicked', timeSinceNodeClick, 'ms ago')
+      console.log('[Nav System] handleIrisClick blocked - node was just clicked', timeSinceNodeClick, 'ms ago')
       return
     }
 
     if (isTransitioning) {
-      console.log('[DEBUG] handleIrisClick blocked - isTransitioning')
+      console.log('[Nav System] handleIrisClick blocked - isTransitioning')
       return
     }
 
-    // Use nav.state.level to determine proper back navigation
-    const level = nav.state.level
+    // Use freshNavLevel to determine proper back navigation (not the stale closure value)
+    const level = freshNavLevel
+    
+    // DEFENSIVE: Prevent any back navigation if we're transitioning
+    if (isTransitioning) {
+      console.log('[Nav System] handleIrisClick blocked - isTransitioning')
+      return
+    }
+    
+    // DEFENSIVE: Check if userNavigatedRef is already true (prevent double navigation)
+    if (userNavigatedRef.current) {
+      console.log('[Nav System] handleIrisClick blocked - userNavigatedRef already true')
+      return
+    }
+    
+    console.log('[Nav System] handleIrisClick proceeding with level:', level)
     
     if (level === 4) {
       // Level 4: Mini nodes active -> go back to level 3 (subnodes)
-      console.log('[DEBUG] handleIrisClick: Level 4->3, deselecting subnode')
+      console.log('[Nav System] handleIrisClick: Level 4->3, deselecting subnode')
       userNavigatedRef.current = true
-      selectSubnode(null)
+      // IMPORTANT: Call nav.goBack() FIRST before clearing backend state
+      // This ensures navigation state changes before backend sync can interfere
       nav.goBack()
+      // Now clear backend state after navigation is initiated
+      // Keep userNavigatedRef = true during this to prevent backend sync from interfering
+      selectSubnode(null)
       setActiveMiniNodeIndex(null)
+      // Reset userNavigatedRef AFTER a short delay to ensure navigation completes
+      setTimeout(() => {
+        userNavigatedRef.current = false
+        console.log('[Nav System] userNavigatedRef reset after Level 4->3 navigation')
+      }, 100)
     } else if (level === 3) {
       // Level 3: Subnodes showing -> go back to level 2 (main nodes)
-      console.log('[DEBUG] handleIrisClick: Level 3->2, going back to main nodes')
+      console.log('[Nav System] handleIrisClick: Level 3->2, going back to main nodes')
       userNavigatedRef.current = true
       nav.goBack()
       // Clear the currentView to show main nodes instead of subnodes
@@ -767,7 +787,7 @@ export function HexagonalControlCenter() {
       }, SPIN_CONFIG.spinDuration)
     } else if (level === 2) {
       // Level 2: Main nodes showing -> collapse to level 1 (idle)
-      console.log('[DEBUG] handleIrisClick: Level 2->1, collapsing to idle')
+      console.log('[Nav System] handleIrisClick: Level 2->1, collapsing to idle')
       userNavigatedRef.current = true
       nav.collapseToIdle()
       setIsExpanded(false)
@@ -775,7 +795,7 @@ export function HexagonalControlCenter() {
       selectCategory("")
     } else {
       // Level 1: Idle -> expand to level 2 (main nodes)
-      console.log('[DEBUG] handleIrisClick: Level 1->2, expanding')
+      console.log('[Nav System] handleIrisClick: Level 1->2, expanding')
       userNavigatedRef.current = true
       nav.expandToMain()
       setIsExpanded(true)
@@ -900,37 +920,14 @@ export function HexagonalControlCenter() {
           </div>
         </motion.div>
 
-        {/* Click-blocking overlay for Level 4 - prevents mini node stack clicks from reaching iris orb */}
-        <AnimatePresence>
-          {nav.state.level === 4 && (
-            <motion.div
-              className="absolute left-1/2 top-1/2 z-[100]"
-              style={{
-                width: 400,
-                height: 400,
-                marginLeft: -100,
-                marginTop: -200,
-                pointerEvents: 'auto',
-                cursor: 'default',
-                backgroundColor: 'rgba(0,0,0,0.01)',
-              }}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.3 }}
-              onClick={(e) => e.stopPropagation()}
-            />
-          )}
-        </AnimatePresence>
-
         {/* Connecting line between Iris Orb and Mini Stack - Liquid Metal */}
         <AnimatePresence>
           {nav.state.level === 4 && (
             <motion.div
-              className="absolute left-1/2 top-1/2 pointer-events-none z-15"
+              className="absolute left-1/2 top-1/2 pointer-events-none z-[55]"
               style={{
                 height: 2,
-                width: 120,
+                width: 200,
                 marginTop: -1,
                 marginLeft: 30,
                 background: `linear-gradient(90deg, 
@@ -950,22 +947,21 @@ export function HexagonalControlCenter() {
           )}
         </AnimatePresence>
 
-        {/* Mini Node Stack - Level 4 - Positioned to the right of iris orb */}
+        {/* Mini Node Stack - Level 4 - COMPLETELY ISOLATED with higher z-index */}
         <AnimatePresence>
           {nav.state.level === 4 && nav.state.miniNodeStack.length > 0 && (
             <motion.div
-              className="absolute left-1/2 top-1/2 pointer-events-auto z-20"
+              className="absolute left-1/2 top-1/2 pointer-events-auto z-[200]"
               style={{ 
-                marginLeft: 200,
-                marginTop: -140,
-                width: 220,
-                height: 400,
+                marginLeft: 280,
+                marginTop: -160,
+                width: 240,
+                height: 420,
               }}
               initial={{ opacity: 0, scale: 0.8, x: -20 }}
               animate={{ opacity: 1, scale: 1, x: 0 }}
               exit={{ opacity: 0, scale: 0.8, x: -20 }}
               transition={{ duration: 0.4 }}
-              onClick={(e) => e.stopPropagation()}
             >
               <MiniNodeStack miniNodes={nav.state.miniNodeStack} />
             </motion.div>
@@ -974,7 +970,7 @@ export function HexagonalControlCenter() {
 
         {/* Exiting nodes */}
         <AnimatePresence>
-          {isExpanded && exitingNodes && (
+          {(nav.state.level === 2 || nav.state.level === 3) && exitingNodes && (
             <>
               {exitingNodes.map((node, idx) => (
                 <PrismNode
@@ -998,7 +994,7 @@ export function HexagonalControlCenter() {
 
         {/* Current nodes - INTERACTIVE - Hidden when mini-node stack is showing (Level 4) */}
         <AnimatePresence>
-          {isExpanded && nav.state.level !== 4 && (
+          {(nav.state.level === 2 || nav.state.level === 3) && (
             <>
               {currentNodes
                 .filter(node => !activeSubnodeId || node.id !== activeSubnodeId)
@@ -1030,7 +1026,7 @@ export function HexagonalControlCenter() {
           )}
         </AnimatePresence>
         <AnimatePresence>
-          {!isExpanded && (
+          {nav.state.level === 1 && (
             <motion.div
               className="absolute bottom-40 left-1/2 -translate-x-1/2 pointer-events-none"
               initial={{ opacity: 0, y: 10 }}

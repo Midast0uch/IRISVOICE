@@ -143,12 +143,12 @@ export function useIRISWebSocket(
         setConnectionState("disconnected")
         wsRef.current = null
 
-        // Auto-reconnect with exponential backoff
-        if (autoConnect && reconnectAttemptsRef.current < 10) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000)
+        // Auto-reconnect with exponential backoff - longer initial delay for browser mode
+        if (autoConnect && reconnectAttemptsRef.current < 3) {
+          const delay = Math.min(5000 * Math.pow(2, reconnectAttemptsRef.current), 30000)
           reconnectAttemptsRef.current++
 
-          console.log(`[IRIS WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
+          console.log(`[IRIS WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/3)`)
 
           reconnectTimeoutRef.current = setTimeout(() => {
             connect()

@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react"
 import { ChevronDown } from "lucide-react"
 import { FieldWrapper } from "./FieldWrapper"
+import { useBrandColor } from "@/contexts/BrandColorContext"
 
 interface DropdownOption {
   label: string
@@ -36,6 +37,8 @@ export function DropdownField({
   const [isLoading, setIsLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const containerRef = useRef<HTMLDivElement>(null)
+  const { getHSLString } = useBrandColor()
+  const glowColor = getHSLString()
 
   // Load async options on first open
   useEffect(() => {
@@ -83,7 +86,10 @@ export function DropdownField({
         {/* Trigger */}
         <button
           type="button"
-          onClick={() => setIsOpen(!isOpen)}
+          onClick={(e) => {
+            e.stopPropagation()
+            setIsOpen(!isOpen)
+          }}
           className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white/90 hover:border-white/20 focus:outline-none focus:border-white/30 transition-colors"
         >
           <span className="truncate">{displayValue}</span>
@@ -117,15 +123,17 @@ export function DropdownField({
                   <button
                     key={option.value}
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation()
                       onChange(option.value)
                       setIsOpen(false)
                     }}
                     className={`w-full px-3 py-2 text-left text-sm transition-colors ${
                       option.value === value
-                        ? "bg-white/10 text-white"
+                        ? "text-white"
                         : "text-white/70 hover:bg-white/5"
                     }`}
+                    style={{ backgroundColor: option.value === value ? `${glowColor}30` : 'transparent' }}
                   >
                     <div className="flex items-center justify-between">
                       <span>{option.label}</span>

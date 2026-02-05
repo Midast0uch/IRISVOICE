@@ -16,6 +16,8 @@ import {
   MINI_NODE_VALUES_KEY
 } from "@/types/navigation"
 
+const CONFIRMED_NODES_KEY = 'irisvoice_confirmed_nodes'
+
 const initialState: NavState = {
   level: 1,
   history: [],
@@ -63,7 +65,7 @@ function navReducer(state: NavState, action: NavAction): NavState {
     }
 
     case 'SELECT_SUB': {
-      console.log('[DEBUG] Reducer SELECT_SUB:', { currentLevel: state.level, subnodeId: action.payload.subnodeId, miniNodesCount: action.payload.miniNodes.length })
+      console.log('[Nav System] Reducer SELECT_SUB:', { currentLevel: state.level, subnodeId: action.payload.subnodeId, miniNodesCount: action.payload.miniNodes.length })
       // Allow transition even if level is transitioning (level 3 or 4)
       return {
         ...state,
@@ -368,6 +370,23 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     } catch (e) {
       console.warn('[NavigationContext] Failed to restore mini node values:', e)
     }
+
+    // Load confirmed nodes from localStorage
+    try {
+      const savedConfirmedNodes = localStorage.getItem(CONFIRMED_NODES_KEY)
+      if (savedConfirmedNodes) {
+        const parsed = JSON.parse(savedConfirmedNodes)
+        dispatch({ 
+          type: 'RESTORE_STATE', 
+          payload: { 
+            ...initialState, 
+            confirmedMiniNodes: parsed 
+          } as NavState 
+        })
+      }
+    } catch (e) {
+      console.warn('[NavigationContext] Failed to restore confirmed nodes:', e)
+    }
   }, [])
 
   // Navigation state is NOT persisted - always start fresh at level 1
@@ -381,6 +400,15 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
       console.warn('[NavigationContext] Failed to save mini node values:', e)
     }
   }, [state.miniNodeValues])
+
+  // Persist confirmed nodes to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(CONFIRMED_NODES_KEY, JSON.stringify(state.confirmedMiniNodes))
+    } catch (e) {
+      console.warn('[NavigationContext] Failed to save confirmed nodes:', e)
+    }
+  }, [state.confirmedMiniNodes])
 
   const goBack = useCallback(() => {
     if (state.isTransitioning) return

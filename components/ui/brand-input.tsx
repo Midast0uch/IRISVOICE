@@ -80,6 +80,25 @@ export function BrandInput({
             color: aurum.primary,
           },
         }
+      default:
+        // Fallback for verdant, nebula, crimson using aurum as base
+        const fallbackAurum = generateAurumMetal(brandColor.hue, brandColor.saturation)
+        return {
+          container: {
+            background: '#161616',
+            border: `1px solid ${isFocused ? fallbackAurum.primary : 'transparent'}`,
+            borderRadius: '0.5rem',
+            boxShadow: isFocused
+              ? `0 0 0 2px ${fallbackAurum.ambient}, 0 0 20px ${fallbackAurum.ambient}`
+              : 'none',
+          },
+          input: {
+            color: '#e5e5e5',
+          },
+          label: {
+            color: fallbackAurum.primary,
+          },
+        }
     }
   }
 

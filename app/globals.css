@@ -362,3 +362,23 @@ body {
   background: transparent;
   overflow: visible;
 }
+
+/* === TAURI SCROLLBAR REMOVAL === */
+/* Remove scrollbars from Tauri Dev build */
+html, body {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE and Edge */
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Ensure no overflow scrollbars appear */
+body {
+  overflow: hidden !important;
+}

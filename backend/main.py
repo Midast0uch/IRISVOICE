@@ -11,43 +11,44 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from .models import (
+from backend.models import (
     Category, 
     IRISState, 
     ColorTheme, 
     get_subnodes_for_category,
     SUBNODE_CONFIGS
 )
-from .state_manager import get_state_manager
-from .ws_manager import get_websocket_manager
-from .audio import get_audio_engine, VoiceState
-from .agent import (
+from backend.state_manager import get_state_manager
+from backend.ws_manager import get_websocket_manager
+from backend.audio import get_audio_engine, VoiceState
+from backend.agent import (
     get_personality_engine,
     get_tts_manager,
     get_conversation_memory,
     get_wake_config
 )
-from .mcp import (
+from backend.mcp import (
     get_server_manager,
     get_tool_registry,
     ServerConfig,
     BrowserServer,
     AppLauncherServer,
     SystemServer,
-    FileManagerServer
+    FileManagerServer,
+    GUIAutomationServer
 )
-from .system import (
+from backend.system import (
     get_power_manager,
     get_display_manager,
     get_storage_manager,
     get_network_manager
 )
-from .customize import (
+from backend.customize import (
     get_startup_manager,
     get_behavior_manager,
     get_notification_manager
 )
-from .monitor import (
+from backend.monitor import (
     get_analytics_manager,
     get_log_manager,
     get_diagnostics_manager,
@@ -280,6 +281,46 @@ async def lifespan(app: FastAPI):
             )
         print(f"[OK] Registered built-in MCP server: {name} ({len(server.get_tools())} tools)")
     
+    # Register GUI Automation server (UI-TARS integration)
+    print("[OK] Initializing GUI Automation server...")
+    
+    # Load GUI automation config from state manager
+    automate_config = state_manager.get_category_field_values("automate")
+    gui_config = {
+        "ui_tars_provider": "native_python",
+        "model_provider": "anthropic",
+        "api_key": "",
+        "max_steps": 25,
+        "safety_confirmation": True,
+        "debug_mode": True
+    }
+    if automate_config:
+        # Map automate config fields to gui config
+        gui_config["ui_tars_provider"] = automate_config.get("ui_tars_provider", "native_python")
+        gui_config["model_provider"] = automate_config.get("model_provider", "anthropic")
+        gui_config["api_key"] = automate_config.get("api_key", "")
+        gui_config["max_steps"] = automate_config.get("max_steps", 25)
+        gui_config["safety_confirmation"] = automate_config.get("safety_confirmation", True)
+        gui_config["debug_mode"] = automate_config.get("debug_mode", True)
+    
+    gui_automation = GUIAutomationServer(
+        use_native=gui_config["ui_tars_provider"] in ["native_python", "api_cloud"],
+        use_vision=gui_config["model_provider"] in ["anthropic", "volcengine", "local"] and bool(gui_config["api_key"]),
+        vision_provider=gui_config["model_provider"],
+        vision_api_key=gui_config["api_key"],
+        max_steps=gui_config["max_steps"],
+        safety_confirmation=gui_config["safety_confirmation"],
+        debug_mode=gui_config["debug_mode"]
+    )
+    
+    for tool in gui_automation.get_tools():
+        tool_registry.register_local_tool(
+            name=tool.name,
+            func=lambda args, s=gui_automation, t=tool.name: asyncio.run(s.execute_tool(t, args)),
+            description=tool.description
+        )
+    print(f"[OK] Registered GUI Automation server ({len(gui_automation.get_tools())} tools)")
+    
     # Register external MCP servers from config (if any)
     automate_config = state_manager.get_category_field_values("automate")
     if automate_config:
@@ -374,7 +415,7 @@ async def get_subnodes(category: str):
 async def get_audio_devices():
     """Get list of available audio input/output devices"""
     try:
-        from .audio.pipeline import AudioPipeline
+        from backend.audio.pipeline import AudioPipeline
         devices = AudioPipeline.list_devices()
         
         input_devices = [d for d in devices if d["input"]]
@@ -936,7 +977,7 @@ async def system_lock():
 async def set_power_profile(profile: str):
     """Set power profile (Balanced, Performance, Battery)"""
     try:
-        from .system.power import PowerProfile
+        from backend.system.power import PowerProfile
         power = get_power_manager()
         
         try:

@@ -358,6 +358,20 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="key_combinations", type=FieldType.TEXT, label="Key Combinations", placeholder="Keys", value=""),
             ]
         ),
+        SubNode(
+            id="gui",
+            label="GUI AUTOMATION",
+            icon="Monitor",
+            fields=[
+                InputField(id="ui_tars_provider", type=FieldType.DROPDOWN, label="UI-TARS Provider", options=["cli_npx", "native_python", "api_cloud"], value="native_python"),
+                InputField(id="model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["anthropic", "volcengine", "local"], value="anthropic"),
+                InputField(id="api_key", type=FieldType.TEXT, label="API Key", placeholder="sk-...", value=""),
+                InputField(id="max_steps", type=FieldType.SLIDER, label="Max Automation Steps", min=5, max=50, value=25),
+                InputField(id="safety_confirmation", type=FieldType.TOGGLE, label="Require Confirmation", value=True),
+                InputField(id="debug_mode", type=FieldType.TOGGLE, label="Debug Logging", value=True),
+                InputField(id="test_automation", type=FieldType.TEXT, label="Test Automation", placeholder="Run test task", value=""),
+            ]
+        ),
     ],
     "system": [
         SubNode(

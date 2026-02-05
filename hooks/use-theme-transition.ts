@@ -37,6 +37,9 @@ export function useThemeTransition(duration: number = 300) {
           aether: 210,
           ember: 30,
           aurum: 45,
+          verdant: 145,
+          nebula: 260,
+          crimson: 350,
         }
 
         const fromHue = themeDefaults[from]

@@ -1,53 +1,47 @@
 """
 IRIS Backend Startup Script
-Simple script to start the FastAPI backend server
+Uses uvicorn programmatically to avoid subprocess Python path issues
 """
 import os
 import sys
-import subprocess
 from pathlib import Path
+
+# Get the directory containing this script (project root)
+base_dir = Path(__file__).parent.resolve()
+os.chdir(base_dir)
+
+# Add project root to Python path BEFORE any imports
+sys.path.insert(0, str(base_dir))
+
+# Set PYTHONPATH environment variable for subprocesses
+os.environ['PYTHONPATH'] = str(base_dir) + os.pathsep + os.environ.get('PYTHONPATH', '')
+
+# Now import and run uvicorn
+import uvicorn
 
 def main():
     """Start the IRIS backend server"""
-    
-    # Get the directory containing this script
-    base_dir = Path(__file__).parent
-    
-    # Change to base directory
-    os.chdir(base_dir)
-    
-    # Check if virtual environment exists
-    venv_path = base_dir / "venv"
-    if not venv_path.exists():
-        print("[ERROR] Virtual environment not found!")
-        print("\nPlease set up the environment first:")
-        print("  python -m venv venv")
-        print("  venv\\Scripts\\activate")
-        print("  pip install -r requirements.txt")
-        sys.exit(1)
-    
-    # Start the server
     print(">> Starting IRIS Backend...")
+    print(f"   Python: {sys.executable}")
+    print(f"   Base dir: {base_dir}")
+    print(f"   Python path: {sys.path[0]}")
+    print(f"   PYTHONPATH: {os.environ.get('PYTHONPATH', 'not set')}")
     print()
     
     try:
-        # Use the virtual environment Python
-        python_exe = venv_path / "Scripts" / "python.exe"
-        
-        # Run the FastAPI app
-        subprocess.run([
-            str(python_exe),
-            "-m", "uvicorn",
+        uvicorn.run(
             "backend.main:app",
-            "--host", "127.0.0.1",
-            "--port", "8000",
-            "--reload"
-        ], check=True)
-        
+            host="127.0.0.1",
+            port=8000,
+            reload=True,
+            log_level="info"
+        )
     except KeyboardInterrupt:
         print("\n\n[OK] Server stopped")
     except Exception as e:
         print(f"\n[ERROR] Error starting server: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":

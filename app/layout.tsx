@@ -4,6 +4,10 @@ import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
 import { NavigationProvider } from "@/contexts/NavigationContext"
 import { BrandColorProvider } from "@/contexts/BrandColorContext"
+import { TransitionProvider } from "@/contexts/TransitionContext"
+import { TransitionIndicator } from "@/components/ui/transition-indicator"
+import { TransitionSwitch } from "@/components/ui/transition-switch"
+import { ThemeTestSwitcher } from "@/components/testing/ThemeTestSwitcher"
 
 const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
@@ -47,9 +51,15 @@ export default function RootLayout({
     <html lang="en" className="bg-transparent">
       <body className="font-sans antialiased bg-transparent text-foreground">
         <BrandColorProvider>
-          <NavigationProvider>
-            {children}
-          </NavigationProvider>
+          <TransitionProvider>
+            <NavigationProvider>
+              {children}
+              <TransitionIndicator />
+              <TransitionSwitch />
+            </NavigationProvider>
+            {/* Test Switcher - independent, always accessible */}
+            <ThemeTestSwitcher />
+          </TransitionProvider>
         </BrandColorProvider>
       </body>
     </html>

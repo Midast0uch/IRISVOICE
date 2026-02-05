@@ -137,7 +137,7 @@ export function useNavigationController({
     if (nav.state.isTransitioning || nav.state.level !== 3) return
 
     nav.setTransitioning(true)
-    nav.selectSub(nodeId)
+    nav.selectSub(nodeId, [])
 
     setTimeout(() => {
       nav.setTransitioning(false)

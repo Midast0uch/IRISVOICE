@@ -106,6 +106,31 @@ export function BrandButton({
             boxShadow: 'none',
           },
         }
+      default:
+        // Fallback for verdant, nebula, crimson using aurum as base
+        const fallbackAurum = generateAurumMetal(brandColor.hue, brandColor.saturation)
+        return {
+          primary: {
+            background: `conic-gradient(from 0deg, ${fallbackAurum.primary}, ${fallbackAurum.highlight}, ${fallbackAurum.secondary}, ${fallbackAurum.primary})`,
+            borderRadius: '28%',
+            border: 'none',
+            color: '#0a0a0f',
+            boxShadow: `0 0 20px ${fallbackAurum.ambient}`,
+          },
+          secondary: {
+            background: '#161616',
+            border: `1px solid ${fallbackAurum.primary}60`,
+            borderRadius: '28%',
+            color: fallbackAurum.primary,
+            boxShadow: `0 0 8px ${fallbackAurum.ambient}`,
+          },
+          ghost: {
+            background: 'transparent',
+            border: 'none',
+            color: fallbackAurum.primary,
+            boxShadow: 'none',
+          },
+        }
     }
   }
 
