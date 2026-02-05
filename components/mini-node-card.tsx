@@ -201,6 +201,8 @@ export function MiniNodeCard({
         transformOrigin: "center center",
       }}
       onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
     >
       {/* Animated border ring - Prism Glass shimmer (NOT for clean themes) */}
       {!isCleanTheme && (

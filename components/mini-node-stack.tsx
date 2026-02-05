@@ -78,6 +78,8 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
           width: containerWidth,
         }}
         onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
         <AnimatePresence mode="popLayout">
           {visibleNodes.map((miniNode, index) => (
@@ -87,6 +89,8 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
                 e.stopPropagation()
                 handleCardClick(index)
               }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
               className="cursor-pointer absolute"
               style={{ 
                 left: 20, // Centered in container
@@ -113,12 +117,16 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
       <div 
         className="absolute -bottom-16 left-1/2 -translate-x-1/2 flex items-center gap-4 z-50"
         onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
         <motion.button
           onClick={(e) => {
             e.stopPropagation()
             rotateStackBackward()
           }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
           whileTap={{ scale: 0.9 }}
           className="w-10 h-10 rounded-full flex items-center justify-center transition-colors pointer-events-auto"
           style={{ 
@@ -132,7 +140,12 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
           <ChevronLeft className="w-5 h-5" style={{ color: glowColor }} />
         </motion.button>
 
-        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        <div 
+          className="flex items-center gap-2" 
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
           {visibleNodes.map((_, index) => (
             <motion.div
               key={index}
@@ -140,6 +153,8 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
                 e.stopPropagation()
                 handleCardClick(index)
               }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
               className="w-2 h-2 rounded-full cursor-pointer transition-colors"
               style={{
                 backgroundColor: index === activeMiniNodeIndex 
@@ -161,6 +176,8 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
             e.stopPropagation()
             rotateStackForward()
           }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
           whileTap={{ scale: 0.9 }}
           className="w-10 h-10 rounded-full flex items-center justify-center transition-colors pointer-events-auto"
           style={{ 
