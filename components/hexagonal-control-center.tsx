@@ -2,9 +2,26 @@
 
 import React, { useState, useCallback, useEffect, useRef, type ElementType } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { getCurrentWindow,PhysicalPosition } from '@tauri-apps/api/window'
-import { Mic, Brain, Bot, Settings, Database, Activity, Volume2, Headphones, AudioWaveform as Waveform, Link, Cpu, Sparkles, MessageSquare, Palette, Power, Keyboard, Minimize2, RefreshCw, History, FileStack, Trash2, Timer, Clock, BarChart3, DollarSign, TrendingUp, Check } from "lucide-react"
+
+// Tauri imports - only work in Tauri app, not browser
+let getCurrentWindow: any = null
+let PhysicalPosition: any = null
+if (typeof window !== 'undefined' && (window as any).__TAURI__) {
+  try {
+    const tauriWindow = require('@tauri-apps/api/window')
+    getCurrentWindow = tauriWindow.getCurrentWindow
+    PhysicalPosition = tauriWindow.PhysicalPosition
+  } catch (e) {
+    console.log('Tauri not available, running in browser mode')
+  }
+}
+
+import { Mic, Brain, Bot, Settings, Database, Activity, Volume2, Headphones, AudioWaveform as Waveform, Link, Cpu, Sparkles, MessageSquare, Palette, Power, Keyboard, Minimize2, RefreshCw, History, FileStack, Trash2, Timer, Clock, BarChart3, DollarSign, TrendingUp, Check, Wrench, Layers, Star, Monitor, HardDrive, Wifi, Bell, Sliders, FileText, Stethoscope, Smile } from "lucide-react"
 import { useIRISWebSocket } from "@/hooks/useIRISWebSocket"
+import { useNavigation } from "@/contexts/NavigationContext"
+import { useBrandColor } from "@/contexts/BrandColorContext"
+import { MiniNodeStack } from "./mini-node-stack"
+import { PrismNode } from "./iris/prism-node"
 
 const SPIN_CONFIG = {
   radiusCollapsed: 0,
@@ -44,61 +61,158 @@ const ORBIT_CONFIG = {
 
 const NODE_POSITIONS = [
   { index: 0, angle: -90, id: "voice", label: "VOICE", icon: Mic, hasSubnodes: true },
-  { index: 1, angle: -30, id: "model", label: "MODEL", icon: Brain, hasSubnodes: true },
-  { index: 2, angle: 30, id: "agent", label: "AGENT", icon: Bot, hasSubnodes: true },
-  { index: 3, angle: 90, id: "settings", label: "SETTINGS", icon: Settings, hasSubnodes: true },
-  { index: 4, angle: 150, id: "memory", label: "MEMORY", icon: Database, hasSubnodes: true },
-  { index: 5, angle: 210, id: "analytics", label: "ANALYTICS", icon: Activity, hasSubnodes: true },
+  { index: 1, angle: -30, id: "agent", label: "AGENT", icon: Bot, hasSubnodes: true },
+  { index: 2, angle: 30, id: "automate", label: "AUTOMATE", icon: Cpu, hasSubnodes: true },
+  { index: 3, angle: 90, id: "system", label: "SYSTEM", icon: Settings, hasSubnodes: true },
+  { index: 4, angle: 150, id: "customize", label: "CUSTOMIZE", icon: Palette, hasSubnodes: true },
+  { index: 5, angle: 210, id: "monitor", label: "MONITOR", icon: Activity, hasSubnodes: true },
 ]
 
 const SUB_NODES: Record<string, { id: string; label: string; icon: ElementType; fields: any[] }[]> = {
   voice: [
     { id: "input", label: "INPUT", icon: Mic, fields: [
-      { id: "input_device", label: "Input Device", type: "dropdown", options: ["Default", "USB Microphone", "Headset", "Webcam"] },
-      { id: "input_sensitivity", label: "Input Sensitivity", type: "slider", min: 0, max: 100, unit: "%" },
-      { id: "noise_gate", label: "Noise Gate", type: "toggle" },
+      { id: "input_device", label: "Input Device", type: "dropdown", options: ["Default", "USB Microphone", "Headset", "Webcam"], defaultValue: "Default" },
+      { id: "input_sensitivity", label: "Input Sensitivity", type: "slider", min: 0, max: 100, unit: "%", defaultValue: 50 },
+      { id: "noise_gate", label: "Noise Gate", type: "toggle", defaultValue: false },
+      { id: "vad", label: "VAD", type: "toggle", defaultValue: true },
     ]},
     { id: "output", label: "OUTPUT", icon: Volume2, fields: [
-      { id: "output_device", label: "Output Device", type: "dropdown", options: ["Default", "Headphones", "Speakers", "HDMI"] },
-      { id: "master_volume", label: "Master Volume", type: "slider", min: 0, max: 100, unit: "%" },
+      { id: "output_device", label: "Output Device", type: "dropdown", options: ["Default", "Headphones", "Speakers", "HDMI"], defaultValue: "Default" },
+      { id: "master_volume", label: "Master Volume", type: "slider", min: 0, max: 100, unit: "%", defaultValue: 70 },
     ]},
     { id: "processing", label: "PROCESSING", icon: Waveform, fields: [
-      { id: "noise_reduction", label: "Noise Reduction", type: "toggle" },
-      { id: "echo_cancellation", label: "Echo Cancellation", type: "toggle" },
+      { id: "noise_reduction", label: "Noise Reduction", type: "toggle", defaultValue: true },
+      { id: "echo_cancellation", label: "Echo Cancellation", type: "toggle", defaultValue: true },
+      { id: "voice_enhancement", label: "Voice Enhancement", type: "toggle", defaultValue: false },
+      { id: "automatic_gain", label: "Automatic Gain", type: "toggle", defaultValue: true },
     ]},
-  ],
-  model: [
-    { id: "connection", label: "CONNECTION", icon: Link, fields: [
-      { id: "endpoint", label: "LM Studio Endpoint", type: "text", placeholder: "http://localhost:1234" },
-    ]},
-    { id: "parameters", label: "PARAMETERS", icon: Cpu, fields: [
-      { id: "temperature", label: "Temperature", type: "slider", min: 0, max: 2, step: 0.1, unit: "" },
+    { id: "model", label: "MODEL", icon: Brain, fields: [
+      { id: "endpoint", label: "LFM Endpoint", type: "text", placeholder: "http://localhost:1234", defaultValue: "http://localhost:1234" },
+      { id: "temperature", label: "Temperature", type: "slider", min: 0, max: 2, step: 0.1, defaultValue: 0.7 },
+      { id: "max_tokens", label: "Max Tokens", type: "slider", min: 256, max: 8192, step: 256, defaultValue: 2048 },
+      { id: "context_window", label: "Context Window", type: "slider", min: 1024, max: 32768, step: 1024, defaultValue: 8192 },
     ]},
   ],
   agent: [
-    { id: "identity", label: "IDENTITY", icon: MessageSquare, fields: [
-      { id: "assistant_name", label: "Assistant Name", type: "text", placeholder: "IRIS" },
+    { id: "identity", label: "IDENTITY", icon: Smile, fields: [
+      { id: "assistant_name", label: "Assistant Name", type: "text", placeholder: "IRIS", defaultValue: "IRIS" },
+      { id: "personality", label: "Personality", type: "dropdown", options: ["Professional", "Friendly", "Concise", "Creative", "Technical"], defaultValue: "Friendly" },
+      { id: "knowledge", label: "Knowledge Focus", type: "dropdown", options: ["General", "Coding", "Writing", "Research", "Conversation"], defaultValue: "General" },
+      { id: "response_length", label: "Response Length", type: "dropdown", options: ["Brief", "Balanced", "Detailed", "Comprehensive"], defaultValue: "Balanced" },
     ]},
     { id: "wake", label: "WAKE", icon: Sparkles, fields: [
-      { id: "wake_phrase", label: "Wake Phrase", type: "text", placeholder: "Hey IRIS" },
+      { id: "wake_phrase", label: "Wake Phrase", type: "text", placeholder: "Hey IRIS", defaultValue: "Hey IRIS" },
+      { id: "detection_sensitivity", label: "Detection Sensitivity", type: "slider", min: 0, max: 100, defaultValue: 70, unit: "%" },
+      { id: "activation_sound", label: "Activation Sound", type: "toggle", defaultValue: true },
+      { id: "sleep_timeout", label: "Sleep Timeout", type: "slider", min: 5, max: 300, defaultValue: 60, unit: "s" },
+    ]},
+    { id: "speech", label: "SPEECH", icon: MessageSquare, fields: [
+      { id: "tts_voice", label: "TTS Voice", type: "dropdown", options: ["Nova", "Alloy", "Echo", "Fable", "Onyx", "Shimmer"], defaultValue: "Nova" },
+      { id: "speaking_rate", label: "Speaking Rate", type: "slider", min: 0.5, max: 2, step: 0.1, defaultValue: 1.0, unit: "x" },
+      { id: "pitch_adjustment", label: "Pitch Adjustment", type: "slider", min: -20, max: 20, defaultValue: 0, unit: "semitones" },
+      { id: "pause_duration", label: "Pause Duration", type: "slider", min: 0, max: 2, step: 0.1, defaultValue: 0.2, unit: "s" },
+    ]},
+    { id: "memory", label: "MEMORY", icon: Database, fields: [
+      { id: "context_visualization", label: "Context Visualization", type: "text", placeholder: "View context" },
+      { id: "token_count", label: "Token Count", type: "text", placeholder: "0 tokens" },
+      { id: "conversation_history", label: "Conversation History", type: "text", placeholder: "Browse history" },
+      { id: "clear_memory", label: "Clear Memory", type: "text", placeholder: "Clear" },
     ]},
   ],
-  settings: [
-    { id: "theme_mode", label: "Theme", icon: Palette, fields: [
-      { id: "theme", label: "Theme Mode", type: "dropdown", options: ["Dark", "Light", "Auto"] },
+  automate: [
+    { id: "tools", label: "TOOLS", icon: Wrench, fields: [
+      { id: "active_servers", label: "Active Servers", type: "text", placeholder: "Server status" },
+      { id: "tool_browser", label: "Tool Browser", type: "text", placeholder: "Browse tools" },
+      { id: "quick_actions", label: "Quick Actions", type: "text", placeholder: "Recent tools" },
     ]},
-    { id: "startup", label: "Startup", icon: Power, fields: [
-      { id: "launch_startup", label: "Launch at Startup", type: "toggle" },
+    { id: "workflows", label: "WORKFLOWS", icon: Layers, fields: [
+      { id: "workflow_list", label: "Workflow List", type: "text", placeholder: "Saved workflows" },
+      { id: "create_workflow", label: "Create Workflow", type: "text", placeholder: "Builder" },
+      { id: "schedule", label: "Schedule", type: "text", placeholder: "Schedule" },
+    ]},
+    { id: "favorites", label: "FAVORITES", icon: Star, fields: [
+      { id: "favorite_commands", label: "Favorite Commands", type: "text", placeholder: "Pinned actions" },
+      { id: "recent_actions", label: "Recent Actions", type: "text", placeholder: "Recent" },
+      { id: "success_rate", label: "Success Rate", type: "text", placeholder: "0%" },
+    ]},
+    { id: "shortcuts", label: "SHORTCUTS", icon: Keyboard, fields: [
+      { id: "global_hotkey", label: "Global Hotkey", type: "text", placeholder: "Ctrl+Space", defaultValue: "Ctrl+Space" },
+      { id: "voice_commands", label: "Voice Commands", type: "text", placeholder: "Map commands" },
+    ]},
+    { id: "gui", label: "GUI AUTOMATION", icon: Monitor, fields: [
+      { id: "ui_tars_provider", label: "UI-TARS Provider", type: "dropdown", options: ["cli_npx", "native_python", "api_cloud"], defaultValue: "native_python" },
+      { id: "model_provider", label: "Vision Model", type: "dropdown", options: ["anthropic", "volcengine", "local"], defaultValue: "anthropic" },
+      { id: "api_key", label: "API Key", type: "text", placeholder: "sk-..." },
+      { id: "max_steps", label: "Max Automation Steps", type: "slider", min: 5, max: 50, defaultValue: 25 },
+      { id: "safety_confirmation", label: "Require Confirmation", type: "toggle", defaultValue: true },
     ]},
   ],
-  memory: [
-    { id: "history", label: "History", icon: History, fields: [
-      { id: "conversation_history", label: "Conversation History", type: "text", placeholder: "View history..." },
+  system: [
+    { id: "power", label: "POWER", icon: Power, fields: [
+      { id: "shutdown", label: "Shutdown", type: "text", placeholder: "Shutdown" },
+      { id: "restart", label: "Restart", type: "text", placeholder: "Restart" },
+      { id: "sleep", label: "Sleep", type: "text", placeholder: "Sleep" },
+      { id: "power_profile", label: "Power Profile", type: "dropdown", options: ["Balanced", "Performance", "Battery"], defaultValue: "Balanced" },
+    ]},
+    { id: "display", label: "DISPLAY", icon: Monitor, fields: [
+      { id: "brightness", label: "Brightness", type: "slider", min: 0, max: 100, defaultValue: 50, unit: "%" },
+      { id: "resolution", label: "Resolution", type: "dropdown", options: ["Auto", "1920x1080", "2560x1440", "3840x2160"], defaultValue: "Auto" },
+      { id: "night_mode", label: "Night Mode", type: "toggle", defaultValue: false },
+    ]},
+    { id: "storage", label: "STORAGE", icon: HardDrive, fields: [
+      { id: "disk_usage", label: "Disk Usage", type: "text", placeholder: "Usage" },
+      { id: "quick_folders", label: "Quick Folders", type: "text", placeholder: "Desktop/Downloads/Documents" },
+      { id: "cleanup", label: "Cleanup", type: "text", placeholder: "Cleanup" },
+    ]},
+    { id: "network", label: "NETWORK", icon: Wifi, fields: [
+      { id: "wifi_toggle", label: "WiFi", type: "toggle", defaultValue: true },
+      { id: "ethernet_status", label: "Ethernet Status", type: "text", placeholder: "Connected" },
+      { id: "vpn_connection", label: "VPN Connection", type: "dropdown", options: ["None", "Work", "Personal"], defaultValue: "None" },
     ]},
   ],
-  analytics: [
-    { id: "tokens", label: "Tokens", icon: BarChart3, fields: [
-      { id: "token_usage", label: "Token Usage", type: "text", placeholder: "0 tokens" },
+  customize: [
+    { id: "theme", label: "THEME", icon: Palette, fields: [
+      { id: "theme_mode", label: "Theme Mode", type: "dropdown", options: ["Dark", "Light", "Auto"], defaultValue: "Dark" },
+      { id: "glow_color", label: "Glow Color", type: "color", defaultValue: "#00ff88" },
+      { id: "state_colors", label: "State Colors", type: "toggle", defaultValue: false },
+    ]},
+    { id: "startup", label: "STARTUP", icon: Power, fields: [
+      { id: "launch_startup", label: "Launch at Startup", type: "toggle", defaultValue: false },
+      { id: "startup_behavior", label: "Startup Behavior", type: "dropdown", options: ["Show Widget", "Start Minimized", "Start Hidden"], defaultValue: "Show Widget" },
+      { id: "welcome_message", label: "Welcome Message", type: "toggle", defaultValue: true },
+    ]},
+    { id: "behavior", label: "BEHAVIOR", icon: Sliders, fields: [
+      { id: "confirm_destructive", label: "Confirm Destructive", type: "toggle", defaultValue: true },
+      { id: "undo_history", label: "Undo History", type: "slider", min: 0, max: 50, defaultValue: 10, unit: "actions" },
+      { id: "auto_save", label: "Auto Save", type: "toggle", defaultValue: true },
+    ]},
+    { id: "notifications", label: "NOTIFICATIONS", icon: Bell, fields: [
+      { id: "dnd_toggle", label: "Do Not Disturb", type: "toggle", defaultValue: false },
+      { id: "notification_sound", label: "Notification Sound", type: "dropdown", options: ["Default", "Chime", "Pulse", "Silent"], defaultValue: "Default" },
+      { id: "app_notifications", label: "App Notifications", type: "toggle", defaultValue: true },
+    ]},
+  ],
+  monitor: [
+    { id: "analytics", label: "ANALYTICS", icon: BarChart3, fields: [
+      { id: "token_usage", label: "Token Usage", type: "text", placeholder: "Usage" },
+      { id: "response_latency", label: "Response Latency", type: "text", placeholder: "Latency" },
+      { id: "session_duration", label: "Session Duration", type: "text", placeholder: "Duration" },
+    ]},
+    { id: "logs", label: "LOGS", icon: FileText, fields: [
+      { id: "system_logs", label: "System Logs", type: "text", placeholder: "System" },
+      { id: "voice_logs", label: "Voice Logs", type: "text", placeholder: "Voice" },
+      { id: "mcp_logs", label: "MCP Logs", type: "text", placeholder: "MCP" },
+      { id: "export_logs", label: "Export Logs", type: "text", placeholder: "Export" },
+    ]},
+    { id: "diagnostics", label: "DIAGNOSTICS", icon: Stethoscope, fields: [
+      { id: "health_check", label: "Health Check", type: "text", placeholder: "Run" },
+      { id: "lfm_benchmark", label: "LFM Benchmark", type: "text", placeholder: "Benchmark" },
+      { id: "mcp_test", label: "MCP Test", type: "text", placeholder: "Test MCP" },
+    ]},
+    { id: "updates", label: "UPDATES", icon: RefreshCw, fields: [
+      { id: "update_channel", label: "Update Channel", type: "dropdown", options: ["Stable", "Beta", "Nightly"], defaultValue: "Stable" },
+      { id: "check_updates", label: "Check Updates", type: "text", placeholder: "Check" },
+      { id: "auto_update", label: "Auto Update", type: "toggle", defaultValue: true },
     ]},
   ],
 }
@@ -113,6 +227,7 @@ interface InputField {
   max?: number
   step?: number
   unit?: string
+  defaultValue?: string | number | boolean
 }
 
 interface ConfirmedMiniNode {
@@ -148,6 +263,7 @@ const ICON_MAP: Record<string, ElementType> = {
   Link, Cpu, Sparkles, MessageSquare, 
   Palette, Power, Keyboard, Minimize2, RefreshCw, History, 
   FileStack, Trash2, Timer, Clock, BarChart3, DollarSign, TrendingUp,
+  Wrench, Layers, Star, Monitor, HardDrive, Wifi, Bell, Sliders, FileText, Stethoscope, Smile,
 }
 
 // ===========================================
@@ -163,6 +279,9 @@ function useManualDragWindow(onClickAction: () => void) {
   const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
     if (e.button !== 0) return
     
+    // Only enable dragging in Tauri app
+    if (!getCurrentWindow) return
+    
     isDragging.current = true
     hasDragged.current = false
     dragStartPos.current = { x: e.screenX, y: e.screenY }
@@ -177,6 +296,9 @@ function useManualDragWindow(onClickAction: () => void) {
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging.current) return
+    
+    // Only enable dragging in Tauri app
+    if (!getCurrentWindow || !PhysicalPosition) return
     
     const dx = e.screenX - dragStartPos.current.x
     const dy = e.screenY - dragStartPos.current.y
@@ -231,15 +353,15 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
       style={{ width: size, height: size }}
       onMouseDown={handleMouseDown}
     >
-      {/* Outer breathe glow */}
+      {/* Outer breathe glow - more vibrant */}
       <motion.div
         className="absolute rounded-full pointer-events-none"
         style={{
-          inset: -60,
-          background: `radial-gradient(circle, ${glowColor}80 0%, ${glowColor}40 30%, transparent 70%)`,
-          filter: "blur(30px)",
+          inset: -70,
+          background: `radial-gradient(circle, ${glowColor}90 0%, ${glowColor}50 30%, transparent 70%)`,
+          filter: "blur(40px)",
         }}
-        animate={{ scale: [1, 1.6, 1], opacity: [0.6, 1, 0.6] }}
+        animate={{ scale: [1, 1.7, 1], opacity: [0.7, 1, 0.7] }}
         transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
       />
 
@@ -248,7 +370,7 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
         className="absolute rounded-full pointer-events-none"
         style={{
           inset: -8,
-          background: `radial-gradient(circle, ${glowColor}cc 0%, ${glowColor}60 30%, ${glowColor}20 60%, transparent 80%)`,
+          background: `radial-gradient(circle at 30% 30%, ${glowColor}14, transparent 70%)`,
           filter: "blur(8px)",
         }}
         animate={{ scale: [0.8, 1.4, 0.8], opacity: [0.7, 1, 0.7] }}
@@ -268,6 +390,48 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
           />
         )}
       </AnimatePresence>
+
+      {/* Radar Sweep - rotating light across orb surface */}
+      <motion.div
+        className="absolute inset-0 rounded-full pointer-events-none overflow-hidden"
+        style={{
+          background: 'transparent',
+        }}
+      >
+        <motion.div
+          className="absolute inset-0"
+          style={{
+            background: `conic-gradient(from 0deg at 50% 50%,
+              transparent 0deg,
+              transparent 88deg,
+              rgba(255,255,255,0.15) 98deg,
+              rgba(255,255,255,0.8) 100deg,
+              rgba(255,255,255,0.15) 102deg,
+              transparent 112deg,
+              transparent 360deg)`,
+          }}
+          animate={{ rotate: 360 }}
+          transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
+        />
+      </motion.div>
+
+      {/* Thin liquid metal border - metallic reflection */}
+      <motion.div
+        className="absolute -inset-[3px] rounded-full pointer-events-none"
+        style={{
+          padding: "3px",
+          background: `conic-gradient(from 0deg, 
+            rgba(255,255,255,0) 0deg,
+            rgba(255,255,255,0.5) 90deg,
+            rgba(192,192,192,0.6) 180deg,
+            rgba(255,255,255,0.5) 270deg,
+            rgba(255,255,255,0) 360deg)`,
+          WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+          WebkitMaskComposite: "xor",
+        }}
+        animate={{ rotate: -360 }}
+        transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
+      />
 
       {/* Rotating shimmer */}
       <motion.div
@@ -301,8 +465,11 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
         <AnimatePresence mode="wait">
           <motion.span
             key={centerLabel}
-            className="text-lg font-light tracking-[0.2em] select-none pointer-events-none"
-            style={{ color: "rgba(255, 255, 255, 0.95)" }}
+            className="text-lg font-medium tracking-[0.2em] select-none pointer-events-none"
+            style={{ 
+              color: "#ffffff",
+              textShadow: '0 0 4px rgba(0,0,0,0.8), 0 2px 4px rgba(0,0,0,0.6)'
+            }}
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0, opacity: 0 }}
@@ -321,156 +488,18 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
   )
 }
 
-interface HexagonalNodeProps {
-  node: { id: string; label: string; icon: ElementType; fields?: InputField[] }
-  angle: number
-  radius: number
-  nodeSize: number
-  onClick: () => void
-  spinRotations: number
-  spinDuration: number
-  staggerIndex: number
-  isCollapsing: boolean
-  isActive: boolean
-  glowColor: string
-}
-
-function HexagonalNode({
-  node,
-  angle,
-  radius,
-  nodeSize,
-  onClick,
-  spinRotations,
-  spinDuration,
-  staggerIndex,
-  isCollapsing,
-  isActive,
-  glowColor,
-}: HexagonalNodeProps) {
-  const Icon = node.icon
-  const pos = getSpiralPosition(angle, radius, spinRotations)
-  const counterRotation = -pos.rotation
-
-  const spiralVariants = {
-    collapsed: { x: 0, y: 0, scale: 0.5, opacity: 0, rotate: 0 },
-    expanded: {
-      x: pos.x,
-      y: pos.y,
-      scale: 1,
-      opacity: 1,
-      rotate: pos.rotation,
-      transition: {
-        duration: spinDuration / 1000,
-        delay: staggerIndex * (SPIN_CONFIG.staggerDelay / 1000),
-        ease: SPIN_CONFIG.ease,
-      },
-    },
-    exit: {
-      x: 0,
-      y: 0,
-      scale: 0.5,
-      opacity: 0,
-      rotate: -360,
-      transition: {
-        duration: spinDuration / 1000,
-        delay: staggerIndex * (SPIN_CONFIG.staggerDelay / 1000),
-        ease: SPIN_CONFIG.ease,
-      },
-    },
-  }
-
-  const contentVariants = {
-    collapsed: { rotate: 0 },
-    expanded: {
-      rotate: counterRotation,
-      transition: {
-        duration: spinDuration / 1000,
-        delay: staggerIndex * (SPIN_CONFIG.staggerDelay / 1000),
-        ease: SPIN_CONFIG.ease,
-      },
-    },
-    exit: {
-      rotate: 360,
-      transition: {
-        duration: spinDuration / 1000,
-        delay: staggerIndex * (SPIN_CONFIG.staggerDelay / 1000),
-        ease: SPIN_CONFIG.ease,
-      },
-    },
-  }
-
-  return (
-    <motion.button
-      className="absolute flex flex-col items-center justify-center cursor-pointer z-10 pointer-events-auto"
-      style={{
-        left: "50%",
-        top: "50%",
-        marginLeft: -nodeSize / 2,
-        marginTop: -nodeSize / 2,
-        width: nodeSize,
-        height: nodeSize,
-      }}
-      variants={spiralVariants}
-      initial="collapsed"
-      animate={isCollapsing ? "exit" : "expanded"}
-      exit="exit"
-      onClick={onClick}
-      whileHover={{ scale: 1.05 }}
-      whileTap={{ scale: 0.95 }}
-    >
-      <motion.div
-        className="absolute -inset-0.5 pointer-events-none"
-        style={{
-          borderRadius: "24px",
-          padding: "2px",
-          background: `conic-gradient(from 0deg, transparent 0deg, ${glowColor}1a 60deg, ${isActive ? glowColor : `${glowColor}e6`} 180deg, ${glowColor}1a 300deg, transparent 360deg)`,
-          WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
-          WebkitMaskComposite: "xor",
-        }}
-        animate={{ rotate: 360 }}
-        transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
-      />
-
-      {isActive && (
-        <motion.div
-          className="absolute -inset-2 pointer-events-none"
-          style={{
-            borderRadius: "28px",
-            background: `radial-gradient(circle, ${glowColor}33 0%, transparent 70%)`,
-            filter: "blur(8px)",
-          }}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-        />
-      )}
-
-      <div
-        className="relative w-full h-full flex flex-col items-center justify-center pointer-events-auto"
-        style={{
-          borderRadius: "24px",
-          background: "rgba(255, 255, 255, 0.06)",
-          backdropFilter: "blur(12px)",
-          border: "1px solid rgba(255, 255, 255, 0.08)",
-        }}
-      >
-        <motion.div
-          className="flex flex-col items-center justify-center gap-1 pointer-events-none"
-          variants={contentVariants}
-          initial="collapsed"
-          animate={isCollapsing ? "exit" : "expanded"}
-        >
-          <Icon className="w-6 h-6 text-silver" strokeWidth={1.5} />
-          <span className="text-[10px] font-medium tracking-wider text-muted-foreground">
-            {node.label}
-          </span>
-        </motion.div>
-      </div>
-    </motion.button>
-  )
-}
-
 export function HexagonalControlCenter() {
+  const nav = useNavigation()
+  const { getThemeConfig, theme: brandTheme, setTheme } = useBrandColor()
+  const theme = getThemeConfig()
+  const themeGlowColor = theme.glow.color
+  
+  // DEBUG: Log theme state
+  useEffect(() => {
+    console.log('[DEBUG] BrandColorContext theme:', brandTheme)
+    console.log('[DEBUG] Computed theme config:', theme.name, 'glow:', themeGlowColor)
+  }, [brandTheme, theme, themeGlowColor])
+  
   const {
     theme: wsTheme,
     confirmedNodes: wsConfirmedNodes,
@@ -490,8 +519,10 @@ export function HexagonalControlCenter() {
   const [activeMiniNodeIndex, setActiveMiniNodeIndex] = useState<number | null>(null)
   const isMobile = useIsMobile()
 
-  // Ensure window starts interactive (solid, not click-through)
+  // Ensure window starts interactive (solid, not click-through) - Tauri only
   useEffect(() => {
+    if (!getCurrentWindow) return
+    
     const setupWindow = async () => {
       const appWindow = await getCurrentWindow()
       await appWindow.setIgnoreCursorEvents(false)
@@ -500,15 +531,62 @@ export function HexagonalControlCenter() {
   }, [])
 
   useEffect(() => {
+    // Skip backend sync if user has manually navigated
+    if (userNavigatedRef.current) {
+      console.log('[DEBUG] Skipping backend sync - user has manually navigated')
+      return
+    }
+    
+    // Skip if category is empty (user just cleared it)
+    if (!currentCategory) {
+      console.log('[DEBUG] Skipping backend sync - currentCategory is empty')
+      return
+    }
+    
+    console.log('[DEBUG] Backend sync useEffect running:', {
+      currentCategory,
+      currentView,
+      isTransitioning,
+      pendingView,
+      exitingView,
+      navLevel: nav.state.level,
+      condition: !isTransitioning && !pendingView && currentCategory !== currentView && !exitingView
+    })
+    
     if (!isTransitioning && !pendingView && currentCategory !== currentView && !exitingView) {
+      console.log('[DEBUG] Setting currentView to currentCategory:', currentCategory)
       setCurrentView(currentCategory)
+      // When backend sends a category, ensure UI is expanded and nav level is synced
+      if (currentCategory) {
+        console.log('[DEBUG] Backend has category, syncing navigation level')
+        if (!isExpanded) {
+          setIsExpanded(true)
+        }
+        // Sync navigation level based on category
+        if (nav.state.level === 1) {
+          // Need to go to level 2 first, then level 3 if category has subnodes
+          console.log('[DEBUG] nav.expandToMain() called from backend sync')
+          nav.expandToMain()
+          if (SUB_NODES[currentCategory]?.length > 0) {
+            // Advance to level 3 to show subnodes
+            setTimeout(() => {
+              console.log('[DEBUG] nav.selectMain() called from backend sync timeout')
+              nav.selectMain(currentCategory)
+            }, 100)
+          }
+        } else if (nav.state.level === 2 && SUB_NODES[currentCategory]?.length > 0) {
+          // Already at level 2, advance to level 3
+          console.log('[DEBUG] nav.selectMain() called from backend sync (level 2)')
+          nav.selectMain(currentCategory)
+        }
+      }
     }
     if (pendingView && currentCategory === pendingView) {
       setPendingView(null)
     }
-  }, [currentCategory, currentView, exitingView, isTransitioning, pendingView])
-
-  const glowColor = wsTheme?.glow || "#00ff88"
+  }, [currentCategory, currentView, exitingView, isTransitioning, pendingView, isExpanded, nav])
+  
+  const glowColor = themeGlowColor || "#00ff88"
 
   const activeSubnodeId = currentSubnode
   const centerLabel = activeSubnodeId 
@@ -531,56 +609,178 @@ export function HexagonalControlCenter() {
 
   const handleNodeClick = useCallback(
     (nodeId: string, nodeLabel: string, hasSubnodes: boolean) => {
-      if (isTransitioning) return
+      const currentNavLevel = nav.state.level
+      
+      console.log('[DEBUG] handleNodeClick START:', { 
+        nodeId, 
+        nodeLabel, 
+        hasSubnodes, 
+        currentView, 
+        isTransitioning, 
+        navLevel: currentNavLevel,
+        timestamp: Date.now()
+      })
+      
+      if (isTransitioning) {
+        console.log('[DEBUG] handleNodeClick blocked - isTransitioning')
+        return
+      }
 
-      if (!currentView) {
+      // Navigate if:
+      // 1. At Level 2 (main nodes showing) - clicking goes to Level 3
+      // 2. At Level 3 but clicking a DIFFERENT main node - switch to that node's subnodes
+      const shouldNavigate = currentNavLevel === 2 || 
+        (currentNavLevel === 3 && nav.state.selectedMain !== nodeId)
+
+      if (shouldNavigate) {
+        console.log('[DEBUG] Should navigate to subnodes:', { nodeId, fromLevel: currentNavLevel })
         if (SUB_NODES[nodeId]?.length > 0) {
-          setExitingView("__main__")
+          console.log('[DEBUG] Found subnodes, proceeding with navigation')
+          userNavigatedRef.current = true
+          setExitingView(currentNavLevel === 3 ? nav.state.selectedMain : "__main__")
           setIsTransitioning(true)
           setActiveMiniNodeIndex(null)
           setPendingView(nodeId)
           setCurrentView(nodeId)
 
+          // If at Level 3, go back first then to new main
+          if (currentNavLevel === 3) {
+            nav.goBack() // Go from Level 3→2 first
+          }
+
+          // Use NavigationContext to advance to Level 3
+          console.log('[DEBUG] Calling nav.selectMain() for nodeId:', nodeId)
+          nav.selectMain(nodeId)
+          console.log('[DEBUG] nav.selectMain() called')
+
           setTimeout(() => {
+            console.log('[DEBUG] Transition timeout completed')
             setExitingView(null)
             setIsTransitioning(false)
             selectCategory(nodeId)
+            // Reset userNavigatedRef to allow backend sync again
+            userNavigatedRef.current = false
           }, SPIN_CONFIG.spinDuration)
+        } else {
+          console.log('[DEBUG] No subnodes found for nodeId:', nodeId)
         }
+      } else {
+        console.log('[DEBUG] Skipping navigation:', { currentNavLevel, nodeId })
       }
     },
-    [currentView, isTransitioning, selectCategory]
+    [isTransitioning, selectCategory, nav, currentView]
   )
 
   const handleSubnodeClick = useCallback((subnodeId: string) => {
+    // Read nav.state.level fresh to avoid stale closure
+    const currentNavLevel = nav.state.level
+    
+    console.log('[DEBUG] handleSubnodeClick START:', { 
+      subnodeId, 
+      activeSubnodeId,
+      currentView,
+      navLevel: currentNavLevel,
+      navSelectedMain: nav.state.selectedMain,
+      navSelectedSub: nav.state.selectedSub
+    })
+
     if (activeSubnodeId === subnodeId) {
+      console.log('[DEBUG] Deselecting subnode, going back to Level 3')
       selectSubnode(null)
+      nav.goBack()
       setActiveMiniNodeIndex(null)
     } else {
+      // Get mini nodes for this subnode and navigate to level 4
+      const subnodeData = SUB_NODES[currentView!]?.find(n => n.id === subnodeId)
+      // Transform fields into proper MiniNode objects - each field becomes a card in the stack
+      const fields = subnodeData?.fields || []
+      const miniNodes: import("@/types/navigation").MiniNode[] = fields.map((field, index) => ({
+        id: `${subnodeId}_${field.id}`,
+        label: field.label,
+        icon: "Settings",
+        fields: [field]
+      }))
+
+      console.log('[DEBUG] Attempting Level 4 navigation:', { 
+        subnodeId, 
+        subnodeFound: !!subnodeData,
+        miniNodesCount: miniNodes.length,
+        miniNodes: miniNodes,
+        currentNavLevel,
+        canNavigate: true
+      })
+
+      console.log('[DEBUG] Calling nav.selectSub()')
+      nav.selectSub(subnodeId, miniNodes)
+      console.log('[DEBUG] After selectSub, nav level should be 4')
+
       selectSubnode(subnodeId)
       setActiveMiniNodeIndex(null)
     }
-  }, [activeSubnodeId, selectSubnode])
+  }, [activeSubnodeId, selectSubnode, nav, currentView])
 
-  const handleIrisClick = useCallback(() => {
-    if (isTransitioning) return
+  // Track recent node clicks to prevent iris toggle
+  const nodeClickTimestampRef = useRef<number>(0)
+  // Track user-initiated navigation to prevent backend sync from overriding
+  const userNavigatedRef = useRef<boolean>(false)
 
-    if (activeSubnodeId) {
+  const handleIrisClick = useCallback((e?: React.MouseEvent) => {
+    console.log('[DEBUG] handleIrisClick START:', { isTransitioning, activeSubnodeId, currentView, isExpanded, navLevel: nav.state.level, target: e?.target })
+
+    // Check if a node was just clicked (within last 300ms) - prevents iris toggle when clicking nodes
+    const timeSinceNodeClick = Date.now() - (nodeClickTimestampRef.current || 0)
+    if (timeSinceNodeClick < 300) {
+      console.log('[DEBUG] handleIrisClick blocked - node was just clicked', timeSinceNodeClick, 'ms ago')
+      return
+    }
+
+    if (isTransitioning) {
+      console.log('[DEBUG] handleIrisClick blocked - isTransitioning')
+      return
+    }
+
+    // Use nav.state.level to determine proper back navigation
+    const level = nav.state.level
+    
+    if (level === 4) {
+      // Level 4: Mini nodes active -> go back to level 3 (subnodes)
+      console.log('[DEBUG] handleIrisClick: Level 4->3, deselecting subnode')
+      userNavigatedRef.current = true
       selectSubnode(null)
+      nav.goBack()
       setActiveMiniNodeIndex(null)
-    } else if (currentView) {
-      setExitingView(currentView)
+    } else if (level === 3) {
+      // Level 3: Subnodes showing -> go back to level 2 (main nodes)
+      console.log('[DEBUG] handleIrisClick: Level 3->2, going back to main nodes')
+      userNavigatedRef.current = true
+      nav.goBack()
+      // Clear the currentView to show main nodes instead of subnodes
+      setExitingView(currentView || "__main__")
       setIsTransitioning(true)
       setTimeout(() => {
         setCurrentView(null)
         setExitingView(null)
         setIsTransitioning(false)
         selectCategory("")
+        // NOTE: Don't reset userNavigatedRef here - let it stay true until user selects a new node
+        // This prevents backend sync from re-selecting the old category before it's cleared
       }, SPIN_CONFIG.spinDuration)
+    } else if (level === 2) {
+      // Level 2: Main nodes showing -> collapse to level 1 (idle)
+      console.log('[DEBUG] handleIrisClick: Level 2->1, collapsing to idle')
+      userNavigatedRef.current = true
+      nav.collapseToIdle()
+      setIsExpanded(false)
+      // Clear backend category to prevent it from restoring on refresh
+      selectCategory("")
     } else {
-      setIsExpanded(!isExpanded)
+      // Level 1: Idle -> expand to level 2 (main nodes)
+      console.log('[DEBUG] handleIrisClick: Level 1->2, expanding')
+      userNavigatedRef.current = true
+      nav.expandToMain()
+      setIsExpanded(true)
     }
-  }, [currentView, isExpanded, isTransitioning, activeSubnodeId, selectSubnode, selectCategory])
+  }, [currentView, isExpanded, isTransitioning, activeSubnodeId, selectSubnode, selectCategory, nav])
 
   const currentNodes = currentView
     ? SUB_NODES[currentView].map((node, idx) => ({
@@ -675,30 +875,109 @@ export function HexagonalControlCenter() {
         </AnimatePresence>
 
         {/* Center IRIS Orb - INTERACTIVE (Drag + Click) */}
-        <div
-          className="absolute left-1/2 top-1/2 flex items-center justify-center pointer-events-auto"
+        <motion.div
+          className="absolute left-1/2 top-1/2 flex items-center justify-center pointer-events-none z-10"
           style={{ 
             marginLeft: -(irisSize + 120) / 2,
             marginTop: -(irisSize + 120) / 2,
             width: irisSize + 120,
             height: irisSize + 120,
           }}
+          animate={{
+            scale: nav.state.level === 4 ? 0.43 : 1,
+            x: 0,
+          }}
+          transition={{ type: "spring", stiffness: 200, damping: 20, duration: 0.5 }}
         >
-          <IrisOrb
-            isExpanded={isExpanded}
-            onClick={handleIrisClick}
-            centerLabel={centerLabel}
-            size={irisSize}
-            glowColor={glowColor}
-          />
-        </div>
+          <div className="pointer-events-auto">
+            <IrisOrb
+              isExpanded={isExpanded}
+              onClick={handleIrisClick}
+              centerLabel={centerLabel}
+              size={irisSize}
+              glowColor={glowColor}
+            />
+          </div>
+        </motion.div>
+
+        {/* Click-blocking overlay for Level 4 - prevents mini node stack clicks from reaching iris orb */}
+        <AnimatePresence>
+          {nav.state.level === 4 && (
+            <motion.div
+              className="absolute left-1/2 top-1/2 z-[100]"
+              style={{
+                width: 400,
+                height: 400,
+                marginLeft: -100,
+                marginTop: -200,
+                pointerEvents: 'auto',
+                cursor: 'default',
+                backgroundColor: 'rgba(0,0,0,0.01)',
+              }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Connecting line between Iris Orb and Mini Stack - Liquid Metal */}
+        <AnimatePresence>
+          {nav.state.level === 4 && (
+            <motion.div
+              className="absolute left-1/2 top-1/2 pointer-events-none z-15"
+              style={{
+                height: 2,
+                width: 120,
+                marginTop: -1,
+                marginLeft: 30,
+                background: `linear-gradient(90deg, 
+                  rgba(255,255,255,0.8) 0%, 
+                  rgba(192,192,192,0.9) 20%, 
+                  rgba(255,255,255,0.95) 40%, 
+                  rgba(192,192,192,0.9) 60%, 
+                  rgba(255,255,255,0.8) 80%,
+                  rgba(128,128,128,0.6) 100%)`,
+                boxShadow: '0 0 4px rgba(255,255,255,0.5)',
+              }}
+              initial={{ opacity: 0, scaleX: 0 }}
+              animate={{ opacity: 1, scaleX: 1 }}
+              exit={{ opacity: 0, scaleX: 0 }}
+              transition={{ duration: 0.4 }}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Mini Node Stack - Level 4 - Positioned to the right of iris orb */}
+        <AnimatePresence>
+          {nav.state.level === 4 && nav.state.miniNodeStack.length > 0 && (
+            <motion.div
+              className="absolute left-1/2 top-1/2 pointer-events-auto z-20"
+              style={{ 
+                marginLeft: 200,
+                marginTop: -140,
+                width: 220,
+                height: 400,
+              }}
+              initial={{ opacity: 0, scale: 0.8, x: -20 }}
+              animate={{ opacity: 1, scale: 1, x: 0 }}
+              exit={{ opacity: 0, scale: 0.8, x: -20 }}
+              transition={{ duration: 0.4 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <MiniNodeStack miniNodes={nav.state.miniNodeStack} />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Exiting nodes */}
         <AnimatePresence>
           {isExpanded && exitingNodes && (
             <>
               {exitingNodes.map((node, idx) => (
-                <HexagonalNode
+                <PrismNode
                   key={`exit-${node.id}`}
                   node={node}
                   angle={node.angle}
@@ -710,44 +989,46 @@ export function HexagonalControlCenter() {
                   staggerIndex={idx}
                   isCollapsing={true}
                   isActive={false}
-                  glowColor={glowColor}
+                  spinConfig={SPIN_CONFIG}
                 />
               ))}
             </>
           )}
         </AnimatePresence>
 
-        {/* Current nodes - INTERACTIVE */}
+        {/* Current nodes - INTERACTIVE - Hidden when mini-node stack is showing (Level 4) */}
         <AnimatePresence>
-          {isExpanded && (
+          {isExpanded && nav.state.level !== 4 && (
             <>
               {currentNodes
                 .filter(node => !activeSubnodeId || node.id !== activeSubnodeId)
                 .map((node, idx) => (
-                <HexagonalNode
+                <PrismNode
                   key={node.id}
                   node={node}
                   angle={node.angle}
                   radius={currentView ? subRadius : mainRadius}
                   nodeSize={nodeSize}
-                  onClick={() =>
+                  onClick={(e) => {
+                    // Track click timestamp to prevent iris orb toggle
+                    nodeClickTimestampRef.current = Date.now()
+                    // Stop event from bubbling to iris orb handler
+                    e?.stopPropagation()
                     currentView
                       ? handleSubnodeClick(node.id)
                       : handleNodeClick(node.id, node.label, (node as any).hasSubnodes)
-                  }
+                  }}
                   spinRotations={currentView ? SUBMENU_CONFIG.rotations : SPIN_CONFIG.rotations}
                   spinDuration={currentView ? SUBMENU_CONFIG.spinDuration : SPIN_CONFIG.spinDuration}
                   staggerIndex={idx}
                   isCollapsing={false}
                   isActive={activeSubnodeId === node.id}
-                  glowColor={glowColor}
+                  spinConfig={SPIN_CONFIG}
                 />
               ))}
             </>
           )}
         </AnimatePresence>
-
-        {/* Tap hint - click-through */}
         <AnimatePresence>
           {!isExpanded && (
             <motion.div

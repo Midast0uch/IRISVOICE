@@ -12,7 +12,8 @@ import type {
 import { 
   DEFAULT_NAV_CONFIG, 
   STORAGE_KEY, 
-  CONFIG_STORAGE_KEY 
+  CONFIG_STORAGE_KEY,
+  MINI_NODE_VALUES_KEY
 } from "@/types/navigation"
 
 const initialState: NavState = {
@@ -23,6 +24,11 @@ const initialState: NavState = {
   selectedMini: null,
   isTransitioning: false,
   transitionDirection: null,
+  // Mini node stack state (Level 4)
+  miniNodeStack: [],
+  activeMiniNodeIndex: 0,
+  confirmedMiniNodes: [],
+  miniNodeValues: {},
 }
 
 function navReducer(state: NavState, action: NavAction): NavState {
@@ -57,11 +63,15 @@ function navReducer(state: NavState, action: NavAction): NavState {
     }
 
     case 'SELECT_SUB': {
-      if (state.level !== 3) return state
+      console.log('[DEBUG] Reducer SELECT_SUB:', { currentLevel: state.level, subnodeId: action.payload.subnodeId, miniNodesCount: action.payload.miniNodes.length })
+      // Allow transition even if level is transitioning (level 3 or 4)
       return {
         ...state,
         level: 4,
-        selectedSub: action.payload.nodeId,
+        selectedSub: action.payload.subnodeId,
+        miniNodeStack: action.payload.miniNodes,
+        activeMiniNodeIndex: 0,
+        confirmedMiniNodes: [],
         history: [...state.history, { level: 3, nodeId: state.selectedMain }],
         transitionDirection: 'forward',
       }
@@ -87,18 +97,30 @@ function navReducer(state: NavState, action: NavAction): NavState {
       let newSelectedMain = state.selectedMain
       let newSelectedSub = state.selectedSub
       let newSelectedMini = state.selectedMini
+      let newMiniNodeStack = state.miniNodeStack
+      let newActiveMiniNodeIndex = state.activeMiniNodeIndex
+      let newConfirmedMiniNodes = state.confirmedMiniNodes
 
       if (newLevel === 1) {
         newSelectedMain = null
         newSelectedSub = null
         newSelectedMini = null
+        newMiniNodeStack = []
+        newActiveMiniNodeIndex = 0
+        newConfirmedMiniNodes = []
       } else if (newLevel === 2) {
         newSelectedMain = null
         newSelectedSub = null
         newSelectedMini = null
+        newMiniNodeStack = []
+        newActiveMiniNodeIndex = 0
+        newConfirmedMiniNodes = []
       } else if (newLevel === 3) {
         newSelectedSub = null
         newSelectedMini = null
+        newMiniNodeStack = []
+        newActiveMiniNodeIndex = 0
+        newConfirmedMiniNodes = []
       } else if (newLevel === 4) {
         newSelectedMini = null
       }
@@ -110,6 +132,9 @@ function navReducer(state: NavState, action: NavAction): NavState {
         selectedMain: newSelectedMain,
         selectedSub: newSelectedSub,
         selectedMini: newSelectedMini,
+        miniNodeStack: newMiniNodeStack,
+        activeMiniNodeIndex: newActiveMiniNodeIndex,
+        confirmedMiniNodes: newConfirmedMiniNodes,
         transitionDirection: 'backward',
       }
     }
@@ -117,6 +142,7 @@ function navReducer(state: NavState, action: NavAction): NavState {
     case 'COLLAPSE_TO_IDLE': {
       return {
         ...initialState,
+        miniNodeValues: state.miniNodeValues, // Persist values across sessions
         transitionDirection: 'backward',
       }
     }
@@ -138,6 +164,103 @@ function navReducer(state: NavState, action: NavAction): NavState {
         level: validLevel as NavigationLevel,
         isTransitioning: false,
         transitionDirection: null,
+      }
+    }
+
+    // Mini node stack actions
+    case 'ROTATE_STACK_FORWARD': {
+      if (state.level !== 4 || state.miniNodeStack.length === 0) return state
+      const newIndex = (state.activeMiniNodeIndex + 1) % state.miniNodeStack.length
+      return {
+        ...state,
+        activeMiniNodeIndex: newIndex,
+      }
+    }
+
+    case 'ROTATE_STACK_BACKWARD': {
+      if (state.level !== 4 || state.miniNodeStack.length === 0) return state
+      const newIndex = state.activeMiniNodeIndex === 0 
+        ? state.miniNodeStack.length - 1 
+        : state.activeMiniNodeIndex - 1
+      return {
+        ...state,
+        activeMiniNodeIndex: newIndex,
+      }
+    }
+
+    case 'JUMP_TO_MINI_NODE': {
+      if (state.level !== 4) return state
+      const index = action.payload.index
+      if (index < 0 || index >= state.miniNodeStack.length) return state
+      return {
+        ...state,
+        activeMiniNodeIndex: index,
+      }
+    }
+
+    case 'CONFIRM_MINI_NODE': {
+      if (state.level !== 4) return state
+      const { id, values } = action.payload
+      const miniNode = state.miniNodeStack.find(n => n.id === id)
+      if (!miniNode) return state
+      
+      // Check if already confirmed
+      if (state.confirmedMiniNodes.some(n => n.id === id)) return state
+      
+      // Limit to 8 confirmed nodes
+      if (state.confirmedMiniNodes.length >= 8) return state
+      
+      const confirmedNode: import("@/types/navigation").ConfirmedNode = {
+        id,
+        label: miniNode.label,
+        icon: miniNode.icon,
+        values,
+        orbitAngle: ((state.confirmedMiniNodes.length * 45) - 90) % 360, // Start from top (-90°), spread 45° apart
+        timestamp: Date.now(),
+      }
+      
+      return {
+        ...state,
+        confirmedMiniNodes: [...state.confirmedMiniNodes, confirmedNode],
+        miniNodeValues: {
+          ...state.miniNodeValues,
+          [id]: values,
+        },
+      }
+    }
+
+    case 'RECALL_CONFIRMED_NODE': {
+      if (state.level !== 4) return state
+      const nodeId = action.payload.id
+      const nodeIndex = state.miniNodeStack.findIndex(n => n.id === nodeId)
+      if (nodeIndex === -1) return state
+      
+      return {
+        ...state,
+        activeMiniNodeIndex: nodeIndex,
+      }
+    }
+
+    case 'UPDATE_MINI_NODE_VALUE': {
+      const { nodeId, fieldId, value } = action.payload
+      return {
+        ...state,
+        miniNodeValues: {
+          ...state.miniNodeValues,
+          [nodeId]: {
+            ...state.miniNodeValues[nodeId],
+            [fieldId]: value,
+          },
+        },
+      }
+    }
+
+    case 'CLEAR_MINI_NODE_STATE': {
+      return {
+        ...state,
+        miniNodeStack: [],
+        activeMiniNodeIndex: 0,
+        confirmedMiniNodes: [],
       }
     }
 
@@ -183,12 +306,19 @@ interface NavigationContextValue {
   goBack: () => void
   expandToMain: () => void
   selectMain: (nodeId: string) => void
-  selectSub: (nodeId: string) => void
+  selectSub: (subnodeId: string, miniNodes: import("@/types/navigation").MiniNode[]) => void
   confirmMini: (nodeId: string) => void
   collapseToIdle: () => void
   setTransitioning: (value: boolean) => void
   updateConfig: (newConfig: Partial<NavigationConfig>) => void
   setNodeLabels: (main: Record<string, string>, sub: Record<string, string>) => void
+  // Mini node stack helpers
+  rotateStackForward: () => void
+  rotateStackBackward: () => void
+  jumpToMiniNode: (index: number) => void
+  confirmMiniNode: (id: string, values: Record<string, any>) => void
+  updateMiniNodeValue: (nodeId: string, fieldId: string, value: any) => void
+  recallConfirmedNode: (id: string) => void
 }
 
 const NavigationContext = createContext<NavigationContextValue | null>(null)
@@ -220,10 +350,37 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     } catch (e) {
       console.warn('[NavigationContext] Failed to restore config:', e)
     }
+
+    // Load mini node values from localStorage
+    try {
+      const savedMiniValues = localStorage.getItem(MINI_NODE_VALUES_KEY)
+      if (savedMiniValues) {
+        const parsed = JSON.parse(savedMiniValues)
+        // Restore into initialState through a special action
+        dispatch({ 
+          type: 'RESTORE_STATE', 
+          payload: { 
+            ...initialState, 
+            miniNodeValues: parsed 
+          } as NavState 
+        })
+      }
+    } catch (e) {
+      console.warn('[NavigationContext] Failed to restore mini node values:', e)
+    }
   }, [])
 
   // Navigation state is NOT persisted - always start fresh at level 1
-  // Only configuration settings are saved
+  // Only configuration settings and mini node values are saved
+
+  // Persist mini node values to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(MINI_NODE_VALUES_KEY, JSON.stringify(state.miniNodeValues))
+    } catch (e) {
+      console.warn('[NavigationContext] Failed to save mini node values:', e)
+    }
+  }, [state.miniNodeValues])
 
   const goBack = useCallback(() => {
     if (state.isTransitioning) return
@@ -240,10 +397,10 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     dispatch({ type: 'SELECT_MAIN', payload: { nodeId } })
   }, [state.level])
 
-  const selectSub = useCallback((nodeId: string) => {
+  const selectSub = useCallback((subnodeId: string, miniNodes: import("@/types/navigation").MiniNode[]) => {
     if (state.isTransitioning) return
-    dispatch({ type: 'SELECT_SUB', payload: { nodeId } })
-  }, [state.isTransitioning, state.level])
+    dispatch({ type: 'SELECT_SUB', payload: { subnodeId, miniNodes } })
+  }, [state.isTransitioning])
 
   const confirmMini = useCallback((nodeId: string) => {
     if (state.isTransitioning) return
@@ -276,6 +433,36 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     setSubNodeLabels(sub)
   }, [])
 
+  // Mini node stack helper functions
+  const rotateStackForward = useCallback(() => {
+    if (state.isTransitioning) return
+    dispatch({ type: 'ROTATE_STACK_FORWARD' })
+  }, [state.isTransitioning])
+
+  const rotateStackBackward = useCallback(() => {
+    if (state.isTransitioning) return
+    dispatch({ type: 'ROTATE_STACK_BACKWARD' })
+  }, [state.isTransitioning])
+
+  const jumpToMiniNode = useCallback((index: number) => {
+    if (state.isTransitioning) return
+    dispatch({ type: 'JUMP_TO_MINI_NODE', payload: { index } })
+  }, [state.isTransitioning])
+
+  const confirmMiniNode = useCallback((id: string, values: Record<string, any>) => {
+    if (state.isTransitioning) return
+    dispatch({ type: 'CONFIRM_MINI_NODE', payload: { id, values } })
+  }, [state.isTransitioning])
+
+  const updateMiniNodeValue = useCallback((nodeId: string, fieldId: string, value: any) => {
+    dispatch({ type: 'UPDATE_MINI_NODE_VALUE', payload: { nodeId, fieldId, value } })
+  }, [])
+
+  const recallConfirmedNode = useCallback((id: string) => {
+    if (state.isTransitioning) return
+    dispatch({ type: 'RECALL_CONFIRMED_NODE', payload: { id } })
+  }, [state.isTransitioning])
+
   const orbState = getIrisOrbState(state, mainNodeLabels, subNodeLabels)
 
   const value: NavigationContextValue = {
@@ -292,6 +479,13 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     setTransitioning,
     updateConfig,
     setNodeLabels,
+    // Mini node stack helpers
+    rotateStackForward,
+    rotateStackBackward,
+    jumpToMiniNode,
+    confirmMiniNode,
+    updateMiniNodeValue,
+    recallConfirmedNode,
   }
 
   return (
