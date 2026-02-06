@@ -152,3 +152,78 @@ The accordion pattern was an intermediate step that solved click-blocking but ha
 - Click-to-set sliders work better than drag in tight spaces
 - Theme glow color integration maintained throughout
 - More design refinements planned but this is a solid baseline
+
+---
+
+## Post-Completion Fixes
+
+### Feb 6, 2026 - UI Refinements
+
+**Changes Made:**
+
+1. **Dropdown → 2x2 Toggle Tabs** (lines 34-95)
+   - Converted from dropdown list to 2×2 grid of clickable toggle tabs
+   - Shows exactly 4 options at a time with white separator lines (1px gap)
+   - Selected option highlighted with theme color and glow effect
+   - "+N more options" indicator if more exist
+   - Darker background (`rgba(0,0,0,0.4)`) for better contrast
+
+2. **Grain Texture Reduced** (line 137)
+   - Lowered `baseFrequency` from 0.9 to 0.3
+   - Reduced `numOctaves` from 4 to 3
+   - Subtler texture on active accordion cards
+
+3. **Duplicate Labels Removed** (lines 195-214, 234-244)
+   - Toggle cards: removed field label from expanded section (was showing twice)
+   - Slider cards: removed "Input Sensitivity" label from expanded section
+   - Now only card header shows the label
+
+4. **Toggle Positioning Fixed** (lines 195-214)
+   - Changed from `justify-between` to `justify-center`
+   - Toggle switch centered horizontally
+   - Removed ON/OFF text from expanded section (was duplicate)
+
+5. **Slider Visibility Improved** (lines 228-306)
+   - Thicker track: 12px height (was 4px)
+   - Added tick marks at 0, 25, 50, 75, 100 positions
+   - Bigger handle: 16px with theme-colored border and inner dot
+   - Value badge centered with glow effect
+   - Min/max labels (0-100) added below
+
+6. **Color Blending Fixed**
+   - All text changed to white (`#fff`) for visibility against theme tint
+   - Preview values, options, labels all use white text
+   - Better contrast on active cards
+
+### Dropdown Fix (Feb 6, 2026)
+
+**Problem:**
+- Dropdown only showing 3 options with `.slice(0, 3)` limit
+- Options not clickable - React Hook error from `useState` inside `renderCompactControl` function
+- Long device names not fitting in card width
+
+**Solution:**
+- Created proper `DropdownControl` React component (lines 34-119)
+- Removed slice limit - now displays all backend-provided options
+- Used `truncate` with `max-w-[120px]` for text overflow
+- Added tooltips (`title={option}`) for full names
+- Dropdown opens as overlay with max-height and scroll
+
+**Implementation:**
+```tsx
+function DropdownControl({ field, value, onChange, glowColor, dynamicOptions }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const options = dynamicOptions || field.options || []
+  // ... expandable dropdown with AnimatePresence
+}
+```
+
+**Result:**
+- All 25+ audio devices visible in dropdown
+- Selection updates card value correctly
+- Backend sync working (WebSocket)
+- No React Hook violations
+
+---
+
+**Last Updated:** Feb 6, 2026

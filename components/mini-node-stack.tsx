@@ -6,6 +6,7 @@ import * as LucideIcons from "lucide-react"
 import type { MiniNode, FieldConfig } from "@/types/navigation"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
+import { useAudioDevices } from "@/hooks/useAudioDevices"
 import { MenuWindowSlider } from "./menu-window-slider"
 
 interface MiniNodeStackProps {
@@ -17,14 +18,80 @@ function getIcon(iconName: string) {
   return icons[iconName] || LucideIcons.Circle
 }
 
-function getFieldPreview(field: FieldConfig, value: any): string {
+function getFieldPreview(field: FieldConfig, value: any, dynamicOptions?: string[]): string {
   if (field.type === 'toggle') return value ? 'ON' : 'OFF'
-  if (field.type === 'dropdown') return value || field.defaultValue || field.options?.[0] || '-'
+  if (field.type === 'dropdown') {
+    const options = dynamicOptions || field.options || []
+    return value || field.defaultValue || options[0] || '-'
+  }
   if (field.type === 'slider') {
     const val = value ?? field.defaultValue ?? field.min ?? 0
     return `${Math.round(val)}${field.unit || ''}`
   }
   return value || field.defaultValue || '-'
+}
+
+// Dropdown component - now with 2x2 toggle tabs interface
+function DropdownControl({
+  field,
+  value,
+  onChange,
+  glowColor,
+  dynamicOptions,
+}: {
+  field: FieldConfig
+  value: any
+  onChange: (v: any) => void
+  glowColor: string
+  dynamicOptions?: string[]
+}) {
+  const options = dynamicOptions || field.options || []
+  const selectedValue = value ?? field.defaultValue ?? options[0] ?? ''
+  const hasMore = options.length > 4
+  const visibleOptions = options.slice(0, 4)
+
+  return (
+    <div className="py-1">
+      {/* 2x2 Grid container - exactly 4 options with white separators */}
+      <div 
+        className="grid grid-cols-2 rounded overflow-hidden"
+        style={{ 
+          background: 'rgba(255,255,255,0.25)',
+          gap: '1px'
+        }}
+      >
+        {visibleOptions.map((option, idx) => {
+          const isSelected = option === selectedValue
+          return (
+            <motion.button
+              key={`${option}-${idx}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                onChange(option)
+              }}
+              className="px-1.5 py-1 text-[7px] leading-tight transition-all text-left flex items-center font-medium"
+              style={{
+                background: isSelected ? glowColor : 'rgba(0,0,0,0.4)',
+                color: isSelected ? '#000' : '#fff',
+                boxShadow: isSelected ? `inset 0 0 8px ${glowColor}80` : 'none',
+                minHeight: '28px'
+              }}
+              whileTap={{ scale: 0.95 }}
+              title={option}
+            >
+              <span className="truncate block w-full">{option}</span>
+            </motion.button>
+          )
+        })}
+      </div>
+      
+      {hasMore && (
+        <div className="text-[7px] text-center mt-1.5 font-medium" style={{ color: '#fff' }}>
+          +{options.length - 4} more options
+        </div>
+      )}
+    </div>
+  )
 }
 
 function InlineRow({
@@ -34,6 +101,7 @@ function InlineRow({
   onChange,
   onSelect,
   glowColor,
+  dynamicOptions,
 }: {
   miniNode: MiniNode
   isActive: boolean
@@ -41,10 +109,11 @@ function InlineRow({
   onChange: (fieldId: string, value: any) => void
   onSelect: () => void
   glowColor: string
+  dynamicOptions?: string[]
 }) {
   const IconComponent = getIcon(miniNode.icon)
   const previewField = miniNode.fields?.[0]
-  const previewValue = previewField ? getFieldPreview(previewField, values[previewField.id]) : ''
+  const previewValue = previewField ? getFieldPreview(previewField, values[previewField.id], dynamicOptions) : ''
 
   const handleClick = useCallback(() => {
     onSelect()
@@ -54,7 +123,7 @@ function InlineRow({
     if (!previewField) return 60
     switch (previewField.type) {
       case 'toggle': return 50
-      case 'dropdown': return 70
+      case 'dropdown': return 90
       case 'slider': return 65
       default: return 60
     }
@@ -65,8 +134,9 @@ function InlineRow({
       className="rounded-md overflow-hidden"
       style={{
         background: isActive
-          ? `linear-gradient(90deg, ${glowColor.replace(')', ', 0.12)')}, transparent)`
+          ? `linear-gradient(90deg, ${glowColor.replace(')', ', 0.12)')}, transparent), url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.3' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")`
           : 'rgba(255,255,255,0.04)',
+        backgroundBlendMode: isActive ? 'overlay' : 'normal',
         border: `1px solid ${isActive ? glowColor.replace(')', ', 0.25)') : 'rgba(255,255,255,0.08)'}`,
       }}
       animate={{ height: isActive ? getExpandedHeight() : 28 }}
@@ -78,7 +148,7 @@ function InlineRow({
         whileHover={{ backgroundColor: isActive ? 'transparent' : 'rgba(255,255,255,0.06)' }}
         whileTap={{ scale: 0.98 }}
       >
-        <div className="flex items-center gap-1.5 overflow-hidden">
+        <div className="flex items-center justify-center gap-1.5 overflow-hidden flex-1">
           <IconComponent 
             className="w-3 h-3 flex-shrink-0" 
             style={{ color: isActive ? glowColor : `${glowColor}aa` }}
@@ -93,19 +163,10 @@ function InlineRow({
         <div className="flex items-center gap-1 flex-shrink-0">
           <span 
             className="text-[9px] tabular-nums"
-            style={{ color: `${glowColor}cc` }}
+            style={{ color: '#fff' }}
           >
             {previewValue}
           </span>
-          <motion.div
-            animate={{ rotate: isActive ? 90 : 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <LucideIcons.ChevronRight 
-              className="w-3 h-3"
-              style={{ color: `${glowColor}88` }}
-            />
-          </motion.div>
         </div>
       </motion.button>
 
@@ -120,7 +181,7 @@ function InlineRow({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="pt-1 border-t border-white/10">
-              {renderCompactControl(previewField, values[previewField.id], (v) => onChange(previewField.id, v), glowColor)}
+              {renderCompactControl(previewField, values[previewField.id], (v) => onChange(previewField.id, v), glowColor, dynamicOptions)}
             </div>
           </motion.div>
         )}
@@ -129,24 +190,23 @@ function InlineRow({
   )
 }
 
-function renderCompactControl(field: FieldConfig, value: any, onChange: (v: any) => void, glowColor: string) {
+function renderCompactControl(field: FieldConfig, value: any, onChange: (v: any) => void, glowColor: string, dynamicOptions?: string[]) {
   switch (field.type) {
     case 'toggle':
       return (
-        <div className="flex items-center justify-between py-1">
-          <span className="text-[9px]" style={{ color: '#ffffffaa' }}>{field.label}</span>
+        <div className="flex items-center justify-center py-1">
           <motion.button
             onClick={(e) => {
               e.stopPropagation()
               onChange(!value)
             }}
-            className="relative w-8 h-4 rounded-full"
+            className="relative w-10 h-5 rounded-full"
             style={{ backgroundColor: value ? glowColor : 'rgba(255, 255, 255, 0.15)' }}
             whileTap={{ scale: 0.95 }}
           >
             <motion.span
-              className="absolute top-0.5 w-3 h-3 rounded-full bg-white"
-              animate={{ left: value ? '17px' : '3px' }}
+              className="absolute top-0.5 w-4 h-4 rounded-full bg-white"
+              animate={{ left: value ? '21px' : '3px' }}
               transition={{ type: "spring", stiffness: 500, damping: 30 }}
             />
           </motion.button>
@@ -154,36 +214,14 @@ function renderCompactControl(field: FieldConfig, value: any, onChange: (v: any)
       )
 
     case 'dropdown':
-      const options = field.options || []
       return (
-        <div className="py-1">
-          <div className="text-[8px] uppercase tracking-wider mb-1" style={{ color: `${glowColor}aa` }}>
-            {field.label}
-          </div>
-          <div className="flex flex-wrap gap-0.5">
-            {options.slice(0, 3).map((option) => {
-              const isSelected = option === value
-              return (
-                <motion.button
-                  key={option}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onChange(option)
-                  }}
-                  className="px-1.5 py-0.5 rounded text-[9px] transition-all"
-                  style={{
-                    background: isSelected ? glowColor : 'rgba(255,255,255,0.08)',
-                    color: isSelected ? '#000' : '#ffffffaa',
-                    border: `1px solid ${isSelected ? glowColor : 'transparent'}`,
-                  }}
-                  whileTap={{ scale: 0.95 }}
-                >
-                  {option.slice(0, 8)}
-                </motion.button>
-              )
-            })}
-          </div>
-        </div>
+        <DropdownControl
+          field={field}
+          value={value}
+          onChange={onChange}
+          glowColor={glowColor}
+          dynamicOptions={dynamicOptions}
+        />
       )
 
     case 'slider':
@@ -193,16 +231,34 @@ function renderCompactControl(field: FieldConfig, value: any, onChange: (v: any)
       const percentage = ((currentValue - min) / (max - min)) * 100
       return (
         <div className="py-1">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[8px] uppercase tracking-wider" style={{ color: `${glowColor}aa` }}>
-              {field.label}
-            </span>
-            <span className="text-[9px] tabular-nums" style={{ color: '#ffffffcc' }}>
+          <div className="flex items-center justify-center mb-2">
+            <span className="text-[11px] tabular-nums font-bold px-2 py-0.5 rounded" 
+              style={{ 
+                color: '#000', 
+                background: glowColor,
+                boxShadow: `0 0 8px ${glowColor}60`
+              }}
+            >
               {Math.round(currentValue)}{field.unit || ''}
             </span>
           </div>
+          
+          {/* Tick marks */}
+          <div className="flex justify-between px-1 mb-1">
+            {[0, 25, 50, 75, 100].map((tick) => (
+              <div 
+                key={tick}
+                className="w-0.5 h-1 rounded-full"
+                style={{ 
+                  background: currentValue >= tick ? glowColor : 'rgba(255,255,255,0.3)',
+                  opacity: currentValue >= tick ? 1 : 0.5
+                }}
+              />
+            ))}
+          </div>
+          
           <div
-            className="relative h-1 bg-white/10 rounded-full cursor-pointer"
+            className="relative h-3 bg-white/30 rounded-full cursor-pointer overflow-visible border border-white/20"
             onClick={(e) => {
               e.stopPropagation()
               const rect = e.currentTarget.getBoundingClientRect()
@@ -211,10 +267,37 @@ function renderCompactControl(field: FieldConfig, value: any, onChange: (v: any)
               onChange(Math.round(newValue))
             }}
           >
+            {/* Filled portion with gradient */}
             <motion.div
               className="absolute left-0 top-0 h-full rounded-full"
-              style={{ width: `${percentage}%`, background: glowColor }}
+              style={{ 
+                width: `${percentage}%`, 
+                background: `linear-gradient(90deg, ${glowColor}88, ${glowColor})`,
+                boxShadow: `inset 0 0 10px ${glowColor}40`
+              }}
             />
+            {/* Handle/knob */}
+            <motion.div
+              className="absolute top-1/2 w-4 h-4 rounded-full border-2 flex items-center justify-center"
+              style={{ 
+                left: `calc(${percentage}% - 8px)`,
+                transform: 'translateY(-50%)',
+                background: '#fff',
+                borderColor: glowColor,
+                boxShadow: `0 0 12px ${glowColor}, 0 2px 4px rgba(0,0,0,0.3)`
+              }}
+            >
+              <div 
+                className="w-1.5 h-1.5 rounded-full" 
+                style={{ background: glowColor }}
+              />
+            </motion.div>
+          </div>
+          
+          {/* Min/Max labels */}
+          <div className="flex justify-between mt-1 px-0.5">
+            <span className="text-[6px]" style={{ color: 'rgba(255,255,255,0.5)' }}>{min}</span>
+            <span className="text-[6px]" style={{ color: 'rgba(255,255,255,0.5)' }}>{max}</span>
           </div>
         </div>
       )
@@ -228,6 +311,8 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
   const glowColor = theme.glow.color
+  
+  const { inputDevices, outputDevices, isLoading: devicesLoading } = useAudioDevices()
   
   const {
     state,
@@ -251,6 +336,21 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
     },
     [jumpToMiniNode]
   )
+  
+  const getDynamicOptions = (miniNode: MiniNode): string[] | undefined => {
+    const field = miniNode.fields?.[0]
+    if (!field) return undefined
+    
+    if (field.id === 'input_device' || field.id.includes('input')) {
+      return inputDevices.length > 0 ? inputDevices : undefined
+    }
+    
+    if (field.id === 'output_device' || field.id.includes('output')) {
+      return outputDevices.length > 0 ? outputDevices : undefined
+    }
+    
+    return undefined
+  }
 
   if (miniNodes.length === 0) {
     return (
@@ -270,6 +370,7 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
       <AnimatePresence mode="popLayout">
         {visibleNodes.map((miniNode, index) => {
           const isActive = index === activeMiniNodeIndex
+          const dynamicOptions = getDynamicOptions(miniNode)
           return (
             <motion.div
               key={miniNode.id}
@@ -285,6 +386,7 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
                 onChange={(fieldId, value) => handleValueChange(miniNode.id, fieldId, value)}
                 onSelect={() => handleCardClick(index)}
                 glowColor={glowColor}
+                dynamicOptions={dynamicOptions}
               />
             </motion.div>
           )
