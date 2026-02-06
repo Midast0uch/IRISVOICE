@@ -6,6 +6,7 @@ import * as LucideIcons from "lucide-react"
 import type { MiniNode, FieldConfig } from "@/types/navigation"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
+import { MenuWindowSlider } from "./menu-window-slider"
 
 interface MiniNodeStackProps {
   miniNodes: MiniNode[]
@@ -291,10 +292,14 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
       </AnimatePresence>
 
       <div 
-        className="text-center mt-1 text-[9px] font-medium tracking-wider"
-        style={{ color: `${glowColor.replace(')', ', 0.5)')}` }}
+        className="mt-2 flex justify-center"
+        style={{ width: 140 }}
       >
-        {activeMiniNodeIndex + 1} / {miniNodes.length}
+        <MenuWindowSlider 
+          onUnlock={() => window.open('/menu-window', '_blank')}
+          isOpen={false}
+          onClose={() => {}}
+        />
       </div>
     </div>
   )

@@ -982,30 +982,6 @@ export function HexagonalControlCenter() {
           </div>
         </motion.div>
 
-        {/* Menu Window Slider - Level 4 - Right above connecting line */}
-        <AnimatePresence>
-          {nav.state.level === 4 && (
-            <motion.div
-              className="absolute left-1/2 top-1/2 pointer-events-auto z-[56]"
-              style={{ 
-                marginLeft: 30,
-                marginTop: -14,
-                width: 140,
-              }}
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 5 }}
-              transition={{ duration: 0.4, delay: 0.1 }}
-            >
-              <MenuWindowSlider 
-                onUnlock={() => window.open('/menu-window', '_blank')}
-                isOpen={false}
-                onClose={() => {}}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         {/* Connecting line between Iris Orb and Mini Stack - Liquid Metal */}
         <AnimatePresence>
           {nav.state.level === 4 && (
