@@ -116,3 +116,26 @@ The mini stack has been redesigned from an overlapping carousel to a **compact i
 - 140px is the minimum viable width for functional controls
 - Click-to-set sliders more usable than drag in tight spaces
 - Design is a solid baseline for future refinements
+
+---
+
+## New Bugs Fixed (Feb 6, 2026)
+
+### Bug #5: Dropdown Shows Only 3 Options ✅ FIXED
+**Severity:** Critical  
+**Problem:** Dropdown was limited to first 3 options with `.slice(0, 3)`, hiding all other backend-provided audio devices  
+**Resolution:** Removed slice limit, now displays all options from backend
+
+### Bug #6: Dropdown Click Not Reacting ✅ FIXED  
+**Severity:** Critical  
+**Problem:** React Hook error - `useState` called inside `renderCompactControl` function instead of a component  
+**Resolution:** Created proper `DropdownControl` component with hooks at top level
+
+### Bug #7: Long Device Names Overflow ✅ FIXED
+**Severity:** Medium  
+**Problem:** Audio device names like "Microphone (HD Pro Webcam C920)" overflow card boundaries  
+**Resolution:** Added `truncate` class with `max-w-[120px]` and tooltips for full names
+
+---
+
+**Last Updated:** Feb 6, 2026

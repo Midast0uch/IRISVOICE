@@ -3,18 +3,10 @@
 import React, { useState, useCallback, useEffect, useRef, type ElementType } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 
-// Tauri imports - only work in Tauri app, not browser
-let getCurrentWindow: any = null
-let PhysicalPosition: any = null
-if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-  try {
-    const tauriWindow = require('@tauri-apps/api/window')
-    getCurrentWindow = tauriWindow.getCurrentWindow
-    PhysicalPosition = tauriWindow.PhysicalPosition
-  } catch (e) {
-    console.log('Tauri not available, running in browser mode')
-  }
-}
+// Tauri v2 API - imported statically but guarded for browser
+import { getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window'
+
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI__
 
 import { Mic, Brain, Bot, Settings, Database, Activity, Volume2, Headphones, AudioWaveform as Waveform, Link, Cpu, Sparkles, MessageSquare, Palette, Power, Keyboard, Minimize2, RefreshCw, History, FileStack, Trash2, Timer, Clock, BarChart3, DollarSign, TrendingUp, Check, Wrench, Layers, Star, Monitor, HardDrive, Wifi, Bell, Sliders, FileText, Stethoscope, Smile } from "lucide-react"
 import { useIRISWebSocket } from "@/hooks/useIRISWebSocket"
@@ -23,6 +15,7 @@ import { useBrandColor } from "@/contexts/BrandColorContext"
 import { MiniNodeStack } from "./mini-node-stack"
 import { PrismNode } from "./iris/prism-node"
 import { MenuWindowSlider } from "./menu-window-slider"
+import { DarkGlassDashboard } from "./dark-glass-dashboard"
 
 const SPIN_CONFIG = {
   radiusCollapsed: 0,
@@ -102,7 +95,7 @@ const SUB_NODES: Record<string, { id: string; label: string; icon: ElementType; 
       { id: "response_length", label: "Response Length", type: "dropdown", options: ["Brief", "Balanced", "Detailed", "Comprehensive"], defaultValue: "Balanced" },
     ]},
     { id: "wake", label: "WAKE", icon: Sparkles, fields: [
-      { id: "wake_phrase", label: "Wake Phrase", type: "text", placeholder: "Hey IRIS", defaultValue: "Hey IRIS" },
+      { id: "wake_phrase", label: "Wake Phrase", type: "text", placeholder: "Hey Computer", defaultValue: "Hey Computer" },
       { id: "detection_sensitivity", label: "Detection Sensitivity", type: "slider", min: 0, max: 100, defaultValue: 70, unit: "%" },
       { id: "activation_sound", label: "Activation Sound", type: "toggle", defaultValue: true },
       { id: "sleep_timeout", label: "Sleep Timeout", type: "slider", min: 5, max: 300, defaultValue: 60, unit: "s" },
@@ -289,14 +282,6 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     // CRITICAL FIX: Only start drag if clicking directly on this element or its children
     const shouldStartDrag = currentElement && currentElement.contains(target)
     
-    console.log('[Nav System] handleMouseDown:', {
-      targetTagName: (e.target as Element)?.tagName,
-      targetClass: (e.target as Element)?.className?.substring(0, 50),
-      shouldStartDrag,
-      hasElement: !!currentElement,
-      contains: currentElement?.contains(target)
-    })
-    
     // SAFETY: Always reset state at the start of a new interaction
     isDraggingThisElement.current = false
     isDragging.current = false
@@ -304,11 +289,9 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     mouseDownTarget.current = null
     
     if (!shouldStartDrag) {
-      console.log('[Nav System] handleMouseDown: REJECTED - click not on iris orb')
       return
     }
 
-    console.log('[Nav System] handleMouseDown: ACCEPTED - starting drag')
     mouseDownTarget.current = e.target
     isDragging.current = true
     isDraggingThisElement.current = true
@@ -316,9 +299,11 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     dragStartPos.current = { x: e.screenX, y: e.screenY }
 
     try {
-      const win = getCurrentWindow()
-      const pos = await win.outerPosition()
-      windowStartPos.current = { x: pos.x, y: pos.y }
+      if (isTauri) {
+        const win = await getCurrentWindow()
+        const pos = await win.outerPosition()
+        windowStartPos.current = { x: pos.x, y: pos.y }
+      }
     } catch (e) {
       // Tauri not available
     }
@@ -327,11 +312,11 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     document.body.style.userSelect = "none"
   }, [elementRef])
 
-  const handleMouseMove = useCallback((e: MouseEvent) => {
+  const handleMouseMove = useCallback(async (e: MouseEvent) => {
     if (!isDragging.current || !isDraggingThisElement.current) return
     
     // Only enable dragging in Tauri app
-    if (!getCurrentWindow || !PhysicalPosition) return
+    if (!isTauri) return
     
     const dx = e.screenX - dragStartPos.current.x
     const dy = e.screenY - dragStartPos.current.y
@@ -340,8 +325,12 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
       hasDragged.current = true
     }
     
-    const win = getCurrentWindow()
-    win.setPosition(new PhysicalPosition(windowStartPos.current.x + dx, windowStartPos.current.y + dy))
+    try {
+      const win = await getCurrentWindow()
+      await win.setPosition(new PhysicalPosition(windowStartPos.current.x + dx, windowStartPos.current.y + dy))
+    } catch (e) {
+      // Tauri window drag failed - ignore
+    }
   }, [elementRef])
 
   const handleMouseUp = useCallback((e: MouseEvent) => {
@@ -350,15 +339,6 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     const draggingThis = isDraggingThisElement.current
     const didDrag = hasDragged.current
     const downTarget = mouseDownTarget.current
-    
-    console.log('[Nav System] handleMouseUp:', { 
-      draggingThis, 
-      didDrag,
-      hasElement: !!currentElement,
-      downTarget,
-      upTarget: e.target,
-      upTargetTag: (e.target as Element)?.tagName
-    })
     
     isDragging.current = false
     document.body.style.cursor = "default"
@@ -377,18 +357,9 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
       // Check if mousedown target was in iris
       const downInOrb = downTargetNode && currentElement.contains(downTargetNode)
       
-      console.log('[Nav System] Click check:', { 
-        upInIris, 
-        downInOrb,
-        shouldTrigger: upInIris && downInOrb
-      })
-      
       // Only click if BOTH mousedown AND mouseup happened on the iris orb
       if (upInIris && downInOrb) {
-        console.log('[Nav System] Triggering onClickAction')
         onClickAction()
-      } else {
-        console.log('[Nav System] Click rejected - not in iris orb')
       }
     }
     
@@ -572,22 +543,12 @@ export function HexagonalControlCenter() {
   const theme = getThemeConfig()
   const themeGlowColor = theme.glow.color
   
-  // DEBUG: Log theme state
-  useEffect(() => {
-    console.log('[Nav System] BrandColorContext theme:', brandTheme)
-    console.log('[Nav System] Computed theme config:', theme.name, 'glow:', themeGlowColor)
-  }, [brandTheme, theme, themeGlowColor])
-  
-  const {
-    theme: wsTheme,
-    confirmedNodes: wsConfirmedNodes,
-    currentCategory,
-    currentSubnode,
-    selectCategory,
-    selectSubnode,
-    confirmMiniNode,
-    updateTheme,
-  } = useIRISWebSocket("ws://localhost:8000/ws/iris")
+  // Wake word detection handler
+  const handleWakeDetected = useCallback(() => {
+    setWakeDetected(true)
+    // Reset after animation
+    setTimeout(() => setWakeDetected(false), 2000)
+  }, [])
 
   const [currentView, setCurrentView] = useState<string | null>(null)
   const [pendingView, setPendingView] = useState<string | null>(null)
@@ -595,22 +556,42 @@ export function HexagonalControlCenter() {
   const [isExpanded, setIsExpanded] = useState(false)
   const [isTransitioning, setIsTransitioning] = useState(false)
   const [activeMiniNodeIndex, setActiveMiniNodeIndex] = useState<number | null>(null)
+  const [wakeDetected, setWakeDetected] = useState(false)
+  const [dashboardOpen, setDashboardOpen] = useState(false)
   const isMobile = useIsMobile()
+
+  const handleOpenDashboard = useCallback(() => {
+    setDashboardOpen(true)
+  }, [])
+
+  const handleCloseDashboard = useCallback(() => {
+    setDashboardOpen(false)
+  }, [])
 
   // Refs for tracking navigation state and preventing stale closures
   const userNavigatedRef = useRef(false)
   const navLevelRef = useRef(nav.state.level)
   const nodeClickTimestampRef = useRef<number | null>(null)
-  const hasUserInteractedRef = useRef(false) // Track if user has explicitly navigated in this session
+  const hasUserInteractedRef = useRef(false)
+
+  const {
+    confirmedNodes: wsConfirmedNodes,
+    currentCategory,
+    currentSubnode,
+    selectCategory,
+    selectSubnode,
+    confirmMiniNode,
+  } = useIRISWebSocket("ws://localhost:8000/ws/iris", true, handleWakeDetected)
 
   // Update navLevelRef on every render to keep it fresh
   useEffect(() => {
     navLevelRef.current = nav.state.level
   }, [nav.state.level])
 
+// ...
   // Ensure window starts interactive (solid, not click-through) - Tauri only
   useEffect(() => {
-    if (!getCurrentWindow) return
+    if (!isTauri) return
     
     const setupWindow = async () => {
       const appWindow = await getCurrentWindow()
@@ -622,33 +603,19 @@ export function HexagonalControlCenter() {
   useEffect(() => {
     // Skip backend sync if user has manually navigated
     if (userNavigatedRef.current) {
-      console.log('[Nav System] Skipping backend sync - user has manually navigated')
       return
     }
     
     // CRITICAL: Never auto-expand from backend on initial load
     // Only sync backend state after user has explicitly interacted
     if (!hasUserInteractedRef.current) {
-      console.log('[Nav System] Skipping backend sync - waiting for user interaction')
       return
     }
     
     // Skip if category is empty (user just cleared it)
     if (!currentCategory) {
-      console.log('[Nav System] Skipping backend sync - currentCategory is empty')
       return
     }
-    
-    console.log('[Nav System] Backend sync useEffect running:', {
-      currentCategory,
-      currentView,
-      isTransitioning,
-      pendingView,
-      exitingView,
-      navLevel: nav.state.level,
-      isExpanded,
-      condition: !isTransitioning && !pendingView && currentCategory !== currentView && !exitingView
-    })
     
     // CRITICAL FIX: Don't auto-navigate to Level 3 on initial load/refresh
     // Only sync the view without advancing navigation level automatically
@@ -657,7 +624,6 @@ export function HexagonalControlCenter() {
       // Only expand to show main nodes (Level 2), don't set currentView to show subnodes
       // This prevents the backend from forcing Level 3 on refresh
       if (!isExpanded && nav.state.level === 1) {
-        console.log('[Nav System] Expanding to main nodes (Level 2) from backend category')
         setIsExpanded(true)
         nav.expandToMain()
       }
@@ -685,8 +651,8 @@ export function HexagonalControlCenter() {
     values: n.values
   }))
 
-  const irisSize = isMobile ? 110 : 140
-  const nodeSize = isMobile ? 72 : 90
+  const irisSize = isMobile ? 120 : 140
+  const nodeSize = isMobile ? 80 : 90
   const mainRadius = isMobile ? 140 : SPIN_CONFIG.radiusExpanded
   const subRadius = isMobile ? 110 : SUBMENU_CONFIG.radius
   const orbitRadius = isMobile ? 160 : ORBIT_CONFIG.radius
@@ -695,18 +661,7 @@ export function HexagonalControlCenter() {
     (nodeId: string, nodeLabel: string, hasSubnodes: boolean) => {
       const currentNavLevel = nav.state.level
       
-      console.log('[Nav System] handleNodeClick START:', { 
-        nodeId, 
-        nodeLabel, 
-        hasSubnodes, 
-        currentView, 
-        isTransitioning, 
-        navLevel: currentNavLevel,
-        timestamp: Date.now()
-      })
-      
       if (isTransitioning) {
-        console.log('[Nav System] handleNodeClick blocked - isTransitioning')
         return
       }
 
@@ -717,9 +672,7 @@ export function HexagonalControlCenter() {
         (currentNavLevel === 3 && nav.state.selectedMain !== nodeId)
 
       if (shouldNavigate) {
-        console.log('[Nav System] Should navigate to subnodes:', { nodeId, fromLevel: currentNavLevel })
         if (SUB_NODES[nodeId]?.length > 0) {
-          console.log('[Nav System] Found subnodes, proceeding with navigation')
           userNavigatedRef.current = true
           setExitingView(currentNavLevel === 3 ? nav.state.selectedMain : "__main__")
           setIsTransitioning(true)
@@ -733,23 +686,16 @@ export function HexagonalControlCenter() {
           }
 
           // Use NavigationContext to advance to Level 3
-          console.log('[Nav System] Calling nav.selectMain() for nodeId:', nodeId)
           nav.selectMain(nodeId)
-          console.log('[Nav System] selectMain called:', { nodeId, level: nav.state.level })
 
           setTimeout(() => {
-            console.log('[Nav System] Transition timeout completed')
             setExitingView(null)
             setIsTransitioning(false)
             selectCategory(nodeId)
             // Reset userNavigatedRef to allow backend sync again
             userNavigatedRef.current = false
           }, SPIN_CONFIG.spinDuration)
-        } else {
-          console.log('[Nav System] No subnodes found for nodeId:', nodeId)
         }
-      } else {
-        console.log('[Nav System] Skipping navigation:', { currentNavLevel, nodeId })
       }
     },
     [isTransitioning, selectCategory, nav, currentView]
@@ -758,18 +704,8 @@ export function HexagonalControlCenter() {
   const handleSubnodeClick = useCallback((subnodeId: string) => {
     // Read nav.state.level fresh to avoid stale closure
     const currentNavLevel = nav.state.level
-    
-    console.log('[Nav System] handleSubnodeClick START:', { 
-      subnodeId, 
-      activeSubnodeId,
-      currentView,
-      navLevel: currentNavLevel,
-      navSelectedMain: nav.state.selectedMain,
-      navSelectedSub: nav.state.selectedSub
-    })
 
     if (activeSubnodeId === subnodeId) {
-      console.log('[Nav System] Deselecting subnode, going back to Level 3')
       selectSubnode(null)
       nav.goBack()
       setActiveMiniNodeIndex(null)
@@ -784,13 +720,6 @@ export function HexagonalControlCenter() {
         icon: "Settings",
         fields: [field]
       }))
-
-      console.log('[Nav System] Attempting Level 4 navigation:', { 
-        subnodeId, 
-        subnodeFound: !!subnodeData,
-        miniNodesCount: miniNodes.length,
-        miniNodes: miniNodes,
-      })
       
       // CRITICAL: Call nav.selectSub() FIRST to trigger Level 4 navigation
       // This updates the navigation state and sets miniNodeStack
@@ -804,18 +733,14 @@ export function HexagonalControlCenter() {
   const handleIrisClick = useCallback((e?: React.MouseEvent) => {
     // CRITICAL FIX: Read nav level from the ref which is updated every render
     const freshNavLevel = navLevelRef.current
-    
-    console.log('[Nav System] handleIrisClick START:', { isTransitioning, activeSubnodeId, currentView, isExpanded, freshNavLevel, target: e?.target })
 
     // Check if a node was just clicked (within last 300ms) - prevents iris toggle when clicking nodes
     const timeSinceNodeClick = Date.now() - (nodeClickTimestampRef.current || 0)
     if (timeSinceNodeClick < 300) {
-      console.log('[Nav System] handleIrisClick blocked - node was just clicked', timeSinceNodeClick, 'ms ago')
       return
     }
 
     if (isTransitioning) {
-      console.log('[Nav System] handleIrisClick blocked - isTransitioning')
       return
     }
 
@@ -824,24 +749,19 @@ export function HexagonalControlCenter() {
     
     // DEFENSIVE: Prevent any back navigation if we're transitioning
     if (isTransitioning) {
-      console.log('[Nav System] handleIrisClick blocked - isTransitioning')
       return
     }
     
     // DEFENSIVE: Check if userNavigatedRef is already true (prevent double navigation)
     if (userNavigatedRef.current) {
-      console.log('[Nav System] handleIrisClick blocked - userNavigatedRef already true')
       return
     }
-    
-    console.log('[Nav System] handleIrisClick proceeding with level:', level)
     
     // Mark that user has explicitly interacted - enables backend sync
     hasUserInteractedRef.current = true
     
     if (level === 4) {
       // Level 4: Mini nodes active -> go back to level 3 (subnodes)
-      console.log('[Nav System] handleIrisClick: Level 4->3, deselecting subnode')
       userNavigatedRef.current = true
       // IMPORTANT: Call nav.goBack() FIRST before clearing backend state
       // This ensures navigation state changes before backend sync can interfere
@@ -853,11 +773,9 @@ export function HexagonalControlCenter() {
       // Reset userNavigatedRef AFTER a short delay to ensure navigation completes
       setTimeout(() => {
         userNavigatedRef.current = false
-        console.log('[Nav System] userNavigatedRef reset after Level 4->3 navigation')
       }, 100)
     } else if (level === 3) {
       // Level 3: Subnodes showing -> go back to level 2 (main nodes)
-      console.log('[Nav System] handleIrisClick: Level 3->2, going back to main nodes')
       userNavigatedRef.current = true
       nav.goBack()
       // Clear the currentView to show main nodes instead of subnodes
@@ -870,11 +788,9 @@ export function HexagonalControlCenter() {
         selectCategory("")
         // Reset userNavigatedRef after transition completes to allow further navigation
         userNavigatedRef.current = false
-        console.log('[Nav System] userNavigatedRef reset after Level 3->2 navigation')
       }, SPIN_CONFIG.spinDuration)
     } else if (level === 2) {
       // Level 2: Main nodes showing -> collapse to level 1 (idle)
-      console.log('[Nav System] handleIrisClick: Level 2->1, collapsing to idle')
       userNavigatedRef.current = true
       nav.collapseToIdle()
       setIsExpanded(false)
@@ -883,18 +799,15 @@ export function HexagonalControlCenter() {
       // Reset userNavigatedRef after longer delay to ensure backend processes the clear
       setTimeout(() => {
         userNavigatedRef.current = false
-        console.log('[Nav System] userNavigatedRef reset after Level 2->1 navigation')
       }, 2500)
     } else {
       // Level 1: Idle -> expand to level 2 (main nodes)
-      console.log('[Nav System] handleIrisClick: Level 1->2, expanding')
       userNavigatedRef.current = true
       nav.expandToMain()
       setIsExpanded(true)
       // Reset userNavigatedRef after transition completes
       setTimeout(() => {
         userNavigatedRef.current = false
-        console.log('[Nav System] userNavigatedRef reset after Level 1->2 navigation')
       }, SPIN_CONFIG.spinDuration)
     }
   }, [currentView, isExpanded, isTransitioning, activeSubnodeId, selectSubnode, selectCategory, nav])
@@ -922,13 +835,15 @@ export function HexagonalControlCenter() {
       className="relative w-full h-full flex items-center justify-center"
       style={{ 
         overflow: 'visible',
-        pointerEvents: 'none' // Outer wrapper: click-through to desktop
+        pointerEvents: 'none'
       }}
+      role="main"
+      aria-label="IRIS Voice Interface"
     >
       {/* Inner container: No pointer-events-auto here! Only on specific children */}
       <div 
         className="relative"
-        style={{ width: 800, height: 800 }}
+        style={{ width: 400, height: 400 }}
       >
         
         {/* Ambient glow - click-through */}
@@ -1006,7 +921,7 @@ export function HexagonalControlCenter() {
           }}
           transition={{ type: "spring", stiffness: 200, damping: 20, duration: 0.5 }}
         >
-          <div className="pointer-events-auto">
+          <div className="pointer-events-auto" role="button" aria-label={`IRIS Control Center - ${centerLabel}`} aria-live="polite">
             <IrisOrb
               isExpanded={isExpanded}
               onClick={handleIrisClick}
@@ -1149,6 +1064,34 @@ export function HexagonalControlCenter() {
             </motion.div>
           )}
         </AnimatePresence>
+        <AnimatePresence>
+          {nav.state.level === 4 && (
+            <motion.div
+              className="absolute left-1/2 top-1/2 pointer-events-auto z-[201]"
+              style={{ 
+                marginLeft: 200,
+                marginTop: 130,
+              }}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.3, delay: 0.2 }}
+            >
+              <MenuWindowSlider 
+                onUnlock={handleOpenDashboard}
+                isOpen={dashboardOpen}
+                onClose={handleCloseDashboard}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <DarkGlassDashboard 
+          isOpen={dashboardOpen}
+          onClose={handleCloseDashboard}
+          theme="nebula"
+        />
+
       </div>
     </div>
   )

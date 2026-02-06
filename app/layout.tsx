@@ -57,10 +57,8 @@ export default function RootLayout({
               <TransitionIndicator />
               <TransitionSwitch />
             </NavigationProvider>
-            {/* Test Switcher - independent, always accessible */}
-            <ThemeTestSwitcher />
-          </TransitionProvider>
-        </BrandColorProvider>
+        </TransitionProvider>
+      </BrandColorProvider>
       </body>
     </html>
   )

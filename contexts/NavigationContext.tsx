@@ -1,6 +1,6 @@
 "use client"
 
-import React, { createContext, useContext, useReducer, useEffect, useCallback, type ReactNode } from "react"
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useMemo, type ReactNode } from "react"
 import type { 
   NavState, 
   NavAction, 
@@ -23,7 +23,6 @@ const initialState: NavState = {
   history: [],
   selectedMain: null,
   selectedSub: null,
-  selectedMini: null,
   isTransitioning: false,
   transitionDirection: null,
   // Mini node stack state (Level 4)
@@ -34,13 +33,6 @@ const initialState: NavState = {
 }
 
 function navReducer(state: NavState, action: NavAction): NavState {
-  console.log('[DEBUG] navReducer ENTRY:', { 
-    actionType: action.type, 
-    currentLevel: state.level, 
-    isTransitioning: state.isTransitioning,
-    selectedMain: state.selectedMain 
-  })
-  
   switch (action.type) {
     case 'EXPAND_TO_MAIN': {
       if (state.level !== 1) return state
@@ -53,7 +45,6 @@ function navReducer(state: NavState, action: NavAction): NavState {
     }
 
     case 'SELECT_MAIN': {
-      console.log('[DEBUG] Reducer SELECT_MAIN:', { currentLevel: state.level, nodeId: action.payload.nodeId, isTransitioning: state.isTransitioning })
       // Allow transition even if level changed due to React batching
       return {
         ...state,
@@ -65,7 +56,6 @@ function navReducer(state: NavState, action: NavAction): NavState {
     }
 
     case 'SELECT_SUB': {
-      console.log('[Nav System] Reducer SELECT_SUB:', { currentLevel: state.level, subnodeId: action.payload.subnodeId, miniNodesCount: action.payload.miniNodes.length })
       // Allow transition even if level is transitioning (level 3 or 4)
       return {
         ...state,
@@ -73,19 +63,7 @@ function navReducer(state: NavState, action: NavAction): NavState {
         selectedSub: action.payload.subnodeId,
         miniNodeStack: action.payload.miniNodes,
         activeMiniNodeIndex: 0,
-        confirmedMiniNodes: [],
         history: [...state.history, { level: 3, nodeId: state.selectedMain }],
-        transitionDirection: 'forward',
-      }
-    }
-
-    case 'CONFIRM_MINI': {
-      if (state.level !== 4) return state
-      return {
-        ...state,
-        level: 5,
-        selectedMini: action.payload.nodeId,
-        history: [...state.history, { level: 4, nodeId: state.selectedSub }],
         transitionDirection: 'forward',
       }
     }
@@ -98,7 +76,6 @@ function navReducer(state: NavState, action: NavAction): NavState {
       
       let newSelectedMain = state.selectedMain
       let newSelectedSub = state.selectedSub
-      let newSelectedMini = state.selectedMini
       let newMiniNodeStack = state.miniNodeStack
       let newActiveMiniNodeIndex = state.activeMiniNodeIndex
       let newConfirmedMiniNodes = state.confirmedMiniNodes
@@ -106,25 +83,19 @@ function navReducer(state: NavState, action: NavAction): NavState {
       if (newLevel === 1) {
         newSelectedMain = null
         newSelectedSub = null
-        newSelectedMini = null
         newMiniNodeStack = []
         newActiveMiniNodeIndex = 0
         newConfirmedMiniNodes = []
       } else if (newLevel === 2) {
         newSelectedMain = null
         newSelectedSub = null
-        newSelectedMini = null
         newMiniNodeStack = []
         newActiveMiniNodeIndex = 0
         newConfirmedMiniNodes = []
       } else if (newLevel === 3) {
         newSelectedSub = null
-        newSelectedMini = null
         newMiniNodeStack = []
         newActiveMiniNodeIndex = 0
-        newConfirmedMiniNodes = []
-      } else if (newLevel === 4) {
-        newSelectedMini = null
       }
 
       return {
@@ -133,7 +104,6 @@ function navReducer(state: NavState, action: NavAction): NavState {
         history: newHistory,
         selectedMain: newSelectedMain,
         selectedSub: newSelectedSub,
-        selectedMini: newSelectedMini,
         miniNodeStack: newMiniNodeStack,
         activeMiniNodeIndex: newActiveMiniNodeIndex,
         confirmedMiniNodes: newConfirmedMiniNodes,
@@ -160,7 +130,7 @@ function navReducer(state: NavState, action: NavAction): NavState {
     case 'RESTORE_STATE': {
       // Validate and normalize restored state to prevent level 0 from old storage
       const restoredLevel = action.payload.level
-      const validLevel = (restoredLevel >= 1 && restoredLevel <= 5) ? restoredLevel : 1
+      const validLevel = (restoredLevel >= 1 && restoredLevel <= 4) ? restoredLevel : 1
       return {
         ...action.payload,
         level: validLevel as NavigationLevel,
@@ -289,12 +259,6 @@ function getIrisOrbState(state: NavState, mainNodeLabels: Record<string, string>
         icon: 'back',
         showBackIndicator: true 
       }
-    case 5:
-      return { 
-        label: state.selectedMini ? state.selectedMini.toUpperCase() : 'DONE',
-        icon: 'back',
-        showBackIndicator: true 
-      }
     default:
       return { label: 'IRIS', icon: 'home', showBackIndicator: false }
   }
@@ -309,7 +273,6 @@ interface NavigationContextValue {
   expandToMain: () => void
   selectMain: (nodeId: string) => void
   selectSub: (subnodeId: string, miniNodes: import("@/types/navigation").MiniNode[]) => void
-  confirmMini: (nodeId: string) => void
   collapseToIdle: () => void
   setTransitioning: (value: boolean) => void
   updateConfig: (newConfig: Partial<NavigationConfig>) => void
@@ -421,18 +384,12 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
   }, [state.isTransitioning])
 
   const selectMain = useCallback((nodeId: string) => {
-    console.log('[DEBUG] selectMain called:', { nodeId, level: state.level })
     dispatch({ type: 'SELECT_MAIN', payload: { nodeId } })
-  }, [state.level])
+  }, [])
 
   const selectSub = useCallback((subnodeId: string, miniNodes: import("@/types/navigation").MiniNode[]) => {
     if (state.isTransitioning) return
     dispatch({ type: 'SELECT_SUB', payload: { subnodeId, miniNodes } })
-  }, [state.isTransitioning])
-
-  const confirmMini = useCallback((nodeId: string) => {
-    if (state.isTransitioning) return
-    dispatch({ type: 'CONFIRM_MINI', payload: { nodeId } })
   }, [state.isTransitioning])
 
   const collapseToIdle = useCallback(() => {
@@ -493,7 +450,7 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
 
   const orbState = getIrisOrbState(state, mainNodeLabels, subNodeLabels)
 
-  const value: NavigationContextValue = {
+  const value = useMemo<NavigationContextValue>(() => ({
     state,
     config,
     orbState,
@@ -502,7 +459,6 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     expandToMain,
     selectMain,
     selectSub,
-    confirmMini,
     collapseToIdle,
     setTransitioning,
     updateConfig,
@@ -514,7 +470,25 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     confirmMiniNode,
     updateMiniNodeValue,
     recallConfirmedNode,
-  }
+  }), [
+    state,
+    config,
+    orbState,
+    goBack,
+    expandToMain,
+    selectMain,
+    selectSub,
+    collapseToIdle,
+    setTransitioning,
+    updateConfig,
+    setNodeLabels,
+    rotateStackForward,
+    rotateStackBackward,
+    jumpToMiniNode,
+    confirmMiniNode,
+    updateMiniNodeValue,
+    recallConfirmedNode,
+  ])
 
   return (
     <NavigationContext.Provider value={value}>

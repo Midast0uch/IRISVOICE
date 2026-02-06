@@ -213,6 +213,28 @@ async def lifespan(app: FastAPI):
         filtered_config = {k: v for k, v in config_map.items() if v is not None}
         audio_engine.update_config(**filtered_config)
         print(f"[OK] Audio engine configured")
+        
+        # Register WebSocket callbacks for wake word and listening state
+        ws_manager = get_websocket_manager()
+        
+        def on_wake_detected(phrase: str, confidence: float):
+            """Broadcast wake detection to all clients"""
+            asyncio.create_task(ws_manager.broadcast({
+                "type": "wake_detected",
+                "phrase": phrase,
+                "confidence": confidence
+            }))
+        
+        def on_state_change(new_state: VoiceState):
+            """Broadcast listening state changes to all clients"""
+            asyncio.create_task(ws_manager.broadcast({
+                "type": "listening_state",
+                "state": new_state.value
+            }))
+        
+        audio_engine.on_wake_detected(on_wake_detected)
+        audio_engine.on_state_change(on_state_change)
+        print("[OK] Audio engine WebSocket callbacks registered")
     
     # Initialize agent components with saved config
     agent_config = state_manager.get_category_field_values("agent")
@@ -328,6 +350,14 @@ async def lifespan(app: FastAPI):
         pass
     
     print(f"[OK] MCP initialized with {len(tool_registry.get_all_tools())} total tools")
+    
+    # Send backend_ready signal to all connected clients
+    ws_manager = get_websocket_manager()
+    await ws_manager.broadcast({
+        "type": "backend_ready",
+        "timestamp": datetime.now().isoformat()
+    })
+    print("[OK] Backend ready signal sent")
     
     yield
     

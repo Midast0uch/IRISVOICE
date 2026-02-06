@@ -55,6 +55,7 @@ class AudioEngine:
         # State
         self._state = VoiceState.IDLE
         self._state_callbacks: list[Callable[[VoiceState], None]] = []
+        self._wake_callbacks: list[Callable[[str, float], None]] = []
         self._is_running = False
         self._lock = threading.Lock()
         
@@ -81,11 +82,17 @@ class AudioEngine:
     def on_state_change(self, callback: Callable[[VoiceState], None]):
         """Register state change callback"""
         self._state_callbacks.append(callback)
+
+    def on_wake_detected(self, callback: Callable[[str, float], None]):
+        """Register wake word detection callback (phrase, confidence)"""
+        self._wake_callbacks.append(callback)
     
     def _set_state(self, new_state: VoiceState):
         """Update state and notify callbacks"""
         if self._state != new_state:
+            old_state = self._state
             self._state = new_state
+            print(f"[AudioEngine] State: {old_state.value} -> {new_state.value}")
             for callback in self._state_callbacks:
                 try:
                     callback(new_state)
@@ -134,6 +141,13 @@ class AudioEngine:
             
         if not self.pipeline:
             if not self.initialize():
+                return False
+        
+        # Initialize wake word detector if not already done
+        if self.wake_detector and not self.wake_detector._initialized:
+            print("[AudioEngine] Initializing wake word detector...")
+            if not self.wake_detector.initialize():
+                print("[AudioEngine] Wake word detector failed to initialize")
                 return False
         
         try:
@@ -192,6 +206,16 @@ class AudioEngine:
     def _on_wake_word_detected(self):
         """Handle wake word detection"""
         print("[AudioEngine] Wake word detected!")
+        wake_phrase = self.config.get("wake_phrase", "Hey Computer")
+        confidence = 0.85  # Placeholder - could get from wake_detector
+        
+        # Notify callbacks (for WebSocket broadcast)
+        for callback in self._wake_callbacks:
+            try:
+                callback(wake_phrase, confidence)
+            except Exception as e:
+                print(f"Wake callback error: {e}")
+        
         self._set_state(VoiceState.LISTENING)
         
     def _on_speech_started(self):

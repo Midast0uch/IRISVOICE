@@ -1,3 +1,4 @@
+/* stylelint-disable at-rule-no-unknown */
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
@@ -23,7 +24,7 @@
   --secondary: rgba(192, 192, 192, 0.1);
   --secondary-foreground: #c0c0c0;
   --muted: rgba(255, 255, 255, 0.08);
-  --muted-foreground: #888888;
+  --muted-foreground: #a0a0a0;
   --accent: var(--brand-color);
   --accent-foreground: #0a0a0f;
   --destructive: #ff4444;
@@ -380,5 +381,5 @@ body::-webkit-scrollbar,
 
 /* Ensure no overflow scrollbars appear */
 body {
-  overflow: hidden !important;
+  overflow: visible !important;
 }

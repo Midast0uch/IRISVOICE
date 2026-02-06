@@ -14,8 +14,14 @@ fn is_backend_running() -> bool {
 
 /// Start the Python backend
 fn start_backend(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let app_dir = app_handle.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let project_dir = app_dir.parent().unwrap_or(&app_dir);
+    // Get the directory where the executable is located
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let project_dir = exe_path.parent()
+        .and_then(|p| p.parent()) // Go up from release/ to target/
+        .and_then(|p| p.parent())  // Go up to project root
+        .unwrap_or_else(|| exe_path.parent().unwrap_or(&exe_path));
+    
+    println!("[IRIS] Project directory: {:?}", project_dir);
     
     // Determine Python executable path
     let python_path = if cfg!(target_os = "windows") {
@@ -81,7 +87,7 @@ fn main() {
             window.set_skip_taskbar(true).ok();
             
             // Keep size locked (prevents resizing/snap assist from changing size)
-            let size = PhysicalSize::new(800, 800);
+            let size = PhysicalSize::new(400, 400);
             window.set_min_size(Some(size)).ok();
             window.set_max_size(Some(size)).ok();
             

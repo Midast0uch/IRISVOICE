@@ -42,13 +42,6 @@ const LEVEL_CONFIGS: Record<NavigationLevel, LevelConfig> = {
     orbIcon: 'back',
     showBackIndicator: true,
   },
-  5: {
-    orbRadius: 260,
-    nodeSize: 90,
-    orbLabel: 'DONE',
-    orbIcon: 'back',
-    showBackIndicator: true,
-  },
 }
 
 const MAIN_NODE_ANGLES = [-90, -30, 30, 90, 150, 210]
@@ -144,17 +137,6 @@ export function useNavigationController({
     }, animConfig.durations.entry)
   }, [nav, animConfig.durations.entry])
 
-  const handleMiniConfirm = useCallback((nodeId: string) => {
-    if (nav.state.isTransitioning || nav.state.level !== 4) return
-
-    nav.setTransitioning(true)
-    nav.confirmMini(nodeId)
-
-    setTimeout(() => {
-      nav.setTransitioning(false)
-    }, animConfig.durations.entry)
-  }, [nav, animConfig.durations.entry])
-
   const levelConfig = LEVEL_CONFIGS[nav.state.level]
 
   const currentMainNodes = useMemo(() => {
@@ -193,7 +175,6 @@ export function useNavigationController({
     transitionDirection: nav.state.transitionDirection,
     selectedMain: nav.state.selectedMain,
     selectedSub: nav.state.selectedSub,
-    selectedMini: nav.state.selectedMini,
 
     levelConfig,
     orbState: nav.orbState,
@@ -209,7 +190,6 @@ export function useNavigationController({
     handleIrisClick,
     handleMainNodeClick,
     handleSubNodeClick,
-    handleMiniConfirm,
 
     goBack: nav.goBack,
     collapseToIdle: nav.collapseToIdle,

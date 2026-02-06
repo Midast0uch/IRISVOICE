@@ -10,6 +10,7 @@ import { DropdownField } from "./fields/DropdownField"
 import { ToggleField } from "./fields/ToggleField"
 import { ColorField } from "./fields/ColorField"
 import { useBrandColor } from "@/contexts/BrandColorContext"
+import { ThemeSwitcherCard } from "./theme-switcher-card"
 
 interface MiniNodeCardProps {
   miniNode: MiniNode
@@ -43,6 +44,12 @@ function renderField(
   const stopProp = (e: React.SyntheticEvent) => e.stopPropagation()
 
   switch (field.type) {
+    case 'custom':
+      return (
+        <div onClick={stopProp}>
+          <ThemeSwitcherCard />
+        </div>
+      )
     case 'text':
       return (
         <div 

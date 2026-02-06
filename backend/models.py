@@ -204,12 +204,23 @@ class MiniNodeConfirmedMessage(BaseModel):
     orbit_angle: float
 
 
-class ThemeUpdatedMessage(BaseModel):
-    """Server broadcasts theme change"""
-    type: str = "theme_updated"
-    primary: str
-    glow: str
-    font: str
+class WakeDetectedMessage(BaseModel):
+    """Server notifies that wake word was detected"""
+    type: str = "wake_detected"
+    phrase: str
+    confidence: float = 0.0
+
+
+class ListeningStateMessage(BaseModel):
+    """Server broadcasts current listening state"""
+    type: str = "listening_state"
+    state: str  # "idle", "listening", "processing", "speaking"
+
+
+class BackendReadyMessage(BaseModel):
+    """Server signals backend is ready"""
+    type: str = "backend_ready"
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
 # ============================================================================
@@ -282,7 +293,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
             label="WAKE",
             icon="Sparkles",
             fields=[
-                InputField(id="wake_phrase", type=FieldType.TEXT, label="Wake Phrase", placeholder="Hey IRIS", value="Hey IRIS"),
+                InputField(id="wake_phrase", type=FieldType.DROPDOWN, label="Wake Phrase", options=["Hey Computer", "Jarvis", "Alexa", "Hey Mycroft", "Hey Jarvis"], value="Hey Computer"),
                 InputField(id="detection_sensitivity", type=FieldType.SLIDER, label="Detection Sensitivity", min=0, max=100, value=70, unit="%"),
                 InputField(id="activation_sound", type=FieldType.TOGGLE, label="Activation Sound", value=True),
                 InputField(id="sleep_timeout", type=FieldType.SLIDER, label="Sleep Timeout", min=5, max=300, value=60, unit="s"),

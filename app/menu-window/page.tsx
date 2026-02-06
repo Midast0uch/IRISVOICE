@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { MenuWindowButton } from '@/components/menu-window-button';
+import { MenuWindowSlider } from '@/components/menu-window-slider';
 import { DarkGlassDashboard } from '@/components/dark-glass-dashboard';
 
 export default function MenuWindowPage() {
@@ -9,8 +9,8 @@ export default function MenuWindowPage() {
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center">
-      {/* Menu Window Button - positioned in corner, outside main UI */}
-      <MenuWindowButton onClick={() => setIsOpen(!isOpen)} isOpen={isOpen} />
+      {/* Menu Window Slider - positioned in corner, outside main UI */}
+      <MenuWindowSlider onUnlock={() => setIsOpen(true)} isOpen={isOpen} onClose={() => setIsOpen(false)} />
 
       {/* Test indicator to show this is isolated */}
       <div className="text-white/20 text-sm absolute bottom-4 left-4">

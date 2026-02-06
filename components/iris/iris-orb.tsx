@@ -38,14 +38,6 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     // CRITICAL FIX: Only start drag if clicking directly on this element or its children
     const shouldStartDrag = currentElement && currentElement.contains(target)
     
-    console.log('[Nav System] handleMouseDown:', {
-      targetTagName: (e.target as Element)?.tagName,
-      targetClass: (e.target as Element)?.className?.substring(0, 50),
-      shouldStartDrag,
-      hasElement: !!currentElement,
-      contains: currentElement?.contains(target)
-    })
-    
     // SAFETY: Always reset state at the start of a new interaction
     isDraggingThisElement.current = false
     isDragging.current = false
@@ -53,11 +45,9 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     mouseDownTarget.current = null
     
     if (!shouldStartDrag) {
-      console.log('[Nav System] handleMouseDown: REJECTED - click not on iris orb')
       return
     }
 
-    console.log('[Nav System] handleMouseDown: ACCEPTED - starting drag')
     mouseDownTarget.current = e.target
     isDragging.current = true
     isDraggingThisElement.current = true
@@ -74,7 +64,7 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
 
     document.body.style.cursor = "grabbing"
     document.body.style.userSelect = "none"
-  }, [])
+  }, [elementRef])
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging.current || !isDraggingThisElement.current) return
@@ -101,15 +91,6 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     const didDrag = hasDragged.current
     const downTarget = mouseDownTarget.current
     
-    console.log('[Nav System] handleMouseUp:', { 
-      draggingThis, 
-      didDrag,
-      hasElement: !!currentElement,
-      downTarget,
-      upTarget: e.target,
-      upTargetTag: (e.target as Element)?.tagName
-    })
-    
     isDragging.current = false
     document.body.style.cursor = "default"
     document.body.style.userSelect = ""
@@ -127,18 +108,9 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
       // Check if mousedown target was in iris
       const downInOrb = downTargetNode && currentElement.contains(downTargetNode)
       
-      console.log('[Nav System] Click check:', { 
-        upInIris, 
-        downInOrb,
-        shouldTrigger: upInIris && downInOrb
-      })
-      
       // Only click if BOTH mousedown AND mouseup happened on the iris orb
       if (upInIris && downInOrb) {
-        console.log('[Nav System] Triggering onClickAction')
         onClickAction()
-      } else {
-        console.log('[Nav System] Click rejected - not in iris orb')
       }
     }
     
@@ -146,7 +118,7 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     isDraggingThisElement.current = false
     mouseDownTarget.current = null
     hasDragged.current = false
-  }, [onClickAction])
+  }, [onClickAction, elementRef])
 
   useEffect(() => {
     window.addEventListener("mousemove", handleMouseMove)
@@ -175,9 +147,7 @@ export function IrisOrb({
   const debounceRef = useRef<NodeJS.Timeout | null>(null)
 
   const handleClick = useCallback((e: React.MouseEvent) => {
-    console.log('[Nav System] IrisOrb handleClick called', { isDebouncing, target: e.target })
     if (isDebouncing) {
-      console.log('[Nav System] IrisOrb click blocked by debounce')
       return
     }
     
@@ -186,7 +156,6 @@ export function IrisOrb({
     
     setTimeout(() => setIsPressed(false), 150)
     
-    console.log('[Nav System] IrisOrb calling onClick')
     onClick()
     
     debounceRef.current = setTimeout(() => {

@@ -16,9 +16,9 @@ class WakeConfig:
     _instance: Optional['WakeConfig'] = None
     _initialized: bool = False
     
-    # Default wake phrases
-    DEFAULT_WAKE_PHRASE = "Hey IRIS"
-    SUPPORTED_PHRASES = ["Hey IRIS", "Hey Computer", "Jarvis", "Hey Assistant"]
+    # OpenWakeWord supported phrases (local, no API key needed)
+    DEFAULT_WAKE_PHRASE = "Hey Computer"
+    SUPPORTED_PHRASES = ["Hey Computer", "Jarvis", "Alexa", "Hey Mycroft", "Hey Jarvis"]
     
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:

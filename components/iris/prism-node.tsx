@@ -4,6 +4,7 @@ import React, { type ElementType } from "react"
 import { motion } from "framer-motion"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { useTransitionVariants } from "@/hooks/useTransitionVariants"
+import { useReducedMotion } from "@/hooks/useReducedMotion"
 
 type ThemeIntensity = 'subtle' | 'medium' | 'strong'
 
@@ -50,18 +51,10 @@ export function PrismNode({
   const counterRotation = -pos.rotation
   const { getThemeConfig } = useBrandColor()
   const { variants } = useTransitionVariants()
+  const prefersReducedMotion = useReducedMotion()
   
   // Get complete theme configuration
   const theme = getThemeConfig()
-
-  // DEBUG: Log theme config
-  console.log('[Nav System] PrismNode theme:', {
-    name: theme.name,
-    gradient: theme.gradient,
-    shimmer: theme.shimmer,
-    glass: theme.glass,
-    glow: theme.glow
-  })
 
   // Check if theme should have clean look (no rotating effects)
   const isCleanTheme = theme.name === 'Verdant' || theme.name === 'Aurum'
@@ -78,8 +71,8 @@ export function PrismNode({
 
   // Merge transition variants with position/rotation animations
   const baseTransition = {
-    duration: spinDuration / 1000,
-    delay: staggerIndex * (spinConfig.staggerDelay / 1000),
+    duration: prefersReducedMotion ? 0 : spinDuration / 1000,
+    delay: prefersReducedMotion ? 0 : staggerIndex * (spinConfig.staggerDelay / 1000),
     ease: spinConfig.ease as any,
   }
 
@@ -90,9 +83,9 @@ export function PrismNode({
     },
     expanded: {
       ...variants.visible,
-      x: pos.x,
-      y: pos.y,
-      rotate: pos.rotation,
+      x: prefersReducedMotion ? pos.x : pos.x,
+      y: prefersReducedMotion ? pos.y : pos.y,
+      rotate: prefersReducedMotion ? 0 : pos.rotation,
       transition: {
         ...baseTransition,
         ...(variants.visible as any)?.transition,
@@ -102,6 +95,7 @@ export function PrismNode({
       ...variants.exit,
       x: 0,
       y: 0,
+      rotate: prefersReducedMotion ? 0 : undefined,
       transition: {
         ...baseTransition,
         ...(variants.exit as any)?.transition,
@@ -123,7 +117,7 @@ export function PrismNode({
 
   // Calculate adjusted values based on intensity
   const glassOpacity = Math.min(theme.glass.opacity * intensityMultipliers.glassOpacity, 0.35)
-  const glowOpacity = Math.min(theme.glow.opacity * intensityMultipliers.glowOpacity, 0.5)
+  const glowOpacity = Math.min(theme.glow.opacity * intensityMultipliers.glowOpacity * 1.5, 0.75)
   const shimmerOpacity = Math.min(1 * intensityMultipliers.shimmerOpacity, 1)
 
   return (
@@ -155,7 +149,7 @@ export function PrismNode({
         className="absolute -inset-4 rounded-[2.5rem] pointer-events-none"
         style={{
           background: `radial-gradient(circle, ${theme.glow.color}${Math.round(glowOpacity * 255).toString(16).padStart(2, '0')} 0%, transparent 70%)`,
-          filter: `blur(${theme.glow.blur}px)`,
+          filter: `blur(${theme.glow.blur * 1.5}px)`,
           opacity: isActive ? 1 : 0.6,
         }}
       />

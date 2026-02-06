@@ -253,10 +253,6 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
     const storedBrand = localStorage.getItem(STORAGE_KEY_BRAND)
     const storedTheme = localStorage.getItem(STORAGE_KEY_THEME)
     
-    console.log('[BrandColorContext] Mount - storedBrand:', storedBrand)
-    console.log('[BrandColorContext] Mount - storedTheme:', storedTheme)
-    console.log('[BrandColorContext] Mount - current default:', THEME_DEFAULTS[DEFAULT_THEME])
-    
     // Determine which theme to use
     const themeToUse = (storedTheme && ['aether', 'ember', 'aurum', 'verdant'].includes(storedTheme)) 
       ? storedTheme as ThemeType 
@@ -268,7 +264,6 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
     if (storedBrand) {
       try {
         const parsed = JSON.parse(storedBrand)
-        console.log('[BrandColorContext] Mount - Loading brand from localStorage:', parsed)
         
         // Validate: Check if stored values match expected theme defaults (within tolerance)
         const hueDiff = Math.abs(parsed.hue - expectedDefaults.hue)
@@ -277,20 +272,17 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
         
         // If values are very different from expected, use defaults instead
         if (hueDiff > 30 || satDiff > 20 || lightDiff > 20) {
-          console.log('[BrandColorContext] Mount - Stored brand mismatch, using defaults:', expectedDefaults)
           setBrandColor(expectedDefaults)
         } else {
           setBrandColor(parsed)
         }
       } catch {
         // Keep default if parsing fails
-        console.log('[BrandColorContext] Mount - Failed to parse storedBrand, using default')
         setBrandColor(expectedDefaults)
       }
     }
     
     if (storedTheme && ['aether', 'ember', 'aurum', 'verdant'].includes(storedTheme)) {
-      console.log('[BrandColorContext] Mount - Loading theme from localStorage:', storedTheme)
       setThemeState(storedTheme as ThemeType)
     }
     
@@ -336,8 +328,6 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
   }, [])
 
   const setTheme = useCallback((newTheme: ThemeType) => {
-    console.log('[BrandColorContext] setTheme called:', newTheme)
-    console.log('[BrandColorContext] Setting brandColor to defaults:', THEME_DEFAULTS[newTheme])
     setThemeState(newTheme)
     // Update brand color to theme default so colors actually change
     setBrandColor(THEME_DEFAULTS[newTheme])
@@ -346,7 +336,6 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
   }, [])
 
   const resetToThemeDefault = useCallback(() => {
-    console.log('[BrandColorContext] resetToThemeDefault called for theme:', theme)
     setBrandColor(THEME_DEFAULTS[theme])
     localStorage.removeItem(STORAGE_KEY_BRAND)
   }, [theme])

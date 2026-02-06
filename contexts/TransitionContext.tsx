@@ -53,7 +53,6 @@ export function TransitionProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     if (isHydrated) {
       localStorage.setItem(STORAGE_KEY, currentTransition)
-      console.log('[TransitionContext] Transition changed to:', currentTransition)
     }
   }, [currentTransition, isHydrated])
 
@@ -62,22 +61,17 @@ export function TransitionProvider({ children }: { children: React.ReactNode }) 
       const currentIndex = TRANSITION_ORDER.indexOf(prev)
       const nextIndex = (currentIndex + 1) % TRANSITION_ORDER.length
       const nextTransition = TRANSITION_ORDER[nextIndex]
-      console.log('[TransitionContext] Cycling:', prev, '→', nextTransition)
       return nextTransition
     })
   }, [])
 
   const setTransition = useCallback((transition: TransitionType) => {
     if (TRANSITION_ORDER.includes(transition)) {
-      console.log('[TransitionContext] Setting transition:', transition)
       setCurrentTransition(transition)
-    } else {
-      console.warn('[TransitionContext] Invalid transition type:', transition)
     }
   }, [])
 
   const resetToDefault = useCallback(() => {
-    console.log('[TransitionContext] Resetting to default:', DEFAULT_TRANSITION)
     setCurrentTransition(DEFAULT_TRANSITION)
   }, [])
 
@@ -105,11 +99,9 @@ export function TransitionProvider({ children }: { children: React.ReactNode }) 
     }
 
     window.addEventListener('keydown', handleKeyDown)
-    console.log('[TransitionContext] Keyboard shortcuts registered')
     
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
-      console.log('[TransitionContext] Keyboard shortcuts unregistered')
     }
   }, [cycleTransition, resetToDefault, setTransition])
 

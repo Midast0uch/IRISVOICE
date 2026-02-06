@@ -8,6 +8,7 @@ import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { useAudioDevices } from "@/hooks/useAudioDevices"
 import { MenuWindowSlider } from "./menu-window-slider"
+import { ThemeSwitcherCard } from "./theme-switcher-card"
 
 interface MiniNodeStackProps {
   miniNodes: MiniNode[]
@@ -47,14 +48,14 @@ function DropdownControl({
 }) {
   const options = dynamicOptions || field.options || []
   const selectedValue = value ?? field.defaultValue ?? options[0] ?? ''
-  const hasMore = options.length > 4
-  const visibleOptions = options.slice(0, 4)
+  const hasMore = options.length > 6
+  const visibleOptions = options.slice(0, 6)
 
   return (
     <div className="py-1">
-      {/* 2x2 Grid container - exactly 4 options with white separators */}
+      {/* 3x2 Grid container - 6 options with white separators */}
       <div 
-        className="grid grid-cols-2 rounded overflow-hidden"
+        className="grid grid-cols-3 rounded overflow-hidden"
         style={{ 
           background: 'rgba(255,255,255,0.25)',
           gap: '1px'
@@ -69,12 +70,12 @@ function DropdownControl({
                 e.stopPropagation()
                 onChange(option)
               }}
-              className="px-1.5 py-1 text-[7px] leading-tight transition-all text-left flex items-center font-medium"
+              className="px-2 py-1.5 text-[9px] leading-tight transition-all text-left flex items-center font-medium"
               style={{
                 background: isSelected ? glowColor : 'rgba(0,0,0,0.4)',
                 color: isSelected ? '#000' : '#fff',
                 boxShadow: isSelected ? `inset 0 0 8px ${glowColor}80` : 'none',
-                minHeight: '28px'
+                minHeight: '32px'
               }}
               whileTap={{ scale: 0.95 }}
               title={option}
@@ -86,8 +87,8 @@ function DropdownControl({
       </div>
       
       {hasMore && (
-        <div className="text-[7px] text-center mt-1.5 font-medium" style={{ color: '#fff' }}>
-          +{options.length - 4} more options
+        <div className="text-[8px] text-center mt-1.5 font-medium" style={{ color: '#fff' }}>
+          +{options.length - 6} more options
         </div>
       )}
     </div>
@@ -120,12 +121,12 @@ function InlineRow({
   }, [onSelect])
 
   const getExpandedHeight = () => {
-    if (!previewField) return 60
+    if (!previewField) return 70
     switch (previewField.type) {
-      case 'toggle': return 50
-      case 'dropdown': return 90
-      case 'slider': return 65
-      default: return 60
+      case 'toggle': return 60
+      case 'dropdown': return 110
+      case 'slider': return 80
+      default: return 70
     }
   }
 
@@ -134,7 +135,7 @@ function InlineRow({
       className="rounded-md overflow-hidden"
       style={{
         background: isActive
-          ? `linear-gradient(90deg, ${glowColor.replace(')', ', 0.12)')}, transparent), url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.3' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")`
+          ? `linear-gradient(90deg, ${glowColor.replace(')', ', 0.12)')}, transparent), url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.15' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")`
           : 'rgba(255,255,255,0.04)',
         backgroundBlendMode: isActive ? 'overlay' : 'normal',
         border: `1px solid ${isActive ? glowColor.replace(')', ', 0.25)') : 'rgba(255,255,255,0.08)'}`,
@@ -144,17 +145,17 @@ function InlineRow({
     >
       <motion.button
         onClick={handleClick}
-        className="w-full flex items-center justify-between px-2 h-7"
+        className="w-full flex items-center justify-between px-3 h-8"
         whileHover={{ backgroundColor: isActive ? 'transparent' : 'rgba(255,255,255,0.06)' }}
         whileTap={{ scale: 0.98 }}
       >
-        <div className="flex items-center justify-center gap-1.5 overflow-hidden flex-1">
+        <div className="flex items-center justify-center gap-2 overflow-hidden flex-1">
           <IconComponent 
-            className="w-3 h-3 flex-shrink-0" 
+            className="w-3.5 h-3.5 flex-shrink-0" 
             style={{ color: isActive ? glowColor : `${glowColor}aa` }}
           />
           <span 
-            className="text-[10px] font-medium tracking-wide truncate"
+            className="text-[11px] font-medium tracking-wide truncate"
             style={{ color: isActive ? '#fff' : '#ffffffaa' }}
           >
             {miniNode.label}
@@ -162,7 +163,7 @@ function InlineRow({
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           <span 
-            className="text-[9px] tabular-nums"
+            className="text-[10px] tabular-nums"
             style={{ color: '#fff' }}
           >
             {previewValue}
@@ -323,9 +324,23 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
   const { activeMiniNodeIndex, miniNodeValues } = state
   const visibleNodes = miniNodes.slice(0, 4)
 
+  // Check if we're in the theme subnode
+  const isThemeSubnode = state.selectedSub === 'theme'
+
   const handleValueChange = useCallback(
     (nodeId: string, fieldId: string, value: any) => {
       updateMiniNodeValue(nodeId, fieldId, value)
+      
+      // Handle voice engine toggle
+      if (fieldId === 'voice_engine') {
+        const endpoint = value ? '/api/voice/start' : '/api/voice/stop'
+        fetch(`http://localhost:8000${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        }).catch(() => {
+          // Silently ignore voice API errors - backend may not be running
+        })
+      }
     },
     [updateMiniNodeValue]
   )
@@ -358,15 +373,24 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         className="flex items-center justify-center h-32 text-white/40 text-xs"
-        style={{ width: 140 }}
+        style={{ width: 200 }}
       >
         No settings
       </motion.div>
     )
   }
 
+  // For theme subnode, show the ThemeSwitcherCard instead of accordion cards
+  if (isThemeSubnode) {
+    return (
+      <div style={{ width: 200 }}>
+        <ThemeSwitcherCard />
+      </div>
+    )
+  }
+
   return (
-    <div className="flex flex-col gap-1" style={{ width: 140 }}>
+    <div className="flex flex-col gap-2" style={{ width: 200 }}>
       <AnimatePresence mode="popLayout">
         {visibleNodes.map((miniNode, index) => {
           const isActive = index === activeMiniNodeIndex
@@ -394,8 +418,8 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
       </AnimatePresence>
 
       <div 
-        className="mt-2 flex justify-center"
-        style={{ width: 140 }}
+        className="mt-3 flex justify-center"
+        style={{ width: 200 }}
       >
         <MenuWindowSlider 
           onUnlock={() => window.open('/menu-window', '_blank')}

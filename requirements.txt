@@ -15,6 +15,6 @@ scipy>=1.11.0
 pvporcupine>=3.0.0
 silero-vad>=4.0.0
 llama-cpp-python>=0.2.0
-speech-recognition>=3.10.0
+speechrecognition>=3.10.0
 openai-whisper>=20231117
 pydub>=0.25.0

@@ -1,4 +1,4 @@
-export type FieldType = 'text' | 'slider' | 'dropdown' | 'toggle' | 'color'
+export type FieldType = 'text' | 'slider' | 'dropdown' | 'toggle' | 'color' | 'custom'
 
 export interface FieldConfig {
   id: string
@@ -10,6 +10,7 @@ export interface FieldConfig {
   // slider props
   min?: number
   max?: number
+  step?: number
   unit?: string
   // dropdown props
   options?: string[]
@@ -31,7 +32,7 @@ export interface ConfirmedNode {
   timestamp: number
 }
 
-export type NavigationLevel = 1 | 2 | 3 | 4 | 5
+export type NavigationLevel = 1 | 2 | 3 | 4
 
 export type TransitionStyle = 
   | 'radial-spin' 
@@ -64,7 +65,6 @@ export interface NavState {
   history: HistoryEntry[]
   selectedMain: string | null
   selectedSub: string | null
-  selectedMini: string | null
   isTransitioning: boolean
   transitionDirection: 'forward' | 'backward' | null
   // Mini node stack state (Level 4)
@@ -78,7 +78,6 @@ export type NavAction =
   | { type: 'EXPAND_TO_MAIN' }
   | { type: 'SELECT_MAIN'; payload: { nodeId: string } }
   | { type: 'SELECT_SUB'; payload: { subnodeId: string; miniNodes: MiniNode[] } }
-  | { type: 'CONFIRM_MINI'; payload: { nodeId: string } }
   | { type: 'GO_BACK' }
   | { type: 'COLLAPSE_TO_IDLE' }
   | { type: 'SET_TRANSITIONING'; payload: boolean }
@@ -103,7 +102,6 @@ export const LEVEL_NAMES: Record<NavigationLevel, string> = {
   2: 'MAIN_EXPANDED',
   3: 'SUB_EXPANDED',
   4: 'MINI_ACTIVE',
-  5: 'CONFIRMED_ORBIT',
 }
 
 export const DEFAULT_NAV_CONFIG: NavigationConfig = {

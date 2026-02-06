@@ -15,7 +15,7 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
           id: 'input_device',
           type: 'dropdown',
           label: 'Device',
-          options: ['Default', 'USB Mic', 'Headset', 'Webcam'],
+          options: ['Default', 'USB Microphone', 'Headset', 'Webcam'],
           defaultValue: 'Default'
         }
       ]
@@ -70,7 +70,7 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
           id: 'output_device',
           type: 'dropdown',
           label: 'Device',
-          options: ['Default', 'Speakers', 'Headphones', 'Bluetooth'],
+          options: ['Default', 'Headphones', 'Speakers', 'HDMI'],
           defaultValue: 'Default'
         }
       ]
@@ -99,6 +99,12 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
       label: 'Noise Reduction',
       icon: 'Minus',
       fields: [
+        {
+          id: 'voice_engine',
+          type: 'toggle',
+          label: 'Voice Engine',
+          defaultValue: false
+        },
         {
           id: 'noise_reduction',
           type: 'toggle',
@@ -147,7 +153,7 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
           id: 'personality_type',
           type: 'dropdown',
           label: 'Type',
-          options: ['Professional', 'Friendly', 'Casual', 'Technical'],
+          options: ['Professional', 'Friendly', 'Concise', 'Creative', 'Technical'],
           defaultValue: 'Friendly'
         }
       ]
@@ -161,7 +167,7 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
           id: 'response_style',
           type: 'dropdown',
           label: 'Style',
-          options: ['Concise', 'Detailed', 'Balanced'],
+          options: ['Brief', 'Balanced', 'Detailed', 'Comprehensive'],
           defaultValue: 'Balanced'
         }
       ]
@@ -175,11 +181,11 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
       icon: 'Mic',
       fields: [
         {
-          id: 'wake_word',
-          type: 'text',
+          id: 'wake_phrase',
+          type: 'dropdown',
           label: 'Phrase',
-          placeholder: 'Hey Iris',
-          defaultValue: 'Hey Iris'
+          options: ['Hey Computer', 'Jarvis', 'Alexa', 'Hey Mycroft', 'Hey Jarvis'],
+          defaultValue: 'Hey Computer'
         }
       ]
     },
@@ -379,7 +385,7 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
           id: 'power_profile',
           type: 'dropdown',
           label: 'Profile',
-          options: ['Balanced', 'Performance', 'Battery Saver'],
+          options: ['Balanced', 'Performance', 'Battery'],
           defaultValue: 'Balanced'
         }
       ]
@@ -507,7 +513,7 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
           id: 'launch_startup',
           type: 'toggle',
           label: 'Enable',
-          defaultValue: true
+          defaultValue: false
         }
       ]
     }

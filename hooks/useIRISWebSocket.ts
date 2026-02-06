@@ -58,6 +58,7 @@ interface UseIRISWebSocketReturn {
   updateTheme: (glowColor?: string, fontColor?: string, stateColors?: { enabled?: boolean; idle?: string; listening?: string; processing?: string; error?: string }) => void
   requestState: () => void
   lastError: string | null
+  onWakeDetected?: () => void
 }
 
 // Default theme matching backend defaults
@@ -69,7 +70,8 @@ const DEFAULT_THEME: ColorTheme = {
 
 export function useIRISWebSocket(
   url: string = "ws://localhost:8000/ws/iris",
-  autoConnect: boolean = true
+  autoConnect: boolean = true,
+  onWakeDetected?: () => void
 ): UseIRISWebSocketReturn {
   // Connection state
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected")
@@ -86,6 +88,12 @@ export function useIRISWebSocket(
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  const onWakeDetectedRef = useRef(onWakeDetected)
+
+  // Update ref when callback changes
+  useEffect(() => {
+    onWakeDetectedRef.current = onWakeDetected
+  }, [onWakeDetected])
 
   const isConnected = connectionState === "connected"
 
@@ -230,6 +238,19 @@ export function useIRISWebSocket(
             ...(payload.error_color && { error_color: payload.error_color }),
           }))
         }
+        break
+      }
+
+      case "wake_detected": {
+        // Trigger wake word callback if provided
+        if (onWakeDetectedRef.current) {
+          onWakeDetectedRef.current()
+        }
+        break
+      }
+
+      case "listening_state": {
+        // Could be used to show listening indicator
         break
       }
 

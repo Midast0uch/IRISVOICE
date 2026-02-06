@@ -195,6 +195,71 @@ The accordion pattern was an intermediate step that solved click-blocking but ha
    - Preview values, options, labels all use white text
    - Better contrast on active cards
 
+### Feb 6, 2026 - Visual Polish Updates
+
+**Changes Made:**
+
+1. **Further Grain Reduction**
+   - Reduced `baseFrequency` from 0.3 to 0.15
+   - Reduced `numOctaves` from 3 to 2
+   - Applied to both `mini-node-stack.tsx` and `theme-switcher-card.tsx`
+   - Subtler texture on active accordion cards
+
+2. **Increased Iris Globe Glow 1.5x**
+   - Modified `prism-node.tsx` (lines 126, 158)
+   - Glow opacity multiplied by 1.5 (max cap raised to 0.75)
+   - Glow blur radius multiplied by 1.5
+   - More prominent glow behind the IRIS center globe
+
+### Feb 6, 2026 - Theme Switcher Redesign
+
+**Changes Made:**
+
+1. **Accordion-Style ThemeSwitcherCard** (lines 1-136 in `theme-switcher-card.tsx`)
+   - Redesigned to match accordion card styling exactly
+   - 28px collapsed height with spring animation to 110px expanded
+   - Grain texture background (`baseFrequency: 0.15`, `numOctaves: 2`)
+   - 1px border with glow color at 25% opacity when expanded
+   - Header: Palette icon (12px), "Theme" label (10px), current theme name preview (9px)
+   - Click to expand/collapse behavior matching other accordion cards
+
+2. **Theme Subnode Integration** (lines 372-379 in `mini-node-stack.tsx`)
+   - Theme subnode now shows ThemeSwitcherCard instead of generic accordion cards
+   - Other subnodes continue to show their specific accordion cards
+   - Conditional rendering based on `state.selectedSub === 'theme'`
+
+3. **2x2 Theme Grid with Color Previews** (lines 94-126)
+   - 4 themes displayed in 2x2 grid: Aether, Ember, Aurum, Verdant
+   - White separator lines between grid cells (1px gap)
+   - **Color preview dot** (8px) showing each theme's actual glow color
+   - Dot has subtle glow effect matching theme color
+   - Selected theme highlighted with theme color background
+   - Black text on selected, white text on unselected
+   - 7px font size with truncate for theme names
+
+4. **Specs Adjuster** (lines 134-257)
+   - Appears after selecting a theme (click any theme to show)
+   - Card expands from 110px to 200px to accommodate sliders
+   - **Hue slider** (0-360°): Rainbow gradient track with white handle
+   - **Saturation slider** (0-100%): Gray-to-color gradient track
+   - **Lightness slider** (0-100%): Black-to-white gradient track
+   - Real-time updates: Changes immediately affect the theme glow color
+   - Uses dynamic `brandColor` HSL values for the glow color
+   - **Reset to Default** button restores theme's original values
+   - Compact 7px labels, 6px track height, 8px handles
+
+5. **Dynamic Glow Color** (line 21)
+   - Changed from static `PRISM_THEMES[theme].glow.color` to dynamic HSL
+   - `glowColor` now computed from `brandColor.hue/saturation/lightness`
+   - Spec adjustments immediately reflected in card border, background tint, and UI glow
+
+**Result:**
+- Theme switcher visually matches other accordion cards
+- Users can see theme colors before selecting via color preview dots
+- Consistent interaction pattern (click to expand, select from grid)
+- Smooth spring animations matching other cards
+- Real-time theme customization with live preview
+
 ### Dropdown Fix (Feb 6, 2026)
 
 **Problem:**
@@ -226,4 +291,4 @@ function DropdownControl({ field, value, onChange, glowColor, dynamicOptions }) 
 
 ---
 
-**Last Updated:** Feb 6, 2026
+**Last Updated:** Feb 6, 2026 - Specs adjuster with real-time theme updates
