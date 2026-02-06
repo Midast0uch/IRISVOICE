@@ -22,6 +22,7 @@ import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { MiniNodeStack } from "./mini-node-stack"
 import { PrismNode } from "./iris/prism-node"
+import { MenuWindowSlider } from "./menu-window-slider"
 
 const SPIN_CONFIG = {
   radiusCollapsed: 0,
@@ -981,6 +982,30 @@ export function HexagonalControlCenter() {
           </div>
         </motion.div>
 
+        {/* Menu Window Slider - Level 4 - Right above connecting line */}
+        <AnimatePresence>
+          {nav.state.level === 4 && (
+            <motion.div
+              className="absolute left-1/2 top-1/2 pointer-events-auto z-[56]"
+              style={{ 
+                marginLeft: 30,
+                marginTop: -14,
+                width: 140,
+              }}
+              initial={{ opacity: 0, y: 5 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 5 }}
+              transition={{ duration: 0.4, delay: 0.1 }}
+            >
+              <MenuWindowSlider 
+                onUnlock={() => window.open('/menu-window', '_blank')}
+                isOpen={false}
+                onClose={() => {}}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Connecting line between Iris Orb and Mini Stack - Liquid Metal */}
         <AnimatePresence>
           {nav.state.level === 4 && (
@@ -1014,10 +1039,10 @@ export function HexagonalControlCenter() {
             <motion.div
               className="absolute left-1/2 top-1/2 pointer-events-auto z-[200]"
               style={{ 
-                marginLeft: 280,
-                marginTop: -160,
-                width: 240,
-                height: 420,
+                marginLeft: 200,
+                marginTop: -80,
+                width: 160,
+                height: 200,
               }}
               initial={{ opacity: 0, scale: 0.8, x: -20 }}
               animate={{ opacity: 1, scale: 1, x: 0 }}
