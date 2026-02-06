@@ -289,6 +289,20 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     // CRITICAL FIX: Only start drag if clicking directly on this element or its children
     const shouldStartDrag = currentElement && currentElement.contains(target)
     
+    console.log('[Nav System] handleMouseDown:', {
+      targetTagName: (e.target as Element)?.tagName,
+      targetClass: (e.target as Element)?.className?.substring(0, 50),
+      shouldStartDrag,
+      hasElement: !!currentElement,
+      contains: currentElement?.contains(target)
+    })
+    
+    // SAFETY: Always reset state at the start of a new interaction
+    isDraggingThisElement.current = false
+    isDragging.current = false
+    hasDragged.current = false
+    mouseDownTarget.current = null
+    
     if (!shouldStartDrag) {
       console.log('[Nav System] handleMouseDown: REJECTED - click not on iris orb')
       return
@@ -300,17 +314,18 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     isDraggingThisElement.current = true
     hasDragged.current = false
     dragStartPos.current = { x: e.screenX, y: e.screenY }
-    
-    // Only enable dragging in Tauri app
-    if (!getCurrentWindow) return
-    
-    const win = getCurrentWindow()
-    const pos = await win.outerPosition()
-    windowStartPos.current = { x: pos.x, y: pos.y }
-    
-    document.body.style.cursor = 'grabbing'
-    document.body.style.userSelect = 'none'
-  }, [])
+
+    try {
+      const win = getCurrentWindow()
+      const pos = await win.outerPosition()
+      windowStartPos.current = { x: pos.x, y: pos.y }
+    } catch (e) {
+      // Tauri not available
+    }
+
+    document.body.style.cursor = "grabbing"
+    document.body.style.userSelect = "none"
+  }, [elementRef])
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging.current || !isDraggingThisElement.current) return
@@ -327,7 +342,7 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     
     const win = getCurrentWindow()
     win.setPosition(new PhysicalPosition(windowStartPos.current.x + dx, windowStartPos.current.y + dy))
-  }, [])
+  }, [elementRef])
 
   const handleMouseUp = useCallback((e: MouseEvent) => {
     // Get fresh ref values - don't rely on closure
@@ -341,17 +356,18 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
       didDrag,
       hasElement: !!currentElement,
       downTarget,
-      upTarget: e.target
+      upTarget: e.target,
+      upTargetTag: (e.target as Element)?.tagName
     })
     
     isDragging.current = false
-    document.body.style.cursor = 'default'
-    document.body.style.userSelect = ''
-    
-    // CRITICAL FIX: Only trigger click if:
+    document.body.style.cursor = "default"
+    document.body.style.userSelect = ""
+
+    // Only trigger click if:
     // 1. We started dragging on this element
     // 2. We didn't actually drag (just clicked)
-    // 3. BOTH mousedown AND mouseup targets are inside the iris orb element
+    // 3. The mouseup target IS the iris orb element or its children
     if (draggingThis && !didDrag && currentElement) {
       const upTarget = e.target as Node
       const downTargetNode = downTarget as Node
@@ -380,7 +396,7 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     isDraggingThisElement.current = false
     mouseDownTarget.current = null
     hasDragged.current = false
-  }, [onClickAction])
+  }, [onClickAction, elementRef])
 
   useEffect(() => {
     window.addEventListener('mousemove', handleMouseMove)
@@ -585,6 +601,7 @@ export function HexagonalControlCenter() {
   const userNavigatedRef = useRef(false)
   const navLevelRef = useRef(nav.state.level)
   const nodeClickTimestampRef = useRef<number | null>(null)
+  const hasUserInteractedRef = useRef(false) // Track if user has explicitly navigated in this session
 
   // Update navLevelRef on every render to keep it fresh
   useEffect(() => {
@@ -609,6 +626,13 @@ export function HexagonalControlCenter() {
       return
     }
     
+    // CRITICAL: Never auto-expand from backend on initial load
+    // Only sync backend state after user has explicitly interacted
+    if (!hasUserInteractedRef.current) {
+      console.log('[Nav System] Skipping backend sync - waiting for user interaction')
+      return
+    }
+    
     // Skip if category is empty (user just cleared it)
     if (!currentCategory) {
       console.log('[Nav System] Skipping backend sync - currentCategory is empty')
@@ -630,17 +654,14 @@ export function HexagonalControlCenter() {
     // Only sync the view without advancing navigation level automatically
     // This prevents the "random main node on refresh" issue
     if (!isTransitioning && !pendingView && currentCategory !== currentView && !exitingView) {
-      console.log('[Nav System] Setting currentView to currentCategory (without auto-navigating):', currentCategory)
-      setCurrentView(currentCategory)
-      
-      // Only expand to show main nodes (Level 2), don't auto-select a main node
+      // Only expand to show main nodes (Level 2), don't set currentView to show subnodes
       // This prevents the backend from forcing Level 3 on refresh
       if (!isExpanded && nav.state.level === 1) {
         console.log('[Nav System] Expanding to main nodes (Level 2) from backend category')
         setIsExpanded(true)
         nav.expandToMain()
       }
-      // Note: We intentionally do NOT call nav.selectMain() here
+      // Note: We intentionally do NOT call nav.selectMain() or setCurrentView here
       // User must explicitly click a main node to reach Level 3
     }
     
@@ -815,6 +836,9 @@ export function HexagonalControlCenter() {
     
     console.log('[Nav System] handleIrisClick proceeding with level:', level)
     
+    // Mark that user has explicitly interacted - enables backend sync
+    hasUserInteractedRef.current = true
+    
     if (level === 4) {
       // Level 4: Mini nodes active -> go back to level 3 (subnodes)
       console.log('[Nav System] handleIrisClick: Level 4->3, deselecting subnode')
@@ -844,8 +868,9 @@ export function HexagonalControlCenter() {
         setExitingView(null)
         setIsTransitioning(false)
         selectCategory("")
-        // NOTE: Don't reset userNavigatedRef here - let it stay true until user selects a new node
-        // This prevents backend sync from re-selecting the old category before it's cleared
+        // Reset userNavigatedRef after transition completes to allow further navigation
+        userNavigatedRef.current = false
+        console.log('[Nav System] userNavigatedRef reset after Level 3->2 navigation')
       }, SPIN_CONFIG.spinDuration)
     } else if (level === 2) {
       // Level 2: Main nodes showing -> collapse to level 1 (idle)
@@ -855,12 +880,22 @@ export function HexagonalControlCenter() {
       setIsExpanded(false)
       // Clear backend category to prevent it from restoring on refresh
       selectCategory("")
+      // Reset userNavigatedRef after longer delay to ensure backend processes the clear
+      setTimeout(() => {
+        userNavigatedRef.current = false
+        console.log('[Nav System] userNavigatedRef reset after Level 2->1 navigation')
+      }, 2500)
     } else {
       // Level 1: Idle -> expand to level 2 (main nodes)
       console.log('[Nav System] handleIrisClick: Level 1->2, expanding')
       userNavigatedRef.current = true
       nav.expandToMain()
       setIsExpanded(true)
+      // Reset userNavigatedRef after transition completes
+      setTimeout(() => {
+        userNavigatedRef.current = false
+        console.log('[Nav System] userNavigatedRef reset after Level 1->2 navigation')
+      }, SPIN_CONFIG.spinDuration)
     }
   }, [currentView, isExpanded, isTransitioning, activeSubnodeId, selectSubnode, selectCategory, nav])
 
@@ -982,31 +1017,39 @@ export function HexagonalControlCenter() {
           </div>
         </motion.div>
 
-        {/* Connecting line between Iris Orb and Mini Stack - Liquid Metal */}
+        {/* Connecting line between Iris Orb and Mini Stack - Liquid Metal - Pivots from Iris to active card */}
         <AnimatePresence>
-          {nav.state.level === 4 && (
-            <motion.div
-              className="absolute left-1/2 top-1/2 pointer-events-none z-[55]"
-              style={{
-                height: 2,
-                width: 200,
-                marginTop: -1,
-                marginLeft: 30,
-                background: `linear-gradient(90deg, 
-                  rgba(255,255,255,0.8) 0%, 
-                  rgba(192,192,192,0.9) 20%, 
-                  rgba(255,255,255,0.95) 40%, 
-                  rgba(192,192,192,0.9) 60%, 
-                  rgba(255,255,255,0.8) 80%,
-                  rgba(128,128,128,0.6) 100%)`,
-                boxShadow: '0 0 4px rgba(255,255,255,0.5)',
-              }}
-              initial={{ opacity: 0, scaleX: 0 }}
-              animate={{ opacity: 1, scaleX: 1 }}
-              exit={{ opacity: 0, scaleX: 0 }}
-              transition={{ duration: 0.4 }}
-            />
-          )}
+          {nav.state.level === 4 && (() => {
+            const activeIndex = nav.state.activeMiniNodeIndex ?? 0
+            const targetY = -80 + (activeIndex * 32) + 14
+            const lineLength = 200
+            const rotation = (Math.atan2(targetY, lineLength) * 180) / Math.PI
+            
+            return (
+              <motion.div
+                className="absolute left-1/2 top-1/2 pointer-events-none z-[55]"
+                style={{
+                  height: 2,
+                  width: lineLength,
+                  marginTop: 0,
+                  marginLeft: 30,
+                  background: `linear-gradient(90deg, 
+                    rgba(255,255,255,0.8) 0%, 
+                    rgba(192,192,192,0.9) 20%, 
+                    rgba(255,255,255,0.95) 40%, 
+                    rgba(192,192,192,0.9) 60%, 
+                    rgba(255,255,255,0.8) 80%,
+                    rgba(128,128,128,0.6) 100%)`,
+                  boxShadow: '0 0 4px rgba(255,255,255,0.5)',
+                  transformOrigin: 'left center',
+                }}
+                initial={{ opacity: 0, scaleX: 0, rotate: 0 }}
+                animate={{ opacity: 1, scaleX: 1, rotate: rotation }}
+                exit={{ opacity: 0, scaleX: 0 }}
+                transition={{ duration: 0.3 }}
+              />
+            )
+          })()}
         </AnimatePresence>
 
         {/* Mini Node Stack - Level 4 - COMPLETELY ISOLATED with higher z-index */}

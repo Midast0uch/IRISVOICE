@@ -489,3 +489,39 @@ selectSubnode(subnodeId)
 [Nav System] handleIrisClick: Level 4->3, deselecting subnode
 [Nav System] userNavigatedRef reset after Level 4->3 navigation
 ```
+
+---
+
+## UPDATE: Feb 6, 2026 - Navigation & Drag Fixes
+
+### Issues Fixed:
+
+#### 1. L2→L1 Navigation Broken
+**Problem:** Clicking IRIS at Level 2 didn't collapse to idle (L1)
+**Root Cause:** `userNavigatedRef` not reset after L3→L2 navigation, blocking subsequent clicks
+**Fix:** Reset `userNavigatedRef.current = false` in L3→L2 setTimeout (line 875)
+
+#### 2. Backend Auto-Expansion to L3
+**Problem:** From idle (L1), first click expanded to L2 but backend sync immediately jumped to L3 (showing subnodes)
+**Root Cause:** Backend sync called `setCurrentView(currentCategory)` which made `currentNodes = SUB_NODES["voice"]`
+**Fix:** Removed `setCurrentView()` from backend sync - now only expands to L2 without setting currentView (lines 656-666)
+
+#### 3. L2→L1 Timeout Too Short
+**Problem:** Backend sync ran before `selectCategory("")` completed, causing re-expansion
+**Fix:** Increased timeout from `SPIN_CONFIG.spinDuration` (1500ms) to `2500ms` (line 890)
+
+#### 4. Backend Sync Before User Interaction
+**Problem:** Backend persisted category caused auto-navigation on page load
+**Fix:** Added `hasUserInteractedRef` - backend sync skipped until user explicitly navigates (lines 631-634, 843)
+
+### Files Modified:
+- `components/hexagonal-control-center.tsx`
+
+### MCP Browser Test Results - ALL PASSED:
+- ✅ L1→L2: IRIS expands to 6 main nodes
+- ✅ L2→L3: Click main node shows subnodes  
+- ✅ L3→L4: Click subnode shows mini-stack
+- ✅ L4→L3: IRIS click returns to subnodes
+- ✅ L3→L2: IRIS click returns to main nodes
+- ✅ L2→L1: IRIS click collapses to idle
+- ✅ Drag vs click: Correctly distinguishes
