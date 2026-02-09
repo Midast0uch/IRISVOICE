@@ -13,7 +13,7 @@
   --brand-color: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness));
   
   /* === BASE THEME VARIABLES === */
-  --background: #0a0a0f;
+  --background: transparent;
   --foreground: #e5e5e5;
   --card: rgba(255, 255, 255, 0.05);
   --card-foreground: #e5e5e5;

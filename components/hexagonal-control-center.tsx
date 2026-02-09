@@ -6,7 +6,8 @@ import { motion, AnimatePresence } from "framer-motion"
 // Tauri v2 API - imported statically but guarded for browser
 import { getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window'
 
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI__
+const isTauri = typeof window !== 'undefined' && (!!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__)
+if (typeof window !== 'undefined') console.log('[IRIS] isTauri:', isTauri, '__TAURI_INTERNALS__:', !!(window as any).__TAURI_INTERNALS__, '__TAURI__:', !!(window as any).__TAURI__)
 
 import { Mic, Brain, Bot, Settings, Database, Activity, Volume2, Headphones, AudioWaveform as Waveform, Link, Cpu, Sparkles, MessageSquare, Palette, Power, Keyboard, Minimize2, RefreshCw, History, FileStack, Trash2, Timer, Clock, BarChart3, DollarSign, TrendingUp, Check, Wrench, Layers, Star, Monitor, HardDrive, Wifi, Bell, Sliders, FileText, Stethoscope, Smile } from "lucide-react"
 import { useIRISWebSocket } from "@/hooks/useIRISWebSocket"
@@ -253,133 +254,57 @@ function getSpiralPosition(baseAngle: number, radius: number, spinRotations: num
 }
 
 const ICON_MAP: Record<string, ElementType> = {
-  Mic, Brain, Bot, Settings, Database, Activity, Volume2, Headphones, Waveform, 
-  Link, Cpu, Sparkles, MessageSquare, 
-  Palette, Power, Keyboard, Minimize2, RefreshCw, History, 
+  Mic, Brain, Bot, Settings, Database, Activity, Volume2, Headphones, Waveform,
+  Link, Cpu, Sparkles, MessageSquare,
+  Palette, Power, Keyboard, Minimize2, RefreshCw, History,
   FileStack, Trash2, Timer, Clock, BarChart3, DollarSign, TrendingUp,
   Wrench, Layers, Star, Monitor, HardDrive, Wifi, Bell, Sliders, FileText, Stethoscope, Smile,
 }
 
-// ===========================================
-// MANUAL DRAG HOOK (Replaces useDragOrClick)
-// Uses setPosition instead of startDragging to bypass Windows Snap Assist
-// ===========================================
-function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObject<HTMLElement | null>) {
-  const isDragging = useRef(false)
-  const dragStartPos = useRef({ x: 0, y: 0 })
-  const windowStartPos = useRef({ x: 0, y: 0 })
-  const hasDragged = useRef(false)
-  const isDraggingThisElement = useRef(false)
-  const mouseDownTarget = useRef<EventTarget | null>(null)
+// Manual window drag - tracks mouse delta and calls setPosition()
+let _dragState: { startX: number; startY: number; winX: number; winY: number } | null = null
+let _dragListenersAttached = false
 
-  const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
-    if (e.button !== 0) return
-    
-    // Get fresh ref value - don't rely on closure
-    const currentElement = elementRef.current
-    const target = e.target as Node
-    
-    // CRITICAL FIX: Only start drag if clicking directly on this element or its children
-    const shouldStartDrag = currentElement && currentElement.contains(target)
-    
-    // SAFETY: Always reset state at the start of a new interaction
-    isDraggingThisElement.current = false
-    isDragging.current = false
-    hasDragged.current = false
-    mouseDownTarget.current = null
-    
-    if (!shouldStartDrag) {
-      return
-    }
+function onDragMouseDown(e: React.MouseEvent) {
+  if (!isTauri || e.button !== 0) return
+  // Capture screen coords IMMEDIATELY before React recycles the event
+  const startX = e.screenX
+  const startY = e.screenY
+  console.log('[DRAG] mousedown fired', startX, startY)
 
-    mouseDownTarget.current = e.target
-    isDragging.current = true
-    isDraggingThisElement.current = true
-    hasDragged.current = false
-    dragStartPos.current = { x: e.screenX, y: e.screenY }
+  // Attach listeners right away so we don't miss any mousemove
+  const onMove = (ev: MouseEvent) => {
+    if (!_dragState) return
+    const dx = ev.screenX - _dragState.startX
+    const dy = ev.screenY - _dragState.startY
+    getCurrentWindow().setPosition(new PhysicalPosition(_dragState.winX + dx, _dragState.winY + dy))
+  }
+  const onUp = () => {
+    console.log('[DRAG] mouseup - drag ended')
+    _dragState = null
+    _dragListenersAttached = false
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
 
-    try {
-      if (isTauri) {
-        const win = await getCurrentWindow()
-        const pos = await win.outerPosition()
-        windowStartPos.current = { x: pos.x, y: pos.y }
-      }
-    } catch (e) {
-      // Tauri not available
-    }
+  if (!_dragListenersAttached) {
+    _dragListenersAttached = true
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
 
-    document.body.style.cursor = "grabbing"
-    document.body.style.userSelect = "none"
-  }, [elementRef])
-
-  const handleMouseMove = useCallback(async (e: MouseEvent) => {
-    if (!isDragging.current || !isDraggingThisElement.current) return
-    
-    // Only enable dragging in Tauri app
-    if (!isTauri) return
-    
-    const dx = e.screenX - dragStartPos.current.x
-    const dy = e.screenY - dragStartPos.current.y
-    
-    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-      hasDragged.current = true
-    }
-    
-    try {
-      const win = await getCurrentWindow()
-      await win.setPosition(new PhysicalPosition(windowStartPos.current.x + dx, windowStartPos.current.y + dy))
-    } catch (e) {
-      // Tauri window drag failed - ignore
-    }
-  }, [elementRef])
-
-  const handleMouseUp = useCallback((e: MouseEvent) => {
-    // Get fresh ref values - don't rely on closure
-    const currentElement = elementRef.current
-    const draggingThis = isDraggingThisElement.current
-    const didDrag = hasDragged.current
-    const downTarget = mouseDownTarget.current
-    
-    isDragging.current = false
-    document.body.style.cursor = "default"
-    document.body.style.userSelect = ""
-
-    // Only trigger click if:
-    // 1. We started dragging on this element
-    // 2. We didn't actually drag (just clicked)
-    // 3. The mouseup target IS the iris orb element or its children
-    if (draggingThis && !didDrag && currentElement) {
-      const upTarget = e.target as Node
-      const downTargetNode = downTarget as Node
-      
-      // Check if mouseup target is inside the iris orb element
-      const upInIris = currentElement.contains(upTarget)
-      // Check if mousedown target was in iris
-      const downInOrb = downTargetNode && currentElement.contains(downTargetNode)
-      
-      // Only click if BOTH mousedown AND mouseup happened on the iris orb
-      if (upInIris && downInOrb) {
-        onClickAction()
-      }
-    }
-    
-    // Always reset state
-    isDraggingThisElement.current = false
-    mouseDownTarget.current = null
-    hasDragged.current = false
-  }, [onClickAction, elementRef])
-
-  useEffect(() => {
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-    
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [handleMouseMove, handleMouseUp])
-
-  return { handleMouseDown }
+  // Get window position async - drag starts as soon as this resolves
+  getCurrentWindow().outerPosition().then(pos => {
+    console.log('[DRAG] window position:', pos.x, pos.y)
+    _dragState = { startX, startY, winX: pos.x, winY: pos.y }
+  }).catch(err => {
+    console.error('[DRAG] outerPosition failed:', err)
+    // Fallback: try native startDragging
+    _dragListenersAttached = false
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+    try { getCurrentWindow().startDragging() } catch (_) {}
+  })
 }
 
 interface IrisOrbProps {
@@ -391,26 +316,24 @@ interface IrisOrbProps {
 }
 
 function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbProps) {
-  const orbRef = useRef<HTMLDivElement>(null)
-  const { handleMouseDown } = useManualDragWindow(onClick, orbRef)
   const [isWaking, setIsWaking] = useState(false)
 
   return (
     <motion.div
-      ref={orbRef}
-      className="relative flex items-center justify-center rounded-full cursor-grab active:cursor-grabbing z-50 pointer-events-auto"
+      className="relative flex items-center justify-center rounded-full cursor-pointer z-50 pointer-events-auto"
       style={{ width: size, height: size }}
-      onMouseDown={handleMouseDown}
+      onMouseDown={onDragMouseDown}
+      onClick={onClick}
     >
       {/* Outer breathe glow - more vibrant */}
       <motion.div
         className="absolute rounded-full pointer-events-none"
         style={{
-          inset: -70,
-          background: `radial-gradient(circle, ${glowColor}90 0%, ${glowColor}50 30%, transparent 70%)`,
-          filter: "blur(40px)",
+          inset: -30,
+          background: `radial-gradient(circle, ${glowColor}80 0%, ${glowColor}40 30%, transparent 65%)`,
+          filter: "blur(25px)",
         }}
-        animate={{ scale: [1, 1.7, 1], opacity: [0.7, 1, 0.7] }}
+        animate={{ scale: [1, 1.2, 1], opacity: [0.6, 0.9, 0.6] }}
         transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
       />
 
@@ -832,266 +755,176 @@ export function HexagonalControlCenter() {
 
   return (
     <div 
-      className="relative w-full h-full flex items-center justify-center"
-      style={{ 
-        overflow: 'visible',
-        pointerEvents: 'none'
-      }}
+      className="relative w-full h-full flex items-center justify-center bg-transparent pointer-events-auto"
       role="main"
       aria-label="IRIS Voice Interface"
     >
       {/* Inner container: No pointer-events-auto here! Only on specific children */}
-      <div 
+      <div
         className="relative"
-        style={{ width: 400, height: 400 }}
+        style={{ width: 460, height: 460, background: 'transparent', border: 'none', overflow: 'visible' }}
       >
         
-        {/* Ambient glow - click-through */}
-        <motion.div
-          className="absolute rounded-full pointer-events-none"
-          style={{
-            width: 400,
-            height: 400,
-            left: "50%",
-            top: "50%",
-            marginLeft: -200,
-            marginTop: -200,
-            background: `radial-gradient(circle, ${glowColor}20 0%, ${glowColor}08 40%, transparent 70%)`,
-          }}
-          animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
-          transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
-        />
-
-        {/* Confirmed orbiting nodes - INTERACTIVE */}
-        <AnimatePresence>
-          {confirmedNodes.map(node => (
+        {!dashboardOpen && (
+          <>
+            {/* Ambient glow - click-through */}
             <motion.div
-              key={node.id}
-              className="absolute flex items-center justify-center pointer-events-auto"
+              className="absolute rounded-full pointer-events-none"
               style={{
-                width: MINI_NODE_STACK_CONFIG.sizeConfirmed,
-                height: MINI_NODE_STACK_CONFIG.sizeConfirmed,
-                left: "50%",
-                top: "50%",
-                marginLeft: -MINI_NODE_STACK_CONFIG.sizeConfirmed / 2,
-                marginTop: -MINI_NODE_STACK_CONFIG.sizeConfirmed / 2,
+                width: 420, height: 420, left: "50%", top: "50%",
+                marginLeft: -210, marginTop: -210,
+                background: `radial-gradient(circle, ${glowColor}18 0%, ${glowColor}0a 40%, transparent 68%)`,
               }}
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{
-                scale: 1,
-                x: Math.cos((node.orbitAngle * Math.PI) / 180) * orbitRadius,
-                y: Math.sin((node.orbitAngle * Math.PI) / 180) * orbitRadius,
-                opacity: 1,
-              }}
-              transition={{ type: "spring", stiffness: 100, damping: 15 }}
+              animate={{ scale: [1, 1.05, 1], opacity: [0.4, 0.7, 0.4] }}
+              transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
+            />
+
+            {/* Confirmed orbiting nodes - INTERACTIVE */}
+            <AnimatePresence>
+              {confirmedNodes.map(node => (
+                <motion.div
+                  key={node.id}
+                  className="absolute flex items-center justify-center pointer-events-auto"
+                  style={{
+                    width: MINI_NODE_STACK_CONFIG.sizeConfirmed, height: MINI_NODE_STACK_CONFIG.sizeConfirmed,
+                    left: "50%", top: "50%",
+                    marginLeft: -MINI_NODE_STACK_CONFIG.sizeConfirmed / 2,
+                    marginTop: -MINI_NODE_STACK_CONFIG.sizeConfirmed / 2,
+                  }}
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={{
+                    scale: 1,
+                    x: Math.cos((node.orbitAngle * Math.PI) / 180) * orbitRadius,
+                    y: Math.sin((node.orbitAngle * Math.PI) / 180) * orbitRadius,
+                    opacity: 1,
+                  }}
+                  transition={{ type: "spring", stiffness: 100, damping: 15 }}
+                >
+                  <div
+                    className="w-full h-full flex flex-col items-center justify-center gap-1 rounded-2xl cursor-pointer"
+                    style={{ background: "rgba(255, 255, 255, 0.08)", backdropFilter: "blur(12px)", border: "1px solid rgba(255, 255, 255, 0.1)" }}
+                  >
+                    {React.createElement(ICON_MAP[typeof node.icon === 'string' ? node.icon : 'Mic'] || Mic, {
+                      className: "w-5 h-5", style: { color: glowColor }, strokeWidth: 1.5
+                    })}
+                    <span className="text-[8px] font-medium tracking-wider text-muted-foreground">{node.label}</span>
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+
+            {/* Center IRIS Orb - INTERACTIVE (Drag + Click) */}
+            <motion.div
+              className="absolute left-1/2 top-1/2 flex items-center justify-center pointer-events-none z-10"
+              style={{ marginLeft: -(irisSize + 120) / 2, marginTop: -(irisSize + 120) / 2, width: irisSize + 120, height: irisSize + 120 }}
+              animate={{ scale: nav.state.level === 4 ? 0.43 : 1, x: 0 }}
+              transition={{ type: "spring", stiffness: 200, damping: 20, duration: 0.5 }}
             >
-              <div
-                className="w-full h-full flex flex-col items-center justify-center gap-1 rounded-2xl cursor-pointer"
-                style={{
-                  background: "rgba(255, 255, 255, 0.08)",
-                  backdropFilter: "blur(12px)",
-                  border: "1px solid rgba(255, 255, 255, 0.1)",
-                }}
-              >
-                {React.createElement(ICON_MAP[typeof node.icon === 'string' ? node.icon : 'Mic'] || Mic, {
-                  className: "w-5 h-5",
-                  style: { color: glowColor },
-                  strokeWidth: 1.5
-                })}
-                <span className="text-[8px] font-medium tracking-wider text-muted-foreground">
-                  {node.label}
-                </span>
+              <div className="pointer-events-auto" role="button" data-no-drag data-tauri-drag-region="false" aria-label={`IRIS Control Center - ${centerLabel}`} aria-live="polite">
+                <IrisOrb isExpanded={isExpanded} onClick={handleIrisClick} centerLabel={centerLabel} size={irisSize} glowColor={glowColor} />
               </div>
             </motion.div>
-          ))}
-        </AnimatePresence>
 
-        {/* Center IRIS Orb - INTERACTIVE (Drag + Click) */}
-        <motion.div
-          className="absolute left-1/2 top-1/2 flex items-center justify-center pointer-events-none z-10"
-          style={{ 
-            marginLeft: -(irisSize + 120) / 2,
-            marginTop: -(irisSize + 120) / 2,
-            width: irisSize + 120,
-            height: irisSize + 120,
-          }}
-          animate={{
-            scale: nav.state.level === 4 ? 0.43 : 1,
-            x: 0,
-          }}
-          transition={{ type: "spring", stiffness: 200, damping: 20, duration: 0.5 }}
-        >
-          <div className="pointer-events-auto" role="button" aria-label={`IRIS Control Center - ${centerLabel}`} aria-live="polite">
-            <IrisOrb
-              isExpanded={isExpanded}
-              onClick={handleIrisClick}
-              centerLabel={centerLabel}
-              size={irisSize}
-              glowColor={glowColor}
-            />
-          </div>
-        </motion.div>
+            {/* Connecting line between Iris Orb and Mini Stack */}
+            <AnimatePresence>
+              {nav.state.level === 4 && (() => {
+                const activeIndex = nav.state.activeMiniNodeIndex ?? 0
+                const targetY = -80 + (activeIndex * 32) + 14
+                const lineLength = 80
+                const rotation = (Math.atan2(targetY, lineLength) * 180) / Math.PI
+                return (
+                  <motion.div
+                    className="absolute left-1/2 top-1/2 pointer-events-none z-[55]"
+                    style={{
+                      height: 2, width: lineLength, marginTop: 0, marginLeft: 30,
+                      background: `linear-gradient(90deg, rgba(255,255,255,0.8) 0%, rgba(192,192,192,0.9) 20%, rgba(255,255,255,0.95) 40%, rgba(192,192,192,0.9) 60%, rgba(255,255,255,0.8) 80%, rgba(128,128,128,0.6) 100%)`,
+                      boxShadow: '0 0 4px rgba(255,255,255,0.5)', transformOrigin: 'left center',
+                    }}
+                    initial={{ opacity: 0, scaleX: 0, rotate: 0 }}
+                    animate={{ opacity: 1, scaleX: 1, rotate: rotation }}
+                    exit={{ opacity: 0, scaleX: 0 }}
+                    transition={{ duration: 0.3 }}
+                  />
+                )
+              })()}
+            </AnimatePresence>
 
-        {/* Connecting line between Iris Orb and Mini Stack - Liquid Metal - Pivots from Iris to active card */}
-        <AnimatePresence>
-          {nav.state.level === 4 && (() => {
-            const activeIndex = nav.state.activeMiniNodeIndex ?? 0
-            const targetY = -80 + (activeIndex * 32) + 14
-            const lineLength = 200
-            const rotation = (Math.atan2(targetY, lineLength) * 180) / Math.PI
-            
-            return (
-              <motion.div
-                className="absolute left-1/2 top-1/2 pointer-events-none z-[55]"
-                style={{
-                  height: 2,
-                  width: lineLength,
-                  marginTop: 0,
-                  marginLeft: 30,
-                  background: `linear-gradient(90deg, 
-                    rgba(255,255,255,0.8) 0%, 
-                    rgba(192,192,192,0.9) 20%, 
-                    rgba(255,255,255,0.95) 40%, 
-                    rgba(192,192,192,0.9) 60%, 
-                    rgba(255,255,255,0.8) 80%,
-                    rgba(128,128,128,0.6) 100%)`,
-                  boxShadow: '0 0 4px rgba(255,255,255,0.5)',
-                  transformOrigin: 'left center',
-                }}
-                initial={{ opacity: 0, scaleX: 0, rotate: 0 }}
-                animate={{ opacity: 1, scaleX: 1, rotate: rotation }}
-                exit={{ opacity: 0, scaleX: 0 }}
-                transition={{ duration: 0.3 }}
-              />
-            )
-          })()}
-        </AnimatePresence>
+            {/* Mini Node Stack - Level 4 */}
+            <AnimatePresence>
+              {nav.state.level === 4 && nav.state.miniNodeStack.length > 0 && (
+                <motion.div
+                  className="absolute left-1/2 top-1/2 pointer-events-auto z-[200]"
+                  style={{ marginLeft: 80, marginTop: -80, width: 160, height: 200 }}
+                  initial={{ opacity: 0, scale: 0.8, x: -20 }}
+                  animate={{ opacity: 1, scale: 1, x: 0 }}
+                  exit={{ opacity: 0, scale: 0.8, x: -20 }}
+                  transition={{ duration: 0.4 }}
+                >
+                  <MiniNodeStack miniNodes={nav.state.miniNodeStack} onOpenDashboard={handleOpenDashboard} dashboardOpen={dashboardOpen} onCloseDashboard={handleCloseDashboard} />
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-        {/* Mini Node Stack - Level 4 - COMPLETELY ISOLATED with higher z-index */}
-        <AnimatePresence>
-          {nav.state.level === 4 && nav.state.miniNodeStack.length > 0 && (
-            <motion.div
-              className="absolute left-1/2 top-1/2 pointer-events-auto z-[200]"
-              style={{ 
-                marginLeft: 200,
-                marginTop: -80,
-                width: 160,
-                height: 200,
-              }}
-              initial={{ opacity: 0, scale: 0.8, x: -20 }}
-              animate={{ opacity: 1, scale: 1, x: 0 }}
-              exit={{ opacity: 0, scale: 0.8, x: -20 }}
-              transition={{ duration: 0.4 }}
-            >
-              <MiniNodeStack miniNodes={nav.state.miniNodeStack} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+            {/* Exiting nodes */}
+            <AnimatePresence>
+              {(nav.state.level === 2 || nav.state.level === 3) && exitingNodes && (
+                <>
+                  {exitingNodes.map((node, idx) => (
+                    <PrismNode key={`exit-${node.id}`} node={node} angle={node.angle} radius={exitingView ? subRadius : mainRadius} nodeSize={nodeSize} onClick={() => {}} spinRotations={exitingView ? SUBMENU_CONFIG.rotations : SPIN_CONFIG.rotations} spinDuration={exitingView ? SUBMENU_CONFIG.spinDuration : SPIN_CONFIG.spinDuration} staggerIndex={idx} isCollapsing={true} isActive={false} spinConfig={SPIN_CONFIG} />
+                  ))}
+                </>
+              )}
+            </AnimatePresence>
 
-        {/* Exiting nodes */}
-        <AnimatePresence>
-          {(nav.state.level === 2 || nav.state.level === 3) && exitingNodes && (
-            <>
-              {exitingNodes.map((node, idx) => (
-                <PrismNode
-                  key={`exit-${node.id}`}
-                  node={node}
-                  angle={node.angle}
-                  radius={exitingView ? subRadius : mainRadius}
-                  nodeSize={nodeSize}
-                  onClick={() => {}}
-                  spinRotations={exitingView ? SUBMENU_CONFIG.rotations : SPIN_CONFIG.rotations}
-                  spinDuration={exitingView ? SUBMENU_CONFIG.spinDuration : SPIN_CONFIG.spinDuration}
-                  staggerIndex={idx}
-                  isCollapsing={true}
-                  isActive={false}
-                  spinConfig={SPIN_CONFIG}
-                />
-              ))}
-            </>
-          )}
-        </AnimatePresence>
+            {/* Current nodes - INTERACTIVE */}
+            <AnimatePresence>
+              {(nav.state.level === 2 || nav.state.level === 3) && (
+                <>
+                  {currentNodes
+                    .filter(node => !activeSubnodeId || node.id !== activeSubnodeId)
+                    .map((node, idx) => (
+                    <PrismNode
+                      key={node.id} node={node} angle={node.angle}
+                      radius={currentView ? subRadius : mainRadius} nodeSize={nodeSize}
+                      onClick={(e) => {
+                        nodeClickTimestampRef.current = Date.now()
+                        e?.stopPropagation()
+                        currentView ? handleSubnodeClick(node.id) : handleNodeClick(node.id, node.label, (node as any).hasSubnodes)
+                      }}
+                      spinRotations={currentView ? SUBMENU_CONFIG.rotations : SPIN_CONFIG.rotations}
+                      spinDuration={currentView ? SUBMENU_CONFIG.spinDuration : SPIN_CONFIG.spinDuration}
+                      staggerIndex={idx} isCollapsing={false} isActive={activeSubnodeId === node.id} spinConfig={SPIN_CONFIG}
+                    />
+                  ))}
+                </>
+              )}
+            </AnimatePresence>
 
-        {/* Current nodes - INTERACTIVE - Hidden when mini-node stack is showing (Level 4) */}
-        <AnimatePresence>
-          {(nav.state.level === 2 || nav.state.level === 3) && (
-            <>
-              {currentNodes
-                .filter(node => !activeSubnodeId || node.id !== activeSubnodeId)
-                .map((node, idx) => (
-                <PrismNode
-                  key={node.id}
-                  node={node}
-                  angle={node.angle}
-                  radius={currentView ? subRadius : mainRadius}
-                  nodeSize={nodeSize}
-                  onClick={(e) => {
-                    // Track click timestamp to prevent iris orb toggle
-                    nodeClickTimestampRef.current = Date.now()
-                    // Stop event from bubbling
-                    e?.stopPropagation()
-                    currentView
-                      ? handleSubnodeClick(node.id)
-                      : handleNodeClick(node.id, node.label, (node as any).hasSubnodes)
-                  }}
-                  spinRotations={currentView ? SUBMENU_CONFIG.rotations : SPIN_CONFIG.rotations}
-                  spinDuration={currentView ? SUBMENU_CONFIG.spinDuration : SPIN_CONFIG.spinDuration}
-                  staggerIndex={idx}
-                  isCollapsing={false}
-                  isActive={activeSubnodeId === node.id}
-                  spinConfig={SPIN_CONFIG}
-                />
-              ))}
-            </>
-          )}
-        </AnimatePresence>
-        <AnimatePresence>
-          {nav.state.level === 1 && (
-            <motion.div
-              className="absolute bottom-40 left-1/2 -translate-x-1/2 pointer-events-none"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 10 }}
-              transition={{ delay: 0.5, duration: 0.4 }}
-            >
-              <motion.span
-                className="text-xs text-muted-foreground/60 tracking-widest uppercase"
-                animate={{ opacity: [0.4, 0.8, 0.4] }}
-                transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-              >
-                TAP IRIS TO EXPAND
-              </motion.span>
-            </motion.div>
-          )}
-        </AnimatePresence>
-        <AnimatePresence>
-          {nav.state.level === 4 && (
-            <motion.div
-              className="absolute left-1/2 top-1/2 pointer-events-auto z-[201]"
-              style={{ 
-                marginLeft: 200,
-                marginTop: 130,
-              }}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 20 }}
-              transition={{ duration: 0.3, delay: 0.2 }}
-            >
-              <MenuWindowSlider 
-                onUnlock={handleOpenDashboard}
-                isOpen={dashboardOpen}
-                onClose={handleCloseDashboard}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
+            {/* TAP IRIS hint */}
+            <AnimatePresence>
+              {nav.state.level === 1 && (
+                <motion.div
+                  className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-none"
+                  initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }}
+                  transition={{ delay: 0.5, duration: 0.4 }}
+                >
+                  <motion.span
+                    className="text-xs text-muted-foreground/60 tracking-widest uppercase"
+                    animate={{ opacity: [0.4, 0.8, 0.4] }}
+                    transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+                  >
+                    TAP IRIS TO EXPAND
+                  </motion.span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </>)}
 
-        <DarkGlassDashboard 
-          isOpen={dashboardOpen}
-          onClose={handleCloseDashboard}
-          theme="nebula"
-        />
-
+          <DarkGlassDashboard 
+            isOpen={dashboardOpen}
+            onClose={handleCloseDashboard}
+            theme="nebula"
+          />
       </div>
     </div>
   )

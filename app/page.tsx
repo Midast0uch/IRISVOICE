@@ -2,8 +2,10 @@ import { HexagonalControlCenter } from "@/components/hexagonal-control-center"
 
 export default function Home() {
   return (
-    <main className="w-full h-full bg-transparent" style={{ overflow: 'visible' }}>
-      <HexagonalControlCenter />
+    <main className="bg-transparent w-full min-h-screen flex items-center justify-center">
+      <div style={{ width: 460, height: 460 }}>
+        <HexagonalControlCenter />
+      </div>
     </main>
   )
 }

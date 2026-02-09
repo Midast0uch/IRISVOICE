@@ -131,6 +131,7 @@ export function PrismNode({
         width: nodeSize,
         height: nodeSize,
       }}
+      data-tauri-drag-region="false"
       variants={spiralVariants}
       initial="collapsed"
       animate={isCollapsing ? "exit" : "expanded"}

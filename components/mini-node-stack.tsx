@@ -12,6 +12,9 @@ import { ThemeSwitcherCard } from "./theme-switcher-card"
 
 interface MiniNodeStackProps {
   miniNodes: MiniNode[]
+  onOpenDashboard?: () => void
+  dashboardOpen?: boolean
+  onCloseDashboard?: () => void
 }
 
 function getIcon(iconName: string) {
@@ -121,12 +124,12 @@ function InlineRow({
   }, [onSelect])
 
   const getExpandedHeight = () => {
-    if (!previewField) return 70
+    if (!previewField) return 55
     switch (previewField.type) {
-      case 'toggle': return 60
-      case 'dropdown': return 110
-      case 'slider': return 80
-      default: return 70
+      case 'toggle': return 50
+      case 'dropdown': return 90
+      case 'slider': return 68
+      default: return 55
     }
   }
 
@@ -135,17 +138,16 @@ function InlineRow({
       className="rounded-md overflow-hidden"
       style={{
         background: isActive
-          ? `linear-gradient(90deg, ${glowColor.replace(')', ', 0.12)')}, transparent), url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.15' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")`
+          ? `linear-gradient(90deg, ${glowColor.replace(')', ', 0.12)')}, transparent)`
           : 'rgba(255,255,255,0.04)',
-        backgroundBlendMode: isActive ? 'overlay' : 'normal',
         border: `1px solid ${isActive ? glowColor.replace(')', ', 0.25)') : 'rgba(255,255,255,0.08)'}`,
       }}
-      animate={{ height: isActive ? getExpandedHeight() : 28 }}
+      animate={{ height: isActive ? getExpandedHeight() : 24 }}
       transition={{ type: "spring", stiffness: 400, damping: 35 }}
     >
       <motion.button
         onClick={handleClick}
-        className="w-full flex items-center justify-between px-3 h-8"
+        className="w-full flex items-center justify-between px-2 h-6"
         whileHover={{ backgroundColor: isActive ? 'transparent' : 'rgba(255,255,255,0.06)' }}
         whileTap={{ scale: 0.98 }}
       >
@@ -178,7 +180,7 @@ function InlineRow({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className="px-2 pb-2"
+            className="px-1.5 pb-1.5"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="pt-1 border-t border-white/10">
@@ -308,7 +310,7 @@ function renderCompactControl(field: FieldConfig, value: any, onChange: (v: any)
   }
 }
 
-export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
+export function MiniNodeStack({ miniNodes, onOpenDashboard, dashboardOpen, onCloseDashboard }: MiniNodeStackProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
   const glowColor = theme.glow.color
@@ -373,7 +375,7 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         className="flex items-center justify-center h-32 text-white/40 text-xs"
-        style={{ width: 200 }}
+        style={{ width: 150 }}
       >
         No settings
       </motion.div>
@@ -383,14 +385,14 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
   // For theme subnode, show the ThemeSwitcherCard instead of accordion cards
   if (isThemeSubnode) {
     return (
-      <div style={{ width: 200 }}>
+      <div style={{ width: 150 }}>
         <ThemeSwitcherCard />
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col gap-2" style={{ width: 200 }}>
+    <div className="flex flex-col gap-1.5" style={{ width: 150 }}>
       <AnimatePresence mode="popLayout">
         {visibleNodes.map((miniNode, index) => {
           const isActive = index === activeMiniNodeIndex
@@ -418,13 +420,13 @@ export function MiniNodeStack({ miniNodes }: MiniNodeStackProps) {
       </AnimatePresence>
 
       <div 
-        className="mt-3 flex justify-center"
-        style={{ width: 200 }}
+        className="mt-2 flex justify-center"
+        style={{ width: 150 }}
       >
         <MenuWindowSlider 
-          onUnlock={() => window.open('/menu-window', '_blank')}
-          isOpen={false}
-          onClose={() => {}}
+          onUnlock={onOpenDashboard || (() => {})}
+          isOpen={dashboardOpen || false}
+          onClose={onCloseDashboard || (() => {})}
         />
       </div>
     </div>
