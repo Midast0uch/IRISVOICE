@@ -9,6 +9,7 @@
 
 # production
 /build
+dist/
 
 # debug
 npm-debug.log*
@@ -25,3 +26,18 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# local models
+models/
+backend/audio/models/
+
+# tauri
+src-tauri/target/
+src-tauri/binaries/
