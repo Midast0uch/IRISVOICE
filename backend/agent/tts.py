@@ -14,8 +14,8 @@ class TTSManager:
     _instance: Optional['TTSManager'] = None
     _initialized: bool = False
     
-    # Available OpenAI TTS voices
-    AVAILABLE_VOICES = ["Nova", "Alloy", "Echo", "Fable", "Onyx", "Shimmer"]
+    # Available voices
+    AVAILABLE_VOICES = ["Built-in", "LiquidAI", "Nova", "Alloy", "Echo", "Fable", "Onyx", "Shimmer"]
     
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -28,7 +28,7 @@ class TTSManager:
         
         # TTS configuration
         self.config = {
-            "tts_voice": "Nova",
+            "tts_voice": "LiquidAI",
             "speaking_rate": 1.0,  # 0.5 to 2.0
             "pitch_adjustment": 0,  # -20 to +20 semitones
             "pause_duration": 0.2,  # 0 to 2 seconds
@@ -37,6 +37,9 @@ class TTSManager:
         
         # OpenAI client (initialized on demand)
         self._client = None
+        
+        # Local TTS engine (initialized on demand)
+        self._local_engine = None
         
         TTSManager._initialized = True
     
@@ -66,11 +69,70 @@ class TTSManager:
                 return None
         return self._client
     
+    def _get_local_engine(self):
+        """Get or create local pyttsx3 engine"""
+        if self._local_engine is None:
+            try:
+                import pyttsx3
+                self._local_engine = pyttsx3.init()
+                # Configure for faster response
+                self._local_engine.setProperty('rate', 175)
+                self._local_engine.setProperty('volume', 1.0)
+            except Exception as e:
+                print(f"[TTSManager] Failed to initialize pyttsx3: {e}")
+                return None
+        return self._local_engine
+
     def synthesize(self, text: str) -> Optional[np.ndarray]:
         """
-        Synthesize text to audio using OpenAI TTS
-        Returns audio as numpy array (24kHz mono float32)
+        Synthesize text to audio.
+        If voice is "Built-in", uses local pyttsx3 (SAPI5/nsss).
+        Otherwise uses OpenAI TTS.
         """
+        voice_config = self.config["tts_voice"]
+        
+        # LOCAL FALLBACK (Built-in)
+        if voice_config == "Built-in":
+            try:
+                print(f"[TTSManager] Using local Built-in voice for: {text[:50]}...")
+                engine = self._get_local_engine()
+                if not engine:
+                    return None
+                
+                # For local engine, we usually just speak directly, 
+                # but to maintain the pipeline we'll try to get the audio data
+                # Actually, pyttsx3 doesn't easily return a numpy array without saving to file first
+                import tempfile
+                import os
+                import soundfile as sf
+                
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp_path = tmp.name
+                
+                engine.save_to_file(text, tmp_path)
+                engine.runAndWait()
+                
+                # Read the saved file
+                audio, sample_rate = sf.read(tmp_path)
+                os.unlink(tmp_path)
+                
+                # Resample if needed
+                if sample_rate != 16000:
+                    import torch
+                    import torchaudio.transforms as T
+                    audio_tensor = torch.from_numpy(audio).float()
+                    if len(audio_tensor.shape) == 1:
+                        audio_tensor = audio_tensor.unsqueeze(0)
+                    resampler = T.Resample(sample_rate, 16000)
+                    audio_tensor = resampler(audio_tensor)
+                    audio = audio_tensor.squeeze(0).numpy()
+                
+                return audio
+            except Exception as e:
+                print(f"[TTSManager] Local synthesis error: {e}")
+                return None
+
+        # OPENAI TTS
         client = self._get_client()
         if not client:
             print("[TTSManager] OpenAI client not available")
@@ -99,6 +161,11 @@ class TTSManager:
             
             # Load MP3 from bytes
             audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
+            
+            # Resample to 16kHz to match AudioPipeline
+            if audio_segment.frame_rate != 16000:
+                print(f"[TTSManager] Resampling from {audio_segment.frame_rate}Hz to 16000Hz")
+                audio_segment = audio_segment.set_frame_rate(16000)
             
             # Convert to mono if stereo
             if audio_segment.channels > 1:
