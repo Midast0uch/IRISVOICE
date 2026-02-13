@@ -48,7 +48,7 @@ const SUB_NODES: Record<string, { id: string; label: string; icon: any; fields: 
       { id: 'automatic_gain', label: 'Auto Gain', type: 'toggle', defaultValue: true },
     ]},
     { id: 'model', label: 'MODEL', icon: Brain, fields: [
-      { id: 'endpoint', label: 'LFM Endpoint', type: 'text', placeholder: 'http://localhost:1234', defaultValue: 'http://localhost:1234' },
+      { id: 'endpoint', label: 'LFM Endpoint', type: 'text', placeholder: 'http://192.168.0.32:1234', defaultValue: 'http://192.168.0.32:1234' },
       { id: 'temperature', label: 'Temperature', type: 'slider', min: 0, max: 2, defaultValue: 0.7 },
       { id: 'max_tokens', label: 'Max Tokens', type: 'slider', min: 256, max: 8192, defaultValue: 2048 },
     ]},

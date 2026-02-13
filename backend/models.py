@@ -268,7 +268,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
             label="MODEL",
             icon="Cpu",
             fields=[
-                InputField(id="endpoint", type=FieldType.TEXT, label="LFM Endpoint", placeholder="http://localhost:1234", value="http://localhost:1234"),
+                InputField(id="endpoint", type=FieldType.TEXT, label="LFM Endpoint", placeholder="http://192.168.0.32:1234", value="http://192.168.0.32:1234"),
                 InputField(id="connection_test", type=FieldType.TEXT, label="Connection Test", placeholder="Test connection", value=""),
                 InputField(id="temperature", type=FieldType.SLIDER, label="Temperature", min=0, max=2, step=0.1, value=0.7, unit=""),
                 InputField(id="max_tokens", type=FieldType.SLIDER, label="Max Tokens", min=256, max=8192, step=256, value=2048, unit=""),

@@ -43,6 +43,8 @@ interface IRISState {
 }
 
 // Hook return type
+type VoiceState = "idle" | "listening" | "processing_conversation" | "processing_tool" | "speaking" | "error"
+
 interface UseIRISWebSocketReturn {
   isConnected: boolean
   connectionState: ConnectionState
@@ -51,6 +53,7 @@ interface UseIRISWebSocketReturn {
   confirmedNodes: ConfirmedNode[]
   currentCategory: string | null
   currentSubnode: string | null
+  voiceState: VoiceState
   selectCategory: (category: string) => void
   selectSubnode: (subnodeId: string | null) => void
   updateField: (subnodeId: string, fieldId: string, value: string | number | boolean) => void
@@ -83,6 +86,7 @@ export function useIRISWebSocket(
   const [confirmedNodes, setConfirmedNodes] = useState<ConfirmedNode[]>([])
   const [currentCategory, setCurrentCategory] = useState<string | null>(null)
   const [currentSubnode, setCurrentSubnode] = useState<string | null>(null)
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle")
 
   // WebSocket ref
   const wsRef = useRef<WebSocket | null>(null)
@@ -250,7 +254,9 @@ export function useIRISWebSocket(
       }
 
       case "listening_state": {
-        // Could be used to show listening indicator
+        if (payload.state) {
+          setVoiceState(payload.state as VoiceState)
+        }
         break
       }
 
@@ -355,6 +361,7 @@ export function useIRISWebSocket(
     confirmedNodes,
     currentCategory,
     currentSubnode,
+    voiceState,
     selectCategory,
     selectSubnode,
     updateField,

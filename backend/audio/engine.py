@@ -1,6 +1,6 @@
 """
 AudioEngine - Singleton audio processing engine for IRIS
-Manages voice pipeline, LFM 2.5 Audio inference, and audio I/O
+Manages voice pipeline, LFM 2.5 Audio inference, vision integration, and audio I/O
 """
 import asyncio
 import threading
@@ -16,6 +16,7 @@ from backend.ws_manager import get_websocket_manager
 from backend.agent import (
     get_tts_manager,
     get_conversation_manager,
+    get_omni_conversation_manager,
 )
 
 
@@ -58,6 +59,10 @@ class AudioEngine:
         self.pipeline: Optional[AudioPipeline] = None
         self.tts_manager = get_tts_manager()
         self.conversation_manager = get_conversation_manager()
+        self.omni_conversation_manager = get_omni_conversation_manager()
+
+        # Vision components (lazy-loaded)
+        self._screen_capture = None
         
         # State
         self._state = VoiceState.IDLE
@@ -65,6 +70,8 @@ class AudioEngine:
         self._wake_callbacks: list[Callable[[str, float], None]] = []
         self._is_running = False
         self._lock = threading.Lock()
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None  # Store main event loop for cross-thread scheduling
+        self._inference_thread: Optional[threading.Thread] = None  # Track inference thread
         
         # Configuration
         self.config: Dict[str, Any] = {
@@ -80,6 +87,11 @@ class AudioEngine:
             "frame_length": 512,
             "conversation_endpoint": None,
             "conversation_model": None,
+            # Vision / MiniCPM-o settings
+            "vision_enabled": True,
+            "screen_context_during_conversation": True,
+            "ollama_endpoint": "http://localhost:11434",
+            "vision_model": "minicpm-o4.5",
         }
         
         AudioEngine._initialized = True
@@ -115,6 +127,18 @@ class AudioEngine:
         """
         try:
             print("[AudioEngine] Initializing...")
+            
+            # Capture the main event loop for cross-thread WebSocket broadcasts
+            try:
+                self._main_loop = asyncio.get_running_loop()
+                print("[AudioEngine] Captured main event loop for cross-thread scheduling")
+            except RuntimeError:
+                try:
+                    self._main_loop = asyncio.get_event_loop()
+                    print("[AudioEngine] Captured event loop (fallback) for cross-thread scheduling")
+                except RuntimeError:
+                    print("[AudioEngine] WARNING: No event loop available for WebSocket broadcasts")
+                    self._main_loop = None
             
             # Initialize wake word detector
             if not self.wake_detector:
@@ -201,6 +225,14 @@ class AudioEngine:
         3. Buffer audio (if processing)
         4. Run inference (when speech ends)
         """
+        # RMS volume meter – prints every 100 frames
+        if not hasattr(self, '_volume_debug_counter'):
+            self._volume_debug_counter = 0
+        self._volume_debug_counter += 1
+        if self._volume_debug_counter % 100 == 0:
+            rms = float(np.sqrt(np.mean(audio_frame**2)))
+            print(f"[AudioEngine] Audio Signal Check - RMS: {rms:.6f}")
+        
         try:
             if self._state == VoiceState.IDLE:
                 # Check for wake word
@@ -259,17 +291,70 @@ class AudioEngine:
         self._set_state(VoiceState.PROCESSING_CONVERSATION)
         
     def _on_speech_ended(self):
-        """Handle speech end detection - trigger inference"""
+        """Handle speech end detection - trigger inference in background thread"""
         print("[AudioEngine] Speech ended, processing...")
         
-        # Get buffered audio and run inference
+        # Get buffered audio and run inference in a background thread
+        # so the audio input loop is not blocked during LLM + TTS processing
         if self.pipeline:
             audio_buffer = self.pipeline.get_buffered_audio()
-            self._run_inference(audio_buffer)
+            if len(audio_buffer) > 0:
+                self._inference_thread = threading.Thread(
+                    target=self._run_inference,
+                    args=(audio_buffer,),
+                    daemon=True
+                )
+                self._inference_thread.start()
+            else:
+                print("[AudioEngine] Empty audio buffer, skipping inference")
+                self._set_state(VoiceState.IDLE)
     
+    def _broadcast_threadsafe(self, message: dict):
+        """
+        Broadcast a WebSocket message from any thread safely.
+        Uses the stored main event loop with call_soon_threadsafe.
+        """
+        ws_manager = get_websocket_manager()
+        
+        if self._main_loop and self._main_loop.is_running():
+            self._main_loop.call_soon_threadsafe(
+                self._main_loop.create_task,
+                ws_manager.broadcast(message)
+            )
+        else:
+            # Fallback: try to get a running loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(ws_manager.broadcast(message))
+                else:
+                    print(f"[AudioEngine] (WS skip: no running loop) {message.get('type', 'unknown')}")
+            except Exception as e:
+                print(f"[AudioEngine] WS broadcast error: {e}")
+
+    def _capture_screen_for_context(self) -> str | None:
+        """
+        Capture the current screen as base64 for vision context.
+        Returns None if vision is disabled or capture fails.
+        """
+        if not self.config.get("vision_enabled") or not self.config.get("screen_context_during_conversation"):
+            return None
+
+        try:
+            if self._screen_capture is None:
+                from backend.vision import ScreenCapture
+                self._screen_capture = ScreenCapture(max_width=1280)
+
+            screenshot_b64, _ = self._screen_capture.capture_base64()
+            return screenshot_b64
+        except Exception as e:
+            print(f"[AudioEngine] Screen capture for context failed: {e}")
+            return None
+
     def _run_inference(self, audio_buffer: np.ndarray):
         """
-        Run LFM 2.5 Audio inference on buffered audio and play response
+        Run inference on buffered audio and play response.
+        Uses MiniCPM-o (vision + text) when available, falls back to LM Studio.
         """
         try:
             # Ensure we're in processing state
@@ -302,99 +387,83 @@ class AudioEngine:
 
             print(f"[AudioEngine] Transcript: {transcript[:100]}...")
 
-            # Broadcast transcript to UI
-            ws_manager = get_websocket_manager()
-            try:
-                # Use a fire-and-forget approach for broadcast if loop is not running
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(ws_manager.broadcast({
-                        "type": "stt_transcript",
-                        "text": transcript
-                    }))
-                else:
-                    print(f"[AudioEngine] (UI Broadcast skip: loop not running) Transcript: {transcript}")
-            except Exception as ws_err:
-                print(f"[AudioEngine] WS Broadcast error: {ws_err}")
+            # Broadcast transcript to UI (thread-safe)
+            self._broadcast_threadsafe({
+                "type": "stt_transcript",
+                "text": transcript
+            })
 
-            # Trigger activation sound (optional - PRD requirement for feedback)
+            # Trigger activation sound (optional)
             if self.config.get("activation_sound", True):
                 print("[AudioEngine] (Feedback: Beep/Sound would play here)")
 
-            # Update LM Studio config from engine config if available
-            conversation_updates = {}
+            # ──────────────────────────────────────────────────────
+            # VISION-AWARE CONVERSATION (MiniCPM-o 4.5 via Ollama)
+            # Falls back to LM Studio text-only if unavailable
+            # ──────────────────────────────────────────────────────
+
+            # Capture screenshot for visual context (if enabled)
+            screenshot_b64 = self._capture_screen_for_context()
+            if screenshot_b64:
+                print("[AudioEngine] 👁️  Screen context captured for vision-aware response")
+
+            # Sync omni conversation manager config
+            omni_updates = {}
+            ollama_endpoint = self.config.get("ollama_endpoint")
+            if ollama_endpoint:
+                omni_updates["ollama_endpoint"] = ollama_endpoint
+            vision_model = self.config.get("vision_model")
+            if vision_model:
+                omni_updates["model"] = vision_model
+            # Also pass LM Studio fallback config
             endpoint = self.config.get("conversation_endpoint") or self.config.get("model_endpoint")
             if endpoint:
-                conversation_updates["endpoint"] = endpoint
+                omni_updates["fallback_endpoint"] = endpoint
             conversation_model = self.config.get("conversation_model")
             if conversation_model:
-                conversation_updates["model"] = conversation_model
-            if conversation_updates:
-                self.conversation_manager.update_config(**conversation_updates)
+                omni_updates["fallback_model"] = conversation_model
+            omni_updates["vision_enabled"] = self.config.get("vision_enabled", True)
+            omni_updates["screen_context_enabled"] = self.config.get("screen_context_during_conversation", True)
+            if omni_updates:
+                self.omni_conversation_manager.update_config(**omni_updates)
 
-            response_text = self.conversation_manager.generate_response(transcript)
+            # Generate response via omni manager (vision + text → MiniCPM-o) or fallback
+            response_text = self.omni_conversation_manager.generate_response(
+                user_text=transcript,
+                screenshot_b64=screenshot_b64,
+            )
+
             if not response_text:
-                print("[AudioEngine] Conversation model returned no response")
+                # Final fallback: try legacy LM Studio directly
+                print("[AudioEngine] Omni response failed, trying legacy LM Studio...")
+                conv_updates = {}
+                if endpoint:
+                    conv_updates["endpoint"] = endpoint
+                if conversation_model:
+                    conv_updates["model"] = conversation_model
+                if conv_updates:
+                    self.conversation_manager.update_config(**conv_updates)
+                response_text = self.conversation_manager.generate_response(transcript)
+
+            if not response_text:
+                print("[AudioEngine] All conversation backends returned no response")
                 self._set_state(VoiceState.IDLE)
                 return
 
             print(f"[AudioEngine] Response text: {response_text[:100]}...")
 
-            # Broadcast AI response to UI
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(ws_manager.broadcast({
-                        "type": "ai_response",
-                        "text": response_text
-                    }))
-                else:
-                    print(f"[AudioEngine] (UI Broadcast skip: loop not running) AI: {response_text}")
-            except Exception as ws_err:
-                print(f"[AudioEngine] WS Broadcast error: {ws_err}")
+            # Broadcast AI response to UI (thread-safe, include whether vision was used)
+            self._broadcast_threadsafe({
+                "type": "ai_response",
+                "text": response_text,
+                "vision_context": screenshot_b64 is not None,
+            })
 
-            # Synthesize audio
-            print(f"[AudioEngine] Starting synthesis for voice: {self.tts_manager.config['tts_voice']}...")
-            
-            if self.tts_manager.config["tts_voice"] == "LiquidAI":
-                # Use LiquidAI local model for synthesis
-                print("[AudioEngine] Using LiquidAI for local TTS...")
-                synthesized_audio = self.model_manager.generate_response_audio(
-                    response_text, 
-                    max_tokens=self.config.get("max_tokens", 2048),
-                    temperature=self.config.get("temperature", 0.7)
-                )
-                
-                # LiquidAI returns audio at 24kHz, resample to 16kHz if needed
-                if synthesized_audio is not None and len(synthesized_audio) > 0:
-                    # Resample from 24kHz to 16kHz
-                    import torch
-                    import torchaudio.transforms as T
-                    
-                    if isinstance(synthesized_audio, np.ndarray):
-                        audio_tensor = torch.from_numpy(synthesized_audio).float()
-                    else:
-                        audio_tensor = synthesized_audio
-                        
-                    if audio_tensor.dim() == 1:
-                        audio_tensor = audio_tensor.unsqueeze(0)
-                        
-                    resampler = T.Resample(24000, 16000)
-                    audio_tensor = resampler(audio_tensor)
-                    synthesized_audio = audio_tensor.squeeze().numpy() # Squeeze to ensure flat array
-            else:
-                # Use traditional TTSManager (OpenAI or Built-in)
-                synthesized_audio = self.tts_manager.synthesize(response_text)
-                if synthesized_audio is not None:
-                    synthesized_audio = np.squeeze(synthesized_audio) # Squeeze just in case
-            
-            if synthesized_audio is None:
-                print("[AudioEngine] TTS returned None (Check OpenAI API key and pydub/ffmpeg)")
-                self._set_state(VoiceState.IDLE)
-                return
-                
-            if len(synthesized_audio) == 0:
-                print("[AudioEngine] TTS returned empty audio")
+            # Synthesize audio with fallback chain
+            synthesized_audio = self._synthesize_with_fallback(response_text)
+
+            if synthesized_audio is None or len(synthesized_audio) == 0:
+                print("[AudioEngine] All TTS methods failed - no audio to play")
                 self._set_state(VoiceState.IDLE)
                 return
 
@@ -422,6 +491,76 @@ class AudioEngine:
             self._set_state(VoiceState.ERROR)
             # Try to recover to IDLE after error
             self._set_state(VoiceState.IDLE)
+
+    def _synthesize_with_fallback(self, response_text: str) -> Optional[np.ndarray]:
+        """
+        Synthesize audio with automatic fallback chain:
+        1. LiquidAI local model (if configured)
+        2. Built-in pyttsx3 (always available on Windows)
+        3. OpenAI TTS (if API key available)
+        Returns numpy audio array or None if all methods fail.
+        """
+        voice = self.tts_manager.config["tts_voice"]
+        print(f"[AudioEngine] Starting synthesis for voice: {voice}...")
+
+        # --- Attempt 1: LiquidAI local model ---
+        if voice == "LiquidAI":
+            try:
+                print("[AudioEngine] Using LiquidAI for local TTS...")
+                synthesized_audio = self.model_manager.generate_response_audio(
+                    response_text,
+                    max_tokens=self.config.get("max_tokens", 2048),
+                    temperature=self.config.get("temperature", 0.7)
+                )
+
+                # LiquidAI returns audio at 24kHz, resample to 16kHz
+                if synthesized_audio is not None and len(synthesized_audio) > 0:
+                    import torch
+                    import torchaudio.transforms as T
+
+                    if isinstance(synthesized_audio, np.ndarray):
+                        audio_tensor = torch.from_numpy(synthesized_audio).float()
+                    else:
+                        audio_tensor = synthesized_audio
+
+                    if audio_tensor.dim() == 1:
+                        audio_tensor = audio_tensor.unsqueeze(0)
+
+                    resampler = T.Resample(24000, 16000)
+                    audio_tensor = resampler(audio_tensor)
+                    return audio_tensor.squeeze().numpy()
+
+            except Exception as e:
+                print(f"[AudioEngine] LiquidAI TTS error: {e}")
+
+            # LiquidAI failed — fall through to Built-in
+            print("[AudioEngine] LiquidAI TTS failed, falling back to Built-in pyttsx3...")
+
+        # --- Attempt 2: Built-in pyttsx3 (always available on Windows) ---
+        try:
+            # Temporarily switch to Built-in for this synthesis
+            original_voice = self.tts_manager.config["tts_voice"]
+            self.tts_manager.config["tts_voice"] = "Built-in"
+            synthesized_audio = self.tts_manager.synthesize(response_text)
+            self.tts_manager.config["tts_voice"] = original_voice  # Restore
+
+            if synthesized_audio is not None and len(synthesized_audio) > 0:
+                print("[AudioEngine] Built-in pyttsx3 synthesis succeeded")
+                return np.squeeze(synthesized_audio)
+        except Exception as e:
+            print(f"[AudioEngine] Built-in TTS error: {e}")
+
+        # --- Attempt 3: Try any other configured voice (OpenAI) ---
+        if voice not in ["LiquidAI", "Built-in"]:
+            try:
+                synthesized_audio = self.tts_manager.synthesize(response_text)
+                if synthesized_audio is not None and len(synthesized_audio) > 0:
+                    return np.squeeze(synthesized_audio)
+            except Exception as e:
+                print(f"[AudioEngine] {voice} TTS error: {e}")
+
+        print("[AudioEngine] All TTS methods exhausted")
+        return None
     
     def update_config(self, **kwargs):
         """Update engine configuration"""

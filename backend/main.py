@@ -6,6 +6,7 @@ import json
 import os
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -208,7 +209,7 @@ async def lifespan(app: FastAPI):
             "temperature": voice_config.get("temperature", 0.7),
             "max_tokens": voice_config.get("max_tokens", 2048),
             "context_window": voice_config.get("context_window", 8192),
-            "model_endpoint": voice_config.get("endpoint", "http://localhost:1234"),
+            "model_endpoint": voice_config.get("endpoint", "http://192.168.0.32:1234"),
         }
         filtered_config = {k: v for k, v in config_map.items() if v is not None}
         audio_engine.update_config(**filtered_config)
@@ -235,6 +236,13 @@ async def lifespan(app: FastAPI):
         audio_engine.on_wake_detected(on_wake_detected)
         audio_engine.on_state_change(on_state_change)
         print("[OK] Audio engine WebSocket callbacks registered")
+        
+        # Start the audio engine to begin wake word detection
+        success = audio_engine.start()
+        if success:
+            print("[OK] Audio engine started successfully")
+        else:
+            print("[ERROR] Failed to start audio engine")
     
     # Initialize agent components with saved config
     agent_config = state_manager.get_category_field_values("agent")
@@ -256,7 +264,7 @@ async def lifespan(app: FastAPI):
         wake = get_wake_config()
         if any(k in agent_config for k in ["wake_phrase", "detection_sensitivity", "activation_sound", "sleep_timeout"]):
             wake.update_config(
-                wake_phrase=agent_config.get("wake_phrase", "Hey IRIS"),
+                wake_phrase=agent_config.get("wake_phrase", "Jarvis"),
                 detection_sensitivity=float(agent_config.get("detection_sensitivity", 70)) / 100.0 if isinstance(agent_config.get("detection_sensitivity"), (int, float)) else 0.7,
                 activation_sound=agent_config.get("activation_sound", True),
                 sleep_timeout=agent_config.get("sleep_timeout", 60)
@@ -264,6 +272,7 @@ async def lifespan(app: FastAPI):
             print(f"[OK] Wake config configured")
         
         # TTS
+        
         tts = get_tts_manager()
         if any(k in agent_config for k in ["tts_voice", "speaking_rate", "pitch_adjustment", "pause_duration"]):
             tts.update_config(
@@ -358,23 +367,38 @@ async def lifespan(app: FastAPI):
         "timestamp": datetime.now().isoformat()
     })
     print("[OK] Backend ready signal sent")
+
+    # Start Audio Engine
+    print("[OK] Starting Audio Engine...")
+    audio_engine = get_audio_engine()
+    if audio_engine:
+        # Update wake word to match user expectation
+        wake_config = get_wake_config()
+        current_phrase = wake_config.config.get('wake_phrase', 'Jarvis')
+        print(f"[OK] Current Wake Phrase: {current_phrase}")
+        
+        # Explicitly update engine config before initialization
+        audio_engine.update_config(wake_phrase=current_phrase)
+        
+        if audio_engine.initialize():
+            audio_engine.start()
+            print("[OK] Audio Engine is now LISTENING")
+        else:
+            print("[ERROR] Failed to initialize Audio Engine")
     
     yield
     
     # Shutdown
-    print("\n[STOP] IRIS Backend shutting down...")
-    
-    # Stop audio engine
-    audio_engine = get_audio_engine()
+    print("Shutting down IRIS...")
     if audio_engine:
         audio_engine.stop()
-        print("[OK] Audio engine stopped")
     
     # Save all categories
     for category in SUBNODE_CONFIGS.keys():
         await state_manager.save_category(category)
     await state_manager.save_theme()
     print("[OK] State saved")
+    print("Goodbye!")
 
 
 # ============================================================================
@@ -815,6 +839,168 @@ async def get_agent_status():
             "tts": tts.get_config(),
             "memory": memory.get_token_count(),
             "wake": wake.get_config()
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# Vision API Endpoints (MiniCPM-o 4.5)
+# ============================================================================
+
+@app.get("/api/vision/status")
+async def get_vision_status():
+    """Get vision subsystem status (MiniCPM-o availability, screen monitor, etc.)"""
+    try:
+        from backend.vision import MiniCPMClient, ScreenCapture
+        from backend.vision.screen_monitor import get_screen_monitor
+        from backend.agent import get_omni_conversation_manager
+
+        minicpm = MiniCPMClient()
+        omni = get_omni_conversation_manager()
+        monitor = get_screen_monitor()
+
+        return {
+            "status": "success",
+            "minicpm": minicpm.get_status(),
+            "available": minicpm.check_availability(),
+            "omni_conversation": omni.get_status(),
+            "screen_monitor": monitor.get_status(),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/vision/describe")
+async def describe_screen(question: Optional[str] = None):
+    """Capture screen and describe what's visible (optionally answering a question)"""
+    try:
+        from backend.vision import MiniCPMClient, ScreenCapture
+
+        minicpm = MiniCPMClient()
+        if not minicpm.check_availability():
+            return {
+                "status": "error",
+                "message": "MiniCPM-o not available. Run: ollama pull openbmb/minicpm-o4.5"
+            }
+
+        capture = ScreenCapture()
+        screenshot_b64, _ = capture.capture_base64()
+
+        import asyncio
+        description = await asyncio.to_thread(
+            minicpm.describe_screen, screenshot_b64, question
+        )
+
+        return {
+            "status": "success",
+            "description": description,
+            "question": question,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/vision/detect")
+async def detect_element(description: str):
+    """Detect a GUI element on screen by natural language description"""
+    try:
+        from backend.vision import MiniCPMClient, ScreenCapture
+
+        minicpm = MiniCPMClient()
+        if not minicpm.check_availability():
+            return {"status": "error", "message": "MiniCPM-o not available"}
+
+        capture = ScreenCapture()
+        screenshot_b64, _ = capture.capture_base64()
+
+        import asyncio
+        result = await asyncio.to_thread(
+            minicpm.detect_gui_element, screenshot_b64, description
+        )
+
+        return {
+            "status": "success",
+            "element": result,
+            "description": description,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/vision/config")
+async def update_vision_config(
+    vision_enabled: Optional[bool] = None,
+    screen_context: Optional[bool] = None,
+    ollama_endpoint: Optional[str] = None,
+    model: Optional[str] = None,
+):
+    """Update vision configuration"""
+    try:
+        audio_engine = get_audio_engine()
+        updates = {}
+        if vision_enabled is not None:
+            updates["vision_enabled"] = vision_enabled
+        if screen_context is not None:
+            updates["screen_context_during_conversation"] = screen_context
+        if ollama_endpoint is not None:
+            updates["ollama_endpoint"] = ollama_endpoint
+        if model is not None:
+            updates["vision_model"] = model
+
+        if updates and audio_engine:
+            audio_engine.update_config(**updates)
+
+        return {
+            "status": "success",
+            "message": "Vision config updated",
+            "updates": updates,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/vision/monitor/start")
+async def start_screen_monitor():
+    """Start proactive screen monitoring"""
+    try:
+        from backend.vision.screen_monitor import get_screen_monitor
+
+        monitor = get_screen_monitor()
+        success = monitor.start()
+        return {
+            "status": "success" if success else "error",
+            "message": "Screen monitor started" if success else "Failed to start",
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/vision/monitor/stop")
+async def stop_screen_monitor():
+    """Stop proactive screen monitoring"""
+    try:
+        from backend.vision.screen_monitor import get_screen_monitor
+
+        monitor = get_screen_monitor()
+        monitor.stop()
+        return {"status": "success", "message": "Screen monitor stopped"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/vision/context")
+async def get_screen_context():
+    """Get the latest screen context analysis"""
+    try:
+        from backend.vision.screen_monitor import get_screen_monitor
+
+        monitor = get_screen_monitor()
+        context = monitor.get_current_context()
+        return {
+            "status": "success",
+            "context": context,
+            "history": monitor.get_context_history(5),
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}

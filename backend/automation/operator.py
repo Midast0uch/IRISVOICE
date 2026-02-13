@@ -190,7 +190,7 @@ class NativeGUIOperator:
                     success=True,
                     message="Screenshot captured (base64)",
                     data={
-                        "base64": img_base64[:100] + "...",  # Truncated for display
+                        "base64": img_base64,
                         "size": (screenshot.width, screenshot.height),
                         "format": "PNG"
                     }

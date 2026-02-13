@@ -15,18 +15,18 @@ class WakeWordDetector:
     """
     
     # Pre-trained models available from OpenWakeWord
+    # These names must match the files downloaded by openwakeword.utils.download_models()
     PRETRAINED_MODELS = {
-        "Hey Computer": "hey_computer",
-        "Jarvis": "jarvis",
-        "Alexa": "alexa", 
-        "Hey Mycroft": "hey_mycroft",
-        "Hey Jarvis": "hey_jarvis",
+        "Jarvis": "hey_jarvis_v0.1",
+        "Alexa": "alexa_v0.1",
+        "Hey Mycroft": "hey_mycroft_v0.1",
+        "Hey Rhasspy": "hey_rhasspy_v0.1",
     }
     
     def __init__(
         self,
         sensitivity: float = 0.7,
-        wake_phrase: str = "Hey Computer",
+        wake_phrase: str = "Jarvis",
         model_dir: Optional[str] = None
     ):
         self.sensitivity = sensitivity
@@ -46,23 +46,40 @@ class WakeWordDetector:
     def initialize(self) -> bool:
         """Initialize OpenWakeWord engine"""
         try:
+            import openwakeword
             from openwakeword.model import Model
             
-            # Download or get local model path
-            model_path = self._get_model_path()
-            if not model_path:
-                print(f"[WakeWordDetector] Model not available for: {self.wake_phrase}")
-                print(f"[WakeWordDetector] Available: {list(self.PRETRAINED_MODELS.keys())}")
-                return False
+            # THE EASY WAY: Use the built-in library downloader
+            print(f"[WakeWordDetector] Ensuring models are downloaded...")
+            openwakeword.utils.download_models()
             
-            # Initialize OpenWakeWord
-            self._oww = Model(wakeword_models=[str(model_path)])
-            self._model_path = model_path
-            self._initialized = True
+            # Try the requested phrase first
+            model_key = self.PRETRAINED_MODELS.get(self.wake_phrase)
             
-            print(f"[WakeWordDetector] Initialized with: {self.wake_phrase}")
-            print(f"[WakeWordDetector] Model: {model_path}")
-            return True
+            # If requested phrase not found, try 'Jarvis' as it's the most reliable
+            if not model_key:
+                print(f"[WakeWordDetector] Phrase '{self.wake_phrase}' not in PRETRAINED_MODELS. Trying Jarvis...")
+                model_key = "hey_jarvis_v0.1"
+                self.wake_phrase = "Jarvis"
+
+            try:
+                # Initialize the model
+                self._oww = Model(
+                    wakeword_models=[model_key], 
+                    inference_framework='onnx'
+                )
+                self._initialized = True
+                print(f"[WakeWordDetector] Successfully initialized with: {self.wake_phrase}")
+                return True
+            except Exception as e:
+                print(f"[WakeWordDetector] Failed to load {model_key}: {e}. Trying fallback to Jarvis...")
+                self._oww = Model(
+                    wakeword_models=["hey_jarvis_v0.1"],
+                    inference_framework='onnx'
+                )
+                self.wake_phrase = "Jarvis"
+                self._initialized = True
+                return True
             
         except ImportError:
             print("[WakeWordDetector] openwakeword not installed")
@@ -73,34 +90,8 @@ class WakeWordDetector:
             return False
     
     def _get_model_path(self) -> Optional[str]:
-        """Get model file path, download if needed"""
-        model_name = self.PRETRAINED_MODELS.get(self.wake_phrase)
-        if not model_name:
-            # Check for custom trained model
-            custom_path = self.model_dir / f"{self.wake_phrase.lower().replace(' ', '_')}.tflite"
-            if custom_path.exists():
-                return str(custom_path)
-            return None
-        
-        # Check if already downloaded
-        model_file = self.model_dir / f"{model_name}.tflite"
-        if model_file.exists():
-            return str(model_file)
-        
-        # Download pretrained model
-        try:
-            import urllib.request
-            base_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
-            url = f"{base_url}/{model_name}.tflite"
-            
-            print(f"[WakeWordDetector] Downloading model from {url}...")
-            urllib.request.urlretrieve(url, model_file)
-            print(f"[WakeWordDetector] Model saved to {model_file}")
-            return str(model_file)
-            
-        except Exception as e:
-            print(f"[WakeWordDetector] Failed to download model: {e}")
-            return None
+        """Deprecated: The library handles this now"""
+        return "internal"
     
     def process(self, audio_frame: np.ndarray) -> bool:
         """

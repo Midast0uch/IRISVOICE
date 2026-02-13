@@ -54,8 +54,9 @@ export default function RootLayout({
           <TransitionProvider>
             <NavigationProvider>
               {children}
-              <TransitionIndicator />
-              <TransitionSwitch />
+              {/* Transition testing components removed - they were interfering with widget drag */}
+              {/* <TransitionIndicator /> */}
+              {/* <TransitionSwitch /> */}
             </NavigationProvider>
         </TransitionProvider>
       </BrandColorProvider>

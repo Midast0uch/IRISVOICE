@@ -48,6 +48,9 @@ class AudioPipeline:
         self._audio_buffer: List[np.ndarray] = []
         self._buffer_lock = threading.Lock()
         
+        # Print input devices on instantiation
+        self._print_input_devices()
+        
     def start(self, on_audio_frame: Callable[[np.ndarray], None]) -> bool:
         """Start audio pipeline"""
         try:
@@ -126,12 +129,21 @@ class AudioPipeline:
     def play_audio(self, audio_data: np.ndarray):
         """Play audio through output stream"""
         if not self._output_stream:
+            print("[AudioPipeline] Cannot play: output stream is not initialized")
             return
         
         try:
             # Convert float to int16
             pcm = (audio_data * 32767).astype(np.int16).tobytes()
+            
+            # Check if stream is active
+            if not self._output_stream.is_active():
+                print("[AudioPipeline] Output stream is not active, starting it...")
+                self._output_stream.start_stream()
+            
+            print(f"[AudioPipeline] Writing {len(pcm)} bytes to output stream...")
             self._output_stream.write(pcm)
+            print("[AudioPipeline] Write complete")
         except Exception as e:
             print(f"[AudioPipeline] Output error: {e}")
     
@@ -164,6 +176,17 @@ class AudioPipeline:
         if self._pa:
             self._pa.terminate()
             self._pa = None
+    
+    def _print_input_devices(self):
+        """Print all available input devices to console"""
+        pa = pyaudio.PyAudio()
+        print("[AudioPipeline] Input devices:")
+        for i in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(i)
+            if info["maxInputChannels"] > 0:
+                print(f"  [{i}] {info['name']}")
+        print(f"[AudioPipeline] Using input device index: {self.input_device or 'Default'}")
+        pa.terminate()
     
     @staticmethod
     def list_devices() -> List[dict]:

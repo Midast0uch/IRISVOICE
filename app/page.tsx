@@ -1,4 +1,4 @@
-import { HexagonalControlCenter } from "@/components/hexagonal-control-center"
+import HexagonalControlCenter from "@/components/hexagonal-control-center"
 
 export default function Home() {
   return (

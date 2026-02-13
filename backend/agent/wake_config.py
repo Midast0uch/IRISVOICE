@@ -17,8 +17,8 @@ class WakeConfig:
     _initialized: bool = False
     
     # OpenWakeWord supported phrases (local, no API key needed)
-    DEFAULT_WAKE_PHRASE = "Hey Computer"
-    SUPPORTED_PHRASES = ["Hey Computer", "Jarvis", "Alexa", "Hey Mycroft", "Hey Jarvis"]
+    DEFAULT_WAKE_PHRASE = "Jarvis"
+    SUPPORTED_PHRASES = ["Jarvis", "Alexa"]
     
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -30,7 +30,7 @@ class WakeConfig:
             return
         
         self.config = {
-            "wake_phrase": self.DEFAULT_WAKE_PHRASE,
+            "wake_phrase": "Jarvis",
             "detection_sensitivity": 0.7,  # 0.0 to 1.0
             "activation_sound": True,
             "sleep_timeout": 60,  # seconds

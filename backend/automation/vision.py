@@ -14,6 +14,7 @@ class VisionProvider(Enum):
     ANTHROPIC = "anthropic"
     VOLCENGINE = "volcengine"
     LOCAL = "local"
+    MINICPM_OLLAMA = "minicpm_ollama"
 
 
 @dataclass
@@ -34,15 +35,30 @@ class VisionModelClient:
     Supports multiple providers: Anthropic, Volcengine, Local
     """
     
-    def __init__(self, provider: VisionProvider = VisionProvider.ANTHROPIC, api_key: Optional[str] = None):
+    def __init__(self, provider: VisionProvider = VisionProvider.MINICPM_OLLAMA, api_key: Optional[str] = None):
         self.provider = provider
         self.api_key = api_key
         self._client = None
+        self._minicpm_client = None
     
     async def initialize(self) -> Dict[str, Any]:
         """Initialize vision model client"""
         try:
-            if self.provider == VisionProvider.ANTHROPIC:
+            if self.provider == VisionProvider.MINICPM_OLLAMA:
+                try:
+                    from backend.vision import MiniCPMClient
+                    self._minicpm_client = MiniCPMClient()
+                    if self._minicpm_client.check_availability():
+                        return {"success": True, "provider": "minicpm_ollama"}
+                    else:
+                        return {
+                            "success": False,
+                            "error": "MiniCPM-o not available. Run: ollama pull openbmb/minicpm-o4.5"
+                        }
+                except ImportError:
+                    return {"success": False, "error": "Vision module not available"}
+
+            elif self.provider == VisionProvider.ANTHROPIC:
                 try:
                     import anthropic
                     self._client = anthropic.Anthropic(api_key=self.api_key)
@@ -66,11 +82,10 @@ class VisionModelClient:
         Detect element by description in screenshot
         Returns element coordinates or None if not found
         """
-        if not self._client:
-            return None
-        
         try:
-            if self.provider == VisionProvider.ANTHROPIC:
+            if self.provider == VisionProvider.MINICPM_OLLAMA and self._minicpm_client:
+                return await self._detect_with_minicpm(screenshot_base64, description)
+            elif self.provider == VisionProvider.ANTHROPIC and self._client:
                 return await self._detect_with_anthropic(screenshot_base64, description)
             return None
         except Exception as e:
@@ -132,11 +147,51 @@ class VisionModelClient:
             print(f"[VisionModel] Anthropic error: {e}")
             return None
     
+    async def _detect_with_minicpm(self, screenshot_base64: str, description: str) -> Optional[ElementDetection]:
+        """Use MiniCPM-o via Ollama for local element detection"""
+        try:
+            import asyncio
+            result = await asyncio.to_thread(
+                self._minicpm_client.detect_gui_element,
+                screenshot_base64,
+                description
+            )
+            
+            if result and result.get("found"):
+                return ElementDetection(
+                    description=description,
+                    x=result.get("x", 0),
+                    y=result.get("y", 0),
+                    width=result.get("width", 50),
+                    height=result.get("height", 30),
+                    confidence=result.get("confidence", 0.8),
+                    element_type=result.get("element_type", "unknown")
+                )
+            return None
+            
+        except Exception as e:
+            print(f"[VisionModel] MiniCPM detection error: {e}")
+            return None
+
     async def analyze_screen(self, screenshot_base64: str, instruction: str) -> Dict[str, Any]:
         """
         Analyze screen and suggest next action
         Returns action dict with type and parameters
         """
+        # MiniCPM-o provider
+        if self.provider == VisionProvider.MINICPM_OLLAMA and self._minicpm_client:
+            try:
+                import asyncio
+                result = await asyncio.to_thread(
+                    self._minicpm_client.analyze_screen_for_action,
+                    screenshot_base64,
+                    instruction
+                )
+                return result
+            except Exception as e:
+                return {"action": "error", "message": str(e)}
+
+        # Anthropic provider
         if not self._client:
             return {"action": "error", "message": "Vision client not initialized"}
         

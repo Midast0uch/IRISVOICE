@@ -82,7 +82,7 @@ const SUB_NODES: Record<string, { id: string; label: string; icon: ElementType; 
       { id: "automatic_gain", label: "Automatic Gain", type: "toggle", defaultValue: true },
     ]},
     { id: "model", label: "MODEL", icon: Brain, fields: [
-      { id: "endpoint", label: "LFM Endpoint", type: "text", placeholder: "http://localhost:1234", defaultValue: "http://localhost:1234" },
+      { id: "endpoint", label: "LFM Endpoint", type: "text", placeholder: "http://192.168.0.32:1234", defaultValue: "http://192.168.0.32:1234" },
       { id: "temperature", label: "Temperature", type: "slider", min: 0, max: 2, step: 0.1, defaultValue: 0.7 },
       { id: "max_tokens", label: "Max Tokens", type: "slider", min: 256, max: 8192, step: 256, defaultValue: 2048 },
       { id: "context_window", label: "Context Window", type: "slider", min: 1024, max: 32768, step: 1024, defaultValue: 8192 },
@@ -302,8 +302,6 @@ function onDragMouseDown(e: React.MouseEvent) {
     // Fallback: try native startDragging
     _dragListenersAttached = false
     window.removeEventListener('mousemove', onMove)
-    window.removeEventListener('mouseup', onUp)
-    try { getCurrentWindow().startDragging() } catch (_) {}
   })
 }
 
@@ -313,10 +311,13 @@ interface IrisOrbProps {
   centerLabel: string
   size: number
   glowColor: string
+  voiceState: "idle" | "listening" | "processing_conversation" | "processing_tool" | "speaking" | "error"
+  wakeFlash: boolean
 }
 
-function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbProps) {
-  const [isWaking, setIsWaking] = useState(false)
+function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor, voiceState, wakeFlash }: IrisOrbProps) {
+  const isSpeaking = voiceState === "speaking"
+  const isProcessing = voiceState === "processing_conversation" || voiceState === "processing_tool"
 
   return (
     <motion.div
@@ -333,7 +334,10 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
           background: `radial-gradient(circle, ${glowColor}80 0%, ${glowColor}40 30%, transparent 65%)`,
           filter: "blur(25px)",
         }}
-        animate={{ scale: [1, 1.2, 1], opacity: [0.6, 0.9, 0.6] }}
+        animate={{
+          scale: isSpeaking ? [1.05, 1.3, 1.05] : [1, 1.15, 1],
+          opacity: isSpeaking ? [0.8, 1, 0.8] : [0.4, 0.75, 0.4],
+        }}
         transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
       />
 
@@ -345,13 +349,16 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
           background: `radial-gradient(circle at 30% 30%, ${glowColor}14, transparent 70%)`,
           filter: "blur(8px)",
         }}
-        animate={{ scale: [0.8, 1.4, 0.8], opacity: [0.7, 1, 0.7] }}
+        animate={{
+          scale: isProcessing ? [0.9, 1.1, 0.9] : isSpeaking ? [0.8, 1.5, 0.8] : [0.8, 1.2, 0.8],
+          opacity: isProcessing ? [0.5, 0.8, 0.5] : [0.6, 1, 0.6],
+        }}
         transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
       />
 
       {/* Wake flash */}
       <AnimatePresence>
-        {isWaking && centerLabel !== "IRIS" && (
+        {wakeFlash && (
           <motion.div
             className="absolute rounded-full pointer-events-none"
             style={{ inset: -20, backgroundColor: `${glowColor}99` }}
@@ -363,96 +370,54 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
         )}
       </AnimatePresence>
 
-      {/* Radar Sweep - rotating light across orb surface */}
-      <motion.div
-        className="absolute inset-0 rounded-full pointer-events-none overflow-hidden"
-        style={{
-          background: 'transparent',
-        }}
-      >
-        <motion.div
-          className="absolute inset-0"
-          style={{
-            background: `conic-gradient(from 0deg at 50% 50%,
-              transparent 0deg,
-              transparent 88deg,
-              rgba(255,255,255,0.15) 98deg,
-              rgba(255,255,255,0.8) 100deg,
-              rgba(255,255,255,0.15) 102deg,
-              transparent 112deg,
-              transparent 360deg)`,
-          }}
-          animate={{ rotate: 360 }}
-          transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
-        />
-      </motion.div>
-
-      {/* Thin liquid metal border - metallic reflection */}
-      <motion.div
-        className="absolute -inset-[3px] rounded-full pointer-events-none"
-        style={{
-          padding: "3px",
-          background: `conic-gradient(from 0deg, 
-            rgba(255,255,255,0) 0deg,
-            rgba(255,255,255,0.5) 90deg,
-            rgba(192,192,192,0.6) 180deg,
-            rgba(255,255,255,0.5) 270deg,
-            rgba(255,255,255,0) 360deg)`,
-          WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
-          WebkitMaskComposite: "xor",
-        }}
-        animate={{ rotate: -360 }}
-        transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
-      />
-
-      {/* Rotating shimmer */}
-      <motion.div
-        className="absolute rounded-full pointer-events-none"
-        style={{
-          inset: -3,
-          borderRadius: "50%",
-          padding: "3px",
-          background: `conic-gradient(from 0deg, transparent 0deg, ${glowColor}4d 90deg, ${glowColor}cc 180deg, ${glowColor}4d 270deg, transparent 360deg)`,
-          WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
-          WebkitMaskComposite: "xor",
-        }}
-        animate={{ rotate: 360 }}
-        transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
-      />
-
-      {/* Orb body */}
+      {/* Orb body and label */}
       <div
-        className="relative w-full h-full flex items-center justify-center rounded-full pointer-events-none"
+        className="relative w-full h-full flex items-center justify-center rounded-full pointer-events-none overflow-hidden"
         style={{
           background: "rgba(255, 255, 255, 0.05)",
           backdropFilter: "blur(20px)",
-          border: "1px solid rgba(255, 255, 255, 0.1)",
+          border: `1px solid ${glowColor}33`,
         }}
       >
         <div
           className="absolute inset-0 rounded-full pointer-events-none"
           style={{ background: `radial-gradient(circle at 30% 30%, ${glowColor}14, transparent 70%)` }}
         />
+        
+        {/* Rotating shimmer ring */}
+        <motion.div
+          className="absolute rounded-full pointer-events-none"
+          style={{
+            inset: -2,
+            borderRadius: "50%",
+            padding: "2px",
+            background: `conic-gradient(from 0deg, transparent 0deg, ${glowColor}33 90deg, ${glowColor}aa 180deg, ${glowColor}33 270deg, transparent 360deg)`,
+            WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
+            WebkitMaskComposite: "xor",
+          }}
+          animate={{ rotate: isProcessing ? 360 : isSpeaking ? [0, 360] : 360 }}
+          transition={{ 
+            duration: isProcessing ? 2 : isSpeaking ? 1.5 : 8, 
+            repeat: Infinity, 
+            ease: "linear" 
+          }}
+        />
 
         <AnimatePresence mode="wait">
           <motion.span
             key={centerLabel}
-            className="text-lg font-medium tracking-[0.2em] select-none pointer-events-none"
+            className="text-lg font-light tracking-[0.2em] select-none pointer-events-none z-10"
             style={{ 
-              color: "#ffffff",
-              textShadow: '0 0 4px rgba(0,0,0,0.8), 0 2px 4px rgba(0,0,0,0.6)'
+              color: "rgba(255, 255, 255, 0.95)",
+              textShadow: `0 0 10px ${glowColor}40`,
+              fontSize: centerLabel.length > 8 ? '0.75rem' : '1.125rem'
             }}
-            initial={{ scale: 0, opacity: 0 }}
+            initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0, opacity: 0 }}
+            exit={{ scale: 0.8, opacity: 0 }}
             transition={{ type: "spring", stiffness: 300, damping: 25 }}
           >
-            <motion.span
-              animate={{ textShadow: [`0 0 10px ${glowColor}4d`, `0 0 20px ${glowColor}99`, `0 0 10px ${glowColor}4d`] }}
-              transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-            >
-              {centerLabel}
-            </motion.span>
+            {centerLabel}
           </motion.span>
         </AnimatePresence>
       </div>
@@ -460,18 +425,16 @@ function IrisOrb({ isExpanded, onClick, centerLabel, size, glowColor }: IrisOrbP
   )
 }
 
-export function HexagonalControlCenter() {
+export default function HexagonalControlCenter() {
   const nav = useNavigation()
-  const { getThemeConfig, theme: brandTheme, setTheme } = useBrandColor()
+  const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
   const themeGlowColor = theme.glow.color
-  
-  // Wake word detection handler
-  const handleWakeDetected = useCallback(() => {
-    setWakeDetected(true)
-    // Reset after animation
-    setTimeout(() => setWakeDetected(false), 2000)
-  }, [])
+  const isMobile = useIsMobile()
+  const userNavigatedRef = useRef(false)
+  const navLevelRef = useRef(nav.state.level)
+  const nodeClickTimestampRef = useRef<number | null>(null)
+  const hasUserInteractedRef = useRef(false)
 
   const [currentView, setCurrentView] = useState<string | null>(null)
   const [pendingView, setPendingView] = useState<string | null>(null)
@@ -481,7 +444,14 @@ export function HexagonalControlCenter() {
   const [activeMiniNodeIndex, setActiveMiniNodeIndex] = useState<number | null>(null)
   const [wakeDetected, setWakeDetected] = useState(false)
   const [dashboardOpen, setDashboardOpen] = useState(false)
-  const isMobile = useIsMobile()
+  const [wakeFlash, setWakeFlash] = useState(false)
+
+  const handleWakeDetected = useCallback(() => {
+    setWakeDetected(true)
+    setWakeFlash(true)
+    setTimeout(() => setWakeDetected(false), 2000)
+    setTimeout(() => setWakeFlash(false), 500)
+  }, [])
 
   const handleOpenDashboard = useCallback(() => {
     setDashboardOpen(true)
@@ -491,27 +461,20 @@ export function HexagonalControlCenter() {
     setDashboardOpen(false)
   }, [])
 
-  // Refs for tracking navigation state and preventing stale closures
-  const userNavigatedRef = useRef(false)
-  const navLevelRef = useRef(nav.state.level)
-  const nodeClickTimestampRef = useRef<number | null>(null)
-  const hasUserInteractedRef = useRef(false)
-
   const {
     confirmedNodes: wsConfirmedNodes,
     currentCategory,
     currentSubnode,
+    voiceState,
     selectCategory,
     selectSubnode,
     confirmMiniNode,
   } = useIRISWebSocket("ws://localhost:8000/ws/iris", true, handleWakeDetected)
 
-  // Update navLevelRef on every render to keep it fresh
   useEffect(() => {
     navLevelRef.current = nav.state.level
   }, [nav.state.level])
 
-// ...
   // Ensure window starts interactive (solid, not click-through) - Tauri only
   useEffect(() => {
     if (!isTauri) return
@@ -539,6 +502,12 @@ export function HexagonalControlCenter() {
     if (!currentCategory) {
       return
     }
+
+    // CRITICAL: If we are at Level 1 (Idle), DO NOT allow the backend to force an expansion.
+    // The user must manually click the Iris orb to enter Level 2.
+    if ((nav.state.level as number) === 1) {
+      return
+    }
     
     // CRITICAL FIX: Don't auto-navigate to Level 3 on initial load/refresh
     // Only sync the view without advancing navigation level automatically
@@ -546,8 +515,9 @@ export function HexagonalControlCenter() {
     if (!isTransitioning && !pendingView && currentCategory !== currentView && !exitingView) {
       // Only expand to show main nodes (Level 2), don't set currentView to show subnodes
       // This prevents the backend from forcing Level 3 on refresh
-      if (!isExpanded && nav.state.level === 1) {
+      if (!isExpanded && (nav.state.level as number) === 1) {
         setIsExpanded(true)
+        
         nav.expandToMain()
       }
       // Note: We intentionally do NOT call nav.selectMain() or setCurrentView here
@@ -654,9 +624,6 @@ export function HexagonalControlCenter() {
   }, [activeSubnodeId, currentView, nav, selectSubnode])
 
   const handleIrisClick = useCallback((e?: React.MouseEvent) => {
-    // CRITICAL FIX: Read nav level from the ref which is updated every render
-    const freshNavLevel = navLevelRef.current
-
     // Check if a node was just clicked (within last 300ms) - prevents iris toggle when clicking nodes
     const timeSinceNodeClick = Date.now() - (nodeClickTimestampRef.current || 0)
     if (timeSinceNodeClick < 300) {
@@ -667,13 +634,8 @@ export function HexagonalControlCenter() {
       return
     }
 
-    // Use freshNavLevel to determine proper back navigation (not the stale closure value)
-    const level = freshNavLevel
-    
-    // DEFENSIVE: Prevent any back navigation if we're transitioning
-    if (isTransitioning) {
-      return
-    }
+    // Use current level from nav state directly
+    const level = nav.state.level
     
     // DEFENSIVE: Check if userNavigatedRef is already true (prevent double navigation)
     if (userNavigatedRef.current) {
@@ -686,30 +648,28 @@ export function HexagonalControlCenter() {
     if (level === 4) {
       // Level 4: Mini nodes active -> go back to level 3 (subnodes)
       userNavigatedRef.current = true
-      // IMPORTANT: Call nav.goBack() FIRST before clearing backend state
-      // This ensures navigation state changes before backend sync can interfere
       nav.goBack()
-      // Now clear backend state after navigation is initiated
-      // Keep userNavigatedRef = true during this to prevent backend sync from interfering
       selectSubnode(null)
       setActiveMiniNodeIndex(null)
-      // Reset userNavigatedRef AFTER a short delay to ensure navigation completes
       setTimeout(() => {
         userNavigatedRef.current = false
-      }, 100)
+      }, SPIN_CONFIG.spinDuration)
     } else if (level === 3) {
       // Level 3: Subnodes showing -> go back to level 2 (main nodes)
       userNavigatedRef.current = true
       nav.goBack()
-      // Clear the currentView to show main nodes instead of subnodes
-      setExitingView(currentView || "__main__")
+      
+      // Immediately transition view state to show main nodes
+      setExitingView(currentView)
+      setCurrentView(null)
       setIsTransitioning(true)
+      
+      // Clear backend category
+      selectCategory("")
+      
       setTimeout(() => {
-        setCurrentView(null)
         setExitingView(null)
         setIsTransitioning(false)
-        selectCategory("")
-        // Reset userNavigatedRef after transition completes to allow further navigation
         userNavigatedRef.current = false
       }, SPIN_CONFIG.spinDuration)
     } else if (level === 2) {
@@ -717,25 +677,30 @@ export function HexagonalControlCenter() {
       userNavigatedRef.current = true
       nav.collapseToIdle()
       setIsExpanded(false)
+      setIsTransitioning(true)
+      
       // Clear backend category to prevent it from restoring on refresh
       selectCategory("")
-      // Reset userNavigatedRef after longer delay to ensure backend processes the clear
+      
       setTimeout(() => {
+        setIsTransitioning(false)
         userNavigatedRef.current = false
-      }, 2500)
+      }, SPIN_CONFIG.spinDuration)
     } else {
       // Level 1: Idle -> expand to level 2 (main nodes)
       userNavigatedRef.current = true
       nav.expandToMain()
       setIsExpanded(true)
-      // Reset userNavigatedRef after transition completes
+      setIsTransitioning(true)
+      
       setTimeout(() => {
+        setIsTransitioning(false)
         userNavigatedRef.current = false
       }, SPIN_CONFIG.spinDuration)
     }
   }, [currentView, isExpanded, isTransitioning, activeSubnodeId, selectSubnode, selectCategory, nav])
 
-  const currentNodes = currentView
+  const currentNodes = (currentView && SUB_NODES[currentView])
     ? SUB_NODES[currentView].map((node, idx) => ({
         ...node,
         angle: (idx * (360 / SUB_NODES[currentView].length)) - 90,
@@ -743,149 +708,115 @@ export function HexagonalControlCenter() {
       }))
     : NODE_POSITIONS.map((n) => ({ ...n, fields: [] as any[] }))
 
-  const exitingNodes = exitingView
-    ? exitingView === "__main__"
-      ? NODE_POSITIONS.map((n) => ({ ...n, fields: [] as any[] }))
-      : SUB_NODES[exitingView].map((node, idx) => ({
-          ...node,
-          angle: (idx * (360 / SUB_NODES[exitingView].length)) - 90,
-          index: idx,
-        }))
-    : null
+  const exitingNodes = (exitingView && SUB_NODES[exitingView])
+    ? SUB_NODES[exitingView].map((node, idx) => ({
+        ...node,
+        angle: (idx * (360 / SUB_NODES[exitingView].length)) - 90,
+        index: idx,
+      }))
+    : NODE_POSITIONS.map((n) => ({ ...n, fields: [] as any[] }))
+
 
   return (
-    <div 
-      className="relative w-full h-full flex items-center justify-center bg-transparent pointer-events-auto"
-      role="main"
-      aria-label="IRIS Voice Interface"
-    >
-      {/* Inner container: No pointer-events-auto here! Only on specific children */}
-      <div
-        className="relative"
-        style={{ width: 460, height: 460, background: 'transparent', border: 'none', overflow: 'visible' }}
-      >
-        
-        {!dashboardOpen && (
-          <>
-            {/* Ambient glow - click-through */}
-            <motion.div
-              className="absolute rounded-full pointer-events-none"
-              style={{
-                width: 420, height: 420, left: "50%", top: "50%",
-                marginLeft: -210, marginTop: -210,
-                background: `radial-gradient(circle, ${glowColor}18 0%, ${glowColor}0a 40%, transparent 68%)`,
-              }}
-              animate={{ scale: [1, 1.05, 1], opacity: [0.4, 0.7, 0.4] }}
-              transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
-            />
-
-            {/* Confirmed orbiting nodes - INTERACTIVE */}
-            <AnimatePresence>
-              {confirmedNodes.map(node => (
-                <motion.div
-                  key={node.id}
-                  className="absolute flex items-center justify-center pointer-events-auto"
-                  style={{
-                    width: MINI_NODE_STACK_CONFIG.sizeConfirmed, height: MINI_NODE_STACK_CONFIG.sizeConfirmed,
-                    left: "50%", top: "50%",
-                    marginLeft: -MINI_NODE_STACK_CONFIG.sizeConfirmed / 2,
-                    marginTop: -MINI_NODE_STACK_CONFIG.sizeConfirmed / 2,
-                  }}
-                  initial={{ scale: 0, opacity: 0 }}
-                  animate={{
-                    scale: 1,
-                    x: Math.cos((node.orbitAngle * Math.PI) / 180) * orbitRadius,
-                    y: Math.sin((node.orbitAngle * Math.PI) / 180) * orbitRadius,
-                    opacity: 1,
-                  }}
-                  transition={{ type: "spring", stiffness: 100, damping: 15 }}
-                >
-                  <div
-                    className="w-full h-full flex flex-col items-center justify-center gap-1 rounded-2xl cursor-pointer"
-                    style={{ background: "rgba(255, 255, 255, 0.08)", backdropFilter: "blur(12px)", border: "1px solid rgba(255, 255, 255, 0.1)" }}
-                  >
-                    {React.createElement(ICON_MAP[typeof node.icon === 'string' ? node.icon : 'Mic'] || Mic, {
-                      className: "w-5 h-5", style: { color: glowColor }, strokeWidth: 1.5
-                    })}
-                    <span className="text-[8px] font-medium tracking-wider text-muted-foreground">{node.label}</span>
-                  </div>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-
-            {/* Center IRIS Orb - INTERACTIVE (Drag + Click) */}
-            <motion.div
-              className="absolute left-1/2 top-1/2 flex items-center justify-center pointer-events-none z-10"
-              style={{ marginLeft: -(irisSize + 120) / 2, marginTop: -(irisSize + 120) / 2, width: irisSize + 120, height: irisSize + 120 }}
-              animate={{ scale: nav.state.level === 4 ? 0.43 : 1, x: 0 }}
-              transition={{ type: "spring", stiffness: 200, damping: 20, duration: 0.5 }}
+    <div className="relative w-full h-full">
+      <div className="relative w-full h-full overflow-hidden">
+          {/* Center IRIS Orb */}
+          <motion.div
+            className="absolute left-1/2 top-1/2 flex items-center justify-center pointer-events-none z-[150]"
+            style={{
+              marginLeft: -(irisSize + 120) / 2,
+              marginTop: -(irisSize + 120) / 2,
+              width: irisSize + 120,
+              height: irisSize + 120,
+            }}
+            animate={{ scale: nav.state.level === 4 ? 0.43 : 1, x: 0 }}
+            transition={{ type: "spring", stiffness: 200, damping: 20, duration: 0.5 }}
+          >
+            <div
+              className="pointer-events-auto flex items-center justify-center"
+              style={{ width: irisSize, height: irisSize }}
+              role="button"
+              data-no-drag
+              data-tauri-drag-region="false"
+              aria-label={`IRIS Control Center - ${centerLabel}`}
+              aria-live="polite"
             >
-              <div className="pointer-events-auto" role="button" data-no-drag data-tauri-drag-region="false" aria-label={`IRIS Control Center - ${centerLabel}`} aria-live="polite">
-                <IrisOrb isExpanded={isExpanded} onClick={handleIrisClick} centerLabel={centerLabel} size={irisSize} glowColor={glowColor} />
-              </div>
-            </motion.div>
+              <IrisOrb
+                isExpanded={isExpanded}
+                onClick={handleIrisClick}
+                centerLabel={centerLabel}
+                size={irisSize}
+                glowColor={glowColor}
+                voiceState={voiceState}
+                wakeFlash={wakeFlash}
+              />
+            </div>
+          </motion.div>
 
-            {/* Connecting line between Iris Orb and Mini Stack */}
-            <AnimatePresence>
-              {nav.state.level === 4 && (() => {
-                const activeIndex = nav.state.activeMiniNodeIndex ?? 0
-                const targetY = -80 + (activeIndex * 32) + 14
-                const lineLength = 80
-                const rotation = (Math.atan2(targetY, lineLength) * 180) / Math.PI
-                return (
-                  <motion.div
-                    className="absolute left-1/2 top-1/2 pointer-events-none z-[55]"
-                    style={{
-                      height: 2, width: lineLength, marginTop: 0, marginLeft: 30,
-                      background: `linear-gradient(90deg, rgba(255,255,255,0.8) 0%, rgba(192,192,192,0.9) 20%, rgba(255,255,255,0.95) 40%, rgba(192,192,192,0.9) 60%, rgba(255,255,255,0.8) 80%, rgba(128,128,128,0.6) 100%)`,
-                      boxShadow: '0 0 4px rgba(255,255,255,0.5)', transformOrigin: 'left center',
-                    }}
-                    initial={{ opacity: 0, scaleX: 0, rotate: 0 }}
-                    animate={{ opacity: 1, scaleX: 1, rotate: rotation }}
-                    exit={{ opacity: 0, scaleX: 0 }}
-                    transition={{ duration: 0.3 }}
-                  />
-                )
-              })()}
-            </AnimatePresence>
-
-            {/* Mini Node Stack - Level 4 */}
-            <AnimatePresence>
-              {nav.state.level === 4 && nav.state.miniNodeStack.length > 0 && (
+          {/* Connecting line between Iris Orb and Mini Stack */}
+          <AnimatePresence>
+            {nav.state.level === 4 && (() => {
+              const activeIndex = nav.state.activeMiniNodeIndex ?? 0
+              const targetY = -80 + (activeIndex * 32) + 14
+              const lineLength = 80
+              const rotation = (Math.atan2(targetY, lineLength) * 180) / Math.PI
+              return (
                 <motion.div
-                  className="absolute left-1/2 top-1/2 pointer-events-auto z-[200]"
-                  style={{ marginLeft: 80, marginTop: -80, width: 160, height: 200 }}
-                  initial={{ opacity: 0, scale: 0.8, x: -20 }}
-                  animate={{ opacity: 1, scale: 1, x: 0 }}
-                  exit={{ opacity: 0, scale: 0.8, x: -20 }}
-                  transition={{ duration: 0.4 }}
-                >
-                  <MiniNodeStack miniNodes={nav.state.miniNodeStack} onOpenDashboard={handleOpenDashboard} dashboardOpen={dashboardOpen} onCloseDashboard={handleCloseDashboard} />
-                </motion.div>
-              )}
-            </AnimatePresence>
+                  className="absolute left-1/2 top-1/2 pointer-events-none z-[55]"
+                  style={{
+                    height: 2, width: lineLength, marginTop: 0, marginLeft: 30,
+                    background: `linear-gradient(90deg, rgba(255,255,255,0.8) 0%, rgba(192,192,192,0.9) 20%, rgba(255,255,255,0.95) 40%, rgba(192,192,192,0.9) 60%, rgba(255,255,255,0.8) 80%, rgba(128,128,128,0.6) 100%)`,
+                    boxShadow: '0 0 4px rgba(255,255,255,0.5)', transformOrigin: 'left center',
+                  }}
+                  initial={{ opacity: 0, scaleX: 0, rotate: 0 }}
+                  animate={{ opacity: 1, scaleX: 1, rotate: rotation }}
+                  exit={{ opacity: 0, scaleX: 0 }}
+                  transition={{ duration: 0.3 }}
+                />
+              )
+            })()}
+          </AnimatePresence>
 
-            {/* Exiting nodes */}
-            <AnimatePresence>
-              {(nav.state.level === 2 || nav.state.level === 3) && exitingNodes && (
-                <>
-                  {exitingNodes.map((node, idx) => (
-                    <PrismNode key={`exit-${node.id}`} node={node} angle={node.angle} radius={exitingView ? subRadius : mainRadius} nodeSize={nodeSize} onClick={() => {}} spinRotations={exitingView ? SUBMENU_CONFIG.rotations : SPIN_CONFIG.rotations} spinDuration={exitingView ? SUBMENU_CONFIG.spinDuration : SPIN_CONFIG.spinDuration} staggerIndex={idx} isCollapsing={true} isActive={false} spinConfig={SPIN_CONFIG} />
-                  ))}
-                </>
-              )}
-            </AnimatePresence>
+          {/* Mini Node Stack - Level 4 */}
+          <AnimatePresence>
+            {nav.state.level === 4 && nav.state.miniNodeStack.length > 0 && (
+              <motion.div
+                className="absolute left-1/2 top-1/2 pointer-events-auto z-[200]"
+                style={{ marginLeft: 80, marginTop: -80, width: 160, height: 200 }}
+                initial={{ opacity: 0, scale: 0.8, x: -20 }}
+                animate={{ opacity: 1, scale: 1, x: 0 }}
+                exit={{ opacity: 0, scale: 0.8, x: -20 }}
+                transition={{ duration: 0.4 }}
+              >
+                <MiniNodeStack miniNodes={nav.state.miniNodeStack} onOpenDashboard={handleOpenDashboard} dashboardOpen={dashboardOpen} onCloseDashboard={handleCloseDashboard} />
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-            {/* Current nodes - INTERACTIVE */}
-            <AnimatePresence>
-              {(nav.state.level === 2 || nav.state.level === 3) && (
-                <>
-                  {currentNodes
-                    .filter(node => !activeSubnodeId || node.id !== activeSubnodeId)
-                    .map((node, idx) => (
+          {/* Exiting nodes */}
+          <AnimatePresence>
+            {(nav.state.level === 2 || nav.state.level === 3) && exitingNodes && (
+              <>
+                {exitingNodes.map((node, idx) => (
+                  <PrismNode key={`exit-${node.id}`} node={node} angle={node.angle} radius={exitingView ? subRadius : mainRadius} nodeSize={nodeSize} onClick={() => {}} spinRotations={exitingView ? SUBMENU_CONFIG.rotations : SPIN_CONFIG.rotations} spinDuration={exitingView ? SUBMENU_CONFIG.spinDuration : SPIN_CONFIG.spinDuration} staggerIndex={idx} isCollapsing={true} isActive={false} spinConfig={SPIN_CONFIG} />
+                ))}
+              </>
+            )}
+          </AnimatePresence>
+
+          {/* Current nodes - INTERACTIVE */}
+          <AnimatePresence>
+            {(nav.state.level === 2 || nav.state.level === 3) && (
+              <>
+                {currentNodes
+                  .filter((node) => !activeSubnodeId || node.id !== activeSubnodeId)
+                  .map((node, idx) => (
                     <PrismNode
-                      key={node.id} node={node} angle={node.angle}
-                      radius={currentView ? subRadius : mainRadius} nodeSize={nodeSize}
+                      key={node.id}
+                      node={node}
+                      angle={node.angle}
+                      radius={currentView ? subRadius : mainRadius}
+                      nodeSize={nodeSize}
                       onClick={(e) => {
                         nodeClickTimestampRef.current = Date.now()
                         e?.stopPropagation()
@@ -893,34 +824,38 @@ export function HexagonalControlCenter() {
                       }}
                       spinRotations={currentView ? SUBMENU_CONFIG.rotations : SPIN_CONFIG.rotations}
                       spinDuration={currentView ? SUBMENU_CONFIG.spinDuration : SPIN_CONFIG.spinDuration}
-                      staggerIndex={idx} isCollapsing={false} isActive={activeSubnodeId === node.id} spinConfig={SPIN_CONFIG}
+                      staggerIndex={idx}
+                      isCollapsing={false}
+                      isActive={activeSubnodeId === node.id}
+                      spinConfig={SPIN_CONFIG}
                     />
                   ))}
-                </>
-              )}
-            </AnimatePresence>
+              </>
+            )}
+          </AnimatePresence>
 
-            {/* TAP IRIS hint */}
-            <AnimatePresence>
-              {nav.state.level === 1 && (
-                <motion.div
-                  className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-none"
-                  initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }}
-                  transition={{ delay: 0.5, duration: 0.4 }}
+          {/* TAP IRIS hint */}
+          <AnimatePresence>
+            {nav.state.level === 1 && (
+              <motion.div
+                className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-none"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                transition={{ delay: 0.5, duration: 0.4 }}
+              >
+                <motion.span
+                  className="text-xs text-muted-foreground/60 tracking-widest uppercase"
+                  animate={{ opacity: [0.4, 0.8, 0.4] }}
+                  transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
                 >
-                  <motion.span
-                    className="text-xs text-muted-foreground/60 tracking-widest uppercase"
-                    animate={{ opacity: [0.4, 0.8, 0.4] }}
-                    transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-                  >
-                    TAP IRIS TO EXPAND
-                  </motion.span>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </>)}
+                  TAP IRIS TO EXPAND
+                </motion.span>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          <DarkGlassDashboard 
+          <DarkGlassDashboard
             isOpen={dashboardOpen}
             onClose={handleCloseDashboard}
             theme="nebula"
