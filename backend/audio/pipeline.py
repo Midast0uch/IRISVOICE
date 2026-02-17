@@ -1,11 +1,11 @@
 """
-AudioPipeline - Manages audio input/output streams using PyAudio
+AudioPipeline - Manages audio input/output streams using sounddevice
 """
 import threading
 import queue
 from typing import Optional, Callable, List
 import numpy as np
-import pyaudio
+import sounddevice as sd
 
 
 class AudioPipeline:
@@ -30,9 +30,6 @@ class AudioPipeline:
         self.frame_length = frame_length
         self.channels = channels
         
-        # PyAudio instance
-        self._pa = None
-        
         # Streams
         self._input_stream = None
         self._output_stream = None
@@ -42,110 +39,93 @@ class AudioPipeline:
         
         # State
         self._is_running = False
-        self._input_thread: Optional[threading.Thread] = None
         
         # Audio buffer for speech collection
         self._audio_buffer: List[np.ndarray] = []
         self._buffer_lock = threading.Lock()
         
-        # Print input devices on instantiation
-        self._print_input_devices()
+        # Frame listeners for unified audio access
+        self._frame_listeners: List[Callable[[np.ndarray], None]] = []
+        
+    def add_frame_listener(self, callback: Callable[[np.ndarray], None]):
+        """Add a listener for raw audio frames."""
+        self._frame_listeners.append(callback)
+        
+        # Don't print devices on instantiation - slows down startup
+        # self._print_input_devices()
         
     def start(self, on_audio_frame: Callable[[np.ndarray], None]) -> bool:
         """Start audio pipeline"""
         try:
-            self._pa = pyaudio.PyAudio()
             self._on_audio_frame = on_audio_frame
             
-            # Open input stream
-            self._input_stream = self._pa.open(
-                format=pyaudio.paInt16,
+            # Start input stream
+            self._input_stream = sd.InputStream(
+                device=self.input_device,
                 channels=self.channels,
-                rate=self.sample_rate,
-                input=True,
-                input_device_index=self.input_device,
-                frames_per_buffer=self.frame_length
+                samplerate=self.sample_rate,
+                callback=self._input_callback,
+                blocksize=self.frame_length
             )
             
-            # Open output stream
-            self._output_stream = self._pa.open(
-                format=pyaudio.paInt16,
+            # Start output stream
+            self._output_stream = sd.OutputStream(
+                device=self.output_device,
                 channels=self.channels,
-                rate=self.sample_rate,
-                output=True,
-                output_device_index=self.output_device
+                samplerate=self.sample_rate,
+                blocksize=self.frame_length
             )
             
-            # Start input thread
+            # Start streams
+            self._input_stream.start()
+            self._output_stream.start()
+            
             self._is_running = True
-            self._input_thread = threading.Thread(target=self._input_loop)
-            self._input_thread.daemon = True
-            self._input_thread.start()
             
-            print("[AudioPipeline] Started")
+            print(f"[AudioPipeline] Started successfully with callback: {self._on_audio_frame.__name__ if self._on_audio_frame else 'None'}")
             return True
             
         except Exception as e:
-            print(f"[AudioPipeline] Start failed: {e}")
+            print(f"[AudioPipeline] FATAL: An error occurred during audio stream startup: {e}")
+            import traceback
+            traceback.print_exc()
             self.cleanup()
             return False
     
     def stop(self):
         """Stop audio pipeline"""
         self._is_running = False
-        
-        if self._input_thread:
-            self._input_thread.join(timeout=1.0)
-        
         self.cleanup()
         print("[AudioPipeline] Stopped")
     
-    def _input_loop(self):
-        """Input stream processing loop"""
-        while self._is_running:
-            try:
-                # Read audio frame
-                data = self._input_stream.read(self.frame_length, exception_on_overflow=False)
-                
-                # Convert to numpy array
-                audio_frame = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-                
-                # Add to buffer
-                with self._buffer_lock:
-                    self._audio_buffer.append(audio_frame)
-                    # Keep only last 30 seconds
-                    max_frames = int(30 * self.sample_rate / self.frame_length)
-                    if len(self._audio_buffer) > max_frames:
-                        self._audio_buffer = self._audio_buffer[-max_frames:]
-                
-                # Call callback
-                if self._on_audio_frame:
-                    self._on_audio_frame(audio_frame)
-                    
-            except Exception as e:
-                print(f"[AudioPipeline] Input error: {e}")
-                break
+    def _input_callback(self, indata, frames, time, status):
+        """This is called (from a separate thread) for each audio block."""
+        if status:
+            print(status, file=sys.stderr)
+        if self._is_running and self._on_audio_frame is not None:
+            # The input data is a numpy array, take the first channel
+            audio_frame = indata[:, 0].astype(np.float32)
+            self._on_audio_frame(audio_frame)
     
     def play_audio(self, audio_data: np.ndarray):
         """Play audio through output stream"""
+        print(f"[AudioPipeline] play_audio called with shape: {audio_data.shape}, dtype: {audio_data.dtype}")
+        
         if not self._output_stream:
-            print("[AudioPipeline] Cannot play: output stream is not initialized")
+            print(f"[AudioPipeline] Cannot play: output stream is not initialized (device: {self.output_device})")
             return
         
         try:
             # Convert float to int16
             pcm = (audio_data * 32767).astype(np.int16).tobytes()
             
-            # Check if stream is active
-            if not self._output_stream.is_active():
-                print("[AudioPipeline] Output stream is not active, starting it...")
-                self._output_stream.start_stream()
-            
             print(f"[AudioPipeline] Writing {len(pcm)} bytes to output stream...")
             self._output_stream.write(pcm)
             print("[AudioPipeline] Write complete")
         except Exception as e:
             print(f"[AudioPipeline] Output error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def get_buffered_audio(self) -> np.ndarray:
         """Get accumulated audio buffer"""
@@ -164,45 +144,28 @@ class AudioPipeline:
     def cleanup(self):
         """Release audio resources"""
         if self._input_stream:
-            self._input_stream.stop_stream()
+            self._input_stream.stop()
             self._input_stream.close()
             self._input_stream = None
         
         if self._output_stream:
-            self._output_stream.stop_stream()
+            self._output_stream.stop()
             self._output_stream.close()
             self._output_stream = None
-        
-        if self._pa:
-            self._pa.terminate()
-            self._pa = None
-    
-    def _print_input_devices(self):
-        """Print all available input devices to console"""
-        pa = pyaudio.PyAudio()
-        print("[AudioPipeline] Input devices:")
-        for i in range(pa.get_device_count()):
-            info = pa.get_device_info_by_index(i)
-            if info["maxInputChannels"] > 0:
-                print(f"  [{i}] {info['name']}")
-        print(f"[AudioPipeline] Using input device index: {self.input_device or 'Default'}")
-        pa.terminate()
     
     @staticmethod
     def list_devices() -> List[dict]:
         """List available audio devices"""
-        pa = pyaudio.PyAudio()
         devices = []
         
-        for i in range(pa.get_device_count()):
-            info = pa.get_device_info_by_index(i)
+        for i in range(sd.query_devices()):
+            info = sd.query_devices(i)
             devices.append({
                 "index": i,
                 "name": info["name"],
-                "input": info["maxInputChannels"] > 0,
-                "output": info["maxOutputChannels"] > 0,
-                "sample_rate": int(info["defaultSampleRate"])
+                "input": info["max_input_channels"] > 0,
+                "output": info["max_output_channels"] > 0,
+                "sample_rate": int(info["default_samplerate"])
             })
         
-        pa.terminate()
         return devices

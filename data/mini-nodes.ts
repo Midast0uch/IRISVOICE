@@ -297,6 +297,85 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
     }
   ],
 
+  vision: [
+    {
+      id: 'vision-toggle',
+      label: 'Vision',
+      icon: 'Eye',
+      fields: [
+        {
+          id: 'vision_enabled',
+          type: 'toggle',
+          label: 'Enable Vision',
+          defaultValue: false
+        }
+      ]
+    },
+    {
+      id: 'screen-context',
+      label: 'Screen Context',
+      icon: 'Monitor',
+      fields: [
+        {
+          id: 'screen_context',
+          type: 'toggle',
+          label: 'Include in Chat',
+          defaultValue: true
+        }
+      ]
+    },
+    {
+      id: 'proactive-monitor',
+      label: 'Proactive Mode',
+      icon: 'Activity',
+      fields: [
+        {
+          id: 'proactive_monitor',
+          type: 'toggle',
+          label: 'Screen Monitoring',
+          defaultValue: false
+        },
+        {
+          id: 'monitor_interval',
+          type: 'slider',
+          label: 'Interval',
+          min: 5,
+          max: 120,
+          unit: 's',
+          defaultValue: 30
+        }
+      ]
+    },
+    {
+      id: 'vision-endpoint',
+      label: 'Ollama Endpoint',
+      icon: 'Link',
+      fields: [
+        {
+          id: 'ollama_endpoint',
+          type: 'text',
+          label: 'Endpoint URL',
+          placeholder: 'http://localhost:11434',
+          defaultValue: 'http://localhost:11434'
+        }
+      ]
+    },
+    {
+      id: 'vision-model',
+      label: 'Vision Model',
+      icon: 'Brain',
+      fields: [
+        {
+          id: 'vision_model',
+          type: 'dropdown',
+          label: 'Model',
+          options: ['minicpm-o4.5', 'llava', 'bakllava'],
+          defaultValue: 'minicpm-o4.5'
+        }
+      ]
+    }
+  ],
+
   workflows: [
     {
       id: 'auto-start',

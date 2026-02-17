@@ -3,7 +3,7 @@
 use std::process::Command;
 use std::time::Duration;
 use std::thread;
-use std::path::PathBuf;
+
 use tauri::{Manager, PhysicalSize};
 
 /// Check if backend is already running
@@ -15,41 +15,57 @@ fn is_backend_running() -> bool {
 
 /// Start the Python backend
 fn start_backend(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-    println!("[IRIS-DEBUG] Executable path: {:?}", exe_path);
+    println!("[IRIS-DEBUG] Attempting to start backend...");
+
+    // In development, the backend is in the project root. In production, it's in the resource dir.
+    let project_dir = if cfg!(debug_assertions) {
+        // In dev, run from the project root
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "CARGO_MANIFEST_DIR not set".to_string())?;
+        std::path::Path::new(&manifest_dir).parent().unwrap().to_path_buf()
+    } else {
+        // In production, the backend is bundled with the app
+        app_handle.path().resource_dir().map_err(|e| format!("Failed to find resource directory: {}", e))?
+    };
+
+    println!("[IRIS-DEBUG] Using project directory: {:?}", project_dir);
+
+    // Determine the correct path to the Python executable within the venv
+    let python_path = if cfg!(target_os = "windows") {
+        // On Windows, the venv executable is in venv/Scripts/python.exe
+        project_dir.join("venv/Scripts/python.exe")
+    } else {
+        // On Linux/macOS, the venv executable is in venv/bin/python
+        project_dir.join("venv/bin/python")
+    };
     
-    // Find the directory containing backend/ folder
-    let project_dir = find_project_root(app_handle, &exe_path);
-    println!("[IRIS-DEBUG] Resolved project directory: {:?}", project_dir);
-    
-    // Determine Python executable - search multiple locations
-    let python_path = find_python(&project_dir, &exe_path);
-    println!("[IRIS-DEBUG] Using Python: {:?}", python_path);
-    
-    // Verify backend module exists
-    let backend_main = project_dir.join("backend").join("main.py");
-    println!("[IRIS-DEBUG] backend/main.py exists: {}", backend_main.exists());
-    
-    if !backend_main.exists() {
-        return Err(format!(
-            "backend/main.py not found at {:?}. Searched project dir: {:?}",
-            backend_main, project_dir
-        ));
+    println!("[IRIS-DEBUG] Python executable path check: {:?}", python_path);
+
+    if !python_path.exists() {
+        return Err(format!("Python executable not found at: {:?}", python_path));
     }
-    
+
+    // The project directory for the backend is also inside the resource bundle.
+    let backend_dir = project_dir.join("backend");
+    println!("[IRIS-DEBUG] Backend project directory check: {:?}", backend_dir);
+
+    if !backend_dir.join("main.py").exists() {
+        return Err(format!("backend/main.py not found in: {:?}", backend_dir));
+    }
+
+    println!("[IRIS-DEBUG] Spawning backend process...");
+    println!("[IRIS-DEBUG] Command: `{} -m backend.main`", python_path.display());
+    println!("[IRIS-DEBUG] Working Directory: `{}`", project_dir.display());
+
     // Spawn backend process
     let mut child = Command::new(&python_path)
         .arg("-m")
         .arg("backend.main")
-        .current_dir(&project_dir)
+        .current_dir(&project_dir) // Run the command from the project root to find 'backend' package
         .spawn()
-        .map_err(|e| {
-            println!("[IRIS-DEBUG] Failed to spawn process: {}", e);
-            format!("Failed to start backend with {:?}: {}", python_path, e)
-        })?;
-    
+        .map_err(|e| format!("Failed to start backend with {:?}: {}", python_path, e))?;
+
     println!("[IRIS-DEBUG] Process spawned, waiting for backend to be ready...");
-    
+
     // Wait for backend to be ready (max 30 seconds)
     for i in 0..30 {
         thread::sleep(Duration::from_secs(1));
@@ -57,96 +73,10 @@ fn start_backend(app_handle: &tauri::AppHandle) -> Result<(), String> {
             println!("[IRIS] Backend started successfully after {}s", i + 1);
             return Ok(());
         }
-        println!("[IRIS-DEBUG] Attempt {}: Backend not ready yet", i + 1);
     }
-    
+
     let _ = child.kill();
     Err("Backend failed to start within 30 seconds".to_string())
-}
-
-/// Find Python executable - checks venv in project dir, next to exe, and system PATH
-fn find_python(project_dir: &std::path::Path, exe_path: &std::path::Path) -> PathBuf {
-    let exe_dir = exe_path.parent().unwrap_or(exe_path);
-    
-    // All candidate venv locations to check
-    let candidates: Vec<PathBuf> = if cfg!(target_os = "windows") {
-        vec![
-            // Venv in project root (dev mode)
-            project_dir.join(".venv\\Scripts\\python.exe"),
-            project_dir.join("venv\\Scripts\\python.exe"),
-            // Venv next to the executable (release mode)
-            exe_dir.join(".venv\\Scripts\\python.exe"),
-            exe_dir.join("venv\\Scripts\\python.exe"),
-            // Venv one level up from exe (release: exe is in bin/ or similar)
-            exe_dir.parent().map(|p| p.join("venv\\Scripts\\python.exe")).unwrap_or_default(),
-            exe_dir.parent().map(|p| p.join(".venv\\Scripts\\python.exe")).unwrap_or_default(),
-        ]
-    } else {
-        vec![
-            project_dir.join(".venv/bin/python"),
-            project_dir.join("venv/bin/python"),
-            exe_dir.join(".venv/bin/python"),
-            exe_dir.join("venv/bin/python"),
-            exe_dir.parent().map(|p| p.join("venv/bin/python")).unwrap_or_default(),
-            exe_dir.parent().map(|p| p.join(".venv/bin/python")).unwrap_or_default(),
-        ]
-    };
-    
-    for path in &candidates {
-        if !path.as_os_str().is_empty() && path.exists() {
-            println!("[IRIS-DEBUG] Found Python at: {:?}", path);
-            return path.clone();
-        }
-    }
-    
-    // Fallback to system Python
-    println!("[IRIS-DEBUG] No venv found, falling back to system 'python'");
-    PathBuf::from("python")
-}
-
-/// Find the project root containing backend/main.py
-/// Priority order:
-///   1. Dev mode: CARGO_MANIFEST_DIR parent (compile-time, always correct in dev)
-///   2. Release mode: Tauri resource directory (backend/ bundled as resource)
-///   3. Fallback: Walk up from exe directory looking for backend/main.py
-///   4. Fallback: Directory next to exe
-fn find_project_root(app_handle: &tauri::AppHandle, exe_path: &std::path::Path) -> PathBuf {
-    // 1. Dev mode: Use compile-time CARGO_MANIFEST_DIR (src-tauri/) -> parent = project root
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    println!("[IRIS-DEBUG] CARGO_MANIFEST_DIR: {:?}", manifest_dir);
-    
-    if let Some(project_root) = manifest_dir.parent() {
-        let project_root = project_root.to_path_buf();
-        if project_root.join("backend").join("main.py").exists() {
-            println!("[IRIS-DEBUG] Found project root via CARGO_MANIFEST_DIR: {:?}", project_root);
-            return project_root;
-        }
-    }
-    
-    // 2. Release mode: Tauri resource directory
-    //    In release builds, resources are placed next to the exe or in a _up_/resources/ dir
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        println!("[IRIS-DEBUG] Tauri resource_dir: {:?}", resource_dir);
-        if resource_dir.join("backend").join("main.py").exists() {
-            println!("[IRIS-DEBUG] Found backend in Tauri resource_dir: {:?}", resource_dir);
-            return resource_dir;
-        }
-    }
-    
-    // 3. Walk up from executable directory
-    let mut current = exe_path.parent();
-    while let Some(dir) = current {
-        if dir.join("backend").join("main.py").exists() {
-            println!("[IRIS-DEBUG] Found project root via walk-up: {:?}", dir);
-            return dir.to_path_buf();
-        }
-        current = dir.parent();
-    }
-    
-    // 4. Ultimate fallback: exe's parent directory
-    let fallback = exe_path.parent().unwrap_or(exe_path).to_path_buf();
-    println!("[IRIS-DEBUG] Using fallback (exe parent): {:?}", fallback);
-    fallback
 }
 
 fn main() {

@@ -33,7 +33,7 @@ def main():
             "backend.main:app",
             host="127.0.0.1",
             port=8000,
-            reload=True,
+            reload=False,  # Disabled for Windows compatibility
             log_level="info"
         )
     except KeyboardInterrupt:

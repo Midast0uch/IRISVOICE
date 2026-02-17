@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 import re
 
+# Import WakeConfig for dynamic options
+from .agent.wake_config import WakeConfig
+
 
 class Category(str, Enum):
     """Main category types matching the frontend hexagonal nodes"""
@@ -293,7 +296,12 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
             label="WAKE",
             icon="Sparkles",
             fields=[
-                InputField(id="wake_phrase", type=FieldType.DROPDOWN, label="Wake Phrase", options=["Hey Computer", "Jarvis", "Alexa", "Hey Mycroft", "Hey Jarvis"], value="Hey Computer"),
+                InputField(id="wake_word_enabled", type=FieldType.TOGGLE, label="Wake Word Enabled", value=True),
+
+# ... (rest of the file)
+
+# In SUBNODE_CONFIGS["agent"][1] for the 'wake' subnode:
+                InputField(id="wake_phrase", type=FieldType.DROPDOWN, label="Wake Phrase", options=WakeConfig.SUPPORTED_PHRASES, value=WakeConfig.DEFAULT_WAKE_PHRASE),
                 InputField(id="detection_sensitivity", type=FieldType.SLIDER, label="Detection Sensitivity", min=0, max=100, value=70, unit="%"),
                 InputField(id="activation_sound", type=FieldType.TOGGLE, label="Activation Sound", value=True),
                 InputField(id="sleep_timeout", type=FieldType.SLIDER, label="Sleep Timeout", min=5, max=300, value=60, unit="s"),
@@ -337,6 +345,19 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
             ]
         ),
         SubNode(
+            id="vision",
+            label="VISION",
+            icon="Eye",
+            fields=[
+                InputField(id="vision_enabled", type=FieldType.TOGGLE, label="Vision Enabled", value=False),
+                InputField(id="screen_context", type=FieldType.TOGGLE, label="Screen Context in Chat", value=True),
+                InputField(id="proactive_monitor", type=FieldType.TOGGLE, label="Proactive Monitor", value=False),
+                InputField(id="monitor_interval", type=FieldType.SLIDER, label="Monitor Interval", min=5, max=120, value=30, unit="s"),
+                InputField(id="ollama_endpoint", type=FieldType.TEXT, label="Ollama Endpoint", placeholder="http://localhost:11434", value="http://localhost:11434"),
+                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm-o4.5", "llava", "bakllava"], value="minicpm-o4.5"),
+            ]
+        ),
+        SubNode(
             id="workflows",
             label="WORKFLOWS",
             icon="Layers",
@@ -375,7 +396,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
             icon="Monitor",
             fields=[
                 InputField(id="ui_tars_provider", type=FieldType.DROPDOWN, label="UI-TARS Provider", options=["cli_npx", "native_python", "api_cloud"], value="native_python"),
-                InputField(id="model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["anthropic", "volcengine", "local"], value="anthropic"),
+                InputField(id="model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm_ollama", "anthropic", "volcengine", "local"], value="minicpm_ollama"),
                 InputField(id="api_key", type=FieldType.TEXT, label="API Key", placeholder="sk-...", value=""),
                 InputField(id="max_steps", type=FieldType.SLIDER, label="Max Automation Steps", min=5, max=50, value=25),
                 InputField(id="safety_confirmation", type=FieldType.TOGGLE, label="Require Confirmation", value=True),

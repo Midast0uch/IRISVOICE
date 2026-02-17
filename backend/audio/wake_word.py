@@ -21,16 +21,19 @@ class WakeWordDetector:
         "Alexa": "alexa_v0.1",
         "Hey Mycroft": "hey_mycroft_v0.1",
         "Hey Rhasspy": "hey_rhasspy_v0.1",
+        "Hey Computer": "hey_computer_v0.1",
     }
     
     def __init__(
         self,
-        sensitivity: float = 0.7,
+        sensitivity: float = 0.7,  # Balanced sensitivity for "Hey Jarvis"
         wake_phrase: str = "Jarvis",
-        model_dir: Optional[str] = None
+        model_dir: Optional[str] = None,
+        gain: float = 50.0  # Increased gain to boost low microphone input
     ):
         self.sensitivity = sensitivity
         self.wake_phrase = wake_phrase
+        self.gain = gain
         
         # Model storage
         if model_dir is None:
@@ -42,15 +45,18 @@ class WakeWordDetector:
         self._oww = None
         self._model_path = None
         self._initialized = False
+        self._audio_buffer = np.array([], dtype=np.float32)
+
         
     def initialize(self) -> bool:
         """Initialize OpenWakeWord engine"""
+
         try:
             import openwakeword
             from openwakeword.model import Model
             
             # THE EASY WAY: Use the built-in library downloader
-            print(f"[WakeWordDetector] Ensuring models are downloaded...")
+            # print(f"[WakeWordDetector] Ensuring models are downloaded...")
             openwakeword.utils.download_models()
             
             # Try the requested phrase first
@@ -87,6 +93,8 @@ class WakeWordDetector:
             return False
         except Exception as e:
             print(f"[WakeWordDetector] Initialization failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _get_model_path(self) -> Optional[str]:
@@ -102,26 +110,57 @@ class WakeWordDetector:
             return False
         
         try:
+            # Accumulate audio
+            self._audio_buffer = np.append(self._audio_buffer, audio_frame)
+            # print(f"[WakeWordDetector] Buffer length after append: {len(self._audio_buffer)}")
+            
+            # OpenWakeWord works best with ~1280 samples (80ms at 16kHz).
+            # If we have less than that, wait for more frames.
+            if len(self._audio_buffer) < 1280:
+                return False
+            
+            # Get data to process and clear buffer
+            # We take all samples collected so far
+            to_process = self._audio_buffer
+            self._audio_buffer = np.array([], dtype=np.float32)
+            # print(f"[WakeWordDetector] Processing buffer with {len(to_process)} samples")
+
             # OpenWakeWord expects 16kHz, 16-bit PCM
             # Convert float [-1, 1] to int16
-            if audio_frame.dtype == np.float32 or audio_frame.dtype == np.float64:
-                pcm = (audio_frame * 32767).astype(np.int16)
+            if to_process.dtype == np.float32 or to_process.dtype == np.float64:
+                # Log pre-gain audio level
+                # max_pre_gain = np.max(np.abs(to_process))
+                # print(f"[WakeWordDetector] Max pre-gain audio level: {max_pre_gain:.4f}")
+
+                # Apply gain to boost low volume
+                to_process = to_process * self.gain
+                # Clamp to [-1, 1]
+                to_process = np.clip(to_process, -1.0, 1.0)
+                pcm = (to_process * 32767).astype(np.int16)
             else:
-                pcm = audio_frame.astype(np.int16)
+                pcm = to_process.astype(np.int16)
             
             # Process with OpenWakeWord
             prediction = self._oww.predict(pcm)
+            
+            # Log max amplitude and prediction scores occasionally
+            # max_amp = np.max(np.abs(pcm))
+            # print(f"[WakeWordDetector] Max Amp: {max_amp:.2f}")
+            # print(f"[WakeWordDetector] Scores: {prediction}")
             
             # Check if wake word detected (returns dict with model names as keys)
             if prediction:
                 for model_name, score in prediction.items():
                     if score >= self.sensitivity:
+                        print(f"[WakeWordDetector] Detected {model_name} with score {score:.4f}")
                         return True
             
             return False
             
         except Exception as e:
             print(f"[WakeWordDetector] Processing error: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def cleanup(self):
@@ -129,6 +168,7 @@ class WakeWordDetector:
         if self._oww:
             self._oww = None
         self._initialized = False
+        self._audio_buffer = np.array([], dtype=np.float32)
 
 
 # Supported wake phrases getter for UI

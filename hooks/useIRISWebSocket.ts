@@ -60,6 +60,7 @@ interface UseIRISWebSocketReturn {
   confirmMiniNode: (subnodeId: string, values: Record<string, string | number | boolean>) => void
   updateTheme: (glowColor?: string, fontColor?: string, stateColors?: { enabled?: boolean; idle?: string; listening?: string; processing?: string; error?: string }) => void
   requestState: () => void
+  sendMessage: (type: string, payload?: any) => boolean
   lastError: string | null
   onWakeDetected?: () => void
 }
@@ -72,9 +73,10 @@ const DEFAULT_THEME: ColorTheme = {
 }
 
 export function useIRISWebSocket(
-  url: string = "ws://localhost:8000/ws/iris",
+  url: string = "ws://localhost:8000/ws/iris", // Reverted to port 8000
   autoConnect: boolean = true,
-  onWakeDetected?: () => void
+  onWakeDetected?: () => void,
+  onNativeAudioResponse?: (payload: any) => void
 ): UseIRISWebSocketReturn {
   // Connection state
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected")
@@ -93,11 +95,13 @@ export function useIRISWebSocket(
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const onWakeDetectedRef = useRef(onWakeDetected)
+  const onNativeAudioResponseRef = useRef(onNativeAudioResponse)
 
   // Update ref when callback changes
   useEffect(() => {
     onWakeDetectedRef.current = onWakeDetected
-  }, [onWakeDetected])
+    onNativeAudioResponseRef.current = onNativeAudioResponse
+  }, [onWakeDetected, onNativeAudioResponse])
 
   const isConnected = connectionState === "connected"
 
@@ -265,6 +269,40 @@ export function useIRISWebSocket(
         break
       }
 
+      case "voice_command_started": {
+        // Voice command recording started
+        console.log("[IRIS WebSocket] Voice command started:", payload.message)
+        break
+      }
+
+      case "voice_command_ended": {
+        // Voice command recording ended
+        console.log("[IRIS WebSocket] Voice command ended:", payload.message)
+        break
+      }
+
+      case "voice_command_result": {
+        // Voice command processing result
+        console.log("[IRIS WebSocket] Voice command result:", payload)
+        break
+      }
+
+      case "native_audio_response": {
+        // Native audio response from LFM2-Audio model
+        console.log("[IRIS WebSocket] Native audio response:", payload)
+        // Call the callback if provided
+        if (onNativeAudioResponseRef.current) {
+          onNativeAudioResponseRef.current(payload)
+        }
+        break
+      }
+
+      case "voice_command_error": {
+        // Voice command error
+        console.error("[IRIS WebSocket] Voice command error:", payload.error)
+        break
+      }
+
       default:
         console.log("[IRIS WebSocket] Unknown message type:", type, payload)
     }
@@ -368,6 +406,7 @@ export function useIRISWebSocket(
     confirmMiniNode,
     updateTheme,
     requestState,
+    sendMessage,
     lastError,
   }
 }

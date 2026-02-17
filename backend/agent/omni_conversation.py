@@ -201,12 +201,12 @@ class OmniConversationManager:
             print("[OmniConversation] No fallback endpoint configured")
             return None
 
-        # Ensure endpoint has the completions path
-        if not endpoint.endswith("/v1/chat/completions"):
-            if endpoint.endswith("/"):
-                endpoint += "v1/chat/completions"
-            else:
-                endpoint += "/v1/chat/completions"
+        # Ensure endpoint has the completions path cleanly
+        endpoint = endpoint.rstrip("/")
+        for suffix in ["/v1/chat/completions", "/v1/completions"]:
+            if endpoint.endswith(suffix):
+                endpoint = endpoint[:-len(suffix)]
+        endpoint = f"{endpoint}/v1/chat/completions"
 
         payload = {
             "model": self.config.get("fallback_model", "default"),

@@ -1,0 +1,34 @@
+{
+    "session_id": "test_session",
+    "start_time": "2026-02-16T17:09:24.027588+00:00",
+    "end_time": "2026-02-16T17:09:24.027652+00:00",
+    "event_count": 3,
+    "events": [
+        {
+            "timestamp": "2026-02-16T17:09:24.027594+00:00",
+            "time_offset": 6e-06,
+            "event_type": "session_start",
+            "payload": {
+                "session_id": "test_session"
+            }
+        },
+        {
+            "timestamp": "2026-02-16T17:09:24.027611+00:00",
+            "time_offset": 2.3e-05,
+            "event_type": "ui_action",
+            "payload": {
+                "action": "click",
+                "element": "button"
+            }
+        },
+        {
+            "timestamp": "2026-02-16T17:09:24.027617+00:00",
+            "time_offset": 2.9e-05,
+            "event_type": "state_change",
+            "payload": {
+                "key": "test",
+                "value": "data"
+            }
+        }
+    ]
+}

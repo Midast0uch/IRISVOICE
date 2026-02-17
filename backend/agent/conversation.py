@@ -28,12 +28,13 @@ class AIConversationManager:
     def update_config(self, **kwargs):
         # If endpoint is provided without /v1/chat/completions, append it
         if "endpoint" in kwargs and kwargs["endpoint"]:
-            endpoint = kwargs["endpoint"]
-            if not endpoint.endswith("/v1/chat/completions") and not endpoint.endswith("/v1/completions"):
-                if endpoint.endswith("/"):
-                    kwargs["endpoint"] = f"{endpoint}v1/chat/completions"
-                else:
-                    kwargs["endpoint"] = f"{endpoint}/v1/chat/completions"
+            endpoint = kwargs["endpoint"].rstrip("/")
+            # Remove existing completions paths if present to prevent duplication
+            for suffix in ["/v1/chat/completions", "/v1/completions"]:
+                if endpoint.endswith(suffix):
+                    endpoint = endpoint[:-len(suffix)]
+            
+            kwargs["endpoint"] = f"{endpoint}/v1/chat/completions"
         
         self.config.update({k: v for k, v in kwargs.items() if v is not None})
 
