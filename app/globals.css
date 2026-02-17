@@ -1,0 +1,385 @@
+/* stylelint-disable at-rule-no-unknown */
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* === BRAND COLOR SYSTEM (ChromaShift) === */
+  /* User-controlled Brand Color (default: 210 Cyan-Blue for Aether compatibility) */
+  --brand-hue: 210;
+  --brand-saturation: 80%;
+  --brand-lightness: 55%;
+  --brand-color: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness));
+  
+  /* === BASE THEME VARIABLES === */
+  --background: transparent;
+  --foreground: #e5e5e5;
+  --card: rgba(255, 255, 255, 0.05);
+  --card-foreground: #e5e5e5;
+  --popover: rgba(15, 15, 20, 0.95);
+  --popover-foreground: #e5e5e5;
+  --primary: var(--brand-color);
+  --primary-foreground: #0a0a0f;
+  --secondary: rgba(192, 192, 192, 0.1);
+  --secondary-foreground: #c0c0c0;
+  --muted: rgba(255, 255, 255, 0.08);
+  --muted-foreground: #a0a0a0;
+  --accent: var(--brand-color);
+  --accent-foreground: #0a0a0f;
+  --destructive: #ff4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness) / 0.5);
+  --chart-1: var(--brand-color);
+  --chart-2: hsl(calc(var(--brand-hue) + 30) 70% 50%);
+  --chart-3: hsl(calc(var(--brand-hue) + 60) 60% 45%);
+  --chart-4: hsl(calc(var(--brand-hue) + 90) 50% 40%);
+  --chart-5: hsl(calc(var(--brand-hue) + 120) 40% 35%);
+  --radius: 0.75rem;
+  --sidebar: #0d0d12;
+  --sidebar-foreground: #e5e5e5;
+  --sidebar-primary: var(--brand-color);
+  --sidebar-primary-foreground: #0a0a0f;
+  --sidebar-accent: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness) / 0.15);
+  --sidebar-accent-foreground: var(--brand-color);
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  --sidebar-ring: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness) / 0.4);
+  
+  /* === GLOW & GLASS VARIABLES === */
+  --glow-primary: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness) / 0.4);
+  --glow-secondary: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness) / 0.2);
+  --glow-tertiary: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness) / 0.1);
+  --glass-bg: rgba(255, 255, 255, 0.05);
+  --glass-border: rgba(255, 255, 255, 0.15);
+  --silver: #c0c0c0;
+  
+  /* === THEME SELECTOR === */
+  --active-theme: aether;
+}
+
+@theme inline {
+  --font-sans: 'Geist', 'Geist Fallback';
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-glow-primary: var(--glow-primary);
+  --color-glow-secondary: var(--glow-secondary);
+  --color-glow-tertiary: var(--glow-tertiary);
+  --color-glass-bg: var(--glass-bg);
+  --color-glass-border: var(--glass-border);
+  --color-silver: var(--silver);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    outline-color: var(--ring);
+  }
+  html, body {
+    background-color: transparent;
+    color: var(--foreground);
+    background: transparent !important;
+    /* CRITICAL: Allow content to overflow so nodes aren't clipped */
+    overflow: visible !important;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+/* Tauri transparent window support - CRITICAL for frameless widgets */
+html {
+  background: transparent;
+  overflow: visible;
+}
+
+body {
+  background: transparent !important;
+  overflow: visible !important;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Prevent default margins that show window frame */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Custom animations for the control center */
+@keyframes breathe {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 
+      0 0 20px rgba(0, 255, 136, 0.4),
+      0 0 40px rgba(0, 255, 136, 0.2),
+      0 0 60px rgba(0, 255, 136, 0.1);
+  }
+  50% {
+    box-shadow: 
+      0 0 30px rgba(0, 255, 136, 0.6),
+      0 0 60px rgba(0, 255, 136, 0.3),
+      0 0 90px rgba(0, 255, 136, 0.15);
+  }
+}
+
+@keyframes rotate-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes draw-line {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.animate-breathe {
+  animation: breathe 4s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 4s ease-in-out infinite;
+}
+
+.animate-rotate-slow {
+  animation: rotate-slow 20s linear infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-draw-line {
+  stroke-dasharray: 100;
+  animation: draw-line 0.5s ease-out forwards;
+}
+
+/* === AETHER THEME (Ethereal Glass) === */
+/* Brand Color becomes prismatic shimmer base */
+[data-theme="aether"] {
+  --active-theme: aether;
+  
+  /* Canvas - cool off-white, Brand Color does not tint */
+  --aether-canvas: #f8fafc;
+  --aether-surface: rgba(255, 255, 255, 0.7);
+  
+  /* Prismatic shimmer spectrum based on Brand Color */
+  --shimmer-start: hsl(var(--brand-hue), 90%, 60%);
+  --shimmer-mid: hsl(calc(var(--brand-hue) + 30), 80%, 65%);
+  --shimmer-end: hsl(calc(var(--brand-hue) + 60), 70%, 55%);
+  --glow-color: hsl(var(--brand-hue), 70%, 60%, 0.3);
+  
+  /* Material properties */
+  --aether-blur: blur(20px);
+  --radius-macro: 24px;
+  --radius-pill: 9999px;
+  
+  /* Shadows cast in Brand Color */
+  --aether-float-elevation: 0 8px 32px var(--glow-color);
+}
+
+/* === EMBER THEME (Warm Industrial) === */
+/* Brand Color becomes directional edge illumination */
+[data-theme="ember"] {
+  --active-theme: ember;
+  
+  /* Canvas - warm stone white, neutral for Brand Color to pop */
+  --ember-canvas: #f5f5f0;
+  --ember-container: #1c1c1e;
+  
+  /* Edge glow with warmth preservation (+10° amber shift, -20% saturation) */
+  --edge-glow: hsl(calc(var(--brand-hue) + 10), 60%, 45%);
+  --edge-glow-soft: hsl(calc(var(--brand-hue) + 10), 50%, 50%, 0.3);
+  --interaction-wash: hsl(calc(var(--brand-hue) + 10), 40%, 50%, 0.1);
+  
+  /* Material properties - desaturated for metallic realism */
+  --ember-saturation-cap: 70%;
+  --radius-macro: 32px;
+  
+  /* Directional shadow */
+  --ember-shadow: 4px 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* === AURUM THEME (Liquid Metal) === */
+/* Brand Color becomes alloy composition */
+[data-theme="aurum"] {
+  --active-theme: aurum;
+  
+  /* Canvas - void black, Brand Color shows through metal */
+  --aurum-canvas: #0a0a0a;
+  --aurum-surface: #161616;
+  
+  /* Metallic with heavy desaturation (40% of base) */
+  --metal-primary: hsl(var(--brand-hue), calc(var(--brand-saturation) * 0.4), 55%);
+  --metal-secondary: hsl(calc(var(--brand-hue) - 20), calc(var(--brand-saturation) * 0.5), 45%);
+  --metal-highlight: hsl(var(--brand-hue), calc(var(--brand-saturation) * 0.6), 70%);
+  --ambient-aura: hsl(var(--brand-hue), 60%, 50%, 0.15);
+  
+  /* Material properties */
+  --aurum-saturation-cap: 40%;
+  --aurum-squircle: 28%;
+  
+  /* Liquid rotation animation */
+  --aurum-rotation-duration: 20s;
+}
+
+/* === SHIMMER ANIMATION === */
+@keyframes shimmer-flow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.aether-shimmer {
+  background: linear-gradient(90deg, var(--shimmer-start), var(--shimmer-mid), var(--shimmer-end), var(--shimmer-start));
+  background-size: 200% 100%;
+  animation: shimmer-flow 3s ease-in-out infinite;
+}
+
+/* === EMBER EDGE GLOW === */
+.ember-edge-glow {
+  box-shadow: inset 3px 0 6px var(--edge-glow-soft);
+  border-left: 3px solid transparent;
+  border-image: linear-gradient(180deg, var(--edge-glow), transparent 80%) 1;
+}
+
+/* === AURUM LIQUID METAL === */
+@keyframes aurum-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.aurum-metal-ring {
+  background: conic-gradient(
+    from 0deg,
+    var(--metal-primary),
+    var(--metal-highlight),
+    var(--metal-secondary),
+    var(--metal-primary)
+  );
+  animation: aurum-rotate var(--aurum-rotation-duration) linear infinite;
+}
+
+/* === UTILITY CLASSES === */
+/* Glassmorphism utility */
+.glass {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.glass-hover:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: hsl(var(--brand-hue) var(--brand-saturation) var(--brand-lightness) / 0.3);
+}
+
+/* Dot grid background pattern */
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 24px 24px;
+
+  
+}
+/* At the very end of the file, after all other styles */
+#__next, #root {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: visible;
+}
+
+/* === TAURI SCROLLBAR REMOVAL === */
+/* Remove scrollbars from Tauri Dev build */
+html, body {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE and Edge */
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Ensure no overflow scrollbars appear */
+body {
+  overflow: visible !important;
+}

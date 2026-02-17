@@ -1,0 +1,13 @@
+[   28866ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_category @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[   41399ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_subnode @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[   42828ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_category @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[  342352ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_subnode @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[  342484ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_category @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[  347862ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_category @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[  402137ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_category @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[  402175ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_subnode @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[  404049ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_subnode @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[  408333ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_category @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[ 1751074ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_category @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[ 1751785ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_subnode @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287
+[ 1753233ms] [WARNING] [IRIS WebSocket] Not connected, message dropped: select_category @ http://localhost:3002/_next/static/chunks/node_modules_next_dist_7a8122d0._.js:2287

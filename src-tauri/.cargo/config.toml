@@ -1,0 +1,9 @@
+﻿[build]
+incremental = false
+target-dir = "C:/temp/tauri-build"
+
+[profile.dev]
+incremental = false
+
+[profile.release]
+incremental = false

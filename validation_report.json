@@ -1,0 +1,50 @@
+{
+    "summary": {
+        "total_tests": 8,
+        "passed": 8,
+        "failed": 0,
+        "duration_seconds": 0.177485
+    },
+    "results": [
+        {
+            "component": "Security",
+            "test": "Tool Validation",
+            "status": "PASS"
+        },
+        {
+            "component": "Session Management",
+            "test": "Full Lifecycle",
+            "status": "PASS"
+        },
+        {
+            "component": "Gateway",
+            "test": "Message Processing",
+            "status": "PASS"
+        },
+        {
+            "component": "Vision Security",
+            "test": "Action Validation",
+            "status": "PASS"
+        },
+        {
+            "component": "Configuration",
+            "test": "Workspace Management",
+            "status": "PASS"
+        },
+        {
+            "component": "Monitoring",
+            "test": "Structured Logging",
+            "status": "PASS"
+        },
+        {
+            "component": "Debug Tools",
+            "test": "Recording & Monitoring",
+            "status": "PASS"
+        },
+        {
+            "component": "Integration",
+            "test": "End-to-End Flow",
+            "status": "PASS"
+        }
+    ]
+}
