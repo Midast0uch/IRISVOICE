@@ -204,6 +204,7 @@
     "eslint": "^10.0.0",
     "fast-check": "^4.5.3",
     "jest": "^30.2.0",
+    "playwright": "^1.58.2",
     "typescript": "^5.9.3"
   },
   "scripts": {
@@ -214,6 +215,7 @@
     "lint": "eslint .",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:preservation": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/preservation-property.test.js",
+    "test:bug-condition": "node tests/bug-condition-navigation-level3.test.js",
     "tauri": "tauri",
     "dev:backend": "C:\\\\Python313\\\\python.exe start-backend.py",
     "dev:tauri": "npx tauri dev",

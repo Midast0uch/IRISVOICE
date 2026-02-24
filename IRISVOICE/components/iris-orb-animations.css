@@ -1,0 +1,84 @@
+/* IrisOrb animations - CSS to avoid hydration mismatch */
+
+@keyframes breathe-outer {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.6); opacity: 1; }
+}
+
+@keyframes breathe-inner {
+  0%, 100% { transform: scale(0.8); opacity: 0.7; }
+  50% { transform: scale(1.4); opacity: 1; }
+}
+
+@keyframes shimmer-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ambient-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.5; }
+  50% { transform: scale(1.2); opacity: 0.8; }
+}
+
+@keyframes text-glow {
+  0%, 100% { text-shadow: 0 0 10px var(--glow-alpha-3); }
+  50% { text-shadow: 0 0 20px var(--glow-alpha-6), 0 0 10px var(--glow-alpha-3); }
+}
+
+.iris-orb__outer-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  inset: -60px;
+  filter: blur(30px);
+  animation: breathe-outer 5s ease-in-out infinite;
+}
+
+.iris-orb__inner-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  inset: -8px;
+  filter: blur(8px);
+  animation: breathe-inner 3s ease-in-out infinite;
+}
+
+.iris-orb__shimmer {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  inset: -3px;
+  padding: 3px;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: shimmer-rotate 10s linear infinite;
+}
+
+.iris-ambient-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  width: 400px;
+  height: 400px;
+  left: 50%;
+  top: 50%;
+  margin-left: -200px;
+  margin-top: -200px;
+  animation: ambient-pulse 8s ease-in-out infinite;
+}
+
+.iris-orb__text-glow {
+  animation: text-glow 4s ease-in-out infinite;
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .iris-orb__outer-glow,
+  .iris-orb__inner-glow,
+  .iris-orb__shimmer,
+  .iris-ambient-glow,
+  .iris-orb__text-glow {
+    animation: none;
+  }
+}

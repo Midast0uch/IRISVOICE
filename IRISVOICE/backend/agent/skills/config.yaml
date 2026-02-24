@@ -1,0 +1,48 @@
+# User Skills Configuration
+# Add, remove, or disable skills here
+# Skills are loaded from the skills/ folder
+
+enabled_skills:
+  # Core skills (built-in)
+  - name: "file_operations"
+    enabled: true
+    description: "Read, write, list, create, and delete files"
+    
+  - name: "web_browser"
+    enabled: true
+    description: "Open URLs and search the web"
+    
+  - name: "system_control"
+    enabled: true
+    description: "Get system info, lock screen, shutdown, restart"
+    
+  - name: "app_launcher"
+    enabled: true
+    description: "Launch applications and open files"
+
+  # Custom skills (user-defined)
+  # Add your custom skills below:
+  # - name: "my_custom_skill"
+  #   enabled: true
+  #   description: "Description of what my skill does"
+
+# Skill categories for organization
+skill_categories:
+  - id: "core"
+    name: "Core Skills"
+    description: "Essential file, web, and system operations"
+    
+  - id: "web"
+    name: "WEB Skills"
+    description: "Browser control and GUI automation"
+    
+  - id: "custom"
+    name: "Custom Skills"
+    description: "User-defined skills"
+
+# Skill execution settings
+settings:
+  max_concurrent: 5
+  default_timeout: 30
+  retry_on_failure: true
+  max_retries: 3

@@ -1,0 +1,41 @@
+
+# Agent Configuration
+# This file defines the models, their roles, capabilities, and loading arguments.
+
+# Communication settings
+communication:
+  timeout: 30.0  # seconds
+  max_retries: 3
+  retry_delay: 1.0  # seconds
+
+# Model settings
+models:
+  - id: "brain"
+    path: "./models/LFM2-8B-A1B"
+    capabilities: ["reasoning", "planning"]
+    constraints:
+      device: "cuda"
+      dtype: "bfloat16"
+    optional: false  # If true, startup continues if model fails to load
+
+  - id: "executor"
+    path: "./models/LFM2.5-1.2B-Instruct"
+    capabilities: ["tool_execution", "instruction_following"]
+    constraints:
+      device: "cuda"
+      dtype: "bfloat16"
+    optional: false
+
+  - id: "vision"
+    # MiniCPM is pre-loaded and accessed via a dedicated toolkit, so no path is needed here.
+    # This entry is for the router to know that the 'vision' capability exists.
+    path: null
+    capabilities: ["vision", "gui_interaction"]
+    constraints: null
+    optional: true
+
+# Tool execution settings
+tool_execution:
+  max_concurrent: 5
+  default_timeout: 30.0
+  enable_security: true

@@ -255,3 +255,230 @@ NEVER remove the webpack exclusions from next.config.mjs. The memory spike will 
 **Testing:**
 - `npm run test` - Runs bug condition test
 - `npm run test:preservation` - Verifies backend still works
+
+
+## Navigation System Architecture (Feb 23, 2026) - CRITICAL
+
+### Overview
+
+The IRISVOICE navigation system is a 4-level hierarchical interface where nodes orbit around a central IRIS orb. This is the core UI interaction pattern and must remain stable across all future implementations.
+
+### Navigation Levels
+
+```
+Level 1: Idle IRIS Orb (collapsed state)
+   ↓ Click orb
+Level 2: 6 Main Category Nodes (hexagonal orbit)
+   ↓ Click category
+Level 3: 4 Sub-nodes per category (orbital display)
+   ↓ Click sub-node
+Level 4: Mini-node stack or wheel view (settings interface)
+```
+
+### Core Components
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| NavigationContext | `contexts/NavigationContext.tsx` | State management, WebSocket integration |
+| HexagonalControlCenter | `components/hexagonal-control-center.tsx` | Renders nodes at levels 2 & 3 |
+| PrismNode (HexagonalNode) | `components/iris/prism-node.tsx` | Individual node rendering & animation |
+| Level4View | `components/level-4-view.tsx` | Settings interface at level 4 |
+| IrisOrb | `components/iris/IrisOrb.tsx` | Central orb component |
+
+### State Management
+
+**NavState Structure:**
+```typescript
+{
+  level: 1 | 2 | 3 | 4,           // Current navigation level
+  selectedMain: string | null,      // Selected category (e.g., "VOICE")
+  selectedSub: string | null,       // Selected sub-node (e.g., "INPUT")
+  history: HistoryEntry[],          // Navigation history for back button
+  transitionDirection: 'forward' | 'backward' | null,
+  isTransitioning: boolean,
+  miniNodeStack: MiniNode[],        // Level 4 settings
+  // ... other state
+}
+```
+
+**CRITICAL STATE RULES:**
+
+1. **Level 2 → Level 3**: `selectedMain` MUST be set and preserved
+2. **Level 3 → Level 2 (backward)**: `selectedMain` MUST remain set (shows which category was selected)
+3. **Level 2 → Level 1 (backward)**: Clear all selections
+4. **Level 4 → Level 3 (backward)**: Keep `selectedMain` and `selectedSub`, clear mini node stack
+
+### Navigation Actions
+
+| Action | Trigger | State Change |
+|--------|---------|--------------|
+| `EXPAND_TO_MAIN` | Click IRIS orb at level 1 | level: 1 → 2 |
+| `SELECT_MAIN` | Click category node | level: 2 → 3, set selectedMain |
+| `SELECT_SUB` | Click sub-node | level: 3 → 4, set selectedSub |
+| `GO_BACK` | Click IRIS orb at level > 1 | level: n → n-1, preserve context |
+| `COLLAPSE_TO_IDLE` | (Not used for orb clicks) | level: n → 1, clear all |
+
+### Node Rendering Logic
+
+**File:** `components/hexagonal-control-center.tsx`
+
+```typescript
+// Level 2: Show 6 main category nodes
+if (nav.state.level === 2) {
+  return MAIN_NODES.map((node, index) => ({
+    ...node,
+    angle: MAIN_NODE_ANGLES[index],
+    isActive: nav.state.selectedMain === node.id
+  }))
+}
+
+// Level 3: Show 4 sub-nodes for selected category
+else if (nav.state.level === 3 && nav.state.selectedMain) {
+  // CRITICAL: Fallback to hardcoded SUB_NODES if WebSocket unavailable
+  const subNodes = (nav.subnodes[nav.state.selectedMain]?.length > 0) 
+    ? nav.subnodes[nav.state.selectedMain] 
+    : (SUB_NODES[nav.state.selectedMain] || [])
+  return subNodes.map((node, index) => ({
+    ...node,
+    angle: SUB_NODE_ANGLES[index],
+    isActive: nav.state.selectedSub === node.id
+  }))
+}
+```
+
+### Animation System
+
+**CRITICAL ANIMATION RULE:**
+Nodes should ALWAYS animate to their expanded (orbital) positions when rendered, regardless of navigation direction.
+
+```typescript
+// CORRECT: Nodes always expand into orbit
+<HexagonalNode
+  isCollapsing={false}  // ✅ Always false - AnimatePresence handles exit
+  // ... other props
+/>
+
+// WRONG: Don't use transitionDirection for isCollapsing
+<HexagonalNode
+  isCollapsing={nav.state.transitionDirection === 'backward'}  // ❌ Breaks backward nav
+/>
+```
+
+**Why:** AnimatePresence automatically handles exit animations when components unmount. Setting `isCollapsing` based on direction causes nodes to animate to center instead of orbit.
+
+### WebSocket Integration
+
+**Fallback Pattern (CRITICAL):**
+```typescript
+// Always provide fallback data when WebSocket is unavailable
+const subNodes = (nav.subnodes[selectedMain]?.length > 0) 
+  ? nav.subnodes[selectedMain]           // Use WebSocket data if available
+  : (SUB_NODES[selectedMain] || [])      // Fallback to hardcoded data
+```
+
+**Why:** Backend may be offline during development. UI must remain functional with hardcoded fallback data.
+
+### Common Bugs & Fixes (Feb 23, 2026)
+
+#### Bug 1: Nodes Don't Appear at Level 3
+**Cause:** Missing fallback to hardcoded SUB_NODES when WebSocket unavailable  
+**Fix:** Added fallback logic in HexagonalControlCenter (line 107-109)  
+**Test:** `tests/bug-condition-navigation-level3.test.js`
+
+#### Bug 2: Backward Navigation Skips Level 2
+**Cause:** `handleIrisClick` called `handleCollapseToIdle()` instead of `handleGoBack()`  
+**Fix:** Changed NavigationContext.tsx line 505 to use `handleGoBack()`  
+**Impact:** Now navigates 4→3→2→1 instead of jumping to 1
+
+#### Bug 3: Nodes Don't Orbit When Going Backward
+**Cause:** `isCollapsing={transitionDirection === 'backward'}` made nodes animate to exit state  
+**Fix:** Changed to `isCollapsing={false}` in HexagonalControlCenter line 147  
+**Impact:** Nodes now properly orbit when navigating backward
+
+#### Bug 4: selectedMain Cleared When Going Back to Level 2
+**Cause:** GO_BACK reducer cleared selectedMain at level 2  
+**Fix:** Removed line that cleared selectedMain in NavigationContext.tsx (line 95-100)  
+**Impact:** Category remains highlighted when returning to level 2
+
+#### Bug 5: React Reuses Component Between Levels
+**Cause:** Same LazyHexagonalControlCenter used for levels 2 & 3 without key prop  
+**Fix:** Added `key="level-2"` and `key="level-3"` in page.tsx  
+**Impact:** Forces proper re-render when transitioning between levels
+
+### Customization Points (Safe to Modify)
+
+✅ **Safe to customize:**
+- Node visual design (colors, glass effects, borders)
+- Animation timing and easing functions
+- Node icons and labels
+- Orbital radius and positioning angles
+- Transition effects and styles
+
+❌ **DO NOT modify without careful testing:**
+- State management logic in NavigationContext reducer
+- `currentNodes` useMemo logic in HexagonalControlCenter
+- `isCollapsing` prop value (must always be `false`)
+- Fallback data pattern for WebSocket
+- Key props on LazyHexagonalControlCenter
+- GO_BACK reducer logic for preserving selectedMain
+
+### Testing
+
+**Bug Condition Tests:**
+```bash
+npm run test:navigation  # Tests level 3 node rendering with offline backend
+```
+
+**Preservation Tests:**
+```bash
+npm run test:navigation:preservation  # Verifies levels 1 & 2 still work
+```
+
+### Future-Proofing Guidelines
+
+When making changes to the navigation system:
+
+1. **Always test with backend offline** - Fallback data must work
+2. **Test backward navigation** - All levels must render correctly going backward
+3. **Verify selectedMain preservation** - Category should stay highlighted at level 2
+4. **Check AnimatePresence behavior** - Nodes should always expand into orbit
+5. **Add tests for new features** - Follow property-based testing pattern
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    NavigationContext                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────┐   │
+│  │   NavState   │  │  WebSocket   │  │  Action         │   │
+│  │   Reducer    │←→│  Integration │←→│  Handlers       │   │
+│  └──────────────┘  └──────────────┘  └─────────────────┘   │
+└────────────┬────────────────────────────────────────────────┘
+             │
+             ↓ Provides state & actions
+┌─────────────────────────────────────────────────────────────┐
+│                    page.tsx (Main App)                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────┐   │
+│  │   IrisOrb    │  │ Hexagonal    │  │  Level4View     │   │
+│  │  (Level 1)   │  │ Control      │  │  (Level 4)      │   │
+│  │              │  │ (Levels 2&3) │  │                 │   │
+│  └──────────────┘  └──────────────┘  └─────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+             │
+             ↓ Renders nodes
+┌─────────────────────────────────────────────────────────────┐
+│              PrismNode (HexagonalNode)                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────┐   │
+│  │  Animation   │  │  Glass       │  │  Orbital        │   │
+│  │  Variants    │  │  Effects     │  │  Positioning    │   │
+│  └──────────────┘  └──────────────┘  └─────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Takeaways
+
+1. **Navigation is state-driven** - All UI changes flow from NavState
+2. **Fallback data is mandatory** - UI must work without backend
+3. **Backward navigation preserves context** - Don't clear state prematurely
+4. **Animations are declarative** - Let AnimatePresence handle exits
+5. **Test with backend offline** - Most bugs appear in this scenario
