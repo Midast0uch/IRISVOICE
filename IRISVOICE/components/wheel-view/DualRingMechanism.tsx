@@ -10,7 +10,9 @@ interface DualRingMechanismProps {
   onSelect: (index: number) => void
   glowColor: string
   orbSize: number
-  confirmSpinning: boolean
+  confirmSpinning?: boolean
+  isVoiceActive?: boolean
+  voiceIntensity?: number
 }
 
 /**
@@ -20,12 +22,12 @@ interface DualRingMechanismProps {
 function hexToRgba(hex: string, alpha: number): string {
   // Remove # if present
   hex = hex.replace("#", "")
-  
+
   // Parse hex values
   const r = parseInt(hex.substring(0, 2), 16)
   const g = parseInt(hex.substring(2, 4), 16)
   const b = parseInt(hex.substring(4, 6), 16)
-  
+
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
@@ -52,11 +54,15 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
   onSelect,
   glowColor,
   orbSize,
-  confirmSpinning,
+  confirmSpinning = false,
+  isVoiceActive = false,
+  voiceIntensity = 0,
 }) => {
-  // Task 5.1: Ring distribution logic (Property 6)
+  // Phase 9.1: Consolidated 2-ring distribution logic
   const { outerItems, innerItems, splitPoint } = useMemo(() => {
-    const split = Math.ceil(items.length / 2)
+    const total = items.length
+    const split = Math.ceil(total * 0.6)
+
     return {
       outerItems: items.slice(0, split),
       innerItems: items.slice(split),
@@ -64,37 +70,29 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
     }
   }, [items])
 
-  // Calculate radii
-  const outerRadius = orbSize * 0.42
-  const innerRadius = orbSize * 0.18
-  const center = orbSize / 2
+  // Consolidated Radii (Phase 49: Ultra-Density Contraction)
+  const outerRadius = orbSize * 0.39
+  const innerRadius = orbSize * 0.27
 
-  // Task 5.2: Outer ring calculations (memoized for performance - Requirement 12.2)
-  const outerSegmentAngle = useMemo(() => 360 / outerItems.length, [outerItems.length])
-  const outerSelectedIndex = selectedIndex < splitPoint ? selectedIndex : -1
+  // Phase 47: SVG Viewport Buffer (Universal Clipping Fix)
+  // 200px provides massive safety for high-intensity blooms on all rings
+  const buffer = 200
+  const center = (orbSize + buffer) / 2
 
-  // Task 5.4: Outer ring rotation logic (memoized for performance - Requirement 12.2)
-  const outerBaseRotation = useMemo(() => 
-    outerSelectedIndex >= 0 ? -(outerSelectedIndex * outerSegmentAngle) : 0,
-    [outerSelectedIndex, outerSegmentAngle]
-  )
+  // Sector angle calculations
+  const outerSegmentAngle = outerItems.length > 0 ? 360 / outerItems.length : 0
+  const innerSegmentAngle = innerItems.length > 0 ? 360 / innerItems.length : 0
 
-  // Task 5.3: Inner ring calculations (memoized for performance - Requirement 12.2)
-  const innerSegmentAngle = useMemo(() => 
-    innerItems.length > 0 ? 360 / innerItems.length : 0,
-    [innerItems.length]
-  )
-  const innerSelectedIndex = selectedIndex >= splitPoint 
-    ? selectedIndex - splitPoint 
-    : -1
+  // Rotation calculations for 2 rings
+  const isOuterSelected = selectedIndex < splitPoint
+  const outerSelectedIndex = isOuterSelected ? selectedIndex : -1
+  const outerBaseRotation = outerSelectedIndex >= 0 ? -(outerSelectedIndex * outerSegmentAngle) : 0
 
-  // Task 5.5: Inner ring rotation logic (memoized for performance - Requirement 12.2)
-  const innerBaseRotation = useMemo(() =>
-    innerSelectedIndex >= 0 ? -(innerSelectedIndex * innerSegmentAngle) : 0,
-    [innerSelectedIndex, innerSegmentAngle]
-  )
+  const isInnerSelected = selectedIndex >= splitPoint
+  const innerSelectedIndex = isInnerSelected ? selectedIndex - splitPoint : -1
+  const innerBaseRotation = innerSelectedIndex >= 0 ? -(innerSelectedIndex * innerSegmentAngle) : 0
 
-  // Task 5.8: Counter-spin animation
+  // Counter-spin rotations for 2 rings
   const outerRotation = confirmSpinning ? outerBaseRotation + 360 : outerBaseRotation
   const innerRotation = confirmSpinning ? innerBaseRotation - 360 : innerBaseRotation
 
@@ -146,287 +144,471 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
   }, [center, polarToCartesian])
 
   /**
-   * Generate curved text path for labels
+   * Render segment text along arc path
    */
-  const generateTextPath = (
+  const renderSegmentText = (
     radius: number,
     startAngle: number,
     endAngle: number,
-    id: string
-  ): JSX.Element => {
-    const midAngle = (startAngle + endAngle) / 2
-    const textRadius = radius
-    const path = generateArcPath(textRadius, startAngle, endAngle)
+    id: string,
+    label: string,
+    isSelected: boolean,
+    fontSize: number = 9
+  ): React.ReactNode => {
+    const textPathId = `textpath-${id}`
+    const path = generateArcPath(radius, startAngle, endAngle)
 
     return (
-      <defs key={`textpath-${id}`}>
-        <path id={`textpath-${id}`} d={path} fill="none" />
-      </defs>
+      <g key={`text-${id}`}>
+        <defs>
+          <path id={textPathId} d={path} fill="none" />
+        </defs>
+        <text
+          fill={isSelected ? "rgba(255, 255, 255, 0.95)" : "rgba(255, 255, 255, 0.4)"}
+          fontSize={fontSize}
+          fontWeight="600"
+          textAnchor="middle"
+          style={{
+            pointerEvents: "none",
+            textTransform: "uppercase",
+            letterSpacing: "0.05em"
+          }}
+        >
+          <textPath
+            href={`#${textPathId}`}
+            startOffset="50%"
+          >
+            {label}
+          </textPath>
+        </text>
+      </g>
     )
   }
 
   return (
     <svg
-      width={orbSize}
-      height={orbSize}
-      viewBox={`0 0 ${orbSize} ${orbSize}`}
-      className="absolute inset-0"
-      style={{ pointerEvents: "none" }}
+      width={orbSize + buffer}
+      height={orbSize + buffer}
+      viewBox={`0 0 ${orbSize + buffer} ${orbSize + buffer}`}
+      className="absolute"
+      style={{
+        pointerEvents: "none",
+        left: -buffer / 2,
+        top: -buffer / 2,
+        overflow: "visible" // Absolute absolute visibility (Phase 50)
+      }}
     >
-      {/* Task 5.6: Decorative rings */}
-      <g style={{ pointerEvents: "none" }}>
-        {/* Ring 1 (innermost) */}
+      {/* 1. Dynamic Background Aura (Absolute Bottom - Refined Phase 50) */}
+      <motion.g
+        style={{ pointerEvents: "none" }}
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{
+          opacity: isVoiceActive ? [0.95, 1.2, 0.95] : 0.95, // Heavy Engine Overdrive (Phase 61)
+          scale: isVoiceActive ? [1, 1.08, 1] : 1 // Increased pulse scale (Phase 61)
+        }}
+        transition={{
+          opacity: isVoiceActive
+            ? { duration: 1.2, repeat: Infinity, ease: "easeInOut" }
+            : { duration: 1.5, ease: "easeOut" },
+          scale: isVoiceActive ? { duration: 1.2, repeat: Infinity, ease: "easeInOut" } : { duration: 1.5 },
+          default: { duration: 1 }
+        }}
+      >
+        <circle
+          cx={center}
+          cy={center}
+          r={orbSize * 0.7}
+          fill="url(#voice-aura-gradient)"
+          style={{
+            opacity: isVoiceActive ? 1.0 : 0.95, // Max Entry Vibrance (Phase 57)
+            transition: 'opacity 0.4s ease-out'
+          }}
+        />
+
+        {/* Subtle Edge Softening */}
+        <circle
+          cx={center}
+          cy={center}
+          r={orbSize * 0.52}
+          fill="none"
+          stroke={hexToRgba(glowColor, 0.1)}
+          strokeWidth="40"
+          style={{ filter: "blur(40px)", opacity: 0.3 }}
+        />
+      </motion.g>
+
+      <defs>
+        {/* Phase 51: Wide-Field Voice Aura Gradient (Smooth Wide-Field Dissipation) */}
+        <radialGradient id="voice-aura-gradient" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor={hexToRgba(glowColor, 0.7)} />
+          <stop offset="30%" stopColor={hexToRgba(glowColor, 0.3)} />
+          <stop offset="70%" stopColor={hexToRgba(glowColor, 0.1)} />
+          <stop offset="100%" stopColor="transparent" />
+        </radialGradient>
+
+        {/* Liquid Metal Refraction Gradient - Boosted Luminance */}
+        <linearGradient id="liquid-metal-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor={hexToRgba(glowColor, 0.6)} />
+          <stop offset="30%" stopColor="rgba(255, 255, 255, 0.5)" />
+          <stop offset="50%" stopColor={hexToRgba(glowColor, 0.9)} />
+          <stop offset="70%" stopColor="rgba(255, 255, 255, 0.3)" />
+          <stop offset="100%" stopColor={hexToRgba(glowColor, 0.6)} />
+        </linearGradient>
+
+        {/* Muted Metal Gradient for Interactive Segments */}
+        <linearGradient id="muted-metal-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="rgba(100, 110, 120, 0.25)" />
+          <stop offset="40%" stopColor="rgba(200, 210, 220, 0.15)" />
+          <stop offset="60%" stopColor="rgba(100, 110, 120, 0.2)" />
+          <stop offset="100%" stopColor="rgba(80, 90, 100, 0.25)" />
+        </linearGradient>
+
+        {/* Liquid Metal Specular Filter */}
+        <filter id="liquid-metal-sheen">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="1" result="blur" />
+          <feSpecularLighting
+            in="blur"
+            surfaceScale="5"
+            specularConstant="1.2"
+            specularExponent="40"
+            lightingColor="#ffffff"
+            result="specular"
+          >
+            <fePointLight x="-50" y="-50" z="100" />
+          </feSpecularLighting>
+          <feComposite in="specular" in2="SourceAlpha" operator="in" result="specularIn" />
+          <feComposite in="SourceGraphic" in2="specularIn" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" />
+        </filter>
+      </defs>
+
+      {/* Liquid Metal Structural Frame (Mercury Material) */}
+      <motion.g
+        initial={{ opacity: 0, scale: 1.1 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{
+          type: "spring",
+          stiffness: 100,
+          damping: 20,
+          delay: 0.1
+        }}
+      >
+        <circle
+          cx={center}
+          cy={center}
+          r={outerRadius + 30}
+          fill="none"
+          stroke="url(#liquid-metal-gradient)"
+          strokeWidth="5"
+          style={{ filter: "url(#liquid-metal-sheen)", opacity: 0.9 }}
+        />
+
+        {/* Sharp Edge Glow (High Intensity Boundary) */}
+        <circle
+          cx={center}
+          cy={center}
+          r={outerRadius + 32.5}
+          fill="none"
+          stroke={glowColor}
+          strokeWidth="0.75"
+          style={{
+            opacity: 0.8,
+            filter: `drop-shadow(0 0 4px ${glowColor})`
+          }}
+        />
+
+        {/* Phase 46: Neon Edge Bloom (High Vibrancy Outer Glow) */}
+        <circle
+          cx={center}
+          cy={center}
+          r={outerRadius + 32.5}
+          fill="none"
+          stroke={glowColor}
+          strokeWidth="2"
+          style={{
+            opacity: 0.4,
+            filter: `blur(8px)`
+          }}
+        />
+
+        {/* Specular Edge (Razor thin white highlight) */}
+        <circle
+          cx={center}
+          cy={center}
+          r={outerRadius + 32.5}
+          fill="none"
+          stroke="rgba(255, 255, 255, 0.4)"
+          strokeWidth="0.5"
+        />
+        {/* Internal Refraction Pulse (Kinetic Boost Energy) */}
         <motion.circle
           cx={center}
           cy={center}
-          r={innerRadius - 6}
+          r={outerRadius + 30}
           fill="none"
-          stroke={hexToRgba(glowColor, 0.15)}
-          strokeWidth="1"
-          strokeDasharray="4 4"
-          className="ring-inner-anim"
-          style={{ pointerEvents: "none" }}
+          stroke={glowColor}
+          strokeWidth="3.2"
+          strokeDasharray="100 900"
+          strokeLinecap="round"
+          animate={{ rotate: 360 }}
+          transition={{
+            duration: 12,
+            repeat: Infinity,
+            ease: "linear"
+          }}
+          style={{
+            originX: "50%",
+            originY: "50%",
+            filter: `blur(1px) drop-shadow(0 0 6px ${glowColor})`,
+            opacity: 0.8
+          }}
         />
+      </motion.g>
 
-        {/* Ring 2 (middle) */}
+      {/* 2. Top-Level Edge Frame (Ticks + Barrier Glider) */}
+      <motion.g
+        style={{ pointerEvents: "none" }}
+        initial={{ opacity: 0, scale: 1.1 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{
+          type: "spring",
+          stiffness: 100,
+          damping: 20,
+          delay: 0.2
+        }}
+      >
+        {/* Barrier Kinetic Glider */}
         <motion.circle
           cx={center}
           cy={center}
-          r={orbSize * 0.30 + 6}
+          r={outerRadius + 23}
           fill="none"
-          stroke={hexToRgba(glowColor, 0.12)}
-          strokeWidth="1"
-          strokeDasharray="6 6"
-          className="ring-middle-anim"
+          stroke={hexToRgba(glowColor, 0.45)}
+          strokeWidth="2.7"
+          strokeDasharray="18.57 4"
+          className="ring-outer-anim"
           style={{ pointerEvents: "none" }}
         />
 
-        {/* Ring 3 (outermost) with tick marks */}
+        {/* Orbital Ticks (12 count) */}
         <g className="ring-outer-anim">
-          {Array.from({ length: 24 }).map((_, i) => {
-            const angle = (i * 360) / 24
-            const tickRadius = outerRadius + 14
-            const innerPoint = polarToCartesian(center, center, tickRadius - 3, angle)
-            const outerPoint = polarToCartesian(center, center, tickRadius + 3, angle)
-            
+          {Array.from({ length: 12 }).map((_, i) => {
+            const angle = (i * 360) / 12
+            const tickRadius = outerRadius + 18
+            const innerPoint = polarToCartesian(center, center, tickRadius - 5, angle)
+            const outerPoint = polarToCartesian(center, center, tickRadius + 5, angle)
+
             return (
-              <line
-                key={`tick-${i}`}
-                x1={innerPoint.x}
-                y1={innerPoint.y}
-                x2={outerPoint.x}
-                y2={outerPoint.y}
-                stroke={hexToRgba(glowColor, 0.2)}
-                strokeWidth="1"
-                style={{ pointerEvents: "none" }}
-              />
+              <g key={`tick-lite-${i}`}>
+                <line
+                  x1={innerPoint.x}
+                  y1={innerPoint.y}
+                  x2={outerPoint.x}
+                  y2={outerPoint.y}
+                  stroke={glowColor}
+                  strokeWidth="2.5"
+                  style={{ pointerEvents: "none", opacity: 0.35, filter: "blur(2px)" }}
+                />
+                <line
+                  x1={innerPoint.x}
+                  y1={innerPoint.y}
+                  x2={outerPoint.x}
+                  y2={outerPoint.y}
+                  stroke={hexToRgba(glowColor, 0.6)}
+                  strokeWidth="1.8"
+                  style={{ pointerEvents: "none" }}
+                />
+              </g>
             )
           })}
         </g>
-      </g>
+      </motion.g>
 
-      {/* Task 5.7: Groove separator */}
-      <g style={{ pointerEvents: "none" }}>
-        <circle
-          cx={center}
-          cy={center}
-          r={orbSize * 0.30}
-          fill="none"
-          stroke="rgba(0, 0, 0, 0.6)"
-          strokeWidth="2"
-        />
-        <circle
-          cx={center}
-          cy={center}
-          r={orbSize * 0.30}
-          fill="none"
-          stroke={hexToRgba(glowColor, 0.1)}
-          strokeWidth="1"
-        />
-      </g>
-
-      {/* Task 5.2: Outer ring rendering */}
+      {/* 3. Outer Interactive Ring (Liquid Metal Refraction) */}
       <motion.g
-        animate={{ rotate: outerRotation }}
-        transition={confirmSpinning ? confirmSpinConfig : springConfig}
+        initial={{ opacity: 0, scale: 1.15 }}
+        animate={{
+          rotate: outerRotation,
+          opacity: 1,
+          scale: 1
+        }}
+        transition={{
+          rotate: confirmSpinning ? confirmSpinConfig : springConfig,
+          opacity: { duration: 0.4, delay: 0.3 },
+          scale: {
+            type: "spring",
+            stiffness: 100,
+            damping: 20,
+            delay: 0.3
+          }
+        }}
         style={{ originX: "50%", originY: "50%" }}
       >
         {outerItems.map((item, index) => {
           const startAngle = index * outerSegmentAngle
           const endAngle = (index + 1) * outerSegmentAngle
-          const isSelected = index === outerSelectedIndex
-          const globalIndex = index
+          const isSelected = selectedIndex === index
+          const path = generateArcPath(outerRadius, startAngle + 1, endAngle - 1)
+          const glowPath = generateArcPath(outerRadius + 14.5, startAngle + 1, endAngle - 1)
 
           return (
-            <g key={item.id}>
-              {/* Segment path */}
+            <g key={`outer-${item.id}`}>
+              {/* Segment Glow Background (Interactive) */}
               <path
-                d={generateArcPath(outerRadius, startAngle, endAngle)}
+                d={path}
                 fill="none"
-                stroke={hexToRgba(glowColor, isSelected ? 0.6 : 0.3)}
+                stroke={isSelected ? hexToRgba(glowColor, 0.12) : "rgba(255, 255, 255, 0.02)"}
                 strokeWidth="28"
-                style={{ 
+                style={{ filter: isSelected ? `blur(8px)` : "none" }}
+              />
+              {/* Liquid Metal Segment Body */}
+              <path
+                d={path}
+                fill="none"
+                stroke={isSelected ? `url(#liquid-metal-gradient)` : "url(#muted-metal-gradient)"}
+                strokeWidth="28"
+                style={{
                   cursor: "pointer",
                   pointerEvents: "auto",
+                  filter: "url(#liquid-metal-sheen)",
+                  opacity: 0.95 // Solid Metal Polish (Phase 52)
                 }}
-                onClick={() => onSelect(globalIndex)}
-                aria-label={item.label}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => onSelect(index)}
               />
-
-              {/* Diamond marker at segment start */}
-              {(() => {
-                const markerPos = polarToCartesian(center, center, outerRadius, startAngle)
-                return (
-                  <g transform={`translate(${markerPos.x}, ${markerPos.y}) rotate(${startAngle})`}>
-                    <polygon
-                      points="0,-3 2,0 0,3 -2,0"
-                      fill={hexToRgba(glowColor, 0.8)}
-                      style={{ pointerEvents: "none" }}
-                    />
-                  </g>
-                )
-              })()}
-            </g>
-          )
-        })}
-
-        {/* Curved text labels for outer ring */}
-        {outerItems.map((item, index) => {
-          const startAngle = index * outerSegmentAngle
-          const endAngle = (index + 1) * outerSegmentAngle
-          const isSelected = index === outerSelectedIndex
-          const textPathId = `outer-text-${item.id}`
-          const path = generateArcPath(outerRadius, startAngle, endAngle)
-
-          return (
-            <g key={`text-${item.id}`}>
-              <defs>
-                <path id={textPathId} d={path} fill="none" />
-              </defs>
-              <text
-                fill={hexToRgba(glowColor, isSelected ? 0.9 : 0.5)}
-                fontSize="9"
-                fontWeight="600"
-                textAnchor="middle"
-                style={{ pointerEvents: "none" }}
-              >
-                <textPath
-                  href={`#${textPathId}`}
-                  startOffset="50%"
-                >
-                  {item.label}
-                </textPath>
-              </text>
+              {/* Micro Edge Highlight */}
+              <path
+                d={glowPath}
+                fill="none"
+                stroke={isSelected ? glowColor : "rgba(255, 255, 255, 0.1)"}
+                strokeWidth="0.5"
+                style={{ opacity: 0.6 }}
+              />
+              {renderSegmentText(outerRadius, startAngle, endAngle, item.id, item.label, isSelected, 10.5)}
             </g>
           )
         })}
       </motion.g>
 
-      {/* Task 5.3: Inner ring rendering */}
-      {innerItems.length > 0 && (
-        <motion.g
-          animate={{ rotate: innerRotation }}
-          transition={confirmSpinning ? confirmSpinConfig : springConfig}
-          style={{ originX: "50%", originY: "50%" }}
-        >
-          {/* Task 5.3: Inner ring depth styling with drop shadows */}
-          <defs>
-            <filter id="inner-ring-shadow">
-              <feDropShadow
-                dx="0"
-                dy="2"
-                stdDeviation="3"
-                floodColor={glowColor}
-                floodOpacity="0.4"
+      {/* 4. Gap Kinetic Glider (Ultra-Density - Phase 49) */}
+      <motion.circle
+        cx={center}
+        cy={center}
+        r={orbSize * 0.33}
+        fill="none"
+        stroke={hexToRgba(glowColor, 0.4)}
+        strokeWidth="2.7"
+        strokeDasharray="45 15"
+        className="ring-middle-anim"
+        style={{ pointerEvents: "none" }}
+        initial={{ opacity: 0, scale: 1.1 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{
+          type: "spring",
+          stiffness: 100,
+          damping: 20,
+          delay: 0.4
+        }}
+      />
+
+      {/* 5. Inner Interactive Ring (Liquid Metal Refraction) */}
+      <motion.g
+        initial={{ opacity: 0, scale: 1.15 }}
+        animate={{
+          rotate: innerRotation,
+          opacity: 1,
+          scale: 1
+        }}
+        transition={{
+          rotate: confirmSpinning ? confirmSpinConfig : springConfig,
+          opacity: { duration: 0.4, delay: 0.5 },
+          scale: {
+            type: "spring",
+            stiffness: 100,
+            damping: 20,
+            delay: 0.5
+          }
+        }}
+        style={{ originX: "50%", originY: "50%" }}
+      >
+        {innerItems.map((item, index) => {
+          const startAngle = index * innerSegmentAngle
+          const endAngle = (index + 1) * innerSegmentAngle
+          const isSelected = selectedIndex === splitPoint + index
+          const globalIndex = splitPoint + index
+          const path = generateArcPath(innerRadius, startAngle + 1, endAngle - 1)
+          const glowPath = generateArcPath(innerRadius + 11.5, startAngle + 1, endAngle - 1)
+
+          return (
+            <g key={`inner-${item.id}-${index}`}>
+              {/* Segment Glow Background */}
+              <path
+                d={path}
+                fill="none"
+                stroke={isSelected ? hexToRgba(glowColor, 0.15) : "rgba(255, 255, 255, 0.02)"}
+                strokeWidth="22"
+                style={{ filter: isSelected ? `blur(6px)` : "none" }}
               />
-            </filter>
-            <filter id="inner-ring-glow">
-              <feGaussianBlur stdDeviation="2" result="blur" />
-              <feFlood floodColor={glowColor} floodOpacity="0.3" />
-              <feComposite in2="blur" operator="in" />
-              <feMerge>
-                <feMergeNode />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          </defs>
+              {/* Liquid Metal Segment Body */}
+              <path
+                d={path}
+                fill="none"
+                stroke={isSelected ? `url(#liquid-metal-gradient)` : "url(#muted-metal-gradient)"}
+                strokeWidth="22"
+                style={{
+                  cursor: "pointer",
+                  pointerEvents: "auto",
+                  filter: "url(#liquid-metal-sheen)",
+                  opacity: 0.95 // Solid Metal Polish (Phase 52)
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => onSelect(globalIndex)}
+              />
+              {/* Micro Edge Highlight */}
+              <path
+                d={glowPath}
+                fill="none"
+                stroke={isSelected ? glowColor : "rgba(255, 255, 255, 0.1)"}
+                strokeWidth="0.5"
+                style={{ opacity: 0.6 }}
+              />
+              {renderSegmentText(innerRadius, startAngle, endAngle, item.id, item.label, isSelected, 9.5)}
+            </g>
+          )
+        })}
+      </motion.g>
 
-          {innerItems.map((item, index) => {
-            const startAngle = index * innerSegmentAngle
-            const endAngle = (index + 1) * innerSegmentAngle
-            const isSelected = index === innerSelectedIndex
-            const globalIndex = splitPoint + index
+      {/* 6. Core Kinetic Glider (Ultra-Density - Phase 49) */}
+      <motion.circle
+        cx={center}
+        cy={center}
+        r={orbSize * 0.185}
+        fill="none"
+        stroke={hexToRgba(glowColor, 0.4)}
+        strokeWidth="2.7"
+        strokeDasharray="15 35"
+        className="ring-inner-anim"
+        style={{ pointerEvents: "none" }}
+        initial={{ opacity: 0, scale: 1.1 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{
+          type: "spring",
+          stiffness: 100,
+          damping: 20,
+          delay: 0.6
+        }}
+      />
 
-            return (
-              <g key={item.id}>
-                {/* Segment path with depth styling */}
-                <path
-                  d={generateArcPath(innerRadius, startAngle, endAngle)}
-                  fill="none"
-                  stroke={hexToRgba(glowColor, isSelected ? 0.7 : 0.35)}
-                  strokeWidth="22"
-                  filter="url(#inner-ring-shadow)"
-                  style={{ 
-                    cursor: "pointer",
-                    pointerEvents: "auto",
-                  }}
-                  onClick={() => onSelect(globalIndex)}
-                  aria-label={item.label}
-                />
+      {/* 7. Static Structural Frame: Laser Anchor Point (Phase 66) */}
+      <circle
+        cx={center}
+        cy={center}
+        r={outerRadius + 29}
+        fill="none"
+        stroke={hexToRgba(glowColor, 0.4)}
+        strokeWidth="1.5"
+        style={{ pointerEvents: "none" }}
+      />
 
-                {/* Circle marker at segment start */}
-                {(() => {
-                  const markerPos = polarToCartesian(center, center, innerRadius, startAngle)
-                  return (
-                    <circle
-                      cx={markerPos.x}
-                      cy={markerPos.y}
-                      r="2"
-                      fill={hexToRgba(glowColor, 0.9)}
-                      filter="url(#inner-ring-glow)"
-                      style={{ pointerEvents: "none" }}
-                    />
-                  )
-                })()}
-              </g>
-            )
-          })}
-
-          {/* Task 5.3: Curved text labels for inner ring (radius + 14) */}
-          {innerItems.map((item, index) => {
-            const startAngle = index * innerSegmentAngle
-            const endAngle = (index + 1) * innerSegmentAngle
-            const isSelected = index === innerSelectedIndex
-            const textPathId = `inner-text-${item.id}`
-            const textRadius = innerRadius + 14
-            const path = generateArcPath(textRadius, startAngle, endAngle)
-
-            return (
-              <g key={`text-${item.id}`}>
-                <defs>
-                  <path id={textPathId} d={path} fill="none" />
-                </defs>
-                <text
-                  fill={hexToRgba(glowColor, isSelected ? 0.9 : 0.5)}
-                  fontSize="8"
-                  fontWeight="600"
-                  textAnchor="middle"
-                  style={{ pointerEvents: "none" }}
-                >
-                  <textPath
-                    href={`#${textPathId}`}
-                    startOffset="50%"
-                  >
-                    {item.label}
-                  </textPath>
-                </text>
-              </g>
-            )
-          })}
-        </motion.g>
-      )}
-
-      {/* CSS animations for decorative rings */}
       <style jsx>{`
         .ring-outer-anim {
           animation: rotate-slow 60s linear infinite;
@@ -452,6 +634,6 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
           }
         }
       `}</style>
-    </svg>
+    </svg >
   )
 }

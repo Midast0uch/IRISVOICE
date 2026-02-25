@@ -20,10 +20,10 @@ const TextFieldComponent: React.FC<TextFieldProps> = ({
   glowColor,
 }) => {
   return (
-    <div className="flex flex-col gap-1 py-1">
+    <div className="flex flex-col gap-2.5">
       <label
         htmlFor={id}
-        className="text-[10px] font-medium uppercase tracking-wider text-white/60"
+        className="text-[9px] font-bold uppercase tracking-[0.08em] text-white/30 leading-tight"
       >
         {label}
       </label>
@@ -33,16 +33,17 @@ const TextFieldComponent: React.FC<TextFieldProps> = ({
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full px-2 py-1.5 text-[11px] text-white bg-white/5 border border-white/10 rounded focus:outline-none focus:ring-2 focus:ring-white/20 transition-colors duration-200 placeholder:text-white/30"
+        className="w-full px-4 py-3 text-[11px] font-bold text-white bg-black/20 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-white/20 transition-all duration-300 placeholder:text-white/20"
         style={{
           caretColor: glowColor,
-          borderColor: "rgba(255, 255, 255, 0.1)",
         }}
         onFocus={(e) => {
-          e.target.style.borderColor = glowColor
+          e.target.style.borderColor = `${glowColor}66`
+          e.target.style.backgroundColor = "rgba(0, 0, 0, 0.3)"
         }}
         onBlur={(e) => {
           e.target.style.borderColor = "rgba(255, 255, 255, 0.1)"
+          e.target.style.backgroundColor = "rgba(0, 0, 0, 0.2)"
         }}
       />
     </div>

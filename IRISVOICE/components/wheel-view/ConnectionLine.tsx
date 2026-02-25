@@ -34,102 +34,136 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
     return `rgba(${r}, ${g}, ${b}, ${alpha})`
   }
 
-  // Calculate line dimensions
-  const lineWidth = panelOffset - orbSize / 2
-  const lineHeight = 24
+  // Calculate line dimensions: anchor precisely to stationary structural frame (Phase 66)
+  // Parent Stage Center: 40 (padding) + 250 (500/2) = 290.
+  // Static Frame Radius 148: center + radius => 290 + 148 = 438.
+  const startX = 438 // Corrected Absolute Anchor relative to 850px container
+  const lineWidth = Math.max(0, panelOffset - startX)
+  const lineHeight = 3.2 // Kinetic-Level Visibility (Phase 63)
+  const containerHeight = 60 // Expanded safety gutter for high-intensity blooms
 
   return (
     <motion.div
-      className="absolute"
+      className="absolute flex items-center"
       style={{
-        left: orbSize / 2,
+        left: startX,
         top: '50%',
-        transform: 'translateY(-50%)',
         width: lineWidth,
-        height: lineHeight,
-        transformOrigin: 'left center'
+        height: containerHeight,
+        transformOrigin: 'left center',
+        pointerEvents: 'auto',
+        overflow: 'visible',
+        zIndex: 50 // Above aura, below panel card
       }}
+      initial={{ scaleX: lineRetracted ? 0 : 1, opacity: lineRetracted ? 0 : 1, y: "-50%" }}
       animate={{
-        scaleX: lineRetracted ? 0 : 1
+        scaleX: lineRetracted ? 0 : 1,
+        opacity: lineRetracted ? 0 : 1,
+        y: "-50%"
       }}
       transition={{
         type: 'spring',
-        stiffness: 200,
-        damping: 25
+        stiffness: 140,
+        damping: 22
       }}
     >
       <svg
         width={lineWidth}
-        height={lineHeight}
-        viewBox={`0 0 ${lineWidth} ${lineHeight}`}
+        height={containerHeight}
+        viewBox={`0 0 ${lineWidth} ${containerHeight}`}
         style={{ overflow: 'visible' }}
       >
         <defs>
           {/* Base gradient: glowColor with alpha fade (cc → 44) */}
           <linearGradient id="line-base-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor={hexToRgba(glowColor, 0.8)} />
-            <stop offset="100%" stopColor={hexToRgba(glowColor, 0.27)} />
-          </linearGradient>
-
-          {/* Glow layer gradient: alpha 44 → 11 */}
-          <linearGradient id="line-glow-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor={hexToRgba(glowColor, 0.27)} />
-            <stop offset="100%" stopColor={hexToRgba(glowColor, 0.07)} />
+            <stop offset="0%" stopColor={hexToRgba(glowColor, 1.0)} />
+            <stop offset="100%" stopColor={hexToRgba(glowColor, 0.9)} />
           </linearGradient>
 
           {/* Shimmer gradient: traveling highlight */}
           <linearGradient id="line-shimmer-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
             <stop offset="0%" stopColor={hexToRgba(glowColor, 0)} />
-            <stop offset="50%" stopColor={hexToRgba(glowColor, 0.6)} />
+            <stop offset="50%" stopColor="#FFFFFF" />
             <stop offset="100%" stopColor={hexToRgba(glowColor, 0)} />
           </linearGradient>
 
-          {/* Blur filter for glow layer */}
-          <filter id="line-glow-blur">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="3" />
+          {/* Blur filter for high-intensity bloom */}
+          <filter id="line-glow-blur-hot">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="4" />
           </filter>
         </defs>
 
-        {/* Glow layer (blurred, behind base line) */}
+        {/* 1. Brand Color Saturation Layer (Backlight) - Phase 64 */}
         <line
           x1="0"
-          y1={lineHeight / 2}
+          y1={containerHeight / 2}
           x2={lineWidth}
-          y2={lineHeight / 2}
-          stroke="url(#line-glow-gradient)"
-          strokeWidth="8"
+          y2={containerHeight / 2}
+          stroke={glowColor}
+          strokeWidth={lineHeight * 3}
           strokeLinecap="round"
-          filter="url(#line-glow-blur)"
+          opacity="0.7"
+          style={{ filter: `blur(2px)` }}
         />
 
-        {/* Base line with gradient */}
+        {/* 2. Neon Edge Bloom Overlay (Atmospheric) */}
         <line
           x1="0"
-          y1={lineHeight / 2}
+          y1={containerHeight / 2}
           x2={lineWidth}
-          y2={lineHeight / 2}
+          y2={containerHeight / 2}
+          stroke={glowColor}
+          strokeWidth={lineHeight * 6}
+          strokeLinecap="round"
+          filter="url(#line-glow-blur-hot)"
+          opacity="0.6" // Restored Vibrancy (Phase 64)
+        />
+
+        {/* 3. Main High-Intensity Energy Beam */}
+        <line
+          x1="0"
+          y1={containerHeight / 2}
+          x2={lineWidth}
+          y2={containerHeight / 2}
           stroke="url(#line-base-gradient)"
-          strokeWidth="2"
+          strokeWidth={lineHeight}
           strokeLinecap="round"
+          style={{
+            filter: `drop-shadow(0 0 10px ${glowColor}) drop-shadow(0 0 4px ${glowColor})`,
+            opacity: 1.0
+          }}
         />
 
-        {/* Shimmer effect: traveling highlight (28px width) */}
+        {/* 4. Needle Hotspot: Pressurized White Core (Phase 63) */}
+        <line
+          x1="0"
+          y1={containerHeight / 2}
+          x2={lineWidth}
+          y2={containerHeight / 2}
+          stroke="white"
+          strokeWidth="1.2"
+          strokeLinecap="round"
+          opacity="0.95"
+          style={{ filter: "drop-shadow(0 0 1px white)" }}
+        />
+
+        {/* 5. Kinetic Shimmer (Traveling Spark) */}
         <motion.line
           x1="0"
-          y1={lineHeight / 2}
+          y1={containerHeight / 2}
           x2={lineWidth}
-          y2={lineHeight / 2}
+          y2={containerHeight / 2}
           stroke="url(#line-shimmer-gradient)"
           strokeWidth="4"
           strokeLinecap="round"
-          initial={{ strokeDasharray: `28 ${lineWidth}`, strokeDashoffset: 0 }}
           animate={{
-            strokeDashoffset: [-lineWidth - 28, 0]
+            strokeDashoffset: [-lineWidth, lineWidth]
           }}
+          initial={{ strokeDasharray: `${lineWidth / 4} ${lineWidth * 2}` }}
           transition={{
-            duration: 2,
+            duration: 1.5,
             repeat: Infinity,
-            ease: 'linear'
+            ease: "linear"
           }}
         />
       </svg>

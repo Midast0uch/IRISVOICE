@@ -57,27 +57,29 @@ export default function Home() {
 
   return (
     <main className="bg-transparent w-full min-h-screen flex flex-col items-center justify-center relative">
-      <div className="flex flex-col items-center justify-center relative">
-        <IrisOrb
-          onClick={handleSingleClick}
-          onDoubleClick={handleDoubleClick}
-          isExpanded={isExpanded}
-          voiceState={voiceState}
-          centerLabel={orbState.label}
-          size={175}
-          glowColor="#00ffff"
-          wakeFlash={false}
-          sendMessage={sendMessage}
-        />
-        <div className="mt-12"> {/* Increased margin top for more spacing */}
-          <ChatActivationText
-            onChatClick={handleChatClick}
+      {state.level !== 3 && (
+        <div className="flex flex-col items-center justify-center relative">
+          <IrisOrb
+            onClick={handleSingleClick}
+            onDoubleClick={handleDoubleClick}
             isExpanded={isExpanded}
-            isChatActive={state.mainView === "chat"}
-            navigationLevel={state.level}
+            voiceState={voiceState}
+            centerLabel={orbState.label}
+            size={175}
+            glowColor="#00ffff"
+            wakeFlash={false}
+            sendMessage={sendMessage}
           />
+          <div className="mt-12"> {/* Increased margin top for more spacing */}
+            <ChatActivationText
+              onChatClick={handleChatClick}
+              isExpanded={isExpanded}
+              isChatActive={state.mainView === "chat"}
+              navigationLevel={state.level}
+            />
+          </div>
         </div>
-      </div>
+      )}
       {state.level === 2 && (
         <Suspense fallback={<div className="text-white/50">Loading...</div>}>
           <LazyHexagonalControlCenter key="level-2" />

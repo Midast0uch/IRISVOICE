@@ -45,8 +45,10 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   lineRetracted,
   orbSize,
 }) => {
-  // Calculate panel position: orbSize/2 + 12px offset
-  const panelOffset = orbSize / 2 + 12
+  // Calculate panel position: anchored at distance for distinct "beam of light" bridge (Phase 48)
+  // Calculate panel position: anchored for a precision 65px bridge from wheel edge (Phase 66)
+  // Wheel Edge (startX) = 438. 438 + 65 = 503.
+  const panelOffset = 503
 
   // Memoize field rendering function for performance (Requirement 12.3)
   const renderField = useCallback(
@@ -151,16 +153,17 @@ export const SidePanel: React.FC<SidePanelProps> = ({
       {/* Side Panel */}
       <motion.div
         className="absolute flex flex-col"
+        onMouseDown={(e) => e.stopPropagation()}
         style={{
           left: panelOffset,
           top: "50%",
-          transform: "translateY(-50%)",
-          width: "100px",
-          maxHeight: "560px",
+          width: "155px", // Precision Stretch (Phase 59)
+          maxHeight: "680px", // High-Capacity Vertical (Phase 59)
+          pointerEvents: "auto",
         }}
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-        exit={{ opacity: 0, x: -20 }}
+        initial={{ opacity: 0, x: -20, y: "-50%" }}
+        animate={{ opacity: 1, x: 0, y: "-50%" }}
+        exit={{ opacity: 0, x: -20, y: "-50%" }}
         transition={{
           type: "spring",
           stiffness: 200,
@@ -179,26 +182,18 @@ export const SidePanel: React.FC<SidePanelProps> = ({
             boxShadow: `0 0 20px ${glowColor}22`,
           }}
         >
-          {/* Panel Header */}
-          <div className="px-3 py-2 border-b border-white/10">
+          {/* Panel Header - Reference Gutter (Phase 60) */}
+          <div className="px-6 py-4 border-b border-white/10">
             <div className="flex items-center gap-2">
-              {/* Indicator dot */}
-              <div
-                className="w-1.5 h-1.5 rounded-full"
-                style={{
-                  backgroundColor: glowColor,
-                  boxShadow: `0 0 6px ${glowColor}`,
-                }}
-              />
-              {/* Mini-node label */}
-              <span className="text-[10px] font-medium uppercase tracking-wider text-white/80">
+              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: glowColor, boxShadow: `0 0 8px ${glowColor}` }} />
+              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/50">
                 {miniNode.label}
               </span>
             </div>
           </div>
 
-          {/* Field List with crossfade transitions */}
-          <div className="px-3 py-2 overflow-y-auto max-h-[440px] custom-scrollbar">
+          {/* Field List - Deep Gutter (Phase 60) */}
+          <div className="px-6 py-6 overflow-y-auto max-h-[520px] custom-scrollbar">
             <AnimatePresence mode="wait">
               <motion.div
                 key={miniNode.id}
@@ -209,46 +204,47 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               >
                 {/* Empty state handling (Requirement 5.7, 15.2) */}
                 {miniNode.fields.length === 0 ? (
-                  <div className="py-4 text-center">
+                  <div className="py-6 text-center">
                     <span className="text-[10px] text-white/40 uppercase tracking-wider">
                       No settings available
                     </span>
-                    <p className="text-[9px] text-white/30 mt-1">
+                    <p className="text-[9px] text-white/30 mt-2 leading-relaxed px-2">
                       This mini-node has no configurable fields
                     </p>
                   </div>
                 ) : (
-                  <div className="space-y-2">{fieldList}</div>
+                  <div className="space-y-6">{fieldList}</div> // Stretched spacing (Phase 59)
                 )}
               </motion.div>
             </AnimatePresence>
           </div>
 
-          {/* Panel Footer with confirm button */}
-          <div className="px-3 py-2 border-t border-white/10">
+          {/* Panel Footer - Rounded Pill (Phase 60) */}
+          <div className="px-6 py-4 border-t border-white/10">
             <button
               onClick={onConfirm}
               aria-label="Confirm settings"
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white/20"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-white/20 active:scale-[0.97]"
               style={{
-                backgroundColor: `${glowColor}22`,
-                border: `1px solid ${glowColor}44`,
+                backgroundColor: `${glowColor}15`,
+                border: `1px solid ${glowColor}33`,
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = `${glowColor}33`
-                e.currentTarget.style.borderColor = `${glowColor}66`
+                e.currentTarget.style.backgroundColor = `${glowColor}25`
+                e.currentTarget.style.borderColor = `${glowColor}55`
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = `${glowColor}22`
-                e.currentTarget.style.borderColor = `${glowColor}44`
+                e.currentTarget.style.backgroundColor = `${glowColor}15`
+                e.currentTarget.style.borderColor = `${glowColor}33`
               }}
             >
               <Check
-                className="w-3.5 h-3.5"
+                className="w-4 h-4"
                 style={{ color: glowColor }}
+                strokeWidth={3}
               />
               <span
-                className="text-[10px] font-medium uppercase tracking-wider"
+                className="text-[11px] font-bold uppercase tracking-wider"
                 style={{ color: glowColor }}
               >
                 Confirm

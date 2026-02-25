@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useEffect, useMemo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { ArrowLeft } from "lucide-react"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 import { DualRingMechanism } from "./DualRingMechanism"
 import { SidePanel } from "./SidePanel"
 import { useNavigation } from "@/contexts/NavigationContext"
@@ -18,38 +19,14 @@ interface WheelViewProps {
   onBackToCategories: () => void
 }
 
-/**
- * Helper function to validate hex color
- * Validates: Property 48 - Invalid Glow Color Fallback
- */
 function validateGlowColor(color: string): string {
   const hexPattern = /^#[0-9A-Fa-f]{6}$/
   if (!hexPattern.test(color)) {
-    console.warn(`[WheelView] Invalid glow color: ${color}, using default`)
-    return "#00D4FF" // Default cyan
+    return "#00D4FF"
   }
   return color
 }
 
-/**
- * WheelView Component
- * 
- * Main container that orchestrates DualRingMechanism, SidePanel, and all animations.
- * 
- * Features:
- * - Displays both sub-nodes (outer ring) and mini-nodes (inner ring) simultaneously
- * - Side panel for input field configuration
- * - Smooth animations with spring physics
- * - Keyboard navigation support (arrows, enter, escape)
- * - Confirm animation sequence (counter-spin, flash, glow breathe)
- * - Animation race condition prevention
- * - Empty state handling
- * - Error handling for invalid colors
- * - Theme integration with BrandColorContext
- * 
- * Validates: Requirements 2.1, 2.7, 6.3, 6.4, 6.5, 6.7, 11.1, 15.1, 15.4, 15.6
- * Validates: Properties 3, 7, 21, 22, 48
- */
 export const WheelView: React.FC<WheelViewProps> = ({
   categoryId,
   glowColor: rawGlowColor,
@@ -58,239 +35,222 @@ export const WheelView: React.FC<WheelViewProps> = ({
   onConfirm,
   onBackToCategories,
 }) => {
-  // Task 6.1: Integrate with NavigationContext and BrandColorContext
-  const { state, updateMiniNodeValue } = useNavigation()
+  const { state, updateMiniNodeValue, sendMessage } = useNavigation()
   const { getThemeConfig } = useBrandColor()
-  
-  // Validate glow color (Requirement 15.4)
+
   const glowColor = useMemo(() => validateGlowColor(rawGlowColor), [rawGlowColor])
-  
-  // Get mini-node stack from context
   const miniNodeStack = state.miniNodeStack || []
-  
-  // Task 6.11: Empty state handling (Requirement 15.1)
-  if (miniNodeStack.length === 0) {
-    return (
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="text-white/40 text-sm">
-          No settings available for this category
-        </div>
-      </div>
-    )
-  }
-  
-  // Task 6.2: Internal state management
+
+  const lastClickTime = React.useRef<number>(0)
+  const clickTimer = React.useRef<NodeJS.Timeout | null>(null)
+
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [confirmFlash, setConfirmFlash] = useState(false)
   const [confirmSpinning, setConfirmSpinning] = useState(false)
   const [lineRetracted, setLineRetracted] = useState(false)
   const [showPanel, setShowPanel] = useState(true)
-  
-  // Task 6.5: Animation race condition prevention (Requirement 6.7, 15.6)
+  const [isVoiceActive, setIsVoiceActive] = useState(false)
+  const [voiceIntensity, setVoiceIntensity] = useState(0)
   const [isAnimating, setIsAnimating] = useState(false)
-  
-  // Task 6.3: Mini-node selection logic
+
   const activeMiniNode = useMemo(() => {
     return miniNodeStack[selectedIndex] || miniNodeStack[0]
   }, [miniNodeStack, selectedIndex])
-  
-  // Get field values for active mini-node
+
   const fieldValues = useMemo(() => {
     return state.miniNodeValues[activeMiniNode?.id] || {}
   }, [state.miniNodeValues, activeMiniNode])
-  
-  // Task 6.3: Selection handler with animation prevention
+
   const handleSelect = useCallback((index: number) => {
-    if (isAnimating) {
-      console.log("[WheelView] Animation in progress, ignoring selection")
-      return
-    }
-    
+    if (isAnimating) return
     setIsAnimating(true)
     setSelectedIndex(index)
     setShowPanel(true)
-    
-    // Animation completes after spring settles (~500ms)
     setTimeout(() => setIsAnimating(false), 500)
   }, [isAnimating])
-  
-  // Task 6.3: Value change handler
+
   const handleValueChange = useCallback((fieldId: string, value: FieldValue) => {
     if (!activeMiniNode) return
     updateMiniNodeValue(activeMiniNode.id, fieldId, value)
   }, [activeMiniNode, updateMiniNodeValue])
-  
-  // Task 6.4: Confirm animation sequence (Requirements 6.3, 6.4, 6.5)
+
   const handleConfirm = useCallback(() => {
     if (isAnimating) return
-    
     setIsAnimating(true)
-    
-    // Start animations
     setLineRetracted(true)
     setConfirmSpinning(true)
     setConfirmFlash(true)
-    
-    // Schedule onConfirm callback after 900ms (Property 21)
+
     setTimeout(() => {
       onConfirm(state.miniNodeValues)
-      
-      // Reset animation states
       setLineRetracted(false)
       setConfirmSpinning(false)
       setConfirmFlash(false)
       setIsAnimating(false)
     }, 900)
   }, [isAnimating, onConfirm, state.miniNodeValues])
-  
-  // Task 7.1-7.3: Keyboard navigation (Requirements 7.1-7.7)
+
+  // Simulate speech pulse when voice is active
+  useEffect(() => {
+    if (!isVoiceActive) {
+      setVoiceIntensity(0)
+      return
+    }
+    const interval = setInterval(() => {
+      // Create a "breathing" intensity pulse (0.3 to 1.0 range)
+      setVoiceIntensity(0.3 + Math.random() * 0.7)
+    }, 150)
+    return () => clearInterval(interval)
+  }, [isVoiceActive])
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Prevent default browser behavior (Requirement 7.7)
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape"].includes(e.key)) {
         e.preventDefault()
       }
-      
-      // Block input during animations
-      if (isAnimating && e.key !== "Escape") {
-        return
-      }
-      
+      if (isAnimating && e.key !== "Escape") return
+
       switch (e.key) {
         case "ArrowRight":
-          // Next item (wrap around)
-          setSelectedIndex((prev) => (prev + 1) % miniNodeStack.length)
-          break
-          
-        case "ArrowLeft":
-          // Previous item (wrap around)
-          setSelectedIndex((prev) => (prev - 1 + miniNodeStack.length) % miniNodeStack.length)
-          break
-          
         case "ArrowDown":
-          // Next item (same as right for single ring)
           setSelectedIndex((prev) => (prev + 1) % miniNodeStack.length)
           break
-          
+        case "ArrowLeft":
         case "ArrowUp":
-          // Previous item (same as left for single ring)
           setSelectedIndex((prev) => (prev - 1 + miniNodeStack.length) % miniNodeStack.length)
           break
-          
         case "Enter":
-          // Confirm current selection
           handleConfirm()
           break
-          
         case "Escape":
-          // Back to categories
           onBackToCategories()
           break
       }
     }
-    
+
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [miniNodeStack.length, isAnimating, handleConfirm, onBackToCategories])
-  
-  return (
-    <div className="absolute inset-0 flex items-center justify-center">
-      {/* Task 6.10: Glow breathe animation */}
-      <motion.div
-        className="absolute"
-        style={{
-          width: expandedIrisSize * 1.5,
-          height: expandedIrisSize * 1.5,
-          borderRadius: "50%",
-          background: `radial-gradient(circle, ${glowColor}22 0%, transparent 70%)`,
-          filter: `blur(${confirmFlash ? 24 : 12}px)`,
-          pointerEvents: "none",
-        }}
-        animate={{
-          scale: confirmFlash ? [1, 2.2, 1] : 1,
-          opacity: confirmFlash ? [0.3, 0.6, 0.3] : 0.3,
-        }}
-        transition={{
-          duration: confirmFlash ? 0.8 : 2,
-          repeat: confirmFlash ? 0 : Infinity,
-          repeatType: "reverse",
-        }}
-      />
-      
-      {/* Container for orb and rings */}
-      <div
-        className="relative"
-        style={{
-          width: expandedIrisSize,
-          height: expandedIrisSize,
-        }}
-      >
-        {/* Task 6.6: Render DualRingMechanism */}
-        <DualRingMechanism
-          items={miniNodeStack}
-          selectedIndex={selectedIndex}
-          onSelect={handleSelect}
-          glowColor={glowColor}
-          orbSize={expandedIrisSize}
-          confirmSpinning={confirmSpinning}
-        />
-        
-        {/* Task 6.8: Center back button */}
-        <motion.button
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center rounded-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white/20"
-          style={{
-            width: 48,
-            height: 48,
-            backgroundColor: "rgba(0, 0, 0, 0.6)",
-            border: `1px solid ${glowColor}44`,
-          }}
-          onClick={onBackToCategories}
-          aria-label="Back to categories"
-          whileHover={{
-            scale: 1.1,
-            backgroundColor: "rgba(0, 0, 0, 0.8)",
-            borderColor: `${glowColor}66`,
-          }}
-          whileTap={{ scale: 0.95 }}
-          whileFocus={{
-            boxShadow: `0 0 0 2px ${glowColor}44`,
-          }}
-        >
-          <ArrowLeft
-            className="w-5 h-5"
-            style={{ color: glowColor }}
-          />
-        </motion.button>
-        
-        {/* Task 6.7: Render SidePanel */}
-        {showPanel && activeMiniNode && (
-          <SidePanel
-            miniNode={activeMiniNode}
-            glowColor={glowColor}
-            values={fieldValues}
-            onValueChange={handleValueChange}
-            onConfirm={handleConfirm}
-            lineRetracted={lineRetracted}
-            orbSize={expandedIrisSize}
-          />
-        )}
+
+  if (miniNodeStack.length === 0) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="text-white/40 text-sm">No settings available</div>
       </div>
-      
-      {/* Task 6.9: Flash overlay animation */}
-      <AnimatePresence>
-        {confirmFlash && (
-          <motion.div
-            className="absolute inset-0 pointer-events-none"
-            style={{
-              background: `radial-gradient(circle, ${glowColor}44 0%, transparent 60%)`,
-            }}
-            initial={{ opacity: 0.3, scale: 0.8 }}
-            animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1.4, 0.8] }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.8 }}
-          />
-        )}
-      </AnimatePresence>
+    )
+  }
+
+  return (
+    <div
+      className="absolute inset-0 flex items-center justify-center bg-transparent"
+      onMouseDown={(e) => {
+        if (e.button === 0) getCurrentWindow().startDragging()
+      }}
+    >
+      <div
+        className="relative flex items-center justify-start pointer-events-none"
+        style={{ width: 850, height: 750, paddingLeft: "40px" }}
+      >
+        {/* Mechanics Stage: 500x500 provides room for 300px orb + 200px buffer safety (Phase 49) */}
+        {/* Force overflow: visible (Phase 50) to ensure soft blooms are never clipped */}
+        <div
+          className="relative pointer-events-none flex items-center justify-center shrink-0"
+          style={{ width: 500, height: 500, overflow: 'visible' }}
+        >
+          {/* Centered Mechanims Layer - Absolute Visibility (Phase 50) */}
+          <div className="relative" style={{ width: 300, height: 300, overflow: 'visible' }}>
+            <DualRingMechanism
+              items={miniNodeStack}
+              selectedIndex={selectedIndex}
+              onSelect={handleSelect}
+              glowColor={glowColor}
+              orbSize={300}
+              confirmSpinning={confirmSpinning}
+              isVoiceActive={isVoiceActive}
+              voiceIntensity={voiceIntensity}
+            />
+
+            {/* Perfectly Aligned Core Center */}
+            <motion.button
+              className="absolute top-1/2 left-1/2 flex items-center justify-center rounded-full focus:outline-none overflow-hidden"
+              style={{
+                width: 64,
+                height: 64,
+                background: `linear-gradient(135deg, ${glowColor}66 0%, rgba(200, 210, 220, 0.2) 50%, ${glowColor}44 100%)`,
+                border: `1px solid rgba(255, 255, 255, 0.2)`,
+                backdropFilter: "blur(8px)",
+                boxShadow: `0 0 15px ${glowColor}33`,
+                filter: "url(#liquid-metal-sheen)",
+                zIndex: 100,
+                pointerEvents: "auto"
+              }}
+              initial={{ opacity: 0, scale: 1.1, x: "-50%", y: "-50%" }}
+              animate={{ opacity: 1, scale: 1, x: "-50%", y: "-50%" }}
+              transition={{ type: "spring", stiffness: 100, damping: 20, delay: 0.7 }}
+              whileHover={{
+                scale: 1.05,
+                x: "-50%",
+                y: "-50%",
+                boxShadow: `0 0 25px ${glowColor}66`,
+                borderColor: "rgba(255, 255, 255, 0.4)",
+              }}
+              whileTap={{ scale: 0.94, x: "-50%", y: "-50%" }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => {
+                const now = Date.now()
+                if (now - lastClickTime.current < 300) {
+                  if (clickTimer.current) clearTimeout(clickTimer.current)
+                  setIsVoiceActive(prev => !prev) // Toggle Voice Aura on double-click (Phase 50)
+                  sendMessage("voice_command_start", {})
+                  lastClickTime.current = 0
+                } else {
+                  lastClickTime.current = now
+                  const activeAtClick = isVoiceActive // Capture state at click time (Phase 63)
+                  clickTimer.current = setTimeout(() => {
+                    if (activeAtClick) {
+                      setIsVoiceActive(false) // Single click stops speech mode ONLY (Phase 62/63)
+                    } else {
+                      onBackToCategories() // Single click navigates back ONLY when idle (Phase 62/63)
+                    }
+                    clickTimer.current = null
+                    lastClickTime.current = 0
+                  }, 300)
+                }
+              }}
+            >
+              {/* Specular Top Edge Highlight */}
+              <div
+                className="absolute top-0 left-0 right-0 h-[2px] opacity-60 pointer-events-none"
+                style={{
+                  background: "linear-gradient(to bottom, rgba(255,255,255,0.7), transparent)",
+                  borderRadius: "50% 50% 0 0"
+                }}
+              />
+
+              <div className="flex flex-col items-center justify-center pointer-events-none relative z-10">
+                <span className="text-[11px] font-black uppercase tracking-[0.1em] text-white">
+                  {categoryId}
+                </span>
+              </div>
+            </motion.button>
+          </div>
+        </div>
+
+        {/* Side Panel: Positioning uses 240 as base for orbSize logic */}
+        <AnimatePresence>
+          {showPanel && activeMiniNode && (
+            <SidePanel
+              miniNode={activeMiniNode}
+              glowColor={glowColor}
+              values={fieldValues}
+              onValueChange={handleValueChange}
+              onConfirm={handleConfirm}
+              lineRetracted={lineRetracted}
+              orbSize={300}
+            />
+          )}
+        </AnimatePresence>
+      </div>
     </div>
   )
 }

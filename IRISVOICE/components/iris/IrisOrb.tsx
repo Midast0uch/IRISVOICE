@@ -8,7 +8,12 @@ import { useNavigation } from "@/contexts/NavigationContext"
 import type { IrisOrbProps, OrbIcon } from "./types"
 
 // --- Helper Hook for Window Dragging ---
-function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObject<HTMLElement | null>) {
+function useManualDragWindow(
+  elementRef: React.RefObject<HTMLElement | null>,
+  onClickAction: () => void,
+  onDoubleClickAction?: () => void,
+  onDoubleClickFlash?: (show: boolean) => void
+) {
   const isDragging = useRef(false)
   const dragStartPos = useRef({ x: 0, y: 0 })
   const windowStartPos = useRef({ x: 0, y: 0 })
@@ -16,19 +21,23 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
   const isDraggingThisElement = useRef(false)
   const mouseDownTarget = useRef<EventTarget | null>(null)
 
+  // Double click detection state
+  const clickCount = useRef<number>(0)
+  const clickTimer = useRef<NodeJS.Timeout | null>(null)
+
   const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
     if (e.button !== 0) return
 
     const currentElement = elementRef.current
     const target = e.target as Node
-    
+
     const shouldStartDrag = currentElement && currentElement.contains(target)
-    
+
     isDraggingThisElement.current = false
     isDragging.current = false
     hasDragged.current = false
     mouseDownTarget.current = null
-    
+
     if (!shouldStartDrag) {
       return
     }
@@ -74,7 +83,7 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     const draggingThis = isDraggingThisElement.current
     const didDrag = hasDragged.current
     const downTarget = mouseDownTarget.current
-    
+
     isDragging.current = false
     document.body.style.cursor = "default"
     document.body.style.userSelect = ""
@@ -82,21 +91,45 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
     if (draggingThis && !didDrag && currentElement) {
       const upTarget = e.target as Node
       const downTargetNode = downTarget as Node
-      
+
       const upInIris = currentElement.contains(upTarget)
       const downInOrb = downTargetNode && currentElement.contains(downTargetNode)
-      
+
       if (upInIris && downInOrb) {
-        if (typeof onClickAction === 'function') {
-          onClickAction()
+        clickCount.current += 1
+
+        if (clickCount.current === 1) {
+          clickTimer.current = setTimeout(() => {
+            if (clickCount.current === 1) {
+              if (typeof onClickAction === 'function') onClickAction()
+            }
+            clickCount.current = 0
+          }, 250) // Tight 250ms window
+        } else if (clickCount.current === 2) {
+          if (clickTimer.current) {
+            clearTimeout(clickTimer.current)
+            clickTimer.current = null
+          }
+
+          if (typeof onDoubleClickAction === 'function') {
+            onDoubleClickAction()
+            if (onDoubleClickFlash) {
+              onDoubleClickFlash(true)
+              setTimeout(() => onDoubleClickFlash(false), 500)
+            }
+          } else if (typeof onClickAction === 'function') {
+            onClickAction()
+          }
+
+          clickCount.current = 0
         }
       }
     }
-    
+
     isDraggingThisElement.current = false
     mouseDownTarget.current = null
     hasDragged.current = false
-  }, [onClickAction, elementRef])
+  }, [onClickAction, onDoubleClickAction, elementRef, onDoubleClickFlash])
 
   useEffect(() => {
     window.addEventListener("mousemove", handleMouseMove)
@@ -115,16 +148,16 @@ function useManualDragWindow(onClickAction: () => void, elementRef: React.RefObj
 
 
 // --- Main IrisOrb Component ---
-export function IrisOrb({ 
-  isExpanded, 
-  onClick, 
+export function IrisOrb({
+  isExpanded,
+  onClick,
   onDoubleClick,
-  centerLabel, 
-  size = 200, 
-  glowColor, 
-  voiceState, 
-  wakeFlash, 
-  sendMessage, 
+  centerLabel,
+  size = 200,
+  glowColor,
+  voiceState,
+  wakeFlash,
+  sendMessage,
   onCallbacksReady,
 
 }: IrisOrbProps) {
@@ -146,8 +179,8 @@ export function IrisOrb({
 
   // --- Combined Click & Drag Handling ---
 
-    const { handleIrisClick } = useNavigation()
-  const { handleMouseDown } = useManualDragWindow(handleIrisClick, orbRef)
+  const { handleIrisClick } = useNavigation()
+  const { handleMouseDown } = useManualDragWindow(orbRef, onClick || handleIrisClick, onDoubleClick, setDoubleClickFlash)
 
 
   // --- Voice Recording Logic ---
@@ -156,7 +189,7 @@ export function IrisOrb({
     setIsRecording(true)
     setFeedbackMessage("Listening...")
     const success = sendMessage("voice_command_start", {})
-    
+
     audioLevelInterval.current = setInterval(() => {
       const level = Math.random() * 0.8 + 0.2
       setAudioLevel(level)
@@ -172,7 +205,7 @@ export function IrisOrb({
       clearInterval(audioLevelInterval.current)
       audioLevelInterval.current = null
     }
-    
+
     const success = sendMessage("voice_command_end", {})
     setAudioLevel(0)
 
@@ -231,9 +264,9 @@ export function IrisOrb({
     const hue2rgb = (p: number, q: number, t: number) => {
       if (t < 0) t += 1
       if (t > 1) t -= 1
-      if (t < 1/6) return p + (q - p) * 6 * t
-      if (t < 1/2) return q
-      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6
+      if (t < 1 / 6) return p + (q - p) * 6 * t
+      if (t < 1 / 2) return q
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
       return p
     }
     let rOut, gOut, bOut
@@ -242,9 +275,9 @@ export function IrisOrb({
     } else {
       const q = l < 0.5 ? l * (1 + s) : l + s - l * s
       const p = 2 * l - q
-      rOut = hue2rgb(p, q, h + 1/3)
+      rOut = hue2rgb(p, q, h + 1 / 3)
       gOut = hue2rgb(p, q, h)
-      bOut = hue2rgb(p, q, h - 1/3)
+      bOut = hue2rgb(p, q, h - 1 / 3)
     }
     const toHex = (n: number) => Math.round(n * 255).toString(16).padStart(2, '0')
     return `#${toHex(rOut)}${toHex(gOut)}${toHex(bOut)}`
@@ -331,7 +364,7 @@ export function IrisOrb({
           animate={{ rotate: isProcessing ? 360 : isSpeaking ? [0, 360] : 8 }}
           transition={{ duration: isProcessing ? 2 : isSpeaking ? 1.5 : 8, repeat: Infinity, ease: "linear" }}
         />
-        
+
 
 
         <AnimatePresence mode="wait">
