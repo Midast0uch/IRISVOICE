@@ -421,3 +421,16 @@ body {
 .ring-paused {
   animation-play-state: paused;
 }
+
+/* Phase 91: Hyper-Flux High-Speed Energy Beams */
+.ring-hyper-flux-ccw {
+  animation: ring-rotate-ccw-mid 4s linear infinite;
+  will-change: transform;
+  transform-origin: center;
+}
+
+.ring-hyper-flux-cw {
+  animation: ring-rotate-cw-slow 4s linear infinite;
+  will-change: transform;
+  transform-origin: center;
+}

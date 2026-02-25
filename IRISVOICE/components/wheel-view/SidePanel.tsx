@@ -2,6 +2,7 @@
 
 import React, { useMemo, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
+import { ENERGY_CYCLE } from '@/lib/timing-config'
 import { Check } from "lucide-react"
 import { ConnectionLine } from "./ConnectionLine"
 import { ToggleField } from "./fields/ToggleField"
@@ -46,9 +47,9 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   orbSize,
 }) => {
   // Calculate panel position: anchored at distance for distinct "beam of light" bridge (Phase 48)
-  // Calculate panel position: anchored for a precision 65px bridge from wheel edge (Phase 66)
-  // Wheel Edge (startX) = 438. 438 + 65 = 503.
-  const panelOffset = 503
+  // Calculate panel position: anchored for a precision 85px bridge from wheel edge (Phase 68)
+  // Wheel Edge (startX) = 438. 438 + 85 = 523.
+  const panelOffset = 523
 
   // Memoize field rendering function for performance (Requirement 12.3)
   const renderField = useCallback(
@@ -170,30 +171,81 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           damping: 25,
         }}
       >
+        {/* Power Intake Energy Border (Phase 85 - Single High-Intensity) */}
+        <svg
+          className="absolute inset-0 pointer-events-none"
+          width="100%"
+          height="100%"
+          style={{ overflow: 'visible', zIndex: 1 }}
+        >
+          {/* SS2: Perpetual Smart Panel Particle (Phase 84) - Slot: 4-7s Active */}
+          <motion.rect
+            x="0.5"
+            y="0.5"
+            width="154"
+            height="100%"
+            rx="24"
+            ry="24"
+            fill="none"
+            stroke="white"
+            strokeWidth="3.5"
+            strokeLinecap="round"
+            pathLength="1"
+            initial={{ strokeDasharray: "0.02 0.98", strokeDashoffset: 0.8, opacity: 0.35 }}
+            animate={{
+              strokeDashoffset: [0.8, -0.2], // Constant loop
+              opacity: [0.35, 0.35, 0.95, 0.95, 0.35] // Flares during 4-7s active
+            }}
+            transition={{
+              strokeDashoffset: {
+                duration: ENERGY_CYCLE.duration / 4,
+                repeat: Infinity,
+                ease: "linear"
+              },
+              opacity: {
+                duration: ENERGY_CYCLE.duration,
+                repeat: Infinity,
+                ease: "linear",
+                times: [
+                  0,
+                  ENERGY_CYCLE.segments.ss2Panel.start,
+                  ENERGY_CYCLE.segments.ss2Panel.start + 0.05,
+                  ENERGY_CYCLE.segments.ss2Panel.end,
+                  1.0
+                ]
+              }
+            }}
+            style={{
+              filter: `blur(0.5px) drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 8px white)`,
+            }}
+          />
+        </svg>
+
         {/* Panel Container with glass-morphism styling */}
         <div
           role="dialog"
           aria-label={`${miniNode.label} settings`}
-          className="relative rounded-lg overflow-hidden"
+          className="relative rounded-[1.5rem] overflow-hidden"
           style={{
-            backgroundColor: "rgba(0, 0, 0, 0.4)",
-            backdropFilter: "blur(12px)",
-            border: `1px solid ${glowColor}33`,
-            boxShadow: `0 0 20px ${glowColor}22`,
+            backgroundColor: "rgba(0, 0, 0, 0.45)",
+            backdropFilter: "blur(16px)",
+            border: `1px solid rgba(255, 255, 255, 0.1)`,
+            boxShadow: `0 20px 40px rgba(0, 0, 0, 0.4)`,
+            height: '100%'
           }}
         >
-          {/* Panel Header - Reference Gutter (Phase 60) */}
-          <div className="px-6 py-4 border-b border-white/10">
+          {/* Panel Header - Centered Spacing (Phase 68) */}
+          <div className="px-7 py-4 border-b border-white/10 flex justify-center">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: glowColor, boxShadow: `0 0 8px ${glowColor}` }} />
+              <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: glowColor, boxShadow: `0 0 8px ${glowColor}` }} />
               <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/50">
                 {miniNode.label}
               </span>
             </div>
           </div>
 
-          {/* Field List - Deep Gutter (Phase 60) */}
-          <div className="px-6 py-6 overflow-y-auto max-h-[520px] custom-scrollbar">
+          {/* Field List - Protective Gutter (Phase 68) */}
+          <div className="px-7 py-6 overflow-y-auto max-h-[520px] custom-scrollbar">
             <AnimatePresence mode="wait">
               <motion.div
                 key={miniNode.id}
@@ -213,14 +265,14 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                     </p>
                   </div>
                 ) : (
-                  <div className="space-y-6">{fieldList}</div> // Stretched spacing (Phase 59)
+                  <div className="space-y-6">{fieldList}</div>
                 )}
               </motion.div>
             </AnimatePresence>
           </div>
 
-          {/* Panel Footer - Rounded Pill (Phase 60) */}
-          <div className="px-6 py-4 border-t border-white/10">
+          {/* Panel Footer - Protective Gutter (Phase 68) */}
+          <div className="px-7 py-4 border-t border-white/10">
             <button
               onClick={onConfirm}
               aria-label="Confirm settings"

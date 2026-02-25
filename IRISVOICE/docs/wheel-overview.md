@@ -17,64 +17,73 @@ The `DualRingMechanism` utilizes a strictly ordered SVG stack to achieve its lay
 | :--- | :--- | :--- | :--- |
 | 1 | **Wide-Field Voice Aura** | Expanded Radial Gradient covering the entire stage. | `r=orbSize*0.7`, `0.95 idle opacity` |
 | 2 | **Dynamic Background Aura** | Soft edge softening layer for depth transition. | `r=orbSize*0.52`, `blur: 40px` |
-| 3 | **Bright Liquid Frame**| 5px Metallic ring with edge glow and 12s kinetic energy pulse. | `r=outerRadius+30`, `stroke: 5px` |
-| 4 | **Neon Edge Bloom** | High-vibrancy neon pulse at the structural boundary. | `r=outerRadius+32.5`, `blur: 8px` |
-| 5 | **Orbital Ticks** | 12 energetic reference points (30° intervals). | `r=outerRadius+14` to `+23` |
-| 6 | **Barrier Kinetic Glider**| A high-density, segmented frame sitting on the tips of the ticks. | `r=outerRadius+23`, `strokeWidth: 2.7px` |
-| 7 | **Interactive Outer Ring** | Solid metallic ring with segment edge glows. | `r=orbSize*0.39`, `opacity: 0.95` |
-| 8 | **Gap Kinetic Glider** | A mid-density, segmented frame sitting between the interactive rings. | `r=orbSize*0.33`, `strokeWidth: 2.7px` |
-| 9 | **Interactive Inner Ring** | Solid metallic ring with segment edge glows. | `r=orbSize*0.27`, `opacity: 0.95` |
-| 10 | **Core Kinetic Glider** | A protective energy frame surrounding the central IrisOrb. | `r=orbSize*0.185`, `strokeWidth: 2.7px` |
-| 11 | **IrisOrb (Tactile Core)** | The primary control point and category label. | `diameter: 64px`, `zIndex: 100` |
-| 12 | **Safety Buffer** | 200px SVG margin + absolute overflow for zero clipping. | `overflow: visible` |
-| 13 | **Connection Bridge** | High-intensity beam anchoring machine to panel. | `opacity: 0.9`, `gap: 25px` |
+| 3 | **Bright Liquid Frame**| 5px Metallic ring with edge glow. | `r=outerRadius+30`, `stroke: 5px` |
+| 4 | **Structural Counter-Beams**| **Phase 89**: 2 CCW beams rotating at Hyper-Flux speed. | `r=outerRadius+30`, `Hyper-Flux` |
+| 5 | **Neon Edge Bloom** | High-vibrancy neon pulse at the structural boundary. | `r=outerRadius+32.5`, `blur: 8px` |
+| 6 | **Orbital Ticks** | 12 reference points alternating between **White** and **Brand Color**. | `r=outerRadius+14` to `+23` |
+| 7 | **Barrier Kinetic Glider**| A high-density, segmented frame sitting on the tips of the ticks. | `r=outerRadius+23`, `20s CW` |
+| 8 | **Interactive Outer Ring** | Solid metallic ring with segment edge glows. | `r=orbSize*0.39`, `20s CW` |
+| 9 | **Mid-Ring Energy Beam** | **Phase 88/91**: 2 CCW beams rotating at Hyper-Flux speed. | `r=orbSize*0.33`, `Hyper-Flux` |
+| 10 | **Gap Kinetic Glider** | A mid-density, segmented frame sitting between the interactive rings. | `r=orbSize*0.33`, `15s CCW` |
+| 11 | **Interactive Inner Ring** | Solid metallic ring with segment edge glows. | `r=orbSize*0.27`, `15s CCW` |
+| 12 | **Core Energy Beam** | **Phase 89/91**: 1 CW beam rotating at Hyper-Flux speed. | `r=orbSize*0.185`, `Hyper-Flux` |
+| 13 | **Core Kinetic Glider** | A protective energy frame surrounding the central IrisOrb. | `r=orbSize*0.185`, `10s CW` |
+| 14 | **White Core Halo** | **Phase 87**: Double-layer glare hugging the button edge. | `r=orbSize*0.11`, `Static` |
+| 15 | **IrisOrb (Tactile Core)** | The primary control point and category label. | `diameter: 64px`, `zIndex: 100` |
+| 16 | **Connection Bridge** | High-intensity beam anchoring machine to panel. | `opacity: 0.9`, `gap: 25px` |
 
 ---
 
-## 3. Kinetic Glider System
-The Gliders are `motion.circle` elements utilizing `strokeDasharray` to create sophisticated digital patterns.
+### White High-Intensity Energy Beams
+These "Living Circuit" elements are the primary kinetic focal points. They utilize **Framer Motion** for rotation to ensure perfect centering and 60fps performance.
 
-### Barrier Glider (Outermost)
-- **Pattern**: 48 segments total (4 segments per 30° tick sector).
-- **Segment Length**: ~18.6px.
-- **Gaps**: ~4px ("Barely Touching").
-- **Effect**: Creates a sophisticated, high-frequency digital loop that "caps" the energy ticks.
-
-### Gap & Core Gliders
-- **Pattern**: 2 long arcs (180° each) with a small gap.
-- **Motion**: They utilize a counter-spin animation relative to the interactive rings to create visual parallax.
+| Beam Location | Count | Direction | Radius | Duration | Animation Engine |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Structural Ring** | 2 | CCW (Counter) | `outerRadius + 30` | **6.0s** | Framer Motion |
+| **Gap (Middle)** | 2 | CCW (Sync) | `orbSize * 0.33` | **3.5s** | Framer Motion |
+| **Core (Inner)** | 1 | CW (Sync) | `orbSize * 0.185` | **4.0s** | Framer Motion |
+| **Edge (Halo)** | - | Static | `orbSize * 0.11` | N/A | React State Pulse |
 
 ---
 
-## 4. Interaction & Tactile Feedback
+## 4. Lighting & Visual Design Specs
+
+### Orbital Tick Alternation (Phase 94)
+The 12 orbital ticks use a high-fidelity chromatic rhythm:
+- **White Ticks** (Indices 0, 2, 4, 6, 8, 10): 
+  - **Color**: `#FFFFFF`.
+  - **Width**: `3.5px` (Bloom) / `2.2px` (Core).
+  - **Effect**: Intense white bloom (3px blur) + White drop-shadow (5px).
+- **Brand Ticks** (Indices 1, 3, 5, 7, 9, 11):
+  - **Color**: `glowColor` (Brand).
+  - **Width**: `2.5px` (Bloom) / `1.8px` (Core).
+  - **Effect**: Soft industrial glow (2px blur).
+
+### High-Intensity White Core Halo (Phase 87)
+- **Location**: `r=orbSize*0.11` (Hugging the center button).
+- **Dual-Layer Lighting**:
+  - **Sharp Halo**: Concentrated white ring at the edge for definition.
+  - **Soft Glare**: Outward-pulsing glare (12px blur) that expands/contracts to simulate a volumetric light source.
+
+---
+
+## 5. Interaction & Tactile Feedback
 The interface is designed to feel physical despite its digital nature.
 
 - **Tactile Center Button**: 
   - **Interaction**: Framer Motion `whileTap={{ scale: 0.88 }}`.
-  - **Single-Click**: 
-    - **Active Mode**: Immediately deactivates voice only.
-    - **Idle Mode**: Transitions **Back to Level 2** (Category view).
-  - **Double-Click**: Exclusive trigger to start the Voice Aura engine.
-- **Connection Bridge**: 
-  - **Hot Laser Beam**: High-intensity **3.2px technical beam** anchored at **438px** to avoid moving barrier gliders.
-  - **Static Structural Frame**: Connects to a stationary, high-fidelity frame at **radius 146**, ensuring zero overlap with rotating segments.
-  - **Centering**: Perfect horizontal bisection (375px Y) across Hub, Laser, and SidePanel.
-  - **Panel Scale**: Vertical expansion to **680px** with **px-6 internal card padding** and **Rounded-XL** input styling.
-- **Spring Physics**: All rotations and ring transitions use high-stiffness spring configurations (`stiffness: 120`, `damping: 14`) to ensure the wheel feels "weighted" and snappy.
+  - **Double-Click**: Starts the Voice Aura engine.
 - **Side Panel Connectivity**: 
   - Active nodes project a `ConnectionLine` (SVG Path) to the SidePanel.
-  - The line uses a refined quadratic bezier curve for a "cabled" look.
-  - **Interactivity**: Enabled via `pointerEvents: "auto"` for direct engagement.
-  - **Centering**: Anchored to `top: 50%` for robust alignment with variable panel heights.
+  - **Surgical Centering**: All components use Framer Motion `y: "-50%"` to ensure perfect eternal bisection.
 
 ---
 
-## 5. Technical Implementation Details
+## 6. Technical Implementation Details
 - **Component**: [DualRingMechanism.tsx](file:///c:/Users/midas/Desktop/dev/IRISVOICE/components/wheel-view/DualRingMechanism.tsx)
-- **Container**: [WheelView.tsx](file:///c:/Users/midas/Desktop/dev/IRISVOICE/components/wheel-view/WheelView.tsx)
-- **State Management**: Integrated via `NavigationContext` for level transitions (1 → 4).
-- **Responsiveness**: Scaling is controlled via `orbSize` prop, allowing the widget to adapt from small icons to full-screen dashboards.
+- **CSS Animations**: [globals.css](file:///c:/Users/midas/Desktop/dev/IRISVOICE/app/globals.css) (Standard ring rotations).
+- **Performance**: High-intensity shimmers and beams use `will-change: transform` and `pathLength="1"` for browser-native optimization.
 
 ---
 
-*Last Updated: 2026-02-24*
+*Last Updated: 2026-02-25*

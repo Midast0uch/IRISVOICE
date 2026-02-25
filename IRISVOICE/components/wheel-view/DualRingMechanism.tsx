@@ -1,8 +1,9 @@
 "use client"
 
 import React, { useMemo, useCallback } from "react"
-import { motion } from "framer-motion"
+import { motion, AnimatePresence } from 'framer-motion'
 import type { MiniNode } from "@/types/navigation"
+import { ENERGY_CYCLE } from '@/lib/timing-config'
 
 interface DualRingMechanismProps {
   items: MiniNode[]
@@ -70,9 +71,9 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
     }
   }, [items])
 
-  // Consolidated Radii (Phase 49: Ultra-Density Contraction)
+  // Consolidated Radii (Phase 86: Precision Symmetry)
   const outerRadius = orbSize * 0.39
-  const innerRadius = orbSize * 0.27
+  const innerRadius = orbSize * 0.2575 // Perfectly equidistant between gliders (Phase 86)
 
   // Phase 47: SVG Viewport Buffer (Universal Clipping Fix)
   // 200px provides massive safety for high-intensity blooms on all rings
@@ -339,27 +340,28 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
           stroke="rgba(255, 255, 255, 0.4)"
           strokeWidth="0.5"
         />
-        {/* Internal Refraction Pulse (Kinetic Boost Energy) */}
+        {/* Phase 93: Structural Counter-Beams (Hyper-Flux CCW - Reliable) */}
         <motion.circle
           cx={center}
           cy={center}
           r={outerRadius + 30}
           fill="none"
-          stroke={glowColor}
-          strokeWidth="3.2"
-          strokeDasharray="100 900"
-          strokeLinecap="round"
-          animate={{ rotate: 360 }}
+          stroke="white"
+          strokeWidth="1.8"
+          pathLength="1"
+          strokeDasharray="0.02 0.48"
+          animate={{ rotate: -360 }}
           transition={{
-            duration: 12,
+            duration: 6, // High speed counter-balance
             repeat: Infinity,
             ease: "linear"
           }}
           style={{
+            pointerEvents: "none",
+            filter: `drop-shadow(0 0 8px white)`,
+            opacity: 0.9,
             originX: "50%",
-            originY: "50%",
-            filter: `blur(1px) drop-shadow(0 0 6px ${glowColor})`,
-            opacity: 0.8
+            originY: "50%"
           }}
         />
       </motion.g>
@@ -397,31 +399,93 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
             const innerPoint = polarToCartesian(center, center, tickRadius - 5, angle)
             const outerPoint = polarToCartesian(center, center, tickRadius + 5, angle)
 
+            const isWhiteTick = i % 2 === 0
+            const tickColor = isWhiteTick ? "white" : glowColor
+
             return (
               <g key={`tick-lite-${i}`}>
+                {/* Tick Bloom Layer */}
                 <line
                   x1={innerPoint.x}
                   y1={innerPoint.y}
                   x2={outerPoint.x}
                   y2={outerPoint.y}
-                  stroke={glowColor}
-                  strokeWidth="2.5"
-                  style={{ pointerEvents: "none", opacity: 0.35, filter: "blur(2px)" }}
+                  stroke={tickColor}
+                  strokeWidth={isWhiteTick ? "3.5" : "2.5"}
+                  style={{
+                    pointerEvents: "none",
+                    opacity: isWhiteTick ? 0.45 : 0.35,
+                    filter: isWhiteTick ? "blur(3px)" : "blur(2px)"
+                  }}
                 />
+                {/* Tick Core Layer */}
                 <line
                   x1={innerPoint.x}
                   y1={innerPoint.y}
                   x2={outerPoint.x}
                   y2={outerPoint.y}
-                  stroke={hexToRgba(glowColor, 0.6)}
-                  strokeWidth="1.8"
-                  style={{ pointerEvents: "none" }}
+                  stroke={isWhiteTick ? "white" : hexToRgba(glowColor, 0.6)}
+                  strokeWidth={isWhiteTick ? "2.2" : "1.8"}
+                  style={{
+                    pointerEvents: "none",
+                    filter: isWhiteTick ? "drop-shadow(0 0 5px white)" : "none"
+                  }}
                 />
               </g>
             )
           })}
         </g>
       </motion.g>
+
+      {/* 2.5 Core Shimmer Engine (Phase 87 - White Bright Light Halo) */}
+      <g style={{ pointerEvents: 'none' }}>
+        {/* Outer White Glare (Soft Bloom) */}
+        <motion.circle
+          cx={center}
+          cy={center}
+          r={orbSize * 0.125}
+          fill="none"
+          stroke="white"
+          strokeWidth="6"
+          initial={{ opacity: 0.1 }}
+          animate={{
+            opacity: [0.1, 0.35, 0.1],
+            scale: [1, 1.1, 1]
+          }}
+          transition={{
+            duration: 4,
+            repeat: Infinity,
+            ease: "easeInOut"
+          }}
+          style={{
+            filter: "blur(12px)",
+            originX: "50%",
+            originY: "50%"
+          }}
+        />
+        {/* Core Halo (Sharp White Light at Button Edge) */}
+        <motion.circle
+          cx={center}
+          cy={center}
+          r={orbSize * 0.11}
+          fill="none"
+          stroke="white"
+          strokeWidth="1.5"
+          initial={{ opacity: 0.5 }}
+          animate={{
+            opacity: [0.5, 0.95, 0.5],
+            strokeWidth: ["1.5px", "2.8px", "1.5px"]
+          }}
+          transition={{
+            duration: 2.5,
+            repeat: Infinity,
+            ease: "easeInOut"
+          }}
+          style={{
+            filter: `drop-shadow(0 0 10px white) drop-shadow(0 0 15px white)`,
+          }}
+        />
+      </g>
 
       {/* 3. Outer Interactive Ring (Liquid Metal Refraction) */}
       <motion.g
@@ -489,17 +553,8 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
         })}
       </motion.g>
 
-      {/* 4. Gap Kinetic Glider (Ultra-Density - Phase 49) */}
-      <motion.circle
-        cx={center}
-        cy={center}
-        r={orbSize * 0.33}
-        fill="none"
-        stroke={hexToRgba(glowColor, 0.4)}
-        strokeWidth="2.7"
-        strokeDasharray="45 15"
-        className="ring-middle-anim"
-        style={{ pointerEvents: "none" }}
+      {/* 4. Gap Kinetic Gliding Structure (Phase 49) */}
+      <motion.g
         initial={{ opacity: 0, scale: 1.1 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{
@@ -508,7 +563,44 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
           damping: 20,
           delay: 0.4
         }}
-      />
+      >
+        {/* Structural Glider Segments (Phase 91: Reverted to Dashed) */}
+        <circle
+          cx={center}
+          cy={center}
+          r={orbSize * 0.33}
+          fill="none"
+          stroke={hexToRgba(glowColor, 0.4)}
+          strokeWidth="2.7"
+          strokeDasharray="45 15"
+          className="ring-middle-anim"
+          style={{ pointerEvents: "none" }}
+        />
+        {/* Phase 93: Inter-Segment Energy Beam (Hyper-Flux CCW - Reliable) */}
+        <motion.circle
+          cx={center}
+          cy={center}
+          r={orbSize * 0.33}
+          fill="none"
+          stroke="white"
+          strokeWidth="2.2"
+          pathLength="1"
+          strokeDasharray="0.02 0.48"
+          animate={{ rotate: -360 }}
+          transition={{
+            duration: 3.5, // Really fast flow
+            repeat: Infinity,
+            ease: "linear"
+          }}
+          style={{
+            pointerEvents: "none",
+            filter: `drop-shadow(0 0 8px white)`,
+            opacity: 0.85,
+            originX: "50%",
+            originY: "50%"
+          }}
+        />
+      </motion.g>
 
       {/* 5. Inner Interactive Ring (Liquid Metal Refraction) */}
       <motion.g
@@ -577,17 +669,8 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
         })}
       </motion.g>
 
-      {/* 6. Core Kinetic Glider (Ultra-Density - Phase 49) */}
-      <motion.circle
-        cx={center}
-        cy={center}
-        r={orbSize * 0.185}
-        fill="none"
-        stroke={hexToRgba(glowColor, 0.4)}
-        strokeWidth="2.7"
-        strokeDasharray="15 35"
-        className="ring-inner-anim"
-        style={{ pointerEvents: "none" }}
+      {/* 6. Core Kinetic Gliding Structure (Phase 49) */}
+      <motion.g
         initial={{ opacity: 0, scale: 1.1 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{
@@ -596,10 +679,46 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
           damping: 20,
           delay: 0.6
         }}
-      />
+      >
+        <circle
+          cx={center}
+          cy={center}
+          r={orbSize * 0.185}
+          fill="none"
+          stroke={hexToRgba(glowColor, 0.4)}
+          strokeWidth="2.7"
+          strokeDasharray="15 35"
+          className="ring-inner-anim"
+          style={{ pointerEvents: "none" }}
+        />
+        {/* Phase 93: Core Energy Beam (Hyper-Flux CW - Reliable) */}
+        <motion.circle
+          cx={center}
+          cy={center}
+          r={orbSize * 0.185}
+          fill="none"
+          stroke="white"
+          strokeWidth="2.2"
+          pathLength="1"
+          strokeDasharray="0.02 0.98"
+          animate={{ rotate: 360 }}
+          transition={{
+            duration: 4, // Really fast pulse
+            repeat: Infinity,
+            ease: "linear"
+          }}
+          style={{
+            pointerEvents: "none",
+            filter: `drop-shadow(0 0 8px white)`,
+            opacity: 0.85,
+            originX: "50%",
+            originY: "50%"
+          }}
+        />
+      </motion.g>
 
-      {/* 7. Static Structural Frame: Laser Anchor Point (Phase 66) */}
-      <circle
+      {/* 7. Structural Energy Circuit: Rotating "Power Spark" (Phase 67) */}
+      <motion.circle
         cx={center}
         cy={center}
         r={outerRadius + 29}
@@ -607,6 +726,85 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
         stroke={hexToRgba(glowColor, 0.4)}
         strokeWidth="1.5"
         style={{ pointerEvents: "none" }}
+      />
+
+      {/* 7. S2: Perpetual Dual Particle "Chase" Relay (Phase 83) - Slot: 0-3s Active */}
+      {/* Particle Alpha: Circles constantly at 0.35, flares to 0.95 during 0-3s */}
+      <motion.circle
+        cx={center}
+        cy={center}
+        r={outerRadius + 29}
+        fill="none"
+        stroke="white"
+        strokeWidth="3"
+        strokeLinecap="round"
+        pathLength="1"
+        initial={{ strokeDasharray: "0.08 0.92", strokeDashoffset: 0.75, opacity: 0.35 }}
+        animate={{
+          strokeDashoffset: [0.75, -0.25], // 1 Full loop constant
+          opacity: [0.35, 0.95, 0.95, 0.35] // Ambient, High, High, Ambient
+        }}
+        transition={{
+          strokeDashoffset: {
+            duration: ENERGY_CYCLE.duration / 4, // 2s per loop
+            repeat: Infinity,
+            ease: "linear"
+          },
+          opacity: {
+            duration: ENERGY_CYCLE.duration,
+            repeat: Infinity,
+            ease: "linear",
+            times: [
+              0, // Start at ambient
+              ENERGY_CYCLE.segments.s2Wheel.start, // Flare up to high
+              ENERGY_CYCLE.segments.s2Wheel.end, // Stay high
+              1.0 // Drop back to ambient
+            ]
+          }
+        }}
+        style={{
+          pointerEvents: "none",
+          filter: `blur(0.5px) drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 6px white)`,
+        }}
+      />
+
+      {/* Particle Beta: Circles constantly, flaring to relay intensity during 0-3s */}
+      <motion.circle
+        cx={center}
+        cy={center}
+        r={outerRadius + 29}
+        fill="none"
+        stroke="white"
+        strokeWidth="3"
+        strokeLinecap="round"
+        pathLength="1"
+        initial={{ strokeDasharray: "0.08 0.92", strokeDashoffset: 0.25, opacity: 0.35 }}
+        animate={{
+          strokeDashoffset: [0.25, -0.75], // 1 Full loop constant
+          opacity: [0.35, 0.95, 0.95, 0.35] // Ambient, High, High, Ambient
+        }}
+        transition={{
+          strokeDashoffset: {
+            duration: ENERGY_CYCLE.duration / 4,
+            repeat: Infinity,
+            ease: "linear"
+          },
+          opacity: {
+            duration: ENERGY_CYCLE.duration,
+            repeat: Infinity,
+            ease: "linear",
+            times: [
+              0, // Start at ambient
+              ENERGY_CYCLE.segments.s2Wheel.start, // Flare up to high
+              ENERGY_CYCLE.segments.s2Wheel.end, // Stay high
+              1.0 // Drop back to ambient
+            ]
+          }
+        }}
+        style={{
+          pointerEvents: "none",
+          filter: `blur(0.5px) drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 6px white)`,
+        }}
       />
 
       <style jsx>{`

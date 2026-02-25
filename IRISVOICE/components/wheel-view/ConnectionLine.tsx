@@ -1,5 +1,6 @@
 import React from 'react'
 import { motion } from 'framer-motion'
+import { ENERGY_CYCLE } from '@/lib/timing-config'
 
 interface ConnectionLineProps {
   glowColor: string
@@ -119,7 +120,7 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
           opacity="0.6" // Restored Vibrancy (Phase 64)
         />
 
-        {/* 3. Main High-Intensity Energy Beam */}
+        {/* 3. Main High-Intensity Energy Beam - Reduced to atmospheric guide (Phase 73) */}
         <line
           x1="0"
           y1={containerHeight / 2}
@@ -129,41 +130,23 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
           strokeWidth={lineHeight}
           strokeLinecap="round"
           style={{
-            filter: `drop-shadow(0 0 10px ${glowColor}) drop-shadow(0 0 4px ${glowColor})`,
-            opacity: 1.0
+            filter: `drop-shadow(0 0 10px ${glowColor})`,
+            opacity: 0.15
           }}
         />
 
-        {/* 4. Needle Hotspot: Pressurized White Core (Phase 63) */}
+        {/* Base conduit - Perpetual High-Intensity Beam (Phase 85) */}
         <line
           x1="0"
           y1={containerHeight / 2}
           x2={lineWidth}
           y2={containerHeight / 2}
-          stroke="white"
-          strokeWidth="1.2"
+          stroke={glowColor}
+          strokeWidth={lineHeight * 1.5}
           strokeLinecap="round"
-          opacity="0.95"
-          style={{ filter: "drop-shadow(0 0 1px white)" }}
-        />
-
-        {/* 5. Kinetic Shimmer (Traveling Spark) */}
-        <motion.line
-          x1="0"
-          y1={containerHeight / 2}
-          x2={lineWidth}
-          y2={containerHeight / 2}
-          stroke="url(#line-shimmer-gradient)"
-          strokeWidth="4"
-          strokeLinecap="round"
-          animate={{
-            strokeDashoffset: [-lineWidth, lineWidth]
-          }}
-          initial={{ strokeDasharray: `${lineWidth / 4} ${lineWidth * 2}` }}
-          transition={{
-            duration: 1.5,
-            repeat: Infinity,
-            ease: "linear"
+          style={{
+            opacity: 0.95,
+            filter: `drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 5px white)`,
           }}
         />
       </svg>
