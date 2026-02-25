@@ -11,30 +11,32 @@ The WheelView is built on an **Energy-First** architecture.
 ---
 
 ## 2. Layered SVG Stack (Bottom to Top)
-The `DualRingMechanism` utilizes a strictly ordered SVG stack to achieve its layered depth effect.
+The `DualRingMechanism` utilizes a strictly ordered SVG stack to achieve its layered depth effect. Moving background layers *inside* the SVG (Phase 101) ensures they sit correctly behind the machine rings but in front of the Voice Aura.
 
 | Order | Component Name | Description | Sizing/Radius |
 | :--- | :--- | :--- | :--- |
 | 1 | **Wide-Field Voice Aura** | Expanded Radial Gradient covering the entire stage. | `r=orbSize*0.7`, `0.95 idle opacity` |
 | 2 | **Dynamic Background Aura** | Soft edge softening layer for depth transition. | `r=orbSize*0.52`, `blur: 40px` |
-| 3 | **Bright Liquid Frame**| 5px Metallic ring with edge glow. | `r=outerRadius+30`, `stroke: 5px` |
-| 4 | **Structural Counter-Beams**| **Phase 89**: 2 CCW beams rotating at Hyper-Flux speed. | `r=outerRadius+30`, `Hyper-Flux` |
-| 5 | **Neon Edge Bloom** | High-vibrancy neon pulse at the structural boundary. | `r=outerRadius+32.5`, `blur: 8px` |
-| 6 | **Orbital Ticks** | 12 reference points alternating between **White** and **Brand Color**. | `r=outerRadius+14` to `+23` |
-| 7 | **Barrier Kinetic Glider**| A high-density, segmented frame sitting on the tips of the ticks. | `r=outerRadius+23`, `20s CW` |
-| 8 | **Interactive Outer Ring** | Solid metallic ring with segment edge glows. | `r=orbSize*0.39`, `20s CW` |
-| 9 | **Mid-Ring Energy Beam** | **Phase 88/91**: 2 CCW beams rotating at Hyper-Flux speed. | `r=orbSize*0.33`, `Hyper-Flux` |
-| 10 | **Gap Kinetic Glider** | A mid-density, segmented frame sitting between the interactive rings. | `r=orbSize*0.33`, `15s CCW` |
-| 11 | **Interactive Inner Ring** | Solid metallic ring with segment edge glows. | `r=orbSize*0.27`, `15s CCW` |
-| 12 | **Core Energy Beam** | **Phase 89/91**: 1 CW beam rotating at Hyper-Flux speed. | `r=orbSize*0.185`, `Hyper-Flux` |
-| 13 | **Core Kinetic Glider** | A protective energy frame surrounding the central IrisOrb. | `r=orbSize*0.185`, `10s CW` |
-| 14 | **White Core Halo** | **Phase 87**: Double-layer glare hugging the button edge. | `r=orbSize*0.11`, `Static` |
-| 15 | **IrisOrb (Tactile Core)** | The primary control point and category label. | `diameter: 64px`, `zIndex: 100` |
-| 16 | **Connection Bridge** | High-intensity beam anchoring machine to panel. | `opacity: 0.9`, `gap: 25px` |
+| 3 | **Integrated BasePlate** | **Phase 101**: Industrial foundation plate (SVG Circle). | `r=147 (98%)`, `base-plate-gradient` |
+| 4 | **Integrated DepthGroove** | **Phase 101**: Recessed industrial well (SVG Circle + Shadows). | `r=138 (92%)`, `blur: 4px` |
+| 5 | **Bright Liquid Frame**| 5px Metallic ring with edge glow. | `r=outerRadius+30`, `stroke: 5px` |
+| 6 | **Structural Counter-Beams**| **Phase 89**: 2 CCW beams rotating at Hyper-Flux speed. | `r=outerRadius+30`, `Hyper-Flux` |
+| 7 | **Neon Edge Bloom** | High-vibrancy neon pulse at the structural boundary. | `r=outerRadius+32.5`, `blur: 8px` |
+| 8 | **Orbital Ticks** | 12 reference points alternating between **White** and **Brand Color**. | `r=outerRadius+14` to `+23` |
+| 9 | **Barrier Kinetic Glider**| A high-density, segmented frame sitting on the tips of the ticks. | `r=outerRadius+23`, `20s CW` |
+| 10 | **Interactive Outer Ring** | Solid metallic ring with segment edge glows. | `r=orbSize*0.39`, `20s CW` |
+| 11| **Mid-Ring Energy Beam** | **Phase 88/91**: 2 CCW beams rotating at Hyper-Flux speed. | `r=orbSize*0.33`, `Hyper-Flux` |
+| 12| **Gap Kinetic Glider** | A mid-density, segmented frame sitting between the interactive rings. | `r=orbSize*0.33`, `15s CCW` |
+| 13| **Interactive Inner Ring** | Solid metallic ring with segment edge glows. | `r=orbSize*0.27`, `15s CCW` |
+| 14| **Core Energy Beam** | **Phase 89/91**: 1 CW beam rotating at Hyper-Flux speed. | `r=orbSize*0.185`, `Hyper-Flux` |
+| 15| **Core Kinetic Glider** | A protective energy frame surrounding the central IrisOrb. | `r=orbSize*0.185`, `10s CW` |
+| 16| **White Core Halo** | **Phase 87**: Double-layer glare hugging the button edge. | `r=orbSize*0.11`, `Static` |
+| 17| **IrisOrb (Tactile Core)** | The primary control point and category label. | `diameter: 64px`, `zIndex: 100` |
+| 18| **Connection Bridge** | High-intensity beam anchoring machine to panel. | `opacity: 0.9`, `gap: 25px` |
 
 ---
 
-### White High-Intensity Energy Beams
+## 3. High-Intensity Energy Beams
 These "Living Circuit" elements are the primary kinetic focal points. They utilize **Framer Motion** for rotation to ensure perfect centering and 60fps performance.
 
 | Beam Location | Count | Direction | Radius | Duration | Animation Engine |
@@ -79,11 +81,28 @@ The interface is designed to feel physical despite its digital nature.
 
 ---
 
-## 6. Technical Implementation Details
+## 6. Background Industrial Architecture (Modifying Colors)
+To ensure absolute layering, the industrial base plate and depth effects are integrated directly into the SVG stack in `DualRingMechanism.tsx`.
+
+### Modifying the Base Plate Color
+1.  Locate [DualRingMechanism.tsx](file:///c:/Users/midas/Desktop/dev/IRISVOICE/components/wheel-view/DualRingMechanism.tsx).
+2.  Search for the `<radialGradient id="base-plate-gradient">` tag inside the `<defs>` section.
+3.  Adjust the hex codes in the gradient stops:
+    - **Stop 1 (Center)**: The core color of the plate.
+    - **Stop 2 (Edge)**: The shadow/outer color of the plate.
+4.  The plate is rendered by a `<circle>` using `fill="url(#base-plate-gradient)"`.
+
+### Modifying Atmospheric Glow
+The `AmbientGlowLayer` (the soft atmospheric pulse behind everything) is still located in [WheelView.tsx](file:///c:/Users/midas/Desktop/dev/IRISVOICE/components/wheel-view/WheelView.tsx).
+- Adjust the `radial-gradient` color and `blur` value for different environmental feels.
+
+---
+
+## 7. Technical Implementation Details
 - **Component**: [DualRingMechanism.tsx](file:///c:/Users/midas/Desktop/dev/IRISVOICE/components/wheel-view/DualRingMechanism.tsx)
 - **CSS Animations**: [globals.css](file:///c:/Users/midas/Desktop/dev/IRISVOICE/app/globals.css) (Standard ring rotations).
 - **Performance**: High-intensity shimmers and beams use `will-change: transform` and `pathLength="1"` for browser-native optimization.
 
 ---
 
-*Last Updated: 2026-02-25*
+*Last Updated: 2026-02-25 (Phase 104)*

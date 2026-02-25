@@ -159,6 +159,73 @@ export const WheelView: React.FC<WheelViewProps> = ({
         >
           {/* Centered Mechanims Layer - Absolute Visibility (Phase 50) */}
           <div className="relative" style={{ width: 300, height: 300, overflow: 'visible' }}>
+
+            {/* 1. AmbientGlowLayer (z-20) - Extreme Soft Pulse */}
+            <motion.div
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                width: '160%',
+                height: '160%',
+                background: `radial-gradient(circle, ${glowColor}0F 0%, transparent 70%)`,
+                filter: 'blur(60px)',
+                zIndex: -20,
+                pointerEvents: 'none',
+              }}
+              animate={{
+                scale: [1, 1.1, 1],
+                opacity: [0.7, 1, 0.7]
+              }}
+              transition={{
+                duration: 8,
+                repeat: Infinity,
+                ease: "easeInOut"
+              }}
+            />
+
+            {/* 2. BasePlateLayer (z-10) - Industrial Foundation (Phase 99: Gunmetal Skin) */}
+            <div
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                width: '98%', // Aligned precisely with structural frame (294px / 300px)
+                height: '98%',
+                transform: 'translate(-50%, -50%)',
+                background: 'radial-gradient(circle at 50% 50%, #1C2026 0%, #0F1115 100%)',
+                borderRadius: '50%',
+                border: `1px solid ${glowColor}26`, // 15% brand opacity
+                boxShadow: `
+                  0 10px 40px rgba(0,0,0,0.6),
+                  inset 0 0 20px rgba(255,255,255,0.02)
+                `,
+                zIndex: -10,
+                pointerEvents: 'none',
+              }}
+            />
+
+            {/* 3. DepthGrooveLayer (z-0) - Recessed Well Effect */}
+            <div
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                width: '92%', // Tighter recessed groove (Phase 97)
+                height: '92%',
+                transform: 'translate(-50%, -50%)',
+                background: 'transparent',
+                borderRadius: '50%',
+                boxShadow: `
+                  inset 0 8px 16px rgba(0,0,0,0.8),
+                  inset 0 -4px 8px rgba(255,255,255,0.03),
+                  0 0 10px rgba(0,0,0,0.4)
+                `,
+                zIndex: 0,
+                pointerEvents: 'none',
+              }}
+            />
+
             <DualRingMechanism
               items={miniNodeStack}
               selectedIndex={selectedIndex}
