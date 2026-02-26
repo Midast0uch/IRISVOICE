@@ -35,10 +35,12 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
     return `rgba(${r}, ${g}, ${b}, ${alpha})`
   }
 
-  // Calculate line dimensions: anchor precisely to stationary structural frame (Phase 66)
-  // Parent Stage Center: 40 (padding) + 250 (500/2) = 290.
-  // Static Frame Radius 148: center + radius => 290 + 148 = 438.
-  const startX = 438 // Corrected Absolute Anchor relative to 850px container
+  // Calculate line dimensions: anchor precisely to stationary structural frame
+  // Container layout: 40px paddingLeft + 600px Mechanics Stage
+  // Mechanics Stage center: 40 + 300 = 340px
+  // Structural Frame Radius: outerRadius + 30 = (orbSize * 0.39) + 30 = 117 + 30 = 147px
+  // Right edge of structural ring: 340 + 147 = 487px
+  const startX = 487 // Absolute anchor to structural ring edge relative to 850px container
   const lineWidth = Math.max(0, panelOffset - startX)
   const lineHeight = 3.2 // Kinetic-Level Visibility (Phase 63)
   const containerHeight = 60 // Expanded safety gutter for high-intensity blooms
