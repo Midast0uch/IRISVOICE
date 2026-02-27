@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\decorators.py
-# hypothesis_version: 6.151.9
-
-['F', '_P', '_R', '__', '_specialize_on', '_specialized_on', 'default', 'dont_skip_tracing', 'einops', 'einsum', 'guarded', 'nested_graph_breaks', 'nonexistent config', 'not implemented yet', 'pack', 'repeat', 'set_stance', 'skip_torchrec', 'unguarded', 'unpack', 'verbose', 'verify_correctness']

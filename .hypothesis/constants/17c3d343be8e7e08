@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\keypoint_rcnn.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.05, 0.25, 0.3, 0.5, 0.7, 50.6, 54.6, 61.1, 65.0, 133.924, 137.42, 226.054, 100, 256, 512, 640, 672, 704, 736, 768, 800, 1000, 1333, 2000, 59137258, '0', '1', '2', '3', 'COCO-val2017', 'KeypointRCNN', '_docs', '_file_size', '_metrics', '_ops', 'bilinear', 'box_map', 'categories', 'fan_out', 'keypoint_names', 'kp_map', 'legacy', 'min_size', 'num_classes', 'num_keypoints', 'num_params', 'pretrained', 'pretrained_backbone', 'recipe', 'relu']

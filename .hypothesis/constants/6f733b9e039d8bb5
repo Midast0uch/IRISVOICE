@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_export\wrappers.py
-# hypothesis_version: 6.151.9
-
-['.', '0', '_', '__init__', '_export_tracepoint', 'apply', 'call_function', 'get_attr', 'in_spec', 'module_call_inputs', 'module_call_outputs', 'out_spec']

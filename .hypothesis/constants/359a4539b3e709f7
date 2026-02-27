@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\variables\base.py
-# hypothesis_version: 6.151.9
-
-['<unknown type>', 'ConstantVariable', 'PyCodegen', 'UserFunctionVariable', 'VariableTracker', '__getattr__', '__iter__', '__len__', '__next__', '_no_implicit_realize', 'guards', 'is_leaf', 'mutation_type', 'parents_tracker', 'source', 'value']

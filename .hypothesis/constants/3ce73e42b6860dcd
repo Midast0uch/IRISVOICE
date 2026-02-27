@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\external\importtools.py
-# hypothesis_version: 6.151.9
-
-['(\\d+ | [a-z]+ | \\.)', '.', 'False', 'SYMPY_DEBUG', 'True', '__version__', 'collections', 'fromlist', 'matplotlib']

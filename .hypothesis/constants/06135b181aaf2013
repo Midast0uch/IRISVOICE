@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\utils.py
-# hypothesis_version: 6.151.9
-
-[1000, '!=', '%', '%.1f%s', '%=', '%s=%s', '&', '&=', '*', '**', '**=', '*=', '+', '+=', ', ', '-', '-=', '/', '//', '//=', '/=', '<', '<<', '<<=', '<=', '<dynamic>', '=', '==', '>', '>=', '>>', '>>=', '@', '@=', 'Flags(%s)', 'Invalid flag: %s', 'LLVM DUMP %s', 'T', 'Tk', 'Tv', '^', '^=', '_', '__', '__builtins__', '__name__', '_shutting_down', 'generic', 'in', 'is', 'is not', 'is_true', 'lazy_func', 'metadata', 'not', 's ms us ns ps', 'target', '|', '|=', '~']

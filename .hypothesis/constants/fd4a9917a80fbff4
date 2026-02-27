@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\utils\operations.py
-# hypothesis_version: 6.151.9
-
-[1.0, '\n  - ', '2.8', '<=', '_asdict', '_fields', 'broadcast tensor', 'dtype', 'gloo', 'is_nested', 'mean', 'npu', 'npu:0', 'sum', 'tensor', 'to', 'xpu']

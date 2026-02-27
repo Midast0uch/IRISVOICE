@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\zero_shot_object_detection.py
-# hypothesis_version: 6.151.9
-
-[0.1, ',', 'Image.Image', 'box', 'boxes', 'candidate_label', 'candidate_labels', 'image', 'is_last', 'label', 'pt', 'score', 'scores', 'target_size', 'text_queries', 'threshold', 'timeout', 'top_k', 'torch.Tensor', 'vision', 'xmax', 'xmin', 'ymax', 'ymin']

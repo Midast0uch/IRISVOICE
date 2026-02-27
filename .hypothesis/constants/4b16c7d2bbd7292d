@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\cuda\streams.py
-# hypothesis_version: 6.151.9
-
-['_CudaEventBase', '_CudaStreamBase', 'device_index', 'stream_id']

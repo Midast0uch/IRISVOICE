@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\scipy\sparse\dok.py
-# hypothesis_version: 6.151.9
-
-['_dok', 'dok', 'dok_matrix', 'isspmatrix_dok', 'sparse', 'spmatrix']

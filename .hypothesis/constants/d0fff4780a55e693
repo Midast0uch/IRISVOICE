@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\joblib\externals\loky\backend\context.py
-# hypothesis_version: 6.151.9
-
-[100000, '#', ',', 'LOKY_MAX_CPU_COUNT', 'Node,NumberOfCores', 'cat /proc/cpuinfo', 'core id', 'cpu_affinity', 'darwin', 'fork', 'forkserver', 'linux', 'loky', 'loky_init_main', 'lscpu --parse=core', 'max', 'not found', 'sched_getaffinity', 'spawn', 'win32']

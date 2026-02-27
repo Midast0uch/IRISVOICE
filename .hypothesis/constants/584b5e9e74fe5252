@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\distributed\algorithms\_comm_hooks\default_hooks.py
-# hypothesis_version: 6.151.9
-
-['parameter_type', 'privateuse1', 'process_group', 'world_size']

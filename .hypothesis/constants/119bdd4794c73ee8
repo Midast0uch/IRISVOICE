@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\librosa\core\spectrum.py
-# hypothesis_version: 6.151.9
-
-[0.0, 1e-10, 1e-06, 1e-05, 0.1, 0.4, 0.5, 0.98, 0.99, 1.0, 2.0, 10.0, 80.0, 512, 2048, 22050, 'A', 'F', 'amplitude_to_db', 'ba', 'constant', 'cubic', 'db_to_amplitude', 'db_to_power', 'fmt', 'griffinlim', 'hann', 'ignore', 'iirt', 'istft', 'magphase', 'maximum', 'mean', 'median', 'minimum', 'pcen', 'perceptual_weighting', 'phase_vocoder', 'power_to_db', 'random', 'sos', 'soxr_hq', 'stft', 'wrap']

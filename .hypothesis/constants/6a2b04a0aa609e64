@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\quantizer_awq.py
-# hypothesis_version: 6.151.9
-
-['5.0.0', 'PreTrainedModel', 'device_map', 'gptqmodel']

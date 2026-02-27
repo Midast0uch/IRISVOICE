@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\metrics\_plot\regression.py
-# hypothesis_version: 6.151.9
-
-[0.7, 0.8, 1000, '--', 'Actual values', 'Predicted values', 'actual_vs_predicted', 'alpha', 'black', 'color', 'datalim', 'equal', 'linestyle', 'tab:blue']

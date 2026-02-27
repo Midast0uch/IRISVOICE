@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\linear_model\_theil_sen.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.001, 0.5, 1.0, 10000.0, 300, '+1', 'Breakdown point: {0}', 'boolean', 'fit_intercept', 'gelss', 'left', 'max_iter', 'max_subpopulation', 'n_jobs', 'n_subsamples', 'random_state', 'tol', 'verbose']

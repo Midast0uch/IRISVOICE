@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\torch_version.py
-# hypothesis_version: 6.151.9
-
-['.', 'TorchVersion', '__eq__', '__ge__', '__gt__', '__le__', '__lt__']

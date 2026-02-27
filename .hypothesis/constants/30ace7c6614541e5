@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\huggingface_hub\utils\_git_credential.py
-# hypothesis_version: 6.151.9
-
-['git config --list', 'hf_user']

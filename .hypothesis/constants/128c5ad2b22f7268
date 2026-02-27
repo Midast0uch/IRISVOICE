@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\huggingface_hub\_jobs_api.py
-# hypothesis_version: 6.151.9
-
-[3600, 'CANCELED', 'COMPLETED', 'DELETED', 'ERROR', 'RUNNING', 'accelerator', 'arch', 'arguments', 'at', 'command', 'concurrency', 'cpu', 'createdAt', 'created_at', 'd', 'dockerImage', 'docker_image', 'endpoint', 'environment', 'flavor', 'h', 'hf.co/spaces/', 'id', 'jobSpec', 'job_spec', 'labels', 'lastJob', 'last_job', 'm', 'manufacturer', 'message', 'model', 'name', 'nextJobRunAt', 'next_job_run_at', 'owner', 'prettyName', 'quantity', 'ram', 's', 'schedule', 'secrets', 'spaceId', 'space_id', 'stage', 'status', 'suspend', 'tags', 'timeout', 'timeoutSeconds', 'type', 'unitCostMicroUSD', 'unitCostUSD', 'unitLabel', 'vram']

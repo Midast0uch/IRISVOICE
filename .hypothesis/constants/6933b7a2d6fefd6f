@@ -1,4 +1,0 @@
-# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\memory.py
-# hypothesis_version: 6.151.9
-
-[100, 8192, '%Y%m%d_%H%M%S', '...', 'Message', 'archived_at', 'audio', 'audio_tokens', 'available', 'backend', 'content', 'conversation.json', 'default', 'exported_at', 'has_tool_results', 'last_updated', 'max_messages', 'max_tokens', 'message_count', 'messages', 'preview', 'r', 'role', 'session_id', 'session_start', 'sessions', 'text', 'text_tokens', 'timestamp', 'token_breakdown', 'tokens', 'tool_results', 'total_tokens', 'usage_percent', 'w']

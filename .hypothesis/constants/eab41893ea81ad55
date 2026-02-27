@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\text_generation.py
-# hypothesis_version: 6.151.9
-
-[0.7, 256, 'TransfoXLLMHeadModel', 'XLNetLMHeadModel', 'add_special_tokens', 'additional_outputs', 'assistant', 'assistant_model', 'assistant_tokenizer', 'attention_mask', 'content', 'documents', 'eos_token_id', 'generated_sequence', 'generated_text', 'generated_token_ids', 'generation_config', 'hole', 'input_ids', 'max_length', 'max_new_tokens', 'min_length', 'min_new_tokens', 'padding', 'past_key_values', 'prefix', 'prefix_length', 'prompt_text', 'pt', 'response_schema', 'return_type', 'role', 'sequences', 'skip_special_tokens', 'tokenizer', 'tools', 'truncation']

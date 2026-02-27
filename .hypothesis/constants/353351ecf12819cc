@@ -1,4 +1,0 @@
-# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\omni_conversation.py
-# hypothesis_version: 6.151.9
-
-[0.7, 120, '/', '/v1/chat/completions', '/v1/completions', 'Content-Type', 'LM_STUDIO_ENDPOINT', 'LM_STUDIO_MODEL', 'MINICPM_MODEL', 'OLLAMA_ENDPOINT', 'application/json', 'assistant', 'choices', 'content', 'default', 'endpoint', 'fallback_endpoint', 'fallback_model', 'max_context_messages', 'message', 'messages', 'minicpm-o4.5', 'minicpm_available', 'minicpm_status', 'model', 'ollama_endpoint', 'response', 'role', 'system', 'temperature', 'timeout', 'user', 'vision_enabled']

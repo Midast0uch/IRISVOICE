@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\models\__init__.py
-# hypothesis_version: 6.151.9
-
-['Conformer', 'ConvTasNet', 'DeepSpeech', 'Emformer', 'HDemucs', 'HuBERTPretrainModel', 'Hypothesis', 'RNNT', 'RNNTBeamSearch', 'SquimObjective', 'SquimSubjective', 'Tacotron2', 'Wav2Letter', 'Wav2Vec2Model', 'WaveRNN', 'conv_tasnet_base', 'emformer_rnnt_base', 'emformer_rnnt_model', 'hdemucs_high', 'hdemucs_low', 'hdemucs_medium', 'hubert_base', 'hubert_large', 'hubert_pretrain_base', 'hubert_xlarge', 'squim_objective_base', 'wav2vec2_base', 'wav2vec2_large', 'wav2vec2_large_lv60k', 'wav2vec2_model', 'wav2vec2_xlsr_1b', 'wav2vec2_xlsr_2b', 'wav2vec2_xlsr_300m', 'wavlm_base', 'wavlm_large', 'wavlm_model']

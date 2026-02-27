@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\mask_generation.py
-# hypothesis_version: 6.151.9
-
-[0.7, 0.88, 0.95, 512, 1500, 'Image.Image', 'batch_size', 'bounding_boxes', 'boxes', 'crop_overlap_ratio', 'crops_n_layers', 'crops_nms_thresh', 'height', 'image_embeddings', 'input_boxes', 'input_labels', 'input_points', 'iou_scores', 'is_last', 'longest_edge', 'mask_threshold', 'masks', 'max_hole_area', 'max_sprinkle_area', 'num_workers', 'original_sizes', 'output_bboxes_mask', 'output_rle_mask', 'pixel_values', 'points_per_batch', 'points_per_crop', 'pred_iou_thresh', 'pred_masks', 'pt', 'reshaped_input_sizes', 'rle_mask', 'scores', 'timeout', 'torch', 'vision']

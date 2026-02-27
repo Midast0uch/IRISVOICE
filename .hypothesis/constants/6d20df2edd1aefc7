@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\np\ufunc\ufuncbuilder.py
-# hypothesis_version: 6.151.9
-
-['No definition', 'boundscheck', 'debuginfo', 'enable_looplift', 'enable_pyobject', 'fastmath', 'forceobj', 'ignore', 'nopython', 'npyufunc', 'nrt', 'numpy', 'reorderable', 'targetoptions', 'ufunc', 'writable_args']

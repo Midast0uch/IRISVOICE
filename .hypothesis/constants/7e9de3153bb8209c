@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\filelock\asyncio.py
-# hypothesis_version: 6.151.9
-
-[0.05, 420, 'AsyncSoftFileLock', 'AsyncUnixFileLock', 'AsyncWindowsFileLock', 'BaseAsyncFileLock', 'blocking', 'executor', 'filelock', 'lock_file', 'loop', 'mode', 'run_in_executor', 'timeout']
