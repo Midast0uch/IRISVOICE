@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\io\video_reader.py
-# hypothesis_version: 6.151.9
-
-[':', 'VideoReader', 'audio', 'average_rate', 'cuda', 'data', 'duration', 'fps', 'framerate', 'ignore', 'pict_type', 'pts', 'pyav', 'src cannot be empty', 'video', 'video_reader']

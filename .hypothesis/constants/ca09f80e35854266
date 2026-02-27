@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\squeezenet.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.01, 0.349, 0.5, 0.819, 4.729, 4.778, 58.092, 58.178, 80.42, 80.624, 128, 192, 224, 256, 384, 512, 1000, 1235496, 1248424, '1_0', '1_1', 'ImageNet-1K', 'SqueezeNet', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'min_size', 'num_classes', 'num_params', 'pretrained', 'recipe', 'squeezenet1_0', 'squeezenet1_1']

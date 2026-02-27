@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\platformdirs\windows.py
-# hypothesis_version: 6.151.9
-
-[255, 1024, 16384, 'ALLUSERSPROFILE', 'APPDATA', 'AppData', 'C:\\ProgramData', 'CSIDL_APPDATA', 'CSIDL_COMMON_APPDATA', 'CSIDL_DOWNLOADS', 'CSIDL_LOCAL_APPDATA', 'CSIDL_MYMUSIC', 'CSIDL_MYPICTURES', 'CSIDL_MYVIDEO', 'CSIDL_PERSONAL', 'CSIDL_PROGRAMS', 'Cache', 'Common AppData', 'Common Programs', 'Data1', 'Data2', 'Data3', 'Data4', 'Documents', 'Downloads', 'LOCALAPPDATA', 'Local AppData', 'Logs', 'Microsoft', 'Music', 'My Music', 'My Pictures', 'My Video', 'PROGRAMDATA', 'Personal', 'Pictures', 'Programs', 'Start Menu', 'Temp', 'USERPROFILE', 'Videos', 'Windows', 'bin', 'kernel32', 'ole32', 'shell32', 'win32']

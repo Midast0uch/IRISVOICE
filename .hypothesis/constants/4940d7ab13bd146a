@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\visual_question_answering.py
-# hypothesis_version: 6.151.9
-
-[256, 'Image.Image', 'KeyDataset', 'answer', 'assistant_model', 'assistant_tokenizer', 'generation_config', 'image', 'padding', 'pt', 'question', 'score', 'timeout', 'tokenizer', 'top_k', 'truncation']

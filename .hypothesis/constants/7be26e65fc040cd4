@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\models\wav2vec2\__init__.py
-# hypothesis_version: 6.151.9
-
-['HuBERTPretrainModel', 'Wav2Vec2Model', 'hubert_base', 'hubert_large', 'hubert_pretrain_base', 'hubert_xlarge', 'utils', 'wav2vec2_base', 'wav2vec2_large', 'wav2vec2_large_lv60k', 'wav2vec2_model', 'wav2vec2_xlsr_1b', 'wav2vec2_xlsr_2b', 'wav2vec2_xlsr_300m', 'wavlm_base', 'wavlm_large', 'wavlm_model']

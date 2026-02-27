@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\models\_hdemucs.py
-# hypothesis_version: 6.151.9
-
-[0.0, 1e-05, 0.0001, 0.01, 0.1, 0.2, 0.5, 10.0, -100, 200, 512, 1024, 2048, 4096, 'attn', 'bhct,bhcs->bhts', 'bhts,bhct->bhcs', 'compress', 'dconv_kw', 'depth', 'freq', 'fts,bhfs->bhts', 'group_norm', 'init', 'kernel_size', 'lstm', 'none', 'norm_groups', 'norm_type', 'pad', 'reflect', 'saved is not empty', 'saved_t is not empty', 'stride', 'zero']

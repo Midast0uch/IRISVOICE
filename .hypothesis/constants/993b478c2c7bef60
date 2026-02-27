@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\scipy\signal\windows\windows.py
-# hypothesis_version: 6.151.9
-
-['_windows', 'barthann', 'bartlett', 'blackman', 'blackmanharris', 'bohman', 'boxcar', 'chebwin', 'cosine', 'dpss', 'exponential', 'flattop', 'gaussian', 'general_cosine', 'general_gaussian', 'general_hamming', 'get_window', 'hamming', 'hann', 'kaiser', 'nuttall', 'parzen', 'signal.windows', 'taylor', 'triang', 'tukey', 'windows']

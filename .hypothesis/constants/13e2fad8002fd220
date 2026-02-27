@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\io\video.py
-# hypothesis_version: 6.151.9
-
-[b'DivX', b'DivX(\\d+)Build(\\d+)(\\w)', b'DivX(\\d+)b(\\d+)(\\w)', b'Lavc', b'p', '<f4', '<f8', '<i2', '<i4', 'NONE', 'TCHW', 'THWC', 'audio', 'audio_fps', 'av.frame.Frame', 'av.stream.Stream', 'dbl', 'dblp', 'flt', 'fltp', 'ignore', 'inf', 'libx264', 'libx264rgb', 'mono', 'pict_type', 'pts', 'pyav', 'rgb24', 's16', 's16p', 's32', 's32p', 'sec', 'stereo', 'u1', 'u8', 'u8p', 'video', 'video_fps', 'w', 'yuv420p']

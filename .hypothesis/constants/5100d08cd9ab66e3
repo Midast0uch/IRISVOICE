@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\datasets\librimix.py
-# hypothesis_version: 6.151.9
-
-[8000, 16000, '*.wav', 'enh_both', 'enh_single', 'max', 'min', 'mix_both', 'mix_clean', 'mix_single', 'sep_clean', 'sep_noisy', 'train-360', 'wav16k', 'wav8k']

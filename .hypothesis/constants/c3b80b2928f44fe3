@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\neighbors\_nearest_centroid.py
-# hypothesis_version: 6.151.9
-
-[1.0, 2.0, 'allow-nan', 'array-like', 'centroids_', 'csc', 'csr', 'empirical', 'euclidean', 'manhattan', 'metric', 'nan_euclidean', 'neither', 'priors', 'shrink_threshold', 'uniform']

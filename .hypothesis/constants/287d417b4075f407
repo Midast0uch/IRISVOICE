@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\moshi\models\lm.py
-# hypothesis_version: 6.151.9
-
-[0.7, 0.8, 1.0, 128, 250, 256, 1024, 32000, 'NaN', 'context', 'cross_attention', 'cuda', 'depformer_', 'layer_norm', 'positional_embedding', 'sin', 'weights_per_step']

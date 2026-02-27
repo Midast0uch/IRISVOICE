@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\types\common.py
-# hypothesis_version: 6.151.9
-
-['%s(%s, %sd, %s)', 'A', 'C', 'CF', 'CS', 'F', 'FS', "Invalid layout '%s'", 'readonly %s']

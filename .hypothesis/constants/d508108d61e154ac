@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\model\conformer\modules.py
-# hypothesis_version: 6.151.9
-
-[-0.5, 0.0, 0.1, 0.5, 'abs_pos', 'batch_norm', 'fused_batch_norm', 'glu_', 'group_norm', 'instance_norm', 'layer_norm', 'rel_pos', 'rel_pos_local_attn', 'zeros']

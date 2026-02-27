@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\model\conformer\processor.py
-# hypothesis_version: 6.151.9
-
-[0.0, 1e-05, 0.01, 0.02, 0.97, 1.0, 2.0, 16.7, 160, 200, 320, 4000, 16000, 32000, 'B', 'D', 'STFT using exact pad', 'T', 'add', 'all_features', 'bartlett', 'blackman', 'clamp', 'constant', 'eps', 'fb', 'fixed_mean', 'fixed_std', 'hamming', 'hann', 'input_signal', 'length', 'max', 'none', 'ones', 'per_feature', 'processed_length', 'processed_signal', 'slaney', 'tiny', 'window']

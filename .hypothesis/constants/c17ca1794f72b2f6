@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\functional_export.py
-# hypothesis_version: 6.151.9
-
-['._export_root', 'ExportTracerOutput', 'FakeTensorMode', "L['self']", '_', '__annotations__', '__export_root_', '_export_root.', '_in_shuffle_graph', '_out_shuffle_graph', 'call_module', 'constant', 'dynamo_compile_id', 'example_value', 'fake_mode', 'flat_args', 'fullgraph_capture', 'get_attr', 'graph_out', 'input', 'meta', 'module_call_specs', 'name', 'nn_module_stack', 'node', 'out_spec', 'output', 'placeholder', 'real', 'shape_env', 'source_fn_stack', 'symbolic', 'tensor_dict', 'tracing_context', 'unbacked_bindings', 'val', 'warn']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\agent_kernel.py
-# hypothesis_version: 6.151.9
-
-[0.3, 0.7, 200, 512, 1024, 'No models available', 'Unknown error', 'action', 'analysis', 'assistant', 'auth_token', 'available', 'available_endpoints', 'conversation_history', 'default', 'enabled', 'endpoints', 'error', 'fallback_to_local', 'lfm2-8b', 'lfm2.5-1.2b-instruct', 'load_balancing', 'max_tokens', 'model_status', 'models_loaded', 'offload_tools', 'parameters', 'protocol', 'ready', 'requires_tools', 'respond_to_user', 'response', 'rest', 'result', 'round_robin', 'single_model_mode', 'step', 'steps', 'success', 'temperature', 'timeout', 'tool', 'total_models', 'user', 'vps_gateway']

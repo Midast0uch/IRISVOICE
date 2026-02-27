@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\fx\passes\runtime_assert.py
-# hypothesis_version: 6.151.9
-
-['%s', 'call_method', 'cond', 'custom', 'example_value', 'graph_code_verbose', 'nn_module_stack', 'placeholder', 'size', 'stack_trace', 'storage_offset', 'stride', 'sympy.Expr', 'unbacked_bindings', 'val']

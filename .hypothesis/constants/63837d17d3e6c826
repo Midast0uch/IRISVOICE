@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\httpcore\_backends\sync.py
-# hypothesis_version: 6.151.9
-
-[16384, 'client_addr', 'is_readable', 'server_addr', 'socket', 'ssl_object', 'win32']

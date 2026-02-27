@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\datasets\librispeech.py
-# hypothesis_version: 6.151.9
-
-[16000, '*/*/*', '-', '.flac', '.tar.gz', '.trans.txt', 'LibriSpeech', 'dev-clean', 'dev-other', 'test-clean', 'test-other', 'train-clean-100', 'train-clean-360', 'train-other-500']

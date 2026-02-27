@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\nn\parallel\scatter_gather.py
-# hypothesis_version: 6.151.9
-
-['T', '_asdict', '_fields', 'gather', 'scatter', 'scatter_kwargs']

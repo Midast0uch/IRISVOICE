@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\datasets\iemocap.py
-# hypothesis_version: 6.151.9
-
-[16000, '*.txt', '*/*.wav', '*impro*.txt', '*script*.txt', 'Dataset not found.', 'EmoEvaluation', 'IEMOCAP', 'Session', '[', '[\t\n]', '_', 'ang', 'dialog', 'exc', 'fru', 'hap', 'improvised', 'label', 'neu', 'path', 'r', 'sad', 'scripted', 'sentences', 'wav']

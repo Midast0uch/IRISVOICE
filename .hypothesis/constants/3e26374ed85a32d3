@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\pooch\processors.py
-# hypothesis_version: 6.151.9
-
-['.bz2', '.decomp', '.gz', '.tar', '.untar', '.unzip', '.xz', '.zip', 'auto', 'bzip2', 'data', 'download', 'filter', 'gzip', 'lzma', 'r', 'tar', 'update', 'w+b', 'xz', 'zip']

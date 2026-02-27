@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_higher_order_ops\effects.py
-# hypothesis_version: 6.151.9
-
-['aten::_print', 'call_function', 'placeholder', 'tangents_token', 'with_effects']

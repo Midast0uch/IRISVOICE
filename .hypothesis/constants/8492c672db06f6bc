@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\swin_transformer.py
-# hypothesis_version: 6.151.9
-
-[-100.0, -0.5, 0.0, 1e-06, 1e-05, 0.02, 0.1, 0.2, 0.3, 0.5, 1.0, 3.0, 4.0, 4.491, 5.94, 8.741, 11.546, 15.431, 20.325, 81.474, 82.072, 83.196, 83.582, 83.712, 84.112, 95.776, 96.132, 96.36, 96.64, 96.816, 96.864, 100.0, 108.19, 108.626, 189.786, 190.675, 335.364, 336.372, 128, 224, 232, 238, 246, 256, 260, 272, 512, 1000, 28288354, 28351570, 49606258, 49737442, 87768224, 87930848, 'ImageNet-1K', 'SwinTransformer', 'Swin_B_Weights', 'Swin_S_Weights', 'Swin_T_Weights', 'Swin_V2_B_Weights', 'Swin_V2_S_Weights', 'Swin_V2_T_Weights', '_docs', '_file_size', '_metrics', '_ops', '_patch_merging_pad', 'acc@1', 'acc@5', 'categories', 'ij', 'min_size', 'num_classes', 'num_params', 'pretrained', 'recipe', 'row', 'swin_b', 'swin_s', 'swin_t', 'swin_v2_b', 'swin_v2_s', 'swin_v2_t']
