@@ -1,0 +1,72 @@
+{
+  "session_id": "\u012c\u0141\u010c\u00c5\u0115\uab31",
+  "session_start": 1772160423.336307,
+  "last_updated": 1772160423.3641543,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160423.3376164,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Open the browser",
+      "timestamp": 1772160423.3435092,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00eb\u00de\u015f\u0144P",
+      "timestamp": 1772160423.3457828,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Create a new file",
+      "timestamp": 1772160423.3481216,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Search for information about Python",
+      "timestamp": 1772160423.350951,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Create a new file",
+      "timestamp": 1772160423.3539348,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Deploy the application",
+      "timestamp": 1772160423.3597865,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160423.364079,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

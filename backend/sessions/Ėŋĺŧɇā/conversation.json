@@ -1,0 +1,72 @@
+{
+  "session_id": "\u0116\u014b\u013a\u0167\u0247\u0101",
+  "session_start": 1772159984.2584617,
+  "last_updated": 1772160418.5491498,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772159984.2594614,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Run the tests",
+      "timestamp": 1772159984.2604442,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u014a",
+      "timestamp": 1772159984.261444,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159984.262437,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772160418.5420446,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Run the tests",
+      "timestamp": 1772160418.5449734,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u014a",
+      "timestamp": 1772160418.5470116,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160418.5491126,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

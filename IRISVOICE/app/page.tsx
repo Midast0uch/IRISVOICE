@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, lazy, Suspense } from "react"
+import { useState, lazy, Suspense, useCallback } from "react"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { IrisOrb } from "@/components/iris/IrisOrb"
@@ -20,24 +20,34 @@ const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-con
 export default function Home() {
   const { state, handleExpandToMain, handleGoBack, sendMessage, setMainView, voiceState, orbState, updateMiniNodeValue } = useNavigation()
   const { getThemeConfig } = useBrandColor()
-  const [isExpanded, setIsExpanded] = useState(false)
+
+  // Phase 124: Single source of truth for expansion to prevent stuck states
+  const isExpanded = state.level > 1
 
   // Get theme configuration for WheelView
   const theme = getThemeConfig()
   const glowColor = theme.glow.color
 
-  const handleSingleClick = () => {
+  const handleSingleClick = useCallback(() => {
+    // Phase 121: Single-click to stop voice engine if active
+    if (voiceState !== "idle") {
+      sendMessage("voice_command_end", {})
+      return
+    }
+
     if (state.level > 1) {
       handleGoBack()
-    } else if (!isExpanded) {
-      setIsExpanded(true)
+    } else {
       handleExpandToMain()
     }
-  }
+  }, [voiceState, state.level, sendMessage, handleGoBack, handleExpandToMain])
 
-  const handleDoubleClick = () => {
-    sendMessage("voice_command_start", {})
-  }
+  const handleDoubleClick = useCallback(() => {
+    // Phase 121: Double-click to start voice engine if idle
+    if (voiceState === "idle") {
+      sendMessage("voice_command_start", {})
+    }
+  }, [voiceState, sendMessage])
 
   const handleChatClick = () => {
     setMainView("chat")
@@ -66,7 +76,7 @@ export default function Home() {
             voiceState={voiceState}
             centerLabel={orbState.label}
             size={175}
-            glowColor="#00ffff"
+            glowColor={glowColor}
             wakeFlash={false}
             sendMessage={sendMessage}
           />

@@ -1,0 +1,136 @@
+{
+  "session_id": "374f469fe3e01edada6bb5639dfcfbd4",
+  "session_start": 1772156331.3932624,
+  "last_updated": 1772156331.4082546,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "\u849a<\uc46f\u00063",
+      "timestamp": 1772156331.3938491,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\uda6d\udecbZ\u0c79K",
+      "timestamp": 1772156331.3944566,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\n\u0081",
+      "timestamp": 1772156331.3949912,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00e0\u0006",
+      "timestamp": 1772156331.39558,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00b5\u00d5\u009e\u0003\u00ae\udb58\ude41\u000b>\t",
+      "timestamp": 1772156331.3961303,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\uda5f\udc11\u008fJ\u0094\u009a\u009bA\u00fd\udad4\udd6c\u00daZt\u00b8t",
+      "timestamp": 1772156331.3967395,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u849a<\uc46f\u00063",
+      "timestamp": 1772156331.3973608,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "S[",
+      "timestamp": 1772156331.3981197,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\ud86b\udf29\ud8a5\udf0d7\u0090o\u0091\u00ac\u00ddK\u00e9@\u00b5G\udab0\udcc2X\u0085\u0019\u00b6\u0015\u00b2\u00acA\ud929\udef1",
+      "timestamp": 1772156331.3988464,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\uda2c\udd0ef\u00ef\ud843\udc59\uda75\udeb7:\ud9f1\udd4a",
+      "timestamp": 1772156331.3998187,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u00cb\u2edc|F\u00b7\u001c\u00a3\u008f\u0018b\u00cc\u0091",
+      "timestamp": 1772156331.4008892,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00cb\u2edc|F\u00b7\u001c\u00a3\u008f\u0018b\u00cc\u0091",
+      "timestamp": 1772156331.4019701,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00aa\u00d0\u0001/\uda74\udeeeR\u0018",
+      "timestamp": 1772156331.4030116,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00a3r",
+      "timestamp": 1772156331.4041889,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u000e\u00cf",
+      "timestamp": 1772156331.406237,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "_u",
+      "timestamp": 1772156331.4082274,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

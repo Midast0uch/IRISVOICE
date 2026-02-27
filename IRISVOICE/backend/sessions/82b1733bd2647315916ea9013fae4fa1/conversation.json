@@ -1,0 +1,16 @@
+{
+  "session_id": "82b1733bd2647315916ea9013fae4fa1",
+  "session_start": 1772156373.1651685,
+  "last_updated": 1772156373.165712,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "user",
+      "content": "BT\u00dbT\u009c\u0083/\u00e7\u00c1\b\u0084\u00a4\u00a0o\u00f3s\"\u00a8\uda4a\udc1f\u00aa$\u0096",
+      "timestamp": 1772156373.1656702,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

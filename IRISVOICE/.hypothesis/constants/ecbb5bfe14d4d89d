@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\retinanet.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.01, 0.05, 0.224, 0.225, 0.229, 0.4, 0.406, 0.456, 0.485, 0.5, 1.0, 2.0, 36.4, 41.5, 130.267, 146.037, 151.54, 152.238, 128, 256, 300, 512, 800, 1000, 1333, 2048, 34014999, 38198935, '0', 'COCO-val2017', 'RetinaNet', '_docs', '_file_size', '_metrics', '_ops', 'bbox_regression', 'bias', 'box_coder', 'box_map', 'boxes', 'categories', 'classification', 'cls_logits', 'floor', 'giou', 'l1', 'labels', 'min_size', 'num_classes', 'num_params', 'out_channels', 'pretrained', 'pretrained_backbone', 'proposal_matcher', 'recipe', 'scores', 'sum', 'version', 'weight']

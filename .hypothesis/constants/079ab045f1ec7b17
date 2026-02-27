@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\_meta_registrations.py
+# hypothesis_version: 6.151.9
+
+['IMPL', 'Meta', '_roi_align_backward', '_roi_pool_backward', 'default', 'deform_conv2d', 'meta', 'ps_roi_align', 'ps_roi_pool', 'roi_align', 'roi_pool', 'torchvision', 'torchvision::nms']

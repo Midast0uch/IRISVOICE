@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\food101.py
+# hypothesis_version: 6.151.9
+
+['/', 'food-101', 'images', 'meta', 'split', 'test', 'train']

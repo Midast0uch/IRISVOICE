@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\models\speecht5\configuration_speecht5.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-05, 0.01, 0.02, 0.05, 0.1, 0.4, 0.5, 10.0, 128, 160, 256, 450, 512, 768, 3072, 4000, 16000, 'SpeechT5Config', 'encoder_layers', 'gelu', 'group', 'hifigan', 'num_attention_heads', 'num_hidden_layers', 'speecht5']

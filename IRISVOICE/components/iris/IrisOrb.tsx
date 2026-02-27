@@ -5,6 +5,7 @@ import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window"
 import { ChevronLeft, ChevronDown } from "lucide-react"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { useNavigation } from "@/contexts/NavigationContext"
+import { useBrandColor, type FloatingOrb } from "@/contexts/BrandColorContext"
 import type { IrisOrbProps, OrbIcon } from "./types"
 
 // --- Helper Hook for Window Dragging ---
@@ -12,7 +13,8 @@ function useManualDragWindow(
   elementRef: React.RefObject<HTMLElement | null>,
   onClickAction: () => void,
   onDoubleClickAction?: () => void,
-  onDoubleClickFlash?: (show: boolean) => void
+  onDoubleClickFlash?: (show: boolean) => void,
+  onPressUpdate?: (pressed: boolean) => void
 ) {
   const isDragging = useRef(false)
   const dragStartPos = useRef({ x: 0, y: 0 })
@@ -42,6 +44,7 @@ function useManualDragWindow(
       return
     }
 
+    if (onPressUpdate) onPressUpdate(true)
     mouseDownTarget.current = e.target
     isDragging.current = true
     isDraggingThisElement.current = true
@@ -66,7 +69,7 @@ function useManualDragWindow(
     const dx = e.screenX - dragStartPos.current.x
     const dy = e.screenY - dragStartPos.current.y
 
-    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
       hasDragged.current = true
     }
 
@@ -104,7 +107,7 @@ function useManualDragWindow(
               if (typeof onClickAction === 'function') onClickAction()
             }
             clickCount.current = 0
-          }, 250) // Tight 250ms window
+          }, 500) // 500ms standard double-click window for maximum reliability
         } else if (clickCount.current === 2) {
           if (clickTimer.current) {
             clearTimeout(clickTimer.current)
@@ -126,10 +129,11 @@ function useManualDragWindow(
       }
     }
 
+    if (onPressUpdate) onPressUpdate(false)
     isDraggingThisElement.current = false
     mouseDownTarget.current = null
     hasDragged.current = false
-  }, [onClickAction, onDoubleClickAction, elementRef, onDoubleClickFlash])
+  }, [onClickAction, onDoubleClickAction, elementRef, onDoubleClickFlash, onPressUpdate])
 
   useEffect(() => {
     window.addEventListener("mousemove", handleMouseMove)
@@ -154,75 +158,85 @@ export function IrisOrb({
   onDoubleClick,
   centerLabel,
   size = 200,
-  glowColor,
-  voiceState,
   wakeFlash,
-  sendMessage,
   onCallbacksReady,
-
 }: IrisOrbProps) {
-  const isSpeaking = voiceState === "speaking"
-  const isProcessing = voiceState === "processing_conversation" || voiceState === "processing_tool"
-
-  // Voice command states
-  const [isRecording, setIsRecording] = useState(false)
-  const [isVoiceProcessing, setIsVoiceProcessing] = useState(false)
-  const [audioLevel, setAudioLevel] = useState(0)
+  // Get voice state and actions from NavigationContext
+  const { voiceState, audioLevel, startVoiceCommand, endVoiceCommand, sendMessage } = useNavigation()
+  
   const [feedbackMessage, setFeedbackMessage] = useState("")
   const [doubleClickFlash, setDoubleClickFlash] = useState(false)
+  const [isPressed, setIsPressed] = useState(false)
 
-  const clickTimer = useRef<NodeJS.Timeout | null>(null)
-  const clickCount = useRef<number>(0)
-  const audioLevelInterval = useRef<NodeJS.Timeout | null>(null)
   const orbRef = useRef<HTMLDivElement>(null)
   const prefersReducedMotion = useReducedMotion()
 
-  // --- Combined Click & Drag Handling ---
+  const { orbState } = useNavigation()
+  const { getThemeConfig } = useBrandColor()
 
-  const { handleIrisClick } = useNavigation()
-  const { handleMouseDown } = useManualDragWindow(orbRef, onClick || handleIrisClick, onDoubleClick, setDoubleClickFlash)
+  // Phase 124: Sync with prop
+  // isExpanded is now passed as a single source of truth from page.tsx level
 
+  // Use voice state from context
+  const isVoiceActive = voiceState !== "idle"
+  const isListening = voiceState === "listening"
+  const isSpeaking = voiceState === "speaking"
+  const isProcessing = voiceState === "processing_conversation" || voiceState === "processing_tool"
+  const isError = voiceState === "error"
+
+  // Theme consumption
+  const theme = getThemeConfig()
+  const glowColor = theme.glow.color
+  const isCleanTheme = theme.name === 'Verdant' || theme.name === 'Aurum'
+
+  // Intensity multipliers
+  const intensityMultipliers = {
+    glowOpacity: isCleanTheme ? 1.5 : 1.0,
+    glassOpacity: isCleanTheme ? 1.2 : 1.0,
+    shimmerOpacity: 1.0,
+  }
+
+  // Calculate dynamic opacities
+  const glassOpacity = Math.min(theme.glass.opacity * intensityMultipliers.glassOpacity, 0.45)
+  const glowOpacity = Math.min(theme.glow.opacity * intensityMultipliers.glowOpacity, 0.6)
+  const shimmerOpacity = Math.min(1 * intensityMultipliers.shimmerOpacity, 1)
+  
+  // Audio level visualization - apply smooth interpolation
+  const audioLevelScale = isListening ? 1 + (audioLevel * 0.15) : 1 // Scale glow by up to 15% based on audio level
+
+  const handleInterceptedClick = useCallback(() => {
+    // Stop voice command if listening
+    if (isListening) {
+      endVoiceCommand()
+      return // Intercept: don't propagate to the prop's navigation logic
+    }
+
+    // Not active, proceed with normal prop logic (navigation)
+    if (onClick) onClick()
+  }, [isListening, endVoiceCommand, onClick])
+
+  const { handleMouseDown } = useManualDragWindow(
+    orbRef,
+    handleInterceptedClick,
+    () => {
+      // Double-click starts voice command
+      if (!isListening) {
+        startVoiceCommand()
+      }
+      if (onDoubleClick) onDoubleClick()
+    },
+    setDoubleClickFlash,
+    setIsPressed
+  )
 
   // --- Voice Recording Logic ---
-
-  const startRecording = () => {
-    setIsRecording(true)
-    setFeedbackMessage("Listening...")
-    const success = sendMessage("voice_command_start", {})
-
-    audioLevelInterval.current = setInterval(() => {
-      const level = Math.random() * 0.8 + 0.2
-      setAudioLevel(level)
-    }, 100)
-  }
-
-  const stopRecording = () => {
-    setIsRecording(false)
-    setFeedbackMessage("Processing...")
-    setIsVoiceProcessing(true)
-
-    if (audioLevelInterval.current) {
-      clearInterval(audioLevelInterval.current)
-      audioLevelInterval.current = null
-    }
-
-    const success = sendMessage("voice_command_end", {})
-    setAudioLevel(0)
-
-    setTimeout(() => {
-      setIsVoiceProcessing(false)
-      setFeedbackMessage("")
-    }, 2000)
-  }
+  // Removed local startRecording/stopRecording - now using context actions
 
   // --- Callbacks for Parent Component ---
-
   const handleWakeDetected = useCallback(() => {
-    if (isRecording || isVoiceProcessing) {
-      return
-    }
-    startRecording()
-  }, [isRecording, isVoiceProcessing])
+    if (isListening) return
+    startVoiceCommand()
+  }, [isListening, startVoiceCommand])
 
   const handleNativeAudioResponse = useCallback((payload: Record<string, unknown>) => {
     if (payload.debug_text && typeof payload.debug_text === 'string') {
@@ -240,154 +254,324 @@ export function IrisOrb({
     }
   }, [onCallbacksReady, handleWakeDetected, handleNativeAudioResponse])
 
-  // --- Visuals ---
+  // --- Visual Scaling & Color Unification ---
+  // Phase 132: Structural Stability & Absolute Color Fidelity
+  // Remove all whitening mixes to ensure 100% theme accuracy
+  const activeColor = isError
+    ? "#ff0000" // Red for error state
+    : (isListening || isSpeaking)
+      ? glowColor
+      : isProcessing
+        ? "#7000ff"
+        : glowColor
+  const effectiveGlowColor = isVoiceActive ? activeColor : glowColor
 
-  const makeVibrant = (color: string): string => {
-    const hex = color.replace('#', '')
-    const r = parseInt(hex.substring(0, 2), 16)
-    const g = parseInt(hex.substring(2, 4), 16)
-    const b = parseInt(hex.substring(4, 6), 16)
-    const rNorm = r / 255, gNorm = g / 255, bNorm = b / 255
-    const max = Math.max(rNorm, gNorm, bNorm), min = Math.min(rNorm, gNorm, bNorm)
-    let h = 0, s = 0, l = (max + min) / 2
-    if (max !== min) {
-      const d = max - min
-      s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
-      switch (max) {
-        case rNorm: h = ((gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0)) / 6; break
-        case gNorm: h = ((bNorm - rNorm) / d + 2) / 6; break
-        case bNorm: h = ((rNorm - gNorm) / d + 4) / 6; break
-      }
-    }
-    s = Math.min(1, s * 2.0)
-    l = Math.min(0.75, l * 1.6)
-    const hue2rgb = (p: number, q: number, t: number) => {
-      if (t < 0) t += 1
-      if (t > 1) t -= 1
-      if (t < 1 / 6) return p + (q - p) * 6 * t
-      if (t < 1 / 2) return q
-      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
-      return p
-    }
-    let rOut, gOut, bOut
-    if (s === 0) {
-      rOut = gOut = bOut = l
-    } else {
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s
-      const p = 2 * l - q
-      rOut = hue2rgb(p, q, h + 1 / 3)
-      gOut = hue2rgb(p, q, h)
-      bOut = hue2rgb(p, q, h - 1 / 3)
-    }
-    const toHex = (n: number) => Math.round(n * 255).toString(16).padStart(2, '0')
-    return `#${toHex(rOut)}${toHex(gOut)}${toHex(bOut)}`
-  }
-
-
-
-  const effectiveGlowColor = isRecording ? makeVibrant(glowColor) : isVoiceProcessing ? "#4444FF" : glowColor
-  const effectiveScale = isRecording ? 1.1 : isVoiceProcessing ? 1.05 : 1
+  // Phase 128: Toned down expansion for better balance
+  const baseScale = isExpanded ? 1.1 : 1
+  const effectiveScale = isPressed
+    ? 0.92
+    : isListening ? 1.15 // Reduced from 1.3
+      : isSpeaking ? 1.1 // Reduced from 1.2
+        : isProcessing ? 1.08 // Reduced from 1.15
+          : isError ? 1.0 // No scale change for error, just shake animation
+            : baseScale
 
   return (
     <motion.div
       ref={orbRef}
       className="relative flex items-center justify-center rounded-full cursor-pointer z-50 pointer-events-auto"
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, overflow: 'visible' }} // Force overflow visible for wide blooms
       onMouseDown={handleMouseDown}
-      animate={{ scale: effectiveScale }}
-      transition={{ type: "spring", stiffness: 300, damping: 25 }}
+      animate={{ 
+        scale: effectiveScale,
+        // Shake animation for error state
+        x: isError ? [0, -10, 10, -10, 10, 0] : 0,
+      }}
+      transition={{ 
+        scale: { type: "spring", stiffness: 300, damping: 25 },
+        x: isError ? { duration: 0.5, repeat: Infinity, repeatDelay: 2 } : { duration: 0 }
+      }}
     >
-      {/* Outer breathe glow */}
-      <motion.div
-        className="absolute rounded-full pointer-events-none"
-        style={{ inset: -30, background: `radial-gradient(circle, ${effectiveGlowColor}80 0%, ${effectiveGlowColor}40 30%, transparent 65%)`, filter: "blur(25px)" }}
-        animate={{
-          scale: isSpeaking ? [1.05, 1.3, 1.05] : isRecording ? [1, 1.25, 1] : [1, 1.15, 1],
-          opacity: isSpeaking ? [0.8, 1, 0.8] : isRecording ? [0.9, 1, 0.9] : [0.4, 0.75, 0.4],
-        }}
-        transition={{ duration: isRecording ? 0.8 : 5, repeat: Infinity, ease: "easeInOut" }}
-      />
-
-      {/* Audio level ring */}
-      {isRecording && (
-        <motion.div
-          className="absolute rounded-full pointer-events-none"
-          style={{ inset: -30, background: `radial-gradient(circle, ${effectiveGlowColor}60 0%, transparent 70%)`, filter: "blur(12px)" }}
-          animate={{ opacity: [0.3, 0.8 * audioLevel, 0.3], scale: [0.9, 1 + (audioLevel * 0.2), 0.9] }}
-          transition={{ duration: 0.1, repeat: Infinity }}
-        />
-      )}
-
-      {/* Inner core pulse */}
-      <motion.div
-        className="absolute rounded-full pointer-events-none"
-        style={{ inset: -8, background: `radial-gradient(circle at 30% 30%, ${effectiveGlowColor}14, transparent 70%)`, filter: "blur(8px)" }}
-        animate={{
-          scale: isProcessing || isVoiceProcessing ? [0.9, 1.1, 0.9] : isSpeaking ? [0.8, 1.5, 0.8] : [0.8, 1.2, 0.8],
-          opacity: isProcessing || isVoiceProcessing ? [0.5, 0.8, 0.5] : [0.6, 1, 0.6],
-        }}
-        transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-      />
-
-      {/* Wake/Double-click flash */}
+      {/* 0.0 STATIC PERSISTENT HAZE - Phase 125: Base Persistence Layer */}
       <AnimatePresence>
-        {(wakeFlash || doubleClickFlash) && (
+        {isVoiceActive && (
           <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.25 }} // Reduced from 0.4
+            exit={{ opacity: 0 }}
             className="absolute rounded-full pointer-events-none"
-            style={{ inset: -20, backgroundColor: `${glowColor}99` }}
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1.5 }}
-            exit={{ opacity: 0, scale: 2 }}
-            transition={{ duration: 0.3 }}
+            style={{
+              inset: -60, // Pulled in from -100
+              background: `radial-gradient(circle, color-mix(in srgb, ${effectiveGlowColor}, transparent 20%) 0%, transparent 75%)`,
+              filter: "blur(40px)", // Sharpened from 60px
+              zIndex: 0
+            }}
           />
         )}
       </AnimatePresence>
 
-      {/* Orb body and label */}
+      {/* 0. ATMOSPHERIC BRAND PULSE - Phase 123: Overdrive Expansion */}
+      <motion.div
+        className="absolute rounded-full pointer-events-none"
+        animate={{
+          opacity: isVoiceActive ? [0.4, 0.7, 0.4] : [0.3, 0.6, 0.3],
+          scale: isVoiceActive 
+            ? [audioLevelScale * 1.0, audioLevelScale * 1.15, audioLevelScale * 1.0] 
+            : [0.95, 1.05, 0.95], // Tightened scaling
+        }}
+        transition={{
+          duration: isVoiceActive ? 0.8 : 4, // Even faster heartbeat in active mode
+          repeat: Infinity,
+          ease: "easeInOut"
+        }}
+        style={{
+          inset: isVoiceActive ? -90 : -60, // Pulled in from -140/-80
+          background: `radial-gradient(circle, color-mix(in srgb, ${effectiveGlowColor}, transparent 10%) 0%, transparent 75%)`,
+          filter: "blur(70px)",
+          zIndex: 0
+        }}
+      />
+
+      {/* 1. NEON LAYER STACK (Outermost) - Phase 111: Vibrant & Shimmering */}
+      {/* 1.1 NEON CORE (Solid Edge) */}
+      <motion.div
+        className="absolute rounded-full pointer-events-none"
+        style={{
+          inset: -4,
+          background: `radial-gradient(circle, ${effectiveGlowColor} 0%, transparent 80%)`,
+          border: `2px solid ${effectiveGlowColor}`,
+          filter: "blur(2px)",
+          opacity: isVoiceActive ? 1.0 : 0.8,
+          boxShadow: isVoiceActive ? `0 0 20px ${effectiveGlowColor}` : "none",
+          zIndex: 1
+        }}
+      />
+
+      {/* 1.15 PLASMA CORONA - Phase 124: Enhanced Energy Swirl */}
+      <AnimatePresence mode="popLayout">
+        {isVoiceActive && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.5, rotate: -45 }}
+            animate={{ opacity: 1, scale: 1, rotate: 0 }}
+            exit={{ opacity: 0, scale: 0.5, rotate: 45 }}
+            className="absolute rounded-full pointer-events-none"
+            style={{
+              inset: -55,
+              background: `conic-gradient(from 0deg, 
+                transparent, 
+                ${effectiveGlowColor}, 
+                transparent, 
+                #ffffff, 
+                transparent,
+                ${effectiveGlowColor},
+                transparent)`,
+              filter: "blur(12px)",
+              mixBlendMode: "screen",
+              zIndex: 1
+            }}
+          >
+            <motion.div
+              className="absolute inset-0 rounded-full"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 0.6, repeat: Infinity, ease: "linear" }}
+              style={{
+                background: `conic-gradient(from 0deg, transparent, #ffffff 40%, transparent)`,
+                opacity: 0.8,
+                mixBlendMode: "overlay"
+              }}
+            />
+            {/* Energy Spine Ring */}
+            <div
+              className="absolute inset-2 border-[1.5px] border-white/40 rounded-full"
+              style={{ filter: "blur(1px)" }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 1.2 NEON EDGE BLOOM with KINETIC SHIMMER */}
+      <motion.div
+        className="absolute rounded-full pointer-events-none"
+        animate={{
+          scale: isVoiceActive ? [audioLevelScale, audioLevelScale * 1.15, audioLevelScale] : 1,
+          opacity: isVoiceActive ? [0.6 + (audioLevel * 0.3), 0.9, 0.6 + (audioLevel * 0.3)] : 0.6
+        }}
+        transition={{
+          duration: isVoiceActive ? 0.8 : 3,
+          repeat: Infinity,
+          ease: "easeInOut"
+        }}
+        style={{
+          inset: -30, // Edge bloom spread
+          background: `radial-gradient(circle, color-mix(in srgb, ${effectiveGlowColor}, transparent 30%) 0%, transparent 75%)`,
+          filter: "blur(20px)",
+          zIndex: 1
+        }}
+      >
+        {/* The "Shimmer off the edge" rotating light spike */}
+        <motion.div
+          className="absolute inset-0 rounded-full"
+          style={{
+            background: `conic-gradient(from 0deg, 
+              transparent 0deg, 
+              rgba(255,255,255,0.4) 45deg, 
+              ${effectiveGlowColor} 90deg, 
+              transparent 180deg)`,
+            mixBlendMode: "overlay"
+          }}
+          animate={{ rotate: 360 }}
+          transition={{ duration: isVoiceActive ? 1.2 : 4, repeat: Infinity, ease: "linear" }}
+        />
+      </motion.div>
+
+      {/* 2. LIQUID METAL RING (Structural Refinement) - Phase 112: Flowing Mercury */}
+      <motion.div
+        className="absolute rounded-full pointer-events-none"
+        style={{
+          inset: 0,
+          border: "2.5px solid transparent",
+          background: `conic-gradient(from 0deg, 
+            #ffffff 0deg, 
+            ${effectiveGlowColor} 45deg, 
+            ${isVoiceActive ? "#000000" : "#101014"} 120deg, 
+            #ffffff 180deg, 
+            ${effectiveGlowColor} 225deg, 
+            ${isVoiceActive ? "#000000" : "#101014"} 300deg, 
+            #ffffff 360deg) border-box`,
+          WebkitMask: "linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0)",
+          WebkitMaskComposite: "destination-out",
+          maskComposite: "exclude",
+          filter: "drop-shadow(0 0 3px rgba(255,255,255,0.6))", // Enhanced specularity
+          zIndex: 2
+        }}
+        animate={{
+          rotate: 360,
+          // Phase 132: Dramatic Audio Jitter (Mechanical reaction to speech)
+          scale: isSpeaking ? [1, 1.05, 0.98, 1.03, 1] : 1
+        }}
+        transition={{
+          rotate: { duration: isVoiceActive ? 1.5 : 6, repeat: Infinity, ease: "linear" },
+          scale: { duration: 0.2, repeat: Infinity, ease: "easeInOut" }
+        }}
+      />
+
+      {/* 3. GLASSMORPHIC BASE & 4. CONVEX HIGHLIGHT - Phase 113: Inverted Groove */}
       <div
         className="relative w-full h-full flex items-center justify-center rounded-full pointer-events-none overflow-hidden"
-        style={{ background: "rgba(255, 255, 255, 0.05)", backdropFilter: "blur(20px)", border: `1px solid ${glowColor}33` }}
+        style={{
+          // Phase 132: Static Structural Body (Never changes background/filter/shadow)
+          background: `linear-gradient(135deg, rgba(30, 32, 40, 0.7) 0%, color-mix(in srgb, ${glowColor}, transparent 75%) 100%)`,
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.5), inset 0 2px 4px rgba(255,255,255,0.2)",
+          zIndex: 3
+        }}
       >
-        <div className="absolute inset-0 rounded-full pointer-events-none" style={{ background: `radial-gradient(circle at 30% 30%, ${glowColor}14, transparent 70%)` }} />
+        {/* Phase 132: Additive Internal Aura Tint (No material change) */}
+        <AnimatePresence>
+          {isVoiceActive && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.3 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 rounded-full"
+              style={{
+                background: `radial-gradient(circle at 30% 30%, color-mix(in srgb, ${effectiveGlowColor}, transparent 40%) 0%, transparent 80%)`,
+                mixBlendMode: "screen",
+                zIndex: 0
+              }}
+            />
+          )}
+        </AnimatePresence>
+        {/* 4.5 REACTOR BACKLIGHT - Phase 125/128: Backlit Content Core */}
+        <AnimatePresence>
+          {isVoiceActive && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.5 }}
+              animate={{ opacity: 0.25, scale: 1.1 }} // Reduced further from 0.4
+              exit={{ opacity: 0, scale: 0.5 }}
+              className="absolute rounded-full pointer-events-none"
+              style={{
+                width: "60%",
+                height: "60%",
+                background: `radial-gradient(circle, #ffffff 0%, ${effectiveGlowColor} 40%, transparent 100%)`,
+                filter: "blur(15px)",
+                opacity: 0.2, // Reduced from 0.5
+                zIndex: 1
+              }}
+            />
+          )}
+        </AnimatePresence>
 
-        {/* Rotating shimmer ring */}
-        <motion.div
-          className="absolute rounded-full pointer-events-none"
+        {/* Subtle inner gradient for extra depth depth */}
+        <div
+          className="absolute inset-0 rounded-full"
           style={{
-            inset: -2,
-            borderRadius: "50%",
-            padding: "2px",
-            background: `conic-gradient(from 0deg, transparent 0deg, ${glowColor}33 90deg, ${glowColor}aa 180deg, ${glowColor}33 270deg, transparent 360deg)`,
-            WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
-            WebkitMaskComposite: "xor",
+            background: `radial-gradient(circle at 30% 30%, rgba(255,255,255,0.05) 0%, transparent 60%)`
           }}
-          animate={{ rotate: isProcessing ? 360 : isSpeaking ? [0, 360] : 8 }}
-          transition={{ duration: isProcessing ? 2 : isSpeaking ? 1.5 : 8, repeat: Infinity, ease: "linear" }}
         />
 
-
-
+        {/* 5. CONTENT AREA (Center) - Phase 107 */}
         <AnimatePresence mode="wait">
-          <motion.span
+          <motion.div
             key={feedbackMessage || centerLabel}
-            className="text-lg font-light tracking-[0.2em] select-none pointer-events-none z-10 text-center"
-            style={{
-              color: "rgba(255, 255, 255, 0.95)",
-              textShadow: `0 0 10px ${glowColor}40`,
-              fontSize: (feedbackMessage || centerLabel || '').length > 8 ? '0.75rem' : '1.125rem',
-              maxWidth: size - 20,
-              lineHeight: 1.2,
-              marginTop: 0,
+            className="relative z-10 flex flex-col items-center justify-center p-4 text-center"
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{
+              scale: isSpeaking ? [1, 1.03, 0.98, 1.01, 1] : 1,
+              opacity: 1,
+              filter: (isSpeaking || isListening || isProcessing)
+                ? `drop-shadow(0 0 15px ${effectiveGlowColor})`
+                : "none"
             }}
-            initial={{ scale: 0.8, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.8, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+            transition={{
+              scale: isSpeaking ? { duration: 0.4, repeat: Infinity, ease: "linear" } : { type: "spring", stiffness: 300, damping: 25 },
+              opacity: { type: "spring", stiffness: 300, damping: 25 }
+            }}
           >
-            {feedbackMessage || centerLabel}
-          </motion.span>
+            {isError ? (
+              <span
+                className="text-red-500 font-black uppercase tracking-[0.2em] select-none pointer-events-none"
+                style={{
+                  fontSize: '0.75rem',
+                  textShadow: '0 2px 4px rgba(0,0,0,0.5)',
+                  lineHeight: 1.2
+                }}
+              >
+                ERROR
+              </span>
+            ) : feedbackMessage || centerLabel ? (
+              <span
+                className="text-white font-black uppercase tracking-[0.2em] select-none pointer-events-none"
+                style={{
+                  fontSize: (feedbackMessage || centerLabel || '').length > 8 ? '0.75rem' : '0.9rem',
+                  textShadow: '0 2px 4px rgba(0,0,0,0.5)',
+                  lineHeight: 1.2
+                }}
+              >
+                {feedbackMessage || centerLabel}
+              </span>
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-white/10 blur-sm animate-pulse" />
+            )}
+          </motion.div>
         </AnimatePresence>
       </div>
+
+      {/* 7. Double-click/Wake Flash Overlay */}
+      <AnimatePresence>
+        {(wakeFlash || doubleClickFlash) && (
+          <motion.div
+            className="absolute rounded-full pointer-events-none"
+            style={{ inset: 0, backgroundColor: `${effectiveGlowColor}99`, zIndex: 60 }}
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1.5 }}
+            exit={{ opacity: 0, scale: 2 }}
+            transition={{ duration: 0.5 }}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   )
 }

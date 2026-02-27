@@ -439,3 +439,153 @@ class FileManagerServer(BuiltinServer):
                 return {"success": False, "error": str(e)}
         
         return {"error": f"Unknown tool: {name}"}
+
+
+class GUIAutomationServer(BuiltinServer):
+    """GUI automation MCP server"""
+    
+    def __init__(self):
+        super().__init__("gui_automation")
+    
+    def _setup_tools(self):
+        self._tools = [
+            MCPTool(
+                name="click",
+                description="Click at screen coordinates",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer", "description": "X coordinate"},
+                        "y": {"type": "integer", "description": "Y coordinate"},
+                        "button": {"type": "string", "description": "Mouse button (left/right/middle)", "default": "left"}
+                    },
+                    "required": ["x", "y"]
+                }
+            ),
+            MCPTool(
+                name="type_text",
+                description="Type text at current cursor position",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Text to type"}
+                    },
+                    "required": ["text"]
+                }
+            ),
+            MCPTool(
+                name="press_key",
+                description="Press a keyboard key",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "description": "Key to press (e.g., 'enter', 'tab', 'ctrl+c')"}
+                    },
+                    "required": ["key"]
+                }
+            ),
+            MCPTool(
+                name="move_mouse",
+                description="Move mouse to coordinates",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer", "description": "X coordinate"},
+                        "y": {"type": "integer", "description": "Y coordinate"}
+                    },
+                    "required": ["x", "y"]
+                }
+            ),
+            MCPTool(
+                name="screenshot",
+                description="Take a screenshot",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "region": {
+                            "type": "object",
+                            "description": "Region to capture (x, y, width, height)",
+                            "properties": {
+                                "x": {"type": "integer"},
+                                "y": {"type": "integer"},
+                                "width": {"type": "integer"},
+                                "height": {"type": "integer"}
+                            }
+                        }
+                    }
+                }
+            )
+        ]
+    
+    async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+        """Execute GUI automation tool"""
+        try:
+            import pyautogui
+        except ImportError:
+            return {"success": False, "error": "pyautogui not installed. Install with: pip install pyautogui"}
+        
+        if name == "click":
+            x = arguments.get("x")
+            y = arguments.get("y")
+            button = arguments.get("button", "left")
+            try:
+                pyautogui.click(x, y, button=button)
+                return {"success": True, "message": f"Clicked at ({x}, {y}) with {button} button"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        elif name == "type_text":
+            text = arguments.get("text", "")
+            try:
+                pyautogui.write(text)
+                return {"success": True, "message": f"Typed: {text}"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        elif name == "press_key":
+            key = arguments.get("key", "")
+            try:
+                # Handle key combinations like "ctrl+c"
+                if "+" in key:
+                    keys = key.split("+")
+                    pyautogui.hotkey(*keys)
+                else:
+                    pyautogui.press(key)
+                return {"success": True, "message": f"Pressed key: {key}"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        elif name == "move_mouse":
+            x = arguments.get("x")
+            y = arguments.get("y")
+            try:
+                pyautogui.moveTo(x, y)
+                return {"success": True, "message": f"Moved mouse to ({x}, {y})"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        elif name == "screenshot":
+            region = arguments.get("region")
+            try:
+                if region:
+                    screenshot = pyautogui.screenshot(region=(
+                        region["x"], region["y"], region["width"], region["height"]
+                    ))
+                else:
+                    screenshot = pyautogui.screenshot()
+                
+                # Save to temp file
+                import tempfile
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                screenshot.save(temp_file.name)
+                
+                return {
+                    "success": True,
+                    "message": "Screenshot captured",
+                    "path": temp_file.name,
+                    "size": {"width": screenshot.width, "height": screenshot.height}
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        return {"error": f"Unknown tool: {name}"}

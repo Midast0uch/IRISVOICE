@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\processor.py
+# hypothesis_version: 6.151.9
+
+[128, 2048, 16000, '<|im_end|>\n', '<|startoftext|>', 'assistant', 'audio_detokenizer', 'audio_in', 'audio_in_lens', 'audio_out', 'config.json', 'conv', 'cuda', 'full_attention', 'modality_flag', 'model.safetensors', 'preprocessor', 'pt', 'sliding_attention', 'system', 'text', 'user']

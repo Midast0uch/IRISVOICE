@@ -1,0 +1,72 @@
+{
+  "session_id": "0f33d251-2dfd-7299-71cb-96395d3ad345",
+  "session_start": 1772159984.148166,
+  "last_updated": 1772160418.3648648,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772159984.1491954,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772159984.1511743,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772159984.1536238,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159984.1536238,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772160418.3614109,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772160418.3626616,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772160418.3637185,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160418.364845,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

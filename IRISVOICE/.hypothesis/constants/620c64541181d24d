@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\cpu_options.py
+# hypothesis_version: 6.151.9
+
+[', ', '__call__', 'afn', 'always', 'arcp', 'comprehension', 'contract', 'enabled', 'fast', 'fusion', 'inplace_binop', 'never', 'ninf', 'nnan', 'nsz', 'numpy', 'prange', 'reassoc', 'reduction', 'setitem', 'stencil']

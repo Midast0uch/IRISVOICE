@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\testing\_internal\distributed\fake_pg.py
+# hypothesis_version: 6.151.9
+
+['cpu', 'cuda', 'fake', 'hpu', 'xpu']

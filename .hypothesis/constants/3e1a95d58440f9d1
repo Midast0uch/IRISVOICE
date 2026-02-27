@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\model_debugging_utils.py
+# hypothesis_version: 6.151.9
+
+[120, '(.*)\\.(\\d+)$', '.', '.safetensors', 'DTensor(non-rank0)', '_FULL_TENSORS.json', '_SUMMARY.json', '_debug_tree', '_local_tensor', 'args', 'children', 'data', 'dtype', 'inputs', 'kwargs', 'max', 'mean', 'min', 'module_path', 'object at 0xXXXXXXXX', 'outputs', 'shape', 'std', 'torch', 'value', 'w']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\fcos.py
+# hypothesis_version: 6.151.9
+
+[1e-05, 0.01, 0.2, 0.224, 0.225, 0.229, 0.406, 0.456, 0.485, 0.6, 1.0, 1.5, 39.2, 123.608, 128.207, 100000000.0, 100, 128, 256, 800, 1000, 1333, 32269600, '0', 'COCO-val2017', 'FCOS', '_docs', '_file_size', '_metrics', '_ops', 'bbox_ctrness', 'bbox_regression', 'box_coder', 'box_map', 'boxes', 'categories', 'classification', 'cls_logits', 'fcos_resnet50_fpn', 'floor', 'inf', 'labels', 'min_size', 'num_classes', 'num_params', 'out_channels', 'pretrained', 'pretrained_backbone', 'recipe', 'scores', 'sum']

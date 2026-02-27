@@ -1,0 +1,16 @@
+{
+  "session_id": "a0a8f9e7-6436-1963-c19c-728cfa477ce7",
+  "session_start": 1772160463.1133785,
+  "last_updated": 1772160463.1145492,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Search for information about Python",
+      "timestamp": 1772160463.1144938,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

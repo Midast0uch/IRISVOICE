@@ -1,0 +1,16 @@
+{
+  "session_id": "\u00cb",
+  "session_start": 1772161088.217689,
+  "last_updated": 1772161088.2186193,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Open the browser",
+      "timestamp": 1772161088.218554,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

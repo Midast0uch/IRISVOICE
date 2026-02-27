@@ -202,6 +202,22 @@ def configure_logging(log_level: str = "INFO", log_file: Optional[Path] = None,
     return get_logger(log_level=log_level, log_file=log_file)
 
 
+def get_structured_logger(name: str = "irisvoice", **kwargs) -> StructuredLogger:
+    """
+    Get or create a structured logger instance.
+    
+    This is the main entry point for getting a logger in the IRIS backend.
+    
+    Args:
+        name: Logger name (default: "irisvoice")
+        **kwargs: Additional configuration options (log_level, log_file, etc.)
+    
+    Returns:
+        Configured StructuredLogger instance
+    """
+    return get_logger(name, **kwargs)
+
+
 # Example usage and testing
 if __name__ == "__main__":
     # Configure logging

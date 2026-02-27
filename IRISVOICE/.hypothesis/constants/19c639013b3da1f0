@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\vps_gateway.py
+# hypothesis_version: 6.151.9
+
+[0.5, 0.7, 0.9, 5.0, 1000.0, 512, 1000, 'Authorization', 'Content-Type', 'active_requests', 'application/json', 'available', 'available_endpoints', 'consecutive_failures', 'conversation_history', 'default', 'do_sample', 'enabled', 'endpoints', 'error_message', 'execution', 'health_status', 'last_check', 'last_success', 'latency_ms', 'least_loaded', 'lfm2-8b', 'lfm2.5-1.2b', 'load_balancing', 'max_new_tokens', 'max_tokens', 'protocol', 'reasoning', 'response', 'rest', 'round_robin', 'status_code', 'task_type', 'temperature', 'top_p', 'vps_gateway', 'websocket']

@@ -1,0 +1,16 @@
+{
+  "session_id": "\ud803\udd30\u00c1\uab79\u0176__\u0131\u00dd\ud835\udf1f",
+  "session_start": 1772161088.3222373,
+  "last_updated": 1772161088.3227835,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Run the tests",
+      "timestamp": 1772161088.322757,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

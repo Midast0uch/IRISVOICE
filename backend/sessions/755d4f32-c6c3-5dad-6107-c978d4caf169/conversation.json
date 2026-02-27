@@ -1,0 +1,88 @@
+{
+  "session_id": "755d4f32-c6c3-5dad-6107-c978d4caf169",
+  "session_start": 1772159995.4593372,
+  "last_updated": 1772160445.016014,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159995.4713767,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Run the tests",
+      "timestamp": 1772160444.993455,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772160444.99578,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Tell me about artificial intelligence",
+      "timestamp": 1772160444.9982355,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Deploy the application",
+      "timestamp": 1772160445.0002112,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u1e2b",
+      "timestamp": 1772160445.002256,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "What is the weather today?",
+      "timestamp": 1772160445.0052476,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "What is the weather today?",
+      "timestamp": 1772160445.0097883,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772160445.0131574,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160445.0159752,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

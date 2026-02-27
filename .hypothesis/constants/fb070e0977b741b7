@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\lfw.py
+# hypothesis_version: 6.151.9
+
+['10fold', 'DevTest', 'DevTrain', 'deepfunneled', 'funneled', 'image_set', 'lfw', 'lfw-deepfunneled', 'lfw-deepfunneled.tgz', 'lfw-funneled.tgz', 'lfw-names.txt', 'lfw-py', 'lfw.tgz', 'lfw_funneled', 'original', 'pairs', 'pairs.txt', 'pairsDevTest.txt', 'pairsDevTrain.txt', 'people', 'people.txt', 'peopleDevTest.txt', 'peopleDevTrain.txt', 'split', 'test', 'train', 'view']

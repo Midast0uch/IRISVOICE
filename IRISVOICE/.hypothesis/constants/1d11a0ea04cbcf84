@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\np\ufunc\array_exprs.py
+# hypothesis_version: 6.151.9
+
+['$', '-', '.', '_', 'after-inference', 'arrayexpr', 'binop', 'body', 'call', 'def {0}(): return', 'end_lineno', 'exec', 'lineno', 'numpy', 'unary']

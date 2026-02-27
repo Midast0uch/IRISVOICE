@@ -1,0 +1,16 @@
+{
+  "session_id": "c6601970e9fff41d48993a14bb459fdf",
+  "session_start": 1772156371.7996318,
+  "last_updated": 1772156371.8001218,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "user",
+      "content": "\u00deD\ud834\ude08\u007f",
+      "timestamp": 1772156371.800096,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

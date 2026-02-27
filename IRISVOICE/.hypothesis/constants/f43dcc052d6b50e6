@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\image_processing_utils_fast.py
+# hypothesis_version: 6.151.9
+
+[1.0, 2.0, 255, 256, 'NOT_FOUND', '_valid_kwargs_names', 'constant', 'crop_size', 'data_format', 'default_to_square', 'device', 'do_convert_rgb', 'image_mean', 'image_std', 'input_data_format', 'interpolation', 'pad_size', 'pixel_values', 'pt', 'resample', 'size', 'torch.Tensor', 'torch.device']

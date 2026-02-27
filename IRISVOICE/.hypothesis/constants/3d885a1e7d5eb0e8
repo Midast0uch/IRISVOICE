@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\filelock\_windows.py
+# hypothesis_version: 6.151.9
+
+[1024, 4294967295, 'WindowsFileLock', 'int', 'kernel32', 'win32']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\model\conformer\encoder.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.1, 1.0, 256, 5000, 10000, 'B', 'D', 'T', '_max_cache_len', 'abs_pos', 'audio_signal', 'batch_norm', 'bypass_pre_encode', 'cache_last_channel', 'cache_last_time', 'cache_last_time_next', 'causal', 'chunked_limited', 'encoded_lengths', 'get_sampling_frames', 'length', 'linear', 'outputs', 'regular', 'rel_pos', 'rel_pos_local_attn', 'stacking', 'stacking_norm', 'striding', 'trunc']

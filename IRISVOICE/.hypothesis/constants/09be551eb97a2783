@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\roi_heads.py
+# hypothesis_version: 6.151.9
+
+[0.01, 0.5, 1.0, 5.0, 10.0, 'bicubic', 'bilinear', 'box_coder', 'boxes', 'fg_bg_sampler', 'floor', 'keypoints', 'keypoints_scores', 'labels', 'loss_box_reg', 'loss_classifier', 'loss_keypoint', 'loss_mask', 'masks', 'proposal_matcher', 'scores', 'sum']

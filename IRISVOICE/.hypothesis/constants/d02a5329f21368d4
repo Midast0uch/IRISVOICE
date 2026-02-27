@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\modeling_flash_attention_utils.py
+# hypothesis_version: 6.151.9
+
+[0.0, '0', '1', 'causal', 'deterministic', 'device', 'dropout', 'dropout_p', 'dtype', 'flash_attention_2', 'flash_attention_3', 'flash_attn_func', 'mps', 'paged|', 's_aux', 'sliding_window', 'softcap', 'softmax_scale', 'window_size', '|']

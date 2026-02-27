@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\sessions\session_manager.py
+# hypothesis_version: 6.151.9
+
+[100, 1024, 1440, 'active_sessions', 'clients', 'connected_clients', 'created_at', 'default', 'expired', 'last_accessed', 'marked_for_cleanup', 'max_per_session_mb', 'max_state_size_kb', 'memory_bounds', 'memory_mb', 'object_count', 'session_id', 'sessions', 'sessions_over_limit', 'state_size_kb', 'total_memory_mb', 'total_sessions', 'within_bounds']

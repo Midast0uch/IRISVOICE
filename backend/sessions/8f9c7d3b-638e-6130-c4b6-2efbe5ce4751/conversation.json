@@ -1,0 +1,72 @@
+{
+  "session_id": "8f9c7d3b-638e-6130-c4b6-2efbe5ce4751",
+  "session_start": 1772159997.5663104,
+  "last_updated": 1772160450.1550267,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Create a new file",
+      "timestamp": 1772159997.5692852,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772159997.5692852,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Open the browser",
+      "timestamp": 1772159997.5712812,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159997.5712812,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Create a new file",
+      "timestamp": 1772160450.1463592,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772160450.149856,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Open the browser",
+      "timestamp": 1772160450.1525018,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160450.154962,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

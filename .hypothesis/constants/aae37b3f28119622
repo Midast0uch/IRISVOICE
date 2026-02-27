@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\quantizer_finegrained_fp8.py
+# hypothesis_version: 6.151.9
+
+['PreTrainedModel', 'Qwen3', 'activation_scale', 'bias', 'colwise', 'cpu', 'device_map', 'disk', 'rowwise', 'torch.Tensor', 'weight', 'weight$', 'weight_scale_inv']

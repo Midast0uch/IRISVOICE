@@ -10,6 +10,7 @@ interface DualRingMechanismProps {
   selectedIndex: number
   onSelect: (index: number) => void
   glowColor: string
+  basePlateColor?: string
   orbSize: number
   confirmSpinning?: boolean
   isVoiceActive?: boolean
@@ -20,9 +21,17 @@ interface DualRingMechanismProps {
  * Helper function to convert hex color to rgba with alpha
  * Validates: Property 36 - HexToRgba Color Conversion
  */
-function hexToRgba(hex: string, alpha: number): string {
+/**
+ * Helper function to convert hex color to rgba with alpha
+ * Validates: Property 36 - HexToRgba Color Conversion
+ */
+function hexToRgba(color: string, alpha: number): string {
+  if (color.startsWith('hsl')) {
+    return color.replace('hsl(', 'hsla(').replace(')', `, ${alpha})`)
+  }
+
   // Remove # if present
-  hex = hex.replace("#", "")
+  const hex = color.replace("#", "")
 
   // Parse hex values
   const r = parseInt(hex.substring(0, 2), 16)
@@ -54,6 +63,7 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
   selectedIndex,
   onSelect,
   glowColor,
+  basePlateColor = "hsl(220, 15%, 15%)",
   orbSize,
   confirmSpinning = false,
   isVoiceActive = false,
@@ -76,8 +86,8 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
   const innerRadius = orbSize * 0.2575 // Perfectly equidistant between gliders (Phase 86)
 
   // Phase 47: SVG Viewport Buffer (Universal Clipping Fix)
-  // 200px provides massive safety for high-intensity blooms on all rings
-  const buffer = 200
+  // 300px provides massive safety for high-intensity blooms, text labels, and all ring effects
+  const buffer = 300
   const center = (orbSize + buffer) / 2
 
   // Sector angle calculations
@@ -238,6 +248,26 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
         />
       </motion.g>
 
+      {/* 3. Integrated BasePlate (Phase 101: Industrial Foundation) */}
+      <circle
+        cx={center}
+        cy={center}
+        r={orbSize * 0.49}
+        fill="url(#base-plate-gradient)"
+        style={{ opacity: 0.8 }}
+      />
+
+      {/* 4. Integrated DepthGroove (Phase 101: Recessed Industrial Well) */}
+      <circle
+        cx={center}
+        cy={center}
+        r={orbSize * 0.46}
+        fill="none"
+        stroke="rgba(0, 0, 0, 0.4)"
+        strokeWidth="8"
+        style={{ filter: "blur(4px)", opacity: 0.6 }}
+      />
+
       <defs>
         {/* Phase 51: Wide-Field Voice Aura Gradient (Smooth Wide-Field Dissipation) */}
         <radialGradient id="voice-aura-gradient" cx="50%" cy="50%" r="50%">
@@ -247,13 +277,20 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
           <stop offset="100%" stopColor="transparent" />
         </radialGradient>
 
-        {/* Liquid Metal Refraction Gradient - Boosted Luminance */}
+        {/* Phase 101: Base Plate Gradient (Industrial Foundation) */}
+        <radialGradient id="base-plate-gradient" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor={basePlateColor} />
+          <stop offset="70%" stopColor={hexToRgba(basePlateColor, 0.6)} />
+          <stop offset="100%" stopColor={hexToRgba(basePlateColor, 0.3)} />
+        </radialGradient>
+
+        {/* Liquid Metal Refraction Gradient - Dynamic Phase 115 */}
         <linearGradient id="liquid-metal-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor={hexToRgba(glowColor, 0.6)} />
-          <stop offset="30%" stopColor="rgba(255, 255, 255, 0.5)" />
-          <stop offset="50%" stopColor={hexToRgba(glowColor, 0.9)} />
-          <stop offset="70%" stopColor="rgba(255, 255, 255, 0.3)" />
-          <stop offset="100%" stopColor={hexToRgba(glowColor, 0.6)} />
+          <stop offset="0%" stopColor="#ffffff" />
+          <stop offset="25%" stopColor={hexToRgba(glowColor, 0.7)} />
+          <stop offset="50%" stopColor="#101014" />
+          <stop offset="75%" stopColor="#ffffff" />
+          <stop offset="100%" stopColor={hexToRgba(glowColor, 0.7)} />
         </linearGradient>
 
         {/* Muted Metal Gradient for Interactive Segments */}
@@ -352,7 +389,7 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
           strokeDasharray="0.02 0.48"
           animate={{ rotate: -360 }}
           transition={{
-            duration: 6, // High speed counter-balance
+            duration: 6,
             repeat: Infinity,
             ease: "linear"
           }}
@@ -463,25 +500,16 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
             originY: "50%"
           }}
         />
-        {/* Core Halo (Sharp White Light at Button Edge) */}
-        <motion.circle
+        {/* Core Halo (Continuous White Light at Button Edge) */}
+        <circle
           cx={center}
           cy={center}
-          r={orbSize * 0.11}
+          r={orbSize * 0.12}
           fill="none"
           stroke="white"
-          strokeWidth="1.5"
-          initial={{ opacity: 0.5 }}
-          animate={{
-            opacity: [0.5, 0.95, 0.5],
-            strokeWidth: ["1.5px", "2.8px", "1.5px"]
-          }}
-          transition={{
-            duration: 2.5,
-            repeat: Infinity,
-            ease: "easeInOut"
-          }}
+          strokeWidth="2"
           style={{
+            opacity: 0.9,
             filter: `drop-shadow(0 0 10px white) drop-shadow(0 0 15px white)`,
           }}
         />
@@ -588,7 +616,7 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
           strokeDasharray="0.02 0.48"
           animate={{ rotate: -360 }}
           transition={{
-            duration: 3.5, // Really fast flow
+            duration: 3.5,
             repeat: Infinity,
             ease: "linear"
           }}
@@ -703,7 +731,7 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
           strokeDasharray="0.02 0.98"
           animate={{ rotate: 360 }}
           transition={{
-            duration: 4, // Really fast pulse
+            duration: 4,
             repeat: Infinity,
             ease: "linear"
           }}

@@ -1,0 +1,56 @@
+{
+  "session_id": "8be81cbf-ac53-a6c1-1182-ec046d91b84e",
+  "session_start": 1772159997.0707712,
+  "last_updated": 1772160448.7844498,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Deploy the application",
+      "timestamp": 1772159997.0713727,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772159997.0723815,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159997.0738695,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Deploy the application",
+      "timestamp": 1772160448.7790325,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772160448.7815874,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160448.78439,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

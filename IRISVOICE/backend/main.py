@@ -8,23 +8,36 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, Any
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Add parent directory to path to allow absolute imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Configure structured logging
+from backend.core.logging_config import setup_backend_logging
+logger = setup_backend_logging(log_level=os.environ.get("IRIS_LOG_LEVEL", "INFO"))
 
 """
 IRIS FastAPI Backend Server (Session-Aware)
 Main application entry point with WebSocket endpoint and session management.
+
+This server provides:
+- WebSocket-based real-time communication
+- Session management with state isolation
+- Dual-LLM agent system (lfm2-8b reasoning + lfm2.5-1.2b-instruct execution)
+- Voice pipeline with wake word detection
+- MCP tool integration
+- Structured logging
 """
 
+logger.info("Starting IRIS Backend initialization...")
 logger.info("  - Importing FastAPI and middleware...")
-# Add parent directory to path to allow absolute imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import os
-
-# CORS configuration - restrict origins in production
-ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+# CORS configuration for Next.js and Tauri
+# In development: Allow localhost origins
+# In production: Restrict to specific origins
+ALLOWED_ORIGINS = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:3001,tauri://localhost,https://tauri.localhost"
+).split(",")
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -194,15 +207,24 @@ async def lifespan(app: FastAPI):
 # FastAPI App Initialization
 # ============================================================================
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="IRIS Backend API",
+    description="WebSocket-based backend for IRISVOICE with dual-LLM agent system",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
+# Configure CORS middleware for Next.js and Tauri integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
 
 @app.get("/api/voice/status")
 async def voice_status():
@@ -315,6 +337,10 @@ async def handle_message(client_id: str, session_id: str, message: dict):
 
     elif msg_type == "ping":
         await ws_manager.send_to_client(client_id, {"type": "pong"})
+
+    elif msg_type == "pong":
+        # Handle pong response from client
+        await ws_manager.handle_pong(client_id)
 
     elif msg_type == "expand_to_main":
         # Handle expand to main category view

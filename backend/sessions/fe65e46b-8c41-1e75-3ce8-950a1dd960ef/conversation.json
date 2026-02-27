@@ -1,0 +1,88 @@
+{
+  "session_id": "fe65e46b-8c41-1e75-3ce8-950a1dd960ef",
+  "session_start": 1772159994.443729,
+  "last_updated": 1772159994.4532957,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "0",
+      "timestamp": 1772159994.4447315,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159994.4457533,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u0104\u00f6\u0134q\u014c.",
+      "timestamp": 1772159994.4467037,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Open the browser",
+      "timestamp": 1772159994.4477031,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Open the browser",
+      "timestamp": 1772159994.4487247,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Tell me about artificial intelligence",
+      "timestamp": 1772159994.449703,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u1e43",
+      "timestamp": 1772159994.4532957,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "i\ud835\udcab\u04b4\u0141",
+      "timestamp": 1772159994.4532957,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "What is the weather today?",
+      "timestamp": 1772159994.4532957,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159994.4532957,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

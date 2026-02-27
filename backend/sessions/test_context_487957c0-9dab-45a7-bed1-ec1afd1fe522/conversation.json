@@ -1,0 +1,32 @@
+{
+  "session_id": "test_context_487957c0-9dab-45a7-bed1-ec1afd1fe522",
+  "session_start": 1772085405.7067668,
+  "last_updated": 1772085405.7096202,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Message 1",
+      "timestamp": 1772085405.7081738,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Response 1",
+      "timestamp": 1772085405.70881,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Message 2",
+      "timestamp": 1772085405.7095985,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

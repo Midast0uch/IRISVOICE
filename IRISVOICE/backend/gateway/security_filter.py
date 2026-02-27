@@ -34,8 +34,16 @@ class FilterResult:
     log_level: str = "info"
 
 
+@dataclass
+class RateLimitConfig:
+    """Rate limit configuration"""
+    max_requests: int
+    time_window_seconds: int
+    key_prefix: str = ""
+
+
 class SecurityFilter:
-    """Gateway-level security filter for message validation"""
+    """Gateway-level security filter for message validation and rate limiting"""
     
     def __init__(self, security_manager: Optional[MCPSecurityManager] = None, 
                  audit_logger: Optional[SecurityAuditLogger] = None):
@@ -47,6 +55,15 @@ class SecurityFilter:
         self._filter_rules: List[FilterRule] = []
         self._rate_limits: Dict[str, List[datetime]] = {}
         self._blocked_patterns: Dict[str, re.Pattern] = {}
+        
+        # Rate limit configurations for different operations
+        self._rate_limit_configs: Dict[str, RateLimitConfig] = {
+            "tool_execution": RateLimitConfig(max_requests=10, time_window_seconds=60),
+            "session_create": RateLimitConfig(max_requests=5, time_window_seconds=60),
+            "state_update": RateLimitConfig(max_requests=10, time_window_seconds=1),
+            "automation_request": RateLimitConfig(max_requests=20, time_window_seconds=60),
+            "vision_request": RateLimitConfig(max_requests=10, time_window_seconds=60),
+        }
         
         # Initialize default filter rules
         self._initialize_default_rules()
@@ -368,6 +385,69 @@ class SecurityFilter:
         # Add current request
         self._rate_limits[key].append(now)
         return False
+    
+    def check_tool_execution_rate_limit(self, session_id: str, tool_name: str) -> bool:
+        """Check rate limit for tool execution (max 10 per minute)"""
+        config = self._rate_limit_configs.get("tool_execution")
+        key = f"tool_execution_{session_id}_{tool_name}"
+        return self._check_rate_limit(key, config.max_requests, config.time_window_seconds)
+    
+    def get_rate_limit_status(self, key: str) -> Dict[str, Any]:
+        """Get current rate limit status for a key"""
+        if key not in self._rate_limits:
+            return {
+                "key": key,
+                "current_count": 0,
+                "limit": 0,
+                "window_seconds": 0,
+                "remaining": 0,
+                "reset_at": None
+            }
+        
+        # Find matching config
+        config = None
+        for config_key, cfg in self._rate_limit_configs.items():
+            if key.startswith(config_key):
+                config = cfg
+                break
+        
+        if not config:
+            return {"key": key, "error": "No rate limit config found"}
+        
+        now = datetime.now()
+        cutoff_time = now - timedelta(seconds=config.time_window_seconds)
+        
+        # Count recent requests
+        recent_requests = [ts for ts in self._rate_limits[key] if ts > cutoff_time]
+        current_count = len(recent_requests)
+        remaining = max(0, config.max_requests - current_count)
+        
+        # Calculate reset time
+        if recent_requests:
+            oldest_request = min(recent_requests)
+            reset_at = oldest_request + timedelta(seconds=config.time_window_seconds)
+        else:
+            reset_at = None
+        
+        return {
+            "key": key,
+            "current_count": current_count,
+            "limit": config.max_requests,
+            "window_seconds": config.time_window_seconds,
+            "remaining": remaining,
+            "reset_at": reset_at.isoformat() if reset_at else None
+        }
+    
+    def reset_rate_limit(self, key: str):
+        """Reset rate limit for a specific key"""
+        if key in self._rate_limits:
+            del self._rate_limits[key]
+            self.logger.info(f"Reset rate limit for {key}")
+    
+    def reset_all_rate_limits(self):
+        """Reset all rate limits"""
+        self._rate_limits.clear()
+        self.logger.info("Reset all rate limits")
     
     def get_filter_stats(self) -> Dict[str, Any]:
         """Get filter statistics"""

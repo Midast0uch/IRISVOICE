@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\librosa\core\audio.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-10, 0.1, 0.5, 1.0, 2.0, 255.0, 1000.0, 180, 255, 512, 2048, 22050, '(n),(),()->(n)', '0.10.0', '1.0', 'autocorrelate', 'chirp', 'clicks', 'fft', 'filename', 'get_duration', 'get_samplerate', 'linear', 'load', 'logarithmic', 'lpc', 'mu_compress', 'mu_expand', 'path', 'polyphase', 'resample', 'resampy', 'samplerate', 'scipy', 'sinc_best', 'sinc_fastest', 'sinc_medium', 'soxr', 'soxr_hq', 'stream', 'to_mono', 'tone', 'zero_crossings', 'zero_order_hold']

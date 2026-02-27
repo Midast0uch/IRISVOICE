@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\compiler_machinery.py
+# hypothesis_version: 6.151.9
+
+[120, '%s.%s: %s: %s %s', '%s: %s', '%s_%s', ',', '-', '-- %s', 'AFTER', 'BEFORE', 'Legacy pass in use', 'Pass {name}', 'all', 'func_ir is None', 'init run finalize', 'none', 'numba:run_pass', 'pass_info', 'pass_timings', 'required: %s\n', '{desc}\n{exc}']

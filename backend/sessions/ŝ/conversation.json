@@ -1,0 +1,88 @@
+{
+  "session_id": "\u015d",
+  "session_start": 1772159996.382369,
+  "last_updated": 1772160446.9390888,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Search for information about Python",
+      "timestamp": 1772160446.9166422,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Tell me about artificial intelligence",
+      "timestamp": 1772160446.9185076,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Open the browser",
+      "timestamp": 1772160446.9211543,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Bz",
+      "timestamp": 1772160446.926496,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u014b\u011c",
+      "timestamp": 1772160446.929611,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Search for information about Python",
+      "timestamp": 1772160446.9315202,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u00d4",
+      "timestamp": 1772160446.9336467,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Run the tests",
+      "timestamp": 1772160446.9351785,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Open the browser",
+      "timestamp": 1772160446.9371746,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160446.9388494,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

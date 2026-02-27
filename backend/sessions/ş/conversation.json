@@ -1,0 +1,72 @@
+{
+  "session_id": "\u015f",
+  "session_start": 1772160443.376893,
+  "last_updated": 1772160443.396441,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Open the browser",
+      "timestamp": 1772160443.378051,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772160443.37945,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Deploy the application",
+      "timestamp": 1772160443.381167,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772160443.3835392,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u2c0f\u0163",
+      "timestamp": 1772160443.3858767,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "a\u013f\u013f\u013dN\ud801\udce6",
+      "timestamp": 1772160443.388449,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Deploy the application",
+      "timestamp": 1772160443.392638,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160443.3962915,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

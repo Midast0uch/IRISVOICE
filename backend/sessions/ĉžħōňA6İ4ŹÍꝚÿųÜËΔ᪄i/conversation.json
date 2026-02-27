@@ -1,0 +1,72 @@
+{
+  "session_id": "\u0109\u017e\u0127\u014d\u0148A6\u01304\u0179\u00cd\ua75a\u00ff\u0173\u00dc\u00cb\u0394\u1a84i",
+  "session_start": 1772160429.7395518,
+  "last_updated": 1772160429.761226,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772160429.7427282,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Deploy the application",
+      "timestamp": 1772160429.7445586,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Create a new file",
+      "timestamp": 1772160429.7463245,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Open the browser",
+      "timestamp": 1772160429.748458,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Run the tests",
+      "timestamp": 1772160429.7507446,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772160429.7531645,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Create a new file",
+      "timestamp": 1772160429.7575722,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160429.7611048,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

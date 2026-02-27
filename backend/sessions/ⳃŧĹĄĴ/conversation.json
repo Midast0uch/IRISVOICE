@@ -1,0 +1,72 @@
+{
+  "session_id": "\u2cc3\u0167\u0139\u0104\u0134",
+  "session_start": 1772159984.2056155,
+  "last_updated": 1772160418.4489982,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772159984.2066152,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Deploy the application",
+      "timestamp": 1772159984.207617,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Deploy the application",
+      "timestamp": 1772159984.2086158,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159984.2096157,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772160418.4415128,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Deploy the application",
+      "timestamp": 1772160418.4439328,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Deploy the application",
+      "timestamp": 1772160418.446521,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160418.4489436,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

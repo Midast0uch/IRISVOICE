@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\sessions\memory_bounds.py
+# hypothesis_version: 6.151.9
+
+[0.8, -100, 100, 1024, 'IRISState', 'after', 'before', 'created_at', 'dict', 'global_stats_after', 'list', 'memory_freed_mb', 'memory_growth_mb', 'memory_mb', 'memory_ok', 'memory_usage_percent', 'memory_warning', 'metadata', 'object_count', 'objects', 'objects_freed', 'process_memory_mb', 'session_id', 'session_results', 'sessions', 'state', 'state_kb', 'state_ok', 'state_size_kb', 'state_usage_percent', 'state_warning', 'thread_count', 'total_memory_mb', 'total_objects', 'total_sessions', 'total_state_kb', 'type', 'unknown', 'weakref', 'within_bounds', 'within_global_bounds']

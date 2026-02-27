@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\pooch\typing\__init__.py
+# hypothesis_version: 6.151.9
+
+['Action', 'Downloader', 'ParsedURL', 'PathInputType', 'PathType', 'Pooch', 'Processor', 'download', 'fetch', 'update']

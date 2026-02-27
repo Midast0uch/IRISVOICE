@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_higher_order_ops\map.py
+# hypothesis_version: 6.151.9
+
+['body_graph_', 'call_function', 'map', 'map_impl', 'mode']

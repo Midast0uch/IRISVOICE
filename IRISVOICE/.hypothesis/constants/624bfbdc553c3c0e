@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\pooch\hashes.py
+# hypothesis_version: 6.151.9
+
+[65536, '*', '**/*', '/', ':', '\\', 'rb', 'sha256', 'utf-8', 'w', 'xxh128', 'xxh32', 'xxh3_128', 'xxh3_64', 'xxh64', '{} {}\n']

@@ -1,0 +1,24 @@
+{
+  "session_id": "\u0159",
+  "session_start": 1772076086.952323,
+  "last_updated": 1772076086.954071,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Tell me about artificial intelligence",
+      "timestamp": 1772076086.9531887,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Generate consistent response",
+      "timestamp": 1772076086.9540572,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

@@ -62,6 +62,7 @@ interface UseIRISWebSocketReturn {
   currentCategory: string | null
   currentSubnode: string | null
   voiceState: VoiceState
+  audioLevel: number
   lastTextResponse: TextResponseMessage | null
   // Agent state
   agentStatus: Record<string, unknown> | null
@@ -79,8 +80,13 @@ interface UseIRISWebSocketReturn {
   executeTool: (toolName: string, params?: Record<string, unknown>) => void
   clearChat: () => void
   reloadSkills: () => void
+  // Voice actions
+  startVoiceCommand: () => void
+  endVoiceCommand: () => void
   sendMessage: (type: string, payload?: Record<string, unknown>) => boolean
   lastError: string | null
+  fieldErrors: Record<string, string> // Map of "subnodeId:fieldId" to error message
+  clearFieldError: (subnodeId: string, fieldId: string) => void
   onWakeDetected?: () => void
 }
 
@@ -100,6 +106,7 @@ export function useIRISWebSocket(
   // Connection state
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected")
   const [lastError, setLastError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({}) // Map of "subnodeId:fieldId" to error message
 
   // IRIS state from backend
   const [theme, setTheme] = useState<ColorTheme>(DEFAULT_THEME)
@@ -109,6 +116,7 @@ export function useIRISWebSocket(
   const [currentCategory, setCurrentCategory] = useState<string | null>(null)
   const [currentSubnode, setCurrentSubnode] = useState<string | null>(null)
   const [voiceState, setVoiceState] = useState<VoiceState>("idle")
+  const [audioLevel, setAudioLevel] = useState<number>(0)
   const [lastTextResponse, setLastTextResponse] = useState<TextResponseMessage | null>(null)
   
   // Agent state
@@ -120,8 +128,16 @@ export function useIRISWebSocket(
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  const pingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pongTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const onWakeDetectedRef = useRef(onWakeDetected)
   const onNativeAudioResponseRef = useRef(onNativeAudioResponse)
+  
+  // Optimistic update tracking: store previous values for revert on validation error
+  const pendingUpdatesRef = useRef<Map<string, { subnodeId: string; fieldId: string; previousValue: string | number | boolean }>>(new Map())
+  
+  // Timestamp tracking for out-of-order update handling
+  const fieldTimestampsRef = useRef<Map<string, number>>(new Map())
 
   // Update ref when callback changes
   useEffect(() => {
@@ -136,6 +152,14 @@ export function useIRISWebSocket(
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
+    }
+    if (pingTimeoutRef.current) {
+      clearTimeout(pingTimeoutRef.current)
+      pingTimeoutRef.current = null
+    }
+    if (pongTimeoutRef.current) {
+      clearTimeout(pongTimeoutRef.current)
+      pongTimeoutRef.current = null
     }
     if (wsRef.current) {
       wsRef.current.close()
@@ -189,9 +213,19 @@ export function useIRISWebSocket(
         setConnectionState("disconnected")
         wsRef.current = null
 
-        // Auto-reconnect with exponential backoff - longer initial delay for browser mode
+        // Clear ping/pong timers
+        if (pingTimeoutRef.current) {
+          clearTimeout(pingTimeoutRef.current)
+          pingTimeoutRef.current = null
+        }
+        if (pongTimeoutRef.current) {
+          clearTimeout(pongTimeoutRef.current)
+          pongTimeoutRef.current = null
+        }
+
+        // Auto-reconnect with exponential backoff (1s, 2s, 4s) up to 3 attempts
         if (autoConnect && reconnectAttemptsRef.current < 3) {
-          const delay = Math.min(5000 * Math.pow(2, reconnectAttemptsRef.current), 30000)
+          const delay = 1000 * Math.pow(2, reconnectAttemptsRef.current) // 1s, 2s, 4s
           reconnectAttemptsRef.current++
 
           if (process.env.NODE_ENV !== 'production') {
@@ -201,6 +235,8 @@ export function useIRISWebSocket(
           reconnectTimeoutRef.current = setTimeout(() => {
             connect()
           }, delay)
+        } else if (reconnectAttemptsRef.current >= 3) {
+          setLastError("Backend offline - running in standalone mode")
         }
       }
 
@@ -241,9 +277,50 @@ export function useIRISWebSocket(
       }
 
       case "field_updated": {
-        // Optimistic update confirmed by server
-        const { subnode_id, field_id, value } = payload as { subnode_id: string; field_id: string; value: string | number | boolean }
+        // Optimistic update confirmed by server - remove from pending updates
+        const { subnode_id, field_id, value, timestamp } = payload as { 
+          subnode_id: string; 
+          field_id: string; 
+          value: string | number | boolean;
+          timestamp?: number;
+        }
+        
         if (subnode_id && field_id !== undefined) {
+          const updateKey = `${subnode_id}:${field_id}`
+          
+          // Handle out-of-order updates using timestamps
+          if (timestamp !== undefined) {
+            // Initialize timestamp tracker if needed
+            if (!fieldTimestampsRef.current) {
+              fieldTimestampsRef.current = new Map<string, number>()
+            }
+            
+            const existingTimestamp = fieldTimestampsRef.current.get(updateKey) || 0
+            
+            // Only apply update if timestamp is newer
+            if (timestamp < existingTimestamp) {
+              // This is an out-of-order update, ignore it
+              if (process.env.NODE_ENV !== 'production') {
+                console.log(`[IRIS WebSocket] Ignoring out-of-order update for ${updateKey}: ${timestamp} < ${existingTimestamp}`)
+              }
+              return
+            }
+            
+            // Update timestamp tracker
+            fieldTimestampsRef.current.set(updateKey, timestamp)
+          }
+          
+          // Remove from pending updates (update confirmed)
+          pendingUpdatesRef.current.delete(updateKey)
+          
+          // Clear any validation error for this field
+          setFieldErrors((prev) => {
+            const newErrors = { ...prev }
+            delete newErrors[updateKey]
+            return newErrors
+          })
+          
+          // Apply the update to state
           setFieldValues((prev) => ({
             ...prev,
             [subnode_id]: {
@@ -256,8 +333,40 @@ export function useIRISWebSocket(
       }
 
       case "validation_error": {
-        console.error("[IRIS WebSocket] Validation error:", payload.error, payload.field_id)
-        setLastError(typeof payload.error === 'string' ? payload.error : null)
+        // Revert optimistic update on validation error
+        const { field_id, subnode_id, error } = payload as { field_id?: string; subnode_id?: string; error: string }
+        
+        console.error("[IRIS WebSocket] Validation error:", error, field_id)
+        setLastError(typeof error === 'string' ? error : null)
+        
+        // Store field-specific error message
+        if (subnode_id && field_id) {
+          const updateKey = `${subnode_id}:${field_id}`
+          setFieldErrors((prev) => ({
+            ...prev,
+            [updateKey]: typeof error === 'string' ? error : 'Validation failed',
+          }))
+          
+          const pendingUpdate = pendingUpdatesRef.current.get(updateKey)
+          
+          if (pendingUpdate) {
+            // Revert to previous value
+            setFieldValues((prev) => ({
+              ...prev,
+              [subnode_id]: {
+                ...prev[subnode_id] || {},
+                [field_id]: pendingUpdate.previousValue,
+              },
+            }))
+            
+            // Remove from pending updates
+            pendingUpdatesRef.current.delete(updateKey)
+            
+            if (process.env.NODE_ENV !== 'production') {
+              console.log(`[IRIS WebSocket] Reverted field ${subnode_id}.${field_id} to previous value:`, pendingUpdate.previousValue)
+            }
+          }
+        }
         break
       }
 
@@ -292,13 +401,30 @@ export function useIRISWebSocket(
 
       case "listening_state": {
         if (payload.state) {
-          setVoiceState(payload.state as VoiceState)
+          const newState = payload.state as VoiceState
+          setVoiceState(newState)
+          // Reset audio level when leaving listening state
+          if (newState !== "listening") {
+            setAudioLevel(0)
+          }
+        }
+        break
+      }
+
+      case "audio_level": {
+        // Audio level update during listening
+        if (typeof payload.level === 'number') {
+          setAudioLevel(payload.level)
         }
         break
       }
 
       case "pong": {
-        // Keep-alive response, no action needed
+        // Keep-alive response received, clear pong timeout
+        if (pongTimeoutRef.current) {
+          clearTimeout(pongTimeoutRef.current)
+          pongTimeoutRef.current = null
+        }
         break
       }
 
@@ -444,7 +570,20 @@ export function useIRISWebSocket(
   }, [sendMessage])
 
   const updateField = useCallback((subnodeId: string, fieldId: string, value: string | number | boolean) => {
-    // Optimistic local update
+    // Store previous value for potential revert on validation error
+    const updateKey = `${subnodeId}:${fieldId}`
+    const previousValue = fieldValues[subnodeId]?.[fieldId]
+    
+    // Only track if we have a previous value (not first time setting)
+    if (previousValue !== undefined) {
+      pendingUpdatesRef.current.set(updateKey, {
+        subnodeId,
+        fieldId,
+        previousValue,
+      })
+    }
+    
+    // Optimistic local update - update UI immediately
     setFieldValues((prev) => ({
       ...prev,
       [subnodeId]: {
@@ -453,9 +592,9 @@ export function useIRISWebSocket(
       },
     }))
 
-    // Send to server
+    // Send to server for validation and persistence
     sendMessage("field_update", { subnode_id: subnodeId, field_id: fieldId, value })
-  }, [sendMessage])
+  }, [sendMessage, fieldValues])
 
   const confirmMiniNode = useCallback((subnodeId: string, values: Record<string, string | number | boolean>) => {
     sendMessage("confirm_mini_node", { subnode_id: subnodeId, values })
@@ -503,6 +642,25 @@ export function useIRISWebSocket(
     sendMessage("reload_skills", {})
   }, [sendMessage])
 
+  // Voice command methods
+  const startVoiceCommand = useCallback(() => {
+    sendMessage("voice_command_start", {})
+  }, [sendMessage])
+
+  const endVoiceCommand = useCallback(() => {
+    sendMessage("voice_command_end", {})
+  }, [sendMessage])
+
+  // Clear field error
+  const clearFieldError = useCallback((subnodeId: string, fieldId: string) => {
+    const updateKey = `${subnodeId}:${fieldId}`
+    setFieldErrors((prev) => {
+      const newErrors = { ...prev }
+      delete newErrors[updateKey]
+      return newErrors
+    })
+  }, [])
+
   // Initialize connection
   useEffect(() => {
     if (autoConnect) {
@@ -512,15 +670,38 @@ export function useIRISWebSocket(
     return cleanup
   }, [autoConnect, connect, cleanup])
 
-  // Keep-alive ping
+  // Keep-alive ping with pong timeout
   useEffect(() => {
     if (!isConnected) return
 
-    const interval = setInterval(() => {
+    const sendPing = () => {
       sendMessage("ping", {})
-    }, 30000) // Ping every 30 seconds
+      
+      // Set pong timeout (5 seconds)
+      pongTimeoutRef.current = setTimeout(() => {
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn("[IRIS WebSocket] Pong timeout - connection may be lost")
+        }
+        // Close connection to trigger reconnect
+        if (wsRef.current) {
+          wsRef.current.close()
+        }
+      }, 5000)
+    }
 
-    return () => clearInterval(interval)
+    // Send initial ping
+    sendPing()
+
+    // Ping every 30 seconds
+    const interval = setInterval(sendPing, 30000)
+
+    return () => {
+      clearInterval(interval)
+      if (pongTimeoutRef.current) {
+        clearTimeout(pongTimeoutRef.current)
+        pongTimeoutRef.current = null
+      }
+    }
   }, [isConnected, sendMessage])
 
   return {
@@ -533,6 +714,7 @@ export function useIRISWebSocket(
     currentCategory,
     currentSubnode,
     voiceState,
+    audioLevel,
     lastTextResponse,
     // Agent state
     agentStatus,
@@ -550,7 +732,12 @@ export function useIRISWebSocket(
     executeTool,
     clearChat,
     reloadSkills,
+    // Voice actions
+    startVoiceCommand,
+    endVoiceCommand,
     sendMessage,
     lastError,
+    fieldErrors,
+    clearFieldError,
   }
 }

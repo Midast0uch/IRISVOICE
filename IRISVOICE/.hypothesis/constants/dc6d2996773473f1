@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\multiprocessing\_atfork.py
+# hypothesis_version: 6.151.9
+
+['register_after_fork', 'win32']

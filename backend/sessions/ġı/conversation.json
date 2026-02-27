@@ -1,0 +1,80 @@
+{
+  "session_id": "\u0121\u0131",
+  "session_start": 1772159994.3926115,
+  "last_updated": 1772159994.4044673,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Create a new file",
+      "timestamp": 1772159994.3926115,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Tell me about artificial intelligence",
+      "timestamp": 1772159994.3936121,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "G\u015c\u2107\u00ff",
+      "timestamp": 1772159994.3946123,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772159994.3956125,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772159994.396612,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Open the browser",
+      "timestamp": 1772159994.397754,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Create a new file",
+      "timestamp": 1772159994.3987563,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772159994.403429,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159994.4044673,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

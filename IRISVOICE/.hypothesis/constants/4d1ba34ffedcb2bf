@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\text_to_audio.py
+# hypothesis_version: 6.151.9
+
+[256, '[', 'add_special_tokens', 'assistant_model', 'assistant_tokenizer', 'audio', 'bark', 'codec_config', 'cpu', 'csm', 'dia', 'feature_extractor', 'forward_params', 'generate_kwargs', 'generation_config', 'max_length', 'musicgen', 'output_audio', 'pt', 'sample_rate', 'sampling_rate', 'semantic_config', 'sequences', 'speecht5', 'tokenizer']

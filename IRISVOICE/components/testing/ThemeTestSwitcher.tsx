@@ -19,28 +19,44 @@ const INTENSITY_CONFIG: Record<TestIntensity, IntensityConfig> = {
 }
 
 export function ThemeTestSwitcher() {
-  const { theme, setTheme, getThemeConfig, brandColor, setHue, setSaturation, setLightness } = useBrandColor()
+  const {
+    theme, setTheme, getThemeConfig, brandColor, setHue, setSaturation, setLightness,
+    basePlateColor, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness
+  } = useBrandColor()
 
   const [isExpanded, setIsExpanded] = useState(true)
   const [intensity, setIntensity] = useState<TestIntensity>("medium")
   const [isMounted, setIsMounted] = useState(false)
-  
+
   // Color adjustment state
   const [customHue, setCustomHue] = useState(brandColor.hue)
   const [customSat, setCustomSat] = useState(brandColor.saturation)
   const [customLight, setCustomLight] = useState(brandColor.lightness)
+
+  // Base Plate adjustment state
+  const [customBaseHue, setCustomBaseHue] = useState(basePlateColor.hue)
+  const [customBaseSat, setCustomBaseSat] = useState(basePlateColor.saturation)
+  const [customBaseLight, setCustomBaseLight] = useState(basePlateColor.lightness)
+
   const [showColorAdjust, setShowColorAdjust] = useState(false)
 
   useEffect(() => {
     setIsMounted(true)
   }, [])
-  
+
   // Sync with brandColor changes
   useEffect(() => {
     setCustomHue(brandColor.hue)
     setCustomSat(brandColor.saturation)
     setCustomLight(brandColor.lightness)
   }, [brandColor])
+
+  // Sync with basePlateColor changes
+  useEffect(() => {
+    setCustomBaseHue(basePlateColor.hue)
+    setCustomBaseSat(basePlateColor.saturation)
+    setCustomBaseLight(basePlateColor.lightness)
+  }, [basePlateColor])
 
   const currentTheme = getThemeConfig()
   const themes: ThemeType[] = ['aether', 'ember', 'aurum', 'verdant']
@@ -52,16 +68,16 @@ export function ThemeTestSwitcher() {
     if (t === "aether") setIntensity("medium")
     if (t === "verdant") setIntensity("medium")
   }
-  
+
   const applyCustomColors = () => {
     setHue(customHue)
     setSaturation(customSat)
     setLightness(customLight)
   }
-  
+
   const copyColorSpecs = () => {
     const specs = `hue: ${Math.round(customHue)}, saturation: ${Math.round(customSat)}, lightness: ${Math.round(customLight)}`
-    
+
     // Try clipboard API first, fallback to console if blocked
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -87,32 +103,29 @@ export function ThemeTestSwitcher() {
   return (
     <motion.div
       className="fixed z-[9999] pointer-events-auto"
-      style={{ top: 24, left: 24 }}
+      style={{ bottom: 24, left: "50%", x: "-50%" }}
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       onClick={(e) => {
         e.stopPropagation()
-        e.preventDefault()
       }}
       onMouseDown={(e) => {
         e.stopPropagation()
-        e.preventDefault()
       }}
       onPointerDown={(e) => {
         e.stopPropagation()
-        e.preventDefault()
       }}
     >
       <AnimatePresence mode="wait">
         {!isExpanded ? (
           <motion.button
             key="collapsed"
-            onClick={(e) => { 
-              e.stopPropagation() 
-              setIsExpanded(true) 
+            onClick={(e) => {
+              e.stopPropagation()
+              setIsExpanded(true)
             }}
             className="flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-xl border border-white/10 shadow-2xl"
-            style={{ 
+            style={{
               background: `linear-gradient(135deg, ${currentTheme.gradient.from}30, ${currentTheme.gradient.to}20)`,
               borderColor: `${currentTheme.shimmer.primary}40`,
             }}
@@ -120,12 +133,12 @@ export function ThemeTestSwitcher() {
             whileTap={{ scale: 0.95 }}
             exit={{ opacity: 0, scale: 0.9 }}
           >
-            <div 
+            <div
               className="w-3 h-3 rounded-full"
-              style={{ 
+              style={{
                 background: currentTheme.shimmer.primary,
                 boxShadow: `0 0 8px ${currentTheme.shimmer.primary}`,
-              }} 
+              }}
             />
             <span className="text-xs font-medium text-white/90 uppercase tracking-wider">
               {currentTheme.name}
@@ -136,7 +149,7 @@ export function ThemeTestSwitcher() {
           <motion.div
             key="expanded"
             className="w-72 rounded-2xl backdrop-blur-xl border border-white/10 shadow-2xl overflow-hidden"
-            style={{ 
+            style={{
               background: `linear-gradient(180deg, rgba(10,10,15,0.95) 0%, rgba(5,5,10,0.98) 100%)`,
               borderColor: `${currentTheme.shimmer.primary}30`,
             }}
@@ -145,7 +158,7 @@ export function ThemeTestSwitcher() {
             exit={{ opacity: 0, scale: 0.95 }}
           >
             {/* Header */}
-            <div 
+            <div
               className="flex items-center justify-between px-4 py-3 border-b"
               style={{ borderColor: `${currentTheme.shimmer.primary}20` }}
             >
@@ -157,9 +170,9 @@ export function ThemeTestSwitcher() {
                 </div>
               </div>
               <button
-                onClick={(e) => { 
-                  e.stopPropagation() 
-                  setIsExpanded(false) 
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setIsExpanded(false)
                 }}
                 className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
               >
@@ -172,22 +185,21 @@ export function ThemeTestSwitcher() {
               {themes.map((t) => {
                 const themeConfig = PRISM_THEMES[t]
                 const isSelected = theme === t
-                
+
                 return (
                   <motion.button
                     key={t}
-                    onClick={(e) => { 
-                      e.stopPropagation() 
-                      handleThemeSelect(t) 
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleThemeSelect(t)
                     }}
-                    className={`relative p-3 rounded-xl border transition-all text-left ${
-                      isSelected ? 'border-white/30 bg-white/10' : 'border-white/5 hover:border-white/20 hover:bg-white/5'
-                    }`}
+                    className={`relative p-3 rounded-xl border transition-all text-left ${isSelected ? 'border-white/30 bg-white/10' : 'border-white/5 hover:border-white/20 hover:bg-white/5'
+                      }`}
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                   >
                     {/* Theme Preview - Gradient Background */}
-                    <div 
+                    <div
                       className="w-full h-14 rounded-lg mb-2 relative overflow-hidden"
                       style={{
                         background: `linear-gradient(${themeConfig.gradient.angle}deg, ${themeConfig.gradient.from}, ${themeConfig.gradient.to})`,
@@ -204,12 +216,12 @@ export function ThemeTestSwitcher() {
                         transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
                       />
                     </div>
-                    
+
                     {/* Theme Name */}
                     <div className="text-xs font-medium text-white/90 mb-0.5">
                       {themeConfig.name}
                     </div>
-                    
+
                     {/* Mood */}
                     <div className="text-[9px] text-white/50 leading-tight">
                       {themeConfig.mood}
@@ -234,13 +246,12 @@ export function ThemeTestSwitcher() {
                 {(['subtle', 'medium', 'strong'] as TestIntensity[]).map((i) => (
                   <button
                     key={i}
-                    onClick={(e) => { 
-                      e.stopPropagation() 
-                      setIntensity(i) 
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setIntensity(i)
                     }}
-                    className={`flex-1 py-1.5 text-[10px] rounded-md transition-all ${
-                      intensity === i ? 'bg-white/20 text-white font-medium' : 'text-white/50 hover:text-white/70'
-                    }`}
+                    className={`flex-1 py-1.5 text-[10px] rounded-md transition-all ${intensity === i ? 'bg-white/20 text-white font-medium' : 'text-white/50 hover:text-white/70'
+                      }`}
                   >
                     {INTENSITY_CONFIG[i].label}
                   </button>
@@ -268,6 +279,11 @@ export function ThemeTestSwitcher() {
                   className="px-3 pb-3 space-y-2 overflow-hidden"
                   onClick={(e) => e.stopPropagation()}
                 >
+                  {/* Brand Color Section */}
+                  <div className="pt-1 pb-1 border-b border-white/5 mb-2">
+                    <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Brand Color</span>
+                  </div>
+
                   {/* Hue */}
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px] text-white/60">
@@ -279,23 +295,18 @@ export function ThemeTestSwitcher() {
                       min="0"
                       max="360"
                       value={customHue}
-                      onChange={(e) => { 
-                        e.stopPropagation(); 
+                      onChange={(e) => {
+                        e.stopPropagation();
                         const val = Number(e.target.value);
                         setCustomHue(val);
                         setHue(val);
-                        console.log('[ThemeAdjust] Hue:', val);
                       }}
-                      onMouseUp={(e) => { e.stopPropagation(); applyCustomColors() }}
-                      onPointerUp={(e) => { e.stopPropagation(); applyCustomColors() }}
                       onMouseDown={(e) => e.stopPropagation()}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
                       className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer"
                       style={{ background: `linear-gradient(to right, hsl(0,100%,50%), hsl(60,100%,50%), hsl(120,100%,50%), hsl(180,100%,50%), hsl(240,100%,50%), hsl(300,100%,50%), hsl(360,100%,50%))` }}
                     />
                   </div>
-                  
+
                   {/* Saturation */}
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px] text-white/60">
@@ -307,22 +318,17 @@ export function ThemeTestSwitcher() {
                       min="0"
                       max="100"
                       value={customSat}
-                      onChange={(e) => { 
-                        e.stopPropagation(); 
+                      onChange={(e) => {
+                        e.stopPropagation();
                         const val = Number(e.target.value);
                         setCustomSat(val);
                         setSaturation(val);
-                        console.log('[ThemeAdjust] Saturation:', val);
                       }}
-                      onMouseUp={(e) => { e.stopPropagation(); applyCustomColors() }}
-                      onPointerUp={(e) => { e.stopPropagation(); applyCustomColors() }}
                       onMouseDown={(e) => e.stopPropagation()}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
                       className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer"
                     />
                   </div>
-                  
+
                   {/* Lightness */}
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px] text-white/60">
@@ -334,18 +340,85 @@ export function ThemeTestSwitcher() {
                       min="0"
                       max="100"
                       value={customLight}
-                      onChange={(e) => { 
-                        e.stopPropagation(); 
+                      onChange={(e) => {
+                        e.stopPropagation();
                         const val = Number(e.target.value);
                         setCustomLight(val);
                         setLightness(val);
-                        console.log('[ThemeAdjust] Lightness:', val);
                       }}
-                      onMouseUp={(e) => { e.stopPropagation(); applyCustomColors() }}
-                      onPointerUp={(e) => { e.stopPropagation(); applyCustomColors() }}
                       onMouseDown={(e) => e.stopPropagation()}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
+                      className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Base Plate Color Section */}
+                  <div className="pt-2 pb-1 border-b border-white/5 mb-2">
+                    <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Base Plate Color</span>
+                  </div>
+
+                  {/* Base Hue */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] text-white/60">
+                      <span>Hue</span>
+                      <span>{Math.round(customBaseHue)}°</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="360"
+                      value={customBaseHue}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        const val = Number(e.target.value);
+                        setCustomBaseHue(val);
+                        setBasePlateHue(val);
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer"
+                      style={{ background: `linear-gradient(to right, hsl(0,100%,50%), hsl(60,100%,50%), hsl(120,100%,50%), hsl(180,100%,50%), hsl(240,100%,50%), hsl(300,100%,50%), hsl(360,100%,50%))` }}
+                    />
+                  </div>
+
+                  {/* Base Saturation */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] text-white/60">
+                      <span>Saturation</span>
+                      <span>{Math.round(customBaseSat)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={customBaseSat}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        const val = Number(e.target.value);
+                        setCustomBaseSat(val);
+                        setBasePlateSaturation(val);
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Base Lightness */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] text-white/60">
+                      <span>Lightness</span>
+                      <span>{Math.round(customBaseLight)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={customBaseLight}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        const val = Number(e.target.value);
+                        setCustomBaseLight(val);
+                        setBasePlateLightness(val);
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
                       className="w-full h-1 bg-white/20 rounded-full appearance-none cursor-pointer"
                     />
                   </div>
@@ -358,10 +431,11 @@ export function ThemeTestSwitcher() {
                     <Copy className="w-3 h-3" />
                     Copy Color Specs
                   </button>
-                  
+
                   {/* Current Values Display */}
-                  <div className="text-[9px] text-white/40 font-mono text-center pt-1">
-                    hue: {Math.round(customHue)}, sat: {Math.round(customSat)}, light: {Math.round(customLight)}
+                  <div className="text-[9px] text-white/40 font-mono text-center pt-1 space-y-0.5">
+                    <div>brand: {Math.round(customHue)},{Math.round(customSat)},{Math.round(customLight)}</div>
+                    <div>plate: {Math.round(customBaseHue)},{Math.round(customBaseSat)},{Math.round(customBaseLight)}</div>
                   </div>
                 </motion.div>
               )}

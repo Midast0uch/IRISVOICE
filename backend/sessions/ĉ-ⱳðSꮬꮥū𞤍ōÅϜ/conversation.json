@@ -1,0 +1,24 @@
+{
+  "session_id": "\u0109-\u2c73\u00f0S\uabac\uaba5\u016b\ud83a\udd0d\u014d\u00c5\u03dc",
+  "session_start": 1772076086.855804,
+  "last_updated": 1772076086.8569431,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Show me the logs",
+      "timestamp": 1772076086.8562431,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Generate consistent response",
+      "timestamp": 1772076086.8569338,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

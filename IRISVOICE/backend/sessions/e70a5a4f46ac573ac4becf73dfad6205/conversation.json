@@ -1,0 +1,16 @@
+{
+  "session_id": "e70a5a4f46ac573ac4becf73dfad6205",
+  "session_start": 1772156400.2841756,
+  "last_updated": 1772156400.2845483,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "\u00de\ud8e3\udec0X[\u00a9s\udaa1\udc81\u00ce\u0087\u0086\u00b3\u00ff\u0010N\u0082+\u0089\u0005",
+      "timestamp": 1772156400.284537,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

@@ -581,11 +581,83 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
       icon: 'Palette',
       fields: [
         {
-          id: 'theme_mode',
+          id: 'section_base',
+          type: 'section',
+          label: 'Theme Engine'
+        },
+        {
+          id: 'active_theme',
           type: 'dropdown',
-          label: 'Mode',
-          options: ['Dark', 'Light', 'Auto'],
-          defaultValue: 'Dark'
+          label: 'Active Theme',
+          options: ['Aether', 'Ember', 'Aurum', 'Verdant'],
+          defaultValue: 'Aether'
+        },
+        {
+          id: 'reset_to_defaults',
+          type: 'custom',
+          label: 'Reset to Defaults'
+        },
+        {
+          id: 'section_brand',
+          type: 'section',
+          label: 'Brand Identity'
+        },
+        {
+          id: 'brand_hue',
+          type: 'slider',
+          label: 'Hue',
+          min: 0,
+          max: 360,
+          defaultValue: 210
+        },
+        {
+          id: 'brand_saturation',
+          type: 'slider',
+          label: 'Saturation',
+          min: 0,
+          max: 100,
+          unit: '%',
+          defaultValue: 40
+        },
+        {
+          id: 'brand_lightness',
+          type: 'slider',
+          label: 'Lightness',
+          min: 0,
+          max: 100,
+          unit: '%',
+          defaultValue: 55
+        },
+        {
+          id: 'section_plate',
+          type: 'section',
+          label: 'Base Plate'
+        },
+        {
+          id: 'base_plate_hue',
+          type: 'slider',
+          label: 'Hue',
+          min: 0,
+          max: 360,
+          defaultValue: 220
+        },
+        {
+          id: 'base_plate_saturation',
+          type: 'slider',
+          label: 'Saturation',
+          min: 0,
+          max: 100,
+          unit: '%',
+          defaultValue: 15
+        },
+        {
+          id: 'base_plate_lightness',
+          type: 'slider',
+          label: 'Lightness',
+          min: 0,
+          max: 100,
+          unit: '%',
+          defaultValue: 12
         }
       ]
     },

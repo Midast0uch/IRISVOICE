@@ -96,5 +96,90 @@ class ModelRouter:
         """Check if at least one model is available."""
         return len(self.models) > 0
 
+    def route_message(self, message: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """Route a message to the appropriate model based on task type.
+        
+        Args:
+            message: The message/query to route
+            context: Optional context dictionary with hints about task type
+                    - requires_reasoning: bool - if True, route to reasoning model
+                    - requires_tools: bool - if True, route to execution model
+        
+        Returns:
+            The model_id to use for this message
+            
+        Routing Logic:
+            - Tool execution requests → execution model (lfm2.5-1.2b-instruct)
+            - Planning and reasoning → reasoning model (lfm2-8b)
+            - Simple queries → reasoning model (lfm2-8b)
+        """
+        context = context or {}
+        
+        # Check explicit context hints first
+        if context.get("requires_tools", False):
+            # Route to execution model
+            model = self.get_model("tool_execution")
+            if model:
+                return model.model_id
+        
+        if context.get("requires_reasoning", False):
+            # Route to reasoning model
+            model = self.get_model("reasoning")
+            if model:
+                return model.model_id
+        
+        # Detect tool execution patterns in the message
+        if self._is_tool_execution(message):
+            model = self.get_model("tool_execution")
+            if model:
+                return model.model_id
+        
+        # Default to reasoning model for planning and general queries
+        model = self.get_model("reasoning")
+        if model:
+            return model.model_id
+        
+        # Fallback: return any available model
+        if self.models:
+            return list(self.models.keys())[0]
+        
+        raise RuntimeError("No models available for routing")
+    
+    def _is_tool_execution(self, message: str) -> bool:
+        """Detect if a message requires tool execution.
+        
+        Looks for patterns that indicate tool/action execution:
+        - Tool call syntax
+        - Action keywords
+        - Execution commands
+        """
+        message_lower = message.lower()
+        
+        # Tool execution indicators
+        tool_indicators = [
+            "execute",
+            "run",
+            "call",
+            "invoke",
+            "perform",
+            "action:",
+            "tool:",
+            "function:",
+            "<tool>",
+            "</tool>",
+            "use tool",
+            "apply",
+        ]
+        
+        return any(indicator in message_lower for indicator in tool_indicators)
+
+    def get_reasoning_model(self) -> Optional[ModelWrapper]:
+        """Get the reasoning model (lfm2-8b)."""
+        return self.get_model("reasoning")
+    
+    def get_execution_model(self) -> Optional[ModelWrapper]:
+        """Get the execution model (lfm2.5-1.2b-instruct)."""
+        return self.get_model("tool_execution")
+
     def __repr__(self):
         return f"<ModelRouter(models={list(self.models.keys())}, ready={self.is_ready()})>"

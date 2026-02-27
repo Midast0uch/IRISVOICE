@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\lfm_audio_manager.py
+# hypothesis_version: 6.151.9
+
+[32768.0, 16000, 32767, '1', 'LFMAudioManager', 'audio', 'cpu', 'cuda', 'device', 'error', 'lfm_model_path', 'on_audio_response', 'on_error', 'on_status_change', 'openai/whisper-base', 'processing', 'ready', 'text', 'text-to-speech', 'wb']

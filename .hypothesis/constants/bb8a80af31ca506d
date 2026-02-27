@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\faster_rcnn.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.05, 0.224, 0.225, 0.229, 0.25, 0.3, 0.406, 0.456, 0.485, 0.5, 0.7, 0.719, 1.0, 2.0, 4.494, 22.8, 32.8, 37.0, 46.7, 74.239, 134.38, 159.743, 167.104, 280.371, 100, 128, 150, 256, 320, 512, 640, 800, 1000, 1024, 1333, 2000, 19386354, 41755286, 43712278, '0', '1', '2', '3', 'COCO-val2017', 'FasterRCNN', '_docs', '_file_size', '_metrics', '_ops', 'box_map', 'categories', 'fan_out', 'max_size', 'min_size', 'num_classes', 'num_params', 'out_channels', 'pretrained', 'pretrained_backbone', 'recipe', 'relu', 'rpn_score_thresh']

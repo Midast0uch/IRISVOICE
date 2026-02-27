@@ -1,0 +1,40 @@
+{
+  "session_id": "\u015dM\u0177m\u00f8",
+  "session_start": 1772159974.7568119,
+  "last_updated": 1772160417.9773166,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772159974.7577827,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772159974.7587829,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772160417.9752445,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160417.977258,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

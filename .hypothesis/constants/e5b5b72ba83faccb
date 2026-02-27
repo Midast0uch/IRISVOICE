@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\ops\feature_pyramid_network.py
+# hypothesis_version: 6.151.9
+
+['bias', 'inner_blocks', 'layer_blocks', 'nearest', 'p6', 'p7', 'pool', 'version', 'weight']

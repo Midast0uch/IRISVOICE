@@ -1,0 +1,88 @@
+{
+  "session_id": "793c6e7a-86b7-8dca-18d8-fbc90f0c8cf5",
+  "session_start": 1772159995.6439302,
+  "last_updated": 1772160445.3817658,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What are the best practices for coding?",
+      "timestamp": 1772160445.3506558,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Deploy the application",
+      "timestamp": 1772160445.3536067,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "J\u0128\u1bb4\u0171\u0152l\u07c96\ud835\udf2c\u0173\u0153\u00ff\ud835\udd55\u0126",
+      "timestamp": 1772160445.3578227,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Run the tests",
+      "timestamp": 1772160445.3633718,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Deploy the application",
+      "timestamp": 1772160445.366318,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Search for information about Python",
+      "timestamp": 1772160445.369159,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u0127?\ud801\udda9\u0113\u0131\u0145\u056e\ud835\udeb9\u0165\u0165Gi,\u0115\u2cc4,",
+      "timestamp": 1772160445.3721147,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00f6\ud835\ude0f\u0107\u0108\ud807\udda8",
+      "timestamp": 1772160445.3756266,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Tell me about artificial intelligence",
+      "timestamp": 1772160445.3787873,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160445.3817136,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

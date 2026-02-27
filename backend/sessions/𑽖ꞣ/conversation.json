@@ -1,0 +1,16 @@
+{
+  "session_id": "\ud807\udf56\ua7a3",
+  "session_start": 1772161088.9072204,
+  "last_updated": 1772161088.908159,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772161088.9081006,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

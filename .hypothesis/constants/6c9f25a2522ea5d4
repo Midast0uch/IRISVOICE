@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\utils\megatron_lm.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.5, 1.0, 100.0, -100, 1000, '-', 'BertTrainStep', 'GPTTrainStep', 'Preparing dataloader', 'Preparing optimizer', 'Preparing scheduler', 'T5TrainStep', '_num_iters', 'add_BOS', 'attention_mask', 'batch_sampler', 'batch_size', 'bert', 'binary_head', 'data_prefix', 'dataset_type', 'dec_mask', 'decoder_input_ids', 'enc_dec_mask', 'enc_mask', 'fine-tuning', 'gpt', 'input_ids', 'is_random', 'labels', 'lm loss', 'logits', 'loss', 'loss_mask', 'lr', 'max_seq_length', 'max_seq_length_dec', 'model_len', 'next_sentence_label', 'padded_vocab_size', 'padding_mask', 'pre-training', 'random_seed', 'sampler', 'seed', 'shuffle', 'sop loss', 'splits_string', 'stop_token', 't5', 'text', 'text_dec', 'text_enc', 'token_type_ids', 'top_p_bound', 'top_p_decay', 'types', 'use_checkpoint_args']

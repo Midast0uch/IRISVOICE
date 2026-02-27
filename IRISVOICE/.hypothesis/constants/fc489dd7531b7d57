@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\integrations\hqq.py
+# hypothesis_version: 6.151.9
+
+['.', 'W_q', 'layers', 'meta', 'model', 'quant_config', 'quant_method', 'skip_modules']

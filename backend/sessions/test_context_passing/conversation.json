@@ -1,0 +1,40 @@
+{
+  "session_id": "test_context_passing",
+  "session_start": 1772160492.4604237,
+  "last_updated": 1772160924.8402479,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Previous context message",
+      "timestamp": 1772160492.4604237,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Previous response",
+      "timestamp": 1772160492.4614208,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Previous context message",
+      "timestamp": 1772160924.8392272,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Previous response",
+      "timestamp": 1772160924.840232,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

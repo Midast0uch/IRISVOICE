@@ -23,7 +23,7 @@ class SessionConfig:
     last_accessed: datetime
     max_memory_mb: int = 100  # Default 100MB per session
     max_state_size_kb: int = 1024  # Default 1MB state size
-    idle_timeout_minutes: int = 30  # Session timeout
+    idle_timeout_minutes: int = 1440  # Session timeout (24 hours = 1440 minutes)
     is_persistent: bool = False  # Whether to persist after disconnect
 
 
@@ -116,7 +116,7 @@ class SessionManager:
             last_accessed=datetime.now(),
             max_memory_mb=100,
             max_state_size_kb=1024,
-            idle_timeout_minutes=30,
+            idle_timeout_minutes=1440,  # 24 hours
             is_persistent=False
         )
     
@@ -151,6 +151,20 @@ class SessionManager:
         """Gracefully shutdown the session manager and its background tasks."""
         await self.stop()
     
+    async def archive_inactive_sessions(self) -> List[str]:
+        """
+        Archive sessions that have been inactive for 24 hours.
+        Returns list of archived session IDs.
+        """
+        archived_sessions = []
+        
+        for session_id, session in list(self.sessions.items()):
+            if session.is_expired() or session.cleanup_scheduled:
+                archived_sessions.append(session_id)
+                await self._cleanup_session(session_id)
+        
+        return archived_sessions
+    
     async def create_session(self, session_id: Optional[str] = None, config: Optional[SessionConfig] = None) -> str:
         """Create a new session with optional custom configuration"""
         if session_id is None:
@@ -174,8 +188,9 @@ class SessionManager:
         session = IRISession(session_id, config)
         self.sessions[session_id] = session
         
-        # Initialize the session's state manager
-        await session.state_manager.initialize()
+        # Initialize the session's state manager with persistence directory
+        persistence_dir = f"backend/sessions/{session_id}"
+        await session.state_manager.initialize(persistence_dir)
         
         return session_id
     

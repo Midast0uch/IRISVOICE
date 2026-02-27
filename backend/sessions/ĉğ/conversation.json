@@ -1,0 +1,16 @@
+{
+  "session_id": "\u0109\u011f",
+  "session_start": 1772161089.5606055,
+  "last_updated": 1772161089.5616615,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772161089.5616226,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

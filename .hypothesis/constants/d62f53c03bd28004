@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\text_classification.py
+# hypothesis_version: 6.151.9
+
+[1.0, '_legacy', 'function_to_apply', 'label', 'logits', 'none', 'pt', 'regression', 'score', 'sigmoid', 'softmax', 'top_k', 'use_cache']

@@ -1,0 +1,16 @@
+{
+  "session_id": "b50cc75494fb629dc9ff4d0975f44336",
+  "session_start": 1772156401.6082428,
+  "last_updated": 1772156401.6088595,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "\u000e\u00d6\u00b4\ud9c1\udc31i\udb06\udc05d\u00aa\b\u00e0*\u9e13\ud8c5\udd2a\u00catf\u00ac\ud9d9\udff7\u0006\u00e2\udb5d\udf5c\u00d7\u00f6#\u00e6",
+      "timestamp": 1772156401.608842,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

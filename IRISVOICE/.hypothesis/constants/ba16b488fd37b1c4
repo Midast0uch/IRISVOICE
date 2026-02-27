@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\tts.py
+# hypothesis_version: 6.151.9
+
+[0.2, 1.0, 32768.0, 175, 16000, 24000, '.wav', 'Alloy', 'Built-in', 'Echo', 'Fable', 'LiquidAI', 'Nova', 'Onyx', 'Shimmer', 'TTSManager', 'available_voices', 'config', 'current_voice', 'pause_duration', 'pitch_adjustment', 'rate', 'speaking_rate', 'tts-1', 'tts_voice', 'voice_cloning_path', 'volume']

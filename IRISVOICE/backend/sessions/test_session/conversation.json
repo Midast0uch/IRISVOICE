@@ -1,0 +1,88 @@
+{
+  "session_id": "test_session",
+  "session_start": 1772155575.5877824,
+  "last_updated": 1772155841.1412528,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "\u00e4\u00f6\u0097B\u00aa\u00e7i\ud895\ude20\u00c1-\u0018",
+      "timestamp": 1772155840.602665,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "$\u001fjL\ud9d7\udd8d\u0087\u00fci\u00b3\u00d1",
+      "timestamp": 1772155840.6195009,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "e7",
+      "timestamp": 1772155840.6303303,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "D\u00bf",
+      "timestamp": 1772155840.644347,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00ad\u00e2",
+      "timestamp": 1772155840.6575854,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u0087\udb11\udc3b\u00b5\u00b7\u0015\u00c42\nU\udbe7\udd6d\u00fa",
+      "timestamp": 1772155840.670616,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\udb86\udee6\u00c6\u001af\u001d\u00cb{\udafc\udcb5\u00da\ua405\u00d7",
+      "timestamp": 1772155840.7262623,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00ee\u00fe\ud9fd\udce6\u0098Y\u008b\ud8a9\udc99\u001e\udb37\udd27\u00d3\udb54\udd45\u00c3\u00ec",
+      "timestamp": 1772155840.7599924,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "0",
+      "timestamp": 1772155840.781644,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "test message",
+      "timestamp": 1772155841.1412427,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

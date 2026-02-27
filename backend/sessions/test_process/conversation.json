@@ -1,0 +1,88 @@
+{
+  "session_id": "test_process",
+  "session_start": 1772075711.8402672,
+  "last_updated": 1772160376.6599116,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Provide current time",
+      "timestamp": 1772075711.8753405,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is my name?",
+      "timestamp": 1772075711.8760443,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Provide current time",
+      "timestamp": 1772075711.8768017,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What time is it?",
+      "timestamp": 1772075737.505472,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Provide current time",
+      "timestamp": 1772075737.507414,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What time is it?",
+      "timestamp": 1772075769.300945,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Provide current time",
+      "timestamp": 1772075769.302149,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What time is it?",
+      "timestamp": 1772085405.600461,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Provide current time",
+      "timestamp": 1772085405.602289,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What time is it?",
+      "timestamp": 1772160376.6598923,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

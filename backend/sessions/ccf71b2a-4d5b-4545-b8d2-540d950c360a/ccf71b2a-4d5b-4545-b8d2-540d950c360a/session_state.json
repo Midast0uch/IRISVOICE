@@ -1,0 +1,30 @@
+{
+  "current_category": null,
+  "current_subnode": null,
+  "field_values": {
+    "notifications": {
+      "áRü𝜄Ǭ": 398
+    },
+    "diagnostics": {
+      "7ь": 482.0777966651881
+    },
+    "network": {
+      "ĠÏXü𝓞SÚ5ĆꙝɻWcSľwM": "𒪲Ö£򿜋JG"
+    },
+    "analytics": {
+      "0ğûÈⰇ": 741.7023567059666
+    }
+  },
+  "active_theme": {
+    "primary": "#00ff88",
+    "glow": "#00ff88",
+    "font": "#ffffff",
+    "state_colors_enabled": false,
+    "idle_color": "#00ff88",
+    "listening_color": "#00aaff",
+    "processing_color": "#a855f7",
+    "error_color": "#ff3355"
+  },
+  "confirmed_nodes": [],
+  "app_state": "starting"
+}

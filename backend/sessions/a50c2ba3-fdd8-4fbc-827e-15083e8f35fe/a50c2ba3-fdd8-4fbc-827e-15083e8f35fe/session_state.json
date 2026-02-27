@@ -1,0 +1,33 @@
+{
+  "current_category": null,
+  "current_subnode": null,
+  "field_values": {
+    "input": {
+      "ϐ": 787
+    },
+    "display": {
+      "ЁvaÍĝŗôŤŝn": -847
+    },
+    "analytics": {
+      "øŪĉæÌ": "üÝ=:"
+    },
+    "output": {
+      "𝞨Ý": false
+    },
+    "workflows": {
+      "ĪŏŪw": "`ÿh򔂈\u001cz7𺩹񏙔ñÄ\u0015"
+    }
+  },
+  "active_theme": {
+    "primary": "#00ff88",
+    "glow": "#00ff88",
+    "font": "#ffffff",
+    "state_colors_enabled": false,
+    "idle_color": "#00ff88",
+    "listening_color": "#00aaff",
+    "processing_color": "#a855f7",
+    "error_color": "#ff3355"
+  },
+  "confirmed_nodes": [],
+  "app_state": "starting"
+}

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\commands\config\config_utils.py
+# hypothesis_version: 6.151.9
+
+['<command> [<args>] ', 'AMAZON_SAGEMAKER', 'AOT_EAGER', 'AOT_TS_NVFUSER', 'CUDAGRAPHS', 'DATA_PARALLEL', 'EAGER', 'FX2TRT', 'INDUCTOR', 'IPEX', 'LOCAL_MACHINE', 'MODEL_PARALLEL', 'MSAMP', 'MULTI_CPU', 'MULTI_GPU', 'MULTI_HPU', 'MULTI_MLU', 'MULTI_MUSA', 'MULTI_NPU', 'MULTI_SDAA', 'MULTI_XPU', 'NO', 'NVPRIMS_NVFUSER', 'OFI', 'ONNXRT', 'TE', 'TENSORRT', 'TORHCHXLA_TRACE_ONCE', 'TVM', 'XLA', 'bf16', 'fp16', 'fp8', 'no', 'yes']

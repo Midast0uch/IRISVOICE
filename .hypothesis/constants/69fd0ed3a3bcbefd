@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\llvmlite\binding\config.py
+# hypothesis_version: 6.151.9
+
+['.', 'LIB', 'dynamic', 'ffi_lib_location', 'lib', 'lief_probe_status', 'linked_libraries', 'llvm_linkage_type', 'name', 'package_format', 'static']

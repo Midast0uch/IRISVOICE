@@ -1,0 +1,120 @@
+{
+  "session_id": "ced6da51ce5a06e6327028d4b4d455b3",
+  "session_start": 1772156400.6077971,
+  "last_updated": 1772156400.6191082,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "\u00c9\u00a5\udb25\ude81\u0014\u00b8=O<\udaf1\ude57",
+      "timestamp": 1772156400.6086705,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u0080\ud84b\ude19\u001c",
+      "timestamp": 1772156400.6094923,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\udba6\ude52\u00efHe\udb5d\ude6dK_\u001a\u00fc\u0019'\u00d1",
+      "timestamp": 1772156400.6102452,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\udad4\udf45\u00e1\u00fey\u00aeK\u706a\u00a5",
+      "timestamp": 1772156400.610987,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u0091\u008a",
+      "timestamp": 1772156400.611896,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\ud85f\udc2c?\u00a1\u0081\u00c3w\u009f\ud98d\udce2",
+      "timestamp": 1772156400.6126943,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00ce\u0085\udaa1\udca3",
+      "timestamp": 1772156400.6136672,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "zE",
+      "timestamp": 1772156400.6143196,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "U\udb9a\udf5eA\u00d2\u00c8%\u00ebg\u00d00\u00b9\u008d\udafc\udf2d\udaba\udead^\t\u00e9\ud9e7\udf5a\ud8a8\udf86\u00ff\u009e\u00e6\udbde\udecd(\ud923\ude3cx",
+      "timestamp": 1772156400.6152275,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "notredame_harris.zip",
+      "timestamp": 1772156400.6158543,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u00ce\u0085\udaa1\udca3",
+      "timestamp": 1772156400.6166358,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00ce\u0085\udaa1\udca3",
+      "timestamp": 1772156400.6173553,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00ab\u00e0",
+      "timestamp": 1772156400.6180472,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00e0",
+      "timestamp": 1772156400.6190977,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

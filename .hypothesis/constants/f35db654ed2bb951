@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\tensor\__init__.py
+# hypothesis_version: 6.151.9
+
+['Array', 'DenseNDimArray', 'Idx', 'Indexed', 'IndexedBase', 'NDimArray', 'SparseNDimArray', 'derive_by_array', 'get_indices', 'permutedims', 'shape', 'tensorcontraction', 'tensordiagonal', 'tensorproduct']

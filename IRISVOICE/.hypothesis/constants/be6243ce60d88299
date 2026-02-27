@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\generation\continuous_batching\input_ouputs.py
+# hypothesis_version: 6.151.9
+
+['No requests in batch', 'attention_mask', 'cache', 'cu_seq_lens_k', 'cu_seq_lens_q', 'full_attention', 'input_ids', 'logits_indices', 'max_seqlen_k', 'max_seqlen_q', 'paged|eager', 'paged|sdpa', 'position_ids', 'read_index', 'sliding_attention', 'sliding_window', 'use_cache', 'write_index']

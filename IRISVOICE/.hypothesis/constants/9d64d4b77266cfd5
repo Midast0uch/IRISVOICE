@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\mnist.py
+# hypothesis_version: 6.151.9
+
+[256, 10000, '.gz', '.pt', '0 - zero', '1 - one', '2 - two', '3 - three', '4 - four', '5 - five', '6 - six', '7 - seven', '8 - eight', '9 - nine', 'Ankle boot', 'Bag', 'Coat', 'Dress', 'L', 'N/A', 'Pullover', 'Sandal', 'Shirt', 'Sneaker', 'T-shirt/top', 'Test', 'Train', 'Trouser', 'aix', 'balanced', 'big', 'byclass', 'bymerge', 'c', 'digits', 'gzip', 'ha', 'hex', 'i', 'j', 'k', 'ki', 'l', 'letters', 'little', 'm', 'ma', 'mnist', 'na', 'nist', 'o', 'p', 'processed', 'raw', 'rb', 're', 's', 'split', 'su', 'test', 'test.pt', 'test10k', 'test50k', 'train', 'training.pt', 'tsu', 'u', 'v', 'w', 'what', 'wo', 'x', 'y', 'ya', 'z']

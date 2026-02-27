@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\model_router.py
+# hypothesis_version: 6.151.9
+
+['</tool>', '<tool>', 'action:', 'apply', 'call', 'capabilities', 'constraints', 'execute', 'function:', 'id', 'invoke', 'models', 'path', 'perform', 'r', 'reasoning', 'requires_reasoning', 'requires_tools', 'run', 'tool:', 'tool_execution', 'use tool']

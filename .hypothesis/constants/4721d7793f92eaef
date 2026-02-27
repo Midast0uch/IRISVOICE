@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\typing\bufproto.py
+# hypothesis_version: 6.151.9
+
+['=', 'A', 'C', 'F', 'Zd', 'Zf', 'bBhHiIlLqQnN', 'd', 'f', 'int%d', 'u']

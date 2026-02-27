@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 from .model_manager import ModelManager
 from .pipeline import AudioPipeline
 from backend.ws_manager import get_websocket_manager
-from backend.agent import get_unified_conversation_manager, get_lfm_audio_manager
+# Lazy import to avoid circular dependency
+# from backend.agent import get_unified_conversation_manager, get_lfm_audio_manager
 
 
 class VoiceState(str, Enum):
@@ -52,6 +53,8 @@ class AudioEngine:
         # Core components
         self.model_manager = ModelManager()
         self.pipeline: Optional[AudioPipeline] = None
+        # Lazy import to avoid circular dependency
+        from backend.agent import get_lfm_audio_manager
         self.lfm_audio_manager = get_lfm_audio_manager()
         
         # State

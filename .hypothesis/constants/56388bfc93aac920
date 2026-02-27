@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\models\tacotron2.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.1, 0.5, 1000.0, 128, 148, 256, 512, 1024, 2000, 'Tacotron2', 'inf', 'linear', 'relu', 'sigmoid', 'tanh']

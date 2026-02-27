@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\llvmlite\binding\ffi.py
+# hypothesis_version: 6.151.9
+
+['.', '<dead OutputString>', 'LLVMBlocksIterator', 'LLVMContext', 'LLVMElementIterator', 'LLVMExecutionEngine', 'LLVMGlobalsIterator', 'LLVMMemoryBuffer', 'LLVMModule', 'LLVMObjectCache', 'LLVMObjectFile', 'LLVMOperandsIterator', 'LLVMOrcLLJITRef', 'LLVMPassBuilder', 'LLVMPassManager', 'LLVMSectionIterator', 'LLVMTarget', 'LLVMTargetData', 'LLVMTargetMachine', 'LLVMType', 'LLVMTypesIterator', 'LLVMValue', 'NULL pointer', '_cfn', '_fntab', '_lib_handle', '_lock', '_ptr', 'close']

@@ -1,0 +1,16 @@
+{
+  "session_id": "\u0159\u011b\u016b\u0180\ud835\udf88\u0116\u00fc\u0521A\u0147",
+  "session_start": 1772161089.4953358,
+  "last_updated": 1772161089.4963822,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Check system status",
+      "timestamp": 1772161089.496311,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\places365.py
+# hypothesis_version: 6.151.9
+
+['/', '256', 'Small: {small}', 'Split: {split}', '_', 'challenge', 'large', 'places365_test.txt', 'places365_val.txt', 'split', 'standard', 'test', 'test_256.tar', 'test_large.tar', 'train', 'train-challenge', 'train-standard', 'val', 'val_256.tar', 'val_large.tar']

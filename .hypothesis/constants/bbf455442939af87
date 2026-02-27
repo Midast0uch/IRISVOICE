@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\personality.py
+# hypothesis_version: 6.151.9
+
+['IRIS', 'PersonalityManager', 'analytical', 'assistant_name', 'balanced', 'casual', 'comprehensive', 'concise', 'creative', 'detailed', 'empathy', 'enthusiastic', 'formal', 'formality', 'friendly', 'general', 'high', 'humor', 'identity', 'informal', 'knowledge', 'low', 'moderate', 'neutral', 'none', 'playful', 'professional', 'subtle', 'technical', 'tone', 'verbosity', 'very_formal', 'very_high', 'very_informal']

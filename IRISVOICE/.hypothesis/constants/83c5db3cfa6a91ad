@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\datasets\voxceleb1.py
+# hypothesis_version: 6.151.9
+
+[16000, '-', '.wav', '/', 'archive_name', 'checksum', 'checksums', 'dev', 'r', 'rb', 'test', 'train', 'url', 'urls', 'vox1_dev_wav.zip', 'vox1_test_wav.zip', 'wav', 'wb']

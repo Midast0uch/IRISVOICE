@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\utils\other.py
+# hypothesis_version: 6.151.9
+
+[1024.0, 29500, '(\\d+\\.\\d+\\.\\d+)', '.', '1.25.0', '2.0.0', '2.5.0', '5.5.0', '>=', 'GB', 'KB', 'Linux', 'MB', 'TB', '__class__', '__name__', '__qualname__', '__wrapped__', '_dynamo', '_orig_mod', '_original_forward', 'bytes', 'format', 'localhost', 'module', 'pt', 'weights_only']

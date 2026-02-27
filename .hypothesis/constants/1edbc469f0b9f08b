@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\llvmlite\ir\module.py
+# hypothesis_version: 6.151.9
+
+[', ', '.', '; ModuleID = "%s"', 'encoding', 'llvm.assume', 'llvm.convert.to.fp16', 'llvm.ctlz', 'llvm.cttz', 'llvm.fma', 'llvm.memcpy', 'llvm.memmove', 'llvm.memset', 'llvm.pow', 'llvm.powi', 'target triple = "%s"']

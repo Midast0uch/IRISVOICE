@@ -54,7 +54,7 @@ export function PrismNode({
   const { getThemeConfig } = useBrandColor()
   const { variants } = useTransitionVariants()
   const prefersReducedMotion = useReducedMotion()
-  
+
   // Get complete theme configuration
   const theme = getThemeConfig()
 
@@ -79,9 +79,9 @@ export function PrismNode({
   }
 
   const spiralVariants = {
-    collapsed: { 
+    collapsed: {
       ...variants.hidden,
-      x: 0, y: 0, 
+      x: 0, y: 0,
     },
     expanded: {
       ...variants.visible,
@@ -142,7 +142,7 @@ export function PrismNode({
       whileTap={{ scale: isChatActive ? 1.0 : 0.95 }}
     >
       {/* 1. Outer glow - soft radial gradient */}
-      <div 
+      <div
         className="absolute -inset-4 rounded-[2.5rem] pointer-events-none"
         style={{
           background: `radial-gradient(circle, ${theme.glow.color}${Math.round(glowOpacity * 255).toString(16).padStart(2, '0')} 0%, transparent 70%)`,
@@ -164,22 +164,77 @@ export function PrismNode({
         />
       )}
 
-      {/* 3. Main glass card container */}
+      {/* 4. LIQUID METAL RING - Phase 117: Rotation Locked */}
+      <div
+        className="absolute rounded-[2.5rem] pointer-events-none"
+        style={{
+          inset: 0,
+          border: "2px solid transparent",
+          background: `conic-gradient(from 0deg, 
+            #ffffff 0deg, 
+            ${theme.glow.color} 45deg, 
+            #101014 120deg, 
+            #ffffff 180deg, 
+            ${theme.glow.color} 225deg, 
+            #101014 300deg, 
+            #ffffff 360deg) border-box`,
+          WebkitMask: "linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0)",
+          WebkitMaskComposite: "destination-out",
+          maskComposite: "exclude",
+          filter: "drop-shadow(0 0 2px rgba(255,255,255,0.4))", // Subtle specular glint
+          zIndex: 2
+        }}
+      />
+
+      {/* 3. Main glass card container & 5. CONVEX HIGHLIGHT - Phase 118: Obsidian Glass */}
       <div
         className="relative w-full h-full flex flex-col items-center justify-center overflow-hidden"
         style={{
           borderRadius: "2.5rem",
-          background: `linear-gradient(${theme.gradient.angle}deg, ${theme.gradient.from}${Math.round(glassOpacity * 255).toString(16).padStart(2, '0')}, ${theme.gradient.to}${Math.round(glassOpacity * 255).toString(16).padStart(2, '0')})`,
-          backdropFilter: `blur(${theme.glass.blur}px)`,
-          border: `1px solid rgba(255,255,255,${theme.glass.borderOpacity})`,
-          boxShadow: `inset 0 1px 1px rgba(255,255,255,0.1), 0 4px 24px rgba(0,0,0,0.2)`,
+          background: `linear-gradient(135deg, #0a0a0c 0%, color-mix(in srgb, ${theme.glow.color}, #0a0a0c 85%) 100%)`, // Deep dark obsidian
+          boxShadow: `0 4px 12px rgba(0,0,0,0.5), inset 0 1.5px 3px rgba(255,255,255,0.25)`, // Boosted Convex Ridge
+          zIndex: 3
         }}
       >
         {/* 6. Gradient overlay for depth */}
-        <div 
+        <div
           className="absolute inset-0 rounded-[2.5rem] pointer-events-none"
           style={{
             background: `linear-gradient(135deg, ${theme.gradient.from}30 0%, transparent 50%, ${theme.gradient.to}15 100%)`,
+          }}
+        />
+
+        {/* 5.5 INTERNAL METAL SEPARATOR - Phase 120: Structural Thicken & Expansion */}
+        <div
+          className="absolute pointer-events-none"
+          style={{
+            inset: 8, // Shifting closer to edge (Phase 120)
+            borderRadius: "2.1rem", // Aligned with outer 2.5rem profile
+            border: "3px solid transparent", // Harder metallic presence
+            background: `conic-gradient(from 0deg, 
+              #ffffff 0deg, 
+              ${theme.glow.color} 45deg, 
+              #101014 120deg, 
+              #ffffff 180deg, 
+              ${theme.glow.color} 225deg, 
+              #101014 300deg, 
+              #ffffff 360deg) border-box`,
+            WebkitMask: "linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0)",
+            WebkitMaskComposite: "destination-out",
+            maskComposite: "exclude",
+            opacity: 1.0, // Full intensity for the rail
+            zIndex: 4
+          }}
+        />
+
+        {/* 5.6 CORE RECESSED WELL - Phase 120: Dynamic Internal Depth */}
+        <div
+          className="absolute pointer-events-none"
+          style={{
+            inset: 11, // Just inside the 3px metal ring
+            borderRadius: "1.9rem",
+            boxShadow: "inset 0 0 15px rgba(0,0,0,0.8)", // Dramatic internal shadow
+            zIndex: 4
           }}
         />
 
@@ -204,9 +259,9 @@ export function PrismNode({
               y: [0, -12, 8, 0],
               scale: [1, 1.15, 0.95, 1],
             }}
-            transition={{ 
-              duration: 8 + i * 2, 
-              repeat: Infinity, 
+            transition={{
+              duration: 8 + i * 2,
+              repeat: Infinity,
               ease: "easeInOut",
               delay: i * 0.5
             }}
@@ -231,24 +286,24 @@ export function PrismNode({
           />
         )} */}
 
-        {/* 8. Content: Icon + Label */}
+        {/* 8. Content: Icon + Label - Phase 119: Micro-Scale */}
         <motion.div
-          className="relative z-10 flex flex-col items-center justify-center gap-2 pointer-events-none"
+          className="relative z-10 flex flex-col items-center justify-center gap-1.5 pointer-events-none"
           variants={contentVariants}
           initial="collapsed"
           animate={isCollapsing ? "exit" : "expanded"}
         >
-          <Icon 
-            className="w-6 h-6" 
-            style={{ 
+          <Icon
+            className="w-5 h-5"
+            style={{
               color: '#ffffff',
               filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.7))'
-            }} 
+            }}
             strokeWidth={1.5}
           />
-          <span 
-            className="text-[10px] font-semibold tracking-wider uppercase"
-            style={{ 
+          <span
+            className="text-[8.5px] font-semibold tracking-wider uppercase text-center px-1"
+            style={{
               color: '#ffffff',
               textShadow: '0 1px 2px rgba(0,0,0,0.7), 0 0 2px rgba(0,0,0,0.5)',
               letterSpacing: '0.1em'

@@ -29,6 +29,9 @@ class IsolatedStateManager:
         self._shutdown = False
         self._state_change_callbacks: list[weakref.ReferenceType] = []
         
+        # Navigation history stack for go_back functionality
+        self._navigation_history: list[tuple[Optional[Category], Optional[str]]] = []
+        
         # Track memory usage of state objects
         self._memory_tracker.track_object_creation(self._state)
     
@@ -90,6 +93,10 @@ class IsolatedStateManager:
         """Set current category with memory tracking"""
         async with self._lock:
             print(f"[{self.session_id}] set_category: before - {self._state.current_category}, new - {category}")
+            
+            # Save current state to navigation history before changing
+            self._navigation_history.append((self._state.current_category, self._state.current_subnode))
+            
             old_category = self._state.current_category
             self._state.current_category = category
             self._state.current_subnode = None
@@ -105,6 +112,9 @@ class IsolatedStateManager:
     async def set_subnode(self, subnode_id: Optional[str]) -> None:
         """Set current subnode with memory tracking"""
         async with self._lock:
+            # Save current state to navigation history before changing
+            self._navigation_history.append((self._state.current_category, self._state.current_subnode))
+            
             old_subnode = self._state.current_subnode
             self._state.current_subnode = subnode_id
             
@@ -115,29 +125,68 @@ class IsolatedStateManager:
             if self._persistence_dir:
                 await self._save_state()
     
-    async def update_field(self, subnode_id: str, field_id: str, value: Any) -> bool:
-        """Update a field value with validation and memory tracking"""
+    async def update_field(self, subnode_id: str, field_id: str, value: Any, timestamp: Optional[float] = None) -> tuple[bool, float]:
+        """Update a field value with validation, memory tracking, and timestamp handling
+        
+        Returns:
+            tuple[bool, float]: (success, timestamp) - success indicates if update was applied,
+                               timestamp is the timestamp of this update
+        """
         async with self._lock:
-            # Validate the value
-            if not await self._validate_field_value(subnode_id, field_id, value):
-                return False
-            
-            # Get old value for tracking
-            old_value = self._state.field_values.get(subnode_id, {}).get(field_id)
-            
-            # Update the field
-            if subnode_id not in self._state.field_values:
-                self._state.field_values[subnode_id] = {}
-            
-            self._state.field_values[subnode_id][field_id] = value
-            
-            # Track memory change
-            self._memory_tracker.track_field_change(subnode_id, field_id, old_value, value)
+            try:
+                # Generate timestamp if not provided
+                if timestamp is None:
+                    timestamp = datetime.now().timestamp()
+                
+                # Validate the value
+                if not await self._validate_field_value(subnode_id, field_id, value):
+                    print(f"[{self.session_id}] Field validation failed for {subnode_id}.{field_id}")
+                    return False, timestamp
+                
+                # Check if we have a timestamp tracker for this field
+                field_key = f"{subnode_id}:{field_id}"
+                if not hasattr(self, '_field_timestamps'):
+                    self._field_timestamps: Dict[str, float] = {}
+                
+                # Handle out-of-order updates: only apply if timestamp is newer
+                existing_timestamp = self._field_timestamps.get(field_key, 0.0)
+                if timestamp < existing_timestamp:
+                    # This is an out-of-order update, ignore it
+                    return False, timestamp
+                
+                # Get old value for tracking
+                old_value = self._state.field_values.get(subnode_id, {}).get(field_id)
+                
+                # Update the field
+                if subnode_id not in self._state.field_values:
+                    self._state.field_values[subnode_id] = {}
+                
+                self._state.field_values[subnode_id][field_id] = value
+                
+                # Update timestamp tracker
+                self._field_timestamps[field_key] = timestamp
+                
+                # Track memory change
+                self._memory_tracker.track_field_change(subnode_id, field_id, old_value, value)
 
-            # Auto-save if persistence is enabled
-            if self._persistence_dir:
-                await self._save_state()
-            return True
+                # Auto-save if persistence is enabled with retry
+                if self._persistence_dir:
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            await self._save_state()
+                            break
+                        except Exception as save_error:
+                            if attempt == max_retries - 1:
+                                print(f"[{self.session_id}] Failed to save state after {max_retries} attempts: {save_error}")
+                                # Continue anyway - field is updated in memory
+                            else:
+                                await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                
+                return True, timestamp
+            except Exception as e:
+                print(f"[{self.session_id}] Error updating field {subnode_id}.{field_id}: {e}")
+                return False, timestamp
     
     async def confirm_subnode(self, category: str, subnode_id: str, values: Dict[str, Any]) -> float:
         """Confirm a subnode and add it to orbit with memory tracking"""
@@ -216,6 +265,35 @@ class IsolatedStateManager:
             if self._persistence_dir:
                 await self._save_all_categories()
     
+    async def go_back(self) -> None:
+        """Navigate back to the previous navigation state"""
+        async with self._lock:
+            if self._navigation_history:
+                # Pop the last navigation state from history
+                previous_category, previous_subnode = self._navigation_history.pop()
+                
+                # Restore the previous state without adding to history
+                self._state.current_category = previous_category
+                self._state.current_subnode = previous_subnode
+                
+                # Auto-save if persistence is enabled
+                if self._persistence_dir:
+                    await self._save_state()
+    
+    async def collapse_to_idle(self) -> None:
+        """Collapse the UI to idle state"""
+        async with self._lock:
+            # Clear navigation state
+            self._state.current_category = None
+            self._state.current_subnode = None
+            
+            # Clear navigation history
+            self._navigation_history.clear()
+            
+            # Auto-save if persistence is enabled
+            if self._persistence_dir:
+                await self._save_state()
+    
     async def _validate_field_value(self, subnode_id: str, field_id: str, value: Any) -> bool:
         """Validate a field value against its configuration"""
         # Implementation copied from StateManager but adapted for async
@@ -266,7 +344,7 @@ class IsolatedStateManager:
     
     # Persistence methods
     async def _save_state(self):
-        """Save the entire state to a single file."""
+        """Save the entire state to a single file with error handling."""
         if not self._persistence_dir:
             print("No persistence directory set")
             return
@@ -274,28 +352,69 @@ class IsolatedStateManager:
         state_file = self._persistence_dir / "session_state.json"
         print(f"Saving state to {state_file}")
         try:
-            async with aiofiles.open(state_file, 'w') as f:
+            # Create backup before saving
+            if state_file.exists():
+                backup_file = state_file.with_suffix('.json.bak')
+                try:
+                    import shutil
+                    shutil.copy2(state_file, backup_file)
+                except Exception as backup_error:
+                    print(f"Warning: Failed to create backup: {backup_error}")
+            
+            async with aiofiles.open(state_file, 'w', encoding='utf-8') as f:
                 await f.write(self._state.model_dump_json(indent=2))
+        except PermissionError as e:
+            print(f"Permission error saving state for session {self.session_id}: {e}")
+            raise
+        except OSError as e:
+            print(f"OS error saving state for session {self.session_id}: {e}")
+            raise
         except Exception as e:
             print(f"Error saving state for session {self.session_id}: {e}")
+            raise
 
     async def _load_state(self) -> None:
-        """Load state from persistence directory"""
+        """Load state from persistence directory with corruption recovery"""
         if not self._persistence_dir:
             return
         
+        state_file = self._persistence_dir / "session_state.json"
+        backup_file = state_file.with_suffix('.json.bak')
+        
+        # Try loading from main file first
         try:
-            state_file = self._persistence_dir / "session_state.json"
             print(f"Loading state from {state_file}")
             if state_file.exists():
-                async with aiofiles.open(state_file, 'r') as f:
+                async with aiofiles.open(state_file, 'r', encoding='utf-8') as f:
                     data = await f.read()
                     print(f"Read state data: {data}")
                     self._state = IRISState.model_validate_json(data)
+                    return
             else:
                 print("State file does not exist")
+        except json.JSONDecodeError as e:
+            print(f"Corrupted state file for session {self.session_id}: {e}")
+            # Try loading from backup
+            if backup_file.exists():
+                try:
+                    print(f"Attempting to load from backup: {backup_file}")
+                    async with aiofiles.open(backup_file, 'r', encoding='utf-8') as f:
+                        data = await f.read()
+                        self._state = IRISState.model_validate_json(data)
+                        print(f"Successfully restored from backup")
+                        # Save the restored state as the main file
+                        await self._save_state()
+                        return
+                except Exception as backup_error:
+                    print(f"Failed to load from backup: {backup_error}")
+            
+            # If both fail, use default state and log warning
+            print(f"Warning: Using default state for session {self.session_id} due to corruption")
+            self._state = IRISState()
         except Exception as e:
             print(f"Error loading state for session {self.session_id}: {e}")
+            # Use default state on any other error
+            self._state = IRISState()
 
     async def get_memory_usage(self) -> int:
         """Get the current memory usage of the state in bytes."""
@@ -384,7 +503,7 @@ class IsolatedStateManager:
         
         try:
             import aiofiles
-            async with aiofiles.open(filepath, 'r') as f:
+            async with aiofiles.open(filepath, 'r', encoding='utf-8') as f:
                 content = await f.read()
                 return json.loads(content)
         except json.JSONDecodeError:
@@ -395,7 +514,7 @@ class IsolatedStateManager:
             return None
     
     async def _save_json(self, filename: str, data: Dict[str, Any]) -> None:
-        """Save JSON file atomically"""
+        """Save JSON file atomically with error handling"""
         if not self._persistence_dir:
             return
         
@@ -405,8 +524,8 @@ class IsolatedStateManager:
         try:
             import aiofiles
             # Write to temp file
-            async with aiofiles.open(temp_path, 'w') as f:
-                await f.write(json.dumps(data, indent=2))
+            async with aiofiles.open(temp_path, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(data, indent=2, ensure_ascii=False))
             
             # Atomic rename
             import os
@@ -420,8 +539,33 @@ class IsolatedStateManager:
             
             os.replace(str(temp_path), str(filepath))
             
+        except PermissionError as e:
+            print(f"Permission error saving {filename} for session {self.session_id}: {e}")
+            # Clean up temp file if it exists
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except:
+                    pass
+            raise
+        except OSError as e:
+            print(f"OS error saving {filename} for session {self.session_id}: {e}")
+            # Clean up temp file if it exists
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except:
+                    pass
+            raise
         except Exception as e:
             print(f"Error saving {filename} for session {self.session_id}: {e}")
+            # Clean up temp file if it exists
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except:
+                    pass
+            raise
     
     # Utility methods
     async def get_field_value(self, subnode_id: str, field_id: str, default: Any = None) -> Any:

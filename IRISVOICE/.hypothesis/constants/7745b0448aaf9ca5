@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\np\random\generator_core.py
+# hypothesis_version: 6.151.9
+
+[1.0, 16777216.0, 'bit_generator', 'fnptr_next_double', 'fnptr_next_uint32', 'fnptr_next_uint64', 'meminfo', 'parent', 'state', 'state_address']

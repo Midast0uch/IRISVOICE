@@ -1,0 +1,33 @@
+{
+  "current_category": null,
+  "current_subnode": null,
+  "field_values": {
+    "power": {
+      "ÐěĂņ": ":\u001ajwᠺ\u0018\"窼¥\u001aP#FO"
+    },
+    "vision": {
+      "__rrshift__": "´򀸢\u0014Dº򗪋f»\u0006ö"
+    },
+    "updates": {
+      "Èō": 0.0
+    },
+    "favorites": {
+      "Ņsĩ": "Ñ𓧗)ÆÖÔÐ"
+    },
+    "speech": {
+      "ĻĹz": ":\u001ajwᠺ\u0018\"窼¥\u001aP#FO"
+    }
+  },
+  "active_theme": {
+    "primary": "#00ff88",
+    "glow": "#00ff88",
+    "font": "#ffffff",
+    "state_colors_enabled": false,
+    "idle_color": "#00ff88",
+    "listening_color": "#00aaff",
+    "processing_color": "#a855f7",
+    "error_color": "#ff3355"
+  },
+  "confirmed_nodes": [],
+  "app_state": "starting"
+}

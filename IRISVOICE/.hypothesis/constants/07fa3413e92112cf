@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\rendered_sst2.py
+# hypothesis_version: 6.151.9
+
+['negative', 'png', 'positive', 'rendered-sst2', 'split', 'test', 'train', 'val', 'valid']

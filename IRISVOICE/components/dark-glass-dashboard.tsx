@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, memo, useMemo, useCallback } from 'react';
+import { useState, memo, useMemo, useCallback, useEffect } from 'react';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBrandColor } from '@/contexts/BrandColorContext';
+import { useNavigation } from '@/contexts/NavigationContext';
 import { Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, Eye } from 'lucide-react';
 
 interface DarkGlassDashboardProps {
@@ -78,6 +79,20 @@ const SUB_NODES_DATA: Record<string, { id: string; label: string; icon: any; fie
       id: 'memory', label: 'MEMORY', icon: Database, fields: [
         { id: 'token_count', label: 'Tokens', type: 'text', placeholder: '0 tokens' },
         { id: 'clear_memory', label: 'Clear Memory', type: 'text', placeholder: 'Clear' },
+      ]
+    },
+    {
+      id: 'vps', label: 'VPS', icon: Cpu, fields: [
+        { id: 'enabled', label: 'Enabled', type: 'toggle', defaultValue: false },
+        { id: 'endpoints', label: 'Endpoints', type: 'text', placeholder: 'https://vps.example.com:8000', defaultValue: '' },
+        { id: 'auth_token', label: 'Auth Token', type: 'password', placeholder: 'Bearer token', defaultValue: '' },
+        { id: 'timeout', label: 'Timeout', type: 'slider', min: 5, max: 120, defaultValue: 30, unit: 's' },
+        { id: 'health_check_interval', label: 'Health Check', type: 'slider', min: 10, max: 300, defaultValue: 60, unit: 's' },
+        { id: 'fallback_to_local', label: 'Fallback Local', type: 'toggle', defaultValue: true },
+        { id: 'load_balancing', label: 'Load Balance', type: 'toggle', defaultValue: false },
+        { id: 'load_balancing_strategy', label: 'LB Strategy', type: 'dropdown', options: ['round_robin', 'least_loaded'], defaultValue: 'round_robin' },
+        { id: 'protocol', label: 'Protocol', type: 'dropdown', options: ['rest', 'websocket'], defaultValue: 'rest' },
+        { id: 'vps_status', label: 'Status', type: 'status', placeholder: 'Not configured' },
       ]
     },
   ],
@@ -196,10 +211,27 @@ const SUB_NODES_DATA: Record<string, { id: string; label: string; icon: any; fie
     ],
 };
 
-const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnodeId, updateField }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; subnodeId?: string; updateField?: (subnodeId: string, fieldId: string, value: any) => void }) {
+const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnodeId, updateField, fieldErrors, clearFieldError }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; subnodeId?: string; updateField?: (subnodeId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (subnodeId: string, fieldId: string) => void }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
   const value = fieldValues && subnodeId ? (fieldValues[subnodeId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
-  const setValue = fieldValues && subnodeId && updateField ? (newValue: any) => updateField(subnodeId, field.id, newValue) : setLocalValue;
+  
+  // Get error message for this field
+  const errorKey = subnodeId && field.id ? `${subnodeId}:${field.id}` : null;
+  const errorMessage = errorKey && fieldErrors ? fieldErrors[errorKey] : null;
+  
+  // Use updateField from context if available, otherwise use local state
+  const setValue = useCallback((newValue: any) => {
+    // Clear error when user starts editing
+    if (errorMessage && subnodeId && field.id && clearFieldError) {
+      clearFieldError(subnodeId, field.id);
+    }
+    
+    if (fieldValues && subnodeId && updateField) {
+      updateField(subnodeId, field.id, newValue);
+    } else {
+      setLocalValue(newValue);
+    }
+  }, [fieldValues, subnodeId, updateField, field.id, errorMessage, clearFieldError]);
 
   const handleSliderClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -212,36 +244,47 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
 
   if (field.type === 'toggle') {
     return (
-      <div className="flex items-center justify-between py-1">
-        <span className="text-[9px] text-white/70">{field.label}</span>
-        <button
-          onClick={() => setValue(!value)}
-          className="relative w-7 h-3.5 rounded-full transition-colors"
-          style={{ backgroundColor: value ? glowColor : 'rgba(255,255,255,0.15)' }}
-        >
-          <motion.span
-            className="absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white"
-            animate={{ left: value ? '14px' : '2px' }}
-            transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-          />
-        </button>
+      <div className="py-1">
+        <div className="flex items-center justify-between">
+          <span className="text-[9px] text-white/70">{field.label}</span>
+          <button
+            onClick={() => setValue(!value)}
+            className="relative w-7 h-3.5 rounded-full transition-colors"
+            style={{ backgroundColor: value ? glowColor : 'rgba(255,255,255,0.15)' }}
+          >
+            <motion.span
+              className="absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white"
+              animate={{ left: value ? '14px' : '2px' }}
+              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+            />
+          </button>
+        </div>
+        {errorMessage && (
+          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
+        )}
       </div>
     );
   }
 
   if (field.type === 'dropdown') {
     return (
-      <div className="flex items-center justify-between py-1">
-        <span className="text-[9px] text-white/70">{field.label}</span>
-        <select
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          className="text-[9px] bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[80px]"
-        >
-          {field.options?.map((opt: string) => (
-            <option key={opt} value={opt} className="bg-zinc-900">{opt}</option>
-          ))}
-        </select>
+      <div className="py-1">
+        <div className="flex items-center justify-between">
+          <span className="text-[9px] text-white/70">{field.label}</span>
+          <select
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            className="text-[9px] bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[80px]"
+            style={errorMessage ? { borderColor: '#f87171' } : {}}
+          >
+            {field.options?.map((opt: string) => (
+              <option key={opt} value={opt} className="bg-zinc-900">{opt}</option>
+            ))}
+          </select>
+        </div>
+        {errorMessage && (
+          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
+        )}
       </div>
     );
   }
@@ -254,29 +297,105 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
       <div className="py-1">
         <div className="flex items-center justify-between mb-0.5">
           <span className="text-[9px] text-white/70">{field.label}</span>
-          <span className="text-[8px] tabular-nums" style={{ color: glowColor }}>{Math.round(Number(value))}{field.unit || ''}</span>
+          <span className="text-[8px] tabular-nums" style={{ color: errorMessage ? '#f87171' : glowColor }}>{Math.round(Number(value))}{field.unit || ''}</span>
         </div>
         <div
           className="relative h-1.5 bg-white/10 rounded-full cursor-pointer"
           onClick={handleSliderClick}
         >
-          <div className="absolute left-0 top-0 h-full rounded-full" style={{ width: `${pct}%`, background: glowColor }} />
+          <div className="absolute left-0 top-0 h-full rounded-full" style={{ width: `${pct}%`, background: errorMessage ? '#f87171' : glowColor }} />
         </div>
+        {errorMessage && (
+          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
+        )}
       </div>
     );
   }
 
   if (field.type === 'text') {
     return (
-      <div className="flex items-center justify-between py-1">
-        <span className="text-[9px] text-white/70">{field.label}</span>
-        <input
-          type="text"
-          value={value as string}
-          placeholder={field.placeholder}
-          onChange={(e) => setValue(e.target.value)}
-          className="text-[9px] bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[80px] text-right"
-        />
+      <div className="py-1">
+        <div className="flex items-center justify-between">
+          <span className="text-[9px] text-white/70">{field.label}</span>
+          <input
+            type="text"
+            value={value as string}
+            placeholder={field.placeholder}
+            onChange={(e) => setValue(e.target.value)}
+            className="text-[9px] bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[80px] text-right"
+            style={errorMessage ? { borderColor: '#f87171' } : {}}
+          />
+        </div>
+        {errorMessage && (
+          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
+        )}
+      </div>
+    );
+  }
+
+  if (field.type === 'password') {
+    return (
+      <div className="py-1">
+        <div className="flex items-center justify-between">
+          <span className="text-[9px] text-white/70">{field.label}</span>
+          <input
+            type="password"
+            value={value as string}
+            placeholder={field.placeholder}
+            onChange={(e) => setValue(e.target.value)}
+            className="text-[9px] bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[80px] text-right"
+            style={errorMessage ? { borderColor: '#f87171' } : {}}
+          />
+        </div>
+        {errorMessage && (
+          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
+        )}
+      </div>
+    );
+  }
+
+  if (field.type === 'status') {
+    // VPS status indicator
+    const vpsEnabled = fieldValues && subnodeId ? fieldValues[subnodeId]?.['enabled'] : false;
+    const vpsEndpoints = fieldValues && subnodeId ? fieldValues[subnodeId]?.['endpoints'] : '';
+    const endpointCount = vpsEndpoints ? (vpsEndpoints as string).split(',').filter(e => e.trim()).length : 0;
+    
+    return (
+      <div className="py-1">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[9px] text-white/70">{field.label}</span>
+        </div>
+        <div className="bg-white/5 rounded px-2 py-1.5 space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[8px] text-white/50">VPS Mode</span>
+            <div className="flex items-center gap-1">
+              <div 
+                className="w-1.5 h-1.5 rounded-full" 
+                style={{ backgroundColor: vpsEnabled ? '#10b981' : '#6b7280' }}
+              />
+              <span className="text-[8px]" style={{ color: vpsEnabled ? '#10b981' : '#6b7280' }}>
+                {vpsEnabled ? 'Enabled' : 'Disabled'}
+              </span>
+            </div>
+          </div>
+          {vpsEnabled && (
+            <>
+              <div className="flex items-center justify-between">
+                <span className="text-[8px] text-white/50">Endpoints</span>
+                <span className="text-[8px] text-white/70">{endpointCount} configured</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[8px] text-white/50">Health</span>
+                <span className="text-[8px] text-yellow-400">Checking...</span>
+              </div>
+            </>
+          )}
+          {!vpsEnabled && (
+            <div className="text-[8px] text-white/40 text-center py-0.5">
+              Enable VPS to offload inference
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -289,12 +408,42 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
   );
 });
 
-export function DarkGlassDashboard({ fieldValues, updateField }: DarkGlassDashboardProps) {
+export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: propUpdateField }: DarkGlassDashboardProps) {
   const [activeTab, setActiveTab] = useState('voice');
   const [activeSubnode, setActiveSubnode] = useState<string | null>(null);
   const { getThemeConfig } = useBrandColor();
-  const theme = getThemeConfig();
-  const glowColor = theme.glow.color;
+  const localTheme = getThemeConfig();
+
+  // Connect to NavigationContext for WebSocket integration
+  const {
+    currentCategory,
+    currentSubnode,
+    subnodes: contextSubnodes,
+    fieldValues: contextFieldValues,
+    fieldErrors,
+    activeTheme, // Get activeTheme from backend via WebSocket
+    selectCategory,
+    selectSubnode,
+    updateField: contextUpdateField,
+    clearFieldError,
+    confirmMiniNode, // Connect onConfirm to confirmMiniNode()
+  } = useNavigation();
+  
+  // Use WebSocket theme glow color if available, otherwise fall back to local theme
+  // This ensures theme changes from backend apply within 100ms (WebSocket latency)
+  // Requirement 10.4: Update accent colors from activeTheme within 100ms
+  const glowColor = activeTheme?.glow || localTheme.glow.color;
+
+  // Log theme changes in development mode for debugging
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development' && activeTheme?.glow) {
+      console.log('[DarkGlassDashboard] Theme synchronized from backend:', activeTheme.glow);
+    }
+  }, [activeTheme]);
+
+  // Use context values if available, otherwise fall back to props
+  const fieldValues = contextFieldValues || propFieldValues || {};
+  const updateField = contextUpdateField || propUpdateField;
 
   const mainNodes = useMemo(() => MAIN_NODES_DATA, []);
   const subNodes = useMemo(() => SUB_NODES_DATA, []);
@@ -305,11 +454,35 @@ export function DarkGlassDashboard({ fieldValues, updateField }: DarkGlassDashbo
   const handleTabClick = useCallback((id: string) => {
     setActiveTab(id);
     setActiveSubnode(null);
-  }, []);
+    // Send category selection to backend via NavigationContext
+    if (selectCategory) {
+      selectCategory(id);
+    }
+  }, [selectCategory]);
 
   const handleSubnodeClick = useCallback((id: string) => {
     setActiveSubnode(id);
-  }, []);
+    // Send subnode selection to backend via NavigationContext
+    if (selectSubnode) {
+      selectSubnode(id);
+    }
+  }, [selectSubnode]);
+
+  const handleConfirmSubnode = useCallback(() => {
+    if (!selectedSub || !confirmMiniNode) return;
+    
+    // Gather all field values for this subnode
+    const values: Record<string, any> = {};
+    selectedSub.fields.forEach(field => {
+      const value = fieldValues[selectedSub.id]?.[field.id] ?? field.defaultValue;
+      if (value !== undefined) {
+        values[field.id] = value;
+      }
+    });
+    
+    // Send confirmation to backend via NavigationContext
+    confirmMiniNode(selectedSub.id, values);
+  }, [selectedSub, fieldValues, confirmMiniNode]);
 
   return (
     <div
@@ -391,7 +564,7 @@ export function DarkGlassDashboard({ fieldValues, updateField }: DarkGlassDashbo
         </div>
 
         {/* Fields panel */}
-        <div className="flex-1 overflow-y-auto px-3 py-2">
+        <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
           <AnimatePresence mode="wait">
             {selectedSub ? (
               <motion.div
@@ -400,15 +573,37 @@ export function DarkGlassDashboard({ fieldValues, updateField }: DarkGlassDashbo
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
                 transition={{ duration: 0.15 }}
-                className="space-y-0.5"
+                className="space-y-0.5 flex-1 flex flex-col"
               >
                 <div className="flex items-center gap-1.5 mb-2 pb-1.5 border-b" style={{ borderColor: `${glowColor}15` }}>
                   {(() => { const Icon = selectedSub.icon; return <Icon className="w-3.5 h-3.5" style={{ color: glowColor }} />; })()}
                   <span className="text-[10px] font-semibold tracking-wider text-white/90">{selectedSub.label}</span>
                 </div>
-                {selectedSub.fields.map(field => (
-                  <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} subnodeId={selectedSub.id} updateField={updateField} />
-                ))}
+                <div className="flex-1 overflow-y-auto">
+                  {selectedSub.fields.map(field => (
+                    <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} subnodeId={selectedSub.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} />
+                  ))}
+                </div>
+                {/* Confirm button */}
+                <div className="mt-2 pt-2 border-t" style={{ borderColor: `${glowColor}15` }}>
+                  <button
+                    onClick={handleConfirmSubnode}
+                    className="w-full py-1.5 rounded text-[9px] font-medium tracking-wider transition-all"
+                    style={{
+                      background: `${glowColor}20`,
+                      color: glowColor,
+                      border: `1px solid ${glowColor}40`,
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = `${glowColor}30`;
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = `${glowColor}20`;
+                    }}
+                  >
+                    CONFIRM
+                  </button>
+                </div>
               </motion.div>
             ) : (
               <motion.div

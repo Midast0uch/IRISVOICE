@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\dependency_versions_check.py
+# hypothesis_version: 6.151.9
+
+['accelerate', 'filelock', 'huggingface-hub', 'numpy', 'packaging', 'python', 'pyyaml', 'regex', 'safetensors', 'tokenizers', 'tqdm']

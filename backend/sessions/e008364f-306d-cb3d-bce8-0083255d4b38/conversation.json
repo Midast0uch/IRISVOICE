@@ -1,0 +1,24 @@
+{
+  "session_id": "e008364f-306d-cb3d-bce8-0083255d4b38",
+  "session_start": 1772075957.2369227,
+  "last_updated": 1772075957.238977,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Create a new file",
+      "timestamp": 1772075957.2375147,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Respond",
+      "timestamp": 1772075957.238966,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

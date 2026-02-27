@@ -1,6 +1,11 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react'
+import {
+  generateAetherShimmers,
+  generateEmberGlow,
+  generateAurumMetal
+} from '@/lib/brand-colors'
 
 // === TYPES ===
 export type ThemeType = 'aether' | 'ember' | 'aurum' | 'verdant'
@@ -62,14 +67,24 @@ export interface BrandColorState {
   lightness: number
 }
 
+export interface BasePlateColorState {
+  hue: number
+  saturation: number
+  lightness: number
+}
+
 export interface BrandColorContextType {
   brandColor: BrandColorState
   theme: ThemeType
   isMounted: boolean
   isCleanTheme: boolean
+  basePlateColor: BasePlateColorState
   setHue: (hue: number) => void
   setSaturation: (saturation: number) => void
   setLightness: (lightness: number) => void
+  setBasePlateHue: (hue: number) => void
+  setBasePlateSaturation: (saturation: number) => void
+  setBasePlateLightness: (lightness: number) => void
   setTheme: (theme: ThemeType) => void
   resetToThemeDefault: () => void
   getHSLString: () => string
@@ -86,6 +101,13 @@ const THEME_DEFAULTS: Record<ThemeType, BrandColorState> = {
   ember: { hue: 30, saturation: 70, lightness: 50 },   // Copper/Orange
   aurum: { hue: 45, saturation: 90, lightness: 55 },   // Gold
   verdant: { hue: 145, saturation: 80, lightness: 45 }, // Forest Green
+}
+
+const BASE_PLATE_THEME_DEFAULTS: Record<ThemeType, BasePlateColorState> = {
+  aether: { hue: 220, saturation: 15, lightness: 12 },
+  ember: { hue: 15, saturation: 20, lightness: 10 },
+  aurum: { hue: 35, saturation: 25, lightness: 12 },
+  verdant: { hue: 150, saturation: 15, lightness: 10 },
 }
 
 // Complete Prism Glass theme specifications
@@ -237,6 +259,7 @@ export const PRISM_THEMES: Record<ThemeType, ThemeConfig> = {
 }
 
 const STORAGE_KEY_BRAND = 'iris-brand-color'
+const STORAGE_KEY_BASE_PLATE = 'iris-base-plate-color'
 const STORAGE_KEY_THEME = 'iris-preferred-theme'
 
 // === CONTEXT ===
@@ -246,31 +269,33 @@ const BrandColorContext = createContext<BrandColorContextType | undefined>(undef
 export function BrandColorProvider({ children }: { children: React.ReactNode }) {
   // Start with default values for SSR consistency
   const [brandColor, setBrandColor] = useState<BrandColorState>(THEME_DEFAULTS[DEFAULT_THEME])
+  const [basePlateColor, setBasePlateColor] = useState<BasePlateColorState>(BASE_PLATE_THEME_DEFAULTS[DEFAULT_THEME])
   const [theme, setThemeState] = useState<ThemeType>(DEFAULT_THEME)
   const [isMounted, setIsMounted] = useState(false)
 
   // After mount, load from localStorage to avoid hydration mismatch
   useEffect(() => {
     const storedBrand = localStorage.getItem(STORAGE_KEY_BRAND)
+    const storedBasePlate = localStorage.getItem(STORAGE_KEY_BASE_PLATE)
     const storedTheme = localStorage.getItem(STORAGE_KEY_THEME)
-    
+
     // Determine which theme to use
-    const themeToUse = (storedTheme && ['aether', 'ember', 'aurum', 'verdant'].includes(storedTheme)) 
-      ? storedTheme as ThemeType 
+    const themeToUse = (storedTheme && ['aether', 'ember', 'aurum', 'verdant'].includes(storedTheme))
+      ? storedTheme as ThemeType
       : DEFAULT_THEME
-    
+
     // Get expected defaults for this theme
     const expectedDefaults = THEME_DEFAULTS[themeToUse]
-    
+
     if (storedBrand) {
       try {
         const parsed = JSON.parse(storedBrand)
-        
+
         // Validate: Check if stored values match expected theme defaults (within tolerance)
         const hueDiff = Math.abs(parsed.hue - expectedDefaults.hue)
         const satDiff = Math.abs(parsed.saturation - expectedDefaults.saturation)
         const lightDiff = Math.abs(parsed.lightness - expectedDefaults.lightness)
-        
+
         // If values are very different from expected, use defaults instead
         if (hueDiff > 30 || satDiff > 20 || lightDiff > 20) {
           setBrandColor(expectedDefaults)
@@ -282,11 +307,22 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
         setBrandColor(expectedDefaults)
       }
     }
-    
+
+    if (storedBasePlate) {
+      try {
+        const parsed = JSON.parse(storedBasePlate)
+        setBasePlateColor(parsed)
+      } catch {
+        setBasePlateColor(BASE_PLATE_THEME_DEFAULTS[themeToUse])
+      }
+    } else {
+      setBasePlateColor(BASE_PLATE_THEME_DEFAULTS[themeToUse])
+    }
+
     if (storedTheme && ['aether', 'ember', 'aurum', 'verdant'].includes(storedTheme)) {
       setThemeState(storedTheme as ThemeType)
     }
-    
+
     setIsMounted(true)
   }, [])
 
@@ -294,6 +330,11 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_BRAND, JSON.stringify(brandColor))
   }, [brandColor])
+
+  // Persist base plate color to localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_BASE_PLATE, JSON.stringify(basePlateColor))
+  }, [basePlateColor])
 
   // Persist theme to localStorage
   useEffect(() => {
@@ -306,10 +347,15 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
     root.style.setProperty('--brand-hue', brandColor.hue.toString())
     root.style.setProperty('--brand-saturation', `${brandColor.saturation}%`)
     root.style.setProperty('--brand-lightness', `${brandColor.lightness}%`)
-    
+
+    // Base Plate variables
+    root.style.setProperty('--base-plate-hue', basePlateColor.hue.toString())
+    root.style.setProperty('--base-plate-saturation', `${basePlateColor.saturation}%`)
+    root.style.setProperty('--base-plate-lightness', `${basePlateColor.lightness}%`)
+
     // Apply theme-specific adjustments
     applyThemeAdjustments(theme, brandColor)
-  }, [brandColor, theme])
+  }, [brandColor, basePlateColor, theme])
 
   // Apply theme data attribute
   useEffect(() => {
@@ -328,17 +374,33 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
     setBrandColor(prev => ({ ...prev, lightness: Math.max(0, Math.min(100, lightness)) }))
   }, [])
 
+  const setBasePlateHue = useCallback((hue: number) => {
+    setBasePlateColor(prev => ({ ...prev, hue: Math.max(0, Math.min(360, hue)) }))
+  }, [])
+
+  const setBasePlateSaturation = useCallback((saturation: number) => {
+    setBasePlateColor(prev => ({ ...prev, saturation: Math.max(0, Math.min(100, saturation)) }))
+  }, [])
+
+  const setBasePlateLightness = useCallback((lightness: number) => {
+    setBasePlateColor(prev => ({ ...prev, lightness: Math.max(0, Math.min(100, lightness)) }))
+  }, [])
+
   const setTheme = useCallback((newTheme: ThemeType) => {
     setThemeState(newTheme)
-    // Update brand color to theme default so colors actually change
+    // Update brand color and base plate to theme defaults
     setBrandColor(THEME_DEFAULTS[newTheme])
-    // Clear localStorage for brand color to prevent override
+    setBasePlateColor(BASE_PLATE_THEME_DEFAULTS[newTheme])
+    // Clear localStorage to prevent override
     localStorage.removeItem(STORAGE_KEY_BRAND)
+    localStorage.removeItem(STORAGE_KEY_BASE_PLATE)
   }, [])
 
   const resetToThemeDefault = useCallback(() => {
     setBrandColor(THEME_DEFAULTS[theme])
+    setBasePlateColor(BASE_PLATE_THEME_DEFAULTS[theme])
     localStorage.removeItem(STORAGE_KEY_BRAND)
+    localStorage.removeItem(STORAGE_KEY_BASE_PLATE)
   }, [theme])
 
   const getHSLString = useCallback(() => {
@@ -346,14 +408,80 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
   }, [brandColor])
 
   const getThemeConfig = useCallback(() => {
-    return PRISM_THEMES[theme]
-  }, [theme])
+    const baseConfig = PRISM_THEMES[theme]
+
+    // Create a dynamic copy of the theme configuration
+    const config: ThemeConfig = {
+      ...baseConfig,
+      hue: brandColor.hue,
+      saturation: brandColor.saturation,
+      lightness: brandColor.lightness,
+      glow: { ...baseConfig.glow },
+      shimmer: { ...baseConfig.shimmer },
+      gradient: { ...baseConfig.gradient },
+      orbs: baseConfig.orbs ? [...baseConfig.orbs] : null
+    }
+
+    // Apply generator logic based on current theme and brandColor state
+    switch (theme) {
+      case 'aether': {
+        const shimmers = generateAetherShimmers(brandColor.hue)
+        config.shimmer = {
+          primary: shimmers.start,
+          secondary: shimmers.mid,
+          accent: shimmers.end
+        }
+        config.glow.color = `hsl(${brandColor.hue}, ${brandColor.saturation}%, ${brandColor.lightness}%)`
+
+        // Dynamically update orbs if they exist
+        if (config.orbs) {
+          config.orbs = [
+            { color: `hsl(${brandColor.hue}, 100%, 60%)`, size: 80, blur: 40, x: -30, y: -20 },
+            { color: `hsl(${(brandColor.hue + 50) % 360}, 80%, 65%)`, size: 60, blur: 30, x: 40, y: 30 },
+            { color: `hsl(${(brandColor.hue + 120) % 360}, 90%, 55%)`, size: 50, blur: 25, x: -20, y: 40 }
+          ]
+        }
+        break
+      }
+      case 'ember': {
+        const ember = generateEmberGlow(brandColor.hue, brandColor.saturation, brandColor.lightness)
+        config.glow.color = ember.edgeGlow
+        config.shimmer = {
+          primary: ember.edgeGlow,
+          secondary: ember.edgeSoft,
+          accent: `hsl(${brandColor.hue}, ${brandColor.saturation}%, ${Math.max(0, brandColor.lightness - 15)}%)`
+        }
+        break
+      }
+      case 'aurum': {
+        const metal = generateAurumMetal(brandColor.hue, brandColor.saturation, brandColor.lightness)
+        config.shimmer = {
+          primary: metal.primary,
+          secondary: metal.secondary,
+          accent: metal.highlight
+        }
+        config.glow.color = metal.primary
+        break
+      }
+      case 'verdant': {
+        config.glow.color = `hsl(${brandColor.hue}, ${brandColor.saturation}%, ${brandColor.lightness}%)`
+        config.shimmer = {
+          primary: `hsl(${brandColor.hue}, 100%, 60%)`,
+          secondary: `hsl(${brandColor.hue}, 80%, 50%)`,
+          accent: `hsl(${brandColor.hue}, 90%, 70%)`
+        }
+        break
+      }
+    }
+
+    return config
+  }, [theme, brandColor])
   const getAccessibleLightness = useCallback((backgroundLuminance: number): number => {
     // WCAG AA requires 4.5:1 for normal text, 3:1 for large text
     // Simplified calculation - ensure sufficient contrast
     const targetContrast = 4.5
     const currentLightness = brandColor.lightness
-    
+
     // If background is dark (low luminance), we need lighter text
     // If background is light (high luminance), we need darker text
     if (backgroundLuminance < 0.5) {
@@ -372,15 +500,19 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
     theme,
     isMounted,
     isCleanTheme,
+    basePlateColor,
     setHue,
     setSaturation,
     setLightness,
+    setBasePlateHue,
+    setBasePlateSaturation,
+    setBasePlateLightness,
     setTheme,
     resetToThemeDefault,
     getHSLString,
     getAccessibleLightness,
     getThemeConfig,
-  }), [brandColor, theme, isMounted, isCleanTheme, setHue, setSaturation, setLightness, setTheme, resetToThemeDefault, getHSLString, getAccessibleLightness, getThemeConfig])
+  }), [brandColor, theme, isMounted, isCleanTheme, basePlateColor, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, setTheme, resetToThemeDefault, getHSLString, getAccessibleLightness, getThemeConfig])
 
   return (
     <BrandColorContext.Provider value={value}>
@@ -392,7 +524,7 @@ export function BrandColorProvider({ children }: { children: React.ReactNode }) 
 // === THEME-SPECIFIC ADJUSTMENTS ===
 function applyThemeAdjustments(theme: ThemeType, brandColor: BrandColorState) {
   const root = document.documentElement
-  
+
   switch (theme) {
     case 'aether':
       // Aether: Full vibrancy allowed
@@ -400,21 +532,21 @@ function applyThemeAdjustments(theme: ThemeType, brandColor: BrandColorState) {
       root.style.setProperty('--aether-shimmer-mid', `hsl(${(brandColor.hue + 30) % 360}, 80%, 65%)`)
       root.style.setProperty('--aether-shimmer-end', `hsl(${(brandColor.hue + 60) % 360}, 70%, 55%)`)
       break
-      
+
     case 'ember':
-      // Ember: Cap saturation at 70%, add warmth shift (+10°)
+      // Ember: Cap saturation at 70%, respect user lightness
       const emberSat = Math.min(brandColor.saturation, 70)
       const emberHue = (brandColor.hue + 10) % 360
-      root.style.setProperty('--ember-edge-glow', `hsl(${emberHue}, ${emberSat * 0.6}%, 45%)`)
-      root.style.setProperty('--ember-edge-soft', `hsl(${emberHue}, ${emberSat * 0.5}%, 50%, 0.3)`)
+      root.style.setProperty('--ember-edge-glow', `hsl(${emberHue}, ${emberSat * 0.6}%, ${brandColor.lightness}%)`)
+      root.style.setProperty('--ember-edge-soft', `hsl(${emberHue}, ${emberSat * 0.5}%, ${brandColor.lightness}%, 0.3)`)
       break
-      
+
     case 'aurum':
-      // Aurum: Heavy desaturation (40% of base) for metallic effect
+      // Aurum: Heavy desaturation, respect user lightness
       const aurumSat = brandColor.saturation * 0.4
-      root.style.setProperty('--aurum-metal-primary', `hsl(${brandColor.hue}, ${aurumSat}%, 55%)`)
-      root.style.setProperty('--aurum-metal-secondary', `hsl(${(brandColor.hue - 20 + 360) % 360}, ${aurumSat * 1.25}%, 45%)`)
-      root.style.setProperty('--aurum-metal-highlight', `hsl(${brandColor.hue}, ${aurumSat * 1.5}%, 70%)`)
+      root.style.setProperty('--aurum-metal-primary', `hsl(${brandColor.hue}, ${aurumSat}%, ${brandColor.lightness}%)`)
+      root.style.setProperty('--aurum-metal-secondary', `hsl(${(brandColor.hue - 20 + 360) % 360}, ${aurumSat * 1.25}%, ${Math.max(0, brandColor.lightness - 10)}%)`)
+      root.style.setProperty('--aurum-metal-highlight', `hsl(${brandColor.hue}, ${aurumSat * 1.5}%, ${Math.min(100, brandColor.lightness + 15)}%)`)
       break
   }
 }

@@ -1,0 +1,32 @@
+{
+  "session_id": "fc05e3a9-1b95-15ae-c77e-73b64b6dcbe7",
+  "session_start": 1772160422.9864588,
+  "last_updated": 1772160422.9915674,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Tell me about artificial intelligence",
+      "timestamp": 1772160422.9873025,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Can you help me with this task?",
+      "timestamp": 1772160422.9884248,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160422.991494,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

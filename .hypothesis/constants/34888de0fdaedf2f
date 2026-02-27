@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\externals.py
+# hypothesis_version: 6.151.9
+
+[128, 4294967295, '__fixunsdfdi', '__fixunssfdi', '__multi3', '_ftol', '_ftol2', 'fptoui', 'fptouif', 'linux', 'multi3', 'win32']

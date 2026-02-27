@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\wake_config.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.2, 1.0, 300, 'Jarvis', 'WakeConfig', 'activation_sound', 'bumblebee', 'computer', 'hey computer', 'jarvis', 'porcupine', 'sleep_timeout', 'wake_phrase', 'wake_word_enabled']

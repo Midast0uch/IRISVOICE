@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\unified_conversation.py
+# hypothesis_version: 6.151.9
+
+[1.05, 512, '__main__', 'auto', 'content', 'cpu', 'cuda', 'error', 'lfm_text_model_path', 'loading', 'max_new_tokens', 'processing', 'pt', 'ready', 'repetition_penalty', 'role', 'user']

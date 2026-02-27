@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\distributed\fsdp\_fully_shard\_fully_shard.py
+# hypothesis_version: 6.151.9
+
+['FSDPModule', 'UnshardHandle', '__deepcopy__', 'fully_shard', 'get_cls_to_fsdp_cls', 'share_comm_ctx']

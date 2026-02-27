@@ -1,0 +1,16 @@
+{
+  "session_id": "e3e70682-c209-4cac-629f-6fbed82c07cd",
+  "session_start": 1772161088.9871347,
+  "last_updated": 1772161088.9879017,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Run the tests",
+      "timestamp": 1772161088.987873,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

@@ -30,10 +30,7 @@ export interface IrisOrbProps {
   onDoubleClick: () => void
   centerLabel: string
   size: number
-  glowColor: string
-  voiceState: "idle" | "listening" | "processing_conversation" | "processing_tool" | "speaking" | "error"
+  glowColor?: string
   wakeFlash: boolean
-  sendMessage: (type: string, payload?: Record<string, unknown>) => boolean
   onCallbacksReady?: (callbacks: { handleWakeDetected: () => void; handleNativeAudioResponse: (payload: Record<string, unknown>) => void }) => void
-
 }

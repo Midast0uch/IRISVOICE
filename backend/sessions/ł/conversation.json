@@ -1,0 +1,32 @@
+{
+  "session_id": "\u0142",
+  "session_start": 1772160429.345648,
+  "last_updated": 1772160429.349835,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "How do I solve this problem?",
+      "timestamp": 1772160429.346549,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Open the browser",
+      "timestamp": 1772160429.3480742,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160429.349775,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

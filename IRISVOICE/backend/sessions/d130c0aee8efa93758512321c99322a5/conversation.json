@@ -1,0 +1,16 @@
+{
+  "session_id": "d130c0aee8efa93758512321c99322a5",
+  "session_start": 1772156328.8236673,
+  "last_updated": 1772156328.824448,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "user",
+      "content": "\udb45\udf32\u0084\u0087A\u00e3\u0010",
+      "timestamp": 1772156328.8244026,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

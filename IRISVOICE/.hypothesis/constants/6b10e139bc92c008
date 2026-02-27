@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\linear_model\_glm\glm.py
+# hypothesis_version: 6.151.9
+
+[-1.0, 0.0, 0.0001, 1.0, 100, 'C', 'L-BFGS-B', 'alpha', 'auto', 'boolean', 'coef_', 'coo', 'csc', 'csr', 'fit_intercept', 'ftol', 'gtol', 'identity', 'iprint', 'lbfgs', 'left', 'link', 'log', 'max_iter', 'maxiter', 'maxls', 'neither', 'newton-cholesky', 'power', 'solver', 'tol', 'verbose', 'warm_start']

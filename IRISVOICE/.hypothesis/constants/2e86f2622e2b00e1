@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\integrations\hub_kernels.py
+# hypothesis_version: 6.151.9
+
+['-', '..utils.import_utils', '0.10.2', '0.10.4', ':', '@', 'FastGELU', 'GeLU', 'Gelu', 'GeluTanh', 'LayerRepository', 'LigerRMSNorm', 'Llama4TextMoe', 'MLP', 'MegaBlocksMoeMLP', 'NewGELU', 'QuickGELU', 'RMSNorm', 'SiLU', 'Silu', 'TritonLlamaMLP', 'USE_HUB_KERNELS', 'YES', '_', 'ahadnagy/megablocks', 'causal-conv1d', 'cuda', 'falcon_mamba-ssm', 'flash_attention_2', 'framework', 'get_kernel', 'kernels', 'lazy_load_kernel', 'mamba-ssm', 'mps', 'npu', 'repo_id', 'revision', 'rocm', 'rotary_fn', 'rotary_pos_emb', 'transformers', 'use_kernelized_func', 'version', 'xpu', '|']

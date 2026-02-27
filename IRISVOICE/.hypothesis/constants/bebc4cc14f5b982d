@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\utils\chat_parsing_utils.py
+# hypothesis_version: 6.151.9
+
+['0', '1', 'additionalProperties', 'allow_non_json', 'array', 'boolean', 'const', 'default', 'false', 'integer', 'items', 'json', 'key', 'number', 'object', 'prefixItems', 'properties', 'string', 'transform', 'true', 'type', 'value', 'x-mapping', 'x-mapping-regex', 'x-parser', 'x-parser-args', 'x-regex', 'x-regex-iterator', 'x-regex-key-value']

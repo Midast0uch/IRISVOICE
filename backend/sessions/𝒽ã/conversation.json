@@ -1,0 +1,16 @@
+{
+  "session_id": "\ud835\udcbd\u00e3",
+  "session_start": 1772160440.7957385,
+  "last_updated": 1772160440.8597376,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather today?",
+      "timestamp": 1772160440.8596816,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

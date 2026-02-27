@@ -1,0 +1,88 @@
+{
+  "session_id": "test_persist",
+  "session_start": 1772075711.9410834,
+  "last_updated": 1772160378.019339,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "respond",
+      "timestamp": 1772075769.580197,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "First message",
+      "timestamp": 1772085405.7794783,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "respond",
+      "timestamp": 1772085405.780578,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Second message",
+      "timestamp": 1772085405.781262,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "respond",
+      "timestamp": 1772085405.78224,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Third message",
+      "timestamp": 1772085405.7828524,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "respond",
+      "timestamp": 1772085405.783725,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "First message",
+      "timestamp": 1772160378.0179455,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Second message",
+      "timestamp": 1772160378.0187263,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Third message",
+      "timestamp": 1772160378.01933,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

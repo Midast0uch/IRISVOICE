@@ -1,0 +1,16 @@
+{
+  "session_id": "\u012b\u00ec",
+  "session_start": 1772161087.8626125,
+  "last_updated": 1772161087.8666253,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Show me the logs",
+      "timestamp": 1772161087.866515,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

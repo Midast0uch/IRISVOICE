@@ -1,0 +1,24 @@
+{
+  "session_id": "ed6d74e7bb9e557a3020c79b01d16f61",
+  "session_start": 1772156332.5521107,
+  "last_updated": 1772156332.5530043,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "^\ud83d\udc92)\t\uda0a\udd0e\ud880\udfb4\u008a",
+      "timestamp": 1772156332.5525014,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u0011",
+      "timestamp": 1772156332.5529869,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

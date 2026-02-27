@@ -1,0 +1,16 @@
+{
+  "session_id": "97113cec-80d3-a77d-2c74-654bf159a61b",
+  "session_start": 1772160463.0667825,
+  "last_updated": 1772160463.0678105,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Tell me about artificial intelligence",
+      "timestamp": 1772160463.0677526,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

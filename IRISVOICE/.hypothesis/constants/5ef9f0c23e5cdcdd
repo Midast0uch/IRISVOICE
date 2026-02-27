@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\cluster\_optics.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.05, 'X', 'algorithm', 'auto', 'ball_tree', 'boolean', 'both', 'brute', 'cache', 'cluster_method', 'core_distances', 'csr', 'dbscan', 'end', 'eps', 'ignore', 'kd_tree', 'leaf_size', 'left', 'max_eps', 'memory', 'metric', 'metric_params', 'mib', 'min_cluster_size', 'min_samples', 'minkowski', 'n_jobs', 'ordering', 'p', 'precomputed', 'predecessor', 'reachability', 'right', 'sparse matrix', 'start', 'xi']

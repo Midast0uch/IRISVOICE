@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\einops\einops.py
+# hypothesis_version: 6.151.9
+
+[-999999, -99999, 256, 1024, '\n Input is list. ', ',', '->', '...', 'Tensor', '_', 'all', 'any', 'max', 'mean', 'min', 'prod', 'rearrange', 'repeat', 'sum']

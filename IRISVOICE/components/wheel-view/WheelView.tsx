@@ -20,6 +20,7 @@ interface WheelViewProps {
 }
 
 function validateGlowColor(color: string): string {
+  if (color.startsWith('hsl')) return color
   const hexPattern = /^#[0-9A-Fa-f]{6}$/
   if (!hexPattern.test(color)) {
     return "#00D4FF"
@@ -35,13 +36,28 @@ export const WheelView: React.FC<WheelViewProps> = ({
   onConfirm,
   onBackToCategories,
 }) => {
-  const { state, updateMiniNodeValue, sendMessage } = useNavigation()
-  const { getThemeConfig } = useBrandColor()
+  const { state, updateMiniNodeValue, voiceState, audioLevel, startVoiceCommand, endVoiceCommand } = useNavigation()
+  const {
+    getThemeConfig,
+    basePlateColor,
+    setTheme,
+    setHue,
+    setSaturation,
+    setLightness,
+    setBasePlateHue,
+    setBasePlateSaturation,
+    setBasePlateLightness,
+    resetToThemeDefault
+  } = useBrandColor()
 
   const glowColor = useMemo(() => validateGlowColor(rawGlowColor), [rawGlowColor])
   const miniNodeStack = state.miniNodeStack || []
 
+  // Calculate if voice is active from NavigationContext
+  const isVoiceActive = voiceState !== "idle"
+
   const lastClickTime = React.useRef<number>(0)
+  const clickCount = React.useRef<number>(0)
   const clickTimer = React.useRef<NodeJS.Timeout | null>(null)
 
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -49,8 +65,6 @@ export const WheelView: React.FC<WheelViewProps> = ({
   const [confirmSpinning, setConfirmSpinning] = useState(false)
   const [lineRetracted, setLineRetracted] = useState(false)
   const [showPanel, setShowPanel] = useState(true)
-  const [isVoiceActive, setIsVoiceActive] = useState(false)
-  const [voiceIntensity, setVoiceIntensity] = useState(0)
   const [isAnimating, setIsAnimating] = useState(false)
 
   const activeMiniNode = useMemo(() => {
@@ -71,8 +85,39 @@ export const WheelView: React.FC<WheelViewProps> = ({
 
   const handleValueChange = useCallback((fieldId: string, value: FieldValue) => {
     if (!activeMiniNode) return
+
+    // Real-time synchronization for Theme Mode fields
+    if (activeMiniNode.id === 'theme-mode') {
+      switch (fieldId) {
+        case 'active_theme':
+          setTheme(value.toString().toLowerCase() as any)
+          break
+        case 'brand_hue':
+          setHue(Number(value))
+          break
+        case 'brand_saturation':
+          setSaturation(Number(value))
+          break
+        case 'brand_lightness':
+          setLightness(Number(value))
+          break
+        case 'base_plate_hue':
+          setBasePlateHue(Number(value))
+          break
+        case 'base_plate_saturation':
+          setBasePlateSaturation(Number(value))
+          break
+        case 'base_plate_lightness':
+          setBasePlateLightness(Number(value))
+          break
+        case 'reset_to_defaults':
+          resetToThemeDefault()
+          break
+      }
+    }
+
     updateMiniNodeValue(activeMiniNode.id, fieldId, value)
-  }, [activeMiniNode, updateMiniNodeValue])
+  }, [activeMiniNode, updateMiniNodeValue, setTheme, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, resetToThemeDefault])
 
   const handleConfirm = useCallback(() => {
     if (isAnimating) return
@@ -89,19 +134,6 @@ export const WheelView: React.FC<WheelViewProps> = ({
       setIsAnimating(false)
     }, 900)
   }, [isAnimating, onConfirm, state.miniNodeValues])
-
-  // Simulate speech pulse when voice is active
-  useEffect(() => {
-    if (!isVoiceActive) {
-      setVoiceIntensity(0)
-      return
-    }
-    const interval = setInterval(() => {
-      // Create a "breathing" intensity pulse (0.3 to 1.0 range)
-      setVoiceIntensity(0.3 + Math.random() * 0.7)
-    }, 150)
-    return () => clearInterval(interval)
-  }, [isVoiceActive])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -132,6 +164,15 @@ export const WheelView: React.FC<WheelViewProps> = ({
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [miniNodeStack.length, isAnimating, handleConfirm, onBackToCategories])
 
+  // Cleanup click timer on unmount
+  useEffect(() => {
+    return () => {
+      if (clickTimer.current) {
+        clearTimeout(clickTimer.current)
+      }
+    }
+  }, [])
+
   if (miniNodeStack.length === 0) {
     return (
       <div className="absolute inset-0 flex items-center justify-center">
@@ -149,13 +190,13 @@ export const WheelView: React.FC<WheelViewProps> = ({
     >
       <div
         className="relative flex items-center justify-start pointer-events-none"
-        style={{ width: 850, height: 750, paddingLeft: "40px" }}
+        style={{ width: 850, height: 750, paddingLeft: "40px", overflow: 'visible' }}
       >
-        {/* Mechanics Stage: 500x500 provides room for 300px orb + 200px buffer safety (Phase 49) */}
-        {/* Force overflow: visible (Phase 50) to ensure soft blooms are never clipped */}
+        {/* Mechanics Stage: 600x600 provides room for 300px orb + 300px buffer safety (Phase 47: Enhanced) */}
+        {/* Force overflow: visible (Phase 50) to ensure soft blooms and text labels are never clipped */}
         <div
           className="relative pointer-events-none flex items-center justify-center shrink-0"
-          style={{ width: 500, height: 500, overflow: 'visible' }}
+          style={{ width: 600, height: 600, overflow: 'visible' }}
         >
           {/* Centered Mechanims Layer - Absolute Visibility (Phase 50) */}
           <div className="relative" style={{ width: 300, height: 300, overflow: 'visible' }}>
@@ -231,71 +272,226 @@ export const WheelView: React.FC<WheelViewProps> = ({
               selectedIndex={selectedIndex}
               onSelect={handleSelect}
               glowColor={glowColor}
+              basePlateColor={`hsl(${basePlateColor.hue}, ${basePlateColor.saturation}%, ${basePlateColor.lightness}%)`}
               orbSize={300}
               confirmSpinning={confirmSpinning}
               isVoiceActive={isVoiceActive}
-              voiceIntensity={voiceIntensity}
+              voiceIntensity={audioLevel}
             />
 
-            {/* Perfectly Aligned Core Center */}
+            {/* Voice Active Atmospheric Pulse - Behind Button (z-index: 98) */}
+            <AnimatePresence>
+              {isVoiceActive && (
+                <motion.div
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
+                  style={{
+                    width: 100,
+                    height: 100,
+                    background: `radial-gradient(circle, ${glowColor}40 0%, ${glowColor}20 50%, transparent 100%)`,
+                    filter: "blur(20px)",
+                    zIndex: 98
+                  }}
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{
+                    opacity: [0.6, 1, 0.6],
+                    scale: [0.9, 1.3, 0.9]
+                  }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  transition={{
+                    duration: 2.5,
+                    repeat: Infinity,
+                    ease: "easeInOut"
+                  }}
+                />
+              )}
+            </AnimatePresence>
+
+            {/* 5-Layer Core Architecture + Interactive Button (Phase 110) */}
             <motion.button
-              className="absolute top-1/2 left-1/2 flex items-center justify-center rounded-full focus:outline-none overflow-hidden"
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full focus:outline-none"
               style={{
-                width: 64,
-                height: 64,
-                background: `linear-gradient(135deg, ${glowColor}66 0%, rgba(200, 210, 220, 0.2) 50%, ${glowColor}44 100%)`,
-                border: `1px solid rgba(255, 255, 255, 0.2)`,
-                backdropFilter: "blur(8px)",
-                boxShadow: `0 0 15px ${glowColor}33`,
-                filter: "url(#liquid-metal-sheen)",
-                zIndex: 100,
-                pointerEvents: "auto"
+                width: 72,
+                height: 72,
+                zIndex: 99,
+                overflow: 'visible',
+                background: 'transparent',
+                border: 'none',
+                padding: 0,
+                cursor: 'pointer',
+                pointerEvents: 'auto'
               }}
-              initial={{ opacity: 0, scale: 1.1, x: "-50%", y: "-50%" }}
-              animate={{ opacity: 1, scale: 1, x: "-50%", y: "-50%" }}
-              transition={{ type: "spring", stiffness: 100, damping: 20, delay: 0.7 }}
-              whileHover={{
-                scale: 1.05,
-                x: "-50%",
-                y: "-50%",
-                boxShadow: `0 0 25px ${glowColor}66`,
-                borderColor: "rgba(255, 255, 255, 0.4)",
+              initial={{ opacity: 0, scale: 1.1 }}
+              animate={{
+                opacity: 1,
+                scale: isVoiceActive 
+                  ? 1 + (audioLevel * 0.15) // Voice intensity modulates breathing (0.3-1.0 = 1.045-1.15 scale)
+                  : 1,
+                boxShadow: isVoiceActive 
+                  ? `0 0 ${20 + audioLevel * 40}px ${glowColor}` // Reactive glow (20-60px)
+                  : "none",
+                filter: isVoiceActive 
+                  ? `drop-shadow(0 0 ${10 + audioLevel * 20}px ${glowColor})` // Reactive shadow (10-30px)
+                  : "none"
               }}
-              whileTap={{ scale: 0.94, x: "-50%", y: "-50%" }}
+              transition={{ 
+                type: "spring", 
+                stiffness: 100, 
+                damping: 20, 
+                delay: 0.7,
+                scale: { duration: 0.15 }, // Fast response to voice intensity
+                boxShadow: { duration: 0.15 },
+                filter: { duration: 0.15 }
+              }}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.94 }}
               onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => {
-                const now = Date.now()
-                if (now - lastClickTime.current < 300) {
-                  if (clickTimer.current) clearTimeout(clickTimer.current)
-                  setIsVoiceActive(prev => !prev) // Toggle Voice Aura on double-click (Phase 50)
-                  sendMessage("voice_command_start", {})
-                  lastClickTime.current = 0
-                } else {
-                  lastClickTime.current = now
-                  const activeAtClick = isVoiceActive // Capture state at click time (Phase 63)
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                
+                clickCount.current += 1
+
+                if (clickCount.current === 1) {
+                  // First click - wait to see if there's a second click
                   clickTimer.current = setTimeout(() => {
-                    if (activeAtClick) {
-                      setIsVoiceActive(false) // Single click stops speech mode ONLY (Phase 62/63)
-                    } else {
-                      onBackToCategories() // Single click navigates back ONLY when idle (Phase 62/63)
+                    if (clickCount.current === 1) {
+                      // Single click confirmed
+                      if (isVoiceActive) {
+                        // Turn off voice mode
+                        endVoiceCommand()
+                      } else {
+                        // Navigate back
+                        onBackToCategories()
+                      }
                     }
+                    clickCount.current = 0
+                  }, 500) // 500ms double-click window (same as IrisOrb)
+                } else if (clickCount.current === 2) {
+                  // Double click detected - clear timer and toggle voice
+                  if (clickTimer.current) {
+                    clearTimeout(clickTimer.current)
                     clickTimer.current = null
-                    lastClickTime.current = 0
-                  }, 300)
+                  }
+                  // Toggle voice command
+                  if (isVoiceActive) {
+                    endVoiceCommand()
+                  } else {
+                    startVoiceCommand()
+                  }
+                  clickCount.current = 0
                 }
               }}
             >
-              {/* Specular Top Edge Highlight */}
-              <div
-                className="absolute top-0 left-0 right-0 h-[2px] opacity-60 pointer-events-none"
+              {/* 0. ATMOSPHERIC BRAND PULSE */}
+              <motion.div
+                className="absolute rounded-full pointer-events-none"
                 style={{
-                  background: "linear-gradient(to bottom, rgba(255,255,255,0.7), transparent)",
-                  borderRadius: "50% 50% 0 0"
+                  inset: isVoiceActive ? -40 : -32,
+                  background: `radial-gradient(circle, color-mix(in srgb, ${glowColor}, transparent 60%) 0%, transparent 70%)`,
+                  filter: "blur(24px)",
+                  zIndex: 0
+                }}
+                animate={{
+                  opacity: isVoiceActive ? [0.6, 1, 0.6] : [0.4, 0.8, 0.4],
+                  scale: isVoiceActive ? [0.9, 1.3, 0.9] : [0.95, 1.15, 0.95],
+                }}
+                transition={{
+                  duration: isVoiceActive ? 2.5 : 4,
+                  repeat: Infinity,
+                  ease: "easeInOut"
                 }}
               />
 
-              <div className="flex flex-col items-center justify-center pointer-events-none relative z-10">
-                <span className="text-[11px] font-black uppercase tracking-[0.1em] text-white">
+              {/* 1. NEON LAYER STACK - Phase 111: Vibrant & Shimmering */}
+              {/* 1.1 NEON CORE (Solid Edge) */}
+              <motion.div
+                className="absolute rounded-full pointer-events-none"
+                style={{
+                  inset: -2,
+                  background: `radial-gradient(circle, ${glowColor} 0%, transparent 80%)`,
+                  border: "1.5px solid",
+                  borderColor: glowColor,
+                  filter: "blur(1.5px)",
+                  opacity: 0.8,
+                  zIndex: 1
+                }}
+              />
+
+              {/* 1.2 NEON EDGE BLOOM with KINETIC SHIMMER */}
+              <motion.div
+                className="absolute rounded-full pointer-events-none"
+                style={{
+                  inset: -15,
+                  background: `radial-gradient(circle, color-mix(in srgb, ${glowColor}, transparent 35%) 0%, transparent 75%)`,
+                  filter: "blur(12px)",
+                  opacity: 0.6,
+                  zIndex: 1
+                }}
+              >
+                {/* Kinetic Shimmer Spike */}
+                <motion.div
+                  className="absolute inset-0 rounded-full"
+                  style={{
+                    background: `conic-gradient(from 0deg, 
+                      transparent 0deg, 
+                      rgba(255,255,255,0.4) 45deg, 
+                      ${glowColor} 90deg, 
+                      transparent 180deg)`,
+                    mixBlendMode: "overlay"
+                  }}
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
+                />
+              </motion.div>
+
+              {/* 2. LIQUID METAL RING - Phase 112: Flowing Mercury */}
+              <motion.div
+                className="absolute inset-0 rounded-full pointer-events-none"
+                style={{
+                  border: "2px solid transparent",
+                  background: `conic-gradient(from 0deg, 
+                    #ffffff 0deg, 
+                    ${glowColor} 45deg, 
+                    #101014 120deg, 
+                    #ffffff 180deg, 
+                    ${glowColor} 225deg, 
+                    #101014 300deg, 
+                    #ffffff 360deg) border-box`,
+                  WebkitMask: "linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0)",
+                  WebkitMaskComposite: "destination-out",
+                  maskComposite: "exclude",
+                  filter: "drop-shadow(0 0 2px rgba(255,255,255,0.6))",
+                  zIndex: 2
+                }}
+                animate={{ rotate: 360 }}
+                transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
+              />
+
+              {/* 3. GLASSMORPHIC BASE & 4. CONVEX HIGHLIGHT - Phase 113: Inverted Groove */}
+              <div
+                className="absolute inset-0 rounded-full pointer-events-none"
+                style={{
+                  background: `linear-gradient(135deg, rgba(30, 32, 40, 0.75) 0%, color-mix(in srgb, ${glowColor}, transparent 65%) 100%)`,
+                  backdropFilter: "blur(12px)",
+                  WebkitBackdropFilter: "blur(12px)",
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.2)",
+                  zIndex: 3
+                }}
+              />
+
+              {/* Invisible clickable surface - ensures entire button area is clickable */}
+              <div 
+                className="absolute inset-0 rounded-full"
+                style={{ 
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  zIndex: 5
+                }}
+              />
+
+              {/* 5. CONTENT AREA */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
+                <span className="text-[10px] font-black uppercase tracking-[0.1em] text-white select-none" style={{ textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>
                   {categoryId}
                 </span>
               </div>

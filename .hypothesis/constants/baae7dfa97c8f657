@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\integrations\flash_attention.py
+# hypothesis_version: 6.151.9
+
+[0.0, '_is_quantized', 'cuda', 'layer_idx', 'output_attentions']

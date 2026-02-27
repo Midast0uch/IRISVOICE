@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\mobilenetv3.py
+# hypothesis_version: 6.151.9
+
+[0.001, 0.01, 0.057, 0.2, 0.217, 1.0, 9.829, 21.107, 21.114, 67.668, 74.042, 75.274, 87.402, 91.34, 92.566, 112, 120, 144, 160, 184, 200, 224, 232, 240, 288, 480, 576, 672, 960, 1000, 1024, 1280, 2542856, 5483032, 'HS', 'ImageNet-1K', 'MobileNetV3', 'RE', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'fan_out', 'illegal stride value', 'min_size', 'mobilenet_v3_large', 'mobilenet_v3_small', 'num_classes', 'num_params', 'pretrained', 'recipe']

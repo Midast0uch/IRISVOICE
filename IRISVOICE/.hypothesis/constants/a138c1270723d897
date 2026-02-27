@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\librosa\version.py
+# hypothesis_version: 6.151.9
+
+['------------------', '0.11', '0.11.0', 'INSTALLED VERSIONS', 'audioread', 'decorator', 'ipython', 'joblib', 'lazy_loader', 'matplotlib', 'mir_eval', 'msgpack', 'numba', 'numpy', 'numpydoc', 'packaging', 'pooch', 'presets', 'pytest', 'pytest_cov', 'pytest_mpl', 'resampy', 'samplerate', 'scipy', 'sklearn', 'soundfile', 'soxr', 'sphinx', 'sphinx_gallery', 'sphinx_multiversion', 'sphinx_rtd_theme', 'typing_extensions', '{}: {}']

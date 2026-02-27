@@ -10,7 +10,6 @@ import { DropdownField } from "./fields/DropdownField"
 import { ToggleField } from "./fields/ToggleField"
 import { ColorField } from "./fields/ColorField"
 import { useBrandColor } from "@/contexts/BrandColorContext"
-import { ThemeSwitcherCard } from "./theme-switcher-card"
 
 interface MiniNodeCardProps {
   miniNode: MiniNode
@@ -39,21 +38,15 @@ function renderField(
   const themedBg = `${theme.shimmer.primary}25`
   const themedBorder = `${theme.shimmer.primary}66`
   const labelColor = '#ffffff'
-  
+
   // Stop propagation wrapper for all field interactions
   const stopProp = (e: React.SyntheticEvent) => e.stopPropagation()
 
   switch (field.type) {
-    case 'custom':
-      return (
-        <div onClick={stopProp}>
-          <ThemeSwitcherCard />
-        </div>
-      )
     case 'text':
       return (
-        <div 
-          className="p-2 rounded-lg space-y-1" 
+        <div
+          className="p-2 rounded-lg space-y-1"
           style={{ background: themedBg, border: `1px solid ${themedBorder}` }}
           onClick={stopProp}
         >
@@ -70,8 +63,8 @@ function renderField(
       )
     case 'slider':
       return (
-        <div 
-          className="p-2 rounded-lg space-y-1" 
+        <div
+          className="p-2 rounded-lg space-y-1"
           style={{ background: themedBg, border: `1px solid ${themedBorder}` }}
           onClick={stopProp}
         >
@@ -90,8 +83,8 @@ function renderField(
       )
     case 'dropdown':
       return (
-        <div 
-          className="p-2 rounded-lg space-y-1" 
+        <div
+          className="p-2 rounded-lg space-y-1"
           style={{ background: themedBg, border: `1px solid ${themedBorder}` }}
           onClick={stopProp}
         >
@@ -108,8 +101,8 @@ function renderField(
       )
     case 'toggle':
       return (
-        <div 
-          className="p-2 rounded-lg flex items-center justify-between" 
+        <div
+          className="p-2 rounded-lg flex items-center justify-between"
           style={{ background: themedBg, border: `1px solid ${themedBorder}` }}
           onClick={stopProp}
         >
@@ -125,8 +118,8 @@ function renderField(
       )
     case 'color':
       return (
-        <div 
-          className="p-2 rounded-lg space-y-1" 
+        <div
+          className="p-2 rounded-lg space-y-1"
           style={{ background: themedBg, border: `1px solid ${themedBorder}` }}
           onClick={stopProp}
         >
@@ -159,14 +152,14 @@ export function MiniNodeCard({
   const theme = getThemeConfig()
   const glowColor = theme.glow.color
   const isCleanTheme = theme.name === 'Verdant' || theme.name === 'Aurum'
-  
+
   // Intensity multipliers (same as PrismNode)
   const intensityMultipliers = {
     glowOpacity: isCleanTheme ? 1.5 : 1.0,
     glassOpacity: isCleanTheme ? 1.2 : 1.0,
     shimmerOpacity: 1.0,
   }
-  
+
   // Calculate dynamic opacities
   const glassOpacity = Math.min(theme.glass.opacity * intensityMultipliers.glassOpacity, 0.35)
   const glowOpacity = Math.min(theme.glow.opacity * intensityMultipliers.glowOpacity, 0.5)
@@ -257,7 +250,7 @@ export function MiniNodeCard({
         }}
       >
         {/* Themed header background */}
-        <div 
+        <div
           className="absolute top-0 left-0 right-0 h-[52px] pointer-events-none"
           style={{
             background: `linear-gradient(180deg, ${theme.shimmer.primary}40 0%, transparent 100%)`,
@@ -265,19 +258,19 @@ export function MiniNodeCard({
         />
 
         {/* Header */}
-        <div 
+        <div
           className="relative flex items-center justify-center gap-2 px-3 py-3 border-b"
           style={{ borderColor: `${theme.shimmer.primary}${Math.round(0.35 * 255).toString(16).padStart(2, '0')}` }}
         >
           {React.createElement(IconComponent as React.ComponentType<{ className?: string; style?: React.CSSProperties; strokeWidth?: number }>, {
             className: "w-5 h-5",
-            style: { 
+            style: {
               color: '#ffffff',
               filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.7))'
             },
             strokeWidth: 1.5
           })}
-          <span className="text-xs font-semibold tracking-wider uppercase" style={{ 
+          <span className="text-xs font-semibold tracking-wider uppercase" style={{
             color: '#ffffff',
             textShadow: '0 1px 2px rgba(0,0,0,0.7), 0 0 2px rgba(0,0,0,0.5)',
             letterSpacing: '0.1em'
@@ -316,7 +309,7 @@ export function MiniNodeCard({
                 transition={{ duration: 0.3 }}
                 className="w-full py-2 rounded-xl text-xs font-medium transition-all duration-200"
                 style={{
-                  background: isConfirming 
+                  background: isConfirming
                     ? "rgba(34, 197, 94, 0.8)"
                     : `linear-gradient(135deg, ${theme.shimmer.primary}cc, ${theme.shimmer.primary}66)`,
                   color: "white",

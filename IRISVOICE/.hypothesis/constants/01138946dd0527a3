@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\country211.py
+# hypothesis_version: 6.151.9
+
+['country211', 'split', 'test', 'train', 'valid']

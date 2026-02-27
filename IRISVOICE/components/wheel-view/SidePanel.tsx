@@ -57,6 +57,15 @@ export const SidePanel: React.FC<SidePanelProps> = ({
       const fieldValue = values[field.id] ?? field.defaultValue
 
       switch (field.type) {
+        case "section":
+          return (
+            <div key={field.id} className="pt-4 pb-1 border-b border-white/5 mb-2">
+              <span className="text-[9px] font-black uppercase tracking-[0.2em] text-white/30">
+                {field.label}
+              </span>
+            </div>
+          )
+
         case "text":
           return (
             <TextField
@@ -122,6 +131,30 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               onChange={(value) => onValueChange(field.id, value)}
               glowColor={glowColor}
             />
+          )
+
+        case "custom":
+          return (
+            <button
+              key={field.id}
+              onClick={() => onValueChange(field.id, "trigger")}
+              className="w-full py-2 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all"
+              style={{
+                background: `${glowColor}15`,
+                border: `1px solid ${glowColor}44`,
+                color: glowColor
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = `${glowColor}25`
+                e.currentTarget.style.borderColor = `${glowColor}66`
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = `${glowColor}15`
+                e.currentTarget.style.borderColor = `${glowColor}44`
+              }}
+            >
+              {field.label}
+            </button>
           )
 
         default:

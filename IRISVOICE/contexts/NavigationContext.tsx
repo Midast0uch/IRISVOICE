@@ -498,11 +498,26 @@ interface NavigationContextValue {
   currentCategory: string | null
   currentSubnode: string | null
   voiceState: "idle" | "listening" | "processing_conversation" | "processing_tool" | "speaking" | "error"
+  audioLevel: number
   fieldValues: Record<string, any>
+  fieldErrors: Record<string, string> // Map of "subnodeId:fieldId" to error message
   lastTextResponse: { text: string; sender: "assistant" } | null
+  activeTheme: { primary: string; glow: string; font: string } // Add activeTheme from WebSocket
   selectCategory: (category: string) => void
   selectSubnode: (subnodeId: string) => void
   sendMessage: (type: string, payload?: any) => boolean
+  clearFieldError: (subnodeId: string, fieldId: string) => void
+  
+  // Voice actions
+  startVoiceCommand: () => void
+  endVoiceCommand: () => void
+  
+  // Chat actions
+  clearChat: () => void
+  
+  // Agent actions
+  getAgentStatus: () => void
+  getAgentTools: () => void
 }
 
 const NavigationContext = createContext<NavigationContextValue | undefined>(undefined)
@@ -519,12 +534,21 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     currentCategory,
     currentSubnode,
     voiceState,
+    audioLevel,
     fieldValues,
+    fieldErrors,
     lastTextResponse,
+    theme: activeTheme, // Expose theme from WebSocket as activeTheme
     selectCategory,
     selectSubnode,
     sendMessage,
+    clearFieldError,
     subnodes, // This is the subnodes from WebSocket
+    startVoiceCommand,
+    endVoiceCommand,
+    clearChat: wsClearChat,
+    getAgentStatus,
+    getAgentTools,
   } = useIRISWebSocket()
 
   // Initialize from localStorage with migration support
@@ -791,11 +815,26 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     currentCategory,
     currentSubnode,
     voiceState,
+    audioLevel,
     fieldValues,
+    fieldErrors,
     lastTextResponse,
+    activeTheme, // Add activeTheme from WebSocket
     selectCategory,
     selectSubnode,
     sendMessage,
+    clearFieldError,
+    
+    // Voice actions
+    startVoiceCommand,
+    endVoiceCommand,
+    
+    // Chat actions
+    clearChat: wsClearChat,
+    
+    // Agent actions
+    getAgentStatus,
+    getAgentTools,
   }), [
     state,
     config,
@@ -835,11 +874,26 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     currentCategory,
     currentSubnode,
     voiceState,
+    audioLevel,
     fieldValues,
+    fieldErrors,
     lastTextResponse,
+    activeTheme, // Add activeTheme to dependencies
     selectCategory,
     selectSubnode,
     sendMessage,
+    clearFieldError,
+    
+    // Voice actions
+    startVoiceCommand,
+    endVoiceCommand,
+    
+    // Chat actions
+    wsClearChat,
+    
+    // Agent actions
+    getAgentStatus,
+    getAgentTools,
   ])
 
   return (

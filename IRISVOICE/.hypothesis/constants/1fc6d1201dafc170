@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\mobilenetv2.py
+# hypothesis_version: 6.151.9
+
+[0.01, 0.2, 0.301, 1.0, 13.555, 13.598, 71.878, 72.154, 90.286, 90.822, 160, 224, 232, 320, 1000, 1280, 3504872, 'ImageNet-1K', 'MobileNetV2', 'MobileNet_V2_Weights', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'fan_out', 'min_size', 'mobilenet_v2', 'num_classes', 'num_params', 'pretrained', 'recipe']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\transforms\_multi_channel.py
+# hypothesis_version: 6.151.9
+
+[1e-15, 1e-08, 1e-07, 'mask_sum_n', 'mask_sum_s', 'psd_n', 'psd_s', 'ref_channel', 'stv_evd', 'stv_power']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\tokenizers\implementations\char_level_bpe.py
+# hypothesis_version: 6.151.9
+
+[1000, 30000, '</w>', '<unk>', 'BPE', 'bert_normalizer', 'dropout', 'lowercase', 'model', 'suffix', 'unicode_normalizer', 'unk_token']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\generators.py
+# hypothesis_version: 6.151.9
+
+['# generator resume', '# generator suspend', '.next', '>', 'DEBUGJIT: {0}', 'entry', 'finalize_', 'gen', 'gen.resume_index', 'gen.state', 'generator_prologue', 'generator_resume%d', 'stop_iteration']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\httpcore\_backends\mock.py
+# hypothesis_version: 6.151.9
+
+['Connection closed', 'h2', 'http/1.1', 'ssl_object']

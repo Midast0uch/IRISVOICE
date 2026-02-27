@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\big_modeling.py
+# hypothesis_version: 6.151.9
+
+[' and ', '0.43.2', 'attention_mask', 'auto', 'balanced', 'balanced_low_0', 'bitsandbytes', 'cpu', 'device', 'disk', 'empty', 'full', 'index.json', 'is_causal', 'is_loaded_in_4bit', 'is_loaded_in_8bit', 'meta', 'mps', 'ones', 'quantization_method', 'requires_grad', 'self_attn', 'sequential', 'to', 'zeros']

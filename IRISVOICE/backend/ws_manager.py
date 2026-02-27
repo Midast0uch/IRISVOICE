@@ -4,6 +4,7 @@ Handles client connections, session association, and message routing.
 """
 import json
 import logging
+import asyncio
 from typing import Dict, List, Set, Optional
 from fastapi import WebSocket
 from datetime import datetime
@@ -17,41 +18,76 @@ from .state_manager import get_state_manager, StateManager
 class WebSocketManager:
     """
     Manages WebSocket connections and associates them with IRIS sessions.
+    Includes ping/pong heartbeat mechanism to maintain connections.
     """
+    
+    PING_INTERVAL = 30  # seconds
+    PONG_TIMEOUT = 5    # seconds
     
     def __init__(self, session_manager: Optional[SessionManager] = None, state_manager: Optional[StateManager] = None):
         self.active_connections: Dict[str, WebSocket] = {}
         self._session_manager = session_manager or get_session_manager()
         self._state_manager = state_manager or get_state_manager()
+        self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
+        self._last_pong: Dict[str, datetime] = {}
     
     async def connect(self, websocket: WebSocket, client_id: str, session_id: Optional[str] = None) -> Optional[str]:
         """
         Accept a new WebSocket connection and associate it with a session.
         If session_id is not provided, a new session is created.
         Returns the session_id if successful, None otherwise.
+        
+        Error Handling:
+        - Connection failures: Logged and None returned
+        - Session creation failures: Logged and None returned
+        - State initialization failures: Logged but connection continues
         """
-        if client_id in self.active_connections:
-            logger.debug(f"Client {client_id} already connected.")
-            return self._session_manager.client_to_session.get(client_id)
-        
-        await websocket.accept()
-        self.active_connections[client_id] = websocket
-        
-        # Create or get session
-        if session_id is None:
-            session_id = await self._session_manager.create_session()
-            # Initialize the state for the new session
-            await self._state_manager.initialize_session_state(session_id)
-        elif not self._session_manager.get_session(session_id):
-             # If client requests a specific session that doesn't exist, create it
-            await self._session_manager.create_session(session_id=session_id)
-            await self._state_manager.initialize_session_state(session_id)
+        try:
+            if client_id in self.active_connections:
+                logger.debug(f"Client {client_id} already connected.")
+                return self._session_manager.client_to_session.get(client_id)
+            
+            # Accept WebSocket connection with error handling
+            try:
+                await websocket.accept()
+            except Exception as e:
+                logger.error(f"Failed to accept WebSocket connection for client {client_id}: {e}", exc_info=True)
+                return None
+            
+            self.active_connections[client_id] = websocket
+            
+            # Create or get session with error handling
+            try:
+                if session_id is None:
+                    session_id = await self._session_manager.create_session()
+                    # Initialize the state for the new session
+                    await self._state_manager.initialize_session_state(session_id)
+                elif not self._session_manager.get_session(session_id):
+                    # If client requests a specific session that doesn't exist, create it
+                    await self._session_manager.create_session(session_id=session_id)
+                    await self._state_manager.initialize_session_state(session_id)
+            except Exception as e:
+                logger.error(f"Failed to create/restore session for client {client_id}: {e}", exc_info=True)
+                # Clean up connection
+                if client_id in self.active_connections:
+                    del self.active_connections[client_id]
+                return None
 
-        # Associate client with session
-        self._session_manager.associate_client_with_session(client_id, session_id)
-        
-        logger.info(f"Client {client_id} connected to session {session_id}. Total clients: {len(self.active_connections)}")
-        return session_id
+            # Associate client with session
+            self._session_manager.associate_client_with_session(client_id, session_id)
+            
+            # Start heartbeat for this client
+            self._last_pong[client_id] = datetime.now()
+            self._heartbeat_tasks[client_id] = asyncio.create_task(self._heartbeat_loop(client_id))
+            
+            logger.info(f"Client {client_id} connected to session {session_id}. Total clients: {len(self.active_connections)}")
+            return session_id
+        except Exception as e:
+            logger.error(f"Unexpected error during connection for client {client_id}: {e}", exc_info=True)
+            # Clean up any partial state
+            if client_id in self.active_connections:
+                del self.active_connections[client_id]
+            return None
     
     def disconnect(self, client_id: str):
         """Remove a client connection and dissociate from its session."""
@@ -59,7 +95,78 @@ class WebSocketManager:
             del self.active_connections[client_id]
             # Dissociate client from session but don't end the session
             session_id = self._session_manager.dissociate_client(client_id)
+            
+            # Cancel heartbeat task
+            if client_id in self._heartbeat_tasks:
+                self._heartbeat_tasks[client_id].cancel()
+                del self._heartbeat_tasks[client_id]
+            
+            # Clean up pong tracking
+            if client_id in self._last_pong:
+                del self._last_pong[client_id]
+            
             logger.debug(f"Client {client_id} disconnected from session {session_id}. Total clients: {len(self.active_connections)}")
+    
+    async def _heartbeat_loop(self, client_id: str):
+        """
+        Send ping messages every PING_INTERVAL seconds.
+        Disconnect client if pong not received within PONG_TIMEOUT.
+        
+        Error Handling:
+        - Ping send failures: Log and disconnect client
+        - Pong timeout: Log warning and disconnect client with reconnection attempt
+        """
+        try:
+            while client_id in self.active_connections:
+                await asyncio.sleep(self.PING_INTERVAL)
+                
+                if client_id not in self.active_connections:
+                    break
+                
+                # Send ping with error handling
+                try:
+                    await self.send_to_client(client_id, {"type": "ping", "payload": {}})
+                    logger.debug(f"Sent ping to client {client_id}")
+                    
+                    # Wait for pong response
+                    await asyncio.sleep(self.PONG_TIMEOUT)
+                    
+                    # Check if pong was received within timeout
+                    if client_id in self._last_pong:
+                        time_since_pong = (datetime.now() - self._last_pong[client_id]).total_seconds()
+                        if time_since_pong > self.PONG_TIMEOUT + self.PING_INTERVAL:
+                            logger.warning(
+                                f"Client {client_id} did not respond to ping within {self.PONG_TIMEOUT}s, disconnecting",
+                                extra={"client_id": client_id, "timeout": self.PONG_TIMEOUT}
+                            )
+                            self.disconnect(client_id)
+                            break
+                except Exception as e:
+                    logger.error(
+                        f"Error in heartbeat for client {client_id}: {e}",
+                        exc_info=True,
+                        extra={"client_id": client_id, "error": str(e)}
+                    )
+                    self.disconnect(client_id)
+                    break
+        except asyncio.CancelledError:
+            logger.debug(f"Heartbeat task cancelled for client {client_id}")
+        except Exception as e:
+            logger.error(
+                f"Unexpected error in heartbeat loop for client {client_id}: {e}",
+                exc_info=True,
+                extra={"client_id": client_id, "error": str(e)}
+            )
+            self.disconnect(client_id)
+    
+    async def handle_pong(self, client_id: str):
+        """
+        Handle pong message from client.
+        Updates the last pong timestamp for the client.
+        """
+        if client_id in self._last_pong:
+            self._last_pong[client_id] = datetime.now()
+            logger.debug(f"Received pong from client {client_id}")
     
     def get_session_id_for_client(self, client_id: str) -> Optional[str]:
         """Get the session ID for a given client ID."""

@@ -1,0 +1,16 @@
+{
+  "session_id": "h\uab9a\u0144\u00c3Z\u1d24\u00cc",
+  "session_start": 1772161089.6836941,
+  "last_updated": 1772161089.685065,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "0",
+      "timestamp": 1772161089.6849856,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

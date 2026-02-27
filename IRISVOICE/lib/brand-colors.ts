@@ -36,7 +36,7 @@ export function generateAetherGradient(hue: number): string {
 // === EMBER THEME GENERATORS ===
 // Warm industrial with saturation cap and amber shift
 
-export function generateEmberGlow(hue: number, saturation: number): {
+export function generateEmberGlow(hue: number, saturation: number, lightness: number): {
   edgeGlow: string
   edgeSoft: string
   interactionWash: string
@@ -47,25 +47,25 @@ export function generateEmberGlow(hue: number, saturation: number): {
   const warmedHue = (hue + 10) % 360
   // Cap saturation at 70% for metallic realism
   const cappedSaturation = Math.min(saturation, 70)
-  
+
   return {
     warmedHue,
     cappedSaturation,
-    edgeGlow: `hsl(${warmedHue}, ${cappedSaturation * 0.6}%, 45%)`,
-    edgeSoft: `hsl(${warmedHue}, ${cappedSaturation * 0.5}%, 50%, 0.3)`,
-    interactionWash: `hsl(${warmedHue}, ${cappedSaturation * 0.4}%, 50%, 0.1)`,
+    edgeGlow: `hsl(${warmedHue}, ${cappedSaturation * 0.6}%, ${lightness}%)`,
+    edgeSoft: `hsl(${warmedHue}, ${cappedSaturation * 0.5}%, ${lightness}%, 0.3)`,
+    interactionWash: `hsl(${warmedHue}, ${cappedSaturation * 0.4}%, ${lightness}%, 0.1)`,
   }
 }
 
-export function generateEmberEdgeGradient(hue: number, saturation: number): string {
-  const { warmedHue, cappedSaturation } = generateEmberGlow(hue, saturation)
-  return `linear-gradient(180deg, hsl(${warmedHue}, ${cappedSaturation * 0.6}%, 45%), transparent 80%)`
+export function generateEmberEdgeGradient(hue: number, saturation: number, lightness: number): string {
+  const { warmedHue, cappedSaturation } = generateEmberGlow(hue, saturation, lightness)
+  return `linear-gradient(180deg, hsl(${warmedHue}, ${cappedSaturation * 0.6}%, ${lightness}%), transparent 80%)`
 }
 
 // === AURUM THEME GENERATORS ===
 // Liquid metal with heavy desaturation
 
-export function generateAurumMetal(hue: number, saturation: number): {
+export function generateAurumMetal(hue: number, saturation: number, lightness: number): {
   primary: string
   secondary: string
   highlight: string
@@ -74,13 +74,13 @@ export function generateAurumMetal(hue: number, saturation: number): {
 } {
   // Heavy desaturation (40% of base) for metallic effect
   const desaturatedSaturation = saturation * 0.4
-  
+
   return {
     desaturatedSaturation,
-    primary: `hsl(${hue}, ${desaturatedSaturation}%, 55%)`,
-    secondary: `hsl(${(hue - 20 + 360) % 360}, ${desaturatedSaturation * 1.25}%, 45%)`,
-    highlight: `hsl(${hue}, ${desaturatedSaturation * 1.5}%, 70%)`,
-    ambient: `hsl(${hue}, 60%, 50%, 0.15)`,
+    primary: `hsl(${hue}, ${desaturatedSaturation}%, ${lightness}%)`,
+    secondary: `hsl(${(hue - 20 + 360) % 360}, ${desaturatedSaturation * 1.25}%, ${Math.max(0, lightness - 10)}%)`,
+    highlight: `hsl(${hue}, ${desaturatedSaturation * 1.5}%, ${Math.min(100, lightness + 15)}%)`,
+    ambient: `hsl(${hue}, 60%, ${lightness}%, 0.15)`,
   }
 }
 
@@ -138,9 +138,9 @@ export function meetsContrastRequirements(
   const [r, g, b] = hslToRgb(foregroundHue, foregroundSat, foregroundLight)
   const luminance = getLuminance(r, g, b)
   const ratio = getContrastRatio(luminance, backgroundLuminance)
-  
+
   const requiredRatio = level === 'AAA' ? 7 : textSize === 'large' ? 3 : 4.5
-  
+
   // Suggest adjusted lightness if needed
   let suggestedLightness = foregroundLight
   if (ratio < requiredRatio) {
@@ -153,7 +153,7 @@ export function meetsContrastRequirements(
       suggestedLightness = Math.max(5, foregroundLight - 20)
     }
   }
-  
+
   return {
     passes: ratio >= requiredRatio,
     ratio: Math.round(ratio * 10) / 10,
@@ -203,11 +203,11 @@ export const PRESET_COLORS = [
 export function interpolateHue(from: number, to: number, progress: number): number {
   const diff = to - from
   let adjustedDiff = diff
-  
+
   // Take the shortest path around the wheel
   if (diff > 180) adjustedDiff = diff - 360
   if (diff < -180) adjustedDiff = diff + 360
-  
+
   const result = from + adjustedDiff * progress
   return ((result % 360) + 360) % 360
 }

@@ -1,4 +1,4 @@
-export type FieldType = 'text' | 'slider' | 'dropdown' | 'toggle' | 'color' | 'custom'
+export type FieldType = "text" | "slider" | "dropdown" | "toggle" | "color" | "custom" | "section"
 
 export type FieldValue = string | number | boolean | Record<string, unknown>;
 
@@ -35,14 +35,14 @@ export interface ConfirmedNode {
   timestamp: number
 }
 
-export type NavigationLevel = 1 | 2 | 3
+export type NavigationLevel = 1 | 2 | 3 | 4
 
-export type TransitionStyle = 
-  | 'radial-spin' 
-  | 'clockwork' 
-  | 'slot-machine' 
-  | 'holographic' 
-  | 'liquid-morph' 
+export type TransitionStyle =
+  | 'radial-spin'
+  | 'clockwork'
+  | 'slot-machine'
+  | 'holographic'
+  | 'liquid-morph'
   | 'pure-fade'
 
 export type ExitStyle = 'symmetric' | 'fade-out' | 'fast-rewind'
@@ -108,6 +108,7 @@ export const LEVEL_NAMES: Record<NavigationLevel, string> = {
   1: 'COLLAPSED',
   2: 'MAIN_EXPANDED',
   3: 'SUB_EXPANDED',
+  4: 'DETAIL_VIEW',
 }
 
 export const DEFAULT_NAV_CONFIG: NavigationConfig = {

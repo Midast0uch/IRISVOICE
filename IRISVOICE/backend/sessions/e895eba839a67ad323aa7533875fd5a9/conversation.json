@@ -1,0 +1,88 @@
+{
+  "session_id": "e895eba839a67ad323aa7533875fd5a9",
+  "session_start": 1772156332.7037811,
+  "last_updated": 1772156332.7127287,
+  "max_messages": 50,
+  "messages": [
+    {
+      "role": "user",
+      "content": "\ud941\udd1e \u00a4",
+      "timestamp": 1772156332.7041504,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00a0\"\u00a9\u00e0b\uda15\ude6e\u00c9",
+      "timestamp": 1772156332.7045498,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u00b2\u00f5\u00a6 ",
+      "timestamp": 1772156332.7049963,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00d3",
+      "timestamp": 1772156332.7059026,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\ud888\uddfe\u0014",
+      "timestamp": 1772156332.7071319,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\ud835\udd7f\ud835\udd8d\ud835\udd8a \ud835\udd96\ud835\udd9a\ud835\udd8e\ud835\udd88\ud835\udd90 \ud835\udd87\ud835\udd97\ud835\udd94\ud835\udd9c\ud835\udd93 \ud835\udd8b\ud835\udd94\ud835\udd9d \ud835\udd8f\ud835\udd9a\ud835\udd92\ud835\udd95\ud835\udd98 \ud835\udd94\ud835\udd9b\ud835\udd8a\ud835\udd97 \ud835\udd99\ud835\udd8d\ud835\udd8a \ud835\udd91\ud835\udd86\ud835\udd9f\ud835\udd9e \ud835\udd89\ud835\udd94\ud835\udd8c",
+      "timestamp": 1772156332.7081285,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u0013\u00b2",
+      "timestamp": 1772156332.7091007,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\uda90\udcb6\uda24\udc92\udbbe\udeeb\u0082\t\u00a8~",
+      "timestamp": 1772156332.7102213,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "\u00d4\u009b",
+      "timestamp": 1772156332.7113218,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "\u00a4\u00d7",
+      "timestamp": 1772156332.7126892,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

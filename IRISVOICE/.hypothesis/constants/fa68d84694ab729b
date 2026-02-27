@@ -1,0 +1,4 @@
+# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\conversation.py
+# hypothesis_version: 6.151.9
+
+[0.7, '/', '/v1/chat/completions', '/v1/completions', 'Content-Type', 'LM_STUDIO_ENDPOINT', 'LM_STUDIO_MODEL', 'application/json', 'assistant', 'choices', 'content', 'default', 'endpoint', 'max_context_messages', 'message', 'messages', 'model', 'role', 'system', 'temperature', 'timeout', 'user']

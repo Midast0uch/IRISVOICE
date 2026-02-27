@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\llvmlite\binding\executionengine.py
+# hypothesis_version: 6.151.9
+
+['aarch64', 'arm64', 'ascii', 'buf_len', 'buf_ptr', 'module_ptr']

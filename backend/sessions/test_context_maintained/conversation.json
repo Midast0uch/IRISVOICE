@@ -1,0 +1,88 @@
+{
+  "session_id": "test_context_maintained",
+  "session_start": 1772075737.5201018,
+  "last_updated": 1772160377.7980928,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "My name is Alice",
+      "timestamp": 1772075769.3179543,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "respond",
+      "timestamp": 1772075769.3193579,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is my name?",
+      "timestamp": 1772075769.320362,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "respond",
+      "timestamp": 1772075769.3214173,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "My name is Alice",
+      "timestamp": 1772085405.6348739,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "respond",
+      "timestamp": 1772085405.63589,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is my name?",
+      "timestamp": 1772085405.6365511,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "respond",
+      "timestamp": 1772085405.6375155,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "My name is Alice",
+      "timestamp": 1772160377.7973976,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "What is my name?",
+      "timestamp": 1772160377.7980838,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

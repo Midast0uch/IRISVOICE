@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\transforms\v2\functional\_misc.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.001, 0.1, 0.15, 0.35, 1.0, 2.0, 255, 'reflect']

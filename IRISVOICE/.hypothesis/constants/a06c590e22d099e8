@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\integrations\tensor_parallel.py
+# hypothesis_version: 6.151.9
+
+['*', '.', '.*', '2.5', 'BF16', 'BOOL', 'F16', 'F32', 'F64', 'F8_E4M3', 'F8_E5M2', 'I16', 'I32', 'I64', 'I8', 'LOCAL_RANK', 'RANK', 'U8', 'WORLD_SIZE', '\\.\\d+(\\.|$)', '\\d+', '_bias', '_input_mask', '_is_hooked', 'bias', 'colwise', 'cpu', 'cuda', 'embedding_rowwise', 'ep_router', 'gloo', 'grouped_gemm', 'hccl', 'hpu', 'moe_tp_experts', 'mps', 'nccl', 'packed_colwise', 'packed_rowwise', 'rowwise', 'rowwise_split_input', 'sequence_parallel', 'tp', 'w', 'xccl', 'xpu']

@@ -10,6 +10,7 @@ import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { Mic, Settings, Zap, Shield, Palette, BarChart3 } from "lucide-react"
 
 import { MAIN_CATEGORY_IDS, SUB_NODE_IDS } from "@/data/navigation-ids"
+import { getMiniNodesForSubnode } from "@/data/mini-nodes"
 
 // Main node configuration with icons
 const MAIN_NODES = [
@@ -76,7 +77,9 @@ export default function HexagonalControlCenter() {
     if (nav.state.level === 2) {
       nav.handleSelectMain(nodeId)
     } else if (nav.state.level === 3) {
-      nav.handleSelectSub(nodeId, [])
+      // Load actual mini-nodes for the selected sub-node
+      const miniNodes = getMiniNodesForSubnode(nodeId)
+      nav.handleSelectSub(nodeId, miniNodes)
     }
   }, [nav])
 
@@ -89,8 +92,6 @@ export default function HexagonalControlCenter() {
         return { orbRadius: 160, nodeSize: 90, showNodes: true }
       case 3:
         return { orbRadius: 140, nodeSize: 90, showNodes: true }
-      case 4:
-        return { orbRadius: 260, nodeSize: 180, showNodes: true }
       default:
         return { orbRadius: 0, nodeSize: 0, showNodes: false }
     }
@@ -120,15 +121,6 @@ export default function HexagonalControlCenter() {
     return []
   }, [nav.state.level, nav.state.selectedMain, nav.state.selectedSub, nav.subnodes])
 
-  // Liquid line for level 4
-  const showLiquidLine = nav.state.level === 4 && nav.state.selectedSub !== null
-  const liquidLineAngle = useMemo(() => {
-    if (!nav.state.selectedSub || !nav.state.selectedMain) return 0
-    const nodes = nav.subnodes[nav.state.selectedMain] || []
-    const index = nodes.findIndex((n: { id: string; label: string }) => n.id === nav.state.selectedSub)
-    return SUB_NODE_ANGLES[index] || 0
-  }, [nav.state.selectedSub, nav.state.selectedMain, nav.subnodes])
-
   if (!levelConfig.showNodes) {
     return null
   }
@@ -154,22 +146,6 @@ export default function HexagonalControlCenter() {
           />
         ))}
       </AnimatePresence>
-
-      {/* Liquid line for level 4 */}
-      {showLiquidLine && (
-        <motion.div
-          className="absolute left-1/2 top-1/2 w-1 bg-gradient-to-b from-transparent via-cyan-400 to-transparent"
-          style={{
-            height: levelConfig.orbRadius * 2,
-            transformOrigin: 'center',
-            transform: `translate(-50%, -50%) rotate(${liquidLineAngle}deg)`,
-          }}
-          initial={{ scaleY: 0 }}
-          animate={{ scaleY: 1 }}
-          exit={{ scaleY: 0 }}
-          transition={{ duration: 0.3 }}
-        />
-      )}
     </div>
   )
 }

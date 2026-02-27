@@ -52,12 +52,17 @@ class StateManager:
         if state_manager:
             await state_manager.set_subnode(subnode_id)
     
-    async def update_field(self, session_id: str, subnode_id: str, field_id: str, value: Any) -> bool:
-        """Update a field value for a session"""
+    async def update_field(self, session_id: str, subnode_id: str, field_id: str, value: Any, timestamp: Optional[float] = None) -> tuple[bool, float]:
+        """Update a field value for a session
+        
+        Returns:
+            tuple[bool, float]: (success, timestamp) - success indicates if update was applied,
+                               timestamp is the timestamp of this update
+        """
         state_manager = await self._get_session_state_manager(session_id)
         if state_manager:
-            return await state_manager.update_field(subnode_id, field_id, value)
-        return False
+            return await state_manager.update_field(subnode_id, field_id, value, timestamp)
+        return False, 0.0
     
     async def confirm_subnode(self, session_id: str, category: str, subnode_id: str, values: Dict[str, Any]) -> Optional[float]:
         """Confirm a subnode for a session"""

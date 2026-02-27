@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\externals\array_api_extra\_delegation.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-08, 1e-05, 'constant', 'integral', 'isclose', 'nan_to_num', 'one_hot', 'pad']

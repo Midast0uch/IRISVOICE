@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\segmentation\fcn.py
+# hypothesis_version: 6.151.9
+
+[0.1, 60.5, 63.7, 91.4, 91.9, 135.009, 152.717, 207.711, 232.738, 520, 1024, 2048, 35322218, 54314346, 'FCN', 'FCN_ResNet50_Weights', '_docs', '_file_size', '_metrics', '_ops', 'aux', 'aux_loss', 'categories', 'fcn_resnet101', 'fcn_resnet50', 'layer3', 'layer4', 'min_size', 'miou', 'num_classes', 'num_params', 'out', 'pixel_acc', 'pretrained', 'pretrained_backbone', 'recipe']

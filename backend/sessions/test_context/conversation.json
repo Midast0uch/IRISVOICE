@@ -1,0 +1,56 @@
+{
+  "session_id": "test_context",
+  "session_start": 1772075711.9363372,
+  "last_updated": 1772075737.6291885,
+  "max_messages": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Message 1",
+      "timestamp": 1772075711.9368823,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Response 1",
+      "timestamp": 1772075711.9374685,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Message 2",
+      "timestamp": 1772075711.9381359,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Message 1",
+      "timestamp": 1772075737.6261814,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "assistant",
+      "content": "Response 1",
+      "timestamp": 1772075737.6279054,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    },
+    {
+      "role": "user",
+      "content": "Message 2",
+      "timestamp": 1772075737.6291611,
+      "audio_tokens": 0,
+      "text_tokens": 0,
+      "tool_results": null
+    }
+  ]
+}

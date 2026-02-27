@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\io\__init__.py
+# hypothesis_version: 6.151.9
+
+['ImageReadMode', 'Timebase', 'Video', 'VideoMetaData', 'VideoReader', '_HAS_VIDEO_OPT', 'decode_avif', 'decode_gif', 'decode_heic', 'decode_image', 'decode_jpeg', 'decode_png', 'decode_webp', 'encode_jpeg', 'encode_png', 'read_file', 'read_image', 'read_video', 'write_file', 'write_jpeg', 'write_png', 'write_video']

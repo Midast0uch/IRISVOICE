@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\librosa\segment.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.5, 1.0, 2.0, 'F', '_ArrayOrSparseMatrix', '_F', 'affinity', 'agglomerative', 'auto', 'brute', 'connectivity', 'constant', 'cross_similarity', 'csc', 'csr', 'distance', 'euclidean', 'gmean_k', 'gmean_k_avg', 'hann', 'lag_to_recurrence', 'mean_k', 'mean_k_avg', 'mean_k_avg_and_pair', 'med_k_scalar', 'path_enhance', 'recurrence_matrix', 'recurrence_to_lag', 'subsegment', 'timelag_filter']

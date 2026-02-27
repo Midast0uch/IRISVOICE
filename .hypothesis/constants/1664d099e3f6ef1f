@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\decomposition\_truncated_svd.py
+# hypothesis_version: 6.151.9
+
+[0.0, 'LU', 'OR', 'TruncatedSVD', 'algorithm', 'arpack', 'auto', 'csc', 'csr', 'float32', 'float64', 'left', 'n_components', 'n_iter', 'n_oversamples', 'none', 'random_state', 'randomized', 'tol']
