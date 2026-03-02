@@ -9,6 +9,7 @@ import { SidePanel } from "./SidePanel"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import type { MiniNode, FieldValue } from "@/types/navigation"
+import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
 
 interface WheelViewProps {
   categoryId: string
@@ -36,7 +37,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
   onConfirm,
   onBackToCategories,
 }) => {
-  const { state, updateMiniNodeValue, voiceState, audioLevel, startVoiceCommand, endVoiceCommand } = useNavigation()
+  const { state, updateMiniNodeValue, voiceState, audioLevel, startVoiceCommand, endVoiceCommand, sendMessage, fieldErrors } = useNavigation()
   const {
     getThemeConfig,
     basePlateColor,
@@ -116,8 +117,20 @@ export const WheelView: React.FC<WheelViewProps> = ({
       }
     }
 
+    // Update local state
     updateMiniNodeValue(activeMiniNode.id, fieldId, value)
-  }, [activeMiniNode, updateMiniNodeValue, setTheme, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, resetToThemeDefault])
+    
+    // Send update_field message to backend for all mini-nodes
+    // Map Card ID to Section ID using the navigation constants
+    const sectionId = CARD_TO_SECTION_ID[activeMiniNode.id]
+    if (sectionId) {
+      sendMessage('update_field', {
+        subnode_id: sectionId,
+        field_id: fieldId,
+        value: value
+      })
+    }
+  }, [activeMiniNode, updateMiniNodeValue, sendMessage, setTheme, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, resetToThemeDefault])
 
   const handleConfirm = useCallback(() => {
     if (isAnimating) return
@@ -193,10 +206,10 @@ export const WheelView: React.FC<WheelViewProps> = ({
         style={{ width: 850, height: 750, paddingLeft: "40px", overflow: 'visible' }}
       >
         {/* Mechanics Stage: 600x600 provides room for 300px orb + 300px buffer safety (Phase 47: Enhanced) */}
-        {/* Force overflow: visible (Phase 50) to ensure soft blooms and text labels are never clipped */}
+        {/* Clip overflow to prevent outer ring from spinning outside container bounds */}
         <div
           className="relative pointer-events-none flex items-center justify-center shrink-0"
-          style={{ width: 600, height: 600, overflow: 'visible' }}
+          style={{ width: 600, height: 600, overflow: 'hidden' }}
         >
           {/* Centered Mechanims Layer - Absolute Visibility (Phase 50) */}
           <div className="relative" style={{ width: 300, height: 300, overflow: 'visible' }}>
@@ -306,6 +319,138 @@ export const WheelView: React.FC<WheelViewProps> = ({
               )}
             </AnimatePresence>
 
+            {/* Audio Level Visualization - Concentric Rings (z-index: 97) */}
+            <AnimatePresence>
+              {voiceState === 'listening' && audioLevel > 0 && (
+                <>
+                  {[0, 1, 2].map((ringIndex) => (
+                    <motion.div
+                      key={ringIndex}
+                      className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
+                      style={{
+                        width: 100 + ringIndex * 30,
+                        height: 100 + ringIndex * 30,
+                        border: `2px solid ${glowColor}`,
+                        opacity: 0.3 - ringIndex * 0.1,
+                        zIndex: 97 - ringIndex
+                      }}
+                      initial={{ scale: 1.0, opacity: 0 }}
+                      animate={{
+                        scale: 1.0 + (audioLevel * 0.3), // Map 0.0-1.0 to 1.0-1.3
+                        opacity: (0.3 - ringIndex * 0.1) * audioLevel
+                      }}
+                      exit={{ scale: 1.0, opacity: 0 }}
+                      transition={{
+                        duration: 0.016, // 60fps (1/60 = 0.016s)
+                        ease: "linear"
+                      }}
+                    />
+                  ))}
+                </>
+              )}
+            </AnimatePresence>
+
+            {/* Processing Spinner - Rotating Orbital Animation (z-index: 96) */}
+            <AnimatePresence>
+              {(voiceState === 'processing_conversation' || voiceState === 'processing_tool') && (
+                <motion.div
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+                  style={{
+                    width: 120,
+                    height: 120,
+                    zIndex: 96
+                  }}
+                  initial={{ opacity: 0, rotate: 0 }}
+                  animate={{ 
+                    opacity: 1,
+                    rotate: 360
+                  }}
+                  exit={{ opacity: 0 }}
+                  transition={{
+                    opacity: { duration: 0.3 },
+                    rotate: { duration: 2, repeat: Infinity, ease: "linear" }
+                  }}
+                >
+                  {/* Orbital dots */}
+                  {[0, 120, 240].map((angle) => (
+                    <div
+                      key={angle}
+                      className="absolute rounded-full"
+                      style={{
+                        width: 8,
+                        height: 8,
+                        background: glowColor,
+                        boxShadow: `0 0 10px ${glowColor}`,
+                        top: '50%',
+                        left: '50%',
+                        transform: `translate(-50%, -50%) rotate(${angle}deg) translateY(-60px)`
+                      }}
+                    />
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Error State - Red Pulsing Effect (z-index: 95) */}
+            <AnimatePresence>
+              {voiceState === 'error' && (
+                <motion.div
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
+                  style={{
+                    width: 120,
+                    height: 120,
+                    background: 'radial-gradient(circle, rgba(255, 50, 50, 0.4) 0%, rgba(255, 50, 50, 0.2) 50%, transparent 100%)',
+                    filter: "blur(20px)",
+                    zIndex: 95
+                  }}
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{
+                    opacity: [0.6, 1, 0.6],
+                    scale: [0.9, 1.2, 0.9]
+                  }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  transition={{
+                    duration: 1.5,
+                    repeat: Infinity,
+                    ease: "easeInOut"
+                  }}
+                />
+              )}
+            </AnimatePresence>
+
+            {/* Error Message Display (z-index: 94) */}
+            <AnimatePresence>
+              {voiceState === 'error' && (
+                <motion.div
+                  className="absolute top-full left-1/2 -translate-x-1/2 mt-4 pointer-events-none"
+                  style={{
+                    zIndex: 94,
+                    maxWidth: 250,
+                    textAlign: 'center'
+                  }}
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <div
+                    className="px-4 py-2 rounded-lg text-sm font-medium"
+                    style={{
+                      background: 'rgba(255, 50, 50, 0.15)',
+                      border: '1px solid rgba(255, 50, 50, 0.4)',
+                      color: '#ff6b6b',
+                      backdropFilter: 'blur(10px)',
+                      boxShadow: '0 4px 12px rgba(255, 50, 50, 0.2)'
+                    }}
+                  >
+                    {Object.keys(fieldErrors).length > 0 
+                      ? Object.values(fieldErrors)[0] 
+                      : 'Voice command error occurred'}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* 5-Layer Core Architecture + Interactive Button (Phase 110) */}
             <motion.button
               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full focus:outline-none"
@@ -323,14 +468,22 @@ export const WheelView: React.FC<WheelViewProps> = ({
               initial={{ opacity: 0, scale: 1.1 }}
               animate={{
                 opacity: 1,
-                scale: isVoiceActive 
-                  ? 1 + (audioLevel * 0.15) // Voice intensity modulates breathing (0.3-1.0 = 1.045-1.15 scale)
+                scale: voiceState === 'listening'
+                  ? [1.0, 1.1, 1.0] // Pulsing animation when listening
+                  : voiceState === 'error'
+                  ? [1.0, 1.05, 1.0] // Subtle pulse for error
+                  : isVoiceActive 
+                  ? 1 + (audioLevel * 0.15) // Voice intensity modulates breathing
                   : 1,
-                boxShadow: isVoiceActive 
-                  ? `0 0 ${20 + audioLevel * 40}px ${glowColor}` // Reactive glow (20-60px)
+                boxShadow: voiceState === 'error'
+                  ? `0 0 30px rgba(255, 50, 50, 0.8)` // Red glow for error
+                  : isVoiceActive 
+                  ? `0 0 ${20 + audioLevel * 40}px ${glowColor}` // Reactive glow
                   : "none",
-                filter: isVoiceActive 
-                  ? `drop-shadow(0 0 ${10 + audioLevel * 20}px ${glowColor})` // Reactive shadow (10-30px)
+                filter: voiceState === 'error'
+                  ? `drop-shadow(0 0 20px rgba(255, 50, 50, 0.8))` // Red shadow for error
+                  : isVoiceActive 
+                  ? `drop-shadow(0 0 ${10 + audioLevel * 20}px ${glowColor})` // Reactive shadow
                   : "none"
               }}
               transition={{ 
@@ -338,7 +491,11 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 stiffness: 100, 
                 damping: 20, 
                 delay: 0.7,
-                scale: { duration: 0.15 }, // Fast response to voice intensity
+                scale: voiceState === 'listening' 
+                  ? { duration: 1.5, repeat: Infinity, ease: "easeInOut" } // 1.5s pulsing for listening
+                  : voiceState === 'error'
+                  ? { duration: 1.5, repeat: Infinity, ease: "easeInOut" } // 1.5s pulsing for error
+                  : { duration: 0.15 }, // Fast response to voice intensity
                 boxShadow: { duration: 0.15 },
                 filter: { duration: 0.15 }
               }}

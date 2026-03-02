@@ -84,8 +84,8 @@ export function generateAurumMetal(hue: number, saturation: number, lightness: n
   }
 }
 
-export function generateAurumConicGradient(hue: number, saturation: number): string {
-  const metal = generateAurumMetal(hue, saturation)
+export function generateAurumConicGradient(hue: number, saturation: number, lightness: number = 50): string {
+  const metal = generateAurumMetal(hue, saturation, lightness)
   return `conic-gradient(from 0deg, ${metal.primary}, ${metal.highlight}, ${metal.secondary}, ${metal.primary})`
 }
 

@@ -44,7 +44,7 @@ export function BrandInput({
         }
       
       case 'ember':
-        const ember = generateEmberGlow(brandColor.hue, brandColor.saturation)
+        const ember = generateEmberGlow(brandColor.hue, brandColor.saturation, brandColor.lightness)
         return {
           container: {
             background: '#1c1c1e',
@@ -63,7 +63,7 @@ export function BrandInput({
         }
       
       case 'aurum':
-        const aurum = generateAurumMetal(brandColor.hue, brandColor.saturation)
+        const aurum = generateAurumMetal(brandColor.hue, brandColor.saturation, brandColor.lightness)
         return {
           container: {
             background: '#161616',
@@ -82,7 +82,7 @@ export function BrandInput({
         }
       default:
         // Fallback for verdant, nebula, crimson using aurum as base
-        const fallbackAurum = generateAurumMetal(brandColor.hue, brandColor.saturation)
+        const fallbackAurum = generateAurumMetal(brandColor.hue, brandColor.saturation, brandColor.lightness)
         return {
           container: {
             background: '#161616',

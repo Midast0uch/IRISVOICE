@@ -107,6 +107,10 @@ class IRISState(BaseModel):
     confirmed_nodes: List[ConfirmedNode] = Field(default_factory=list)
     app_state: AppState = Field(default=AppState.STARTING)
     
+    # Model selection (user-configurable dual-LLM)
+    selected_reasoning_model: Optional[str] = None
+    selected_tool_execution_model: Optional[str] = None
+    
     def get_category_values(self, category: str) -> Dict[str, Dict[str, Any]]:
         """Get all field values for a category (all subnodes)"""
         result = {}
@@ -285,6 +289,26 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
         ),
     ],
     "agent": [
+        SubNode(
+            id="inference_mode",
+            label="INFERENCE MODE",
+            icon="Server",
+            fields=[
+                InputField(id="inference_mode", type=FieldType.DROPDOWN, label="Inference Mode", options=["Local Models", "VPS Gateway", "OpenAI API"], value="Local Models"),
+                InputField(id="vps_url", type=FieldType.TEXT, label="VPS URL", placeholder="https://vps.example.com", value=""),
+                InputField(id="vps_api_key", type=FieldType.TEXT, label="VPS API Key", placeholder="Enter API key", value=""),
+                InputField(id="openai_api_key", type=FieldType.TEXT, label="OpenAI API Key", placeholder="sk-...", value=""),
+            ]
+        ),
+        SubNode(
+            id="model_selection",
+            label="MODEL SELECTION",
+            icon="BrainCircuit",
+            fields=[
+                InputField(id="reasoning_model", type=FieldType.DROPDOWN, label="Reasoning Model", options=[], value=""),
+                InputField(id="tool_execution_model", type=FieldType.DROPDOWN, label="Tool Execution Model", options=[], value=""),
+            ]
+        ),
         SubNode(
             id="model",
             label="MODEL",

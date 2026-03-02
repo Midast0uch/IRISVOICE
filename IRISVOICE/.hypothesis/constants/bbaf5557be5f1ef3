@@ -1,4 +1,0 @@
-# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\lfm_audio_manager.py
-# hypothesis_version: 6.151.9
-
-[0.5, 1.0, 2.0, 100.0, 32768.0, 100, 16000, 32767, '1', 'Alloy', 'Echo', 'Fable', 'LFMAudioManager', 'Nova', 'Onyx', 'Shimmer', 'activation_sound', 'audio', 'bumblebee', 'computer', 'cpu', 'cuda', 'device', 'error', 'hey computer', 'hey iris', 'jarvis', 'lfm_model_path', 'models', 'on_audio_response', 'on_error', 'on_status_change', 'on_wake_detected', 'openai/whisper-base', 'porcupine', 'processing', 'ready', 'speaking_rate', 'text', 'text-to-speech', 'tts_voice', 'wake_phrase', 'wake_words', 'wb']

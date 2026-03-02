@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\pipelines\_wav2vec2\impl.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.05, 0.1, 0.2, 128, 320, 512, 768, 800, 1024, 1280, 1920, 3072, 4096, 5120, 7680, 16000, '*', '-', 'Wav2Vec2', 'WavLM', 'aux_num_out', 'encoder_dropout', 'encoder_embed_dim', 'encoder_layer_drop', 'encoder_max_distance', 'encoder_num_buckets', 'encoder_num_heads', 'encoder_num_layers', 'extractor_conv_bias', 'extractor_mode', 'group_norm', 'layer_norm', 'wav2vec2_xlsr_1b.pth', 'wav2vec2_xlsr_2b.pth', 'wavlm_base.pth', 'wavlm_base_plus.pth', 'wavlm_large.pth']

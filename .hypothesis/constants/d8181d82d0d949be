@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\model\conformer\subsampling.py
-# hypothesis_version: 6.151.9
-
-[-0.5, 1.0, '_left_padding', 'dw_striding', 'dw_striding_conv1d', 'stride', 'striding', 'striding_conv1d', 'vggnet']

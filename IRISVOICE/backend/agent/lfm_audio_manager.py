@@ -563,11 +563,9 @@ class LFMAudioManager:
         try:
             logger.info("[LFMAudioManager] Starting end-to-end audio processing...")
             
-            # Step 1: Wake word detection (handled internally by LFM 2.5)
+            # Step 1: Wake word detection (optional - for passive listening mode)
+            # Note: This is kept for passive wake word detection but NOT required for manual trigger
             wake_detected = self.detect_wake_word(audio_data)
-            if not wake_detected and not self.wake_word_active:
-                logger.info("[LFMAudioManager] No wake word detected, skipping processing")
-                return b""
             
             # Step 2: Voice Activity Detection (handled internally by LFM 2.5)
             # In real LFM 2.5, this would detect speech boundaries

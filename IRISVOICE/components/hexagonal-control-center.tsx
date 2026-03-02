@@ -31,9 +31,9 @@ const SUB_NODES: Record<string, { id: string; label: string }[]> = {
     { id: SUB_NODE_IDS.VOICE_MODEL, label: "Model" },
   ],
   [MAIN_CATEGORY_IDS.AGENT]: [
+    { id: SUB_NODE_IDS.AGENT_MODEL_SELECTION, label: "Models" },
+    { id: SUB_NODE_IDS.AGENT_INFERENCE_MODE, label: "Inference" },
     { id: SUB_NODE_IDS.AGENT_IDENTITY, label: "Identity" },
-    { id: SUB_NODE_IDS.AGENT_WAKE, label: "Wake" },
-    { id: SUB_NODE_IDS.AGENT_SPEECH, label: "Speech" },
     { id: SUB_NODE_IDS.AGENT_MEMORY, label: "Memory" },
   ],
   [MAIN_CATEGORY_IDS.AUTOMATE]: [

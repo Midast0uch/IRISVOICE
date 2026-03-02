@@ -89,6 +89,9 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
   // 300px provides massive safety for high-intensity blooms, text labels, and all ring effects
   const buffer = 300
   const center = (orbSize + buffer) / 2
+  
+  // Calculate maximum radius to ensure all elements stay within bounds
+  const maxElementRadius = outerRadius + 35 // Accounts for outermost decorative elements
 
   // Sector angle calculations
   const outerSegmentAngle = outerItems.length > 0 ? 360 / outerItems.length : 0
@@ -533,7 +536,10 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
             delay: 0.3
           }
         }}
-        style={{ originX: "50%", originY: "50%" }}
+        style={{ 
+          transformOrigin: 'center center',
+          transformBox: 'view-box'
+        }}
       >
         {outerItems.map((item, index) => {
           const startAngle = index * outerSegmentAngle
@@ -648,7 +654,10 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
             delay: 0.5
           }
         }}
-        style={{ originX: "50%", originY: "50%" }}
+        style={{ 
+          transformOrigin: 'center center',
+          transformBox: 'view-box'
+        }}
       >
         {innerItems.map((item, index) => {
           const startAngle = index * innerSegmentAngle

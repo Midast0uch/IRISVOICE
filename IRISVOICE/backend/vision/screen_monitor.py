@@ -3,11 +3,18 @@ ScreenMonitor — Proactive screen monitoring for IRIS.
 
 Periodically captures the screen and analyzes it for context changes,
 enabling proactive assistance ("Hey, I noticed you got an error...").
+
+NOTE: Screen monitoring only works when VisionService is enabled by the user.
 """
 import asyncio
 import time
 import threading
 from typing import Any, Callable, Dict, List, Optional
+
+from backend.vision.vision_service import get_vision_service, VisionService
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ScreenMonitor:
@@ -55,20 +62,18 @@ class ScreenMonitor:
         # Callbacks for proactive notifications
         self._notification_callbacks: List[Callable[[Dict], None]] = []
 
-        # Lazy deps
-        self._minicpm_client = None
+        # Use shared VisionService (user must enable it)
+        self._vision_service: VisionService = get_vision_service()
+        
+        # Lazy-loaded screen capture
         self._screen_capture = None
 
         ScreenMonitor._initialized = True
 
-    def _get_minicpm_client(self):
-        if self._minicpm_client is None:
-            try:
-                from backend.vision import MiniCPMClient
-                self._minicpm_client = MiniCPMClient()
-            except Exception as e:
-                print(f"[ScreenMonitor] Cannot load MiniCPM client: {e}")
-        return self._minicpm_client
+    def _is_vision_available(self) -> bool:
+        """Check if vision is enabled and available."""
+        status = self._vision_service.get_status()
+        return status.get("status") == "enabled" and status.get("is_available", False)
 
     def _get_screen_capture(self):
         if self._screen_capture is None:
@@ -88,9 +93,9 @@ class ScreenMonitor:
         if self._is_running:
             return True
 
-        minicpm = self._get_minicpm_client()
-        if not minicpm or not minicpm.check_availability():
-            print("[ScreenMonitor] MiniCPM-o not available, cannot start")
+        # Check if vision service is enabled by user
+        if not self._is_vision_available():
+            logger.warning("[ScreenMonitor] Vision service not enabled, cannot start. User must enable vision first.")
             return False
 
         self._stop_event.clear()
@@ -99,7 +104,7 @@ class ScreenMonitor:
             target=self._monitor_loop, daemon=True
         )
         self._monitor_thread.start()
-        print("[ScreenMonitor] Started background monitoring")
+        logger.info("[ScreenMonitor] Started background monitoring")
         return True
 
     def stop(self):
@@ -125,6 +130,12 @@ class ScreenMonitor:
 
     def _check_screen(self):
         """Capture and analyze the screen."""
+        # Double-check vision is still available
+        if not self._is_vision_available():
+            logger.warning("[ScreenMonitor] Vision service no longer available, stopping monitor")
+            self.stop()
+            return
+        
         capture = self._get_screen_capture()
         if not capture:
             return
@@ -135,13 +146,27 @@ class ScreenMonitor:
         if not is_new and self.config.get("analyze_on_change_only", True):
             return
 
-        minicpm = self._get_minicpm_client()
-        if not minicpm:
+        # Analyze screen context using VisionService
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            analysis = loop.run_until_complete(
+                self._vision_service.analyze(
+                    image_b64=screenshot_b64,
+                    prompt="Analyze this screen. What app is active? Are there any errors or notable items? Is the user potentially stuck or needing help?"
+                )
+            )
+            loop.close()
+            
+            # Parse analysis into context structure
+            context = self._parse_analysis_to_context(analysis)
+            context["timestamp"] = time.time()
+            context["raw_analysis"] = analysis
+        except Exception as e:
+            logger.error(f"[ScreenMonitor] Vision analysis failed: {e}")
             return
-
-        # Analyze screen context
-        context = minicpm.detect_screen_context(screenshot_b64)
-        context["timestamp"] = time.time()
 
         # Check for notable changes
         notifications = self._detect_notable_changes(context)
@@ -207,6 +232,55 @@ class ScreenMonitor:
             })
 
         return notifications
+
+    def _parse_analysis_to_context(self, analysis: str) -> Dict[str, Any]:
+        """Parse vision analysis into context structure."""
+        context = {
+            "active_app": "unknown",
+            "notable_items": [],
+            "needs_help": False,
+            "suggestion": None,
+        }
+        
+        analysis_lower = analysis.lower()
+        
+        # Extract app name if mentioned
+        app_indicators = ["active app:", "application:", "window:", "in ", "using "]
+        for indicator in app_indicators:
+            if indicator in analysis_lower:
+                idx = analysis_lower.find(indicator)
+                if idx >= 0:
+                    # Extract a few words after the indicator
+                    end = min(idx + len(indicator) + 30, len(analysis))
+                    context["active_app"] = analysis[idx:end].strip()
+                    break
+        
+        # Check for errors
+        error_keywords = ["error", "exception", "failed", "warning", "crash", "issue", "problem"]
+        for keyword in error_keywords:
+            if keyword in analysis_lower:
+                # Extract the sentence containing the keyword
+                sentences = analysis.split('.')
+                for sent in sentences:
+                    if keyword in sent.lower():
+                        context["notable_items"].append(sent.strip())
+                        break
+        
+        # Check if user needs help
+        help_indicators = ["help", "stuck", "confused", "unclear", "assistance", "need help"]
+        for indicator in help_indicators:
+            if indicator in analysis_lower:
+                context["needs_help"] = True
+                # Try to extract suggestion
+                if "suggest" in analysis_lower or "try" in analysis_lower:
+                    sentences = analysis.split('.')
+                    for sent in sentences:
+                        if "suggest" in sent.lower() or "try" in sent.lower():
+                            context["suggestion"] = sent.strip()
+                            break
+                break
+        
+        return context
 
     def get_current_context(self) -> Optional[Dict[str, Any]]:
         """Get the most recent screen context analysis."""

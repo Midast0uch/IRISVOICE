@@ -52,6 +52,17 @@ interface TextResponseMessage {
   sender: "assistant"
 }
 
+interface VisionStatus {
+  status: "disabled" | "loading" | "enabled" | "error"
+  vram_usage_mb: number | null
+  load_progress_percent: number | null
+  error_message: string | null
+  last_used: string | null
+  model_name: string
+  quantization_enabled: boolean
+  is_available: boolean
+}
+
 interface UseIRISWebSocketReturn {
   isConnected: boolean
   connectionState: ConnectionState
@@ -84,10 +95,17 @@ interface UseIRISWebSocketReturn {
   startVoiceCommand: () => void
   endVoiceCommand: () => void
   sendMessage: (type: string, payload?: Record<string, unknown>) => boolean
+  // Device actions
+  getWakeWords: () => void
+  getAudioDevices: () => void
   lastError: string | null
   fieldErrors: Record<string, string> // Map of "subnodeId:fieldId" to error message
   clearFieldError: (subnodeId: string, fieldId: string) => void
   onWakeDetected?: () => void
+  // Vision state and actions
+  visionStatus: VisionStatus
+  enableVision: () => void
+  disableVision: () => void
 }
 
 // Default theme matching backend defaults
@@ -98,7 +116,7 @@ const DEFAULT_THEME: ColorTheme = {
 }
 
 export function useIRISWebSocket(
-  url: string = "ws://localhost:8000/ws/iris", // Reverted to port 8000
+  url: string = "ws://127.0.0.1:8000/ws/iris",
   autoConnect: boolean = true,
   onWakeDetected?: () => void,
   onNativeAudioResponse?: (payload: Record<string, unknown>) => void
@@ -123,6 +141,32 @@ export function useIRISWebSocket(
   const [agentStatus, setAgentStatus] = useState<Record<string, unknown> | null>(null)
   const [agentTools, setAgentTools] = useState<Record<string, unknown>[]>([])
   const [agentSkills, setAgentSkills] = useState<Record<string, unknown>[]>([])
+
+  // Device state
+  const [wakeWords, setWakeWords] = useState<{filename: string; display_name: string; platform: string; version: string}[]>([])
+  const [audioInputDevices, setAudioInputDevices] = useState<{name: string; index: number; sample_rate: number}[]>([])
+  const [audioOutputDevices, setAudioOutputDevices] = useState<{name: string; index: number; sample_rate: number}[]>([])
+
+  // Vision service state
+  const [visionStatus, setVisionStatus] = useState<{
+    status: "disabled" | "loading" | "enabled" | "error"
+    vram_usage_mb: number | null
+    load_progress_percent: number | null
+    error_message: string | null
+    last_used: string | null
+    model_name: string
+    quantization_enabled: boolean
+    is_available: boolean
+  }>({
+    status: "disabled",
+    vram_usage_mb: null,
+    load_progress_percent: null,
+    error_message: null,
+    last_used: null,
+    model_name: "minicpm-o4.5",
+    quantization_enabled: true,
+    is_available: false
+  })
 
   // WebSocket ref
   const wsRef = useRef<WebSocket | null>(null)
@@ -253,15 +297,29 @@ export function useIRISWebSocket(
     const { type, ...payload } = message
 
     switch (type) {
+      case "full_state": {
+        // Legacy message type from old main.py - redirect to initial_state handler
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn("[IRIS WebSocket] Received legacy 'full_state' message, treating as 'initial_state'")
+        }
+        // Fall through to initial_state handler
+      }
       case "initial_state":
       case "state_sync": {
         const state: IRISState = payload.state as IRISState
-        if (state.active_theme) setTheme(state.active_theme)
-        if (state.field_values) setFieldValues(state.field_values)
-        if (state.subnodes) setSubnodes(state.subnodes)
-        if (state.confirmed_nodes) setConfirmedNodes(state.confirmed_nodes)
-        if (state.current_category !== undefined) setCurrentCategory(state.current_category)
-        if (state.current_subnode !== undefined) setCurrentSubnode(state.current_subnode)
+        if (state && state.active_theme) setTheme(state.active_theme)
+        if (state && state.field_values) setFieldValues(state.field_values)
+        if (state && state.subnodes) setSubnodes(state.subnodes)
+        if (state && state.confirmed_nodes) setConfirmedNodes(state.confirmed_nodes)
+        if (state && state.current_category !== undefined) setCurrentCategory(state.current_category)
+        if (state && state.current_subnode !== undefined) setCurrentSubnode(state.current_subnode)
+        
+        // BUG-02 FIX: Dispatch CustomEvent for SidePanel listeners
+        if (typeof window !== 'undefined' && state) {
+          window.dispatchEvent(new CustomEvent('iris:initial_state', {
+            detail: { state }
+          }))
+        }
         break
       }
 
@@ -328,11 +386,19 @@ export function useIRISWebSocket(
               [field_id]: value,
             },
           }))
+          
+          // GAP-03 FIX: Dispatch CustomEvent for SidePanel and other listeners
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('iris:field_updated', {
+              detail: { subnode_id, field_id, value, timestamp }
+            }))
+          }
         }
         break
       }
 
       case "validation_error": {
+        // GAP-09 FIX: Handle flat payload structure from backend
         // Revert optimistic update on validation error
         const { field_id, subnode_id, error } = payload as { field_id?: string; subnode_id?: string; error: string }
         
@@ -403,6 +469,14 @@ export function useIRISWebSocket(
         if (payload.state) {
           const newState = payload.state as VoiceState
           setVoiceState(newState)
+          
+          // GAP-03 FIX: Dispatch CustomEvent for SidePanel and other listeners
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
+              detail: { state: newState }
+            }))
+          }
+          
           // Reset audio level when leaving listening state
           if (newState !== "listening") {
             setAudioLevel(0)
@@ -507,6 +581,111 @@ export function useIRISWebSocket(
         break
       }
 
+      case "wake_words_list": {
+        // Wake words list response
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Wake words:", payload)
+        }
+        const wakeWordsList = payload.wake_words as {filename: string; display_name: string; platform: string; version: string}[] || []
+        setWakeWords(wakeWordsList)
+        // Dispatch custom event for SidePanel listeners
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:wake_words_list', {
+            detail: { wake_words: wakeWordsList }
+          }))
+        }
+        break
+      }
+
+      case "audio_devices": {
+        // Audio devices response
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Audio devices:", payload)
+        }
+        const inputDevices = payload.input_devices as {name: string; index: number; sample_rate: number}[] || []
+        const outputDevices = payload.output_devices as {name: string; index: number; sample_rate: number}[] || []
+        setAudioInputDevices(inputDevices)
+        setAudioOutputDevices(outputDevices)
+        // Dispatch custom event for SidePanel listeners
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:audio_devices', {
+            detail: { input_devices: inputDevices, output_devices: outputDevices }
+          }))
+        }
+        break
+      }
+
+      case "vision_status": {
+        // Vision service status update
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Vision status:", payload)
+        }
+        setVisionStatus({
+          status: (payload.status as "disabled" | "loading" | "enabled" | "error") || "disabled",
+          vram_usage_mb: payload.vram_usage_mb as number | null,
+          load_progress_percent: payload.load_progress_percent as number | null,
+          error_message: payload.error_message as string | null,
+          last_used: payload.last_used as string | null,
+          model_name: (payload.model_name as string) || "minicpm-o4.5",
+          quantization_enabled: (payload.quantization_enabled as boolean) ?? true,
+          is_available: (payload.is_available as boolean) || false
+        })
+        // Dispatch custom event for UI listeners
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:vision_status', {
+            detail: payload
+          }))
+        }
+        break
+      }
+
+      case "enable_vision": {
+        // Vision enabled confirmation
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Vision enabled:", payload)
+        }
+        if (payload.success) {
+          setVisionStatus(prev => ({
+            ...prev,
+            status: "enabled",
+            vram_usage_mb: payload.vram_usage_mb as number | null,
+            quantization_enabled: (payload.quantization_enabled as boolean) ?? true
+          }))
+        } else {
+          setVisionStatus(prev => ({
+            ...prev,
+            status: "error",
+            error_message: (payload.error as string) || "Failed to enable vision"
+          }))
+          setLastError((payload.error as string) || "Failed to enable vision")
+        }
+        break
+      }
+
+      case "disable_vision": {
+        // Vision disabled confirmation
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Vision disabled:", payload)
+        }
+        if (payload.success) {
+          setVisionStatus(prev => ({
+            ...prev,
+            status: "disabled",
+            vram_usage_mb: null,
+            load_progress_percent: null,
+            error_message: null
+          }))
+        } else {
+          setVisionStatus(prev => ({
+            ...prev,
+            status: "error",
+            error_message: (payload.error as string) || "Failed to disable vision"
+          }))
+          setLastError((payload.error as string) || "Failed to disable vision")
+        }
+        break
+      }
+
       case "chat_cleared": {
         // Chat history cleared
         if (process.env.NODE_ENV !== 'production') {
@@ -532,13 +711,85 @@ export function useIRISWebSocket(
         break
       }
 
+      case "available_models": {
+        // Available models list response
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Available models:", payload)
+        }
+        // Store available models in a way that can be accessed by components
+        // We'll dispatch a custom event that WheelView can listen to
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:available_models', { 
+            detail: { models: payload.models || [] }
+          }))
+        }
+        break
+      }
+
       case "voice_command_error": {
         // Voice command error
         console.error("[IRIS WebSocket] Voice command error:", payload.error)
         break
       }
 
+      // GAP-08 FIX: Add error handler for backend error messages
+      case "error": {
+        const errorMessage = payload.message || payload.error || "Unknown error"
+        console.error("[IRIS WebSocket] Backend error:", errorMessage)
+        setLastError(typeof errorMessage === 'string' ? errorMessage : "Unknown error")
+        break
+      }
+
+      // GAP-04 FIX: Add handlers for backend messages without frontend handlers
+      case "subnodes": {
+        // Handle subnodes response - updates available subnodes for current category
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Subnodes received:", payload.subnodes)
+        }
+        if (payload.subnodes && Array.isArray(payload.subnodes) && currentCategory) {
+          setSubnodes((prev) => ({
+            ...prev,
+            [currentCategory]: payload.subnodes as Record<string, unknown>[]
+          }))
+        }
+        break
+      }
+
+      case "model_selection_updated": {
+        // Handle model selection update
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Model selection updated:", payload)
+        }
+        break
+      }
+
+      case "wake_word_selected": {
+        // Handle wake word selection
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Wake word selected:", payload)
+        }
+        break
+      }
+
+      case "cleanup_report":
+      case "cleanup_result": {
+        // Handle cleanup operations
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`[IRIS WebSocket] ${type}:`, payload)
+        }
+        break
+      }
+
+      case "category_expanded": {
+        // Handle category expansion confirmation
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Category expanded")
+        }
+        break
+      }
+
       default:
+        // GAP-04 FIX: Only log unknown message types in development mode
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Unknown message type:", type, payload)
         }
@@ -661,6 +912,24 @@ export function useIRISWebSocket(
     })
   }, [])
 
+  // Device methods
+  const getWakeWords = useCallback(() => {
+    sendMessage("get_wake_words", {})
+  }, [sendMessage])
+
+  const getAudioDevices = useCallback(() => {
+    sendMessage("get_audio_devices", {})
+  }, [sendMessage])
+
+  // Vision service methods
+  const enableVision = useCallback(() => {
+    sendMessage("enable_vision", {})
+  }, [sendMessage])
+
+  const disableVision = useCallback(() => {
+    sendMessage("disable_vision", {})
+  }, [sendMessage])
+
   // Initialize connection
   useEffect(() => {
     if (autoConnect) {
@@ -736,8 +1005,24 @@ export function useIRISWebSocket(
     startVoiceCommand,
     endVoiceCommand,
     sendMessage,
+    // Device actions
+    getWakeWords,
+    getAudioDevices,
     lastError,
     fieldErrors,
     clearFieldError,
+    // Vision state and actions
+    visionStatus,
+    enableVision,
+    disableVision,
   }
 }
+
+// Export type for components that receive sendMessage as prop
+export type SendMessageFunction = (
+  type: string,
+  payload?: Record<string, unknown>
+) => boolean;
+
+// Export VisionStatus for components that need to display vision state
+export type { VisionStatus };

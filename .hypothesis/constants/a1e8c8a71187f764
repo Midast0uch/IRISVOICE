@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\backends\quantized\__init__.py
-# hypothesis_version: 6.151.9
-
-['*undefined', 'fbgemm', 'none', 'onednn', 'qnnpack', 'x86']

@@ -5,7 +5,13 @@ import { useState, memo, useMemo, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBrandColor } from '@/contexts/BrandColorContext';
 import { useNavigation } from '@/contexts/NavigationContext';
-import { Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, Eye } from 'lucide-react';
+import { SUB_NODES_WITH_MINI, getMiniNodesForSubnode, MINI_NODES_DATA } from '@/data/mini-nodes';
+import { SECTION_TO_LABEL, SECTION_TO_ICON, CARD_TO_SECTION_ID } from '@/data/navigation-constants';
+import {
+  Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, Eye, Globe,
+  // Additional icons for section mapping
+  Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play
+} from 'lucide-react';
 
 interface DarkGlassDashboardProps {
   theme?: string;
@@ -22,204 +28,142 @@ const MAIN_NODES_DATA = [
   { id: 'monitor', label: 'MON', icon: Activity },
 ];
 
-const SUB_NODES_DATA: Record<string, { id: string; label: string; icon: any; fields: { id: string; label: string; type: string; options?: string[]; defaultValue?: any; min?: number; max?: number; unit?: string; placeholder?: string }[] }[]> = {
-  voice: [
-    {
-      id: 'input', label: 'INPUT', icon: Mic, fields: [
-        { id: 'input_device', label: 'Input Device', type: 'dropdown', options: ['Default', 'USB Microphone', 'Headset', 'Webcam'], defaultValue: 'Default' },
-        { id: 'input_sensitivity', label: 'Sensitivity', type: 'slider', min: 0, max: 100, unit: '%', defaultValue: 50 },
-        { id: 'noise_gate', label: 'Noise Gate', type: 'toggle', defaultValue: false },
-        { id: 'vad', label: 'VAD', type: 'toggle', defaultValue: true },
-      ]
-    },
-    {
-      id: 'output', label: 'OUTPUT', icon: Volume2, fields: [
-        { id: 'output_device', label: 'Output Device', type: 'dropdown', options: ['Default', 'Headphones', 'Speakers', 'HDMI'], defaultValue: 'Default' },
-        { id: 'master_volume', label: 'Volume', type: 'slider', min: 0, max: 100, unit: '%', defaultValue: 70 },
-      ]
-    },
-    {
-      id: 'processing', label: 'PROCESSING', icon: Waves, fields: [
-        { id: 'noise_reduction', label: 'Noise Reduction', type: 'toggle', defaultValue: true },
-        { id: 'echo_cancellation', label: 'Echo Cancel', type: 'toggle', defaultValue: true },
-        { id: 'voice_enhancement', label: 'Enhancement', type: 'toggle', defaultValue: false },
-        { id: 'automatic_gain', label: 'Auto Gain', type: 'toggle', defaultValue: true },
-      ]
-    },
-    {
-      id: 'model', label: 'MODEL', icon: Brain, fields: [
-        { id: 'endpoint', label: 'LFM Endpoint', type: 'text', placeholder: 'http://192.168.0.32:1234', defaultValue: 'http://192.168.0.32:1234' },
-        { id: 'temperature', label: 'Temperature', type: 'slider', min: 0, max: 2, defaultValue: 0.7 },
-        { id: 'max_tokens', label: 'Max Tokens', type: 'slider', min: 256, max: 8192, defaultValue: 2048 },
-      ]
-    },
-  ],
-  agent: [
-    {
-      id: 'identity', label: 'IDENTITY', icon: Smile, fields: [
-        { id: 'assistant_name', label: 'Name', type: 'text', placeholder: 'IRIS', defaultValue: 'IRIS' },
-        { id: 'personality', label: 'Personality', type: 'dropdown', options: ['Professional', 'Friendly', 'Concise', 'Creative', 'Technical'], defaultValue: 'Friendly' },
-        { id: 'knowledge', label: 'Knowledge', type: 'dropdown', options: ['General', 'Coding', 'Writing', 'Research'], defaultValue: 'General' },
-      ]
-    },
-    {
-      id: 'wake', label: 'WAKE', icon: Sparkles, fields: [
-        { id: 'wake_phrase', label: 'Wake Phrase', type: 'text', placeholder: 'Hey Computer', defaultValue: 'Hey Computer' },
-        { id: 'detection_sensitivity', label: 'Sensitivity', type: 'slider', min: 0, max: 100, defaultValue: 70, unit: '%' },
-        { id: 'activation_sound', label: 'Sound', type: 'toggle', defaultValue: true },
-      ]
-    },
-    {
-      id: 'speech', label: 'SPEECH', icon: MessageSquare, fields: [
-        { id: 'tts_voice', label: 'TTS Voice', type: 'dropdown', options: ['Nova', 'Alloy', 'Echo', 'Fable', 'Onyx', 'Shimmer'], defaultValue: 'Nova' },
-        { id: 'speaking_rate', label: 'Rate', type: 'slider', min: 0.5, max: 2, defaultValue: 1.0, unit: 'x' },
-      ]
-    },
-    {
-      id: 'memory', label: 'MEMORY', icon: Database, fields: [
-        { id: 'token_count', label: 'Tokens', type: 'text', placeholder: '0 tokens' },
-        { id: 'clear_memory', label: 'Clear Memory', type: 'text', placeholder: 'Clear' },
-      ]
-    },
-    {
-      id: 'vps', label: 'VPS', icon: Cpu, fields: [
-        { id: 'enabled', label: 'Enabled', type: 'toggle', defaultValue: false },
-        { id: 'endpoints', label: 'Endpoints', type: 'text', placeholder: 'https://vps.example.com:8000', defaultValue: '' },
-        { id: 'auth_token', label: 'Auth Token', type: 'password', placeholder: 'Bearer token', defaultValue: '' },
-        { id: 'timeout', label: 'Timeout', type: 'slider', min: 5, max: 120, defaultValue: 30, unit: 's' },
-        { id: 'health_check_interval', label: 'Health Check', type: 'slider', min: 10, max: 300, defaultValue: 60, unit: 's' },
-        { id: 'fallback_to_local', label: 'Fallback Local', type: 'toggle', defaultValue: true },
-        { id: 'load_balancing', label: 'Load Balance', type: 'toggle', defaultValue: false },
-        { id: 'load_balancing_strategy', label: 'LB Strategy', type: 'dropdown', options: ['round_robin', 'least_loaded'], defaultValue: 'round_robin' },
-        { id: 'protocol', label: 'Protocol', type: 'dropdown', options: ['rest', 'websocket'], defaultValue: 'rest' },
-        { id: 'vps_status', label: 'Status', type: 'status', placeholder: 'Not configured' },
-      ]
-    },
-  ],
-  automate: [
-      {
-        id: 'tools', label: 'TOOLS', icon: Wrench, fields: [
-          { id: 'active_servers', label: 'Servers', type: 'text', placeholder: 'Status' },
-          { id: 'tool_browser', label: 'Browser', type: 'text', placeholder: 'Browse' },
-        ]
-      },
-      {
-        id: 'vision', label: 'VISION', icon: Eye, fields: [
-          { id: 'vision_enabled', label: 'Vision', type: 'toggle', defaultValue: false },
-          { id: 'screen_context', label: 'Screen in Chat', type: 'toggle', defaultValue: true },
-          { id: 'proactive_monitor', label: 'Proactive', type: 'toggle', defaultValue: false },
-          { id: 'monitor_interval', label: 'Interval', type: 'slider', min: 5, max: 120, defaultValue: 30, unit: 's' },
-          { id: 'ollama_endpoint', label: 'Endpoint', type: 'text', placeholder: 'http://localhost:11434', defaultValue: 'http://localhost:11434' },
-          { id: 'vision_model', label: 'Model', type: 'dropdown', options: ['minicpm-o4.5', 'llava', 'bakllava'], defaultValue: 'minicpm-o4.5' },
-        ]
-      },
-      {
-        id: 'workflows', label: 'WORKFLOWS', icon: Layers, fields: [
-          { id: 'workflow_list', label: 'Workflows', type: 'text', placeholder: 'Saved' },
-          { id: 'schedule', label: 'Schedule', type: 'text', placeholder: 'Schedule' },
-        ]
-      },
-      {
-        id: 'shortcuts', label: 'SHORTCUTS', icon: Keyboard, fields: [
-          { id: 'global_hotkey', label: 'Hotkey', type: 'text', placeholder: 'Ctrl+Space', defaultValue: 'Ctrl+Space' },
-        ]
-      },
-      {
-        id: 'gui', label: 'GUI AUTO', icon: Monitor, fields: [
-          { id: 'ui_tars_provider', label: 'Provider', type: 'dropdown', options: ['cli_npx', 'native_python', 'api_cloud'], defaultValue: 'native_python' },
-          { id: 'model_provider', label: 'Vision Model', type: 'dropdown', options: ['minicpm_ollama', 'anthropic', 'volcengine', 'local'], defaultValue: 'minicpm_ollama' },
-          { id: 'max_steps', label: 'Max Steps', type: 'slider', min: 5, max: 50, defaultValue: 25 },
-          { id: 'safety_confirmation', label: 'Confirm', type: 'toggle', defaultValue: true },
-        ]
-      },
-    ],
-  system: [
-      {
-        id: 'power', label: 'POWER', icon: Power, fields: [
-          { id: 'power_profile', label: 'Profile', type: 'dropdown', options: ['Balanced', 'Performance', 'Battery'], defaultValue: 'Balanced' },
-        ]
-      },
-      {
-        id: 'display', label: 'DISPLAY', icon: Monitor, fields: [
-          { id: 'brightness', label: 'Brightness', type: 'slider', min: 0, max: 100, defaultValue: 50, unit: '%' },
-          { id: 'night_mode', label: 'Night Mode', type: 'toggle', defaultValue: false },
-        ]
-      },
-      {
-        id: 'storage', label: 'STORAGE', icon: HardDrive, fields: [
-          { id: 'disk_usage', label: 'Usage', type: 'text', placeholder: 'Usage' },
-        ]
-      },
-      {
-        id: 'network', label: 'NETWORK', icon: Wifi, fields: [
-          { id: 'wifi_toggle', label: 'WiFi', type: 'toggle', defaultValue: true },
-          { id: 'vpn_connection', label: 'VPN', type: 'dropdown', options: ['None', 'Work', 'Personal'], defaultValue: 'None' },
-        ]
-      },
-    ],
-  customize: [
-      {
-        id: 'theme', label: 'THEME', icon: Palette, fields: [
-          { id: 'theme_mode', label: 'Mode', type: 'dropdown', options: ['Dark', 'Light', 'Auto'], defaultValue: 'Dark' },
-          { id: 'state_colors', label: 'State Colors', type: 'toggle', defaultValue: false },
-        ]
-      },
-      {
-        id: 'startup', label: 'STARTUP', icon: Power, fields: [
-          { id: 'launch_startup', label: 'Launch at Start', type: 'toggle', defaultValue: false },
-          { id: 'startup_behavior', label: 'Behavior', type: 'dropdown', options: ['Show Widget', 'Minimized', 'Hidden'], defaultValue: 'Show Widget' },
-        ]
-      },
-      {
-        id: 'behavior', label: 'BEHAVIOR', icon: Sliders, fields: [
-          { id: 'confirm_destructive', label: 'Confirm', type: 'toggle', defaultValue: true },
-          { id: 'auto_save', label: 'Auto Save', type: 'toggle', defaultValue: true },
-        ]
-      },
-      {
-        id: 'notifications', label: 'NOTIFS', icon: Bell, fields: [
-          { id: 'dnd_toggle', label: 'Do Not Disturb', type: 'toggle', defaultValue: false },
-          { id: 'notification_sound', label: 'Sound', type: 'dropdown', options: ['Default', 'Chime', 'Pulse', 'Silent'], defaultValue: 'Default' },
-        ]
-      },
-    ],
-  monitor: [
-      {
-        id: 'analytics', label: 'ANALYTICS', icon: BarChart3, fields: [
-          { id: 'token_usage', label: 'Tokens', type: 'text', placeholder: 'Usage' },
-          { id: 'response_latency', label: 'Latency', type: 'text', placeholder: 'Latency' },
-        ]
-      },
-      {
-        id: 'logs', label: 'LOGS', icon: FileText, fields: [
-          { id: 'system_logs', label: 'System', type: 'text', placeholder: 'System' },
-          { id: 'voice_logs', label: 'Voice', type: 'text', placeholder: 'Voice' },
-        ]
-      },
-      {
-        id: 'diagnostics', label: 'DIAG', icon: Stethoscope, fields: [
-          { id: 'health_check', label: 'Health', type: 'text', placeholder: 'Run' },
-          { id: 'mcp_test', label: 'MCP Test', type: 'text', placeholder: 'Test' },
-        ]
-      },
-      {
-        id: 'updates', label: 'UPDATES', icon: RefreshCw, fields: [
-          { id: 'update_channel', label: 'Channel', type: 'dropdown', options: ['Stable', 'Beta', 'Nightly'], defaultValue: 'Stable' },
-          { id: 'auto_update', label: 'Auto Update', type: 'toggle', defaultValue: true },
-        ]
-      },
-    ],
+// Helper function to map icon names from SECTION_TO_ICON to Lucide components
+const getIconComponent = (iconName: string) => {
+  const iconMap: Record<string, React.ComponentType<any>> = {
+    'Mic': Mic,
+    'Volume2': Volume2,
+    'Cpu': Cpu,
+    'Brain': Brain,
+    'Shield': Shield,
+    'Zap': Zap,
+    'Eye': Eye,
+    'Workflow': Workflow,
+    'Keyboard': Keyboard,
+    'Monitor': Monitor,
+    'Boxes': Boxes,
+    'Puzzle': Puzzle,
+    'FolderOpen': FolderOpen,
+    'Power': Power,
+    'MonitorIcon': MonitorIcon,
+    'HardDrive': HardDrive,
+    'Wifi': Wifi,
+    'Palette': Palette,
+    'Play': Play,
+    'Activity': Activity,
+    'FileText': FileText,
+    'Stethoscope': Stethoscope,
+    'RefreshCw': RefreshCw,
+    'Waves': Waves,
+    'Database': Database,
+    'Sparkles': Sparkles,
+    'MessageSquare': MessageSquare,
+    'Smile': Smile,
+    'Wrench': Wrench,
+    'Layers': Layers,
+    'Star': Star,
+    'Bell': Bell,
+    'Sliders': Sliders,
+    'BarChart3': BarChart3,
+    'Globe': Globe,
+    'Bot': Bot,
+    'Settings': Settings,
+  };
+  return iconMap[iconName] || Boxes;
 };
 
-const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnodeId, updateField, fieldErrors, clearFieldError }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; subnodeId?: string; updateField?: (subnodeId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (subnodeId: string, fieldId: string) => void }) {
+// Helper function to convert mini-nodes fields to dashboard field format
+function convertMiniNodeFieldsToDashboardFields(miniNodes: any[]) {
+  const fields: any[] = [];
+  miniNodes.forEach(miniNode => {
+    miniNode.fields.forEach((field: any) => {
+      // Skip section fields as they're not rendered in dashboard
+      if (field.type === 'section' || field.type === 'custom') return;
+      
+      fields.push({
+        id: field.id,
+        label: field.label,
+        type: field.type,
+        options: field.options,
+        defaultValue: field.defaultValue,
+        min: field.min,
+        max: field.max,
+        unit: field.unit,
+        placeholder: field.placeholder,
+      });
+    });
+  });
+  return fields;
+}
+
+// Generate SUB_NODES_DATA dynamically from mini-nodes.ts and navigation constants
+// This ensures all components use the same field IDs, labels, and options
+function useSubNodesData() {
+  return useMemo(() => {
+    const sections = Object.entries(CARD_TO_SECTION_ID).reduce((acc, [cardId, sectionId]) => {
+      if (!acc[sectionId]) {
+        acc[sectionId] = {
+          id: sectionId,
+          label: SECTION_TO_LABEL[sectionId]?.toUpperCase() || sectionId.toUpperCase(),
+          icon: getIconComponent(SECTION_TO_ICON[sectionId] || 'Boxes'),
+          fields: convertMiniNodeFieldsToDashboardFields(getMiniNodesForSubnode(sectionId))
+        };
+      }
+      
+      return acc;
+    }, {} as Record<string, { id: string; label: string; icon: any; fields: any[] }>);
+    
+    // Group sections by category
+    const categoryMapping: Record<string, string[]> = {
+      voice: ['input', 'output', 'processing', 'model'],
+      agent: ['model_selection', 'inference_mode', 'identity', 'memory'],
+      automate: ['tools', 'vision', 'workflows', 'shortcuts', 'gui', 'extensions'],
+      system: ['power', 'display', 'storage', 'network'],
+      customize: ['theme', 'startup', 'behavior', 'notifications'],
+      monitor: ['analytics', 'logs', 'diagnostics', 'updates'],
+    };
+    
+    const result: Record<string, { id: string; label: string; icon: any; fields: any[] }[]> = {};
+    
+    Object.entries(categoryMapping).forEach(([categoryId, sectionIds]) => {
+      result[categoryId] = sectionIds
+        .map(sectionId => sections[sectionId])
+        .filter(Boolean);
+    });
+    
+    return result;
+  }, []);
+}
+
+const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnodeId, updateField, fieldErrors, clearFieldError, availableModels, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; subnodeId?: string; updateField?: (subnodeId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (subnodeId: string, fieldId: string) => void; availableModels?: string[]; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
+  const [testResult, setTestResult] = useState<string | null>(null);
   const value = fieldValues && subnodeId ? (fieldValues[subnodeId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
   
   // Get error message for this field
   const errorKey = subnodeId && field.id ? `${subnodeId}:${field.id}` : null;
   const errorMessage = errorKey && fieldErrors ? fieldErrors[errorKey] : null;
   
+  // Conditional field rendering for inference_mode subnode
+  const inferenceMode = fieldValues && subnodeId === 'inference_mode' ? (fieldValues[subnodeId]?.['inference_mode'] ?? 'Local Models') : null;
+  
+  // Hide VPS fields unless VPS Gateway is selected
+  if (subnodeId === 'inference_mode' && (field.id === 'vps_url' || field.id === 'vps_api_key' || field.id === 'test_vps_connection') && inferenceMode !== 'VPS Gateway') {
+    return null;
+  }
+  
+  // Hide OpenAI fields unless OpenAI API is selected
+  if (subnodeId === 'inference_mode' && (field.id === 'openai_api_key' || field.id === 'test_openai_connection') && inferenceMode !== 'OpenAI API') {
+    return null;
+  }
+  
+  // Hide GPU warning unless Local Models is selected
+  if (subnodeId === 'inference_mode' && field.id === 'local_gpu_warning' && inferenceMode !== 'Local Models') {
+    return null;
+  }
+  
   // Use updateField from context if available, otherwise use local state
+  // Store changes locally only - no backend updates until Confirm button is pressed
   const setValue = useCallback((newValue: any) => {
     // Clear error when user starts editing
     if (errorMessage && subnodeId && field.id && clearFieldError) {
@@ -231,6 +175,10 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
     } else {
       setLocalValue(newValue);
     }
+    
+    // NOTE: Removed immediate update_field WebSocket messages
+    // Field changes are stored locally only until Confirm button is pressed
+    // This prevents premature backend initialization before user confirms configuration
   }, [fieldValues, subnodeId, updateField, field.id, errorMessage, clearFieldError]);
 
   const handleSliderClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -244,9 +192,9 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
 
   if (field.type === 'toggle') {
     return (
-      <div className="py-1">
+      <div className="py-3">
         <div className="flex items-center justify-between">
-          <span className="text-[9px] text-white/70">{field.label}</span>
+          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
           <button
             onClick={() => setValue(!value)}
             className="relative w-7 h-3.5 rounded-full transition-colors"
@@ -267,17 +215,38 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
   }
 
   if (field.type === 'dropdown') {
+    // Use available models for model_selection subnode dropdowns
+    let options = field.options || [];
+    if (subnodeId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_execution_model')) {
+      options = availableModels && availableModels.length > 0 ? availableModels : ['No models available'];
+    }
+    
+    // Use audio input devices for input subnode
+    if (subnodeId === 'input' && field.id === 'input_device') {
+      options = audioInputDevices && audioInputDevices.length > 0 ? audioInputDevices : ['No input devices found'];
+    }
+    
+    // Use audio output devices for output subnode
+    if (subnodeId === 'output' && field.id === 'output_device') {
+      options = audioOutputDevices && audioOutputDevices.length > 0 ? audioOutputDevices : ['No output devices found'];
+    }
+    
+    // Use wake words for wake subnode
+    if (subnodeId === 'wake' && field.id === 'wake_phrase') {
+      options = wakeWords && wakeWords.length > 0 ? wakeWords : ['No wake words found'];
+    }
+    
     return (
-      <div className="py-1">
+      <div className="py-3">
         <div className="flex items-center justify-between">
-          <span className="text-[9px] text-white/70">{field.label}</span>
+          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
           <select
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            className="text-[9px] bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[80px]"
+            className="text-[13px] tabular-nums bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[120px]"
             style={errorMessage ? { borderColor: '#f87171' } : {}}
           >
-            {field.options?.map((opt: string) => (
+            {options?.map((opt: string) => (
               <option key={opt} value={opt} className="bg-zinc-900">{opt}</option>
             ))}
           </select>
@@ -294,10 +263,10 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
     const max = field.max ?? 100;
     const pct = ((Number(value) - min) / (max - min)) * 100;
     return (
-      <div className="py-1">
+      <div className="py-3">
         <div className="flex items-center justify-between mb-0.5">
-          <span className="text-[9px] text-white/70">{field.label}</span>
-          <span className="text-[8px] tabular-nums" style={{ color: errorMessage ? '#f87171' : glowColor }}>{Math.round(Number(value))}{field.unit || ''}</span>
+          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
+          <span className="text-[13px] tabular-nums" style={{ color: errorMessage ? '#f87171' : glowColor }}>{Math.round(Number(value))}{field.unit || ''}</span>
         </div>
         <div
           className="relative h-1.5 bg-white/10 rounded-full cursor-pointer"
@@ -314,15 +283,15 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
 
   if (field.type === 'text') {
     return (
-      <div className="py-1">
+      <div className="py-3">
         <div className="flex items-center justify-between">
-          <span className="text-[9px] text-white/70">{field.label}</span>
+          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
           <input
             type="text"
             value={value as string}
             placeholder={field.placeholder}
             onChange={(e) => setValue(e.target.value)}
-            className="text-[9px] bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[80px] text-right"
+            className="text-[13px] tabular-nums bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[120px] text-right"
             style={errorMessage ? { borderColor: '#f87171' } : {}}
           />
         </div>
@@ -335,15 +304,15 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
 
   if (field.type === 'password') {
     return (
-      <div className="py-1">
+      <div className="py-3">
         <div className="flex items-center justify-between">
-          <span className="text-[9px] text-white/70">{field.label}</span>
+          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
           <input
             type="password"
             value={value as string}
             placeholder={field.placeholder}
             onChange={(e) => setValue(e.target.value)}
-            className="text-[9px] bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[80px] text-right"
+            className="text-[13px] tabular-nums bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[120px] text-right"
             style={errorMessage ? { borderColor: '#f87171' } : {}}
           />
         </div>
@@ -361,9 +330,9 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
     const endpointCount = vpsEndpoints ? (vpsEndpoints as string).split(',').filter(e => e.trim()).length : 0;
     
     return (
-      <div className="py-1">
+      <div className="py-3">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[9px] text-white/70">{field.label}</span>
+          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
         </div>
         <div className="bg-white/5 rounded px-2 py-1.5 space-y-1">
           <div className="flex items-center justify-between">
@@ -400,10 +369,61 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
     );
   }
 
+  if (field.type === 'button') {
+    const handleTestConnection = async () => {
+      setTestResult('Testing...');
+      // Simulate connection test - in real implementation, this would call backend
+      setTimeout(() => {
+        setTestResult('Connection successful');
+        setTimeout(() => setTestResult(null), 3000);
+      }, 1000);
+    };
+
+    return (
+      <div className="py-1">
+        <button
+          onClick={handleTestConnection}
+          className="w-full py-1.5 rounded text-[9px] font-medium tracking-wider transition-all"
+          style={{
+            background: `${glowColor}20`,
+            color: glowColor,
+            border: `1px solid ${glowColor}40`,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = `${glowColor}30`;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = `${glowColor}20`;
+          }}
+        >
+          {field.label}
+        </button>
+        {testResult && (
+          <div className="mt-1 text-[8px] text-center" style={{ color: testResult.includes('successful') ? '#10b981' : glowColor }}>
+            {testResult}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (field.type === 'info') {
+    return (
+      <div className="py-1">
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded px-2 py-1.5">
+          <div className="flex items-start gap-1.5">
+            <span className="text-yellow-500 text-[10px] mt-0.5">⚠</span>
+            <span className="text-[8px] text-yellow-200/90 leading-relaxed">{field.defaultValue}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex items-center justify-between py-1">
-      <span className="text-[9px] text-white/70">{field.label}</span>
-      <span className="text-[8px] text-white/40 truncate max-w-[80px]">{field.placeholder || value || '-'}</span>
+    <div className="flex items-center justify-between py-3">
+      <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
+      <span className="text-[13px] tabular-nums text-white/40 truncate max-w-[120px]">{field.placeholder || value || '-'}</span>
     </div>
   );
 });
@@ -411,6 +431,11 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
 export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: propUpdateField }: DarkGlassDashboardProps) {
   const [activeTab, setActiveTab] = useState('voice');
   const [activeSubnode, setActiveSubnode] = useState<string | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [audioInputDevices, setAudioInputDevices] = useState<string[]>([]);
+  const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>([]);
+  const [wakeWords, setWakeWords] = useState<string[]>([]);
+  const [showError, setShowError] = useState(false);
   const { getThemeConfig } = useBrandColor();
   const localTheme = getThemeConfig();
 
@@ -422,17 +447,56 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
     fieldValues: contextFieldValues,
     fieldErrors,
     activeTheme, // Get activeTheme from backend via WebSocket
+    voiceState, // Voice command state for visual feedback
+    audioLevel, // Audio level for visualization
     selectCategory,
     selectSubnode,
-    updateField: contextUpdateField,
+    updateMiniNodeValue: contextUpdateMiniNodeValue,
     clearFieldError,
     confirmMiniNode, // Connect onConfirm to confirmMiniNode()
+    sendMessage, // Add sendMessage for fetching available models
   } = useNavigation();
   
   // Use WebSocket theme glow color if available, otherwise fall back to local theme
   // This ensures theme changes from backend apply within 100ms (WebSocket latency)
   // Requirement 10.4: Update accent colors from activeTheme within 100ms
   const glowColor = activeTheme?.glow || localTheme.glow.color;
+
+  // Fetch current configuration from backend on mount
+  useEffect(() => {
+    if (sendMessage) {
+      // Request current state from backend
+      sendMessage('request_state', {})
+      
+      // Listen for initial state response
+      const handleInitialState = (event: CustomEvent) => {
+        const state = event.detail?.state || {}
+        console.log('[DarkGlassDashboard] Received initial state:', state)
+        
+        // Extract field values from the state
+        // The state contains fieldValues per subnode/category
+        if (state.fieldValues) {
+          // Update field values from backend state
+          Object.entries(state.fieldValues).forEach(([subnodeId, values]) => {
+            if (values && typeof values === 'object') {
+              Object.entries(values).forEach(([fieldId, value]) => {
+                // Use updateField if available, otherwise use context
+                if (propUpdateField) {
+                  propUpdateField(subnodeId, fieldId, value)
+                }
+              })
+            }
+          })
+        }
+      }
+      
+      window.addEventListener('iris:initial_state', handleInitialState as EventListener)
+      
+      return () => {
+        window.removeEventListener('iris:initial_state', handleInitialState as EventListener)
+      }
+    }
+  }, [sendMessage, propUpdateField])
 
   // Log theme changes in development mode for debugging
   useEffect(() => {
@@ -441,12 +505,91 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
     }
   }, [activeTheme]);
 
+  // Auto-dismiss error after 3 seconds
+  useEffect(() => {
+    if (voiceState === 'error') {
+      setShowError(true);
+      const timer = setTimeout(() => {
+        setShowError(false);
+      }, 3000);
+      return () => clearTimeout(timer);
+    } else {
+      setShowError(false);
+    }
+  }, [voiceState]);
+
+  // Fetch available models when model_selection subnode is opened
+  useEffect(() => {
+    if (activeSubnode === 'model_selection' && sendMessage) {
+      // Send get_available_models message to backend
+      sendMessage('get_available_models', {});
+      
+      // Listen for the response via custom event
+      const handleAvailableModels = (event: CustomEvent) => {
+        const models = event.detail.models || [];
+        const modelOptions = models.map((m: any) => m.name || m.id);
+        setAvailableModels(modelOptions);
+      };
+      
+      window.addEventListener('iris:available_models', handleAvailableModels as EventListener);
+      
+      return () => {
+        window.removeEventListener('iris:available_models', handleAvailableModels as EventListener);
+      };
+    }
+  }, [activeSubnode, sendMessage]);
+
+  // Fetch audio devices when input or output subnodes are opened
+  useEffect(() => {
+    if ((activeSubnode === 'input' || activeSubnode === 'output') && sendMessage) {
+      // Send get_audio_devices message to backend
+      sendMessage('get_audio_devices', {});
+      
+      // Listen for the response via custom event
+      const handleAudioDevices = (event: CustomEvent) => {
+        const inputDevices = event.detail.input_devices || [];
+        const outputDevices = event.detail.output_devices || [];
+        const inputOptions = inputDevices.map((d: any) => d.name || d.index);
+        const outputOptions = outputDevices.map((d: any) => d.name || d.index);
+        setAudioInputDevices(inputOptions);
+        setAudioOutputDevices(outputOptions);
+      };
+      
+      window.addEventListener('iris:audio_devices', handleAudioDevices as EventListener);
+      
+      return () => {
+        window.removeEventListener('iris:audio_devices', handleAudioDevices as EventListener);
+      };
+    }
+  }, [activeSubnode, sendMessage]);
+
+  // Fetch wake words when wake subnode is opened
+  useEffect(() => {
+    if (activeSubnode === 'wake' && sendMessage) {
+      // Send get_wake_words message to backend
+      sendMessage('get_wake_words', {});
+      
+      // Listen for the response via custom event
+      const handleWakeWords = (event: CustomEvent) => {
+        const wakeWordsList = event.detail.wake_words || [];
+        const wakeWordOptions = wakeWordsList.map((w: any) => w.display_name || w.filename);
+        setWakeWords(wakeWordOptions);
+      };
+      
+      window.addEventListener('iris:wake_words_list', handleWakeWords as EventListener);
+      
+      return () => {
+        window.removeEventListener('iris:wake_words_list', handleWakeWords as EventListener);
+      };
+    }
+  }, [activeSubnode, sendMessage]);
+
   // Use context values if available, otherwise fall back to props
   const fieldValues = contextFieldValues || propFieldValues || {};
-  const updateField = contextUpdateField || propUpdateField;
+  const updateField = propUpdateField || contextUpdateMiniNodeValue;
 
   const mainNodes = useMemo(() => MAIN_NODES_DATA, []);
-  const subNodes = useMemo(() => SUB_NODES_DATA, []);
+  const subNodes = useSubNodesData();
 
   const subnodesForTab = useMemo(() => subNodes[activeTab] || [], [subNodes, activeTab]);
   const selectedSub = useMemo(() => activeSubnode ? subnodesForTab.find(s => s.id === activeSubnode) : null, [activeSubnode, subnodesForTab]);
@@ -486,7 +629,7 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
 
   return (
     <div
-      className="w-[420px] h-[420px] rounded-2xl overflow-hidden flex flex-col bg-transparent"
+      className="w-full h-full min-h-0 rounded-2xl overflow-hidden flex flex-col bg-transparent"
       style={{
         background: 'rgba(10, 10, 20, 0.95)',
         backdropFilter: 'blur(30px)',
@@ -495,17 +638,136 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
       }}
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: `${glowColor}20` }}>
+      <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: `${glowColor}20` }}>
         <span className="text-[11px] font-semibold tracking-widest uppercase text-white/90">IRIS MENU</span>
-        {/* This button is now redundant as it's part of ChatView */}
-        {/*
-        <button
-          onClick={() => appWindow.close()}
-          className="p-1 rounded-md hover:bg-white/10 transition-colors"
-        >
-          <X className="w-3.5 h-3.5 text-white/60" />
-        </button>
-        */}
+        
+        {/* Voice State Indicators */}
+        <div className="flex items-center gap-2">
+          {/* Listening State - Pulsing Animation */}
+          {voiceState === 'listening' && (
+            <motion.div
+              className="flex items-center gap-1.5"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+            >
+              <motion.div
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: glowColor }}
+                animate={{
+                  scale: [1, 1.3, 1],
+                  opacity: [1, 0.6, 1],
+                }}
+                transition={{
+                  duration: 1.5,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                }}
+              />
+              <span className="text-[8px] text-white/70">Listening</span>
+            </motion.div>
+          )}
+          
+          {/* Audio Level Visualization */}
+          {voiceState === 'listening' && audioLevel > 0 && (
+            <div className="flex items-center gap-0.5">
+              {[0, 1, 2, 3].map((i) => {
+                const barHeight = Math.max(0, Math.min(1, (audioLevel * 4) - i));
+                return (
+                  <motion.div
+                    key={i}
+                    className="w-0.5 rounded-full"
+                    style={{
+                      backgroundColor: glowColor,
+                      height: `${4 + barHeight * 8}px`,
+                    }}
+                    animate={{
+                      height: `${4 + barHeight * 8}px`,
+                    }}
+                    transition={{
+                      duration: 0.1,
+                    }}
+                  />
+                );
+              })}
+            </div>
+          )}
+          
+          {/* Processing State - Spinner */}
+          {(voiceState === 'processing_conversation' || voiceState === 'processing_tool') && (
+            <motion.div
+              className="flex items-center gap-1.5"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+            >
+              <motion.div
+                className="w-3 h-3 border-2 rounded-full"
+                style={{
+                  borderColor: `${glowColor}40`,
+                  borderTopColor: glowColor,
+                }}
+                animate={{ rotate: 360 }}
+                transition={{
+                  duration: 1,
+                  repeat: Infinity,
+                  ease: "linear",
+                }}
+              />
+              <span className="text-[8px] text-white/70">
+                {voiceState === 'processing_conversation' ? 'Processing' : 'Tool'}
+              </span>
+            </motion.div>
+          )}
+          
+          {/* Speaking State */}
+          {voiceState === 'speaking' && (
+            <motion.div
+              className="flex items-center gap-1.5"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+            >
+              <motion.div
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: glowColor }}
+                animate={{
+                  scale: [1, 1.2, 1],
+                }}
+                transition={{
+                  duration: 0.8,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                }}
+              />
+              <span className="text-[8px] text-white/70">Speaking</span>
+            </motion.div>
+          )}
+          
+          {/* Error State - Red Pulsing with Auto-dismiss */}
+          {voiceState === 'error' && showError && (
+            <motion.div
+              className="flex items-center gap-1.5"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+            >
+              <motion.div
+                className="w-2 h-2 rounded-full bg-red-500"
+                animate={{
+                  scale: [1, 1.3, 1],
+                  opacity: [1, 0.5, 1],
+                }}
+                transition={{
+                  duration: 1,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                }}
+              />
+              <span className="text-[8px] text-red-400">Error</span>
+            </motion.div>
+          )}
+        </div>
       </div>
 
       {/* Tab bar - 6 main nodes */}
@@ -564,7 +826,7 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
         </div>
 
         {/* Fields panel */}
-        <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
+        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col">
           <AnimatePresence mode="wait">
             {selectedSub ? (
               <motion.div
@@ -573,15 +835,15 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
                 transition={{ duration: 0.15 }}
-                className="space-y-0.5 flex-1 flex flex-col"
+                className="space-y-4 flex-1 flex flex-col"
               >
                 <div className="flex items-center gap-1.5 mb-2 pb-1.5 border-b" style={{ borderColor: `${glowColor}15` }}>
                   {(() => { const Icon = selectedSub.icon; return <Icon className="w-3.5 h-3.5" style={{ color: glowColor }} />; })()}
                   <span className="text-[10px] font-semibold tracking-wider text-white/90">{selectedSub.label}</span>
                 </div>
-                <div className="flex-1 overflow-y-auto">
+                <div className="flex-1 overflow-y-auto space-y-4">
                   {selectedSub.fields.map(field => (
-                    <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} subnodeId={selectedSub.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} />
+                    <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} subnodeId={selectedSub.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} />
                   ))}
                 </div>
                 {/* Confirm button */}

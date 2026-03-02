@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\datasets\snips.py
-# hypothesis_version: 6.151.9
-
-[16000, '-', 'Aditi', 'Amy', 'Brian', 'Dataset not found.', 'Emma', 'Geraint', 'Ivy', 'Joanna', 'Joey', 'Justin', 'Kendra', 'Kimberly', 'Matthew', 'Nicole', 'Raveena', 'Russell', 'SNIPS', 'Salli', 'all.iob.snips.txt', 'mp3', 'r', 'test', 'train', 'valid', 'wav']

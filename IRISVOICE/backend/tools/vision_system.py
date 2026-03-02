@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-VisionSystem - Screen monitoring and analysis for IRIS
+VisionSystem - Screen monitoring and analysis for IRIS (DEPRECATED)
 
-This module provides vision capabilities for the agent system:
-- Screen monitoring with configurable intervals
-- Screen capture and analysis using vision models (MiniCPM-o, LLaVA, BakLLaVA)
-- Integration with Ollama endpoint for vision model inference
-- Proactive monitoring mode for context-aware assistance
-- Screen context integration with AgentKernel
+⚠️ DEPRECATION WARNING: This module is deprecated and will be removed in v2.2.
+Use VisionService instead: backend.vision.vision_service
 
-Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 15.7
+This module now provides a compatibility wrapper around VisionService
+for backward compatibility during the migration period.
+
+See docs/VISION_MIGRATION_GUIDE.md for migration instructions.
 """
 
+import warnings
 import asyncio
 import base64
 import logging
@@ -22,6 +22,14 @@ from enum import Enum
 import threading
 
 logger = logging.getLogger(__name__)
+
+# Deprecation warning on module import
+warnings.warn(
+    "VisionSystem is deprecated. Use VisionService from backend.vision.vision_service instead. "
+    "See docs/VISION_MIGRATION_GUIDE.md for migration instructions.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 class VisionModel(Enum):
@@ -56,16 +64,26 @@ class ScreenAnalysis:
 
 class VisionSystem:
     """
-    Vision system for screen monitoring and analysis.
+    Vision system for screen monitoring and analysis (DEPRECATED).
+    
+    ⚠️ This class is deprecated. Use VisionService instead.
     
     Provides:
     - Screen capture at configurable intervals
     - Vision model analysis using Ollama
     - Proactive monitoring for context changes
     - Integration with AgentKernel for context
+    
+    This class now redirects to VisionService for actual functionality.
     """
     
     def __init__(self, config: Optional[VisionConfig] = None):
+        warnings.warn(
+            "VisionSystem is deprecated. Use VisionService instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         self.config = config or VisionConfig()
         self._screen_capture = None
         self._minicpm_client = None
@@ -76,8 +94,12 @@ class VisionSystem:
         self._current_context: Optional[ScreenAnalysis] = None
         self._notification_callbacks: List[Callable[[Dict], None]] = []
         self._max_history = 20
+        self._vision_service = None
         
-        logger.info(f"[VisionSystem] Initialized with model: {self.config.vision_model.value}")
+        logger.warning(
+            f"[VisionSystem] Initialized with model: {self.config.vision_model.value} "
+            "(DEPRECATED - Use VisionService instead)"
+        )
     
     def _get_screen_capture(self):
         """Lazy load screen capture module"""

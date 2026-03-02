@@ -6,6 +6,7 @@ import { ChevronLeft, ChevronDown } from "lucide-react"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor, type FloatingOrb } from "@/contexts/BrandColorContext"
+import { UILayoutState } from "@/hooks/useUILayoutState"
 import type { IrisOrbProps, OrbIcon } from "./types"
 
 // --- Helper Hook for Window Dragging ---
@@ -159,6 +160,7 @@ export function IrisOrb({
   centerLabel,
   size = 200,
   wakeFlash,
+  uiState = UILayoutState.UI_STATE_IDLE,
   onCallbacksReady,
 }: IrisOrbProps) {
   // Get voice state and actions from NavigationContext
@@ -211,20 +213,30 @@ export function IrisOrb({
       return // Intercept: don't propagate to the prop's navigation logic
     }
 
-    // Not active, proceed with normal prop logic (navigation)
+    // If wings are open (chat or both), clicking orb should close them and return to idle
+    if (uiState === UILayoutState.UI_STATE_CHAT_OPEN || uiState === UILayoutState.UI_STATE_BOTH_OPEN) {
+      // Trigger navigation/exit - the parent component will handle closing wings
+      if (onClick) onClick()
+      return
+    }
+
+    // Not active and at idle state, proceed with normal prop logic (navigation)
     if (onClick) onClick()
-  }, [isListening, endVoiceCommand, onClick])
+  }, [isListening, endVoiceCommand, uiState, onClick])
+
+  // BUG-04 FIX: Memoize double-click handler to prevent stale closure
+  const handleDoubleClick = useCallback(() => {
+    // Double-click starts voice command
+    if (!isListening) {
+      startVoiceCommand()
+    }
+    if (onDoubleClick) onDoubleClick()
+  }, [isListening, startVoiceCommand, onDoubleClick])
 
   const { handleMouseDown } = useManualDragWindow(
     orbRef,
     handleInterceptedClick,
-    () => {
-      // Double-click starts voice command
-      if (!isListening) {
-        startVoiceCommand()
-      }
-      if (onDoubleClick) onDoubleClick()
-    },
+    handleDoubleClick,  // Stable reference now
     setDoubleClickFlash,
     setIsPressed
   )
@@ -232,11 +244,16 @@ export function IrisOrb({
   // --- Voice Recording Logic ---
   // Removed local startRecording/stopRecording - now using context actions
 
+  // BUG-09 FIX: Use refs to break dependency chain and prevent re-registration
+  const isListeningRef = useRef(isListening)
+  isListeningRef.current = isListening
+
   // --- Callbacks for Parent Component ---
+  // Stable callback that doesn't recreate on isListening changes
   const handleWakeDetected = useCallback(() => {
-    if (isListening) return
+    if (isListeningRef.current) return
     startVoiceCommand()
-  }, [isListening, startVoiceCommand])
+  }, [startVoiceCommand])  // Only depends on stable startVoiceCommand
 
   const handleNativeAudioResponse = useCallback((payload: Record<string, unknown>) => {
     if (payload.debug_text && typeof payload.debug_text === 'string') {
@@ -245,6 +262,7 @@ export function IrisOrb({
     }
   }, [])
 
+  // Register callbacks only once on mount
   useEffect(() => {
     if (onCallbacksReady) {
       onCallbacksReady({
@@ -252,7 +270,7 @@ export function IrisOrb({
         handleNativeAudioResponse
       })
     }
-  }, [onCallbacksReady, handleWakeDetected, handleNativeAudioResponse])
+  }, [])  // Empty deps - register once, refs keep values current
 
   // --- Visual Scaling & Color Unification ---
   // Phase 132: Structural Stability & Absolute Color Fidelity
@@ -266,6 +284,14 @@ export function IrisOrb({
         : glowColor
   const effectiveGlowColor = isVoiceActive ? activeColor : glowColor
 
+  // Orb retreat effects when wings are open
+  // When UI_STATE_CHAT_OPEN or UI_STATE_BOTH_OPEN: scale 0.85, blur 2px, opacity 0.6
+  // When UI_STATE_IDLE: scale 1, blur 0px, opacity 1
+  const isWingsOpen = uiState === UILayoutState.UI_STATE_CHAT_OPEN || uiState === UILayoutState.UI_STATE_BOTH_OPEN
+  const orbRetreatScale = isWingsOpen ? 0.85 : 1.0
+  const orbBlur = isWingsOpen ? 2 : 0
+  const orbOpacity = isWingsOpen ? 0.6 : 1.0
+
   // Phase 128: Toned down expansion for better balance
   const baseScale = isExpanded ? 1.1 : 1
   const effectiveScale = isPressed
@@ -275,20 +301,32 @@ export function IrisOrb({
         : isProcessing ? 1.08 // Reduced from 1.15
           : isError ? 1.0 // No scale change for error, just shake animation
             : baseScale
+  
+  // Apply orb retreat scale on top of other scales
+  const finalScale = effectiveScale * orbRetreatScale
 
   return (
     <motion.div
       ref={orbRef}
-      className="relative flex items-center justify-center rounded-full cursor-pointer z-50 pointer-events-auto"
-      style={{ width: size, height: size, overflow: 'visible' }} // Force overflow visible for wide blooms
+      className="relative flex items-center justify-center rounded-full cursor-pointer pointer-events-auto"
+      style={{ 
+        width: size, 
+        height: size, 
+        overflow: 'visible',
+        zIndex: 0 // Set z-index to 0 as per requirements
+      }}
       onMouseDown={handleMouseDown}
       animate={{ 
-        scale: effectiveScale,
+        scale: finalScale,
+        filter: `blur(${orbBlur}px)`,
+        opacity: orbOpacity,
         // Shake animation for error state
         x: isError ? [0, -10, 10, -10, 10, 0] : 0,
       }}
       transition={{ 
         scale: { type: "spring", stiffness: 300, damping: 25 },
+        filter: { duration: 0.3, ease: "easeOut" },
+        opacity: { duration: 0.3, ease: "easeOut" },
         x: isError ? { duration: 0.5, repeat: Infinity, repeatDelay: 2 } : { duration: 0 }
       }}
     >

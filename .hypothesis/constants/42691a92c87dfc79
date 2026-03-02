@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\utils\modeling.py
-# hypothesis_version: 6.151.9
-
-[0.9, 1.25, ', ', '.', '.index.json', '.json', '.safetensors', '2.1.0', '2.2.0', '2.3', '2.4.0', '2.7.0', '2.8.0', '>=', 'FP4Params', 'GB', 'GIB', 'Int8Params', 'KB', 'KIB', 'Linear4bit', 'Linear8bitLt', 'MB', 'MIB', 'Params4bit', 'PreTrainedModel', 'QBitsTensor', 'QTensor', 'SCB', '[^\\d](\\d+)$', '_hf_hook', '_no_split_modules', '_tie_weights', 'b', 'bf16', 'broadcast_from_rank0', 'config', 'cpu', 'cuda', 'disk', 'flax', 'format', 'fp16', 'fp8', 'get_text_config', 'hpu', 'is_encoder_decoder', 'meta', 'mlu', 'mps', 'musa', 'npu', 'pt', 'quant_state', 'sdaa', 'tf', 'tie_encoder_decoder', 'tie_word_embeddings', 'torch.', 'torch.bool', 'torch.int', 'torch.uint', 'w', 'weight', 'weight_map', 'xpu']

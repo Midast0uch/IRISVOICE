@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\keypoint_matching.py
-# hypothesis_version: 6.151.9
-
-[0.0, ' - A pair of images.', 'Image.Image', 'keypoints0', 'keypoints1', 'matching_scores', 'model_inputs', 'model_outputs', 'pt', 'score', 'target_sizes', 'threshold', 'timeout', 'vision']

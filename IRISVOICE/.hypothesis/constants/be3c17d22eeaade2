@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\typed\typedobjectutils.py
-# hypothesis_version: 6.151.9
-
-['.numba_{}.{}_decref', '.numba_{}.{}_equal', '.numba_{}.{}_incref', 'expected an optional']

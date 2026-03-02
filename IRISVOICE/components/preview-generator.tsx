@@ -20,8 +20,8 @@ interface ThemePreviewCardProps {
 function ThemePreviewCard({ themeType, brandHue, brandSat, brandLight, isActive }: ThemePreviewCardProps) {
   // Generate theme-specific colors
   const aetherColors = generateAetherShimmers(brandHue)
-  const emberColors = generateEmberGlow(brandHue, brandSat)
-  const aurumColors = generateAurumMetal(brandHue, brandSat)
+  const emberColors = generateEmberGlow(brandHue, brandSat, brandLight)
+  const aurumColors = generateAurumMetal(brandHue, brandSat, brandLight)
   
   const getPreviewStyles = () => {
     switch (themeType) {

@@ -60,7 +60,7 @@ export function BrandButton({
         }
       
       case 'ember':
-        const ember = generateEmberGlow(brandColor.hue, brandColor.saturation)
+        const ember = generateEmberGlow(brandColor.hue, brandColor.saturation, brandColor.lightness)
         return {
           primary: {
             background: '#1c1c1e',
@@ -83,7 +83,7 @@ export function BrandButton({
         }
       
       case 'aurum':
-        const aurum = generateAurumMetal(brandColor.hue, brandColor.saturation)
+        const aurum = generateAurumMetal(brandColor.hue, brandColor.saturation, brandColor.lightness)
         return {
           primary: {
             background: `conic-gradient(from 0deg, ${aurum.primary}, ${aurum.highlight}, ${aurum.secondary}, ${aurum.primary})`,
@@ -108,7 +108,7 @@ export function BrandButton({
         }
       default:
         // Fallback for verdant, nebula, crimson using aurum as base
-        const fallbackAurum = generateAurumMetal(brandColor.hue, brandColor.saturation)
+        const fallbackAurum = generateAurumMetal(brandColor.hue, brandColor.saturation, brandColor.lightness)
         return {
           primary: {
             background: `conic-gradient(from 0deg, ${fallbackAurum.primary}, ${fallbackAurum.highlight}, ${fallbackAurum.secondary}, ${fallbackAurum.primary})`,

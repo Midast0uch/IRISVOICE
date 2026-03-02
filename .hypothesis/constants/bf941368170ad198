@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_library\fake_profile.py
-# hypothesis_version: 6.151.9
-
-['.', 'FRAGMENT', 'TensorMetadata', 'args_profile', 'device', 'dtype', 'layout', 'operators', 'out_profile', 'rank', 'torch_version', 'utf-8', 'w']

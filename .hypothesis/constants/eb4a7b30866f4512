@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\video_utils.py
-# hypothesis_version: 6.151.9
-
-['T', 'TCHW', 'THWC', 'VideoClips', '_version', 'audio_fps', 'clips', 'cumulative_sizes', 'pyav', 'resampling_idxs', 'video_fps', 'video_paths', 'video_pts', 'video_pts_sizes']

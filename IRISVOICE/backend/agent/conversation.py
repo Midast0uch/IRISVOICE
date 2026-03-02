@@ -47,7 +47,7 @@ class AIConversationManager:
             {"role": "system", "content": system_prompt}
         ]
 
-        history = self.memory.get_context_window(self.config.get("max_context_messages"))
+        history = self.memory.get_context(max_messages=self.config.get("max_context_messages"))
         messages.extend(history)
         messages.append({"role": "user", "content": user_text})
         return messages

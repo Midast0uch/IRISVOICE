@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\librosa\_typing.py
-# hypothesis_version: 6.151.9
-
-['_T', 'constant', 'edge', 'empty', 'linear_ramp', 'maximum', 'mean', 'median', 'minimum', 'np.floating[Any]', 'np.integer[Any]', 'np.number[Any]', 'reflect', 'symmetric', 'wrap']

@@ -5,7 +5,8 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 ## 🌟 Key Features
 
 ### 🎤 Voice & Audio
-- **Wake Word Detection**: Custom "hey iris" wake word using Picovoice Porcupine
+- **Wake Word Detection**: Custom wake words using Picovoice Porcupine with automatic file discovery
+- **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
 - **End-to-End Audio Processing**: LFM 2.5 audio model handles complete audio pipeline
 - **Voice Commands**: Natural language voice interaction with double-click activation
 - **Text-to-Speech**: High-quality speech synthesis with configurable voices
@@ -13,11 +14,15 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 
 ### 🤖 AI Agent System
 - **Dual-LLM Architecture**: lfm2-8b (reasoning) + lfm2.5-1.2b-instruct (execution)
+- **Model-Agnostic Design**: Works with Local, VPS, or OpenAI inference backends
+- **Flexible Inference Modes**: Choose between Local Models, VPS Gateway, or OpenAI API
+- **User-Configurable Models**: Select which models handle reasoning and tool execution
+- **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
 - **Personality System**: Configurable assistant personality and behavior
-- **Conversation Memory**: Context-aware conversations with memory management
-- **VPS Gateway**: Optional remote model inference with automatic fallback
+- **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
+- **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
 
 ### 🎨 User Interface
 - **Hexagonal Hub Interface**: 6 main categories (Voice, Agent, Automate, System, Customize, Monitor)
@@ -34,6 +39,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Structured Logging**: JSON-formatted logs with context injection
 - **Performance Optimization**: Sub-50ms WebSocket latency, <5s agent responses
 - **Security**: Tool execution security with allowlists and audit logging
+- **Cleanup System**: Analyze and remove unused files and dependencies to free disk space
 
 ## 📋 Table of Contents
 
@@ -508,13 +514,38 @@ npm test -- --coverage
 
 ## 📚 Documentation
 
-### Available Documentation
+### User Guides
 
+- **[Inference Mode Selection Guide](./docs/USER_GUIDE_INFERENCE_MODE.md)**: Choose between Local, VPS, or OpenAI inference
+- **[Dual-LLM Model Selection Guide](./docs/USER_GUIDE_MODEL_SELECTION.md)**: Configure reasoning and tool execution models
+- **[Wake Word Configuration Guide](./docs/USER_GUIDE_WAKE_WORDS.md)**: Set up custom wake words
+- **[Cleanup System Guide](./docs/USER_GUIDE_CLEANUP.md)**: Analyze and remove unused files
+
+### Developer Guides
+
+- **[Lazy Loading Architecture](./docs/DEVELOPER_LAZY_LOADING.md)**: Model loading/unloading implementation
+- **[Model-Agnostic Architecture](./docs/DEVELOPER_MODEL_AGNOSTIC.md)**: Agent capabilities across all inference modes
+- **[Agent Architecture](./docs/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
+- **[System Overview](./docs/SYSTEM_OVERVIEW.md)**: Complete system architecture
+- **[UI Architecture](./docs/UI_ARCHITECTURE.md)**: Frontend component structure
+
+### API Documentation
+
+- **[WebSocket Messages](./docs/api/websocket-messages.md)**: Complete WebSocket protocol reference
+- **[Backend Classes](./docs/api/backend-classes.md)**: Backend component documentation
+- **[Configuration Guide](./docs/api/configuration.md)**: Configuration options
+- **[Data Models](./docs/api/data-models.md)**: Data structure definitions
 - **[API Documentation](./API_DOCUMENTATION.md)**: Complete API reference
+
+### Operations Guides
+
 - **[Deployment Guide](./DEPLOYMENT_GUIDE.md)**: Production deployment instructions
 - **[Troubleshooting Guide](./TROUBLESHOOTING_GUIDE.md)**: Common issues and solutions
 - **[Performance Optimization](./PERFORMANCE_OPTIMIZATION_SUMMARY.md)**: Performance tuning guide
-- **[Porcupine Integration](./PORCUPINE_INTEGRATION_SUMMARY.md)**: Wake word detection setup
+- **[Feature Summary](./docs/FEATURE_SUMMARY.md)**: Recent features and improvements
+
+### Component Documentation
+
 - **[Backend Core README](./backend/core/README.md)**: Core infrastructure documentation
 - **[Agent Personality](./backend/agent/README_PERSONALITY.md)**: Personality system guide
 - **[Model System](./backend/agent/README_MODEL_SYSTEM.md)**: Dual-LLM architecture
@@ -532,23 +563,37 @@ npm test -- --coverage
 - `GET /docs` - Swagger UI
 - `GET /redoc` - ReDoc documentation
 
-### WebSocket Message Types
+**WebSocket Message Types**
 
 **Client → Server:**
 - `select_category` - Navigate to category
 - `select_subnode` - Select subnode
-- `field_update` - Update field value
+- `update_field` - Update field value (including inference_mode, model selection)
 - `text_message` - Send text message to agent
 - `voice_command_start` - Start voice recording
 - `voice_command_end` - Stop voice recording
+- `get_wake_words` - Request wake word list
+- `select_wake_word` - Select wake word file
+- `get_available_models` - Request available models
+- `get_cleanup_report` - Request cleanup analysis
+- `execute_cleanup` - Execute cleanup
 
 **Server → Client:**
 - `initial_state` - Complete state on connection
 - `field_updated` - Field update confirmation
 - `text_response` - Agent text response
-- `agent_status` - Agent status update
+- `agent_status` - Agent status update (includes inference mode, model selection)
 - `audio_level` - Voice activity level
 - `validation_error` - Field validation error
+- `wake_words_list` - Available wake word files
+- `wake_word_selected` - Wake word selection confirmed
+- `available_models` - Available models from all inference sources
+- `inference_mode_changed` - Inference mode change confirmed
+- `model_selection_updated` - Model selection change confirmed
+- `cleanup_report` - Cleanup analysis result
+- `cleanup_result` - Cleanup execution result
+
+For complete message documentation, see [WebSocket Messages](./docs/api/websocket-messages.md).
 
 ## 🔧 Troubleshooting
 
@@ -569,13 +614,19 @@ lsof -i :8000  # macOS/Linux
 
 **Models not loading:**
 ```bash
-# Re-download models
+# Note: Models are NOT loaded automatically on startup (lazy loading)
+# Select inference mode in Agent settings first
+
+# For Local Models mode:
+# Re-download models if needed
 python download_text_model.py
 python download_lfm_audio.py
 
-# Check available RAM (need ~20GB)
-# Check GPU memory if using CUDA
+# Check available GPU RAM (need ~20GB for local models)
 nvidia-smi
+
+# For VPS/OpenAI modes:
+# No local models needed - configure in Agent settings
 ```
 
 **Wake word not detected:**

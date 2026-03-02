@@ -1,16 +1,46 @@
 "use client"
 
-import React, { useMemo, useCallback } from "react"
+import React, { useMemo, useCallback, useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
+
+// Extension Manager Hook (Phase 2)
+const useExtensionManager = () => {
+  const [mcpServers, setMcpServers] = useState([]);
+  const [skills, setSkills] = useState([]);
+  const [savedWorkflows, setSavedWorkflows] = useState([]);
+
+  const manageMcpServer = (serverId: string, action: 'add' | 'remove' | 'configure') => {
+    console.log(`[Phase 2] MCP Server ${action}: ${serverId}`);
+    // TODO: Implement in Phase 2
+  };
+
+  const manageSkill = (skillId: string, action: 'enable' | 'disable' | 'configure') => {
+    console.log(`[Phase 2] Skill ${action}: ${skillId}`);
+    // TODO: Implement in Phase 2
+  };
+
+  const manageWorkflow = (workflowId: string, action: 'save' | 'delete' | 'execute') => {
+    console.log(`[Phase 2] Workflow ${action}: ${workflowId}`);
+    // TODO: Implement in Phase 2
+  };
+
+  return {
+    mcpServers,
+    skills,
+    savedWorkflows,
+    manageMcpServer,
+    manageSkill,
+    manageWorkflow
+  };
+};
 import { ENERGY_CYCLE } from '@/lib/timing-config'
 import { Check } from "lucide-react"
 import { ConnectionLine } from "./ConnectionLine"
-import { ToggleField } from "./fields/ToggleField"
-import { SliderField } from "./fields/SliderField"
-import { DropdownField } from "./fields/DropdownField"
-import { TextField } from "./fields/TextField"
-import { ColorField } from "./fields/ColorField"
+// Explicitly import from wheel-view fields barrel export to avoid conflict with general fields
+import { ToggleField, SliderField, DropdownField, TextField, ColorField } from "./fields"
 import type { MiniNode, FieldConfig, FieldValue } from "@/types/navigation"
+import { useNavigation } from "@/contexts/NavigationContext"
+import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
 
 interface SidePanelProps {
   miniNode: MiniNode
@@ -46,6 +76,110 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   lineRetracted,
   orbSize,
 }) => {
+  const { sendMessage } = useNavigation()
+  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [audioInputDevices, setAudioInputDevices] = useState<string[]>([])
+  const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>([])
+  const [wakeWords, setWakeWords] = useState<string[]>([])
+
+  // Fetch current configuration from backend on mount
+  useEffect(() => {
+    // Request current state from backend
+    sendMessage('request_state', {})
+    
+    // Listen for initial state response
+    const handleInitialState = (event: CustomEvent) => {
+      const state = event.detail?.state || {}
+      console.log('[SidePanel] Received initial state:', state)
+      
+      // Extract field values from the state
+      // BUG-07 FIX: Use CARD_TO_SECTION_ID mapping for correct lookup
+      // Backend stores values under Section IDs, not Card IDs
+      if (state.fieldValues && miniNode.id) {
+        const sectionId = CARD_TO_SECTION_ID[miniNode.id] || miniNode.id
+        const subnodeValues = state.fieldValues[sectionId]
+        if (subnodeValues) {
+          // Update values from backend state
+          Object.entries(subnodeValues).forEach(([fieldId, value]) => {
+            onValueChange(fieldId, value as FieldValue)
+          })
+        }
+      }
+    }
+    
+    window.addEventListener('iris:initial_state', handleInitialState as EventListener)
+    
+    return () => {
+      window.removeEventListener('iris:initial_state', handleInitialState as EventListener)
+    }
+  }, [sendMessage, miniNode.id, onValueChange])
+
+  // Fetch available models when models-card mini-node is active
+  useEffect(() => {
+    if (miniNode.id === 'models-card') {
+      // Send get_available_models message to backend
+      sendMessage('get_available_models', {})
+      
+      // Listen for the response
+      const handleAvailableModels = (event: CustomEvent) => {
+        const models = event.detail.models || []
+        const modelOptions = models.map((m: any) => m.name || m.id)
+        setAvailableModels(modelOptions)
+      }
+      
+      window.addEventListener('iris:available_models', handleAvailableModels as EventListener)
+      
+      return () => {
+        window.removeEventListener('iris:available_models', handleAvailableModels as EventListener)
+      }
+    }
+  }, [miniNode.id, sendMessage])
+
+  // Fetch audio devices when input-device or output-device mini-nodes are active
+  useEffect(() => {
+    if (miniNode.id === 'input-device' || miniNode.id === 'output-device') {
+      // Send get_audio_devices message to backend
+      sendMessage('get_audio_devices', {})
+      
+      // Listen for the response
+      const handleAudioDevices = (event: CustomEvent) => {
+        const inputDevices = event.detail.input_devices || []
+        const outputDevices = event.detail.output_devices || []
+        const inputOptions = inputDevices.map((d: any) => d.name || d.index)
+        const outputOptions = outputDevices.map((d: any) => d.name || d.index)
+        setAudioInputDevices(inputOptions)
+        setAudioOutputDevices(outputOptions)
+      }
+      
+      window.addEventListener('iris:audio_devices', handleAudioDevices as EventListener)
+      
+      return () => {
+        window.removeEventListener('iris:audio_devices', handleAudioDevices as EventListener)
+      }
+    }
+  }, [miniNode.id, sendMessage])
+
+  // Fetch wake words when wake-word-card mini-node is active
+  useEffect(() => {
+    if (miniNode.id === 'wake-word-card') {
+      // Send get_wake_words message to backend
+      sendMessage('get_wake_words', {})
+      
+      // Listen for the response
+      const handleWakeWords = (event: CustomEvent) => {
+        const wakeWordsList = event.detail.wake_words || []
+        const wakeWordOptions = wakeWordsList.map((w: any) => w.display_name || w.filename)
+        setWakeWords(wakeWordOptions)
+      }
+      
+      window.addEventListener('iris:wake_words_list', handleWakeWords as EventListener)
+      
+      return () => {
+        window.removeEventListener('iris:wake_words_list', handleWakeWords as EventListener)
+      }
+    }
+  }, [miniNode.id, sendMessage])
+
   // Calculate panel position: anchored at distance for distinct "beam of light" bridge (Phase 48)
   // Calculate panel position: anchored for a precision 85px bridge from wheel edge (Phase 68)
   // Wheel Edge (startX) = 438. 438 + 85 = 523.
@@ -55,6 +189,47 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   const renderField = useCallback(
     (field: FieldConfig) => {
       const fieldValue = values[field.id] ?? field.defaultValue
+
+      // Conditional field rendering for inference-card mini-node
+      if (miniNode.id === 'inference-card') {
+        const inferenceMode = values['inference_mode'] ?? 'Local Models'
+        
+        // Hide VPS fields unless VPS Gateway is selected
+        if ((field.id === 'section_vps' || field.id === 'vps_url' || field.id === 'vps_api_key' || field.id === 'test_vps_connection') && inferenceMode !== 'VPS Gateway') {
+          return null
+        }
+        
+        // Hide OpenAI fields unless OpenAI API is selected
+        if ((field.id === 'section_openai' || field.id === 'openai_api_key' || field.id === 'test_openai_connection') && inferenceMode !== 'OpenAI API') {
+          return null
+        }
+        
+        // Hide GPU warning unless Local Models is selected
+        if ((field.id === 'section_local_warning' || field.id === 'local_gpu_warning') && inferenceMode !== 'Local Models') {
+          return null
+        }
+      }
+
+      // For models-card mini-node, use available models for dropdowns
+      let fieldOptions = field.options ?? []
+      if (miniNode.id === 'models-card' && (field.id === 'reasoning_model' || field.id === 'tool_execution_model')) {
+        fieldOptions = availableModels.length > 0 ? availableModels : ['No models available']
+      }
+
+      // For input-device mini-node, use audio input devices
+      if (miniNode.id === 'input-device' && field.id === 'input_device') {
+        fieldOptions = audioInputDevices.length > 0 ? audioInputDevices : ['No input devices found']
+      }
+
+      // For output-device mini-node, use audio output devices
+      if (miniNode.id === 'output-device' && field.id === 'output_device') {
+        fieldOptions = audioOutputDevices.length > 0 ? audioOutputDevices : ['No output devices found']
+      }
+
+      // For wake-word-card mini-node, use wake words
+      if (miniNode.id === 'wake-word-card' && field.id === 'wake_phrase') {
+        fieldOptions = wakeWords.length > 0 ? wakeWords : ['No wake words found']
+      }
 
       switch (field.type) {
         case "section":
@@ -102,7 +277,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               id={field.id}
               label={field.label}
               value={(fieldValue as string) ?? ""}
-              options={field.options ?? []}
+              options={fieldOptions}
               loadOptions={field.loadOptions}
               onChange={(value) => onValueChange(field.id, value)}
               glowColor={glowColor}
@@ -165,7 +340,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           return null
       }
     },
-    [values, onValueChange, glowColor]
+    [values, onValueChange, glowColor, miniNode.id, availableModels]
   )
 
   // Memoize field list for performance (Requirement 12.2)

@@ -97,6 +97,10 @@ class AudioEngine:
             # LFM 2.5 audio model handles everything
             # No need to manage streams, devices, or processing
             
+            # Set wake_word_active for manual trigger (bypasses wake word requirement)
+            if self._lfm_audio_manager:
+                self._lfm_audio_manager.wake_word_active = True
+            
             logger.info("[AudioEngine] Audio interaction started")
             return True
         
@@ -117,6 +121,11 @@ class AudioEngine:
         
         try:
             logger.info("[AudioEngine] Stopping audio interaction...")
+            
+            # Reset wake_word_active for manual trigger
+            if self._lfm_audio_manager:
+                self._lfm_audio_manager.wake_word_active = False
+            
             self._is_running = False
             
             # LFM 2.5 audio model handles cleanup

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sentencepiece\__init__.py
-# hypothesis_version: 6.151.9
-
-[0.1, 1.0, '(?<!^)(?=[A-Z])', '.', '<%s.%s; %s >', 'GetScore', 'IdToPiece', 'IsByte', 'IsControl', 'IsUnknown', 'IsUnused', 'PieceToId', 'The membership flag', '^[A-Z]+', '_', '__init__', 'add_dummy_prefix', 'escape_whitespaces', 'immutable_proto', 'model_writer', 'n_best', 'nbest', 'nbests {{\n{}}}', 'package_data', 'pieces {{\n{}}}', 'proto', 'proxy of ', 'sentence_iterator', 'sentence_reader', 'sentencepiece', 'serialized_proto', 'this', 'thisown', 'unknown out_type', 'unknown out_type={}', 'unknown output type']

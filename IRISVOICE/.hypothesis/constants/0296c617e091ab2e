@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\linear_model\_sag.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.001, 0.25, 1.0, 1000, 'C', 'coef', 'csr', 'gradient_memory', 'log', 'multinomial', 'num_seen', 'seen', 'squared', 'sum_gradient']

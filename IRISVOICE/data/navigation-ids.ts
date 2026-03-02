@@ -50,17 +50,18 @@ export const SUB_NODE_IDS = {
   VOICE_MODEL: 'model',
   
   // Agent category
+  AGENT_MODEL_SELECTION: 'model_selection',
+  AGENT_INFERENCE_MODE: 'inference_mode',
   AGENT_IDENTITY: 'identity',
-  AGENT_WAKE: 'wake',
-  AGENT_SPEECH: 'speech',
   AGENT_MEMORY: 'memory',
-  
+
   // Automate category
   AUTOMATE_TOOLS: 'tools',
   AUTOMATE_VISION: 'vision',
   AUTOMATE_WORKFLOWS: 'workflows',
   AUTOMATE_SHORTCUTS: 'shortcuts',
   AUTOMATE_GUI: 'gui',
+  AUTOMATE_EXTENSIONS: 'extensions',
   
   // System category
   SYSTEM_POWER: 'power',
@@ -146,9 +147,9 @@ export const ID_MIGRATION_MAP: Record<string, string> = {
   'PROCESSING': SUB_NODE_IDS.VOICE_PROCESSING,
   'MODEL': SUB_NODE_IDS.VOICE_MODEL,
   
+  'MODEL_SELECTION': SUB_NODE_IDS.AGENT_MODEL_SELECTION,
+  'INFERENCE_MODE': SUB_NODE_IDS.AGENT_INFERENCE_MODE,
   'IDENTITY': SUB_NODE_IDS.AGENT_IDENTITY,
-  'WAKE': SUB_NODE_IDS.AGENT_WAKE,
-  'SPEECH': SUB_NODE_IDS.AGENT_SPEECH,
   'MEMORY': SUB_NODE_IDS.AGENT_MEMORY,
   
   'TOOLS': SUB_NODE_IDS.AUTOMATE_TOOLS,

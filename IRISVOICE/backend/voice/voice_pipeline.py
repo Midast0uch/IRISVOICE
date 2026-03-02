@@ -261,6 +261,63 @@ class VoicePipeline:
             self._audio_level_callbacks[session_id] = []
         self._audio_level_callbacks[session_id].append(callback)
     
+    # GAP-06 FIX: Add unregister methods for cleanup
+    def unregister_state_callback(self, session_id: str, callback: Callable[[VoiceState], None]) -> None:
+        """
+        Unregister a state change callback for a session.
+        
+        Args:
+            session_id: Session ID
+            callback: Callback function to remove
+        """
+        if session_id in self._state_callbacks:
+            try:
+                self._state_callbacks[session_id].remove(callback)
+                logger.debug(f"[VoicePipeline] Unregistered state callback for session {session_id}")
+            except ValueError:
+                # Callback not found in list
+                pass
+    
+    def unregister_audio_level_callback(self, session_id: str, callback: Callable[[float], None]) -> None:
+        """
+        Unregister an audio level callback for a session.
+        
+        Args:
+            session_id: Session ID
+            callback: Callback function to remove
+        """
+        if session_id in self._audio_level_callbacks:
+            try:
+                self._audio_level_callbacks[session_id].remove(callback)
+                logger.debug(f"[VoicePipeline] Unregistered audio level callback for session {session_id}")
+            except ValueError:
+                # Callback not found in list
+                pass
+    
+    def cleanup_session(self, session_id: str) -> None:
+        """
+        Clean up all callbacks and state for a session.
+        GAP-06 FIX: Removes all callbacks and state for session cleanup.
+        
+        Args:
+            session_id: Session ID
+        """
+        # Remove callbacks
+        if session_id in self._state_callbacks:
+            del self._state_callbacks[session_id]
+            logger.debug(f"[VoicePipeline] Cleaned up state callbacks for session {session_id}")
+        
+        if session_id in self._audio_level_callbacks:
+            del self._audio_level_callbacks[session_id]
+            logger.debug(f"[VoicePipeline] Cleaned up audio level callbacks for session {session_id}")
+        
+        # Remove session state
+        if session_id in self._session_states:
+            del self._session_states[session_id]
+            logger.debug(f"[VoicePipeline] Cleaned up session state for session {session_id}")
+        
+        logger.info(f"[VoicePipeline] Session cleanup completed for {session_id}")
+    
     async def _set_state(self, session_id: str, new_state: VoiceState) -> None:
         """
         Update voice state and notify callbacks

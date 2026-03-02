@@ -2,8 +2,9 @@
 """
 Inter-Model Communication
 
-This module provides a robust class to manage communication between different models
-in the agent system with standardized JSON-based request/response protocols.
+Manages direct brain ↔ executor communication with full context preservation.
+All messages carry the originating TaskContext so neither model ever loses
+track of the user's original intent or prior execution results.
 """
 
 import json
@@ -13,21 +14,21 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 from enum import Enum
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
 from .model_router import ModelRouter
 from .model_conversation import ModelConversation
 
 
 class MessagePriority(Enum):
-    """Priority levels for inter-model messages."""
     LOW = "low"
     NORMAL = "normal"
     HIGH = "high"
 
 
 class ExecutionStatus(Enum):
-    """Status codes for tool execution results."""
     SUCCESS = "success"
     FAILURE = "failure"
     PARTIAL = "partial"
@@ -36,7 +37,13 @@ class ExecutionStatus(Enum):
 
 
 class ToolRequest:
-    """Standardized tool request from brain model to executor model."""
+    """
+    Standardized tool request from brain to executor.
+
+    Critically includes `user_intent` and `prior_results` so the executor
+    always understands WHY it's being asked to execute a tool and WHAT has
+    already happened in the task.
+    """
 
     def __init__(
         self,
@@ -44,7 +51,11 @@ class ToolRequest:
         tool_name: str,
         parameters: Dict[str, Any],
         context: str = "",
-        priority: MessagePriority = MessagePriority.NORMAL
+        priority: MessagePriority = MessagePriority.NORMAL,
+        # Context engineering additions:
+        user_intent: str = "",
+        prior_results: Optional[List[Dict[str, Any]]] = None,
+        step_rationale: str = ""
     ):
         self.request_id = request_id
         self.timestamp = datetime.now().isoformat()
@@ -52,46 +63,55 @@ class ToolRequest:
         self.parameters = parameters
         self.context = context
         self.priority = priority
+        self.user_intent = user_intent
+        self.prior_results = prior_results or []
+        self.step_rationale = step_rationale
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
         return {
             "request_id": self.request_id,
             "timestamp": self.timestamp,
             "tool_name": self.tool_name,
             "parameters": self.parameters,
             "context": self.context,
-            "priority": self.priority.value
+            "priority": self.priority.value,
+            "user_intent": self.user_intent,
+            "prior_results": self.prior_results,
+            "step_rationale": self.step_rationale
         }
 
     def to_json(self) -> str:
-        """Serialize to JSON string."""
         return json.dumps(self.to_dict())
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ToolRequest':
-        """Create from dictionary."""
         return cls(
             request_id=data.get("request_id", str(uuid.uuid4())),
             tool_name=data.get("tool_name", ""),
             parameters=data.get("parameters", {}),
             context=data.get("context", ""),
-            priority=MessagePriority(data.get("priority", "normal"))
+            priority=MessagePriority(data.get("priority", "normal")),
+            user_intent=data.get("user_intent", ""),
+            prior_results=data.get("prior_results", []),
+            step_rationale=data.get("step_rationale", "")
         )
 
     @classmethod
     def from_json(cls, json_str: str) -> Optional['ToolRequest']:
-        """Deserialize from JSON string."""
         try:
-            data = json.loads(json_str)
-            return cls.from_dict(data)
+            return cls.from_dict(json.loads(json_str))
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error(f"[InterModelComm] Failed to parse ToolRequest: {e}")
             return None
 
 
 class ToolResponse:
-    """Standardized tool response from executor model to brain model."""
+    """
+    Standardized tool response from executor to brain.
+
+    Includes execution metadata so the brain can reason about what happened
+    and why, not just whether it succeeded.
+    """
 
     def __init__(
         self,
@@ -99,7 +119,9 @@ class ToolResponse:
         status: ExecutionStatus,
         output_data: Any = None,
         error_message: Optional[str] = None,
-        diagnostics: Optional[Dict[str, Any]] = None
+        diagnostics: Optional[Dict[str, Any]] = None,
+        tool_name: str = "",
+        user_intent: str = ""
     ):
         self.request_id = request_id
         self.timestamp = datetime.now().isoformat()
@@ -107,85 +129,94 @@ class ToolResponse:
         self.output_data = output_data or {}
         self.error_message = error_message
         self.diagnostics = diagnostics or {}
+        # Echo back identifiers so brain can correlate without lookup
+        self.tool_name = tool_name
+        self.user_intent = user_intent
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
         return {
             "request_id": self.request_id,
             "timestamp": self.timestamp,
             "status": self.status.value,
             "output_data": self.output_data,
             "error_message": self.error_message,
-            "diagnostics": self.diagnostics
+            "diagnostics": self.diagnostics,
+            "tool_name": self.tool_name,
+            "user_intent": self.user_intent
         }
 
     def to_json(self) -> str:
-        """Serialize to JSON string."""
         return json.dumps(self.to_dict())
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == ExecutionStatus.SUCCESS
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ToolResponse':
-        """Create from dictionary."""
         return cls(
             request_id=data.get("request_id", ""),
             status=ExecutionStatus(data.get("status", "failure")),
             output_data=data.get("output_data"),
             error_message=data.get("error_message"),
-            diagnostics=data.get("diagnostics", {})
+            diagnostics=data.get("diagnostics", {}),
+            tool_name=data.get("tool_name", ""),
+            user_intent=data.get("user_intent", "")
         )
 
     @classmethod
     def from_json(cls, json_str: str) -> Optional['ToolResponse']:
-        """Deserialize from JSON string."""
         try:
-            data = json.loads(json_str)
-            return cls.from_dict(data)
+            return cls.from_dict(json.loads(json_str))
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error(f"[InterModelComm] Failed to parse ToolResponse: {e}")
             return None
 
     @classmethod
-    def create_success(cls, request_id: str, output_data: Any, diagnostics: Optional[Dict] = None) -> 'ToolResponse':
-        """Factory method for successful response."""
+    def create_success(cls, request: 'ToolRequest', output_data: Any, diagnostics: Optional[Dict] = None) -> 'ToolResponse':
         return cls(
-            request_id=request_id,
+            request_id=request.request_id,
             status=ExecutionStatus.SUCCESS,
             output_data=output_data,
-            diagnostics=diagnostics or {}
+            diagnostics=diagnostics or {},
+            tool_name=request.tool_name,
+            user_intent=request.user_intent
         )
 
     @classmethod
-    def create_failure(cls, request_id: str, error_message: str, diagnostics: Optional[Dict] = None) -> 'ToolResponse':
-        """Factory method for failure response."""
+    def create_failure(cls, request_id: str, error_message: str, tool_name: str = "", diagnostics: Optional[Dict] = None) -> 'ToolResponse':
         return cls(
             request_id=request_id,
             status=ExecutionStatus.FAILURE,
             error_message=error_message,
-            diagnostics=diagnostics or {}
+            diagnostics=diagnostics or {},
+            tool_name=tool_name
         )
 
     @classmethod
-    def create_timeout(cls, request_id: str, diagnostics: Optional[Dict] = None) -> 'ToolResponse':
-        """Factory method for timeout response."""
+    def create_timeout(cls, request_id: str, tool_name: str = "") -> 'ToolResponse':
         return cls(
             request_id=request_id,
             status=ExecutionStatus.TIMEOUT,
             error_message="Operation timed out",
-            diagnostics=diagnostics or {}
+            tool_name=tool_name
         )
 
     @classmethod
     def create_invalid_request(cls, request_id: str, error_message: str) -> 'ToolResponse':
-        """Factory method for invalid request response."""
-        return cls(
-            request_id=request_id,
-            status=ExecutionStatus.INVALID_REQUEST,
-            error_message=error_message
-        )
+        return cls(request_id=request_id, status=ExecutionStatus.INVALID_REQUEST, error_message=error_message)
 
 
 class InterModelCommunicator:
-    """Manages the communication flow between the brain and executor models with robust error handling."""
+    """
+    Manages brain ↔ executor communication with full context integrity.
+
+    Key design principles:
+    1. Every ToolRequest carries user_intent and prior_results
+    2. Every ToolResponse echoes back tool_name and user_intent for correlation
+    3. ModelConversation records the full inter-model dialogue for debugging
+    4. Request history retains the full context objects, not just IDs
+    """
 
     def __init__(
         self,
@@ -201,49 +232,69 @@ class InterModelCommunicator:
         self._request_history: List[Dict[str, Any]] = []
 
     def _generate_request_id(self) -> str:
-        """Generate a unique request ID."""
         return f"req_{uuid.uuid4().hex[:12]}"
 
-    def _record_request(self, request: ToolRequest, response: Optional[ToolResponse] = None):
-        """Record request/response in history."""
+    def _record_exchange(self, request: ToolRequest, response: Optional[ToolResponse] = None):
+        """Record request/response with full context for debugging."""
         self._request_history.append({
             "request": request.to_dict(),
             "response": response.to_dict() if response else None,
             "recorded_at": datetime.now().isoformat()
         })
-        # Keep only last 100 requests
         if len(self._request_history) > 100:
             self._request_history = self._request_history[-100:]
+
+        # Also record in ModelConversation so the inter-model dialogue is visible
+        self.conversation.add_message(
+            role="brain_to_executor",
+            content={
+                "tool": request.tool_name,
+                "user_intent": request.user_intent,
+                "parameters": request.parameters
+            }
+        )
+        if response:
+            self.conversation.add_message(
+                role="executor_to_brain",
+                content={
+                    "status": response.status.value,
+                    "output": response.output_data,
+                    "error": response.error_message
+                }
+            )
 
     def create_tool_request(
         self,
         tool_name: str,
         parameters: Dict[str, Any],
         context: str = "",
-        priority: MessagePriority = MessagePriority.NORMAL
+        priority: MessagePriority = MessagePriority.NORMAL,
+        user_intent: str = "",
+        prior_results: Optional[List[Dict[str, Any]]] = None,
+        step_rationale: str = ""
     ) -> ToolRequest:
-        """Create a standardized tool request."""
+        """Create a ToolRequest with full context attached."""
         return ToolRequest(
             request_id=self._generate_request_id(),
             tool_name=tool_name,
             parameters=parameters,
             context=context,
-            priority=priority
+            priority=priority,
+            user_intent=user_intent,
+            prior_results=prior_results or [],
+            step_rationale=step_rationale
         )
 
     def get_response(self, model_capability: str, prompt: str) -> Any:
-        """Gets a response from a model with a specific capability.
-        
-        This is the main entry point for brain model communication.
-        """
+        """Get a response from a model. Records in conversation history."""
         model = self.model_router.get_model(model_capability)
         if not model:
-            error_response = {
+            error = {
                 "error": f"No model with '{model_capability}' capability found.",
                 "available_capabilities": self.model_router.list_available_capabilities()
             }
-            logger.error(f"[InterModelComm] {error_response['error']}")
-            return json.dumps(error_response)
+            logger.error(f"[InterModelComm] {error['error']}")
+            return json.dumps(error)
 
         try:
             response = model.generate(prompt)
@@ -252,115 +303,131 @@ class InterModelCommunicator:
         except Exception as e:
             error_msg = f"Error generating response from {model_capability} model: {e}"
             logger.error(f"[InterModelComm] {error_msg}")
-            error_response = {"error": error_msg, "model_capability": model_capability}
-            return json.dumps(error_response)
+            return json.dumps({"error": error_msg, "model_capability": model_capability})
 
     def send_tool_request_to_executor(self, request: ToolRequest) -> ToolResponse:
-        """Send a tool request to the executor model for processing.
-        
-        The executor model interprets the request and returns a structured response.
         """
-        # Create prompt for executor model
+        Send a tool request to the executor model.
+
+        The executor receives the full ToolRequest including:
+        - user_intent: what the user originally asked for
+        - prior_results: what has already been executed this task
+        - step_rationale: why this tool was chosen by the brain
+
+        This ensures the executor can adapt its parameter resolution and
+        provide meaningful results even for ambiguous inputs.
+        """
         executor_prompt = self._build_executor_prompt(request)
-        
-        # Get executor model
+
         executor = self.model_router.get_model("tool_execution")
         if not executor:
-            # Fallback: return error response if executor not available
-            error_response = ToolResponse.create_failure(
+            response = ToolResponse.create_failure(
                 request.request_id,
-                "Executor model not available for tool execution"
+                "Executor model not available",
+                tool_name=request.tool_name
             )
-            self._record_request(request, error_response)
-            return error_response
+            self._record_exchange(request, response)
+            return response
 
         try:
-            # Get response from executor model
-            executor_response = executor.generate(executor_prompt)
-            
-            # Try to parse the executor's response as a ToolResponse
-            # The executor should return JSON in ToolResponse format
-            tool_response = self._parse_executor_response(request, executor_response)
-            
-            self._record_request(request, tool_response)
+            executor_output = executor.generate(executor_prompt)
+            tool_response = self._parse_executor_response(request, executor_output)
+            self._record_exchange(request, tool_response)
             return tool_response
-            
         except Exception as e:
-            error_response = ToolResponse.create_failure(
+            response = ToolResponse.create_failure(
                 request.request_id,
-                f"Error executing tool request: {str(e)}"
+                f"Error executing tool request: {str(e)}",
+                tool_name=request.tool_name
             )
-            self._record_request(request, error_response)
-            return error_response
+            self._record_exchange(request, response)
+            return response
 
     def _build_executor_prompt(self, request: ToolRequest) -> str:
-        """Build a prompt for the executor model to process the tool request."""
-        return f"""You are a tool execution agent. Process the following tool request and return the result.
+        """
+        Build executor prompt with full context so it can resolve parameters
+        intelligently against prior results.
+        """
+        prior_context = ""
+        if request.prior_results:
+            prior_context = "\nPrevious steps in this task:\n" + json.dumps(
+                request.prior_results, indent=2
+            )[:600]
 
-Tool Request:
+        return f"""You are a tool execution agent. Execute the requested tool and return the result.
+
+User's original request: {request.user_intent or "Not specified"}
+Step rationale: {request.step_rationale or "Execute as requested"}
+{prior_context}
+
+Tool to execute:
 {request.to_json()}
 
-Available Tools:
-- read_file: Read contents of a file (parameters: path)
-- write_file: Write contents to a file (parameters: path, content)
-- list_directory: List directory contents (parameters: path, recursive)
-- create_directory: Create a new directory (parameters: path)
-- delete_file: Delete a file or directory (parameters: path)
-- open_url: Open a URL in browser (parameters: url)
-- search: Search using default search engine (parameters: query)
-- launch_app: Launch an application (parameters: app_name)
-- get_system_info: Get system information (parameters: none)
+Available tools and signatures:
+- read_file(path): Read file contents
+- write_file(path, content): Write to file
+- list_directory(path, recursive): List directory
+- create_directory(path): Create directory
+- delete_file(path): Delete file/directory
+- open_url(url): Open URL in browser
+- search(query): Web search
+- launch_app(app_name): Launch application
+- get_system_info(): Get system information
 
-Return your response as a JSON object with the following structure:
+Return ONLY a JSON object:
 {{
     "request_id": "{request.request_id}",
     "status": "success|failure|partial",
-    "output_data": {{...}},
-    "error_message": null or "error description",
-    "diagnostics": {{"execution_time": 0.1}}
-}}
-
-Execute the tool and provide the results."""
+    "output_data": {{}},
+    "error_message": null,
+    "diagnostics": {{"execution_time_ms": 100}}
+}}"""
 
     def _parse_executor_response(self, request: ToolRequest, executor_output: str) -> ToolResponse:
-        """Parse the executor model's output into a ToolResponse."""
+        """Parse executor output into a ToolResponse, echoing context fields."""
         try:
-            # Try to parse as JSON
             data = json.loads(executor_output)
-            
-            # Validate required fields
             if "status" not in data:
-                raise ValueError("Missing 'status' field in executor response")
-            
-            return ToolResponse.from_dict(data)
-            
+                raise ValueError("Missing 'status' field")
+            response = ToolResponse.from_dict(data)
+            # Always echo back user_intent so brain can correlate
+            response.tool_name = request.tool_name
+            response.user_intent = request.user_intent
+            return response
         except json.JSONDecodeError:
-            # If not JSON, treat the output as the result
-            return ToolResponse.create_success(
-                request.request_id,
-                {"output": executor_output.strip()},
-                {"parsing": "raw_text"}
+            # Raw text output — treat as successful result
+            return ToolResponse(
+                request_id=request.request_id,
+                status=ExecutionStatus.SUCCESS,
+                output_data={"output": executor_output.strip()},
+                diagnostics={"parsing": "raw_text"},
+                tool_name=request.tool_name,
+                user_intent=request.user_intent
             )
         except Exception as e:
             return ToolResponse.create_failure(
                 request.request_id,
-                f"Failed to parse executor response: {str(e)}"
+                f"Failed to parse executor response: {str(e)}",
+                tool_name=request.tool_name
             )
 
     def get_request_history(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get recent request history."""
         return self._request_history[-limit:]
 
+    def get_conversation_history(self) -> List[Dict[str, Any]]:
+        """Get the full brain ↔ executor conversation log."""
+        return self.conversation.get_history()
+
     def clear_history(self):
-        """Clear request history."""
         self._request_history = []
+        self.conversation.clear_history()
 
     def get_status(self) -> Dict[str, Any]:
-        """Get communicator status."""
         return {
             "timeout": self.timeout,
             "max_retries": self.max_retries,
             "request_history_count": len(self._request_history),
+            "conversation_turns": len(self.conversation.get_history()),
             "available_capabilities": self.model_router.list_available_capabilities(),
             "loaded_models": list(self.model_router.models.keys())
         }

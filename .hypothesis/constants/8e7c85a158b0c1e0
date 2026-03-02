@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\variables\streams.py
-# hypothesis_version: 6.151.9
-
-['PyCodegen', 'Stream', 'StreamVariable', '_event', 'build_event', 'build_stream', 'call_function', 'call_method', 'example_value', 'query', 'record', 'record_event', 'stream', 'streams::fork', 'streams::join', 'streams::wait_event', 'streams::wait_stream', 'synchronize', 'torch._C', 'wait', 'wait_event', 'wait_stream']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\cpython\tupleobj.py
-# hypothesis_version: 6.151.9
-
-['<', 'TYPED_VALUE_SLOT%s', 'cmp_end', 'getiter', 'index', 'iternext', 'static_getitem', 'switch.%d', 'switch.else', 'switch.end', 'typed_getitem', 'typed_switch.%d', 'typed_switch.else', 'typed_switch.end']

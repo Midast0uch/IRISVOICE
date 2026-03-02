@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\object_detection.py
-# hypothesis_version: 6.151.9
-
-[0.5, 1000, 'Image.Image', 'bbox', 'box', 'boxes', 'images', 'inputs', 'label', 'labels', 'logits', 'pt', 'score', 'scores', 'target_size', 'threshold', 'timeout', 'torch.Tensor', 'vision', 'words', 'xmax', 'xmin', 'ymax', 'ymin']

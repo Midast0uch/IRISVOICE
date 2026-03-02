@@ -1,4 +1,0 @@
-# file: C:\Users\midas\Desktop\dev\IRISVOICE\backend\agent\model_wrapper.py
-# hypothesis_version: 6.151.9
-
-[1.05, 512, './offload', 'Hello', 'auto', 'bfloat16', 'capabilities', 'constraints', 'content', 'cpu', 'cuda', 'device', 'dtype', 'error', 'float16', 'float32', 'healthy', 'loaded', 'max_new_tokens', 'model_id', 'model_path', 'pt', 'repetition_penalty', 'role', 'user']

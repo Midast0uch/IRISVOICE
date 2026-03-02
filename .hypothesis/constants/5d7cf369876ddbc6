@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\PIL\ImageFilter.py
-# hypothesis_version: 6.151.9
-
-[100, 128, 150, 255, '<{}>', 'Blur', 'BoxBlur', 'Color 3D LUT', 'Contour', 'Detail', 'Edge-enhance', 'Edge-enhance More', 'Emboss', 'Find Edges', 'GaussianBlur', 'Kernel', 'Max', 'Median', 'Min', 'Mode', 'P', 'Rank', 'Sharpen', 'Smooth', 'Smooth More', 'UnsharpMask', '_copy_table', 'radius must be >= 0', 'shape', 'size={:d}x{:d}x{:d}']

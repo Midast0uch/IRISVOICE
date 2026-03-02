@@ -1,0 +1,1175 @@
+
+> irisvoice@1.0.0 test
+> node --experimental-vm-modules node_modules/jest/bin/jest.js --passWithNoTests
+
+FAIL tests/contexts/NavigationContext.test.js
+  ● Test suite failed to run
+
+    ● Validation Error:
+
+      Test environment jest-environment-jsdom cannot be found. Make sure the testEnvironment configuration option points to an existing node module.
+
+      Configuration Documentation:
+      https://jestjs.io/docs/configuration
+
+
+    As of Jest 28 "jest-environment-jsdom" is no longer shipped by default, make sure to install it separately.
+
+        Test environment jest-environment-jsdom cannot be found. Make sure the testEnvironment configuration option points to an existing node module.
+        Configuration Documentation:
+        https://jestjs.io/docs/configuration
+      As of Jest 28 "jest-environment-jsdom" is no longer shipped by default, make sure to install it separately.
+
+  console.log
+    
+    === Testing Webpack Models Directory Exclusion ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:181:15)
+
+  console.log
+    
+    === Testing Cargo Configuration ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:199:13)
+
+  console.log
+    Cargo config path: C:\Users\midas\Desktop\dev\IRISVOICE\src-tauri\.cargo\config.toml
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:205:13)
+
+  console.log
+    Current jobs setting: 8
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:206:13)
+
+  console.log
+    ✓ Webpack config exists: C:\Users\midas\Desktop\dev\IRISVOICE\next.config.mjs
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:188:15)
+
+  console.log
+    ✓ Models directory excluded from watching: true
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:189:15)
+
+  console.log
+    
+    === Testing TypeScript Configuration ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:236:13)
+
+  console.log
+    ✓ Webpack models directory exclusion preserved
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:194:15)
+
+  console.log
+    TypeScript config path: C:\Users\midas\Desktop\dev\IRISVOICE\tsconfig.json
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:242:13)
+
+  console.log
+    
+    === Testing Webpack Model File Type Exclusion ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:208:15)
+
+  console.log
+    Type directories in include: 3
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:243:13)
+
+  console.log
+    ✓ Model file types (.bin, .safetensors) excluded: true
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:215:15)
+
+  console.log
+      - Existing: dist/types/**/*.ts
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:244:13)
+
+  console.log
+    ✓ Webpack model file type exclusion preserved
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:220:15)
+
+  console.log
+      - Non-existing: .next/types/**/*.ts, dist/dev/types/**/*.ts
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:245:13)
+
+  console.log
+    Expected counterexamples on unfixed code:
+
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:373:15)
+
+  console.log
+      ChatWing.rotateY: 0deg (expected: 8deg)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    🐛 BUG CONFIRMED: TypeScript type directory overhead detected!
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:248:15)
+
+  console.log
+      ChatWing.width: 320px (expected: 420px)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+       Current: 3 type directories
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:249:15)
+
+  console.log
+      ChatWing.height: 70vh (expected: 80vh)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: models-directory exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:234:21
+
+  console.log
+       Expected: <= 2 type directories
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:250:15)
+
+  console.log
+      ChatWing.left: 2% (expected: 5%)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+       Impact: TypeScript initialization will take 30-60 seconds
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:251:15)
+
+  console.log
+    
+    === Property-Based Test: model-file-types exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:234:21
+
+  console.log
+       Root cause: Scanning multiple type directories (some may not exist)
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:252:15)
+
+  console.log
+    
+       Type directories:
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:253:15)
+
+  console.log
+      DashboardWing.rotateY: 0deg (expected: -8deg)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: models-directory exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:234:21
+
+  console.log
+         - .next/types/**/*.ts (NOT FOUND)
+
+      at tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:256:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+      DashboardWing.width: 320px (expected: 450px)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: models-directory exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:234:21
+
+  console.log
+         - dist/types/**/*.ts (exists)
+
+      at tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:256:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+      DashboardWing.height: 70vh (expected: 80vh)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+         - dist/dev/types/**/*.ts (NOT FOUND)
+
+      at tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:256:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: model-file-types exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:234:21
+
+  console.log
+      DashboardWing.right: 2% (expected: 5%)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+      DarkGlassDashboard.scale: 0.75 (expected: 1)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+      DarkGlassDashboard.labelSize: 9px (expected: 11px)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+      IrisOrb.scale: 1 (expected: 0.85)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+      Page.perspective: nullpx (expected: 1200px)
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:375:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Testing TypeScript Incremental Compilation ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:274:15)
+
+  console.log
+    ✓ TypeScript config exists: C:\Users\midas\Desktop\dev\IRISVOICE\tsconfig.json
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:281:15)
+
+  console.log
+    ✓ Incremental compilation enabled: true
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:282:15)
+
+  console.log
+    ✓ TypeScript incremental compilation preserved
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:284:15)
+
+  console.log
+    
+    === Testing Cargo Incremental Compilation ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:298:15)
+
+  console.log
+    Preservation requirements verified:
+
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-preservation.test.js:666:15)
+
+  console.log
+    
+    === Property-Based Test: typescript configuration ===
+
+      at tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:278:19
+
+  console.log
+    ✓ Cargo config exists: C:\Users\midas\Desktop\dev\IRISVOICE\src-tauri\.cargo\config.toml
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:305:15)
+
+  console.log
+    ✓ Incremental compilation enabled: true
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:306:15)
+
+  console.log
+    🐛 Counterexample found: 3 type directories (expected <= 2)
+
+      at tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:294:23
+
+  console.log
+    ✓ Cargo incremental compilation preserved
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:308:15)
+
+  console.log
+      1. Spring physics animations
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: cargo configuration ===
+
+      at tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:278:19
+
+  console.log
+    
+    === Testing Production Build Configuration ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:327:15)
+
+  console.log
+      2. Close button functionality
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+      3. Escape key functionality
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    ✓ Compression enabled for production
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:336:15)
+
+  console.log
+    ✓ Source maps disabled for production
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:337:15)
+
+  console.log
+      4. ChatWing header rendering
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    ✓ Console removal configured for production
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:342:15)
+
+  console.log
+      5. DashboardWing header rendering
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    ✓ Production build configuration preserved
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:343:15)
+
+  console.log
+      6. Backdrop blur styling
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Testing Combined Configuration Impact ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:323:13)
+
+  console.log
+      7. Border styling
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: console-removal setting ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:357:21
+
+  console.log
+      8. ChatWing message display
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    Configuration analysis:
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:349:13)
+
+  console.log
+    
+    === Property-Based Test: source-maps setting ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:357:21
+
+  console.log
+      - Cargo bottleneck: NO
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:350:13)
+
+  console.log
+      9. DashboardWing content rendering
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: source-maps setting ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:357:21
+
+  console.log
+      - TypeScript overhead: YES
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:351:13)
+
+  console.log
+      10. AnimatePresence usage
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    🐛 BUG CONFIRMED: Multiple configuration issues detected!
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:354:15)
+
+  console.log
+      11. UILayoutState transitions
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: console-removal setting ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:357:21
+
+  console.log
+    
+       Issues found:
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:355:15)
+
+  console.log
+      12. NavigationContext level separation
+
+      at tests/bugfix/iris-widget-tilt-transform-preservation.test.js:668:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+         - TypeScript Initialization: 3 type directories
+
+      at tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:357:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+    === Property-Based Test: compression setting ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:357:21
+
+  console.log
+           Estimated delay: ~45 seconds
+
+      at tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:358:17
+          at Array.forEach (<anonymous>)
+
+  console.log
+    
+       Total estimated compilation time: ~45 seconds (0.8 minutes)
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:360:15)
+
+  console.log
+    
+    === Testing WebSocket Hook Preservation (CRITICAL) ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:403:15)
+
+  console.log
+       Expected compilation time: < 30 seconds
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:361:15)
+
+(node:8768) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  console.log
+       Slowdown factor: 1.5x
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:362:15)
+
+  console.log
+    ✓ WebSocket hook exists: C:\Users\midas\Desktop\dev\IRISVOICE\hooks\useIRISWebSocket.ts
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:409:15)
+
+  console.log
+    ✓ File size: 28945 bytes
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:410:15)
+
+  console.log
+    ✓ Last modified: 2026-03-02T06:42:49.015Z
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:411:15)
+
+PASS tests/bugfix/iris-widget-tilt-transform-preservation.test.js (5.756 s)
+  IRIS Widget Tilt Transform Preservation Tests
+    Property 2: Spring Physics Preservation
+      √ Wings should use spring physics with stiffness 280-300, damping 25-30 (15 ms)
+    Property 2: Close Button Preservation
+      √ Close button should close wings and return to idle state (4 ms)
+    Property 2: Escape Key Preservation
+      √ Escape key should close all open wings (5 ms)
+    Property 2: ChatWing Header Preservation
+      √ ChatWing header should display IRIS Assistant title with pulse indicator (3 ms)
+    Property 2: DashboardWing Header Preservation
+      √ DashboardWing header should display IRIS Dashboard title with pulse indicator (3 ms)
+    Property 2: Backdrop Blur Preservation
+      √ Wings should render with backdrop-blur-lg and bg-black/30 for glass morphism (3 ms)
+    Property 2: Border Styling Preservation
+      √ Wings should have border-white/10 with rounded-2xl corners (2 ms)
+    Property 2: ChatWing Message Display Preservation
+      √ ChatWing should render message history, typing indicators, and input field correctly (5 ms)
+    Property 2: DashboardWing Content Preservation
+      √ DashboardWing should pass fieldValues and updateField props to DarkGlassDashboard (4 ms)
+    Property 2: AnimatePresence Preservation
+      √ Wings should use AnimatePresence for proper exit animations (5 ms)
+    Property 2: UILayoutState Transitions Preservation
+      √ UILayoutState should transition between idle/chat_open/both_open correctly (4 ms)
+    Property 2: NavigationContext Level Separation Preservation
+      √ Wings should only appear at NavigationContext level 1, HexagonalControlCenter at level 2-3 (5 ms)
+    Preservation Summary
+      √ All preservation properties should pass on unfixed code (68 ms)
+
+  console.log
+    ✓ WebSocket hook contains expected functionality
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:417:15)
+
+  console.log
+    ✓ CRITICAL: useIRISWebSocket.ts remains untouched
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:418:15)
+
+  console.log
+    
+    === Testing WebSocket Message Types ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:432:15)
+
+  console.log
+    ✓ WebSocket connection logic present
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:445:15)
+
+  console.log
+    ✓ WebSocket message handling preserved
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:446:15)
+
+  console.log
+    
+    === Testing Standalone Next.js Configuration ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:463:15)
+
+  console.log
+    ✓ Standalone dev script: npm run dev
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:472:15)
+
+  console.log
+    ✓ Frontend dev script: npm run dev:frontend
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:473:15)
+
+  console.log
+    ✓ Turbopack disabled (using webpack)
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:482:15)
+
+  console.log
+    ✓ Standalone Next.js dev server configuration preserved
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:483:15)
+
+  console.log
+    
+    === Testing Tauri Configuration ===
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:501:15)
+
+  console.log
+    ✓ beforeDevCommand: npm run dev
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:515:17)
+
+  console.log
+    ✓ Tauri configuration preserved
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-preservation.test.js:518:15)
+
+(node:17376) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  console.log
+    
+    === Property-Based Test: webpack-file-exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ webpack-file-exclusion preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+FAIL tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js (5.789 s)
+  IRIS Widget Tilt Transform Bug Exploration
+    Property 1: Transform Conflict Detection
+      × ChatWing should display visible 3D tilt (rotateY 8deg, rotateX 2deg) with correct dimensions (14 ms)
+      × DashboardWing should display visible 3D tilt (rotateY -8deg, rotateX 2deg) with correct dimensions (4 ms)
+      × DarkGlassDashboard should render at full scale with readable text (11px labels, 13px values) (3 ms)
+      × IrisOrb should retreat (scale 0.85, blur 2px, opacity 0.6) when wings open (4 ms)
+      × Page should have perspective container (perspective: 1200px) for 3D transforms (1 ms)
+    Counterexample Documentation
+      √ Document expected counterexamples on unfixed code (67 ms)
+
+  ● IRIS Widget Tilt Transform Bug Exploration › Property 1: Transform Conflict Detection › ChatWing should display visible 3D tilt (rotateY 8deg, rotateX 2deg) with correct dimensions
+
+    Property failed after 1 tests
+    { seed: -1509088439, path: "0:1", endOnFailure: true }
+    Counterexample: [{"isOpen":false,"uiState":"both_open"}]
+    Shrunk 1 time(s)
+
+    Hint: Enable verbose mode in order to have the list of all failing values encountered during the run
+
+    [0m [90m 48 |[39m [90m       */[39m
+     [90m 49 |[39m       
+    [31m[1m>[22m[39m[90m 50 |[39m       fc[33m.[39massert(
+     [90m    |[39m          [31m[1m^[22m[39m
+     [90m 51 |[39m         fc[33m.[39mproperty(
+     [90m 52 |[39m           fc[33m.[39mrecord({
+     [90m 53 |[39m             isOpen[33m:[39m fc[33m.[39mboolean()[33m,[39m[0m
+
+      at buildError (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:156:19)
+      at throwIfFailed (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:165:11)
+      at reportRunDetails (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:178:16)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:61:9)
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:50:10)
+
+    Cause:
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+    [0m [90m  99 |[39m             
+     [90m 100 |[39m             [90m// Assert expected behavior[39m
+    [31m[1m>[22m[39m[90m 101 |[39m             expect(actualTransform[33m.[39mhasRotateY)[33m.[39mtoBe(expectedTransform[33m.[39mhasRotateY)[33m;[39m
+     [90m     |[39m                                                [31m[1m^[22m[39m
+     [90m 102 |[39m             expect(actualTransform[33m.[39mrotateYValue)[33m.[39mtoBe(expectedTransform[33m.[39mrotateYValue)[33m;[39m
+     [90m 103 |[39m             expect(actualTransform[33m.[39mhasRotateX)[33m.[39mtoBe(expectedTransform[33m.[39mhasRotateX)[33m;[39m
+     [90m 104 |[39m             expect(actualTransform[33m.[39mrotateXValue)[33m.[39mtoBe(expectedTransform[33m.[39mrotateXValue)[33m;[39m[0m
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:101:48
+      at Property.predicate (node_modules/fast-check/lib/check/property/Property.js:14:54)
+      at Property.run (node_modules/fast-check/lib/check/property/Property.generic.js:43:33)
+      at runIt (node_modules/fast-check/lib/check/runner/Runner.js:14:30)
+      at check (node_modules/fast-check/lib/check/runner/Runner.js:54:11)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:57:17)
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:50:10)
+
+  ● IRIS Widget Tilt Transform Bug Exploration › Property 1: Transform Conflict Detection › DashboardWing should display visible 3D tilt (rotateY -8deg, rotateX 2deg) with correct dimensions
+
+    Property failed after 6 tests
+    { seed: -123600525, path: "5:0", endOnFailure: true }
+    Counterexample: [{"isOpen":false,"uiState":"both_open"}]
+    Shrunk 1 time(s)
+
+    Hint: Enable verbose mode in order to have the list of all failing values encountered during the run
+
+    [0m [90m 131 |[39m [90m       */[39m
+     [90m 132 |[39m       
+    [31m[1m>[22m[39m[90m 133 |[39m       fc[33m.[39massert(
+     [90m     |[39m          [31m[1m^[22m[39m
+     [90m 134 |[39m         fc[33m.[39mproperty(
+     [90m 135 |[39m           fc[33m.[39mrecord({
+     [90m 136 |[39m             isOpen[33m:[39m fc[33m.[39mboolean()[33m,[39m[0m
+
+      at buildError (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:156:19)
+      at throwIfFailed (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:165:11)
+      at reportRunDetails (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:178:16)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:61:9)
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:133:10)
+
+    Cause:
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+    [0m [90m 180 |[39m             
+     [90m 181 |[39m             [90m// Assert expected behavior[39m
+    [31m[1m>[22m[39m[90m 182 |[39m             expect(actualTransform[33m.[39mhasRotateY)[33m.[39mtoBe(expectedTransform[33m.[39mhasRotateY)[33m;[39m
+     [90m     |[39m                                                [31m[1m^[22m[39m
+     [90m 183 |[39m             expect(actualTransform[33m.[39mrotateYValue)[33m.[39mtoBe(expectedTransform[33m.[39mrotateYValue)[33m;[39m
+     [90m 184 |[39m             expect(actualTransform[33m.[39mhasRotateX)[33m.[39mtoBe(expectedTransform[33m.[39mhasRotateX)[33m;[39m
+     [90m 185 |[39m             expect(actualTransform[33m.[39mrotateXValue)[33m.[39mtoBe(expectedTransform[33m.[39mrotateXValue)[33m;[39m[0m
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:182:48
+      at Property.predicate (node_modules/fast-check/lib/check/property/Property.js:14:54)
+      at Property.run (node_modules/fast-check/lib/check/property/Property.generic.js:43:33)
+      at runIt (node_modules/fast-check/lib/check/runner/Runner.js:14:30)
+      at check (node_modules/fast-check/lib/check/runner/Runner.js:54:11)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:57:17)
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:133:10)
+
+  ● IRIS Widget Tilt Transform Bug Exploration › Property 1: Transform Conflict Detection › DarkGlassDashboard should render at full scale with readable text (11px labels, 13px values)
+
+    Property failed after 1 tests
+    { seed: -831341313, path: "0:1", endOnFailure: true }
+    Counterexample: [{"isOpen":true}]
+    Shrunk 1 time(s)
+
+    Hint: Enable verbose mode in order to have the list of all failing values encountered during the run
+
+    [0m [90m 211 |[39m [90m       */[39m
+     [90m 212 |[39m       
+    [31m[1m>[22m[39m[90m 213 |[39m       fc[33m.[39massert(
+     [90m     |[39m          [31m[1m^[22m[39m
+     [90m 214 |[39m         fc[33m.[39mproperty(
+     [90m 215 |[39m           fc[33m.[39mrecord({
+     [90m 216 |[39m             isOpen[33m:[39m fc[33m.[39mboolean()[33m,[39m[0m
+
+      at buildError (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:156:19)
+      at throwIfFailed (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:165:11)
+      at reportRunDetails (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:178:16)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:61:9)
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:213:10)
+
+    Cause:
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 1
+    Received: 0.75
+
+    [0m [90m 238 |[39m             
+     [90m 239 |[39m             [90m// Assert expected behavior[39m
+    [31m[1m>[22m[39m[90m 240 |[39m             expect(actualScale)[33m.[39mtoBe(expectedScale)[33m;[39m
+     [90m     |[39m                                 [31m[1m^[22m[39m
+     [90m 241 |[39m             expect(actualTextSizes[33m.[39mlabelSize)[33m.[39mtoBe(expectedTextSizes[33m.[39mlabelSize)[33m;[39m
+     [90m 242 |[39m             expect(actualTextSizes[33m.[39mvalueSize)[33m.[39mtoBe(expectedTextSizes[33m.[39mvalueSize)[33m;[39m
+     [90m 243 |[39m             expect(actualResponsive)[33m.[39mtoBe(expectedResponsive)[33m;[39m[0m
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:240:33
+      at Property.predicate (node_modules/fast-check/lib/check/property/Property.js:14:54)
+      at Property.run (node_modules/fast-check/lib/check/property/Property.generic.js:43:33)
+      at runIt (node_modules/fast-check/lib/check/runner/Runner.js:14:30)
+      at check (node_modules/fast-check/lib/check/runner/Runner.js:54:11)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:57:17)
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:213:10)
+
+  ● IRIS Widget Tilt Transform Bug Exploration › Property 1: Transform Conflict Detection › IrisOrb should retreat (scale 0.85, blur 2px, opacity 0.6) when wings open
+
+    Property failed after 1 tests
+    { seed: -1469185298, path: "0", endOnFailure: true }
+    Counterexample: [{"uiState":"both_open"}]
+    Shrunk 0 time(s)
+
+    Hint: Enable verbose mode in order to have the list of all failing values encountered during the run
+
+    [0m [90m 264 |[39m [90m       */[39m
+     [90m 265 |[39m       
+    [31m[1m>[22m[39m[90m 266 |[39m       fc[33m.[39massert(
+     [90m     |[39m          [31m[1m^[22m[39m
+     [90m 267 |[39m         fc[33m.[39mproperty(
+     [90m 268 |[39m           fc[33m.[39mrecord({
+     [90m 269 |[39m             uiState[33m:[39m fc[33m.[39mconstantFrom([32m'idle'[39m[33m,[39m [32m'chat_open'[39m[33m,[39m [32m'both_open'[39m)[33m,[39m[0m
+
+      at buildError (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:156:19)
+      at throwIfFailed (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:165:11)
+      at reportRunDetails (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:178:16)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:61:9)
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:266:10)
+
+    Cause:
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 0.85
+    Received: 1
+
+    [0m [90m 291 |[39m             
+     [90m 292 |[39m             [90m// Assert expected behavior[39m
+    [31m[1m>[22m[39m[90m 293 |[39m             expect(actualOrbState[33m.[39mscale)[33m.[39mtoBe(expectedOrbState[33m.[39mscale)[33m;[39m
+     [90m     |[39m                                          [31m[1m^[22m[39m
+     [90m 294 |[39m             expect(actualOrbState[33m.[39mblur)[33m.[39mtoBe(expectedOrbState[33m.[39mblur)[33m;[39m
+     [90m 295 |[39m             expect(actualOrbState[33m.[39mopacity)[33m.[39mtoBe(expectedOrbState[33m.[39mopacity)[33m;[39m
+     [90m 296 |[39m             [0m
+
+      at tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:293:42
+      at Property.predicate (node_modules/fast-check/lib/check/property/Property.js:14:54)
+      at Property.run (node_modules/fast-check/lib/check/property/Property.generic.js:43:33)
+      at runIt (node_modules/fast-check/lib/check/runner/Runner.js:14:30)
+      at check (node_modules/fast-check/lib/check/runner/Runner.js:54:11)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:57:17)
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:266:10)
+
+  ● IRIS Widget Tilt Transform Bug Exploration › Property 1: Transform Conflict Detection › Page should have perspective container (perspective: 1200px) for 3D transforms
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 1200
+    Received: null
+
+    [0m [90m 320 |[39m       
+     [90m 321 |[39m       [90m// Assert expected behavior[39m
+    [31m[1m>[22m[39m[90m 322 |[39m       expect(actualPerspective)[33m.[39mtoBe(expectedPerspective)[33m;[39m
+     [90m     |[39m                                 [31m[1m^[22m[39m
+     [90m 323 |[39m     })[33m;[39m
+     [90m 324 |[39m   })[33m;[39m
+     [90m 325 |[39m   [0m
+
+      at Object.<anonymous> (tests/bugfix/iris-widget-tilt-transform-bug-exploration.test.js:322:33)
+
+  console.log
+    
+    === Property-Based Test: webpack-file-exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ webpack-file-exclusion preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: typescript-incremental ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+(node:16232) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  console.log
+    ✓ typescript-incremental preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: webpack-models-exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+FAIL tests/bugfix/tauri-dev-compilation-bug-exploration.test.js (5.797 s)
+  Tauri Dev Compilation Bug Exploration - Configuration Analysis
+    √ Property 1.1: Cargo configuration should enable parallel Rust compilation (>= 4 jobs) (68 ms)
+    × Property 1.2: TypeScript configuration should minimize type directory scanning (31 ms)
+    × Property 1.3 (Property-Based): Configuration issues should not exist across multiple checks (12 ms)
+    × Property 1.4: Combined configuration issues predict slow compilation (19 ms)
+
+  ● Tauri Dev Compilation Bug Exploration - Configuration Analysis › Property 1.2: TypeScript configuration should minimize type directory scanning
+
+    expect(received).toBeLessThanOrEqual(expected)
+
+    Expected: <= 2
+    Received:    3
+
+    [0m [90m 259 |[39m     
+     [90m 260 |[39m     [90m// This assertion will FAIL on unfixed code, confirming the bug exists[39m
+    [31m[1m>[22m[39m[90m 261 |[39m     expect(tsConfig[33m.[39mtypeDirectories[33m.[39mlength)[33m.[39mtoBeLessThanOrEqual([33mEXPECTED_MAX_TYPE_DIRECTORIES[39m)[33m;[39m
+     [90m     |[39m                                             [31m[1m^[22m[39m
+     [90m 262 |[39m   })[33m;[39m
+     [90m 263 |[39m   
+     [90m 264 |[39m   test([32m'Property 1.3 (Property-Based): Configuration issues should not exist across multiple checks'[39m[33m,[39m () [33m=>[39m {[0m
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:261:45)
+
+  ● Tauri Dev Compilation Bug Exploration - Configuration Analysis › Property 1.3 (Property-Based): Configuration issues should not exist across multiple checks
+
+    Property failed after 1 tests
+    { seed: 1408742780, path: "0", endOnFailure: true }
+    Counterexample: ["typescript"]
+    Shrunk 0 time(s)
+
+    Encountered failures were:
+    - ["typescript"]
+
+    [0m [90m 272 |[39m [90m     */[39m
+     [90m 273 |[39m     
+    [31m[1m>[22m[39m[90m 274 |[39m     fc[33m.[39massert(
+     [90m     |[39m        [31m[1m^[22m[39m
+     [90m 275 |[39m       fc[33m.[39mproperty(
+     [90m 276 |[39m         fc[33m.[39mconstantFrom([32m'cargo'[39m[33m,[39m [32m'typescript'[39m)[33m,[39m
+     [90m 277 |[39m         (configType) [33m=>[39m {[0m
+
+      at buildError (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:156:19)
+      at throwIfFailed (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:165:11)
+      at reportRunDetails (node_modules/fast-check/lib/check/runner/utils/RunDetailsFormatter.js:178:16)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:61:9)
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:274:8)
+
+    Cause:
+    Property failed by returning false
+
+    [0m [90m 272 |[39m [90m     */[39m
+     [90m 273 |[39m     
+    [31m[1m>[22m[39m[90m 274 |[39m     fc[33m.[39massert(
+     [90m     |[39m        [31m[1m^[22m[39m
+     [90m 275 |[39m       fc[33m.[39mproperty(
+     [90m 276 |[39m         fc[33m.[39mconstantFrom([32m'cargo'[39m[33m,[39m [32m'typescript'[39m)[33m,[39m
+     [90m 277 |[39m         (configType) [33m=>[39m {[0m
+
+      at Property.run (node_modules/fast-check/lib/check/property/Property.generic.js:46:28)
+      at runIt (node_modules/fast-check/lib/check/runner/Runner.js:14:30)
+      at check (node_modules/fast-check/lib/check/runner/Runner.js:54:11)
+      at Module.assert (node_modules/fast-check/lib/check/runner/Runner.js:57:17)
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:274:8)
+
+  ● Tauri Dev Compilation Bug Exploration - Configuration Analysis › Property 1.4: Combined configuration issues predict slow compilation
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 0
+    Received: 1
+
+    [0m [90m 364 |[39m     
+     [90m 365 |[39m     [90m// This assertion will FAIL on unfixed code, confirming the bug exists[39m
+    [31m[1m>[22m[39m[90m 366 |[39m     expect(issues[33m.[39mlength)[33m.[39mtoBe([35m0[39m)[33m;[39m
+     [90m     |[39m                           [31m[1m^[22m[39m
+     [90m 367 |[39m   })[33m;[39m
+     [90m 368 |[39m })[33m;[39m
+     [90m 369 |[39m[0m
+
+      at Object.<anonymous> (tests/bugfix/tauri-dev-compilation-bug-exploration.test.js:366:27)
+
+  console.log
+    ✓ webpack-models-exclusion preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: typescript-incremental ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ typescript-incremental preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: nextjs-dev-config ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ nextjs-dev-config preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: production-build-config ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ production-build-config preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: nextjs-dev-config ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ nextjs-dev-config preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: production-build-config ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ production-build-config preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: webpack-models-exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ webpack-models-exclusion preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: typescript-incremental ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ typescript-incremental preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: webpack-models-exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ webpack-models-exclusion preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: typescript-incremental ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ typescript-incremental preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: nextjs-dev-config ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ nextjs-dev-config preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: nextjs-dev-config ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ nextjs-dev-config preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: production-build-config ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ production-build-config preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: webpack-file-exclusion ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ webpack-file-exclusion preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: typescript-incremental ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ typescript-incremental preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: typescript-incremental ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ typescript-incremental preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+  console.log
+    
+    === Property-Based Test: cargo-incremental ===
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:543:21
+
+  console.log
+    ✓ cargo-incremental preserved
+
+      at tests/bugfix/tauri-dev-compilation-preservation.test.js:576:23
+
+(node:10632) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/bugfix/tauri-dev-compilation-preservation.test.js (5.843 s)
+  Tauri Dev Compilation Preservation Tests
+    Property 2.1: Webpack Configuration Preservation
+      √ Webpack should continue to exclude models directory from watching (70 ms)
+      √ Webpack should continue to exclude model file types (.bin, .safetensors) (5 ms)
+      √ Property-Based: Webpack exclusions should be effective across multiple checks (18 ms)
+    Property 2.2: Incremental Compilation Preservation
+      √ TypeScript incremental compilation should remain enabled (9 ms)
+      √ Cargo incremental compilation should remain enabled (7 ms)
+    Property 2.3: Production Build Preservation
+      √ Production build configuration should remain unchanged (6 ms)
+      √ Property-Based: Build configuration should be consistent (11 ms)
+    Property 2.4: WebSocket Hook Preservation (CRITICAL)
+      √ useIRISWebSocket.ts must remain completely untouched (11 ms)
+      √ WebSocket hook should contain all expected message types (5 ms)
+    Property 2.5: Standalone Next.js Dev Server Preservation
+      √ Standalone Next.js dev server configuration should remain unchanged (5 ms)
+    Property 2.6: Tauri Configuration Preservation
+      √ Tauri configuration should remain unchanged (12 ms)
+    Property 2.7: Overall Preservation Guarantee
+      √ Property-Based: All preservation requirements should hold (53 ms)
+
+Test Suites: 3 failed, 2 passed, 5 total
+Tests:       8 failed, 27 passed, 35 total
+Snapshots:   0 total
+Time:        7.129 s, estimated 9 s
+Ran all test suites.

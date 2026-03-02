@@ -98,6 +98,9 @@ from backend.customize import (
     get_notification_manager
 )
 
+logger.info("  - Importing IRIS Gateway...")
+from backend.iris_gateway import get_iris_gateway, IRISGateway
+
 logger.info("  - Importing monitor components...")
 from backend.monitor import (
     get_analytics_manager,
@@ -157,20 +160,58 @@ async def lifespan(app: FastAPI):
         logger.info("  - Initializing audio engine...")
         audio_engine = get_audio_engine()
         # audio_engine.initialize() # DISABLED - lazy init only
+        logger.info("  - Audio engine created (models NOT loaded - lazy initialization active)")
         
         logger.info("  - Initializing voice command handler...")
         voice_handler = VoiceCommandHandler(audio_engine)
         app.state.voice_handler = voice_handler
 
+        logger.info("  - Initializing IRIS Gateway...")
+        iris_gateway = get_iris_gateway()
+        app.state.iris_gateway = iris_gateway
+        logger.info("  - IRIS Gateway initialized successfully.")
+
         logger.info("  - Initializing agent kernel...")
         try:
             from backend.agent import get_agent_kernel
+            from backend.agent.tool_bridge import get_agent_tool_bridge
             agent_kernel = get_agent_kernel()
+            
+            # Initialize tool bridge and wire to kernel
+            agent_kernel._tool_bridge = get_agent_tool_bridge()
+            
             app.state.agent_kernel = agent_kernel
             logger.info("  - Agent kernel initialized successfully.")
+            logger.info("  - LAZY LOADING ACTIVE: Models will NOT be loaded automatically")
+            logger.info("  - Models will load only when user selects Local Model inference mode")
         except Exception as e:
             logger.warning(f"  - Warning: Failed to initialize agent kernel: {e}")
             logger.info("  - Agent functionality will be unavailable.")
+        
+        # Initialize Memory Foundation (after agent kernel for adapter access)
+        logger.info("  - Initializing memory system...")
+        try:
+            from backend.memory import initialise_memory
+            
+            # Use agent kernel's model router as adapter if available
+            adapter = None
+            if hasattr(app.state, 'agent_kernel') and app.state.agent_kernel:
+                adapter = app.state.agent_kernel._model_router
+            
+            if adapter:
+                memory = await initialise_memory(adapter=adapter)
+                app.state.memory = memory
+                
+                # Wire memory to agent kernel
+                if hasattr(app.state, 'agent_kernel') and app.state.agent_kernel:
+                    app.state.agent_kernel.set_memory_interface(memory)
+                
+                logger.info("  - Memory system initialized successfully.")
+            else:
+                logger.warning("  - Warning: Cannot initialize memory - no model adapter available")
+        except Exception as e:
+            logger.warning(f"  - Warning: Failed to initialize memory system: {e}")
+            logger.info("  - Memory functionality will be unavailable.")
         
         logger.info("IRIS Backend startup completed successfully!")
         
@@ -256,8 +297,10 @@ async def websocket_endpoint(
         current_state = await state_manager.get_state(active_session_id)
         if current_state:
             await ws_manager.send_to_client(client_id, {
-                "type": "full_state",
-                "state": current_state.model_dump()
+                "type": "initial_state",
+                "payload": {
+                    "state": current_state.model_dump()
+                }
             })
         
         # Register a callback for state changes
@@ -282,9 +325,23 @@ async def websocket_endpoint(
 
     except WebSocketDisconnect:
         logger.info(f"Client {client_id} disconnected.")
+        # GAP-11 FIX: Clean up session resources on disconnect
+        if active_session_id:
+            try:
+                iris_gateway = get_iris_gateway()
+                await iris_gateway.cleanup_session(active_session_id)
+            except Exception as cleanup_error:
+                logger.error(f"Error cleaning up session {active_session_id}: {cleanup_error}")
     except Exception as e:
         logger.error(f"Error in WebSocket for client {client_id}: {e}")
     finally:
+        # GAP-11 FIX: Ensure cleanup happens even on errors
+        if active_session_id:
+            try:
+                iris_gateway = get_iris_gateway()
+                await iris_gateway.cleanup_session(active_session_id)
+            except Exception as cleanup_error:
+                logger.error(f"Error in final cleanup for session {active_session_id}: {cleanup_error}")
         ws_manager.disconnect(client_id)
 
 
@@ -293,197 +350,90 @@ async def websocket_endpoint(
 # ============================================================================
 
 async def handle_message(client_id: str, session_id: str, message: dict):
-    """Process incoming messages from clients, now with session context."""
-    state_manager = get_state_manager()
+    """Process incoming messages from clients - delegates to IRISGateway for unified routing.
+    
+    GAP-01 FIX: All message routing now goes through iris_gateway.py to eliminate
+    dual message handling systems and prevent race conditions.
+    """
+    msg_type = message.get("type", "")
+    
+    # Handle memory-related messages
+    if msg_type.startswith("memory/"):
+        await handle_memory_message(client_id, session_id, message)
+        return
+    
+    # GAP-01: Delegate all other message handling to IRISGateway
+    iris_gateway = get_iris_gateway()
+    await iris_gateway.handle_message(client_id, message)
+
+
+async def handle_memory_message(client_id: str, session_id: str, message: dict):
+    """
+    Handle memory-related WebSocket messages.
+    
+    Message types:
+    - memory/get_preferences: Get user profile display entries
+    - memory/forget_preference: Remove a preference
+    - memory/get_stats: Get memory system statistics
+    """
+    msg_type = message.get("type", "")
     ws_manager = get_websocket_manager()
     
-    msg_type = message.get("type")
-    logger.info(f"[Session: {session_id}] Received message type: {msg_type}")
-
-    # Pass session_id to all state manager calls
-    if msg_type == "set_category":
-        category = message.get("category")
-        await state_manager.set_category(session_id, category)
-        subnodes = get_subnodes_for_category(category)
-        await ws_manager.send_to_client(client_id, {"type": "subnodes", "subnodes": [s.model_dump() for s in subnodes]})
-
-    elif msg_type == "set_subnode":
-        subnode_id = message.get("subnode")
-        await state_manager.set_subnode(session_id, subnode_id)
-
-    elif msg_type == "go_back":
-        await state_manager.go_back(session_id)
-
-    elif msg_type == "collapse_to_idle":
-        await state_manager.collapse_to_idle(session_id)
-
-    elif msg_type == "update_theme":
-        glow_color = message.get("payload", {}).get("glow_color")
-        font_color = message.get("payload", {}).get("font_color")
-        state_colors = message.get("payload", {}).get("state_colors")
-        await state_manager.update_theme(session_id, glow_color, font_color, state_colors)
-        await ws_manager.send_to_client(client_id, {
-            "type": "theme_updated",
-            "glow": glow_color,
-            "font": font_color
-        })
-
-    elif msg_type == "request_state":
-        current_state = await state_manager.get_state(session_id)
-        await ws_manager.send_to_client(client_id, {
-            "type": "full_state",
-            "state": current_state.model_dump() if current_state else {}
-        })
-
-    elif msg_type == "ping":
-        await ws_manager.send_to_client(client_id, {"type": "pong"})
-
-    elif msg_type == "pong":
-        # Handle pong response from client
-        await ws_manager.handle_pong(client_id)
-
-    elif msg_type == "expand_to_main":
-        # Handle expand to main category view
-        await ws_manager.send_to_client(client_id, {
-            "type": "category_expanded"
-        })
-
-    elif msg_type == "clear_chat":
-        # Clear agent conversation history
-        agent_kernel = getattr(app.state, 'agent_kernel', None)
-        if agent_kernel and agent_kernel.conversation:
-            agent_kernel.conversation.clear_history()
-        await ws_manager.send_to_client(client_id, {
-            "type": "chat_cleared"
-        })
-
-    elif msg_type == "reload_skills":
-        # Reload skills configuration
-        try:
-            from backend.agent.skills import get_skills_loader
-            loader = get_skills_loader()
-            loader.reload()
-            await ws_manager.send_to_client(client_id, {
-                "type": "skills_reloaded",
-                "payload": {"skills": loader.list_skills()}
-            })
-        except Exception as e:
-            await ws_manager.send_to_client(client_id, {
-                "type": "skills_error",
-                "error": str(e)
-            })
-
-    elif msg_type == "update_field":
-        subnode_id = message.get("subnode_id")
-        field_id = message.get("field_id")
-        value = message.get("value")
+    try:
+        # Get memory interface
+        from backend.memory import get_memory_interface
+        memory = get_memory_interface()
         
-        success = await state_manager.update_field(session_id, subnode_id, field_id, value)
-        if success:
+        if memory is None:
             await ws_manager.send_to_client(client_id, {
-                "type": "field_updated",
-                "subnode_id": subnode_id,
-                "field_id": field_id,
-                "value": value
+                "type": "memory/error",
+                "payload": {"error": "Memory system not initialized"}
             })
-
-    # Example for voice command, passing session_id
-    elif msg_type == "voice_command":
-        voice_handler = app.state.voice_handler
-        if voice_handler:
-            await voice_handler.handle_command(session_id, message)
-
-    # Handle text messages from chat interface
-    elif msg_type == "text_message":
-        text = message.get("payload", {}).get("text")
-        if text:
-            agent_kernel = getattr(app.state, 'agent_kernel', None)
-            
-            if agent_kernel:
-                try:
-                    # Generate response using the agent kernel
-                    response_text = await agent_kernel.process_text_message_async(text)
-                except Exception as e:
-                    response_text = f"Error processing message: {str(e)}"
-                    logger.error(f"[text_message] Error: {e}")
+            return
+        
+        if msg_type == "memory/get_preferences":
+            # Get user-facing memory entries
+            entries = memory.get_user_profile_display()
+            await ws_manager.send_to_client(client_id, {
+                "type": "memory/preferences",
+                "payload": {"entries": entries}
+            })
+        
+        elif msg_type == "memory/forget_preference":
+            # Remove a preference
+            key = message.get("payload", {}).get("key")
+            if key:
+                success = memory.forget_preference(key)
+                await ws_manager.send_to_client(client_id, {
+                    "type": "memory/forget_result",
+                    "payload": {"key": key, "success": success}
+                })
             else:
-                response_text = "Agent kernel is not available. Please restart the backend."
-            
-            # Send response back to client
-            await ws_manager.send_to_client(client_id, {
-                "type": "text_response",
-                "payload": {
-                    "text": response_text,
-                    "sender": "assistant"
-                }
-            })
-
-    # Get agent kernel status
-    elif msg_type == "agent_status":
-        agent_kernel = getattr(app.state, 'agent_kernel', None)
-        if agent_kernel:
-            status = {
-                "ready": True,
-                "models_loaded": len([m for m in (agent_kernel.model_router.models.values() if agent_kernel.model_router else []) if m.is_loaded()]) if agent_kernel.model_router else 0,
-                "total_models": len(agent_kernel.model_router.models) if agent_kernel.model_router else 0,
-                "tool_bridge_available": agent_kernel.tool_bridge is not None,
-            }
-            if agent_kernel.model_router:
-                status["models"] = agent_kernel.model_router.get_all_models_status()
-        else:
-            status = {"ready": False, "error": "Agent kernel not available"}
+                await ws_manager.send_to_client(client_id, {
+                    "type": "memory/error",
+                    "payload": {"error": "No key provided"}
+                })
         
+        elif msg_type == "memory/get_stats":
+            # Get memory statistics
+            stats = memory.get_memory_stats()
+            await ws_manager.send_to_client(client_id, {
+                "type": "memory/stats",
+                "payload": stats
+            })
+        
+        else:
+            await ws_manager.send_to_client(client_id, {
+                "type": "memory/error",
+                "payload": {"error": f"Unknown memory message type: {msg_type}"}
+            })
+    
+    except Exception as e:
+        logger.error(f"[Memory] Error handling memory message: {e}")
         await ws_manager.send_to_client(client_id, {
-            "type": "agent_status",
-            "payload": status
+            "type": "memory/error",
+            "payload": {"error": str(e)}
         })
-
-    # Get available tools from agent
-    elif msg_type == "agent_tools":
-        agent_kernel = getattr(app.state, 'agent_kernel', None)
-        if agent_kernel and agent_kernel.tool_bridge:
-            tools = agent_kernel.tool_bridge.get_available_tools()
-            await ws_manager.send_to_client(client_id, {
-                "type": "agent_tools",
-                "payload": {"tools": tools}
-            })
-        else:
-            await ws_manager.send_to_client(client_id, {
-                "type": "agent_tools",
-                "payload": {"tools": [], "error": "Tool bridge not available"}
-            })
-
-    # Execute a specific tool directly
-    elif msg_type == "execute_tool":
-        tool_name = message.get("payload", {}).get("tool_name")
-        parameters = message.get("payload", {}).get("parameters", {})
-        
-        agent_kernel = getattr(app.state, 'agent_kernel', None)
-        if agent_kernel and agent_kernel.tool_bridge:
-            try:
-                result = await agent_kernel.tool_bridge.execute_tool(tool_name, parameters)
-                await ws_manager.send_to_client(client_id, {
-                    "type": "tool_result",
-                    "payload": {"tool": tool_name, "result": result}
-                })
-            except Exception as e:
-                await ws_manager.send_to_client(client_id, {
-                    "type": "tool_result",
-                    "payload": {"tool": tool_name, "error": str(e)}
-                })
-        else:
-            await ws_manager.send_to_client(client_id, {
-                "type": "tool_result",
-                "payload": {"tool": tool_name, "error": "Tool bridge not available"}
-            })
-
-    # Broadcast state changes to the relevant session
-    updated_state = await state_manager.get_state(session_id)
-    if updated_state:
-        await ws_manager.broadcast_to_session(session_id, {
-            "type": "state_update",
-            "state": updated_state.model_dump()
-        }, exclude_clients={client_id})
 
 
 # ============================================================================

@@ -474,7 +474,6 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
             label="NETWORK",
             icon="Wifi",
             fields=[
-                InputField(id="wifi_toggle", type=FieldType.TOGGLE, label="WiFi", value=True),
                 InputField(id="ethernet_status", type=FieldType.TEXT, label="Ethernet Status", placeholder="Connected", value=""),
                 InputField(id="vpn_connection", type=FieldType.DROPDOWN, label="VPN Connection", options=["None", "Work", "Personal"], value="None"),
                 InputField(id="bandwidth", type=FieldType.TEXT, label="Bandwidth", placeholder="0 Mbps", value=""),

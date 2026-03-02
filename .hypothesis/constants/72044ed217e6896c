@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_library\custom_ops.py
-# hypothesis_version: 6.151.9
-
-['::', 'ADInplaceOrView', 'AutocastCPU', 'AutocastCUDA', 'Autograd', 'BackendSelect', 'CustomOpDef', 'FRAGMENT', 'FuncTorchBatched', 'cpu', 'cuda', 'disable', 'enable', 'ignore', 'torch.library']

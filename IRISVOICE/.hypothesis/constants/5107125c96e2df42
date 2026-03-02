@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\runtime\nrt.py
-# hypothesis_version: 6.151.9
-
-['NRT_', '_', 'alloc', 'free', 'mi_alloc', 'mi_free', 'nrt_mstats']

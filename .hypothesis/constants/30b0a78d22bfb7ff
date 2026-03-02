@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_functorch\_aot_autograd\utils.py
-# hypothesis_version: 6.151.9
-
-['%s', '_P', '_P2', '_R', '_R2', '_S', '_T', '__annotations__', '__doc__', '__type_params__', '__wrapped__', '_boxed_call', '_export_root', '_orig_mod', 'annotation', 'aot_graphs_effects', 'backward', 'call_function', 'cpu', 'cuda', 'custom', 'forward', 'fwd_nn_module_stack', 'fwd_source_fn_stack', 'is_backward', 'is_gradient_acc', 'nn_module_stack', 'node: %s', 'output', 'partitioner_tag', 'placeholder', 'seq_nr', 'seq_nr: %s', 'source_fn_stack', 'tags', 'tensor_meta', 'val']

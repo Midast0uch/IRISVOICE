@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_inductor\runtime\hints.py
-# hypothesis_version: 6.151.9
-
-[1024, 2048, 4096, 8192, 'AttrsDescriptor', 'R0_', 'R1_', 'X', 'Y', 'Z', 'arg_properties', 'at::BFloat16*', 'at::Half*', 'cls', 'cpu', 'cuda', 'divisible_by_16', 'equal_to_1', 'hip', 'major', 'mtia', 'tt.divisibility', 'tt.equal_to', 'uint16_t*', 'warp_size', 'xpu']

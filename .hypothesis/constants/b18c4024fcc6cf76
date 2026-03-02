@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\externals\array_api_compat\numpy\fft.py
-# hypothesis_version: 6.151.9
-
-['fft2', 'ifft2', 'irfft2', 'rfft2']

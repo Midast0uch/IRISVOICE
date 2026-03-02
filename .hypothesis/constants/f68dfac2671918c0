@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\scipy\_lib\array_api_extra\_lib\_funcs.py
-# hypothesis_version: 6.151.9
-
-[0.0, 1e-08, 1e-05, 1.0, 'apply_where', 'atleast_nd', 'bool', 'boolean indexing', 'broadcast_shapes', 'complex floating', 'cov', 'create_diagonal', 'expand_dims', 'indexing', 'integral', 'kron', 'numeric', 'nunique', 'pad', 'real floating', 'setdiff1d', 'sinc']

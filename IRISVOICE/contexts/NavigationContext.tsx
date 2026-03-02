@@ -30,9 +30,9 @@ const CATEGORY_TO_SUBNODES: Record<string, string[]> = {
     SUB_NODE_IDS.VOICE_MODEL,
   ],
   [MAIN_CATEGORY_IDS.AGENT]: [
+    SUB_NODE_IDS.AGENT_MODEL_SELECTION,
+    SUB_NODE_IDS.AGENT_INFERENCE_MODE,
     SUB_NODE_IDS.AGENT_IDENTITY,
-    SUB_NODE_IDS.AGENT_WAKE,
-    SUB_NODE_IDS.AGENT_SPEECH,
     SUB_NODE_IDS.AGENT_MEMORY,
   ],
   [MAIN_CATEGORY_IDS.AUTOMATE]: [
@@ -41,6 +41,7 @@ const CATEGORY_TO_SUBNODES: Record<string, string[]> = {
     SUB_NODE_IDS.AUTOMATE_WORKFLOWS,
     SUB_NODE_IDS.AUTOMATE_SHORTCUTS,
     SUB_NODE_IDS.AUTOMATE_GUI,
+    SUB_NODE_IDS.AUTOMATE_EXTENSIONS,
   ],
   [MAIN_CATEGORY_IDS.SYSTEM]: [
     SUB_NODE_IDS.SYSTEM_POWER,
@@ -549,16 +550,21 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     clearChat: wsClearChat,
     getAgentStatus,
     getAgentTools,
+    getWakeWords,
+    getAudioDevices,
   } = useIRISWebSocket()
 
   // Initialize from localStorage with migration support
+  // BUG-01/08 FIX: Consolidated into single RESTORE_STATE dispatch
   useEffect(() => {
-    // Restore navigation state with migration
+    let restoredState = { ...initialState }
+    let migrated = false
+
+    // Step 1: Restore navigation state with migration
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved) {
         const parsed = JSON.parse(saved)
-        let migrated = false
         
         // Normalize level 4 to level 3
         if (parsed.level === 4 || parsed.level > 3) {
@@ -573,15 +579,12 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         }
         
         // Preserve Mini_Node_Stack and miniNodeValues during migration
-        // These are already in the parsed object, just ensure they're not lost
-        const restoredState = {
+        restoredState = {
           ...parsed,
           level: normalizeLevel(parsed.level),
           miniNodeStack: parsed.miniNodeStack || [],
           miniNodeValues: parsed.miniNodeValues || {},
         }
-        
-        dispatch({ type: 'RESTORE_STATE', payload: restoredState })
         
         // Save migrated state back to localStorage
         if (migrated) {
@@ -598,10 +601,32 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
       }
       // Clear corrupted data and start fresh
       localStorage.removeItem(STORAGE_KEY)
-      dispatch({ type: 'RESTORE_STATE', payload: initialState })
+      restoredState = { ...initialState }
     }
 
-    // Restore config
+    // Step 2: Restore mini node values (merge into existing restoredState)
+    // BUG-01/08 FIX: No stale closure - using local variable, not state
+    try {
+      const savedValues = localStorage.getItem(MINI_NODE_VALUES_KEY)
+      if (savedValues) {
+        const parsed = JSON.parse(savedValues)
+        // Merge with existing restoredState.miniNodeValues (from main state or empty)
+        restoredState.miniNodeValues = {
+          ...restoredState.miniNodeValues,
+          ...parsed
+        }
+      }
+    } catch (e) {
+      if (process.env.NODE_ENV === 'development') {
+        console.error('[NavigationContext] Failed to restore mini node values from localStorage:', e)
+      }
+      localStorage.removeItem(MINI_NODE_VALUES_KEY)
+    }
+
+    // Step 3: Single RESTORE_STATE dispatch with complete state
+    dispatch({ type: 'RESTORE_STATE', payload: restoredState })
+
+    // Step 4: Restore config separately (separate state, not part of NavState)
     try {
       const savedConfig = localStorage.getItem(CONFIG_STORAGE_KEY)
       if (savedConfig) {
@@ -614,37 +639,49 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
       }
       localStorage.removeItem(CONFIG_STORAGE_KEY)
     }
-
-    // Restore mini node values
-    try {
-      const savedValues = localStorage.getItem(MINI_NODE_VALUES_KEY)
-      if (savedValues) {
-        const parsed = JSON.parse(savedValues)
-        // Restore all mini node values at once
-        dispatch({ 
-          type: 'RESTORE_STATE', 
-          payload: { 
-            ...state, 
-            miniNodeValues: parsed 
-          } 
-        })
-      }
-    } catch (e) {
-      if (process.env.NODE_ENV === 'development') {
-        console.error('[NavigationContext] Failed to restore mini node values from localStorage:', e)
-      }
-      localStorage.removeItem(MINI_NODE_VALUES_KEY)
-    }
   }, [])
 
-  // Persist state to localStorage
+  // BUG-01/08 FIX: Persist state with debounce and exclude animation transitions
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-    } catch (e) {
-      // Ignore storage errors
-    }
-  }, [state])
+    // Skip persistence during animation transitions
+    if (state.isTransitioning) return
+
+    const timer = setTimeout(() => {
+      try {
+        // Only persist meaningful navigation state (exclude transition-related fields)
+        const stateToPersist = {
+          level: state.level,
+          history: state.history,
+          mainView: state.mainView,
+          selectedMain: state.selectedMain,
+          selectedSub: state.selectedSub,
+          miniNodeStack: state.miniNodeStack,
+          activeMiniNodeIndex: state.activeMiniNodeIndex,
+          confirmedMiniNodes: state.confirmedMiniNodes,
+          miniNodeValues: state.miniNodeValues,
+          view: state.view,
+          // Note: isTransitioning and transitionDirection are intentionally omitted
+        }
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToPersist))
+      } catch (e) {
+        // Ignore storage errors
+      }
+    }, 100) // 100ms debounce
+
+    return () => clearTimeout(timer)
+  }, [
+    state.level,
+    state.history,
+    state.mainView,
+    state.selectedMain,
+    state.selectedSub,
+    state.miniNodeStack,
+    state.activeMiniNodeIndex,
+    state.confirmedMiniNodes,
+    state.miniNodeValues,
+    state.view,
+    state.isTransitioning, // Included to re-run when transition ends
+  ])
 
   // Persist config to localStorage
   useEffect(() => {
@@ -835,6 +872,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     // Agent actions
     getAgentStatus,
     getAgentTools,
+    getWakeWords,
+    getAudioDevices,
   }), [
     state,
     config,
@@ -894,6 +933,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     // Agent actions
     getAgentStatus,
     getAgentTools,
+    getWakeWords,
+    getAudioDevices,
   ])
 
   return (

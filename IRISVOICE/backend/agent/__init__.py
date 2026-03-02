@@ -5,7 +5,7 @@ Personality engine, TTS integration, conversation memory, and omni-conversation
 
 from .personality import PersonalityEngine, get_personality_engine
 from .tts import TTSManager, get_tts_manager
-from .memory import ConversationMemory, get_conversation_memory
+from .memory import ConversationMemory, get_conversation_memory, TaskRecord
 from .conversation import AIConversationManager, get_conversation_manager
 from .omni_conversation import OmniConversationManager, get_omni_conversation_manager
 from .unified_conversation import UnifiedConversationManager, get_unified_conversation_manager
@@ -21,6 +21,7 @@ __all__ = [
     "get_tts_manager",
     "ConversationMemory",
     "get_conversation_memory",
+    "TaskRecord",
     "AIConversationManager",
     "get_conversation_manager",
     "OmniConversationManager",

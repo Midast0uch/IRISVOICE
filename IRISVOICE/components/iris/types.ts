@@ -1,5 +1,6 @@
 
 import type { ElementType } from "react";
+import type { UILayoutState } from "@/hooks/useUILayoutState";
 
 export interface InputField {
   id: string;
@@ -32,5 +33,6 @@ export interface IrisOrbProps {
   size: number
   glowColor?: string
   wakeFlash: boolean
+  uiState?: UILayoutState
   onCallbacksReady?: (callbacks: { handleWakeDetected: () => void; handleNativeAudioResponse: (payload: Record<string, unknown>) => void }) => void
 }

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\base.py
-# hypothesis_version: 6.151.9
-
-['.weight', 'Llama4TextExperts', 'PreTrainedModel', 'dequantize', 'hf_quantizer', 'meta', 'module_name', 'pre_quantized', 'quantization_config', 'quantization_method', 'quantization_methods', 'torch.Tensor', 'torch.dtype']

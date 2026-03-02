@@ -15,16 +15,17 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 from enum import Enum
 
+from backend.core.input_validator import get_input_validator, InputValidator, ValidationResult
+from backend.core.models import (
+    ToolDefinition, ToolRequest, ToolResponse, ToolCategory,
+    ExecutionContext, ValidationError as ModelValidationError
+)
+
 logger = logging.getLogger(__name__)
 
 
-class ToolCategory(Enum):
-    """Categories of available tools."""
-    FILE_MANAGEMENT = "file_management"
-    BROWSER = "browser"
-    SYSTEM = "system"
-    APP_LAUNCHER = "app_launcher"
-    CUSTOM = "custom"
+# Re-export ToolCategory from models for backward compatibility
+ToolCategory = ToolCategory
 
 
 @dataclass
@@ -35,8 +36,39 @@ class ToolSpec:
     category: ToolCategory
     parameters: Dict[str, Any]  # JSON Schema
     required_params: List[str] = field(default_factory=list)
-    handler: Optional[Callable] = None
-    async_handler: Optional[Callable] = None
+    handler: Optional[Callable[[Dict[str, Any], Dict[str, Any]], Any]] = None
+    async_handler: Optional[Callable[[Dict[str, Any], Dict[str, Any]], Any]] = None
+    
+    def to_definition(self) -> ToolDefinition:
+        """Convert ToolSpec to Pydantic ToolDefinition."""
+        from backend.core.models import ToolParameter
+        
+        properties = self.parameters.get("properties", {})
+        parameters = []
+        
+        for param_name, param_spec in properties.items():
+            param = ToolParameter(
+                name=param_name,
+                type=param_spec.get("type", "string"),
+                description=param_spec.get("description", ""),
+                required=param_name in self.required_params,
+                default=param_spec.get("default"),
+                enum=param_spec.get("enum"),
+                min_length=param_spec.get("minLength"),
+                max_length=param_spec.get("maxLength"),
+                pattern=param_spec.get("pattern"),
+                minimum=param_spec.get("minimum"),
+                maximum=param_spec.get("maximum")
+            )
+            parameters.append(param)
+        
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            category=self.category,
+            parameters=parameters,
+            required_params=self.required_params
+        )
 
 
 @dataclass
@@ -47,6 +79,18 @@ class ExecutionResult:
     error: Optional[str] = None
     execution_time: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_response(self, tool_name: str, request_id: Optional[str] = None) -> ToolResponse:
+        """Convert ExecutionResult to Pydantic ToolResponse."""
+        return ToolResponse(
+            success=self.success,
+            tool_name=tool_name,
+            output=self.output,
+            error=self.error,
+            execution_time_ms=self.execution_time * 1000,
+            request_id=request_id,
+            metadata=self.metadata
+        )
 
 
 class ToolExecutor:
@@ -65,6 +109,7 @@ class ToolExecutor:
         self._tools: Dict[str, ToolSpec] = {}
         self._execution_history: List[Dict[str, Any]] = []
         self._max_history = 100
+        self._input_validator: InputValidator = get_input_validator()
         self._initialized = True
         self._register_builtin_tools()
 
@@ -245,7 +290,18 @@ class ToolExecutor:
         handler: Optional[Callable] = None,
         async_handler: Optional[Callable] = None
     ):
-        """Register a new tool."""
+        """
+        Register a new tool with JSON Schema validation.
+        
+        Args:
+            name: Tool name
+            description: Tool description
+            category: Tool category
+            parameters: JSON Schema for parameters
+            required_params: List of required parameter names
+            handler: Synchronous handler function
+            async_handler: Asynchronous handler function
+        """
         tool_spec = ToolSpec(
             name=name,
             description=description,
@@ -256,7 +312,18 @@ class ToolExecutor:
             async_handler=async_handler
         )
         self._tools[name] = tool_spec
-        logger.info(f"[ToolExecutor] Registered tool: {name}")
+        
+        # Register schema with input validator for JSON Schema validation
+        try:
+            schema = {
+                "type": "object",
+                "properties": parameters.get("properties", {}),
+                "required": required_params
+            }
+            self._input_validator.register_schema(f"tool:{name}", schema)
+            logger.info(f"[ToolExecutor] Registered tool with validation: {name}")
+        except Exception as e:
+            logger.warning(f"[ToolExecutor] Failed to register validation schema for {name}: {e}")
 
     def get_tool(self, name: str) -> Optional[ToolSpec]:
         """Get a tool specification by name."""
@@ -274,26 +341,72 @@ class ToolExecutor:
             for tool in self._tools.values()
         ]
 
-    def validate_parameters(self, tool_name: str, parameters: Dict[str, Any]) -> tuple[bool, Optional[str]]:
-        """Validate parameters against tool specification."""
+    def validate_parameters(
+        self,
+        tool_name: str,
+        parameters: Dict[str, Any],
+        sanitize: bool = True
+    ) -> tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+        """
+        Validate parameters against tool specification using JSON Schema.
+        
+        Args:
+            tool_name: Name of the tool
+            parameters: Parameters to validate
+            sanitize: Whether to sanitize string inputs
+            
+        Returns:
+            Tuple of (valid: bool, error_message: str, sanitized_params: dict)
+        """
         tool = self.get_tool(tool_name)
         if not tool:
-            return False, f"Tool '{tool_name}' not found"
+            return False, f"Tool '{tool_name}' not found", None
 
-        # Check required parameters
+        # Check required parameters (fast path)
         for req_param in tool.required_params:
-            if req_param not in parameters:
-                return False, f"Missing required parameter: {req_param}"
+            if req_param not in parameters or parameters[req_param] is None:
+                return False, f"Missing required parameter: {req_param}", None
 
-        return True, None
+        # JSON Schema validation with InputValidator
+        try:
+            result = self._input_validator.validate(
+                data=parameters,
+                schema_name=f"tool:{tool_name}",
+                sanitize=sanitize
+            )
+            
+            if not result.is_valid:
+                error_msg = "; ".join(result.get_error_messages())
+                return False, error_msg, None
+            
+            # Return sanitized parameters if sanitization was performed
+            sanitized = result.sanitized_data if sanitize else parameters
+            return True, None, sanitized
+            
+        except Exception as e:
+            logger.error(f"[ToolExecutor] Validation error for {tool_name}: {e}")
+            # Fall back to basic validation
+            return True, None, parameters
 
     async def execute(
         self,
         tool_name: str,
         parameters: Dict[str, Any],
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None
     ) -> ExecutionResult:
-        """Execute a tool with given parameters."""
+        """
+        Execute a tool with given parameters.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            parameters: Tool parameters (will be validated and sanitized)
+            context: Execution context
+            request_id: Optional request ID for tracking
+            
+        Returns:
+            ExecutionResult with success status, output, and metadata
+        """
         start_time = time.time()
 
         # Get tool specification
@@ -306,8 +419,8 @@ class ToolExecutor:
                 execution_time=time.time() - start_time
             )
 
-        # Validate parameters
-        valid, error = self.validate_parameters(tool_name, parameters)
+        # Validate parameters with JSON Schema validation and sanitization
+        valid, error, sanitized_params = self.validate_parameters(tool_name, parameters, sanitize=True)
         if not valid:
             return ExecutionResult(
                 success=False,
@@ -316,15 +429,18 @@ class ToolExecutor:
                 execution_time=time.time() - start_time
             )
 
+        # Use sanitized parameters for execution
+        params_to_use = sanitized_params if sanitized_params is not None else parameters
+
         # Execute the tool
         try:
             if tool.async_handler:
-                output = await tool.async_handler(parameters, context or {})
+                output = await tool.async_handler(params_to_use, context or {})
             elif tool.handler:
                 if asyncio.iscoroutinefunction(tool.handler):
-                    output = await tool.handler(parameters, context or {})
+                    output = await tool.handler(params_to_use, context or {})
                 else:
-                    output = tool.handler(parameters, context or {})
+                    output = tool.handler(params_to_use, context or {})
             else:
                 output = {"message": f"Tool '{tool_name}' has no handler"}
 
@@ -353,6 +469,28 @@ class ToolExecutor:
                 execution_time=execution_time
             )
 
+    async def execute_request(self, request: ToolRequest) -> ToolResponse:
+        """
+        Execute a tool using a Pydantic ToolRequest model.
+        
+        Args:
+            request: ToolRequest with tool_name, parameters, and context
+            
+        Returns:
+            ToolResponse with execution results
+        """
+        result = await self.execute(
+            tool_name=request.tool_name,
+            parameters=request.parameters,
+            context=request.context,
+            request_id=request.request_id
+        )
+        
+        return result.to_response(
+            tool_name=request.tool_name,
+            request_id=request.request_id
+        )
+
     def _record_execution(
         self,
         tool_name: str,
@@ -360,16 +498,17 @@ class ToolExecutor:
         output: Any,
         success: bool,
         execution_time: float
-    ):
+    ) -> None:
         """Record tool execution in history."""
-        self._execution_history.append({
+        record: Dict[str, Any] = {
             "tool_name": tool_name,
             "parameters": parameters,
             "output": str(output)[:500],  # Truncate long outputs
             "success": success,
             "execution_time": execution_time,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        self._execution_history.append(record)
 
         if len(self._execution_history) > self._max_history:
             self._execution_history = self._execution_history[-self._max_history:]

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\models\auto\auto_factory.py
-# hypothesis_version: 6.151.9
-
-['-', '--', '/', 'BaseAutoModelClass', 'GenerationMixin', '_T', '__name__', '_adapter_model_path', '_commit_hash', '_from_auto', 'adapter_kwargs', 'architectures', 'auto', 'auto_map', 'cache_dir', 'code_revision', 'config', 'config_class', 'dtype', 'features_only', 'force_download', 'generate', 'get_values', 'local_files_only', 'num_channels', 'out_features', 'out_indices', 'output_loading_info', 'proxies', 'quantization_config', 'r', 'revision', 'shortcut_placeholder', 'subfolder', 'text_config', 'timm', 'token', 'torch_dtype', 'transformers', 'transformers.models', 'trust_remote_code', 'use_timm_backbone', 'utf-8', 'vision']

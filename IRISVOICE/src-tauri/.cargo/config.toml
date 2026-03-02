@@ -1,7 +1,7 @@
 [build]
 incremental = true
 target-dir = "C:\\temp\\tauri-target"
-jobs = 2
+jobs = 8
 
 [profile.dev]
 incremental = true

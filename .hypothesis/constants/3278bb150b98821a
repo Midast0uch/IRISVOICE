@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\utils\dlpack.py
-# hypothesis_version: 6.151.9
-
-['DLDeviceType', '__dlpack__', 'copy', 'dl_device', 'from_dlpack', 'max_version', 'stream', 'torch.Tensor']

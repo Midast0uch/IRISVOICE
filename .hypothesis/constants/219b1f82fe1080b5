@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\bytecode_analysis.py
-# hypothesis_version: 6.151.9
-
-[100, '-inf', 'DELETE', 'Instruction', 'JUMP_ABSOLUTE', 'JUMP_BACKWARD', 'JUMP_FORWARD', 'LOAD', 'MAKE_CELL', 'RAISE_VARARGS', 'RERAISE', 'RETURN_CONST', 'RETURN_VALUE', 'STORE', 'StackSize', 'inf']

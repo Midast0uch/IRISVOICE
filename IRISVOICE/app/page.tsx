@@ -1,25 +1,42 @@
 "use client"
 
-import { useState, lazy, Suspense, useCallback } from "react"
+import { lazy, Suspense, useCallback } from "react"
+import { motion } from "framer-motion"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { IrisOrb } from "@/components/iris/IrisOrb"
 import { ChatActivationText } from "@/components/chat-activation-text"
 import { WheelView } from "@/components/wheel-view/WheelView"
 import { WheelViewErrorBoundary } from "@/components/wheel-view/WheelViewErrorBoundary"
-import { AnimatePresence } from "framer-motion"
+import { useUILayoutState, UILayoutState } from "@/hooks/useUILayoutState"
+import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation"
+import { BackdropBlur } from "@/components/backdrop-blur"
+import { DashboardWing } from "@/components/dashboard-wing"
 
 // Lazy load heavy components for faster initial page load
 // Note: Using 'any' here due to TypeScript/React.lazy() compatibility issues with Next.js 16/React 19
 // A proper fix would require adding explicit type exports to each component
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const LazyChatView = lazy(() => import("@/components/chat-view") as any)
+const LazyChatWing = lazy(() => import("@/components/chat-view") as any)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-control-center") as any)
 
 export default function Home() {
-  const { state, handleExpandToMain, handleGoBack, sendMessage, setMainView, voiceState, orbState, updateMiniNodeValue } = useNavigation()
+  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateMiniNodeValue } = useNavigation()
   const { getThemeConfig } = useBrandColor()
+  
+  // Initialize UI layout state machine
+  const { 
+    state: uiLayoutState, 
+    openChat, 
+    openDashboard, 
+    closeAll, 
+    isChatOpen, 
+    isBothOpen 
+  } = useUILayoutState()
+
+  // Enable keyboard navigation (Escape key to close wings)
+  useKeyboardNavigation({ closeAll, uiState: uiLayoutState })
 
   // Phase 124: Single source of truth for expansion to prevent stuck states
   const isExpanded = state.level > 1
@@ -35,12 +52,19 @@ export default function Home() {
       return
     }
 
+    // If wings are open, close them and return to idle
+    if (uiLayoutState !== UILayoutState.UI_STATE_IDLE) {
+      closeAll()
+      return
+    }
+
+    // Otherwise, handle navigation as before
     if (state.level > 1) {
       handleGoBack()
     } else {
       handleExpandToMain()
     }
-  }, [voiceState, state.level, sendMessage, handleGoBack, handleExpandToMain])
+  }, [voiceState, uiLayoutState, state.level, sendMessage, closeAll, handleGoBack, handleExpandToMain])
 
   const handleDoubleClick = useCallback(() => {
     // Phase 121: Double-click to start voice engine if idle
@@ -50,7 +74,7 @@ export default function Home() {
   }, [voiceState, sendMessage])
 
   const handleChatClick = () => {
-    setMainView("chat")
+    openChat()
   }
 
   // Task 10.2: Wire up WheelView callbacks
@@ -66,29 +90,43 @@ export default function Home() {
   }
 
   return (
-    <main className="bg-transparent w-full min-h-screen flex flex-col items-center justify-center relative">
+    <main className="bg-transparent w-full min-h-screen flex flex-col items-center justify-center relative" style={{ perspective: '1200px' }}>
+      {/* Backdrop Blur - renders when wings are open */}
+      <BackdropBlur uiState={uiLayoutState} />
+      
       {state.level !== 3 && (
-        <div className="flex flex-col items-center justify-center relative">
-          <IrisOrb
-            onClick={handleSingleClick}
-            onDoubleClick={handleDoubleClick}
-            isExpanded={isExpanded}
-            voiceState={voiceState}
-            centerLabel={orbState.label}
-            size={175}
-            glowColor={glowColor}
-            wakeFlash={false}
-            sendMessage={sendMessage}
-          />
-          <div className="mt-12"> {/* Increased margin top for more spacing */}
-            <ChatActivationText
-              onChatClick={handleChatClick}
+        <motion.div 
+          className="absolute inset-0 flex items-center justify-center"
+          animate={{
+            scale: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.85 : 1,
+            filter: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 'blur(2px)' : 'blur(0px)',
+            opacity: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.6 : 1,
+          }}
+          transition={{
+            duration: 0.4,
+            ease: [0.22, 1, 0.36, 1],
+          }}
+          style={{ zIndex: 0 }}
+        >
+          <div className="flex flex-col items-center justify-center relative">
+            <IrisOrb
+              onClick={handleSingleClick}
+              onDoubleClick={handleDoubleClick}
               isExpanded={isExpanded}
-              isChatActive={state.mainView === "chat"}
-              navigationLevel={state.level}
+              centerLabel={orbState.label}
+              size={175}
+              glowColor={glowColor}
+              wakeFlash={false}
             />
+            <div className="mt-12"> {/* Increased margin top for more spacing */}
+              <ChatActivationText
+                onClick={handleChatClick}
+                navigationLevel={state.level}
+                uiState={uiLayoutState}
+              />
+            </div>
           </div>
-        </div>
+        </motion.div>
       )}
       {state.level === 2 && (
         <Suspense fallback={<div className="text-white/50">Loading...</div>}>
@@ -109,17 +147,23 @@ export default function Home() {
           </WheelViewErrorBoundary>
         </Suspense>
       )}
-      <AnimatePresence>
-        {state.mainView === "chat" && (
-          <Suspense fallback={<div className="text-white">Loading chat...</div>}>
-            <LazyChatView
-              onClose={() => setMainView("navigation")}
-              isActive={true}
-              sendMessage={sendMessage}
-            />
-          </Suspense>
-        )}
-      </AnimatePresence>
+      
+      {/* ChatWing - sibling to DashboardWing */}
+      <Suspense fallback={null}>
+        <LazyChatWing
+          isOpen={isChatOpen || isBothOpen}
+          onClose={closeAll}
+          onDashboardClick={openDashboard}
+          sendMessage={sendMessage}
+        />
+      </Suspense>
+      
+      {/* DashboardWing - sibling to ChatWing */}
+      <DashboardWing
+        isOpen={isBothOpen}
+        onClose={closeAll}
+        sendMessage={sendMessage}
+      />
     </main>
   )
 }

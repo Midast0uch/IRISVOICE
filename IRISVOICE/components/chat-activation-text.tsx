@@ -1,32 +1,32 @@
 "use client"
 
-import React, { useState, useEffect, memo } from "react"
+import React, { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
+import { UILayoutState } from "@/hooks/useUILayoutState"
 
 interface ChatActivationTextProps {
-  isChatActive: boolean
-  onChatClick: () => void
-  isExpanded: boolean
+  uiState: UILayoutState
   navigationLevel: number
+  onClick: () => void
 }
 
-export const ChatActivationText = React.memo(function ChatActivationText({ isChatActive, onChatClick, isExpanded, navigationLevel }: ChatActivationTextProps) {
+export const ChatActivationText = React.memo(function ChatActivationText({ 
+  uiState, 
+  navigationLevel, 
+  onClick 
+}: ChatActivationTextProps) {
   const [currentTextIndex, setCurrentTextIndex] = useState(0)
-  const [isVisible, setIsVisible] = useState(true)
 
   const texts = [
     "Tap iris for menu",
-    "Double-tap for 🎤", 
-    "Tap here for 💬"
+    "Double-click for🎙️",
+    "Tap here for chat"
   ]
 
-  // Cycle through texts every 3 seconds
+  // Cycle through texts every 3 seconds when visible
   useEffect(() => {
-    // Only show when at navigation level 1 and not expanded
-    const shouldBeVisible = navigationLevel === 1 && !isExpanded && !isChatActive
-    setIsVisible(shouldBeVisible)
-    
-    if (!shouldBeVisible) {
+    // Only rotate text when at navigation level 1 and UI is idle
+    if (navigationLevel !== 1 || uiState !== UILayoutState.UI_STATE_IDLE) {
       return
     }
 
@@ -35,45 +35,60 @@ export const ChatActivationText = React.memo(function ChatActivationText({ isCha
     }, 3000)
 
     return () => clearInterval(interval)
-  }, [isChatActive, texts.length, navigationLevel, isExpanded])
+  }, [navigationLevel, uiState, texts.length])
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation()
-    // Make the entire text clickable to open chat
-    onChatClick()
+    onClick()
   }
 
+  // Only render when NavigationContext level equals 1
+  if (navigationLevel !== 1) {
+    return null
+  }
+
+  // Calculate opacity based on UI state
+  const opacity = uiState === UILayoutState.UI_STATE_IDLE ? 0.7 : 0
+
   return (
-    <div className="relative mt-4">
-      {/* Invisible clickable area */}
-      <div 
-        className="absolute inset-0 w-full h-8 cursor-pointer z-10"
-        onClick={handleClick}
-        style={{
-          background: "transparent",
-          border: "1px solid transparent"
-        }}
-      />
-      
-      {/* Text display area */}
+    <motion.div
+      className="fixed left-1/2 -translate-x-1/2 cursor-pointer"
+      style={{
+        top: "60%",
+        zIndex: 1,
+        pointerEvents: "auto"
+      }}
+      onClick={handleClick}
+      initial={{ opacity: 0, scale: 1 }}
+      animate={{ 
+        opacity,
+        scale: uiState === UILayoutState.UI_STATE_IDLE ? [1, 1.02, 1] : 1
+      }}
+      transition={{
+        opacity: { duration: 0.3 },
+        scale: {
+          duration: 3,
+          repeat: Infinity,
+          ease: "easeInOut"
+        }
+      }}
+      whileHover={{
+        opacity: 1,
+        scale: 1.05
+      }}
+    >
       <AnimatePresence mode="wait">
-        {isVisible && (
-          <motion.div
-            key={currentTextIndex}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.3, ease: "easeInOut" }}
-            className="text-center"
-          >
-            <p 
-              className="text-sm font-semibold transition-all duration-300 text-white/80 cursor-pointer hover:text-white"
-            >
-              {texts[currentTextIndex]}
-            </p>
-          </motion.div>
-        )}
+        <motion.p
+          key={currentTextIndex}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -10 }}
+          transition={{ duration: 0.3, ease: "easeInOut" }}
+          className="text-sm font-semibold text-white text-center whitespace-nowrap"
+        >
+          {texts[currentTextIndex]}
+        </motion.p>
       </AnimatePresence>
-    </div>
+    </motion.div>
   )
 })

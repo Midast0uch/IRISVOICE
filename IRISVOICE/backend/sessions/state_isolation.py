@@ -44,6 +44,9 @@ class IsolatedStateManager:
             # Load existing state if available
             await self._load_state()
             
+            # Restore model selections to AgentKernel if they exist
+            await self._restore_model_selections()
+            
             # Start auto-save task
             self._auto_save_task = asyncio.create_task(self._periodic_auto_save())
     
@@ -85,7 +88,9 @@ class IsolatedStateManager:
                 current_subnode=self._state.current_subnode,
                 field_values=self._state.field_values.copy(),
                 active_theme=self._state.active_theme,
-                confirmed_nodes=self._state.confirmed_nodes.copy()
+                confirmed_nodes=self._state.confirmed_nodes.copy(),
+                selected_reasoning_model=self._state.selected_reasoning_model,
+                selected_tool_execution_model=self._state.selected_tool_execution_model
             )
             return state_copy
     
@@ -128,6 +133,12 @@ class IsolatedStateManager:
     async def update_field(self, subnode_id: str, field_id: str, value: Any, timestamp: Optional[float] = None) -> tuple[bool, float]:
         """Update a field value with validation, memory tracking, and timestamp handling
         
+        Special handling for model selection fields (reasoning_model, tool_execution_model):
+        These are stored as top-level state fields rather than in field_values.
+        
+        Special handling for API keys (openai_api_key):
+        These are encrypted before storage for security.
+        
         Returns:
             tuple[bool, float]: (success, timestamp) - success indicates if update was applied,
                                timestamp is the timestamp of this update
@@ -138,10 +149,31 @@ class IsolatedStateManager:
                 if timestamp is None:
                     timestamp = datetime.now().timestamp()
                 
+                # Special handling for model selection fields
+                if field_id == "reasoning_model":
+                    self._state.selected_reasoning_model = value
+                    print(f"[{self.session_id}] Updated reasoning model selection: {value}")
+                    if self._persistence_dir:
+                        await self._save_state()
+                    return True, timestamp
+                elif field_id == "tool_execution_model":
+                    self._state.selected_tool_execution_model = value
+                    print(f"[{self.session_id}] Updated tool execution model selection: {value}")
+                    if self._persistence_dir:
+                        await self._save_state()
+                    return True, timestamp
+                
                 # Validate the value
                 if not await self._validate_field_value(subnode_id, field_id, value):
                     print(f"[{self.session_id}] Field validation failed for {subnode_id}.{field_id}")
                     return False, timestamp
+                
+                # Encrypt API keys before storage
+                stored_value = value
+                if field_id == "openai_api_key" and value:
+                    from ..utils.encryption import encrypt_api_key
+                    stored_value = encrypt_api_key(value)
+                    print(f"[{self.session_id}] Encrypted API key for storage")
                 
                 # Check if we have a timestamp tracker for this field
                 field_key = f"{subnode_id}:{field_id}"
@@ -157,17 +189,17 @@ class IsolatedStateManager:
                 # Get old value for tracking
                 old_value = self._state.field_values.get(subnode_id, {}).get(field_id)
                 
-                # Update the field
+                # Update the field with encrypted value
                 if subnode_id not in self._state.field_values:
                     self._state.field_values[subnode_id] = {}
                 
-                self._state.field_values[subnode_id][field_id] = value
+                self._state.field_values[subnode_id][field_id] = stored_value
                 
                 # Update timestamp tracker
                 self._field_timestamps[field_key] = timestamp
                 
                 # Track memory change
-                self._memory_tracker.track_field_change(subnode_id, field_id, old_value, value)
+                self._memory_tracker.track_field_change(subnode_id, field_id, old_value, stored_value)
 
                 # Auto-save if persistence is enabled with retry
                 if self._persistence_dir:
@@ -296,6 +328,30 @@ class IsolatedStateManager:
     
     async def _validate_field_value(self, subnode_id: str, field_id: str, value: Any) -> bool:
         """Validate a field value against its configuration"""
+        # Import validation utilities
+        from ..utils.api_validation import validate_openai_key, validate_api_url
+        from ..utils.encryption import encrypt_api_key
+        
+        # Special validation for OpenAI API key fields
+        if field_id == "openai_api_key":
+            if not value:  # Allow empty (user might configure later)
+                return True
+            is_valid, error_msg = validate_openai_key(value)
+            if not is_valid:
+                print(f"[{self.session_id}] OpenAI API key validation failed: {error_msg}")
+                return False
+            return True
+        
+        # Special validation for OpenAI API URL fields
+        if field_id == "openai_api_url":
+            if not value:  # Allow empty (will use default)
+                return True
+            is_valid, error_msg = validate_api_url(value)
+            if not is_valid:
+                print(f"[{self.session_id}] OpenAI API URL validation failed: {error_msg}")
+                return False
+            return True
+        
         # Implementation copied from StateManager but adapted for async
         category = self._get_category_for_subnode(subnode_id)
         subnodes = get_subnodes_for_category(category)
@@ -567,10 +623,79 @@ class IsolatedStateManager:
                     pass
             raise
     
+    async def _restore_model_selections(self):
+        """Restore model selections to AgentKernel after loading state"""
+        try:
+            # Import here to avoid circular dependency
+            from ..agent.agent_kernel import get_agent_kernel
+            
+            # Get the AgentKernel for this session
+            agent_kernel = get_agent_kernel(self.session_id)
+            
+            # Restore model selections if they exist in state
+            if self._state.selected_reasoning_model or self._state.selected_tool_execution_model:
+                success = agent_kernel.set_model_selection(
+                    reasoning_model=self._state.selected_reasoning_model,
+                    tool_execution_model=self._state.selected_tool_execution_model
+                )
+                
+                if success:
+                    print(f"[{self.session_id}] Restored model selections: "
+                          f"reasoning={self._state.selected_reasoning_model}, "
+                          f"tool_execution={self._state.selected_tool_execution_model}")
+                else:
+                    print(f"[{self.session_id}] Warning: Failed to restore model selections. "
+                          f"Models may not be available.")
+        except Exception as e:
+            print(f"[{self.session_id}] Error restoring model selections: {e}")
+    
     # Utility methods
     async def get_field_value(self, subnode_id: str, field_id: str, default: Any = None) -> Any:
         """Get a specific field value by subnode_id"""
         return self._state.field_values.get(subnode_id, {}).get(field_id, default)
+    
+    async def get_decrypted_field_value(self, subnode_id: str, field_id: str, default: Any = None) -> Any:
+        """
+        Get a specific field value, decrypting if it's an API key.
+        
+        Args:
+            subnode_id: The subnode ID
+            field_id: The field ID
+            default: Default value if field not found
+            
+        Returns:
+            Decrypted value for API keys, plain value for other fields
+        """
+        value = self._state.field_values.get(subnode_id, {}).get(field_id, default)
+        
+        # Decrypt API keys
+        if field_id == "openai_api_key" and value:
+            from ..utils.encryption import decrypt_api_key
+            return decrypt_api_key(value)
+        
+        return value
+    
+    async def get_masked_field_value(self, subnode_id: str, field_id: str, default: Any = None) -> Any:
+        """
+        Get a specific field value, masking if it's an API key.
+        
+        Args:
+            subnode_id: The subnode ID
+            field_id: The field ID
+            default: Default value if field not found
+            
+        Returns:
+            Masked value for API keys, plain value for other fields
+        """
+        # First decrypt the value
+        value = await self.get_decrypted_field_value(subnode_id, field_id, default)
+        
+        # Mask API keys
+        if field_id == "openai_api_key" and value:
+            from ..utils.encryption import mask_api_key
+            return mask_api_key(value)
+        
+        return value
     
     async def get_subnode_field_values(self, subnode_id: str) -> Dict[str, Any]:
         """Get all field values for a subnode"""

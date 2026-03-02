@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\decomposition\__init__.py
-# hypothesis_version: 6.151.9
-
-['DictionaryLearning', 'FactorAnalysis', 'FastICA', 'IncrementalPCA', 'KernelPCA', 'MiniBatchNMF', 'MiniBatchSparsePCA', 'NMF', 'PCA', 'SparseCoder', 'SparsePCA', 'TruncatedSVD', 'dict_learning', 'dict_learning_online', 'fastica', 'randomized_svd', 'sparse_encode']

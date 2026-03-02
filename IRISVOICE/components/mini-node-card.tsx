@@ -4,11 +4,8 @@ import React, { useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import * as LucideIcons from "lucide-react"
 import type { MiniNode, FieldConfig, FieldValue } from "@/types/navigation"
-import { TextField } from "./fields/TextField"
-import { SliderField } from "./fields/SliderField"
-import { DropdownField } from "./fields/DropdownField"
-import { ToggleField } from "./fields/ToggleField"
-import { ColorField } from "./fields/ColorField"
+// Explicitly import from form-fields barrel export
+import { TextField, SliderField, DropdownField, ToggleField, ColorField } from "./form-fields"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 
 interface MiniNodeCardProps {

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\cluster\_dbscan.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.5, 'X', 'algorithm', 'array-like', 'auto', 'ball_tree', 'brute', 'csr', 'eps', 'euclidean', 'ignore', 'kd_tree', 'leaf_size', 'left', 'metric', 'metric_params', 'min_samples', 'minkowski', 'n_jobs', 'neither', 'p', 'precomputed', 'sample_weight', 'sparse matrix']

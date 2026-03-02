@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\generation\continuous_batching\requests.py
-# hypothesis_version: 6.151.9
-
-[2147483647, '\n)', ',\n\t', 'RequestState', 'RequestState(\n\t', 'cpu', 'cuda', 'decoding', 'failed', 'finished', 'mps', 'pending', 'prefilling', 'prefilling_split', 'xpu']

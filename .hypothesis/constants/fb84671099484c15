@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\transforms.py
-# hypothesis_version: 6.151.9
-
-['$cp', '$cp_check', '$cp_rhs', 'add candidate: %s', 'args', 'call', 'getiter', 'has yield', 'kwargs', 'loop_lift_info', 'mutate_with_body', 'no yield', 'one_entry=%s', 'top-level loop: %s']

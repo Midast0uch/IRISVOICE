@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\numba\core\decorators.py
-# hypothesis_version: 6.151.9
-
-['_target', 'argtypes', 'boundscheck', 'cpu', 'cuda', 'forceobj', 'nopython', 'npyufunc', 'pipeline_class', 'restype']

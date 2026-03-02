@@ -14,13 +14,53 @@ import json
 import asyncio
 import logging
 import time
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 from .model_router import ModelRouter
-from .memory import ConversationMemory
+from .memory import ConversationMemory, TaskRecord
 from .personality import PersonalityManager
 from .vps_gateway import VPSGateway, VPSConfig
+from .inter_model_communication import InterModelCommunicator
+from .model_conversation import ModelConversation
+
+
+@dataclass
+class TaskContext:
+    """
+    Carries full context through the entire task pipeline.
+    
+    This is the single object that carries context from the user's message
+    through planning, execution, and response synthesis. It prevents context
+    loss at handoff points between the brain and executor models.
+    """
+    task_id: str                          # unique per user message
+    user_message: str                     # original user request — never lost
+    session_id: str
+    conversation_history: List[Dict]      # snapshot of memory at task start
+    plan: Optional[Dict] = None           # brain's plan (set after planning)
+    step_results: List[Dict] = field(default_factory=list)  # accumulates as steps execute
+    started_at: float = field(default_factory=time.time)
+    completed_at: Optional[float] = None
+    
+    def get_results_summary(self) -> str:
+        """Get a formatted summary of all step results for the brain."""
+        if not self.step_results:
+            return "No tool results."
+        
+        summary_parts = []
+        for i, result in enumerate(self.step_results, 1):
+            if isinstance(result, dict):
+                if "error" in result:
+                    summary_parts.append(f"Step {i}: ERROR - {result.get('error')}")
+                elif result.get("success"):
+                    tool_name = result.get("tool", "unknown")
+                    action = result.get("action", "")
+                    result_text = result.get("result", result.get("response", ""))
+                    summary_parts.append(f"Step {i}: {tool_name} ({action}): {result_text[:200]}")
+        
+        return "\n".join(summary_parts) if summary_parts else "No tool results."
 
 class AgentKernel:
     """
@@ -54,14 +94,22 @@ class AgentKernel:
         self._conversation_memory: Optional[ConversationMemory] = None
         self._personality: Optional[PersonalityManager] = None
         self._tool_bridge = None  # Will be initialized lazily
+        self._inter_model_communicator: Optional[InterModelCommunicator] = None  # For brain↔executor logging
         
         # State management
         self._single_model_mode = False
         self._available_model_id: Optional[str] = None
         self._initialization_error: Optional[str] = None
         
+        # Model selection (user-configurable dual-LLM)
+        self._selected_reasoning_model: Optional[str] = None
+        self._selected_tool_execution_model: Optional[str] = None
+        
         # VPS configuration (loaded from settings)
         self._vps_config: Optional[VPSConfig] = None
+        
+        # Internet access control (default: False to match UI default)
+        self._internet_access_enabled: bool = False
         
         # Initialize components
         self._initialize_components()
@@ -69,28 +117,16 @@ class AgentKernel:
     def _initialize_components(self):
         """Initialize all core components with error handling."""
         try:
-            # Initialize Model Router
-            logger.info("[AgentKernel] Initializing Model Router...")
-            self._model_router = ModelRouter(self.config_path)
+            # Initialize Model Router with UNINITIALIZED mode (lazy loading)
+            logger.info("[AgentKernel] Initializing Model Router in UNINITIALIZED mode (lazy loading)...")
+            from .model_router import InferenceMode
+            self._model_router = ModelRouter(self.config_path, inference_mode=InferenceMode.UNINITIALIZED)
+            logger.info("[AgentKernel] Model Router initialized - models will NOT be loaded automatically")
+            logger.info("[AgentKernel] Models will be loaded only when user selects Local Model inference mode")
             
-            # Check model availability
-            reasoning_model = self._model_router.get_reasoning_model()
-            execution_model = self._model_router.get_execution_model()
-            
-            if reasoning_model and execution_model:
-                logger.info("[AgentKernel] Dual-LLM mode: Both models available")
-                self._single_model_mode = False
-            elif reasoning_model:
-                logger.warning("[AgentKernel] Single-model mode: Only reasoning model available")
-                self._single_model_mode = True
-                self._available_model_id = reasoning_model.model_id
-            elif execution_model:
-                logger.warning("[AgentKernel] Single-model mode: Only execution model available")
-                self._single_model_mode = True
-                self._available_model_id = execution_model.model_id
-            else:
-                logger.error("[AgentKernel] No models available")
-                self._initialization_error = "No models available"
+            # In UNINITIALIZED mode, we don't have models yet
+            logger.info("[AgentKernel] Waiting for user to configure inference mode (Local/VPS/OpenAI)")
+            self._single_model_mode = False
                 
         except Exception as e:
             logger.error(f"[AgentKernel] Failed to initialize Model Router: {e}")
@@ -138,8 +174,103 @@ class AgentKernel:
             self._initialization_error = f"Personality Manager initialization failed: {e}"
             self._personality = None
         
+        try:
+            # Initialize Inter-Model Communicator for brain↔executor logging (Bug 5 fix)
+            logger.info("[AgentKernel] Initializing Inter-Model Communicator...")
+            if self._model_router:
+                model_conversation = ModelConversation()
+                self._inter_model_communicator = InterModelCommunicator(
+                    model_router=self._model_router,
+                    conversation=model_conversation
+                )
+                logger.info("[AgentKernel] Inter-Model Communicator initialized")
+            else:
+                logger.warning("[AgentKernel] Inter-Model Communicator not initialized: Model Router unavailable")
+        except Exception as e:
+            logger.error(f"[AgentKernel] Failed to initialize Inter-Model Communicator: {e}")
+            self._inter_model_communicator = None
+        
         # Tool Bridge will be initialized lazily when needed
+        
+        # Memory Foundation integration
+        self._memory_interface: Optional[Any] = None
+        
         logger.info("[AgentKernel] Initialization complete")
+    
+    def set_memory_interface(self, memory_interface: Any) -> None:
+        """
+        Set the memory interface for the agent kernel.
+        
+        This is called after AgentKernel initialization to wire in
+        the Memory Foundation system.
+        
+        Args:
+            memory_interface: MemoryInterface instance from backend.memory
+        """
+        self._memory_interface = memory_interface
+        logger.info("[AgentKernel] Memory interface connected")
+    
+    def _get_memory_context(self, task: str) -> str:
+        """
+        Get memory-augmented context for a task.
+        
+        Args:
+            task: Task description
+        
+        Returns:
+            Context string with memory augmentation
+        """
+        if self._memory_interface is None:
+            return ""
+        
+        try:
+            context = self._memory_interface.get_task_context(
+                task=task,
+                session_id=self.session_id
+            )
+            return context
+        except Exception as e:
+            logger.warning(f"[AgentKernel] Failed to get memory context: {e}")
+            return ""
+    
+    def _store_task_episode(
+        self,
+        task_summary: str,
+        full_content: str,
+        outcome_type: str = "success",
+        tool_sequence: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
+        """
+        Store a task episode in memory.
+        
+        Args:
+            task_summary: Brief task description
+            full_content: Full conversation/task content
+            outcome_type: Task outcome (success, failure, etc.)
+            tool_sequence: List of tool calls made
+        """
+        if self._memory_interface is None:
+            return
+        
+        try:
+            from backend.memory import Episode
+            
+            episode = Episode(
+                session_id=self.session_id,
+                task_summary=task_summary,
+                full_content=full_content,
+                tool_sequence=tool_sequence or [],
+                outcome_type=outcome_type,
+                source_channel="websocket",
+                node_id="local",
+                origin="local"
+            )
+            
+            self._memory_interface.store_episode(episode)
+            logger.debug(f"[AgentKernel] Stored episode for task: {task_summary[:50]}...")
+            
+        except Exception as e:
+            logger.warning(f"[AgentKernel] Failed to store episode: {e}")
     
     async def initialize_vps_gateway(self) -> None:
         """
@@ -250,6 +381,10 @@ class AgentKernel:
             logger.error(f"[AgentKernel] {error_msg}")
             return error_msg
         
+        # Create TaskContext to carry full context through pipeline (fixes Bug 3, 4, 5, 6)
+        import uuid
+        task_id = str(uuid.uuid4())
+        
         try:
             # Add user message to conversation memory
             self._conversation_memory.add_message("user", text)
@@ -261,62 +396,92 @@ class AgentKernel:
             # Handle conversation memory errors gracefully
             logger.warning(f"[AgentKernel] Conversation memory error: {e}")
             context = []  # Continue with empty context
-            
-            # Plan task using reasoning model with timeout
-            try:
-                plan = self.plan_task(text, context)
-            except TimeoutError as e:
-                error_response = f"Request timed out while planning: {e}"
-                logger.error(f"[AgentKernel] {error_response}")
-                self._conversation_memory.add_message("assistant", error_response)
-                return error_response
-            except Exception as e:
-                error_response = f"Error planning task: {e}"
-                logger.error(f"[AgentKernel] {error_response}", exc_info=True)
-                self._conversation_memory.add_message("assistant", error_response)
-                return error_response
-            
-            if "error" in plan:
-                error_response = f"Error planning task: {plan['error']}"
-                self._conversation_memory.add_message("assistant", error_response)
-                return error_response
-            
-            # Execute plan using execution model with timeout
-            try:
-                execution_results = self.execute_plan(plan)
-            except TimeoutError as e:
-                error_response = f"Request timed out during execution: {e}"
-                logger.error(f"[AgentKernel] {error_response}")
-                self._conversation_memory.add_message("assistant", error_response)
-                return error_response
-            except Exception as e:
-                error_response = f"Error executing plan: {e}"
-                logger.error(f"[AgentKernel] {error_response}", exc_info=True)
-                self._conversation_memory.add_message("assistant", error_response)
-                return error_response
-            
-            # Generate final response
-            response = self._generate_response(text, plan, execution_results, context)
-            
-            # Add assistant response to conversation memory
-            try:
-                self._conversation_memory.add_message("assistant", response)
-            except Exception as e:
-                # Log but don't fail if memory update fails
-                logger.warning(f"[AgentKernel] Failed to save response to conversation memory: {e}")
-            
-            logger.info(f"[AgentKernel] Generated response: {response[:50]}...")
-            return response
-            
+
+        # Create TaskContext with initial data
+        task = TaskContext(
+            task_id=task_id,
+            user_message=text,
+            session_id=session_id,
+            conversation_history=context
+        )
+
+        # Plan task using reasoning model with timeout
+        try:
+            plan = self.plan_task(text, context)
+            task.plan = plan  # Store plan in TaskContext
+        except TimeoutError as e:
+            error_response = f"Request timed out while planning: {e}"
+            logger.error(f"[AgentKernel] {error_response}")
+            self._conversation_memory.add_message("assistant", error_response)
+            return error_response
         except Exception as e:
-            error_msg = f"Error processing text message: {e}"
-            logger.error(f"[AgentKernel] {error_msg}", exc_info=True)
-            try:
-                if self._conversation_memory:
-                    self._conversation_memory.add_message("assistant", error_msg)
-            except Exception as mem_error:
-                logger.warning(f"[AgentKernel] Failed to save error to conversation memory: {mem_error}")
-            return error_msg
+            error_response = f"Error planning task: {e}"
+            logger.error(f"[AgentKernel] {error_response}", exc_info=True)
+            self._conversation_memory.add_message("assistant", error_response)
+            return error_response
+        
+        if "error" in plan:
+            error_response = f"Error planning task: {plan['error']}"
+            self._conversation_memory.add_message("assistant", error_response)
+            return error_response
+        
+        # Execute plan using execution model with timeout
+        try:
+            execution_results = self.execute_plan(plan)
+            # Accumulate results in TaskContext (fixes Bug 4)
+            task.step_results = execution_results
+        except TimeoutError as e:
+            error_response = f"Request timed out during execution: {e}"
+            logger.error(f"[AgentKernel] {error_response}")
+            self._conversation_memory.add_message("assistant", error_response)
+            return error_response
+        except Exception as e:
+            error_response = f"Error executing plan: {e}"
+            logger.error(f"[AgentKernel] {error_response}", exc_info=True)
+            self._conversation_memory.add_message("assistant", error_response)
+            return error_response
+        
+        # Generate final response using brain synthesis (fixes Bug 2)
+        response = self._synthesize_response(task, execution_results)
+        
+        # Add assistant response to conversation memory
+        try:
+            self._conversation_memory.add_message("assistant", response)
+        except Exception as e:
+            # Log but don't fail if memory update fails
+            logger.warning(f"[AgentKernel] Failed to save response to conversation memory: {e}")
+        
+        # Record task for session-level memory continuity (fixes Bug 6)
+        try:
+            task.completed_at = time.time()
+            had_failures = any(
+                isinstance(r, dict) and "error" in r
+                for r in execution_results
+            )
+            tool_names_used = list(set(
+                r.get("tool", "unknown")
+                for r in execution_results
+                if isinstance(r, dict)
+            ))
+            
+            task_record = TaskRecord(
+                task_id=task.task_id,
+                user_message=task.user_message,
+                summary=response,
+                step_count=len(execution_results),
+                had_failures=had_failures,
+                tool_names_used=tool_names_used,
+                started_at=task.started_at,
+                completed_at=task.completed_at,
+                session_id=task.session_id
+            )
+            self._conversation_memory.record_task(task_record)
+            logger.info(f"[AgentKernel] Recorded task {task.task_id} to session memory")
+        except Exception as e:
+            logger.warning(f"[AgentKernel] Failed to record task: {e}")
+        
+        logger.info(f"[AgentKernel] Generated response: {response[:50]}...")
+        return response
 
     def plan_task(self, task_description: str, context: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
@@ -342,7 +507,23 @@ class AgentKernel:
             reasoning_model = None
             if self._model_router:
                 try:
-                    reasoning_model = self._model_router.get_reasoning_model()
+                    # Use user-selected reasoning model if available
+                    if self._selected_reasoning_model:
+                        reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
+                        if reasoning_model:
+                            logger.info(f"[AgentKernel] Using user-selected reasoning model: {self._selected_reasoning_model}")
+                        else:
+                            logger.warning(f"[AgentKernel] Selected model {self._selected_reasoning_model} unavailable, falling back to default")
+                            reasoning_model = self._model_router.get_reasoning_model()
+                            if reasoning_model:
+                                default_model_id = getattr(reasoning_model, 'model_id', 'unknown')
+                                logger.info(f"[AgentKernel] Fallback successful: using default reasoning model {default_model_id}")
+                    else:
+                        # Use default reasoning model
+                        reasoning_model = self._model_router.get_reasoning_model()
+                        if reasoning_model:
+                            default_model_id = getattr(reasoning_model, 'model_id', 'unknown')
+                            logger.info(f"[AgentKernel] No model selected, using default reasoning model: {default_model_id}")
                 except Exception as e:
                     logger.error(f"[AgentKernel] Error getting reasoning model: {e}")
                     return {"error": f"Failed to access reasoning model: {e}"}
@@ -561,7 +742,23 @@ Respond with a JSON object:
         execution_model = None
         if self._model_router:
             try:
-                execution_model = self._model_router.get_execution_model()
+                # Use user-selected tool execution model if available
+                if self._selected_tool_execution_model:
+                    execution_model = self._model_router.models.get(self._selected_tool_execution_model)
+                    if execution_model:
+                        logger.info(f"[AgentKernel] Using user-selected tool execution model: {self._selected_tool_execution_model}")
+                    else:
+                        logger.warning(f"[AgentKernel] Selected model {self._selected_tool_execution_model} unavailable, falling back to default")
+                        execution_model = self._model_router.get_execution_model()
+                        if execution_model:
+                            default_model_id = getattr(execution_model, 'model_id', 'unknown')
+                            logger.info(f"[AgentKernel] Fallback successful: using default tool execution model {default_model_id}")
+                else:
+                    # Use default execution model
+                    execution_model = self._model_router.get_execution_model()
+                    if execution_model:
+                        default_model_id = getattr(execution_model, 'model_id', 'unknown')
+                        logger.info(f"[AgentKernel] No model selected, using default tool execution model: {default_model_id}")
             except Exception as e:
                 logger.error(f"[AgentKernel] Error getting execution model: {e}")
                 return {"error": f"Failed to access execution model: {e}", "success": False}
@@ -786,6 +983,61 @@ Provide the execution result."""
         
         return "I've processed your request."
     
+    def _synthesize_response(
+        self,
+        task: TaskContext,
+        execution_results: List[Any]
+    ) -> str:
+        """
+        Synthesize response using the brain model with tool results.
+        
+        This addresses Bug 2: The brain now sees the actual tool output
+        before generating the final response.
+        
+        Args:
+            task: TaskContext containing user message and plan
+            execution_results: Results from execute_plan()
+            
+        Returns:
+            Synthesized response from the brain model
+        """
+        # Get results summary for the brain
+        results_summary = task.get_results_summary()
+        
+        # Build synthesis prompt for the brain
+        synthesis_prompt = f"""User request: {task.user_message}
+
+Tool execution results:
+{results_summary}
+
+Based on the tool results above, provide a natural response to the user's request.
+If any tools failed, address those issues in your response.
+"""
+        
+        try:
+            # Get reasoning model for synthesis
+            reasoning_model = None
+            if self._model_router:
+                if self._selected_reasoning_model:
+                    reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
+                if not reasoning_model:
+                    reasoning_model = self._model_router.get_reasoning_model()
+            
+            if reasoning_model:
+                # Call the brain model for synthesis
+                response = reasoning_model.generate(synthesis_prompt)
+                logger.info("[AgentKernel] Brain synthesized response with tool results context")
+                return response
+            else:
+                # Fall back to template-based response
+                logger.warning("[AgentKernel] No reasoning model available, using fallback response")
+                return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
+                
+        except Exception as e:
+            logger.error(f"[AgentKernel] Error in brain synthesis: {e}")
+            # Fall back to template-based response
+            return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
+    
     def get_status(self) -> Dict[str, Any]:
         """
         Get agent status information.
@@ -881,6 +1133,81 @@ Provide the execution result."""
         if self._personality:
             self._personality.load_from_config(config)
             logger.info("[AgentKernel] Personality configuration updated")
+    
+    def set_model_selection(self, reasoning_model: Optional[str] = None, tool_execution_model: Optional[str] = None) -> bool:
+        """
+        Set user-selected models for reasoning and tool execution.
+        
+        Args:
+            reasoning_model: Model ID for reasoning tasks (None to use default)
+            tool_execution_model: Model ID for tool execution tasks (None to use default)
+            
+        Returns:
+            True if models were set successfully, False otherwise
+        """
+        try:
+            # Validate that selected models are available
+            if reasoning_model and self._model_router:
+                available_models = self._model_router.get_available_models()
+                available_ids = [m["id"] for m in available_models]
+                
+                if reasoning_model not in available_ids:
+                    logger.error(f"[AgentKernel] Reasoning model '{reasoning_model}' not available. Available: {available_ids}")
+                    return False
+            
+            if tool_execution_model and self._model_router:
+                available_models = self._model_router.get_available_models()
+                available_ids = [m["id"] for m in available_models]
+                
+                if tool_execution_model not in available_ids:
+                    logger.error(f"[AgentKernel] Tool execution model '{tool_execution_model}' not available. Available: {available_ids}")
+                    return False
+            
+            # Set the selected models
+            self._selected_reasoning_model = reasoning_model
+            self._selected_tool_execution_model = tool_execution_model
+            
+            logger.info(f"[AgentKernel] Model selection updated: reasoning={reasoning_model}, tool_execution={tool_execution_model}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[AgentKernel] Failed to set model selection: {e}")
+            return False
+    
+    def get_model_selection(self) -> Dict[str, Optional[str]]:
+        """
+        Get current model selection.
+        
+        Returns:
+            Dictionary with reasoning_model and tool_execution_model keys
+        """
+        return {
+            "reasoning_model": self._selected_reasoning_model,
+            "tool_execution_model": self._selected_tool_execution_model
+        }
+    
+    def set_internet_access(self, enabled: bool) -> None:
+        """
+        Enable or disable agent internet access.
+        
+        This controls whether the agent can use web search and internet-based tools.
+        It does NOT affect application connectivity to VPS or OpenAI services.
+        
+        Args:
+            enabled: True to enable internet access, False to disable
+        """
+        self._internet_access_enabled = enabled
+        logger.info(f"[AgentKernel] Agent internet access {'enabled' if enabled else 'disabled'}")
+        logger.info("[AgentKernel] Note: This controls agent web search tools, not application connectivity")
+    
+    def get_internet_access(self) -> bool:
+        """
+        Get current internet access setting.
+        
+        Returns:
+            True if internet access is enabled, False otherwise
+        """
+        return self._internet_access_enabled
 
 
 # Singleton instance management

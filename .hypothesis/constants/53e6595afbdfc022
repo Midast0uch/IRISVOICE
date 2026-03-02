@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\quantization\googlenet.py
-# hypothesis_version: 6.151.9
-
-[1.498, 12.618, 69.826, 89.404, 224, 6624904, 'ImageNet-1K', 'QuantizableGoogLeNet', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'aux_logits', 'backend', 'bn', 'categories', 'conv', 'fbgemm', 'googlenet', 'init_weights', 'min_size', 'num_classes', 'num_params', 'pretrained', 'quantize', 'quantized_googlenet', 'recipe', 'relu', 'transform_input', 'unquantized']

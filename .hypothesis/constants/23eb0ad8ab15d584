@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\transforms\autoaugment.py
-# hypothesis_version: 6.151.9
-
-[-1.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99, 1.0, 3.0, 30.0, 32.0, 135.0, 150.0, 255.0, 331.0, 'AugMix', 'AutoAugment', 'AutoAugmentPolicy', 'AutoContrast', 'Brightness', 'Color', 'Contrast', 'Equalize', 'Identity', 'Invert', 'Posterize', 'RandAugment', 'Rotate', 'Sharpness', 'ShearX', 'ShearY', 'Solarize', 'TranslateX', 'TranslateY', 'TrivialAugmentWide', 'cifar10', 'imagenet', 'svhn']

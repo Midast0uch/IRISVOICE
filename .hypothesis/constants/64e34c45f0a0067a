@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\distributed\_composable\checkpoint_activation.py
-# hypothesis_version: 6.151.9
-
-[',', 'context_fn', 'debug', 'determinism_check', 'early_stop', 'preserve_rng_state', 'use_reentrant']

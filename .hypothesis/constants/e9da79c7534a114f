@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\huggingface_hub\utils\_http.py
-# hypothesis_version: 6.151.9
-
-[60.0, 100, 400, 401, 403, 416, 429, 500, 502, 503, 504, 1000, 1000000, '\n\nBad request:', ',', '-H', '-X', '-d', '.', '/', ';', '<TOKEN>', '<streaming body>', 'Amz CF ID', 'Amzn Trace ID', 'Content-Type', 'Content-length', 'EntryNotFound', 'GatedRepo', 'Range', 'RepoNotFound', 'Request ID', 'RevisionNotFound', 'Send: %s', 'X-Amzn-Trace-Id', 'X-Error-Code', 'X-Error-Message', 'X-HF-Warning', 'authorization', 'curl', 'data', 'error', 'errors', 'html', 'ignore', 'message', 'q', 'r', 'ratelimit', 'ratelimit-policy', 'register_at_fork', 'request', 'resource_type', 'response', 't', 'utf-8', 'w', 'x-amz-cf-id', 'x-request-id']

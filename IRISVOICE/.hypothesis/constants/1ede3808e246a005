@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\librosa\effects.py
-# hypothesis_version: 6.151.9
-
-[0.97, 1.0, 2.0, 512, 2048, 'constant', 'hann', 'harmonic', 'hop_length', 'hpss', 'n_fft', 'percussive', 'pitch_shift', 'remix', 'soxr_hq', 'split', 'time_stretch', 'trim']

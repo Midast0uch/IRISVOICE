@@ -24,14 +24,18 @@ const loadOutputDevices = async () => {
 }
 
 // Mini node definitions for each subnode
-// Keys must match subnode IDs from hexagonal-control-center.tsx SUB_NODES
+// Keys must match subnode IDs from navigation-ids.ts SUB_NODE_IDS
 
 export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
-  // Voice category subnodes
+  // ============================================================================
+  // VOICE CATEGORY (6 Cards)
+  // ============================================================================
+
+  // input section - microphone-card and wake-word-card
   input: [
     {
-      id: 'input-device',
-      label: 'Input Device',
+      id: 'microphone-card',
+      label: 'Microphone',
       icon: 'Mic',
       fields: [
         {
@@ -40,53 +44,53 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
           label: 'Device',
           loadOptions: loadInputDevices,
           defaultValue: 'Default'
-        }
-      ]
-    },
-    {
-      id: 'input-sensitivity',
-      label: 'Sensitivity',
-      icon: 'Volume2',
-      fields: [
+        },
         {
-          id: 'input_sensitivity',
+          id: 'input_volume',
           type: 'slider',
-          label: 'Sensitivity',
+          label: 'Input Volume',
           min: 0,
           max: 100,
           unit: '%',
-          defaultValue: 50
+          defaultValue: 75
         }
       ]
     },
     {
-      id: 'noise-gate',
-      label: 'Noise Gate',
-      icon: 'Minus',
+      id: 'wake-word-card',
+      label: 'Wake Word',
+      icon: 'Mic',
       fields: [
         {
-          id: 'noise_gate',
+          id: 'wake_word_enabled',
           type: 'toggle',
-          label: 'Enable',
-          defaultValue: false
+          label: 'Wake Word Enabled',
+          defaultValue: true
         },
         {
-          id: 'gate_threshold',
+          id: 'wake_word_sensitivity',
           type: 'slider',
-          label: 'Threshold',
-          min: -60,
-          max: 0,
-          unit: 'dB',
-          defaultValue: -30
+          label: 'Sensitivity',
+          min: 1,
+          max: 10,
+          defaultValue: 5
+        },
+        {
+          id: 'voice_profile',
+          type: 'dropdown',
+          label: 'Voice Profile',
+          options: ['Default', 'Personal', 'Professional'],
+          defaultValue: 'Default'
         }
       ]
     }
   ],
 
+  // output section - speaker-card and speech-card
   output: [
     {
-      id: 'output-device',
-      label: 'Output Device',
+      id: 'speaker-card',
+      label: 'Speaker',
       icon: 'Speaker',
       fields: [
         {
@@ -95,191 +99,229 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
           label: 'Device',
           loadOptions: loadOutputDevices,
           defaultValue: 'Default'
-        }
-      ]
-    },
-    {
-      id: 'output-volume',
-      label: 'Volume',
-      icon: 'Volume',
-      fields: [
+        },
         {
           id: 'output_volume',
           type: 'slider',
-          label: 'Volume',
+          label: 'Output Volume',
           min: 0,
           max: 100,
           unit: '%',
           defaultValue: 75
         }
       ]
-    }
-  ],
-
-  processing: [
-    {
-      id: 'noise-reduction',
-      label: 'Noise Reduction',
-      icon: 'Minus',
-      fields: [
-        {
-          id: 'voice_engine',
-          type: 'toggle',
-          label: 'Voice Engine',
-          defaultValue: false
-        },
-        {
-          id: 'noise_reduction',
-          type: 'toggle',
-          label: 'Enable',
-          defaultValue: true
-        }
-      ]
     },
     {
-      id: 'echo-cancellation',
-      label: 'Echo Cancellation',
-      icon: 'X',
-      fields: [
-        {
-          id: 'echo_cancellation',
-          type: 'toggle',
-          label: 'Enable',
-          defaultValue: true
-        }
-      ]
-    }
-  ],
-
-  // Agent category subnodes
-  identity: [
-    {
-      id: 'agent-name',
-      label: 'Agent Name',
-      icon: 'User',
-      fields: [
-        {
-          id: 'agent_name',
-          type: 'text',
-          label: 'Name',
-          placeholder: 'Enter agent name',
-          defaultValue: 'Iris'
-        }
-      ]
-    },
-    {
-      id: 'personality-type',
-      label: 'Personality',
-      icon: 'Smile',
-      fields: [
-        {
-          id: 'personality_type',
-          type: 'dropdown',
-          label: 'Type',
-          options: ['Professional', 'Friendly', 'Concise', 'Creative', 'Technical'],
-          defaultValue: 'Friendly'
-        }
-      ]
-    },
-    {
-      id: 'response-style',
-      label: 'Response Style',
-      icon: 'MessageCircle',
-      fields: [
-        {
-          id: 'response_style',
-          type: 'dropdown',
-          label: 'Style',
-          options: ['Brief', 'Balanced', 'Detailed', 'Comprehensive'],
-          defaultValue: 'Balanced'
-        }
-      ]
-    }
-  ],
-
-  wake: [
-    {
-      id: 'wake-word',
-      label: 'Wake Word',
-      icon: 'Mic',
-      fields: [
-        {
-          id: 'wake_phrase',
-          type: 'dropdown',
-          label: 'Phrase',
-          options: ['Hey Computer', 'Jarvis', 'Alexa', 'Hey Mycroft', 'Hey Jarvis'],
-          defaultValue: 'Hey Computer'
-        }
-      ]
-    },
-    {
-      id: 'voice-trigger',
-      label: 'Voice Trigger',
-      icon: 'Activity',
-      fields: [
-        {
-          id: 'voice_trigger_enabled',
-          type: 'toggle',
-          label: 'Enabled',
-          defaultValue: true
-        }
-      ]
-    }
-  ],
-
-  speech: [
-    {
-      id: 'tts-voice',
-      label: 'TTS Voice',
+      id: 'speech-card',
+      label: 'Speech',
       icon: 'Volume2',
       fields: [
+        {
+          id: 'tts_enabled',
+          type: 'toggle',
+          label: 'TTS Enabled',
+          defaultValue: true
+        },
         {
           id: 'tts_voice',
           type: 'dropdown',
           label: 'Voice',
           options: ['Nova', 'Alloy', 'Echo', 'Fable', 'Onyx', 'Shimmer'],
           defaultValue: 'Nova'
-        }
-      ]
-    },
-    {
-      id: 'tts-speed',
-      label: 'Speed',
-      icon: 'Zap',
-      fields: [
+        },
         {
           id: 'tts_speed',
           type: 'slider',
           label: 'Speed',
           min: 0.5,
           max: 2,
+          step: 0.1,
           defaultValue: 1
         }
       ]
     }
   ],
 
+  // processing section - voice-engine-card
+  processing: [
+    {
+      id: 'voice-engine-card',
+      label: 'Voice Engine',
+      icon: 'Waves',
+      fields: [
+        {
+          id: 'stt_engine',
+          type: 'dropdown',
+          label: 'STT Engine',
+          options: ['Whisper', 'Local', 'Cloud'],
+          defaultValue: 'Whisper'
+        },
+        {
+          id: 'voice_activity_detection',
+          type: 'toggle',
+          label: 'Voice Activity Detection',
+          defaultValue: true
+        },
+        {
+          id: 'noise_suppression',
+          type: 'toggle',
+          label: 'Noise Suppression',
+          defaultValue: true
+        }
+      ]
+    }
+  ],
+
+  // model section - audio-model-card
+  model: [
+    {
+      id: 'audio-model-card',
+      label: 'Audio Model',
+      icon: 'Brain',
+      fields: [
+        {
+          id: 'audio_model',
+          type: 'dropdown',
+          label: 'Model',
+          options: ['Whisper Tiny', 'Whisper Base', 'Whisper Small', 'Whisper Medium', 'Whisper Large'],
+          defaultValue: 'Whisper Base'
+        },
+        {
+          id: 'audio_language',
+          type: 'dropdown',
+          label: 'Language',
+          options: ['English', 'Spanish', 'French', 'German', 'Chinese', 'Japanese', 'Auto-detect'],
+          defaultValue: 'English'
+        }
+      ]
+    }
+  ],
+
+  // ============================================================================
+  // AGENT CATEGORY (4 Cards - removed wake/speech)
+  // ============================================================================
+
+  // model_selection section - models-card
+  model_selection: [
+    {
+      id: 'models-card',
+      label: 'Models',
+      icon: 'BrainCircuit',
+      fields: [
+        {
+          id: 'model_provider',
+          type: 'dropdown',
+          label: 'Provider',
+          options: ['OpenAI', 'Anthropic', 'Local', 'Custom'],
+          defaultValue: 'OpenAI'
+        },
+        {
+          id: 'model_name',
+          type: 'dropdown',
+          label: 'Model',
+          options: [], // Will be populated dynamically based on provider
+          defaultValue: ''
+        },
+        {
+          id: 'api_key',
+          type: 'text',
+          label: 'API Key',
+          placeholder: 'Enter API key...',
+          defaultValue: ''
+        }
+      ]
+    }
+  ],
+
+  // inference_mode section - inference-card
+  inference_mode: [
+    {
+      id: 'inference-card',
+      label: 'Inference',
+      icon: 'Cpu',
+      fields: [
+        {
+          id: 'mode',
+          type: 'dropdown',
+          label: 'Mode',
+          options: ['Fast', 'Balanced', 'Quality'],
+          defaultValue: 'Balanced'
+        },
+        {
+          id: 'temperature',
+          type: 'slider',
+          label: 'Temperature',
+          min: 0,
+          max: 2,
+          step: 0.1,
+          defaultValue: 0.7
+        },
+        {
+          id: 'max_tokens',
+          type: 'slider',
+          label: 'Max Tokens',
+          min: 256,
+          max: 8192,
+          step: 256,
+          defaultValue: 2048
+        }
+      ]
+    }
+  ],
+
+  // identity section - personality-card
+  identity: [
+    {
+      id: 'personality-card',
+      label: 'Personality',
+      icon: 'User',
+      fields: [
+        {
+          id: 'agent_name',
+          type: 'text',
+          label: 'Agent Name',
+          placeholder: 'Enter agent name...',
+          defaultValue: 'Iris'
+        },
+        {
+          id: 'persona',
+          type: 'dropdown',
+          label: 'Persona',
+          options: ['Professional', 'Friendly', 'Concise', 'Creative', 'Technical'],
+          defaultValue: 'Friendly'
+        },
+        {
+          id: 'greeting_message',
+          type: 'text',
+          label: 'Greeting Message',
+          placeholder: 'Hello! How can I help you?',
+          defaultValue: 'Hello! How can I help you?'
+        }
+      ]
+    }
+  ],
+
+  // memory section - memory-card
   memory: [
     {
-      id: 'context-window',
-      label: 'Context Window',
-      icon: 'Layers',
+      id: 'memory-card',
+      label: 'Memory',
+      icon: 'Database',
       fields: [
+        {
+          id: 'memory_enabled',
+          type: 'toggle',
+          label: 'Memory Enabled',
+          defaultValue: true
+        },
         {
           id: 'context_window',
           type: 'slider',
-          label: 'Messages',
+          label: 'Context Window',
           min: 5,
           max: 50,
           defaultValue: 10
-        }
-      ]
-    },
-    {
-      id: 'memory-persistence',
-      label: 'Persistence',
-      icon: 'Save',
-      fields: [
+        },
         {
           id: 'memory_persistence',
           type: 'toggle',
@@ -290,108 +332,51 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
     }
   ],
 
-  // Automate category subnodes
+  // ============================================================================
+  // AUTOMATE CATEGORY (8 Cards - added extensions)
+  // ============================================================================
+
+  // tools section - tool-permissions-card
   tools: [
     {
-      id: 'tool-access',
-      label: 'Tool Access',
+      id: 'tool-permissions-card',
+      label: 'Tool Permissions',
       icon: 'Tool',
       fields: [
         {
-          id: 'tool_access',
-          type: 'toggle',
-          label: 'Enable Tools',
-          defaultValue: true
-        }
-      ]
-    },
-    {
-      id: 'web-search',
-      label: 'Web Search',
-      icon: 'Globe',
-      fields: [
+          id: 'allowed_tools',
+          type: 'dropdown',
+          label: 'Allowed Tools',
+          options: ['All', 'None', 'Custom'],
+          defaultValue: 'All'
+        },
         {
-          id: 'web_search',
+          id: 'tool_confirmations',
           type: 'toggle',
-          label: 'Allow Web Search',
-          defaultValue: false
+          label: 'Require Confirmations',
+          defaultValue: true
         }
       ]
     }
   ],
 
+  // vision section - vision-card
   vision: [
     {
-      id: 'vision-toggle',
+      id: 'vision-card',
       label: 'Vision',
       icon: 'Eye',
       fields: [
         {
           id: 'vision_enabled',
           type: 'toggle',
-          label: 'Enable Vision',
-          defaultValue: false
-        }
-      ]
-    },
-    {
-      id: 'screen-context',
-      label: 'Screen Context',
-      icon: 'Monitor',
-      fields: [
-        {
-          id: 'screen_context',
-          type: 'toggle',
-          label: 'Include in Chat',
-          defaultValue: true
-        }
-      ]
-    },
-    {
-      id: 'proactive-monitor',
-      label: 'Proactive Mode',
-      icon: 'Activity',
-      fields: [
-        {
-          id: 'proactive_monitor',
-          type: 'toggle',
-          label: 'Screen Monitoring',
+          label: 'Vision Enabled',
           defaultValue: false
         },
         {
-          id: 'monitor_interval',
-          type: 'slider',
-          label: 'Interval',
-          min: 5,
-          max: 120,
-          unit: 's',
-          defaultValue: 30
-        }
-      ]
-    },
-    {
-      id: 'vision-endpoint',
-      label: 'Ollama Endpoint',
-      icon: 'Link',
-      fields: [
-        {
-          id: 'ollama_endpoint',
-          type: 'text',
-          label: 'Endpoint URL',
-          placeholder: 'http://localhost:11434',
-          defaultValue: 'http://localhost:11434'
-        }
-      ]
-    },
-    {
-      id: 'vision-model',
-      label: 'Vision Model',
-      icon: 'Brain',
-      fields: [
-        {
           id: 'vision_model',
           type: 'dropdown',
-          label: 'Model',
+          label: 'Vision Model',
           options: ['minicpm-o4.5', 'llava', 'bakllava'],
           defaultValue: 'minicpm-o4.5'
         }
@@ -399,429 +384,454 @@ export const SUB_NODES_WITH_MINI: Record<string, MiniNode[]> = {
     }
   ],
 
+  // workflows section - workflows-card (action buttons)
   workflows: [
     {
-      id: 'auto-start',
-      label: 'Auto Start',
-      icon: 'Play',
+      id: 'workflows-card',
+      label: 'Workflows',
+      icon: 'GitBranch',
+      fields: [
+        {
+          id: 'workflow_1',
+          type: 'custom',
+          label: 'Workflow 1'
+        },
+        {
+          id: 'workflow_2',
+          type: 'custom',
+          label: 'Workflow 2'
+        },
+        {
+          id: 'workflow_3',
+          type: 'custom',
+          label: 'Workflow 3'
+        }
+      ]
+    }
+  ],
+
+  // shortcuts section - shortcuts-card (action buttons)
+  shortcuts: [
+    {
+      id: 'shortcuts-card',
+      label: 'Shortcuts',
+      icon: 'Keyboard',
+      fields: [
+        {
+          id: 'shortcut_1',
+          type: 'custom',
+          label: 'Shortcut 1'
+        },
+        {
+          id: 'shortcut_2',
+          type: 'custom',
+          label: 'Shortcut 2'
+        },
+        {
+          id: 'shortcut_3',
+          type: 'custom',
+          label: 'Shortcut 3'
+        }
+      ]
+    }
+  ],
+
+  // gui section - gui-card
+  gui: [
+    {
+      id: 'gui-card',
+      label: 'GUI',
+      icon: 'Monitor',
+      fields: [
+        {
+          id: 'gui_enabled',
+          type: 'toggle',
+          label: 'GUI Automation Enabled',
+          defaultValue: false
+        },
+        {
+          id: 'gui_precision',
+          type: 'dropdown',
+          label: 'Precision',
+          options: ['Low', 'Medium', 'High'],
+          defaultValue: 'Medium'
+        }
+      ]
+    }
+  ],
+
+  // extensions section - mcp-servers-card, skills-card, saved-workflows-card (Phase 2 stubs)
+  extensions: [
+    {
+      id: 'mcp-servers-card',
+      label: 'MCP Servers',
+      icon: 'Server',
+      fields: [
+        {
+          id: 'mcp_server_1',
+          type: 'custom',
+          label: 'MCP Server 1'
+        },
+        {
+          id: 'mcp_server_2',
+          type: 'custom',
+          label: 'MCP Server 2'
+        }
+      ]
+    },
+    {
+      id: 'skills-card',
+      label: 'Skills',
+      icon: 'Sparkles',
+      fields: [
+        {
+          id: 'skill_1',
+          type: 'custom',
+          label: 'Skill 1'
+        },
+        {
+          id: 'skill_2',
+          type: 'custom',
+          label: 'Skill 2'
+        }
+      ]
+    },
+    {
+      id: 'saved-workflows-card',
+      label: 'Saved Workflows',
+      icon: 'Workflow',
+      fields: [
+        {
+          id: 'saved_workflow_1',
+          type: 'custom',
+          label: 'Saved Workflow 1'
+        },
+        {
+          id: 'saved_workflow_2',
+          type: 'custom',
+          label: 'Saved Workflow 2'
+        }
+      ]
+    }
+  ],
+
+  // ============================================================================
+  // SYSTEM CATEGORY (4 Cards)
+  // ============================================================================
+
+  // power section - power-card
+  power: [
+    {
+      id: 'power-card',
+      label: 'Power',
+      icon: 'Power',
       fields: [
         {
           id: 'auto_start',
           type: 'toggle',
-          label: 'Start on Boot',
+          label: 'Auto Start on Boot',
           defaultValue: false
-        }
-      ]
-    },
-    {
-      id: 'auto-listen',
-      label: 'Auto Listen',
-      icon: 'Headphones',
-      fields: [
+        },
         {
-          id: 'auto_listen',
+          id: 'minimize_to_tray',
           type: 'toggle',
-          label: 'Listen on Start',
+          label: 'Minimize to Tray',
           defaultValue: true
         }
       ]
     }
   ],
 
-  favorites: [
-    {
-      id: 'favorite-commands',
-      label: 'Favorites',
-      icon: 'Star',
-      fields: [
-        {
-          id: 'favorite_commands',
-          type: 'text',
-          label: 'Pinned Actions',
-          placeholder: 'View favorites...',
-          defaultValue: ''
-        }
-      ]
-    }
-  ],
-
-  shortcuts: [
-    {
-      id: 'global-hotkey',
-      label: 'Global Hotkey',
-      icon: 'Keyboard',
-      fields: [
-        {
-          id: 'global_hotkey',
-          type: 'text',
-          label: 'Shortcut',
-          placeholder: 'Ctrl+Space',
-          defaultValue: 'Ctrl+Space'
-        }
-      ]
-    },
-    {
-      id: 'toggle-listen',
-      label: 'Toggle Listen',
-      icon: 'Mic',
-      fields: [
-        {
-          id: 'toggle_listen_key',
-          type: 'text',
-          label: 'Shortcut',
-          placeholder: 'Ctrl+L',
-          defaultValue: 'Ctrl+L'
-        }
-      ]
-    }
-  ],
-
-  // System category subnodes
-  power: [
-    {
-      id: 'power-profile',
-      label: 'Power Profile',
-      icon: 'Battery',
-      fields: [
-        {
-          id: 'power_profile',
-          type: 'dropdown',
-          label: 'Profile',
-          options: ['Balanced', 'Performance', 'Battery'],
-          defaultValue: 'Balanced'
-        }
-      ]
-    }
-  ],
-
+  // display section - window-card
   display: [
     {
-      id: 'brightness',
-      label: 'Brightness',
-      icon: 'Sun',
+      id: 'window-card',
+      label: 'Window',
+      icon: 'Monitor',
       fields: [
         {
-          id: 'brightness',
+          id: 'window_opacity',
           type: 'slider',
-          label: 'Level',
-          min: 0,
+          label: 'Window Opacity',
+          min: 20,
           max: 100,
           unit: '%',
-          defaultValue: 80
-        }
-      ]
-    },
-    {
-      id: 'theme',
-      label: 'Theme',
-      icon: 'Palette',
-      fields: [
+          defaultValue: 95
+        },
         {
-          id: 'theme',
-          type: 'dropdown',
-          label: 'Color Theme',
-          options: ['Dark', 'Light', 'Auto'],
-          defaultValue: 'Dark'
-        }
-      ]
-    },
-    {
-      id: 'accent-color',
-      label: 'Accent',
-      icon: 'Droplet',
-      fields: [
-        {
-          id: 'accent_color',
-          type: 'color',
-          label: 'Accent Color',
-          defaultValue: '#00D4FF'
+          id: 'always_on_top',
+          type: 'toggle',
+          label: 'Always on Top',
+          defaultValue: false
         }
       ]
     }
   ],
 
+  // storage section - storage-card
   storage: [
     {
-      id: 'disk-usage',
-      label: 'Disk Usage',
-      icon: 'Database',
+      id: 'storage-card',
+      label: 'Storage',
+      icon: 'HardDrive',
       fields: [
         {
-          id: 'disk_usage',
-          type: 'text',
-          label: 'Storage',
-          placeholder: 'View usage...',
-          defaultValue: ''
-        }
-      ]
-    }
-  ],
-
-  network: [
-    {
-      id: 'wifi-toggle',
-      label: 'WiFi',
-      icon: 'Wifi',
-      fields: [
-        {
-          id: 'wifi_toggle',
-          type: 'toggle',
-          label: 'Enabled',
-          defaultValue: true
-        }
-      ]
-    }
-  ],
-
-  // Customize category subnodes
-  theme: [
-    {
-      id: 'theme-mode',
-      label: 'Theme Mode',
-      icon: 'Palette',
-      fields: [
-        {
-          id: 'section_base',
-          type: 'section',
-          label: 'Theme Engine'
-        },
-        {
-          id: 'active_theme',
-          type: 'dropdown',
-          label: 'Active Theme',
-          options: ['Aether', 'Ember', 'Aurum', 'Verdant'],
-          defaultValue: 'Aether'
-        },
-        {
-          id: 'reset_to_defaults',
-          type: 'custom',
-          label: 'Reset to Defaults'
-        },
-        {
-          id: 'section_brand',
-          type: 'section',
-          label: 'Brand Identity'
-        },
-        {
-          id: 'brand_hue',
+          id: 'cache_size',
           type: 'slider',
-          label: 'Hue',
-          min: 0,
-          max: 360,
-          defaultValue: 210
+          label: 'Cache Size',
+          min: 100,
+          max: 5000,
+          unit: 'MB',
+          defaultValue: 500
         },
-        {
-          id: 'brand_saturation',
-          type: 'slider',
-          label: 'Saturation',
-          min: 0,
-          max: 100,
-          unit: '%',
-          defaultValue: 40
-        },
-        {
-          id: 'brand_lightness',
-          type: 'slider',
-          label: 'Lightness',
-          min: 0,
-          max: 100,
-          unit: '%',
-          defaultValue: 55
-        },
-        {
-          id: 'section_plate',
-          type: 'section',
-          label: 'Base Plate'
-        },
-        {
-          id: 'base_plate_hue',
-          type: 'slider',
-          label: 'Hue',
-          min: 0,
-          max: 360,
-          defaultValue: 220
-        },
-        {
-          id: 'base_plate_saturation',
-          type: 'slider',
-          label: 'Saturation',
-          min: 0,
-          max: 100,
-          unit: '%',
-          defaultValue: 15
-        },
-        {
-          id: 'base_plate_lightness',
-          type: 'slider',
-          label: 'Lightness',
-          min: 0,
-          max: 100,
-          unit: '%',
-          defaultValue: 12
-        }
-      ]
-    },
-    {
-      id: 'orb-style',
-      label: 'Orb Style',
-      icon: 'Circle',
-      fields: [
-        {
-          id: 'orb_style',
-          type: 'dropdown',
-          label: 'Style',
-          options: ['Glass', 'Solid', 'Gradient'],
-          defaultValue: 'Glass'
-        }
-      ]
-    }
-  ],
-
-  startup: [
-    {
-      id: 'launch-startup',
-      label: 'Launch at Startup',
-      icon: 'Power',
-      fields: [
-        {
-          id: 'launch_startup',
-          type: 'toggle',
-          label: 'Enable',
-          defaultValue: false
-        }
-      ]
-    }
-  ],
-
-  behavior: [
-    {
-      id: 'confirm-destructive',
-      label: 'Confirm Actions',
-      icon: 'Shield',
-      fields: [
-        {
-          id: 'confirm_destructive',
-          type: 'toggle',
-          label: 'Confirm Destructive',
-          defaultValue: true
-        }
-      ]
-    }
-  ],
-
-  notifications: [
-    {
-      id: 'dnd-toggle',
-      label: 'Do Not Disturb',
-      icon: 'BellOff',
-      fields: [
-        {
-          id: 'dnd_toggle',
-          type: 'toggle',
-          label: 'Enabled',
-          defaultValue: false
-        }
-      ]
-    }
-  ],
-
-  // Monitor category subnodes
-  analytics: [
-    {
-      id: 'token-usage',
-      label: 'Token Usage',
-      icon: 'BarChart',
-      fields: [
-        {
-          id: 'token_usage',
-          type: 'text',
-          label: 'Usage',
-          placeholder: 'View stats...',
-          defaultValue: ''
-        }
-      ]
-    },
-    {
-      id: 'performance-monitor',
-      label: 'Performance',
-      icon: 'Activity',
-      fields: [
-        {
-          id: 'performance_monitor',
-          type: 'toggle',
-          label: 'Show FPS',
-          defaultValue: false
-        }
-      ]
-    }
-  ],
-
-  logs: [
-    {
-      id: 'log-level',
-      label: 'Log Level',
-      icon: 'FileText',
-      fields: [
-        {
-          id: 'log_level',
-          type: 'dropdown',
-          label: 'Level',
-          options: ['Debug', 'Info', 'Warning', 'Error'],
-          defaultValue: 'Info'
-        }
-      ]
-    },
-    {
-      id: 'log-retention',
-      label: 'Retention',
-      icon: 'Clock',
-      fields: [
         {
           id: 'log_retention',
           type: 'slider',
-          label: 'Days',
+          label: 'Log Retention',
           min: 1,
           max: 30,
+          unit: 'days',
           defaultValue: 7
         }
       ]
     }
   ],
 
-  diagnostics: [
+  // network section - connection-card
+  network: [
     {
-      id: 'health-check',
-      label: 'Health Check',
-      icon: 'HeartPulse',
+      id: 'connection-card',
+      label: 'Connection',
+      icon: 'Wifi',
       fields: [
         {
-          id: 'health_check',
+          id: 'websocket_url',
           type: 'text',
-          label: 'Status',
-          placeholder: 'Run check...',
-          defaultValue: ''
+          label: 'WebSocket URL',
+          placeholder: 'ws://localhost:8000/ws',
+          defaultValue: 'ws://localhost:8000/ws'
+        },
+        {
+          id: 'connection_timeout',
+          type: 'slider',
+          label: 'Timeout',
+          min: 5,
+          max: 60,
+          unit: 's',
+          defaultValue: 30
         }
       ]
     }
   ],
 
+  // ============================================================================
+  // CUSTOMIZE CATEGORY (4 Cards)
+  // ============================================================================
+
+  // theme section - theme-card (local only)
+  theme: [
+    {
+      id: 'theme-card',
+      label: 'Theme',
+      icon: 'Palette',
+      fields: [
+        {
+          id: 'theme_mode',
+          type: 'dropdown',
+          label: 'Theme Mode',
+          options: ['Dark', 'Light', 'Auto'],
+          defaultValue: 'Dark'
+        },
+        {
+          id: 'accent_color',
+          type: 'color',
+          label: 'Accent Color',
+          defaultValue: '#00D4FF'
+        },
+        {
+          id: 'font_size',
+          type: 'slider',
+          label: 'Font Size',
+          min: 12,
+          max: 24,
+          unit: 'px',
+          defaultValue: 16
+        }
+      ]
+    }
+  ],
+
+  // startup section - startup-card
+  startup: [
+    {
+      id: 'startup-card',
+      label: 'Startup',
+      icon: 'Rocket',
+      fields: [
+        {
+          id: 'startup_page',
+          type: 'dropdown',
+          label: 'Startup Page',
+          options: ['Dashboard', 'Chat', 'Settings'],
+          defaultValue: 'Dashboard'
+        },
+        {
+          id: 'startup_behavior',
+          type: 'dropdown',
+          label: 'Startup Behavior',
+          options: ['Normal', 'Minimized', 'Fullscreen'],
+          defaultValue: 'Normal'
+        }
+      ]
+    }
+  ],
+
+  // behavior section - behavior-card
+  behavior: [
+    {
+      id: 'behavior-card',
+      label: 'Behavior',
+      icon: 'Sliders',
+      fields: [
+        {
+          id: 'confirm_exit',
+          type: 'toggle',
+          label: 'Confirm on Exit',
+          defaultValue: true
+        },
+        {
+          id: 'auto_save',
+          type: 'toggle',
+          label: 'Auto Save',
+          defaultValue: true
+        }
+      ]
+    }
+  ],
+
+  // notifications section - notifications-card
+  notifications: [
+    {
+      id: 'notifications-card',
+      label: 'Notifications',
+      icon: 'Bell',
+      fields: [
+        {
+          id: 'notifications_enabled',
+          type: 'toggle',
+          label: 'Notifications Enabled',
+          defaultValue: true
+        },
+        {
+          id: 'sound_effects',
+          type: 'toggle',
+          label: 'Sound Effects',
+          defaultValue: true
+        }
+      ]
+    }
+  ],
+
+  // ============================================================================
+  // MONITOR CATEGORY (4 Cards)
+  // ============================================================================
+
+  // analytics section - analytics-card (display-only action buttons)
+  analytics: [
+    {
+      id: 'analytics-card',
+      label: 'Analytics',
+      icon: 'BarChart3',
+      fields: [
+        {
+          id: 'view_analytics',
+          type: 'custom',
+          label: 'View Analytics'
+        },
+        {
+          id: 'export_report',
+          type: 'custom',
+          label: 'Export Report'
+        }
+      ]
+    }
+  ],
+
+  // logs section - logs-card (action buttons)
+  logs: [
+    {
+      id: 'logs-card',
+      label: 'Logs',
+      icon: 'FileText',
+      fields: [
+        {
+          id: 'view_logs',
+          type: 'custom',
+          label: 'View Logs'
+        },
+        {
+          id: 'clear_logs',
+          type: 'custom',
+          label: 'Clear Logs'
+        }
+      ]
+    }
+  ],
+
+  // diagnostics section - diagnostics-card (action buttons)
+  diagnostics: [
+    {
+      id: 'diagnostics-card',
+      label: 'Diagnostics',
+      icon: 'Stethoscope',
+      fields: [
+        {
+          id: 'run_diagnostics',
+          type: 'custom',
+          label: 'Run Diagnostics'
+        },
+        {
+          id: 'system_info',
+          type: 'custom',
+          label: 'System Info'
+        }
+      ]
+    }
+  ],
+
+  // updates section - updates-card (action buttons)
   updates: [
     {
-      id: 'update-channel',
-      label: 'Update Channel',
+      id: 'updates-card',
+      label: 'Updates',
       icon: 'RefreshCw',
       fields: [
         {
-          id: 'update_channel',
-          type: 'dropdown',
-          label: 'Channel',
-          options: ['Stable', 'Beta', 'Nightly'],
-          defaultValue: 'Stable'
+          id: 'check_updates',
+          type: 'custom',
+          label: 'Check for Updates'
+        },
+        {
+          id: 'install_update',
+          type: 'custom',
+          label: 'Install Update'
         }
       ]
     }
   ]
 }
+
+// Flat mapping of all card IDs to their mini node data
+// This allows direct lookup by card ID (e.g., 'microphone-card')
+export const MINI_NODES_DATA: Record<string, MiniNode> = Object.entries(SUB_NODES_WITH_MINI).reduce(
+  (acc, [, miniNodes]) => {
+    miniNodes.forEach((miniNode) => {
+      acc[miniNode.id] = miniNode
+    })
+    return acc
+  },
+  {} as Record<string, MiniNode>
+)
 
 // Helper function to get mini nodes for a subnode
 export function getMiniNodesForSubnode(subnodeId: string): MiniNode[] {

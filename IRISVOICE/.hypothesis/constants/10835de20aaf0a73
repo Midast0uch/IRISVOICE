@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\audioread\ffdec.py
-# hypothesis_version: 6.151.9
-
-[10.0, 1024, 134217728, '(\\d+) hz', '(\\d+)\\.?(\\d)?', '-', '-f', '-i', '-version', '.', 'audio:', 'avconv', 'duration:', 'ffmpeg', 'ffmpeg output: {}', 'file not found', 'hz, ([^,]+),', 'ignore', 'invalid data found', 'no such file', 'proc', 's16le', 'stderr_reader', 'stdout_reader', 'stereo', 'utf8', 'win', 'win32']

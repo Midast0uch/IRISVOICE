@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from .personality import get_personality_engine
 from .memory import get_conversation_memory
+from backend.vision.vision_service import get_vision_service, VisionService
 
 
 class OmniConversationManager:
@@ -57,23 +58,20 @@ class OmniConversationManager:
         self.personality = get_personality_engine()
         self.memory = get_conversation_memory()
 
-        # Lazy-loaded clients
-        self._minicpm_client = None
+        # Use shared VisionService (lazy loading, user-controlled)
+        self._vision_service: VisionService = get_vision_service()
+        
+        # Lazy-loaded screen capture
         self._screen_capture = None
 
-    def _get_minicpm_client(self):
-        """Lazy-load MiniCPMClient."""
-        if self._minicpm_client is None:
-            try:
-                from backend.vision import MiniCPMClient
+    def _get_vision_service(self) -> VisionService:
+        """Get the shared VisionService instance."""
+        return self._vision_service
 
-                self._minicpm_client = MiniCPMClient(
-                    endpoint=self.config.get("ollama_endpoint"),
-                    model=self.config.get("model"),
-                )
-            except Exception as e:
-                logger.error(f"[OmniConversation] Failed to create MiniCPM client: {e}")
-        return self._minicpm_client
+    def _is_vision_available(self) -> bool:
+        """Check if vision is enabled and available."""
+        status = self._vision_service.get_status()
+        return status.get("status") == "enabled" and status.get("is_available", False)
 
     def _get_screen_capture(self):
         """Lazy-load ScreenCapture."""
@@ -107,11 +105,9 @@ class OmniConversationManager:
         if not user_text:
             return None
 
-        # --- Try MiniCPM-o with vision ---
-        if not force_text_only and self.config.get("vision_enabled", True):
-            minicpm = self._get_minicpm_client()
-            if minicpm and minicpm.check_availability():
-                return self._generate_with_vision(user_text, screenshot_b64)
+        # --- Try VisionService with vision (only if user has enabled it) ---
+        if not force_text_only and self._is_vision_available():
+            return self._generate_with_vision(user_text, screenshot_b64)
 
         # --- Fallback: LM Studio (text-only) ---
         logger.info("[OmniConversation] Falling back to LM Studio text-only")
@@ -122,11 +118,9 @@ class OmniConversationManager:
         user_text: str,
         screenshot_b64: Optional[str] = None,
     ) -> Optional[str]:
-        """Generate response via MiniCPM-o with optional screen context."""
-        minicpm = self._get_minicpm_client()
-        if not minicpm:
-            return None
-
+        """Generate response via VisionService with optional screen context."""
+        vision_service = self._get_vision_service()
+        
         # Auto-capture screenshot if enabled and not provided
         if screenshot_b64 is None and self.config.get("screen_context_enabled", True):
             capture = self._get_screen_capture()
@@ -137,8 +131,8 @@ class OmniConversationManager:
                     logger.error(f"[OmniConversation] Screen capture failed: {e}")
 
         # Build conversation history
-        history = self.memory.get_context_window(
-            self.config.get("max_context_messages", 10)
+        history = self.memory.get_context(
+            max_messages=self.config.get("max_context_messages", 10)
         )
 
         # Add personality to system prompt
@@ -155,19 +149,25 @@ class OmniConversationManager:
         messages.append({"role": "user", "content": user_text})
 
         try:
+            # Use VisionService for multimodal inference
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
             if screenshot_b64:
-                result = minicpm.chat(
-                    messages=messages,
-                    images=[screenshot_b64],
-                    temperature=self.config.get("temperature", 0.7),
+                response_text = loop.run_until_complete(
+                    vision_service.chat(
+                        messages=messages,
+                        images=[screenshot_b64],
+                        temperature=self.config.get("temperature", 0.7),
+                    )
                 )
             else:
-                result = minicpm.chat(
-                    messages=messages,
-                    temperature=self.config.get("temperature", 0.7),
+                response_text = loop.run_until_complete(
+                    vision_service.chat(
+                        messages=messages,
+                        temperature=self.config.get("temperature", 0.7),
+                    )
                 )
-
-            response_text = result.get("response", "").strip()
 
             if response_text:
                 # Store in memory
@@ -179,11 +179,11 @@ class OmniConversationManager:
                 )
                 return response_text
 
-            logger.warning("[OmniConversation] MiniCPM returned empty response")
+            logger.warning("[OmniConversation] Vision service returned empty response")
             return None
 
         except Exception as e:
-            logger.error(f"[OmniConversation] MiniCPM inference error: {e}")
+            logger.error(f"[OmniConversation] Vision service inference error: {e}")
             return None
 
     def _generate_with_lm_studio(self, user_text: str) -> Optional[str]:
@@ -191,8 +191,8 @@ class OmniConversationManager:
         import requests as req
 
         system_prompt = self.personality.get_system_prompt()
-        history = self.memory.get_context_window(
-            self.config.get("max_context_messages", 10)
+        history = self.memory.get_context(
+            max_messages=self.config.get("max_context_messages", 10)
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -243,27 +243,18 @@ class OmniConversationManager:
             if key in self.config and value is not None:
                 self.config[key] = value
 
-        # Update MiniCPM client if relevant settings changed
-        if self._minicpm_client:
-            minicpm_updates = {}
-            if "ollama_endpoint" in kwargs:
-                minicpm_updates["endpoint"] = kwargs["ollama_endpoint"]
-            if "model" in kwargs:
-                minicpm_updates["model"] = kwargs["model"]
-            if minicpm_updates:
-                self._minicpm_client.update_config(**minicpm_updates)
-
         logger.info(f"[OmniConversation] Config updated: {list(kwargs.keys())}")
 
     def get_status(self) -> Dict[str, Any]:
         """Get conversation manager status."""
-        minicpm = self._get_minicpm_client()
+        vision_status = self._vision_service.get_status()
         return {
-            "vision_enabled": self.config.get("vision_enabled", False),
+            "vision_enabled": self._is_vision_available(),
             "screen_context_enabled": self.config.get("screen_context_enabled", False),
-            "minicpm_available": minicpm.check_availability() if minicpm else False,
-            "minicpm_status": minicpm.get_status() if minicpm else None,
-            "model": self.config.get("model"),
+            "vision_service_status": vision_status.get("status"),
+            "vision_available": vision_status.get("is_available", False),
+            "model": vision_status.get("model_name"),
+            "vram_usage_mb": vision_status.get("vram_usage_mb"),
             "fallback_endpoint": self.config.get("fallback_endpoint"),
         }
 

@@ -1,67 +1,75 @@
 'use client';
 
-import { motion, useMotionValue, useSpring, useTransform } from 'framer-motion';
-import { ReactNode, useCallback } from 'react';
-import { useDashboardTheme, dashboardThemes } from '@/contexts/DashboardThemeContext';
+import { ReactNode } from 'react';
 
-interface TiltContainerProps {
+interface PerspectiveContainerProps {
   children: ReactNode;
+  perspective?: number;
   className?: string;
 }
 
-export function TiltContainer({ children, className = '' }: TiltContainerProps) {
-  const theme = useDashboardTheme();
-  const t = dashboardThemes[theme];
-
-  const x = useMotionValue(0);
-  const y = useMotionValue(0);
-
-  const mouseX = useSpring(x, { stiffness: 150, damping: 20 });
-  const mouseY = useSpring(y, { stiffness: 150, damping: 20 });
-
-  const rotateX = useTransform(mouseY, [-0.5, 0.5], [12, 2]);
-  const rotateY = useTransform(mouseX, [-0.5, 0.5], [-18, -6]);
-
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    x.set((e.clientX - centerX) / rect.width);
-    y.set((e.clientY - centerY) / rect.height);
-  }, [x, y]);
-
-  const handleMouseLeave = useCallback(() => {
-    x.set(0);
-    y.set(0);
-  }, [x, y]);
-
+/**
+ * PerspectiveContainer - Provides 3D perspective context for child elements
+ * 
+ * This container establishes the perspective origin for 3D transforms without
+ * interfering with motion animations. Children can use CSS transforms for tilt
+ * while Framer Motion handles position/opacity animations independently.
+ * 
+ * Usage:
+ * <PerspectiveContainer perspective={1200}>
+ *   <motion.div
+ *     initial={{ x: -100, opacity: 0 }}
+ *     animate={{ x: 0, opacity: 1 }}
+ *     style={{ transform: 'rotateY(8deg)' }}
+ *   >
+ *     Content
+ *   </motion.div>
+ * </PerspectiveContainer>
+ */
+export function PerspectiveContainer({ 
+  children, 
+  perspective = 1200,
+  className = '' 
+}: PerspectiveContainerProps) {
   return (
     <div
-      className="relative flex items-center justify-center"
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-      style={{ perspective: 2000 }}
+      className={`relative w-full h-full ${className}`}
+      style={{
+        perspective: `${perspective}px`,
+        perspectiveOrigin: 'center center',
+      }}
     >
-      {/* Ambient Glow */}
-      <div
-        className={`absolute inset-0 ${t.ambient} blur-[120px] rounded-full pointer-events-none`}
-        style={{ transform: 'translateZ(-100px)' }}
-      />
+      {children}
+    </div>
+  );
+}
 
-      <motion.div
-        initial={{ opacity: 0, rotateX: 15, rotateY: -15, scale: 0.9 }}
-        animate={{ opacity: 1, rotateX: 8, rotateY: -12, scale: 1 }}
-        style={{
-          rotateX,
-          rotateY,
-          transformStyle: 'preserve-3d',
-        }}
-        transition={{ duration: 1, ease: 'easeOut' }}
-        whileHover={{ scale: 1.02 }}
-        className={`relative ${className}`}
-      >
-        {children}
-      </motion.div>
+interface WingContainerProps {
+  children: ReactNode;
+  side: 'left' | 'right';
+  className?: string;
+}
+
+/**
+ * WingContainer - Pre-configured container for ChatWing and DashboardWing
+ * 
+ * Applies the correct 3D tilt based on side (left/right) while maintaining
+ * separation between CSS transforms (tilt) and motion animations (position).
+ */
+export function WingContainer({ children, side, className = '' }: WingContainerProps) {
+  const tiltDeg = side === 'left' ? 8 : -8;
+  const origin = side === 'left' ? 'left center' : 'right center';
+  
+  return (
+    <div
+      className={`h-full w-full ${className}`}
+      style={{
+        transform: `rotateY(${tiltDeg}deg) rotateX(2deg)`,
+        transformOrigin: origin,
+        transformStyle: 'preserve-3d',
+      }}
+    >
+      {children}
     </div>
   );
 }

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\accelerator\memory.py
-# hypothesis_version: 6.151.9
-
-['empty_cache', 'get_memory_info', 'max_memory_allocated', 'max_memory_reserved', 'memory_allocated', 'memory_reserved', 'memory_stats']
