@@ -6,6 +6,8 @@ import { X, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, AlertCircle 
 import { DarkGlassDashboard } from "./dark-glass-dashboard"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket"
+import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon"
+import { SpotlightState } from "@/hooks/useUILayoutState"
 
 // Notification types for the universal notification system
 interface Notification {
@@ -48,6 +50,9 @@ interface DashboardWingProps {
   sendMessage?: SendMessageFunction
   fieldValues?: Record<string, any>
   updateField?: (subnodeId: string, fieldId: string, value: any) => void
+  // Spotlight Mode props
+  spotlightState?: SpotlightState
+  onSpotlightToggle?: () => void
 }
 
 export function DashboardWing({ 
@@ -55,7 +60,9 @@ export function DashboardWing({
   onClose, 
   sendMessage, 
   fieldValues, 
-  updateField 
+  updateField,
+  spotlightState = SpotlightState.BALANCED,
+  onSpotlightToggle
 }: DashboardWingProps) {
   const { activeTheme, voiceState } = useNavigation()
   
@@ -70,6 +77,45 @@ export function DashboardWing({
   
   // Global error state
   const globalError = voiceState === 'error';
+
+  // Spotlight Mode derived states
+  const isInDashboardSpotlight = spotlightState === SpotlightState.DASHBOARD_SPOTLIGHT;
+  const isInChatSpotlight = spotlightState === SpotlightState.CHAT_SPOTLIGHT;
+  const isBalanced = spotlightState === SpotlightState.BALANCED;
+
+  // Spotlight dynamic styles
+  const getSpotlightWidth = () => {
+    if (isInDashboardSpotlight) return 380; // Spotlight width
+    if (isInChatSpotlight) return 180; // Background width
+    return 280; // Balanced width
+  };
+
+  const getSpotlightTransform = () => {
+    if (isInDashboardSpotlight) return 'translateY(-50%) rotateY(0deg) rotateX(0deg)';
+    if (isInChatSpotlight) return 'translateY(-50%) rotateY(-15deg) rotateX(2deg)';
+    return 'translateY(-50%) rotateY(-15deg) rotateX(2deg)';
+  };
+
+  const getSpotlightOpacity = () => {
+    if (isInChatSpotlight) return 0.3;
+    return 1.0;
+  };
+
+  const getSpotlightFilter = () => {
+    if (isInChatSpotlight) return 'saturate(0.6) blur(2px)';
+    return 'none';
+  };
+
+  const getSpotlightZIndex = () => {
+    if (isInDashboardSpotlight) return 20;
+    if (isInChatSpotlight) return 5;
+    return 10;
+  };
+
+  const getSpotlightPointerEvents = () => {
+    if (isInChatSpotlight) return 'none';
+    return 'auto';
+  };
 
   // Keyboard navigation - Escape to close
   useEffect(() => {
@@ -121,9 +167,13 @@ export function DashboardWing({
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          className="fixed z-[10]"
+          className="fixed"
           initial={{ x: 120, opacity: 0, scale: 0.95 }}
-          animate={{ x: 0, opacity: 1, scale: 1 }}
+          animate={{ 
+            x: 0, 
+            opacity: getSpotlightOpacity(), 
+            scale: 1 
+          }}
           exit={{ x: 120, opacity: 0, scale: 0.95 }}
           transition={{ 
             type: "spring", 
@@ -134,16 +184,27 @@ export function DashboardWing({
           style={{ 
             right: '3%',
             top: '50%',
-            width: '280px',
+            width: getSpotlightWidth(),
             height: '50vh',
             perspective: '800px',
+            zIndex: getSpotlightZIndex(),
+            filter: getSpotlightFilter(),
+            pointerEvents: getSpotlightPointerEvents() as any,
           }}
         >
           {/* HUD Glass Panel Container */}
-          <div 
+          <motion.div 
             className="h-full overflow-hidden flex flex-col relative"
+            animate={{
+              transform: getSpotlightTransform()
+            }}
+            transition={{
+              type: "spring",
+              stiffness: 280,
+              damping: 25,
+              mass: 0.8
+            }}
             style={{
-              transform: 'translateY(-50%) rotateY(-15deg) rotateX(2deg)',
               transformOrigin: 'right center',
               transformStyle: 'preserve-3d',
               background: 'linear-gradient(225deg, rgba(10,10,20,0.95) 0%, rgba(5,5,10,0.98) 100%)',
@@ -189,8 +250,8 @@ export function DashboardWing({
 
             {/* 48px Header */}
             <div 
-              className="h-12 px-3 flex items-center justify-between flex-shrink-0 border-b relative z-30"
-              style={{ borderColor: `${glowColor}15` }}
+              className="h-12 px-3 flex items-center flex-shrink-0 border-b relative z-30"
+              style={{ borderColor: `${glowColor}15`, position: 'relative' }}
             >
               {/* Global error line */}
               {globalError && (
@@ -202,7 +263,8 @@ export function DashboardWing({
                 />
               )}
               
-              <div className="flex items-center gap-2">
+              {/* Left section: Pulse + Title */}
+              <div className="flex items-center gap-2 flex-1">
                 <motion.div 
                   className="w-1.5 h-1.5 rounded-full"
                   style={{ backgroundColor: glowColor }}
@@ -219,8 +281,47 @@ export function DashboardWing({
                   Dashboard
                 </span>
               </div>
+
+              {/* Center section: Spotlight Iris Aperture Button - positioned at top edge */}
+              <div className="flex items-start justify-center absolute left-1/2 -translate-x-1/2" style={{ top: '-16px' }}>
+                {onSpotlightToggle && (
+                  <button
+                    onClick={() => {
+                      onSpotlightToggle();
+                      setShowNotifications(false);
+                    }}
+                    className="p-3 rounded-full transition-all duration-150 border shadow-lg"
+                    style={{ 
+                      color: isInDashboardSpotlight ? glowColor : `${fontColor}60`,
+                      backgroundColor: isInDashboardSpotlight ? `${glowColor}20` : 'rgba(10,10,20,0.95)',
+                      borderColor: `${glowColor}30`,
+                      boxShadow: `0 -2px 10px rgba(0,0,0,0.5), 0 0 20px ${isInDashboardSpotlight ? glowColor : 'transparent'}40`,
+                      backdropFilter: 'blur(10px)'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isInDashboardSpotlight) e.currentTarget.style.color = `${fontColor}90`;
+                      e.currentTarget.style.backgroundColor = 'rgba(20,20,35,0.98)';
+                      e.currentTarget.style.borderColor = `${glowColor}60`;
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isInDashboardSpotlight) e.currentTarget.style.color = `${fontColor}60`;
+                      e.currentTarget.style.backgroundColor = isInDashboardSpotlight ? `${glowColor}20` : 'rgba(10,10,20,0.95)';
+                      e.currentTarget.style.borderColor = `${glowColor}30`;
+                    }}
+                    title={isInDashboardSpotlight ? "Restore balanced view" : "Maximize dashboard"}
+                  >
+                    <IrisApertureIcon 
+                      isActive={isInDashboardSpotlight} 
+                      glowColor={glowColor} 
+                      fontColor={fontColor}
+                      size={20}
+                    />
+                  </button>
+                )}
+              </div>
               
-              <div className="flex items-center gap-0.5">
+              {/* Right section: Notifications + Close */}
+              <div className="flex items-center gap-0.5 flex-1 justify-end">
                 {/* Notifications */}
                 <button
                   onClick={() => setShowNotifications(!showNotifications)}
@@ -398,7 +499,7 @@ export function DashboardWing({
                 updateField={updateField}
               />
             </div>
-          </div>
+          </motion.div>
         </motion.div>
       )}
     </AnimatePresence>

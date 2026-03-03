@@ -8,7 +8,7 @@ import { IrisOrb } from "@/components/iris/IrisOrb"
 import { ChatActivationText } from "@/components/chat-activation-text"
 import { WheelView } from "@/components/wheel-view/WheelView"
 import { WheelViewErrorBoundary } from "@/components/wheel-view/WheelViewErrorBoundary"
-import { useUILayoutState, UILayoutState } from "@/hooks/useUILayoutState"
+import { useUILayoutState, UILayoutState, SpotlightState } from "@/hooks/useUILayoutState"
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation"
 import { BackdropBlur } from "@/components/backdrop-blur"
 import { DashboardWing } from "@/components/dashboard-wing"
@@ -28,15 +28,27 @@ export default function Home() {
   // Initialize UI layout state machine
   const { 
     state: uiLayoutState, 
+    spotlightState,
     openChat, 
     openDashboard, 
     closeAll, 
+    toggleChatSpotlight,
+    toggleDashboardSpotlight,
+    restoreBalanced,
     isChatOpen, 
-    isBothOpen 
+    isBothOpen,
+    isChatSpotlight,
+    isDashboardSpotlight,
+    isBalanced
   } = useUILayoutState()
 
-  // Enable keyboard navigation (Escape key to close wings)
-  useKeyboardNavigation({ closeAll, uiState: uiLayoutState })
+  // Enable keyboard navigation (Escape key to close wings, or restore balanced in spotlight)
+  useKeyboardNavigation({ 
+    closeAll, 
+    uiState: uiLayoutState,
+    spotlightState,
+    restoreBalanced
+  })
 
   // Phase 124: Single source of truth for expansion to prevent stuck states
   const isExpanded = state.level > 1
@@ -155,6 +167,8 @@ export default function Home() {
           onClose={closeAll}
           onDashboardClick={openDashboard}
           sendMessage={sendMessage}
+          spotlightState={spotlightState}
+          onSpotlightToggle={isBothOpen ? toggleChatSpotlight : undefined}
         />
       </Suspense>
       
@@ -163,6 +177,8 @@ export default function Home() {
         isOpen={isBothOpen}
         onClose={closeAll}
         sendMessage={sendMessage}
+        spotlightState={spotlightState}
+        onSpotlightToggle={isBothOpen ? toggleDashboardSpotlight : undefined}
       />
     </main>
   )

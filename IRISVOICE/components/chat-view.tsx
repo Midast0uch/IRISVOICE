@@ -6,6 +6,8 @@ import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shi
 import { useNavigation } from "@/contexts/NavigationContext";
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
+import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
+import { SpotlightState, SpotlightStateType } from "@/hooks/useUILayoutState";
 
 // Notification types for the universal notification system
 interface Notification {
@@ -95,9 +97,21 @@ interface ChatWingProps {
   sendMessage?: SendMessageFunction
   fieldValues?: Record<string, any>
   updateField?: (subnodeId: string, fieldId: string, value: any) => void
+  // Spotlight Mode props
+  spotlightState?: SpotlightStateType
+  onSpotlightToggle?: () => void
 }
 
-export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, fieldValues, updateField }: ChatWingProps) {
+export function ChatWing({ 
+  isOpen, 
+  onClose, 
+  onDashboardClick, 
+  sendMessage, 
+  fieldValues, 
+  updateField,
+  spotlightState = SpotlightState.BALANCED,
+  onSpotlightToggle
+}: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
   // Thread-based conversation state
@@ -684,13 +698,56 @@ ${message.text}`;
   // Global error state (derived from voiceState)
   const globalError = voiceState === 'error';
 
+  // Spotlight Mode derived states
+  const isInChatSpotlight = spotlightState === SpotlightState.CHAT_SPOTLIGHT;
+  const isInDashboardSpotlight = spotlightState === SpotlightState.DASHBOARD_SPOTLIGHT;
+  const isBalanced = spotlightState === SpotlightState.BALANCED;
+
+  // Spotlight dynamic styles
+  const getSpotlightWidth = () => {
+    if (isInChatSpotlight) return 340; // Spotlight width
+    if (isInDashboardSpotlight) return 180; // Background width
+    return 255; // Balanced width
+  };
+
+  const getSpotlightTransform = () => {
+    if (isInChatSpotlight) return 'translateY(-50%) rotateY(0deg) rotateX(0deg)';
+    if (isInDashboardSpotlight) return 'translateY(-50%) rotateY(15deg) rotateX(2deg)';
+    return 'translateY(-50%) rotateY(15deg) rotateX(2deg)';
+  };
+
+  const getSpotlightOpacity = () => {
+    if (isInDashboardSpotlight) return 0.3;
+    return 1.0;
+  };
+
+  const getSpotlightFilter = () => {
+    if (isInDashboardSpotlight) return 'saturate(0.6) blur(2px)';
+    return 'none';
+  };
+
+  const getSpotlightZIndex = () => {
+    if (isInChatSpotlight) return 20;
+    if (isInDashboardSpotlight) return 5;
+    return 10;
+  };
+
+  const getSpotlightPointerEvents = () => {
+    if (isInDashboardSpotlight) return 'none';
+    return 'auto';
+  };
+
   return (
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          className="fixed z-[10]"
+          className="fixed"
           initial={{ x: -120, opacity: 0, scale: 0.95 }}
-          animate={{ x: 0, opacity: 1, scale: 1 }}
+          animate={{ 
+            x: 0, 
+            opacity: getSpotlightOpacity(), 
+            scale: 1 
+          }}
           exit={{ x: -120, opacity: 0, scale: 0.95 }}
           transition={{ 
             type: "spring", 
@@ -701,16 +758,27 @@ ${message.text}`;
           style={{ 
             left: '3%',
             top: '50%',
-            width: '255px',
+            width: getSpotlightWidth(),
             height: '50vh',
             perspective: '800px',
+            zIndex: getSpotlightZIndex(),
+            filter: getSpotlightFilter(),
+            pointerEvents: getSpotlightPointerEvents() as any,
           }}
         >
           {/* HUD Glass Panel Container */}
-          <div 
+          <motion.div 
             className="h-full overflow-hidden flex flex-col relative"
+            animate={{
+              transform: getSpotlightTransform()
+            }}
+            transition={{
+              type: "spring",
+              stiffness: 280,
+              damping: 25,
+              mass: 0.8
+            }}
             style={{
-              transform: 'translateY(-50%) rotateY(15deg) rotateX(2deg)',
               transformOrigin: 'left center',
               transformStyle: 'preserve-3d',
               background: 'linear-gradient(135deg, rgba(10,10,20,0.95) 0%, rgba(5,5,10,0.98) 100%)',
@@ -756,8 +824,8 @@ ${message.text}`;
 
             {/* 48px Header */}
             <div 
-              className="h-12 px-3 flex items-center justify-between flex-shrink-0 border-b relative z-30"
-              style={{ borderColor: `${glowColor}15` }}
+              className="h-12 px-3 flex items-center flex-shrink-0 border-b relative z-30"
+              style={{ borderColor: `${glowColor}15`, position: 'relative' }}
             >
               {/* Global error line */}
               {globalError && (
@@ -769,7 +837,8 @@ ${message.text}`;
                 />
               )}
               
-              <div className="flex items-center gap-2">
+              {/* Left section: Pulse + Title + Dashboard */}
+              <div className="flex items-center gap-2 flex-1">
                 <motion.div
                   className="w-1.5 h-1.5 rounded-full"
                   style={{ backgroundColor: glowColor }}
@@ -806,8 +875,47 @@ ${message.text}`;
                   <BarChart3 size={14} />
                 </button>
               </div>
+
+              {/* Center section: Spotlight Iris Aperture Button - positioned at top edge */}
+              <div className="flex items-start justify-center absolute left-1/2 -translate-x-1/2" style={{ top: '-16px' }}>
+                {onSpotlightToggle && (
+                  <button
+                    onClick={() => {
+                      onSpotlightToggle();
+                      closeDropdowns();
+                    }}
+                    className="p-3 rounded-full transition-all duration-150 border shadow-lg"
+                    style={{ 
+                      color: isInChatSpotlight ? glowColor : `${fontColor}60`,
+                      backgroundColor: isInChatSpotlight ? `${glowColor}20` : 'rgba(10,10,20,0.95)',
+                      borderColor: `${glowColor}30`,
+                      boxShadow: `0 -2px 10px rgba(0,0,0,0.5), 0 0 20px ${isInChatSpotlight ? glowColor : 'transparent'}40`,
+                      backdropFilter: 'blur(10px)'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isInChatSpotlight) e.currentTarget.style.color = `${fontColor}90`;
+                      e.currentTarget.style.backgroundColor = 'rgba(20,20,35,0.98)';
+                      e.currentTarget.style.borderColor = `${glowColor}60`;
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isInChatSpotlight) e.currentTarget.style.color = `${fontColor}60`;
+                      e.currentTarget.style.backgroundColor = isInChatSpotlight ? `${glowColor}20` : 'rgba(10,10,20,0.95)';
+                      e.currentTarget.style.borderColor = `${glowColor}30`;
+                    }}
+                    title={isInChatSpotlight ? "Restore balanced view" : "Maximize chat"}
+                  >
+                    <IrisApertureIcon 
+                      isActive={isInChatSpotlight} 
+                      glowColor={glowColor} 
+                      fontColor={fontColor}
+                      size={20}
+                    />
+                  </button>
+                )}
+              </div>
               
-              <div className="flex items-center gap-0.5">
+              {/* Right section: Notifications + History + Close */}
+              <div className="flex items-center gap-0.5 flex-1 justify-end">
                 {/* Notifications */}
                 <button
                   onClick={() => showNotifications ? closeDropdowns() : openNotifications()}
@@ -1809,7 +1917,7 @@ ${message.text}`;
                 </motion.button>
               </div>
             </div>
-          </div>
+          </motion.div>
         </motion.div>
       )}
     </AnimatePresence>

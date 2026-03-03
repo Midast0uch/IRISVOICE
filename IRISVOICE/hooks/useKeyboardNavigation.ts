@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect } from "react"
-import { UILayoutState } from "@/hooks/useUILayoutState"
+import { UILayoutState, SpotlightState } from "@/hooks/useUILayoutState"
 
 /**
  * Props for useKeyboardNavigation hook
@@ -9,6 +9,8 @@ import { UILayoutState } from "@/hooks/useUILayoutState"
 interface UseKeyboardNavigationProps {
   closeAll: () => void
   uiState: UILayoutState
+  spotlightState?: SpotlightState
+  restoreBalanced?: () => void
 }
 
 /**
@@ -31,7 +33,12 @@ interface UseKeyboardNavigationProps {
  * @param closeAll - Callback function to close all wings and return to idle state
  * @param uiState - Current UI layout state to determine if Escape should trigger
  */
-export function useKeyboardNavigation({ closeAll, uiState }: UseKeyboardNavigationProps): void {
+export function useKeyboardNavigation({ 
+  closeAll, 
+  uiState, 
+  spotlightState,
+  restoreBalanced 
+}: UseKeyboardNavigationProps): void {
   useEffect(() => {
     /**
      * Handles keydown events for keyboard navigation
@@ -46,6 +53,19 @@ export function useKeyboardNavigation({ closeAll, uiState }: UseKeyboardNavigati
           uiState === UILayoutState.UI_STATE_CHAT_OPEN ||
           uiState === UILayoutState.UI_STATE_BOTH_OPEN
         ) {
+          // If in spotlight mode (not balanced), restore balanced first
+          if (
+            spotlightState && 
+            restoreBalanced &&
+            spotlightState !== SpotlightState.BALANCED
+          ) {
+            if (process.env.NODE_ENV === 'development') {
+              console.log(`[useKeyboardNavigation] Escape pressed at ${uiState} with spotlight ${spotlightState}, restoring balanced view`)
+            }
+            restoreBalanced()
+            return
+          }
+
           if (process.env.NODE_ENV === 'development') {
             console.log(`[useKeyboardNavigation] Escape pressed at ${uiState}, closing all wings`)
           }
@@ -63,5 +83,5 @@ export function useKeyboardNavigation({ closeAll, uiState }: UseKeyboardNavigati
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [closeAll, uiState])
+  }, [closeAll, uiState, spotlightState, restoreBalanced])
 }

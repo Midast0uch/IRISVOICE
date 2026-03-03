@@ -15,6 +15,18 @@ export enum UILayoutState {
 }
 
 /**
+ * Spotlight State enum
+ * Defines the three spotlight configurations when both wings are open (UI_STATE_BOTH_OPEN)
+ */
+export enum SpotlightState {
+  BALANCED = 'balanced',                    // Both wings equal (default)
+  CHAT_SPOTLIGHT = 'chatSpotlight',         // ChatWing expanded, DashboardWing minimized
+  DASHBOARD_SPOTLIGHT = 'dashboardSpotlight' // DashboardWing expanded, ChatWing minimized
+}
+
+export type SpotlightStateType = SpotlightState;
+
+/**
  * Transition direction for animations
  */
 export type TransitionDirection = 'forward' | 'backward' | null
@@ -46,6 +58,9 @@ export function useUILayoutState() {
   const [uiState, setUIState] = useState<UILayoutState>(UILayoutState.UI_STATE_IDLE)
   const [isTransitioning, setIsTransitioning] = useState(false)
   const [transitionDirection, setTransitionDirection] = useState<TransitionDirection>(null)
+  
+  // Spotlight state (only meaningful in UI_STATE_BOTH_OPEN)
+  const [spotlightState, setSpotlightState] = useState<SpotlightState>(SpotlightState.BALANCED)
   
   // Track previous navigation level to detect changes
   const prevNavigationLevel = useRef(navState.level)
@@ -145,6 +160,42 @@ export function useUILayoutState() {
   }, [uiState, transitionTo])
 
   /**
+   * Toggles chat spotlight state
+   * Only works when in UI_STATE_BOTH_OPEN
+   * Toggles between CHAT_SPOTLIGHT and BALANCED
+   */
+  const toggleChatSpotlight = useCallback(() => {
+    if (uiState !== UILayoutState.UI_STATE_BOTH_OPEN) return
+    setSpotlightState(prev => 
+      prev === SpotlightState.CHAT_SPOTLIGHT 
+        ? SpotlightState.BALANCED 
+        : SpotlightState.CHAT_SPOTLIGHT
+    )
+  }, [uiState])
+
+  /**
+   * Toggles dashboard spotlight state
+   * Only works when in UI_STATE_BOTH_OPEN
+   * Toggles between DASHBOARD_SPOTLIGHT and BALANCED
+   */
+  const toggleDashboardSpotlight = useCallback(() => {
+    if (uiState !== UILayoutState.UI_STATE_BOTH_OPEN) return
+    setSpotlightState(prev => 
+      prev === SpotlightState.DASHBOARD_SPOTLIGHT 
+        ? SpotlightState.BALANCED 
+        : SpotlightState.DASHBOARD_SPOTLIGHT
+    )
+  }, [uiState])
+
+  /**
+   * Restores balanced spotlight state
+   * Can be called from any spotlight state
+   */
+  const restoreBalanced = useCallback(() => {
+    setSpotlightState(SpotlightState.BALANCED)
+  }, [])
+
+  /**
    * Automatic wing closure when NavigationContext changes to Level 2 or 3
    * This effect monitors NavigationContext level changes and closes wings automatically
    */
@@ -178,6 +229,16 @@ export function useUILayoutState() {
     prevNavigationLevel.current = currentLevel
   }, [navState.level, uiState])
 
+  /**
+   * Reset spotlight to balanced when leaving BOTH_OPEN state
+   * This ensures consistent starting state when re-entering BOTH_OPEN
+   */
+  useEffect(() => {
+    if (uiState !== UILayoutState.UI_STATE_BOTH_OPEN) {
+      setSpotlightState(SpotlightState.BALANCED)
+    }
+  }, [uiState])
+
   return {
     // Current state
     state: uiState,
@@ -195,5 +256,17 @@ export function useUILayoutState() {
     isChatOpen: uiState === UILayoutState.UI_STATE_CHAT_OPEN,
     isBothOpen: uiState === UILayoutState.UI_STATE_BOTH_OPEN,
     canOpenWings: navState.level === 1, // Wings can only be opened at Level 1
+    
+    // Spotlight state (NEW)
+    spotlightState,
+    isBalanced: spotlightState === SpotlightState.BALANCED,
+    isChatSpotlight: spotlightState === SpotlightState.CHAT_SPOTLIGHT,
+    isDashboardSpotlight: spotlightState === SpotlightState.DASHBOARD_SPOTLIGHT,
+    
+    // Spotlight methods (NEW)
+    setSpotlightState,
+    toggleChatSpotlight,
+    toggleDashboardSpotlight,
+    restoreBalanced,
   }
 }
