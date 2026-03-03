@@ -2,7 +2,12 @@
 
 ## Overview
 
-Spotlight Mode is integrated into the existing `useUILayoutState` hook as a sub-state system. When the UI is in `UI_STATE_BOTH_OPEN`, users can toggle between three spotlight configurations: **balanced**, **chatSpotlight**, and **dashboardSpotlight**. This approach preserves the existing state machine while adding spotlight functionality as an enhancement layer.
+Spotlight Mode is integrated into the existing `useUILayoutState` hook as a sub-state system. Users can toggle between spotlight configurations in two contexts:
+
+1. **Chat-Only Mode** (`UI_STATE_CHAT_OPEN`): Only ChatWing is visible, spotlight expands the chat wing
+2. **Both-Open Mode** (`UI_STATE_BOTH_OPEN`): Both wings visible, spotlight emphasizes one wing while dimming the other
+
+Three spotlight configurations: **balanced**, **chatSpotlight**, and **dashboardSpotlight**. This approach preserves the existing state machine while adding spotlight functionality as an enhancement layer.
 
 ## Architecture
 
@@ -12,12 +17,25 @@ Spotlight Mode is integrated into the existing `useUILayoutState` hook as a sub-
 UILayoutState
 ├── UI_STATE_IDLE
 ├── UI_STATE_CHAT_OPEN
+│   └── SpotlightState (sub-state)
+│       ├── balanced (default)
+│       └── chatSpotlight
 └── UI_STATE_BOTH_OPEN
     └── SpotlightState (sub-state)
         ├── balanced (default)
         ├── chatSpotlight
         └── dashboardSpotlight
 ```
+
+### Chat-Only Spotlight
+
+When only the ChatWing is open (`UI_STATE_CHAT_OPEN`), spotlight mode provides:
+- **Expanded width**: 340px (vs 255px default)
+- **Zero rotation**: rotateY(0deg) for flat presentation
+- **Full opacity**: No background wing to dim
+- **Aperture button visible**: Embedded in header for toggle access
+
+This allows users to maximize chat space even when dashboard is not open.
 
 ### Integration Points
 

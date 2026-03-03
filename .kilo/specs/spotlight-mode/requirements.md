@@ -2,7 +2,12 @@
 
 ## Introduction
 
-Spotlight Mode extends the existing `useUILayoutState` hook to add a sub-state system within `UI_STATE_BOTH_OPEN`. When both wings are open, users can toggle between three spotlight configurations: **balanced** (50/50 equal positioning), **chatSpotlight** (ChatWing expanded, DashboardWing minimized), and **dashboardSpotlight** (DashboardWing expanded, ChatWing minimized). The implementation preserves the existing balanced state behavior while adding smooth spring-animated transitions between all three spotlight states.
+Spotlight Mode extends the existing `useUILayoutState` hook to add a sub-state system that works in two contexts:
+
+1. **Chat-Only Mode** (`UI_STATE_CHAT_OPEN`): When only ChatWing is visible, spotlight expands the chat for maximum space
+2. **Both-Open Mode** (`UI_STATE_BOTH_OPEN`): When both wings are visible, spotlight emphasizes one wing while dimming the other
+
+Users can toggle between three spotlight configurations: **balanced** (default positioning), **chatSpotlight** (ChatWing expanded), and **dashboardSpotlight** (DashboardWing expanded). The implementation preserves the existing balanced state behavior while adding smooth spring-animated transitions between all spotlight states. The Iris Aperture button is always visible in the ChatWing header whenever the chat is open, allowing users to toggle spotlight mode regardless of dashboard visibility.
 
 ## Requirements
 
@@ -16,7 +21,11 @@ Spotlight Mode extends the existing `useUILayoutState` hook to add a sub-state s
 2. THE SYSTEM SHALL add `spotlightState` property to the hook's return interface
 3. THE SYSTEM SHALL default `spotlightState` to `balanced` when entering `UI_STATE_BOTH_OPEN`
 4. THE SYSTEM SHALL reset `spotlightState` to `balanced` when transitioning away from `UI_STATE_BOTH_OPEN`
-5. THE SYSTEM SHALL only allow spotlight transitions when `uiState === UI_STATE_BOTH_OPEN`
+5. THE SYSTEM SHALL allow spotlight transitions when `uiState === UI_STATE_BOTH_OPEN`
+6. THE SYSTEM SHALL allow `chatSpotlight` and `balanced` states when `uiState === UI_STATE_CHAT_OPEN`
+7. WHEN in `UI_STATE_CHAT_OPEN` THE SYSTEM SHALL display the Iris Aperture button in ChatWing header
+8. WHEN in `UI_STATE_CHAT_OPEN` with `chatSpotlight` THE SYSTEM SHALL expand ChatWing to 340px width
+9. THE SYSTEM SHALL pass `isDashboardOpen` prop to ChatWing to distinguish between single-wing and both-wing spotlight contexts
 
 ### Requirement 2: Spotlight Transition Methods
 

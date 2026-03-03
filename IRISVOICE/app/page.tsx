@@ -168,7 +168,8 @@ export default function Home() {
           onDashboardClick={openDashboard}
           sendMessage={sendMessage}
           spotlightState={spotlightState}
-          onSpotlightToggle={isBothOpen ? toggleChatSpotlight : undefined}
+          onSpotlightToggle={toggleChatSpotlight}
+          isDashboardOpen={isBothOpen}
         />
       </Suspense>
       

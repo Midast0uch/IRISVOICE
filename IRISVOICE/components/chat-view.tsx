@@ -100,6 +100,7 @@ interface ChatWingProps {
   // Spotlight Mode props
   spotlightState?: SpotlightStateType
   onSpotlightToggle?: () => void
+  isDashboardOpen?: boolean
 }
 
 export function ChatWing({ 
@@ -110,7 +111,8 @@ export function ChatWing({
   fieldValues, 
   updateField,
   spotlightState = SpotlightState.BALANCED,
-  onSpotlightToggle
+  onSpotlightToggle,
+  isDashboardOpen = false
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
