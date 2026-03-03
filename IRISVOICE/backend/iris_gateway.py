@@ -183,6 +183,9 @@ class IRISGateway:
             elif msg_type == "get_vision_status":
                 await self._handle_get_vision_status(session_id, client_id)
             
+            elif msg_type == "message_exported":
+                await self._handle_message_exported(session_id, client_id, message)
+            
             else:
                 self._logger.warning(
                     f"Unknown message type: {msg_type}",
@@ -1554,6 +1557,32 @@ class IRISGateway:
         except Exception as e:
             self._logger.error(f"[Session: {session_id}] Error getting vision status: {e}", exc_info=True)
             await self._send_error(client_id, f"Error getting vision status: {str(e)}")
+    
+    async def _handle_message_exported(self, session_id: str, client_id: str, message: dict) -> None:
+        """
+        Handle message_exported event for analytics/logging.
+        
+        Args:
+            session_id: Session ID
+            client_id: Client ID
+            message: Message dictionary with payload containing message_id and content_type
+        """
+        try:
+            payload = message.get("payload", {})
+            message_id = payload.get("message_id")
+            content_type = payload.get("content_type")
+            
+            self._logger.info(
+                f"[Session: {session_id}] Message exported",
+                extra={
+                    "session_id": session_id,
+                    "client_id": client_id,
+                    "message_id": message_id,
+                    "content_type": content_type
+                }
+            )
+        except Exception as e:
+            self._logger.error(f"[Session: {session_id}] Error handling message export: {e}", exc_info=True)
     
     async def _broadcast_state_update(self, session_id: str, exclude_client: Optional[str] = None) -> None:
         """

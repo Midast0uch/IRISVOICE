@@ -629,17 +629,50 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
 
   return (
     <div
-      className="w-full h-full min-h-0 rounded-2xl overflow-hidden flex flex-col bg-transparent"
-      style={{
-        background: 'rgba(10, 10, 20, 0.95)',
-        backdropFilter: 'blur(30px)',
-        border: `1px solid ${glowColor}30`,
-        boxShadow: `0 0 40px ${glowColor}15, inset 0 1px 0 rgba(255,255,255,0.05)`,
-      }}
+      className="w-full h-full min-h-0 overflow-hidden flex flex-col bg-transparent relative"
     >
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: `${glowColor}20` }}>
-        <span className="text-[11px] font-semibold tracking-widest uppercase text-white/90">IRIS MENU</span>
+      {/* HUD Effects Overlay */}
+      <div 
+        className="absolute inset-0 pointer-events-none z-0"
+        style={{
+          background: `
+            linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.01) 50%, transparent 100%),
+            repeating-linear-gradient(
+              0deg,
+              transparent,
+              transparent 2px,
+              rgba(0,0,0,0.02) 2px,
+              rgba(0,0,0,0.02) 4px
+            )
+          `,
+          backgroundSize: '100% 100%, 100% 4px',
+        }}
+      />
+      
+      {/* Edge Fresnel Effect */}
+      <div 
+        className="absolute inset-0 pointer-events-none z-0"
+        style={{
+          background: `
+            linear-gradient(90deg, ${glowColor}05 0%, transparent 10%, transparent 90%, ${glowColor}05 100%),
+            linear-gradient(0deg, ${glowColor}03 0%, transparent 15%, transparent 85%, ${glowColor}03 100%)
+          `,
+        }}
+      />
+      {/* HUD Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b relative z-10" style={{ borderColor: `${glowColor}15` }}>
+        <div className="flex items-center gap-2">
+          <motion.div 
+            className="w-1.5 h-1.5 rounded-full"
+            style={{ backgroundColor: glowColor }}
+            animate={{ 
+              scale: voiceState === 'listening' ? [1, 1.4, 1] : 1,
+              opacity: voiceState === 'listening' ? [1, 0.6, 1] : 1
+            }}
+            transition={{ duration: 1.2, repeat: Infinity }}
+          />
+          <span className="text-[11px] font-semibold tracking-widest uppercase text-white/90">Settings</span>
+        </div>
         
         {/* Voice State Indicators */}
         <div className="flex items-center gap-2">
@@ -770,8 +803,8 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
         </div>
       </div>
 
-      {/* Tab bar - 6 main nodes */}
-      <div className="flex border-b" style={{ borderColor: `${glowColor}15` }}>
+      {/* HUD Tab bar - 6 main nodes */}
+      <div className="flex border-b relative z-10" style={{ borderColor: `${glowColor}10` }}>
         {mainNodes.map(node => {
           const Icon = node.icon;
           const isActive = activeTab === node.id;
@@ -800,7 +833,7 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
       </div>
 
       {/* Content area */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative z-10">
         {/* Subnode list */}
         <div className="w-[105px] border-r flex-shrink-0 overflow-y-auto" style={{ borderColor: `${glowColor}10` }}>
           {subnodesForTab.map(sub => {

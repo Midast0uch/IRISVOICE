@@ -46,3 +46,4 @@ tauri-build/
 
 # recordings
 recordings/
+"*.log"  

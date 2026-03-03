@@ -2,9 +2,69 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Send, X, BarChart3, Trash2, AlertCircle } from 'lucide-react';
+import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile } from 'lucide-react';
 import { useNavigation } from "@/contexts/NavigationContext";
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
+import { useReducedMotion } from "@/hooks/useReducedMotion";
+
+// Notification types for the universal notification system
+interface Notification {
+  id: string;
+  type: 'alert' | 'permission' | 'error' | 'task' | 'completion';
+  title: string;
+  message: string;
+  timestamp: Date;
+  read: boolean;
+  progress?: number;
+}
+
+// Content type definitions for smart message handling
+export type ContentType = 'markdown' | 'email' | 'video' | 'picture' | 'text';
+
+const MESSAGE_THRESHOLDS = {
+  TRUNCATE_AT: 150,
+  DOCUMENT_MODE_AT: 300,
+  WARNING_AT: 1000
+} as const;
+
+const ContentTypePatterns = {
+  video: /(?:youtube\.com|youtu\.be|vimeo\.com|\.mp4|\.webm|\.mov)/i,
+  picture: /\.(jpg|jpeg|png|gif|webp|svg|bmp)(?:\?.*)?$/i,
+  markdown: /(?:^#{1,6}\s|\*\*|__|\[.+?\]\(.+?\)|```)/m,
+  email: /(?:^From:|^To:|^Subject:|\S+@\S+\.\S+)/m
+};
+
+const ContentTypeLabels: Record<ContentType, string> = {
+  markdown: 'Markdown Document',
+  email: 'Email',
+  video: 'Video',
+  picture: 'Image',
+  text: 'Text Document'
+};
+
+// Helper functions for notification styling
+const getNotificationColor = (type: string, glowColor: string): string => {
+  switch (type) {
+    case 'alert': return '#fbbf24'; // amber
+    case 'permission': return '#3b82f6'; // blue
+    case 'error': return '#ef4444'; // red
+    case 'task': return '#a855f7'; // purple
+    case 'completion': return '#22c55e'; // green
+    default: return glowColor;
+  }
+};
+
+const getNotificationIcon = (type: string, glowColor: string) => {
+  const iconProps = { size: 10, style: { color: getNotificationColor(type, glowColor) } };
+  switch (type) {
+    case 'alert': return <AlertTriangle {...iconProps} />;
+    case 'permission': return <Shield {...iconProps} />;
+    case 'error': return <AlertCircle {...iconProps} />;
+    case 'task': return <Loader {...iconProps} className="animate-spin" />;
+    case 'completion': return <CheckCircle {...iconProps} />;
+    default: return <Info {...iconProps} />;
+  }
+};
 
 interface Message {
   id: string
@@ -12,6 +72,20 @@ interface Message {
   sender: "user" | "assistant" | "error"
   timestamp: Date
   errorType?: "agent" | "voice" | "validation"
+  words?: string[]; // For TTS word highlighting
+  currentWordIndex?: number; // Current word being spoken
+  feedback?: 'positive' | 'negative' | null; // User feedback on AI responses
+}
+
+// Thread-based conversation structure
+interface Conversation {
+  id: string;
+  title: string;
+  preview: string;
+  messages: Message[];
+  timestamp: Date;
+  isPinned: boolean;
+  lastMessagePreview: string;
 }
 
 interface ChatWingProps {
@@ -24,11 +98,39 @@ interface ChatWingProps {
 }
 
 export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, fieldValues, updateField }: ChatWingProps) {
-  const [messages, setMessages] = useState<Message[]>([])
+  const prefersReducedMotion = useReducedMotion();
+  
+  // Thread-based conversation state
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [inputText, setInputText] = useState("")
+  const [justSent, setJustSent] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const { lastTextResponse, voiceState, clearChat, activeTheme, fieldErrors } = useNavigation();
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const { lastTextResponse, voiceState, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
+  
+  // Notification system state
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  
+  // TTS state
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [currentTtsMessageId, setCurrentTtsMessageId] = useState<string | null>(null);
+  
+  // Copy feedback state
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  
+  // Smart message length handling state
+  const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
+  const [documentModalMessage, setDocumentModalMessage] = useState<Message | null>(null);
+  const [messageContentTypes, setMessageContentTypes] = useState<Record<string, ContentType>>({});
+  
+  // File upload drag-and-drop state
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [draggedFileType, setDraggedFileType] = useState<'image' | 'video' | 'file' | null>(null);
   
   // Derive isTyping from agent processing state
   const isTyping = voiceState === "processing_conversation" || voiceState === "processing_tool";
@@ -37,6 +139,22 @@ export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, field
   const glowColor = activeTheme?.glow || "#00d4ff";
   const primaryColor = activeTheme?.primary || "#00d4ff";
   const fontColor = activeTheme?.font || "#ffffff";
+  
+  // Get active conversation messages
+  const activeConversation = conversations.find(c => c.id === activeConversationId);
+  const messages = activeConversation?.messages || [];
+
+  // Calculate unread count when notifications change
+  useEffect(() => {
+    setUnreadCount(notifications.filter(n => !n.read).length);
+  }, [notifications]);
+
+  // Mark all as read when notification panel opens
+  useEffect(() => {
+    if (showNotifications) {
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    }
+  }, [showNotifications]);
 
   // Auto-focus input when chat becomes open
   useEffect(() => {
@@ -58,10 +176,45 @@ export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, field
         text: lastTextResponse.text,
         sender: "assistant",
         timestamp: new Date(),
+        words: lastTextResponse.text.split(' '), // Split for potential TTS highlighting
+        currentWordIndex: -1,
+        feedback: null,
       }
-      setMessages(prev => [...prev, assistantMessage])
+      
+      // Add to active conversation or create new one
+      setConversations(prev => {
+        if (activeConversationId) {
+          // Add to existing conversation
+          return prev.map(conv => 
+            conv.id === activeConversationId
+              ? {
+                  ...conv,
+                  messages: [...conv.messages, assistantMessage],
+                  lastMessagePreview: assistantMessage.text.substring(0, 60),
+                  timestamp: new Date()
+                }
+              : conv
+          );
+        } else {
+          // Create new conversation
+          const newConv: Conversation = {
+            id: Date.now().toString(),
+            title: `Conversation ${prev.length + 1}`,
+            preview: assistantMessage.text.substring(0, 60),
+            messages: [assistantMessage],
+            timestamp: new Date(),
+            isPinned: false,
+            lastMessagePreview: assistantMessage.text.substring(0, 60)
+          };
+          setActiveConversationId(newConv.id);
+          return [...prev, newConv];
+        }
+      });
+      
+      setCurrentTtsMessageId(assistantMessage.id);
+      setIsSpeaking(true);
     }
-  }, [lastTextResponse])
+  }, [lastTextResponse, activeConversationId])
   
   // Handle voice command errors
   useEffect(() => {
@@ -73,14 +226,20 @@ export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, field
         errorType: "voice",
         timestamp: new Date(),
       }
-      setMessages(prev => [...prev, errorMessage])
+      
+      if (activeConversationId) {
+        setConversations(prev => prev.map(conv => 
+          conv.id === activeConversationId
+            ? { ...conv, messages: [...conv.messages, errorMessage] }
+            : conv
+        ));
+      }
     }
-  }, [voiceState])
+  }, [voiceState, activeConversationId])
   
   // Handle field validation errors
   useEffect(() => {
     if (fieldErrors && Object.keys(fieldErrors).length > 0) {
-      // Get the most recent error
       const errorKeys = Object.keys(fieldErrors)
       const latestErrorKey = errorKeys[errorKeys.length - 1]
       const errorText = fieldErrors[latestErrorKey]
@@ -92,9 +251,55 @@ export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, field
         errorType: "validation",
         timestamp: new Date(),
       }
-      setMessages(prev => [...prev, errorMessage])
+      
+      if (activeConversationId) {
+        setConversations(prev => prev.map(conv => 
+          conv.id === activeConversationId
+            ? { ...conv, messages: [...conv.messages, errorMessage] }
+            : conv
+        ));
+      }
     }
-  }, [fieldErrors])
+  }, [fieldErrors, activeConversationId])
+
+  // Handle TTS word highlighting simulation (fallback when backend doesn't provide tts_word events)
+  useEffect(() => {
+    if (isSpeaking && currentTtsMessageId && activeConversationId) {
+      const message = messages.find((m: Message) => m.id === currentTtsMessageId);
+      if (message && message.words && message.words.length > 0) {
+        let wordIndex = 0;
+        const interval = setInterval(() => {
+          if (wordIndex >= message.words!.length) {
+            setIsSpeaking(false);
+            clearInterval(interval);
+            return;
+          }
+          setConversations((prev: Conversation[]) => prev.map((conv: Conversation) => 
+            conv.id === activeConversationId
+              ? {
+                  ...conv,
+                  messages: conv.messages.map((m: Message) => 
+                    m.id === currentTtsMessageId 
+                      ? { ...m, currentWordIndex: wordIndex }
+                      : m
+                  )
+                }
+              : conv
+          ));
+          wordIndex++;
+        }, 200); // 200ms per word - adjust based on actual TTS speed
+        
+        return () => clearInterval(interval);
+      }
+    }
+  }, [isSpeaking, currentTtsMessageId, activeConversationId, messages]);
+
+  // Reset speaking state when voice changes to idle
+  useEffect(() => {
+    if (voiceState === 'idle' && isSpeaking) {
+      setIsSpeaking(false);
+    }
+  }, [voiceState, isSpeaking]);
 
   const handleSendMessage = async () => {
     if (!inputText.trim()) return
@@ -106,19 +311,216 @@ export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, field
       timestamp: new Date(),
     }
 
-    setMessages(prev => [...prev, userMessage])
     setInputText("")
+    setJustSent(true);
+    setTimeout(() => setJustSent(false), 300);
+
+    // Add to active conversation or create new one
+    setConversations(prev => {
+      if (activeConversationId) {
+        // Add to existing conversation
+        return prev.map(conv => 
+          conv.id === activeConversationId
+            ? {
+                ...conv,
+                messages: [...conv.messages, userMessage],
+                lastMessagePreview: userMessage.text.substring(0, 60),
+                timestamp: new Date()
+              }
+            : conv
+        );
+      } else {
+        // Create new conversation
+        const newConv: Conversation = {
+          id: Date.now().toString(),
+          title: `Conversation ${prev.length + 1}`,
+          preview: userMessage.text.substring(0, 60),
+          messages: [userMessage],
+          timestamp: new Date(),
+          isPinned: false,
+          lastMessagePreview: userMessage.text.substring(0, 60)
+        };
+        setActiveConversationId(newConv.id);
+        return [...prev, newConv];
+      }
+    });
 
     // Send message via WebSocket if available
     sendMessage?.("text_message", { text: userMessage.text })
   }
 
-  const handleClearChat = () => {
-    // Clear local messages
-    setMessages([])
-    // Clear conversation history on backend
-    clearChat()
-  }
+  // Conversation management functions
+  const handleSelectConversation = (conversationId: string) => {
+    setActiveConversationId(conversationId);
+    setShowHistory(false);
+  };
+
+  const handleDeleteConversation = (e: React.MouseEvent, conversationId: string) => {
+    e.stopPropagation();
+    setConversations(prev => prev.filter(c => c.id !== conversationId));
+    if (activeConversationId === conversationId) {
+      const remaining = conversations.filter(c => c.id !== conversationId);
+      setActiveConversationId(remaining.length > 0 ? remaining[0].id : null);
+    }
+  };
+
+  const handlePinConversation = (e: React.MouseEvent, conversationId: string) => {
+    e.stopPropagation();
+    setConversations(prev => {
+      const updated = prev.map(c => 
+        c.id === conversationId ? { ...c, isPinned: !c.isPinned } : c
+      );
+      // Sort: pinned first, then by timestamp
+      return updated.sort((a, b) => {
+        if (a.isPinned && !b.isPinned) return -1;
+        if (!a.isPinned && b.isPinned) return 1;
+        return b.timestamp.getTime() - a.timestamp.getTime();
+      });
+    });
+  };
+
+  const handleNewConversation = () => {
+    // Create new conversation thread
+    const newConv: Conversation = {
+      id: `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      title: `Conversation ${conversations.length + 1}`,
+      preview: 'New conversation',
+      messages: [],
+      timestamp: new Date(),
+      isPinned: false,
+      lastMessagePreview: 'New conversation'
+    };
+    
+    setConversations(prev => [newConv, ...prev]);
+    setActiveConversationId(newConv.id);
+    setInputText('');
+    
+    // Close any open dropdowns
+    closeDropdowns();
+    
+    // Focus input field
+    setTimeout(() => inputRef.current?.focus(), 100);
+    
+    // Notify backend of new conversation
+    sendMessage?.('new_conversation', { 
+      conversation_id: newConv.id,
+      timestamp: newConv.timestamp.toISOString()
+    });
+  };
+
+  // Feedback action handlers
+  const handleCopyMessage = async (text: string, messageId: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMessageId(messageId);
+      setTimeout(() => setCopiedMessageId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  const handleFeedback = (messageId: string, feedback: 'positive' | 'negative') => {
+    if (!activeConversationId) return;
+    
+    setConversations(prev => prev.map(conv => 
+      conv.id === activeConversationId
+        ? {
+            ...conv,
+            messages: conv.messages.map(msg => 
+              msg.id === messageId ? { ...msg, feedback } : msg
+            )
+          }
+        : conv
+    ));
+    
+    // Send feedback to backend
+    sendMessage?.('message_feedback', { message_id: messageId, feedback });
+  };
+
+  const handlePlayTTS = (text: string) => {
+    sendMessage?.('tts_play', { text });
+  };
+
+  // Smart message length handling helpers
+  const detectContentType = useCallback((text: string): ContentType => {
+    if (ContentTypePatterns.video.test(text)) return 'video';
+    if (ContentTypePatterns.picture.test(text)) return 'picture';
+    if (ContentTypePatterns.markdown.test(text)) return 'markdown';
+    if (ContentTypePatterns.email.test(text)) return 'email';
+    return 'text';
+  }, []);
+
+  const getContentType = useCallback((message: Message): ContentType => {
+    if (!messageContentTypes[message.id]) {
+      const detected = detectContentType(message.text);
+      setMessageContentTypes(prev => ({ ...prev, [message.id]: detected }));
+      return detected;
+    }
+    return messageContentTypes[message.id];
+  }, [messageContentTypes, detectContentType]);
+
+  const toggleMessageExpanded = useCallback((messageId: string) => {
+    setExpandedMessages(prev => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  }, []);
+
+  const isMessageExpanded = useCallback((messageId: string) => {
+    return expandedMessages.has(messageId);
+  }, [expandedMessages]);
+
+  const handleDownloadMessage = useCallback((message: Message) => {
+    const contentType = getContentType(message);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `IRIS_${contentType}_${timestamp}.txt`;
+    
+    const content = `========================================
+IRIS ${ContentTypeLabels[contentType]} Export
+Exported: ${new Date().toLocaleString()}
+========================================
+
+${message.text}`;
+    
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    // Notify backend
+    sendMessage?.('message_exported', { 
+      message_id: message.id,
+      content_type: contentType 
+    });
+  }, [getContentType, sendMessage]);
+
+  const handleShareMessage = useCallback(async (message: Message) => {
+    try {
+      await navigator.clipboard.writeText(message.text);
+      // Show notification
+      const notif: Notification = {
+        id: Date.now().toString(),
+        type: 'completion',
+        title: 'Copied to clipboard',
+        message: 'Message content has been copied',
+        timestamp: new Date(),
+        read: false
+      };
+      setNotifications(prev => [notif, ...prev]);
+    } catch (err) {
+      console.error('Failed to share:', err);
+    }
+  }, []);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -126,6 +528,161 @@ export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, field
       handleSendMessage()
     }
   }
+
+  // File upload handlers
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (!isDraggingFile) {
+      setIsDraggingFile(true);
+      
+      // Detect file type from drag data
+      const items = e.dataTransfer.items;
+      if (items && items.length > 0) {
+        const item = items[0];
+        if (item.type.startsWith('image/')) {
+          setDraggedFileType('image');
+        } else if (item.type.startsWith('video/')) {
+          setDraggedFileType('video');
+        } else {
+          setDraggedFileType('file');
+        }
+      }
+    }
+  }, [isDraggingFile]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Only clear if leaving the container (not entering a child)
+    if (e.currentTarget === e.target) {
+      setIsDraggingFile(false);
+      setDraggedFileType(null);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+    setDraggedFileType(null);
+    
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      handleFileUpload(file);
+    }
+  }, []);
+
+  const handleFileUpload = useCallback((file: File) => {
+    // Create a message about the uploaded file
+    const fileType = file.type.startsWith('image/') ? 'image' :
+                     file.type.startsWith('video/') ? 'video' : 'file';
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      
+      // Send file content or metadata based on type
+      if (fileType === 'image' || fileType === 'video') {
+        // For media, just send metadata and a reference
+        const message = `[${fileType.toUpperCase()}: ${file.name} (${(file.size / 1024).toFixed(1)} KB)]`;
+        setInputText(message);
+      } else {
+        // For text files, send the content (truncated if needed)
+        const textContent = content.slice(0, 1000);
+        const truncated = content.length > 1000 ? '... (truncated)' : '';
+        setInputText(`[File: ${file.name}]\n\n${textContent}${truncated}`);
+      }
+    };
+    
+    if (fileType === 'image' || fileType === 'video') {
+      reader.readAsDataURL(file);
+    } else {
+      reader.readAsText(file);
+    }
+    
+    // Show notification
+    const notif: Notification = {
+      id: Date.now().toString(),
+      type: 'completion',
+      title: 'File ready',
+      message: `${file.name} loaded. Press Enter to send.`,
+      timestamp: new Date(),
+      read: false
+    };
+    setNotifications(prev => [notif, ...prev]);
+  }, []);
+
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      handleFileUpload(files[0]);
+    }
+    // Reset input
+    e.target.value = '';
+  }, []);
+
+  // Keyboard navigation - Escape to close
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isOpen) {
+        // Close document modal first if open
+        if (documentModalMessage) {
+          setDocumentModalMessage(null);
+          return;
+        }
+        // Close any open dropdowns next
+        if (showNotifications || showHistory) {
+          closeDropdowns();
+          return;
+        }
+        // Finally close chat
+        onClose();
+      }
+    };
+    
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [isOpen, showNotifications, showHistory, onClose, documentModalMessage]);
+
+  // Dropdown exclusivity handlers
+  const openNotifications = () => {
+    setShowNotifications(true);
+    setShowHistory(false);
+  };
+
+  const openHistory = () => {
+    setShowHistory(true);
+    setShowNotifications(false);
+  };
+
+  const closeDropdowns = () => {
+    setShowNotifications(false);
+    setShowHistory(false);
+  };
+
+  // Permission response handlers
+  const handlePermissionGrant = (notificationId: string) => {
+    sendMessage?.('notification_response', { 
+      notification_id: notificationId, 
+      action: 'grant' 
+    });
+    setNotifications(prev => prev.filter(n => n.id !== notificationId));
+  };
+
+  const handlePermissionDeny = (notificationId: string) => {
+    sendMessage?.('notification_response', { 
+      notification_id: notificationId, 
+      action: 'deny' 
+    });
+    setNotifications(prev => prev.filter(n => n.id !== notificationId));
+  };
+
+  // Global error state (derived from voiceState)
+  const globalError = voiceState === 'error';
 
   return (
     <AnimatePresence>
@@ -144,68 +701,179 @@ export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, field
           style={{ 
             left: '3%',
             top: '50%',
-            width: '231px',
+            width: '255px',
             height: '50vh',
             perspective: '800px',
           }}
         >
-          {/* Chat Container */}
+          {/* HUD Glass Panel Container */}
           <div 
-            className="h-full bg-black/30 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden flex flex-col"
+            className="h-full overflow-hidden flex flex-col relative"
             style={{
               transform: 'translateY(-50%) rotateY(15deg) rotateX(2deg)',
               transformOrigin: 'left center',
               transformStyle: 'preserve-3d',
-              background: 'linear-gradient(135deg, rgba(10,10,20,0.9) 0%, rgba(5,5,10,0.95) 100%)',
-              boxShadow: '20px 0 60px rgba(0,0,0,0.5), 0 10px 40px rgba(0,0,0,0.3)',
+              background: 'linear-gradient(135deg, rgba(10,10,20,0.95) 0%, rgba(5,5,10,0.98) 100%)',
+              boxShadow: `
+                inset 0 1px 1px rgba(255,255,255,0.05),
+                inset 0 -1px 1px rgba(0,0,0,0.5),
+                0 0 0 1px rgba(0,0,0,0.8),
+                20px 0 60px rgba(0,0,0,0.5)
+              `,
+              borderRadius: '12px',
+              border: `1px solid ${glowColor}20`,
             }}
           >
-            {/* Header */}
+            {/* HUD Effects Overlay */}
             <div 
-              className="flex items-center justify-between p-4 border-b flex-shrink-0" 
-              style={{ borderColor: `${glowColor}20` }}
+              className="absolute inset-0 pointer-events-none z-10"
+              style={{
+                background: `
+                  linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.02) 50%, transparent 100%),
+                  repeating-linear-gradient(
+                    0deg,
+                    transparent,
+                    transparent 2px,
+                    rgba(0,0,0,0.03) 2px,
+                    rgba(0,0,0,0.03) 4px
+                  )
+                `,
+                backgroundSize: '100% 100%, 100% 4px',
+              }}
+            />
+            
+            {/* Edge Fresnel Effect */}
+            <div 
+              className="absolute inset-0 pointer-events-none z-20"
+              style={{
+                background: `
+                  linear-gradient(90deg, ${glowColor}08 0%, transparent 15%, transparent 85%, ${glowColor}08 100%),
+                  linear-gradient(0deg, ${glowColor}05 0%, transparent 20%, transparent 80%, ${glowColor}05 100%)
+                `,
+                borderRadius: '12px',
+              }}
+            />
+
+            {/* 48px Header */}
+            <div 
+              className="h-12 px-3 flex items-center justify-between flex-shrink-0 border-b relative z-30"
+              style={{ borderColor: `${glowColor}15` }}
             >
-              <div className="flex items-center space-x-3">
-                <div 
-                  className="w-2 h-2 rounded-full animate-pulse" 
-                  style={{ backgroundColor: glowColor }}
+              {/* Global error line */}
+              {globalError && (
+                <motion.div
+                  className="absolute top-0 left-0 right-0 h-[1px] z-40"
+                  style={{ background: 'rgba(239,68,68,0.8)' }}
+                  animate={{ opacity: [1, 0.3, 1] }}
+                  transition={{ duration: 2, repeat: Infinity }}
                 />
-                <span 
-                  className="font-medium" 
+              )}
+              
+              <div className="flex items-center gap-2">
+                <motion.div
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{ backgroundColor: glowColor }}
+                  animate={{
+                    scale: voiceState === 'listening' ? [1, 1.4, 1] : 1,
+                    opacity: voiceState === 'listening' ? [1, 0.6, 1] : 1
+                  }}
+                  transition={{ duration: 1.2, repeat: Infinity }}
+                />
+                <span
+                  className="text-[13px] font-semibold tracking-wide"
                   style={{ color: fontColor, opacity: 0.9 }}
                 >
-                  IRIS Assistant
+                  IRIS
                 </span>
-              </div>
-              <div className="flex items-center space-x-2">
-                {messages.length > 0 && (
-                  <button
-                    onClick={handleClearChat}
-                    className="p-2 rounded-lg hover:bg-white/10 transition-colors"
-                    style={{ color: fontColor, opacity: 0.6 }}
-                    onMouseEnter={(e) => e.currentTarget.style.opacity = '0.9'}
-                    onMouseLeave={(e) => e.currentTarget.style.opacity = '0.6'}
-                    title="Clear Chat"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                )}
+                {/* Dashboard - positioned next to IRIS text */}
                 <button
-                  onClick={onDashboardClick}
-                  className="p-2 rounded-lg hover:bg-white/10 transition-colors"
-                  style={{ color: fontColor, opacity: 0.6 }}
-                  onMouseEnter={(e) => e.currentTarget.style.opacity = '0.9'}
-                  onMouseLeave={(e) => e.currentTarget.style.opacity = '0.6'}
+                  onClick={() => {
+                    onDashboardClick();
+                    closeDropdowns();
+                  }}
+                  className="p-1.5 rounded-lg transition-all duration-150"
+                  style={{ color: `${fontColor}60` }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = glowColor;
+                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = `${fontColor}60`;
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
                   title="Open Dashboard"
                 >
-                  <BarChart3 size={16} />
+                  <BarChart3 size={14} />
                 </button>
+              </div>
+              
+              <div className="flex items-center gap-0.5">
+                {/* Notifications */}
                 <button
-                  onClick={onClose}
-                  className="p-2 rounded-lg hover:bg-white/10 transition-colors"
-                  style={{ color: fontColor, opacity: 0.6 }}
-                  onMouseEnter={(e) => e.currentTarget.style.opacity = '0.9'}
-                  onMouseLeave={(e) => e.currentTarget.style.opacity = '0.6'}
+                  onClick={() => showNotifications ? closeDropdowns() : openNotifications()}
+                  className="p-2 rounded-lg transition-all duration-150 relative"
+                  style={{ 
+                    color: showNotifications ? glowColor : unreadCount > 0 ? glowColor : `${fontColor}60`,
+                    backgroundColor: showNotifications ? `${glowColor}15` : 'transparent'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : `${fontColor}90`;
+                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : `${fontColor}60`;
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
+                  title="Notifications"
+                >
+                  <Bell size={16} />
+                  {unreadCount > 0 && (
+                    <motion.span
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      className="absolute top-1 right-1 w-2 h-2 rounded-full"
+                      style={{ backgroundColor: glowColor }}
+                    />
+                  )}
+                </button>
+                
+                {/* History */}
+                <button
+                  onClick={() => showHistory ? closeDropdowns() : openHistory()}
+                  className="p-2 rounded-lg transition-all duration-150"
+                  style={{ 
+                    color: showHistory ? glowColor : `${fontColor}60`,
+                    backgroundColor: showHistory ? `${glowColor}15` : 'transparent'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!showHistory) e.currentTarget.style.color = `${fontColor}90`;
+                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!showHistory) e.currentTarget.style.color = `${fontColor}60`;
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
+                  title="Conversation History"
+                >
+                  <History size={16} />
+                </button>
+                
+                {/* Close */}
+                <button
+                  onClick={() => {
+                    onClose();
+                    closeDropdowns();
+                  }}
+                  className="p-2 rounded-lg transition-all duration-150"
+                  style={{ color: `${fontColor}60` }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = `${fontColor}90`;
+                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = `${fontColor}60`;
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
                   title="Close Chat"
                 >
                   <X size={16} />
@@ -213,152 +881,932 @@ export function ChatWing({ isOpen, onClose, onDashboardClick, sendMessage, field
               </div>
             </div>
 
-            {/* Messages Area - Conditional */}
-            {(messages.length > 0 || isTyping) && (
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <motion.div
-                      initial={{ opacity: 0, y: 10, scale: 0.9 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      transition={{ duration: 0.2 }}
-                      className={`max-w-xs px-4 py-2 rounded-2xl ${
-                        message.sender === 'user'
-                          ? 'text-white'
-                          : message.sender === 'error'
-                          ? 'border'
-                          : 'border'
-                      }`}
-                      style={{
-                        backgroundColor: message.sender === 'user' 
-                          ? `${primaryColor}cc` 
-                          : message.sender === 'error'
-                          ? 'rgba(239, 68, 68, 0.2)'
-                          : 'rgba(255, 255, 255, 0.1)',
-                        borderColor: message.sender === 'error' 
-                          ? 'rgba(239, 68, 68, 0.5)' 
-                          : 'rgba(255, 255, 255, 0.2)',
-                        color: message.sender === 'error' ? '#fca5a5' : fontColor,
-                      }}
-                    >
-                      {message.sender === 'error' && (
-                        <div className="flex items-center space-x-2 mb-1">
-                          <AlertCircle size={14} className="text-red-400" />
-                          <span className="text-xs font-semibold text-red-400">
-                            {message.errorType === 'voice' ? 'Voice Error' : 
-                             message.errorType === 'validation' ? 'Validation Error' : 
-                             'Error'}
-                          </span>
-                        </div>
+            {/* Notification Dropdown Panel */}
+            <AnimatePresence>
+              {showNotifications && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                  className="overflow-hidden border-b flex-shrink-0 z-20"
+                  style={{ 
+                    borderColor: `${glowColor}10`,
+                    background: 'linear-gradient(180deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.9) 100%)',
+                    backdropFilter: 'blur(20px)',
+                    maxHeight: '50%'
+                  }}
+                >
+                  <div className="p-3 space-y-2 overflow-y-auto">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-semibold tracking-widest uppercase text-white/50">
+                        Notifications
+                      </span>
+                      {notifications.length > 0 && (
+                        <button
+                          onClick={() => setNotifications([])}
+                          className="text-[9px] px-2 py-1 rounded transition-colors text-white/40 hover:text-white/70 hover:bg-white/5"
+                        >
+                          Clear all
+                        </button>
                       )}
-                      {message.sender === 'assistant' && (
-                        <div className="flex items-center space-x-2 mb-1">
-                          <span className="text-xs font-semibold" style={{ color: glowColor }}>
-                            IRIS
-                          </span>
-                        </div>
-                      )}
-                      <p className="text-sm">{message.text}</p>
-                      <p 
-                        className="text-xs mt-1"
-                        style={{ 
-                          color: message.sender === 'user' ? 'rgba(255, 255, 255, 0.7)' : 'rgba(255, 255, 255, 0.5)' 
-                        }}
-                      >
-                        {message.timestamp.toLocaleTimeString()}
-                      </p>
-                    </motion.div>
+                    </div>
+                    
+                    {notifications.length === 0 ? (
+                      <div className="text-center py-6 text-[11px] text-white/40">
+                        No notifications
+                      </div>
+                    ) : (
+                      notifications.map((notif) => (
+                        <motion.div
+                          key={notif.id}
+                          initial={{ x: unreadCount > 0 && !notif.read ? -10 : 0, opacity: 0 }}
+                          animate={{ x: 0, opacity: 1 }}
+                          className="p-2.5 rounded-lg transition-all duration-150 group relative overflow-hidden"
+                          style={{
+                            backgroundColor: !notif.read ? `${glowColor}08` : 'rgba(255,255,255,0.03)',
+                            borderLeft: `2px solid ${getNotificationColor(notif.type, glowColor)}`
+                          }}
+                        >
+                          {/* Type indicator glow */}
+                          <div 
+                            className="absolute top-0 right-0 w-16 h-16 opacity-10 blur-xl rounded-full -translate-y-1/2 translate-x-1/2"
+                            style={{ backgroundColor: getNotificationColor(notif.type, glowColor) }}
+                          />
+                          
+                          <div className="flex items-start justify-between relative">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                {getNotificationIcon(notif.type, glowColor)}
+                                <span 
+                                  className="text-[9px] font-semibold tracking-wide uppercase"
+                                  style={{ color: getNotificationColor(notif.type, glowColor) }}
+                                >
+                                  {notif.type}
+                                </span>
+                                <span className="text-[8px] text-white/30 tabular-nums ml-auto">
+                                  {notif.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                </span>
+                              </div>
+                              <p className="text-[11px] font-medium text-white/90 leading-snug">
+                                {notif.title}
+                              </p>
+                              <p className="text-[10px] text-white/60 mt-0.5 line-clamp-2">
+                                {notif.message}
+                              </p>
+                            </div>
+                          </div>
+                          
+                          {/* Action buttons based on type */}
+                          {notif.type === 'permission' && (
+                            <div className="flex gap-2 mt-2">
+                              <button
+                                onClick={() => handlePermissionGrant(notif.id)}
+                                className="flex-1 py-1 rounded text-[9px] font-medium transition-colors"
+                                style={{ 
+                                  background: `${glowColor}20`,
+                                  color: glowColor
+                                }}
+                              >
+                                Allow
+                              </button>
+                              <button
+                                onClick={() => handlePermissionDeny(notif.id)}
+                                className="flex-1 py-1 rounded text-[9px] font-medium transition-colors bg-white/10 text-white/70 hover:bg-white/15"
+                              >
+                                Deny
+                              </button>
+                            </div>
+                          )}
+                          
+                          {notif.type === 'task' && (
+                            <div className="mt-2">
+                              <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                                <motion.div 
+                                  className="h-full rounded-full"
+                                  style={{ backgroundColor: glowColor }}
+                                  initial={{ width: 0 }}
+                                  animate={{ width: `${notif.progress || 0}%` }}
+                                />
+                              </div>
+                              <span className="text-[8px] text-white/40 mt-1 block">
+                                {notif.progress || 0}% complete
+                              </span>
+                            </div>
+                          )}
+                        </motion.div>
+                      ))
+                    )}
                   </div>
-                ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-                {isTyping && (
-                  <div className="flex justify-start">
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.9 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      className="border rounded-2xl px-4 py-2"
-                      style={{
-                        backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                        borderColor: 'rgba(255, 255, 255, 0.2)',
-                        color: fontColor,
-                      }}
+            {/* History Dropdown Panel - Thread-Based */}
+            <AnimatePresence>
+              {showHistory && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
+                  className="overflow-hidden border-b flex-shrink-0 z-20"
+                  style={{ 
+                    borderColor: `${glowColor}10`,
+                    background: 'linear-gradient(180deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.9) 100%)',
+                    backdropFilter: 'blur(20px)',
+                    maxHeight: '50%'
+                  }}
+                >
+                  <div className="p-3 space-y-2 overflow-y-auto">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-semibold tracking-widest uppercase text-white/50">
+                        Conversation Threads
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] text-white/30">
+                          {conversations.length} total
+                        </span>
+                        <button
+                          onClick={handleNewConversation}
+                          className="p-1.5 rounded transition-all duration-150 flex items-center gap-1"
+                          style={{ color: `${fontColor}50` }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.color = glowColor;
+                            e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.color = `${fontColor}50`;
+                            e.currentTarget.style.backgroundColor = 'transparent';
+                          }}
+                          title="Start new conversation"
+                          aria-label="New conversation"
+                        >
+                          <Plus size={12} />
+                        </button>
+                      </div>
+                    </div>
+                    
+                    {conversations.length === 0 ? (
+                      <div className="text-center py-6 text-[11px] text-white/40">
+                        No conversations yet
+                      </div>
+                    ) : (
+                      conversations.map((conv) => (
+                        <motion.div
+                          key={conv.id}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          onClick={() => handleSelectConversation(conv.id)}
+                          className="group relative p-2.5 rounded-lg cursor-pointer transition-all duration-150 hover:bg-white/5"
+                          style={{
+                            backgroundColor: activeConversationId === conv.id ? `${glowColor}15` : 'rgba(255,255,255,0.03)',
+                            borderLeft: `2px solid ${activeConversationId === conv.id ? glowColor : 'transparent'}`
+                          }}
+                        >
+                          <div className="flex items-center gap-2">
+                            {/* Content */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                {conv.isPinned && (
+                                  <Pin size={10} style={{ color: glowColor }} className="fill-current flex-shrink-0" />
+                                )}
+                                <span className="text-[10px] font-medium text-white/90 truncate">
+                                  {conv.title}
+                                </span>
+                                <span className="text-[8px] text-white/30 tabular-nums flex-shrink-0">
+                                  {conv.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                </span>
+                              </div>
+                              <p className="text-[9px] text-white/50 truncate leading-snug">
+                                {conv.lastMessagePreview}
+                                {conv.lastMessagePreview.length >= 60 ? '...' : ''}
+                              </p>
+                              <span className="text-[8px] text-white/30 mt-1 block">
+                                {conv.messages.length} message{conv.messages.length !== 1 ? 's' : ''}
+                              </span>
+                            </div>
+                            
+                            {/* Action buttons - centered on right */}
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 self-center">
+                              <button
+                                onClick={(e) => handlePinConversation(e, conv.id)}
+                                className="p-1.5 rounded transition-colors hover:bg-white/10"
+                                style={{ color: conv.isPinned ? glowColor : 'rgba(255,255,255,0.5)' }}
+                                title={conv.isPinned ? 'Unpin' : 'Pin to top'}
+                              >
+                                <Pin size={12} className={conv.isPinned ? 'fill-current' : ''} />
+                              </button>
+                              <button
+                                onClick={(e) => handleDeleteConversation(e, conv.id)}
+                                className="p-1.5 rounded transition-colors hover:bg-white/10 text-white/50 hover:text-red-400"
+                                title="Delete conversation"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Messages Area - Thread-Based with Separators */}
+            <div className="flex-1 overflow-y-auto px-3 py-3 relative z-10">
+              {messages.length === 0 && !isTyping ? (
+                <div 
+                  className="flex-1 flex items-center justify-center h-full"
+                  style={{ color: `${fontColor}50` }}
+                >
+                  <p className="text-center text-[11px]">
+                    {conversations.length === 0 ? (
+                      <>
+                        Start a conversation
+                        <br />
+                        <span className="text-[10px] opacity-70">How can I help you today?</span>
+                      </>
+                    ) : (
+                      <>
+                        Select a conversation
+                        <br />
+                        <span className="text-[10px] opacity-70">or start a new one</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-0">
+                  {messages.map((message, index) => {
+                    // Smart message length handling
+                    const charCount = message.text.length;
+                    const contentType = getContentType(message);
+                    const isExpanded = isMessageExpanded(message.id);
+                    const shouldTruncate = charCount > MESSAGE_THRESHOLDS.TRUNCATE_AT;
+                    const isDocumentMode = charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
+                    
+                    // Content type icon mapping
+                    const ContentTypeIcon = ({ size = 12 }: { size?: number }) => {
+                      const style = { color: glowColor };
+                      switch (contentType) {
+                        case 'markdown': return <FileText size={size} style={style} />;
+                        case 'email': return <Mail size={size} style={style} />;
+                        case 'video': return <Video size={size} style={style} />;
+                        case 'picture': return <Image size={size} style={style} />;
+                        default: return <File size={size} style={style} />;
+                      }
+                    };
+                    
+                    return (
+                    <div key={message.id}>
+                      {/* Horizontal separator */}
+                      {index > 0 && (
+                        <div 
+                          className="h-px w-full my-3"
+                          style={{ backgroundColor: `${glowColor}10` }}
+                        />
+                      )}
+                      
+                      <div
+                        className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                      >
+                        {message.sender === 'user' ? (
+                          // User message - no bubble container
+                          <motion.div
+                            initial={{ opacity: prefersReducedMotion ? 1 : 0, y: prefersReducedMotion ? 0 : 5 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
+                            className="max-w-[90%] py-2"
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[9px] font-medium text-white/40">You</span>
+                              <span className="text-[8px] text-white/30 tabular-nums">
+                                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                              </span>
+                            </div>
+                            
+                            {/* Smart message length handling for user messages */}
+                            {isDocumentMode ? (
+                              // Document mode for long messages
+                              <div className="mt-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <ContentTypeIcon size={16} />
+                                  <span className="text-[10px] font-medium" style={{ color: fontColor }}>
+                                    {ContentTypeLabels[contentType]}
+                                  </span>
+                                  {charCount > MESSAGE_THRESHOLDS.WARNING_AT && (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                                      Large
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[13px] leading-relaxed text-white/85 line-clamp-3">
+                                  {message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT)}...
+                                </p>
+                                <p className="text-[9px] text-white/40 mt-1">
+                                  {charCount.toLocaleString()} characters
+                                </p>
+                                <div className="flex gap-2 mt-3">
+                                  <button
+                                    onClick={() => setDocumentModalMessage(message)}
+                                    className="flex-1 py-1.5 px-3 rounded text-[10px] font-medium transition-all"
+                                    style={{ backgroundColor: `${glowColor}20`, color: glowColor }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}30`; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}20`; }}
+                                  >
+                                    View full document
+                                  </button>
+                                  <button
+                                    onClick={() => handleShareMessage(message)}
+                                    className="p-1.5 rounded transition-colors"
+                                    style={{ color: `${fontColor}60` }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                    title="Share"
+                                  >
+                                    <Share size={14} />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDownloadMessage(message)}
+                                    className="p-1.5 rounded transition-colors"
+                                    style={{ color: `${fontColor}60` }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                    title="Download"
+                                  >
+                                    <Download size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            ) : shouldTruncate ? (
+                              // Truncated message with expand option
+                              <div className="mt-1">
+                                <div className="flex items-center gap-1 mb-1">
+                                  <ContentTypeIcon size={12} />
+                                  <span className="text-[9px] text-white/50 uppercase tracking-wide">{contentType}</span>
+                                </div>
+                                <div className="relative">
+                                  <p className="text-[13px] leading-relaxed text-white/90">
+                                    {isExpanded ? message.text : message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT) + '...'}
+                                  </p>
+                                  {!isExpanded && (
+                                    <div 
+                                      className="absolute bottom-0 left-0 right-0 h-6 pointer-events-none"
+                                      style={{ background: 'linear-gradient(to bottom, transparent, rgba(10,10,20,0.95))' }}
+                                    />
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => toggleMessageExpanded(message.id)}
+                                  className="mt-1 flex items-center gap-1 text-[10px] font-medium transition-colors"
+                                  style={{ color: glowColor }}
+                                  aria-expanded={isExpanded}
+                                >
+                                  {isExpanded ? (
+                                    <>Show less <ChevronUp size={12} /></>
+                                  ) : (
+                                    <>Show more <ChevronDown size={12} /></>
+                                  )}
+                                </button>
+                                {isExpanded && (
+                                  <div className="flex gap-2 mt-2 pt-2 border-t border-white/10">
+                                    <button
+                                      onClick={() => handleShareMessage(message)}
+                                      className="p-1.5 rounded transition-colors hover:bg-white/5"
+                                      style={{ color: `${fontColor}70` }}
+                                      title="Share"
+                                    >
+                                      <Share size={14} />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDownloadMessage(message)}
+                                      className="p-1.5 rounded transition-colors hover:bg-white/5"
+                                      style={{ color: `${fontColor}70` }}
+                                      title="Download"
+                                    >
+                                      <Download size={14} />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              // Short message - display fully
+                              <p className="text-[13px] leading-relaxed text-white/90">{message.text}</p>
+                            )}
+                          </motion.div>
+                        ) : message.sender === 'assistant' ? (
+                          // AI message - no bubble container with feedback bar
+                          <motion.div
+                            initial={{ opacity: prefersReducedMotion ? 1 : 0, y: prefersReducedMotion ? 0 : 5 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
+                            className="max-w-[90%] py-2"
+                          >
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <span 
+                                className="text-[9px] font-semibold tracking-wide"
+                                style={{ color: glowColor }}
+                              >
+                                IRIS
+                              </span>
+                              {isSpeaking && message.id === currentTtsMessageId && (
+                                <span className="text-[8px] text-white/40 flex items-center gap-0.5">
+                                  <span className="w-0.5 h-0.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '0ms' }} />
+                                  <span className="w-0.5 h-0.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '150ms' }} />
+                                  <span className="w-0.5 h-0.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '300ms' }} />
+                                </span>
+                              )}
+                              <span className="text-[8px] text-white/30 tabular-nums ml-auto">
+                                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                              </span>
+                            </div>
+                            
+                            {/* Message content with smart length handling and TTS highlighting */}
+                            {isDocumentMode ? (
+                              // Document mode for long messages
+                              <div className="mt-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <ContentTypeIcon size={16} />
+                                  <span className="text-[10px] font-medium" style={{ color: fontColor }}>
+                                    {ContentTypeLabels[contentType]}
+                                  </span>
+                                  {charCount > MESSAGE_THRESHOLDS.WARNING_AT && (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                                      Large
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[13px] leading-relaxed text-white/85 line-clamp-3">
+                                  {message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT)}...
+                                </p>
+                                <p className="text-[9px] text-white/40 mt-1">
+                                  {charCount.toLocaleString()} characters
+                                </p>
+                                <div className="flex gap-2 mt-3">
+                                  <button
+                                    onClick={() => setDocumentModalMessage(message)}
+                                    className="flex-1 py-1.5 px-3 rounded text-[10px] font-medium transition-all"
+                                    style={{ backgroundColor: `${glowColor}20`, color: glowColor }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}30`; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}20`; }}
+                                  >
+                                    View full document
+                                  </button>
+                                  <button
+                                    onClick={() => handleShareMessage(message)}
+                                    className="p-1.5 rounded transition-colors"
+                                    style={{ color: `${fontColor}60` }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                    title="Share"
+                                  >
+                                    <Share size={14} />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDownloadMessage(message)}
+                                    className="p-1.5 rounded transition-colors"
+                                    style={{ color: `${fontColor}60` }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                    title="Download"
+                                  >
+                                    <Download size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            ) : shouldTruncate ? (
+                              // Truncated message with expand option
+                              <div className="mt-1">
+                                <div className="flex items-center gap-1 mb-1">
+                                  <ContentTypeIcon size={12} />
+                                  <span className="text-[9px] text-white/50 uppercase tracking-wide">{contentType}</span>
+                                </div>
+                                <div className="relative">
+                                  <div className="text-[13px] leading-relaxed text-white/85 prose prose-invert prose-sm max-w-none">
+                                    {isExpanded ? (
+                                      message.words ? message.words.map((word, idx) => (
+                                        <motion.span
+                                          key={idx}
+                                          initial={idx === message.currentWordIndex ? { opacity: 0.5 } : false}
+                                          animate={{ 
+                                            opacity: idx === message.currentWordIndex ? 1 : idx < (message.currentWordIndex || -1) ? 0.7 : 0.85,
+                                            color: idx === message.currentWordIndex ? glowColor : 'rgba(255,255,255,0.85)',
+                                          }}
+                                          transition={{ duration: prefersReducedMotion ? 0 : 0.1 }}
+                                        >
+                                          {word}{' '}
+                                        </motion.span>
+                                      )) : message.text
+                                    ) : (
+                                      message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT) + '...'
+                                    )}
+                                  </div>
+                                  {!isExpanded && (
+                                    <div 
+                                      className="absolute bottom-0 left-0 right-0 h-6 pointer-events-none"
+                                      style={{ background: 'linear-gradient(to bottom, transparent, rgba(10,10,20,0.95))' }}
+                                    />
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => toggleMessageExpanded(message.id)}
+                                  className="mt-1 flex items-center gap-1 text-[10px] font-medium transition-colors"
+                                  style={{ color: glowColor }}
+                                  aria-expanded={isExpanded}
+                                >
+                                  {isExpanded ? (
+                                    <>Show less <ChevronUp size={12} /></>
+                                  ) : (
+                                    <>Show more <ChevronDown size={12} /></>
+                                  )}
+                                </button>
+                                {isExpanded && (
+                                  <div className="flex gap-2 mt-2 pt-2 border-t border-white/10">
+                                    <button
+                                      onClick={() => handleShareMessage(message)}
+                                      className="p-1.5 rounded transition-colors hover:bg-white/5"
+                                      style={{ color: `${fontColor}70` }}
+                                      title="Share"
+                                    >
+                                      <Share size={14} />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDownloadMessage(message)}
+                                      className="p-1.5 rounded transition-colors hover:bg-white/5"
+                                      style={{ color: `${fontColor}70` }}
+                                      title="Download"
+                                    >
+                                      <Download size={14} />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              // Short message - display fully with TTS highlighting
+                              <div className="text-[13px] leading-relaxed text-white/85 prose prose-invert prose-sm max-w-none">
+                                {message.words ? message.words.map((word, idx) => (
+                                  <motion.span
+                                    key={idx}
+                                    initial={idx === message.currentWordIndex ? { opacity: 0.5 } : false}
+                                    animate={{ 
+                                      opacity: idx === message.currentWordIndex ? 1 : idx < (message.currentWordIndex || -1) ? 0.7 : 0.85,
+                                      color: idx === message.currentWordIndex ? glowColor : 'rgba(255,255,255,0.85)',
+                                    }}
+                                    transition={{ duration: prefersReducedMotion ? 0 : 0.1 }}
+                                  >
+                                    {word}{' '}
+                                  </motion.span>
+                                )) : message.text}
+                              </div>
+                            )}
+                            
+                            {/* Feedback action bar */}
+                            <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/5">
+                              <button
+                                onClick={() => handleCopyMessage(message.text, message.id)}
+                                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors hover:bg-white/5 text-white/40 hover:text-white/70"
+                                title="Copy to clipboard"
+                              >
+                                <Copy size={12} />
+                                {copiedMessageId === message.id ? 'Copied!' : 'Copy'}
+                              </button>
+                              
+                              <button
+                                onClick={() => handlePlayTTS(message.text)}
+                                className="p-1.5 rounded transition-colors hover:bg-white/5 text-white/40 hover:text-white/70"
+                                title="Play text-to-speech"
+                              >
+                                <Volume2 size={12} />
+                              </button>
+                              
+                              <div className="flex items-center gap-1 ml-auto">
+                                <button
+                                  onClick={() => handleFeedback(message.id, 'positive')}
+                                  className={`p-1.5 rounded transition-colors ${
+                                    message.feedback === 'positive' 
+                                      ? 'text-green-400 bg-green-400/10' 
+                                      : 'text-white/40 hover:text-white/70 hover:bg-white/5'
+                                  }`}
+                                  title="Helpful response"
+                                >
+                                  <ThumbsUp size={12} className={message.feedback === 'positive' ? 'fill-current' : ''} />
+                                </button>
+                                <button
+                                  onClick={() => handleFeedback(message.id, 'negative')}
+                                  className={`p-1.5 rounded transition-colors ${
+                                    message.feedback === 'negative' 
+                                      ? 'text-red-400 bg-red-400/10' 
+                                      : 'text-white/40 hover:text-white/70 hover:bg-white/5'
+                                  }`}
+                                  title="Not helpful"
+                                >
+                                  <ThumbsDown size={12} className={message.feedback === 'negative' ? 'fill-current' : ''} />
+                                </button>
+                              </div>
+                            </div>
+                          </motion.div>
+                        ) : (
+                          // Error message
+                          <motion.div
+                            initial={{ opacity: prefersReducedMotion ? 1 : 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
+                            className="max-w-[90%] py-2"
+                          >
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <AlertCircle size={10} className="text-red-400" />
+                              <span className="text-[9px] font-semibold text-red-400">
+                                {message.errorType === 'voice' ? 'Voice Error' : 
+                                 message.errorType === 'validation' ? 'Validation' : 'Error'}
+                              </span>
+                              <span className="text-[8px] text-white/30 tabular-nums ml-auto">
+                                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                              </span>
+                            </div>
+                            <p className="text-[12px] text-red-200/90 leading-relaxed">{message.text}</p>
+                          </motion.div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                  {/* Typing Indicator */}
+                  {isTyping && (
+                    <div>
+                      <div 
+                        className="h-px w-full my-3"
+                        style={{ backgroundColor: `${glowColor}10` }}
+                      />
+                      <div className="flex justify-start">
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          className="py-2"
+                        >
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span className="text-[9px] font-semibold" style={{ color: glowColor }}>
+                              IRIS
+                            </span>
+                            <span className="text-[8px] text-white/40">thinking...</span>
+                          </div>
+                          <div className="flex gap-1">
+                            <motion.div 
+                              className="w-1 h-1 rounded-full"
+                              style={{ backgroundColor: glowColor }}
+                              animate={prefersReducedMotion ? {} : { opacity: [0.3, 1, 0.3] }}
+                              transition={{ duration: 1, repeat: Infinity }}
+                            />
+                            <motion.div 
+                              className="w-1 h-1 rounded-full"
+                              style={{ backgroundColor: glowColor }}
+                              animate={prefersReducedMotion ? {} : { opacity: [0.3, 1, 0.3] }}
+                              transition={{ duration: 1, repeat: Infinity, delay: 0.2 }}
+                            />
+                            <motion.div 
+                              className="w-1 h-1 rounded-full"
+                              style={{ backgroundColor: glowColor }}
+                              animate={prefersReducedMotion ? {} : { opacity: [0.3, 1, 0.3] }}
+                              transition={{ duration: 1, repeat: Infinity, delay: 0.4 }}
+                            />
+                          </div>
+                        </motion.div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div ref={messagesEndRef} />
+                </div>
+              )}
+            </div>
+
+            {/* Document View Modal */}
+            <AnimatePresence>
+              {documentModalMessage && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
+                  className="absolute inset-0 z-50 flex flex-col"
+                  style={{ 
+                    background: 'linear-gradient(135deg, rgba(10,10,20,0.99) 0%, rgba(5,5,10,0.98) 100%)'
+                  }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="document-modal-title"
+                >
+                  <motion.div
+                    initial={{ scale: 0.98, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.98, opacity: 0 }}
+                    transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
+                    className="w-full h-full flex flex-col overflow-hidden"
+                  >
+                    {/* Modal header - compact */}
+                    <div 
+                      className="px-2 py-1.5 flex items-center justify-between border-b flex-shrink-0"
+                      style={{ borderColor: `${glowColor}20` }}
                     >
-                      <div className="flex items-center space-x-2 mb-1">
-                        <span className="text-xs font-semibold" style={{ color: glowColor }}>
-                          IRIS is typing...
+                      <div className="flex items-center gap-1.5" id="document-modal-title">
+                        {(() => {
+                          const type = getContentType(documentModalMessage);
+                          const Icon = type === 'markdown' ? FileText :
+                                      type === 'email' ? Mail :
+                                      type === 'video' ? Video :
+                                      type === 'picture' ? Image : File;
+                          return <Icon size={10} style={{ color: glowColor }} />;
+                        })()}
+                        <span className="text-[10px] font-medium" style={{ color: fontColor }}>
+                          {ContentTypeLabels[getContentType(documentModalMessage)]}
+                        </span>
+                        <span className="text-[8px] text-white/40">
+                          ({documentModalMessage.text.length.toLocaleString()})
                         </span>
                       </div>
-                      <div className="flex space-x-1">
-                        <div 
-                          className="w-2 h-2 rounded-full animate-bounce" 
-                          style={{ backgroundColor: `${glowColor}99` }}
-                        />
-                        <div 
-                          className="w-2 h-2 rounded-full animate-bounce" 
-                          style={{ backgroundColor: `${glowColor}99`, animationDelay: '0.1s' }}
-                        />
-                        <div 
-                          className="w-2 h-2 rounded-full animate-bounce" 
-                          style={{ backgroundColor: `${glowColor}99`, animationDelay: '0.2s' }}
-                        />
-                      </div>
-                    </motion.div>
-                  </div>
-                )}
+                      <button
+                        onClick={() => setDocumentModalMessage(null)}
+                        className="p-1 rounded transition-all"
+                        style={{ color: `${fontColor}60` }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; }}
+                        aria-label="Close"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                    
+                    {/* Modal content - compact */}
+                    <div 
+                      className="p-2 overflow-y-auto flex-1"
+                    >
+                      <pre 
+                        className="text-[10px] leading-snug whitespace-pre-wrap font-mono"
+                        style={{ color: 'rgba(255,255,255,0.85)' }}
+                      >
+                        {documentModalMessage.text}
+                      </pre>
+                    </div>
+                    
+                    {/* Modal action bar - compact */}
+                    <div 
+                      className="px-2 py-1.5 flex gap-1.5 border-t flex-shrink-0"
+                      style={{ borderColor: `${glowColor}20` }}
+                    >
+                      <button
+                        onClick={() => handleDownloadMessage(documentModalMessage)}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-[9px] font-medium transition-colors"
+                        style={{ backgroundColor: `${glowColor}20`, color: glowColor }}
+                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}30`; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}20`; }}
+                      >
+                        <Download size={10} />
+                        Save
+                      </button>
+                      <button
+                        onClick={() => handleShareMessage(documentModalMessage)}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-[9px] font-medium transition-colors"
+                        style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: fontColor }}
+                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.12)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.08)'; }}
+                      >
+                        <Share size={10} />
+                        Share
+                      </button>
+                      <button
+                        onClick={() => handleCopyMessage(documentModalMessage.text, documentModalMessage.id)}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-[9px] font-medium transition-colors"
+                        style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: fontColor }}
+                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.12)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.08)'; }}
+                      >
+                        <Copy size={10} />
+                        {copiedMessageId === documentModalMessage.id ? '✓' : 'Copy'}
+                      </button>
+                      
+                      {/* Close button */}
+                      <button
+                        onClick={() => setDocumentModalMessage(null)}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-[9px] font-medium transition-colors ml-auto"
+                        style={{ color: `${fontColor}70` }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}70`; }}
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-                <div ref={messagesEndRef} />
-              </div>
-            )}
-
-            {/* Empty State - Conditional */}
-            {messages.length === 0 && !isTyping && (
-              <div 
-                className="flex-1 flex items-center justify-center p-4"
-                style={{ color: `${fontColor}80` }}
-              >
-                <p className="text-center">
-                  Start a conversation with IRIS
-                  <br />
-                  <span className="text-sm">How can I help you today?</span>
-                </p>
-              </div>
-            )}
-
-            {/* Input Area */}
+            {/* Input Area - Command Line Style with Drag & Drop */}
             <div 
-              className="p-4 border-t flex-shrink-0"
-              style={{ borderColor: `${glowColor}20` }}
+              className="px-3 pb-3 pt-2 flex-shrink-0 relative z-30"
+              style={{
+                background: 'linear-gradient(0deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.5) 50%, transparent 100%)'
+              }}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
             >
-              <div className="flex items-center space-x-3">
+              {/* Drag overlay with smile/file icon */}
+              <AnimatePresence>
+                {isDraggingFile && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute bottom-12 left-3 flex items-center gap-1.5 pointer-events-none z-40"
+                  >
+                    {draggedFileType === 'image' ? (
+                      <Image size={14} style={{ color: glowColor }} />
+                    ) : draggedFileType === 'video' ? (
+                      <Video size={14} style={{ color: glowColor }} />
+                    ) : (
+                      <Smile size={14} style={{ color: glowColor }} />
+                    )}
+                    <span className="text-[10px]" style={{ color: fontColor }}>
+                      Drop file here
+                    </span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div className="relative flex items-end gap-2">
+                <div className="flex-1 relative">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    placeholder={voiceState === 'listening' ? 'Listening...' : 'Type command or drop file...'}
+                    disabled={voiceState === 'listening'}
+                    className="w-full bg-transparent border-0 border-b py-2.5 pr-10 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50"
+                    style={{
+                      borderColor: isDraggingFile ? glowColor : inputText ? glowColor : `${glowColor}30`,
+                      color: fontColor,
+                      borderBottomWidth: '1px',
+                      boxShadow: isDraggingFile ? `0 0 8px ${glowColor}40` : inputText ? `0 1px 0 0 ${glowColor}` : 'none',
+                    }}
+                  />
+                  
+                  {/* Voice indicator */}
+                  {voiceState === 'listening' && (
+                    <motion.div 
+                      className="absolute left-0 bottom-0 h-[1px]"
+                      style={{ backgroundColor: glowColor }}
+                      animate={{ width: [`${audioLevel * 100}%`, `${Math.min(100, audioLevel * 150)}%`] }}
+                      transition={{ duration: 0.1 }}
+                    />
+                  )}
+                </div>
+                
+                {/* Hidden file input */}
                 <input
-                  ref={inputRef}
-                  type="text"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  placeholder="Type your message..."
-                  className="flex-1 bg-white/5 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 transition-all"
-                  style={{
-                    borderColor: `${glowColor}20`,
-                    color: fontColor,
-                    caretColor: glowColor,
-                  }}
+                  ref={fileInputRef}
+                  type="file"
+                  onChange={handleFileInputChange}
+                  className="hidden"
+                  accept="*/*"
                 />
-                <button
+
+                {/* Send button - inside */}
+                <motion.button
                   onClick={handleSendMessage}
-                  disabled={!inputText.trim() || isTyping}
-                  className="p-3 text-white rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
+                  className="p-2.5 rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                   style={{
-                    backgroundColor: `${primaryColor}cc`,
+                    backgroundColor: inputText.trim() ? `${glowColor}20` : 'transparent',
+                    color: inputText.trim() ? glowColor : `${fontColor}40`,
+                    border: `1px solid ${inputText.trim() ? `${glowColor}40` : 'transparent'}`,
                   }}
-                  onMouseEnter={(e) => !e.currentTarget.disabled && (e.currentTarget.style.backgroundColor = primaryColor)}
-                  onMouseLeave={(e) => !e.currentTarget.disabled && (e.currentTarget.style.backgroundColor = `${primaryColor}cc`)}
+                  whileHover={inputText.trim() ? { scale: 1.05 } : {}}
+                  whileTap={inputText.trim() ? { scale: 0.95 } : {}}
+                  title="Send message"
                 >
-                  <Send size={18} />
-                </button>
+                  <Send size={16} />
+                </motion.button>
+
+                {/* Plus button for file upload - outside/right */}
+                <motion.button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={voiceState === 'listening'}
+                  className="p-2 rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                  style={{
+                    backgroundColor: 'transparent',
+                    color: `${fontColor}60`,
+                    border: `1px solid ${glowColor}30`,
+                  }}
+                  whileHover={{ scale: 1.05, backgroundColor: `${glowColor}15` }}
+                  whileTap={{ scale: 0.95 }}
+                  title="Upload file"
+                >
+                  <Plus size={14} />
+                </motion.button>
               </div>
             </div>
           </div>

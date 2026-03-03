@@ -15,7 +15,7 @@ fn main() {
             window.set_skip_taskbar(true).ok();
             
             // Keep size locked (prevents resizing/snap assist from changing size)
-            let size = PhysicalSize::new(460, 460);
+            let size = PhysicalSize::new(680, 680);
             window.set_min_size(Some(size)).ok();
             window.set_max_size(Some(size)).ok();
             
