@@ -2,11 +2,11 @@
 
 import React, { useMemo, useCallback } from "react"
 import { motion, AnimatePresence } from 'framer-motion'
-import type { MiniNode } from "@/types/navigation"
+import type { Card } from "@/types/navigation"
 import { ENERGY_CYCLE } from '@/lib/timing-config'
 
 interface DualRingMechanismProps {
-  items: MiniNode[]
+  items: Card[]
   selectedIndex: number
   onSelect: (index: number) => void
   glowColor: string
@@ -70,9 +70,10 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
   voiceIntensity = 0,
 }) => {
   // Phase 9.1: Consolidated 2-ring distribution logic
+  // Equal distribution: 50/50 split between outer and inner rings
   const { outerItems, innerItems, splitPoint } = useMemo(() => {
     const total = items.length
-    const split = Math.ceil(total * 0.6)
+    const split = Math.ceil(total / 2)
 
     return {
       outerItems: items.slice(0, split),

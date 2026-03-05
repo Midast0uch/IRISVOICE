@@ -2,12 +2,16 @@
 
 import React, { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { X, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, AlertCircle } from 'lucide-react'
+import { X, Bell, MessageSquare, AlertTriangle, Shield, Loader, CheckCircle, Info, AlertCircle, LayoutDashboard, Activity, FileText, Store } from 'lucide-react'
 import { DarkGlassDashboard } from "./dark-glass-dashboard"
+import { ActivityPanel } from "./dashboard/ActivityPanel"
+import { LogsPanel } from "./dashboard/LogsPanel"
+import { MarketplaceScreen } from "./integrations/MarketplaceScreen"
 import { useNavigation } from "@/contexts/NavigationContext"
+import { useBrandColor } from "@/contexts/BrandColorContext"
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket"
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon"
-import { SpotlightState } from "@/hooks/useUILayoutState"
+import { SpotlightState, UILayoutState } from "@/hooks/useUILayoutState"
 
 // Notification types for the universal notification system
 interface Notification {
@@ -44,6 +48,8 @@ const getNotificationIcon = (type: string, glowColor: string) => {
   }
 };
 
+export type DashboardTab = 'dashboard' | 'activity' | 'logs' | 'marketplace';
+
 interface DashboardWingProps {
   isOpen: boolean
   onClose: () => void
@@ -53,27 +59,63 @@ interface DashboardWingProps {
   // Spotlight Mode props
   spotlightState?: SpotlightState
   onSpotlightToggle?: () => void
+  // Solo mode props
+  isSolo?: boolean
+  uiState?: UILayoutState
+  // Chat open callback
+  onOpenChat?: () => void
+  isChatOpen?: boolean
+  // Tab navigation
+  activeTab?: DashboardTab
+  onTabChange?: (tab: DashboardTab) => void
 }
 
-export function DashboardWing({ 
-  isOpen, 
-  onClose, 
-  sendMessage, 
-  fieldValues, 
+const TABS: { id: DashboardTab; label: string; icon: React.ElementType }[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'activity', label: 'Activity', icon: Activity },
+  { id: 'logs', label: 'Logs', icon: FileText },
+  { id: 'marketplace', label: 'Marketplace', icon: Store },
+];
+
+export function DashboardWing({
+  isOpen,
+  onClose,
+  sendMessage,
+  fieldValues,
   updateField,
   spotlightState = SpotlightState.BALANCED,
-  onSpotlightToggle
+  onSpotlightToggle,
+  isSolo = false,
+  uiState,
+  onOpenChat,
+  isChatOpen = false,
+  activeTab: controlledActiveTab,
+  onTabChange,
 }: DashboardWingProps) {
-  const { activeTheme, voiceState } = useNavigation()
+  const { voiceState } = useNavigation()
+  const { getThemeConfig } = useBrandColor()
+  
+  // Tab state (controlled or uncontrolled)
+  const [internalActiveTab, setInternalActiveTab] = useState<DashboardTab>('dashboard');
+  const activeTab = controlledActiveTab ?? internalActiveTab;
+  
+  const handleTabChange = (tab: DashboardTab) => {
+    if (onTabChange) {
+      onTabChange(tab);
+    } else {
+      setInternalActiveTab(tab);
+    }
+  };
   
   // Notification system state (mirrors ChatWing)
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   
-  // Get theme colors with fallback
-  const glowColor = activeTheme?.glow || "#00d4ff"
-  const fontColor = activeTheme?.font || "#ffffff"
+  // Get theme colors from BrandColorContext for real-time updates
+  const brandTheme = getThemeConfig()
+  const glowColor = brandTheme.glow.color || "#00d4ff"
+  const fontColor = brandTheme.text.primary || "#ffffff"
   
   // Global error state
   const globalError = voiceState === 'error';
@@ -85,34 +127,40 @@ export function DashboardWing({
 
   // Spotlight dynamic styles
   const getSpotlightWidth = () => {
-    if (isInDashboardSpotlight) return 380; // Spotlight width
-    if (isInChatSpotlight) return 180; // Background width
+    if (isInDashboardSpotlight) return 380; // Spotlight width (works in solo and both-open)
+    if (isSolo) return 280; // Solo balanced width
+    if (isInChatSpotlight) return 180; // Background width when chat is spotlighted
     return 280; // Balanced width
   };
 
   const getSpotlightTransform = () => {
-    if (isInDashboardSpotlight) return 'translateY(-50%) rotateY(0deg) rotateX(0deg)';
+    if (isInDashboardSpotlight) return 'translateY(-50%) rotateY(0deg) rotateX(0deg)'; // Flat when spotlighted
+    if (isSolo) return 'translateY(-50%) rotateY(-15deg) rotateX(2deg)'; // Solo balanced: angled
     if (isInChatSpotlight) return 'translateY(-50%) rotateY(-15deg) rotateX(2deg)';
     return 'translateY(-50%) rotateY(-15deg) rotateX(2deg)';
   };
 
   const getSpotlightOpacity = () => {
+    if (isSolo) return 1.0; // Solo: full opacity
     if (isInChatSpotlight) return 0.3;
     return 1.0;
   };
 
   const getSpotlightFilter = () => {
+    if (isSolo) return 'none'; // Solo: no filter
     if (isInChatSpotlight) return 'saturate(0.6) blur(2px)';
     return 'none';
   };
 
   const getSpotlightZIndex = () => {
+    if (isSolo) return 10; // Solo: normal z-index
     if (isInDashboardSpotlight) return 20;
     if (isInChatSpotlight) return 5;
     return 10;
   };
 
   const getSpotlightPointerEvents = () => {
+    if (isSolo) return 'auto'; // Solo: always interactive
     if (isInChatSpotlight) return 'none';
     return 'auto';
   };
@@ -351,6 +399,32 @@ export function DashboardWing({
                   )}
                 </button>
                 
+                {/* Open Chat - visible in solo mode or when chat is closed */}
+                {onOpenChat && !isChatOpen && (
+                  <button
+                    onClick={() => {
+                      onOpenChat();
+                      setShowNotifications(false);
+                    }}
+                    className="p-2 rounded-lg transition-all duration-150"
+                    style={{ 
+                      color: glowColor,
+                      backgroundColor: 'transparent'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = fontColor;
+                      e.currentTarget.style.backgroundColor = `${glowColor}20`;
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = glowColor;
+                      e.currentTarget.style.backgroundColor = 'transparent';
+                    }}
+                    title="Open Chat"
+                  >
+                    <MessageSquare size={16} />
+                  </button>
+                )}
+                
                 {/* Close */}
                 <button
                   onClick={onClose}
@@ -369,6 +443,51 @@ export function DashboardWing({
                   <X size={16} />
                 </button>
               </div>
+            </div>
+
+            {/* Tab Navigation Bar - 32px height */}
+            <div
+              className="h-8 flex items-center px-2 border-b flex-shrink-0 relative z-30"
+              style={{ borderColor: `${glowColor}15` }}
+            >
+              {TABS.map((tab) => {
+                const isActive = activeTab === tab.id;
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => handleTabChange(tab.id)}
+                    className="relative flex-1 h-full flex items-center justify-center gap-1.5 text-[11px] font-medium transition-all duration-150"
+                    style={{
+                      color: isActive ? glowColor : `${fontColor}50`,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isActive) e.currentTarget.style.color = `${fontColor}80`;
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isActive) e.currentTarget.style.color = `${fontColor}50`;
+                    }}
+                  >
+                    <Icon size={12} />
+                    <span>{tab.label}</span>
+                    {isActive && (
+                      <motion.div
+                        layoutId="activeTab"
+                        className="absolute bottom-0 left-1 right-1 h-[2px] rounded-t"
+                        style={{
+                          background: glowColor,
+                          boxShadow: `0 -2px 8px ${glowColor}60`,
+                        }}
+                        transition={{
+                          type: "spring",
+                          stiffness: 400,
+                          damping: 30,
+                        }}
+                      />
+                    )}
+                  </button>
+                );
+              })}
             </div>
 
             {/* Notification Dropdown Panel */}
@@ -492,12 +611,73 @@ export function DashboardWing({
               )}
             </AnimatePresence>
 
-            {/* Dashboard Content */}
+            {/* Dashboard Content - Tab Switching */}
             <div className="flex-1 overflow-hidden relative z-10">
-              <DarkGlassDashboard 
-                fieldValues={fieldValues}
-                updateField={updateField}
-              />
+              <AnimatePresence mode="wait">
+                {activeTab === 'dashboard' && (
+                  <motion.div
+                    key="dashboard"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="h-full"
+                  >
+                    <DarkGlassDashboard
+                      fieldValues={fieldValues}
+                      updateField={updateField}
+                    />
+                  </motion.div>
+                )}
+                
+                {activeTab === 'activity' && (
+                  <motion.div
+                    key="activity"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="h-full"
+                  >
+                    <ActivityPanel
+                      glowColor={glowColor}
+                      fontColor={fontColor}
+                    />
+                  </motion.div>
+                )}
+                
+                {activeTab === 'logs' && (
+                  <motion.div
+                    key="logs"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="h-full"
+                  >
+                    <LogsPanel
+                      glowColor={glowColor}
+                      fontColor={fontColor}
+                    />
+                  </motion.div>
+                )}
+                
+                {activeTab === 'marketplace' && (
+                  <motion.div
+                    key="marketplace"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="h-full"
+                  >
+                    <MarketplaceScreen
+                      glowColor={glowColor}
+                      fontColor={fontColor}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </motion.div>
         </motion.div>

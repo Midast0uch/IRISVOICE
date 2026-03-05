@@ -1,0 +1,27 @@
+{
+  "name": "iris-mcp-imap",
+  "version": "1.0.0",
+  "description": "Iris MCP Server for generic IMAP/SMTP email",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "iris-mcp-imap": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "iris",
+    "mcp",
+    "email",
+    "imap",
+    "smtp"
+  ],
+  "author": "Torus Network",
+  "license": "MIT",
+  "dependencies": {
+    "imap": "^0.8.19",
+    "nodemailer": "^6.9.7",
+    "mailparser": "^3.6.5"
+  }
+}

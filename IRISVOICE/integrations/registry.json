@@ -1,0 +1,207 @@
+{
+  "integrations": [
+    {
+      "id": "gmail",
+      "name": "Gmail",
+      "category": "email",
+      "icon": "gmail.svg",
+      "auth_type": "oauth2",
+      "oauth": {
+        "provider": "google",
+        "scopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.send",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "client_id_env": "GOOGLE_CLIENT_ID",
+        "redirect_uri": "iris://oauth/callback/gmail"
+      },
+      "mcp_server": {
+        "module": "integrations/servers/gmail/index.js",
+        "binary": "iris-mcp-gmail",
+        "runtime": "node",
+        "transport": "stdio",
+        "tools": [
+          "gmail_list_inbox",
+          "gmail_search",
+          "gmail_read_message",
+          "gmail_send",
+          "gmail_reply",
+          "gmail_label",
+          "gmail_delete",
+          "gmail_create_draft"
+        ]
+      },
+      "permissions_summary": "Read, send, and organize your Gmail",
+      "enabled_by_default": false
+    },
+    {
+      "id": "outlook",
+      "name": "Outlook / Microsoft 365",
+      "category": "email",
+      "icon": "outlook.svg",
+      "auth_type": "oauth2",
+      "oauth": {
+        "provider": "microsoft",
+        "scopes": [
+          "Mail.Read",
+          "Mail.Send",
+          "Mail.ReadWrite"
+        ],
+        "client_id_env": "MICROSOFT_CLIENT_ID",
+        "redirect_uri": "iris://oauth/callback/outlook"
+      },
+      "mcp_server": {
+        "module": "integrations/servers/outlook/index.js",
+        "binary": "iris-mcp-outlook",
+        "runtime": "node",
+        "transport": "stdio",
+        "tools": [
+          "outlook_list_inbox",
+          "outlook_search",
+          "outlook_read_message",
+          "outlook_send",
+          "outlook_reply",
+          "outlook_move",
+          "outlook_delete"
+        ]
+      },
+      "permissions_summary": "Read, send, and organize your Outlook mail",
+      "enabled_by_default": false
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "category": "messaging",
+      "icon": "telegram.svg",
+      "auth_type": "telegram_mtproto",
+      "telegram": {
+        "api_id_env": "TELEGRAM_API_ID",
+        "api_hash_env": "TELEGRAM_API_HASH",
+        "session_storage": "encrypted_local"
+      },
+      "mcp_server": {
+        "module": "integrations/servers/telegram/index.py",
+        "binary": "iris-mcp-telegram",
+        "runtime": "python",
+        "transport": "stdio",
+        "tools": [
+          "telegram_list_chats",
+          "telegram_read_chat",
+          "telegram_send_message",
+          "telegram_reply",
+          "telegram_search_messages",
+          "telegram_get_contacts",
+          "telegram_send_file",
+          "telegram_create_group",
+          "telegram_get_chat_members"
+        ]
+      },
+      "permissions_summary": "Read and send messages, manage chats and contacts",
+      "enabled_by_default": false
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "category": "messaging",
+      "icon": "discord.svg",
+      "auth_type": "oauth2",
+      "oauth": {
+        "provider": "discord",
+        "scopes": [
+          "bot",
+          "messages.read",
+          "identify",
+          "guilds"
+        ],
+        "client_id_env": "DISCORD_CLIENT_ID",
+        "redirect_uri": "iris://oauth/callback/discord"
+      },
+      "mcp_server": {
+        "module": "integrations/servers/discord/index.js",
+        "binary": "iris-mcp-discord",
+        "runtime": "node",
+        "transport": "stdio",
+        "tools": [
+          "discord_list_servers",
+          "discord_list_channels",
+          "discord_read_channel",
+          "discord_send_message",
+          "discord_reply",
+          "discord_react",
+          "discord_search",
+          "discord_get_members",
+          "discord_create_thread"
+        ]
+      },
+      "permissions_summary": "Read and send messages across your Discord servers",
+      "enabled_by_default": false
+    },
+    {
+      "id": "imap_smtp",
+      "name": "Generic Email (IMAP/SMTP)",
+      "category": "email",
+      "icon": "email.svg",
+      "auth_type": "credentials",
+      "credentials": {
+        "fields": [
+          {
+            "key": "imap_host",
+            "label": "IMAP Host",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "imap_port",
+            "label": "IMAP Port",
+            "type": "number",
+            "default": 993,
+            "required": true
+          },
+          {
+            "key": "smtp_host",
+            "label": "SMTP Host",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "smtp_port",
+            "label": "SMTP Port",
+            "type": "number",
+            "default": 587,
+            "required": true
+          },
+          {
+            "key": "email",
+            "label": "Email Address",
+            "type": "email",
+            "required": true
+          },
+          {
+            "key": "password",
+            "label": "Password / App Password",
+            "type": "password",
+            "required": true
+          }
+        ]
+      },
+      "mcp_server": {
+        "module": "integrations/servers/imap/index.js",
+        "binary": "iris-mcp-imap",
+        "runtime": "node",
+        "transport": "stdio",
+        "tools": [
+          "email_list_inbox",
+          "email_search",
+          "email_read",
+          "email_send",
+          "email_reply",
+          "email_move",
+          "email_delete"
+        ]
+      },
+      "permissions_summary": "Connect any IMAP/SMTP email account",
+      "enabled_by_default": false
+    }
+  ]
+}

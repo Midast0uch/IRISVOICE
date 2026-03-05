@@ -1,0 +1,25 @@
+{
+  "name": "iris-mcp-outlook",
+  "version": "1.0.0",
+  "description": "Iris MCP Server for Microsoft Outlook / Microsoft 365",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "iris-mcp-outlook": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "iris",
+    "mcp",
+    "outlook",
+    "microsoft",
+    "email"
+  ],
+  "author": "Torus Network",
+  "license": "MIT",
+  "dependencies": {
+    "@azure/msal-node": "^2.6.0"
+  }
+}

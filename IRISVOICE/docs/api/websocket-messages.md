@@ -883,3 +883,367 @@ General error.
 ## Heartbeat
 
 The backend sends ping messages every 30 seconds. Clients should respond with pong within 5 seconds to maintain the connection.
+
+## Integration Messages (MCP)
+
+### Client → Server
+
+#### integration_list
+Request list of all available integrations.
+
+**Payload:**
+```json
+{}
+```
+
+**Response:** `integration_list`
+
+---
+
+#### integration_enable
+Enable an integration.
+
+**Payload:**
+```json
+{
+  "integration_id": "string"
+}
+```
+
+**Example:**
+```json
+{
+  "type": "integration_enable",
+  "payload": {
+    "integration_id": "gmail"
+  }
+}
+```
+
+**Response:** `integration_enabled` or `integration_error`
+
+---
+
+#### integration_disable
+Disable an integration.
+
+**Payload:**
+```json
+{
+  "integration_id": "string",
+  "forget_credentials": "boolean (optional)"
+}
+```
+
+**Response:** `integration_disabled`
+
+---
+
+#### integration_state
+Get current state of an integration.
+
+**Payload:**
+```json
+{
+  "integration_id": "string"
+}
+```
+
+**Response:** `integration_state`
+
+---
+
+#### integration_oauth_callback
+Initiate or complete OAuth flow.
+
+**Payload (initiate):**
+```json
+{
+  "integration_id": "string"
+}
+```
+
+**Payload (callback with code):**
+```json
+{
+  "integration_id": "string",
+  "code": "string",
+  "state": "string"
+}
+```
+
+**Response:** `integration_auth_started` or `integration_enabled`
+
+---
+
+#### integration_credentials_auth
+Submit credentials for authentication.
+
+**Payload:**
+```json
+{
+  "integration_id": "string",
+  "credentials": {
+    "username": "string",
+    "password": "string"
+  }
+}
+```
+
+---
+
+#### integration_telegram_auth
+Submit Telegram verification code.
+
+**Payload:**
+```json
+{
+  "integration_id": "string",
+  "code": "string"
+}
+```
+
+---
+
+#### marketplace_preference_store
+Store a marketplace user preference.
+
+**Payload:**
+```json
+{
+  "user_id": "string",
+  "preference_type": "category_viewed | integration_viewed | search_query",
+  "value": "any",
+  "metadata": "object (optional)"
+}
+```
+
+**Example:**
+```json
+{
+  "type": "marketplace_preference_store",
+  "payload": {
+    "user_id": "default_user",
+    "preference_type": "category_viewed",
+    "value": "email",
+    "metadata": {
+      "timestamp": "2024-01-15T10:30:00Z"
+    }
+  }
+}
+```
+
+**Response:** `marketplace_preference_stored`
+
+---
+
+#### marketplace_preferences_get
+Get user marketplace preferences.
+
+**Payload:**
+```json
+{
+  "user_id": "string",
+  "preference_type": "string (optional)"
+}
+```
+
+**Response:** `marketplace_preferences`
+
+---
+
+#### marketplace_recommendations_get
+Get recommended integrations for user.
+
+**Payload:**
+```json
+{
+  "user_id": "string",
+  "limit": "number (optional, default: 5)"
+}
+```
+
+**Response:** `marketplace_recommendations`
+
+---
+
+#### activity_get_recent
+Get recent integration activity.
+
+**Payload:**
+```json
+{
+  "limit": "number (optional, default: 20)",
+  "filter": "conversation | action | tool | integration (optional)"
+}
+```
+
+**Response:** `activity_recent`
+
+---
+
+#### logs_subscribe
+Subscribe to system logs stream.
+
+**Payload:**
+```json
+{
+  "levels": ["debug", "info", "warn", "error"]
+}
+```
+
+**Response:** `logs_subscribed`, then `logs_batch`
+
+---
+
+#### logs_get_history
+Get historical system logs.
+
+**Payload:**
+```json
+{
+  "limit": "number (optional, default: 50)",
+  "levels": ["debug", "info", "warn", "error"],
+  "search": "string (optional)"
+}
+```
+
+**Response:** `logs_history`
+
+---
+
+#### logs_unsubscribe
+Unsubscribe from logs stream.
+
+**Payload:**
+```json
+{}
+```
+
+**Response:** `logs_unsubscribed`
+
+### Server → Client
+
+#### integration_list
+List of available integrations.
+
+**Payload:**
+```json
+{
+  "integrations": [
+    {
+      "id": "string",
+      "name": "string",
+      "category": "email | messaging | productivity | other",
+      "icon": "string",
+      "auth_type": "oauth2 | telegram_mtproto | credentials",
+      "permissions_summary": "string",
+      "enabled_by_default": "boolean",
+      "status": "disabled | auth_pending | running | error | reauth_pending | wiped",
+      "credential_exists": "boolean",
+      "is_running": "boolean"
+    }
+  ]
+}
+```
+
+---
+
+#### integration_state_changed
+Integration state changed notification.
+
+**Payload:**
+```json
+{
+  "integration_id": "string",
+  "state": {
+    "status": "string",
+    "connected_since": "string (ISO date)",
+    "error_message": "string (optional)",
+    "retry_count": "number"
+  }
+}
+```
+
+---
+
+#### marketplace_recommendations
+Recommended integrations for user.
+
+**Payload:**
+```json
+{
+  "recommendations": [
+    {
+      "integration_id": "string",
+      "name": "string",
+      "description": "string",
+      "category": "string",
+      "score": "number",
+      "reason": "string"
+    }
+  ],
+  "count": "number"
+}
+```
+
+---
+
+#### activity_recent
+Recent activity data.
+
+**Payload:**
+```json
+{
+  "activities": [
+    {
+      "id": "string",
+      "type": "conversation | action | tool | integration",
+      "title": "string",
+      "description": "string",
+      "timestamp": "string (ISO date)",
+      "outcome": "success | failure | unknown"
+    }
+  ],
+  "total": "number"
+}
+```
+
+---
+
+#### logs_batch
+Batch of log entries (streamed after subscription).
+
+**Payload:**
+```json
+{
+  "logs": [
+    {
+      "timestamp": "string (ISO date)",
+      "level": "debug | info | warn | error",
+      "source": "string",
+      "message": "string"
+    }
+  ]
+}
+```
+
+---
+
+#### logs_history
+Historical log entries.
+
+**Payload:**
+```json
+{
+  "logs": [
+    {
+      "timestamp": "string (ISO date)",
+      "level": "debug | info | warn | error",
+      "source": "string",
+      "message": "string"
+    }
+  ],
+  "total": "number"
+}
+```

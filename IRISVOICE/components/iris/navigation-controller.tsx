@@ -78,7 +78,7 @@ export function useNavigationController({
       })
     })
 
-    nav.setNodeLabels(mainLabels, subLabels)
+    nav.setCategoryLabels(mainLabels, subLabels)
   }, [mainNodes, subNodes, nav])
 
   useEffect(() => {
@@ -130,7 +130,7 @@ export function useNavigationController({
     if (nav.state.isTransitioning || nav.state.level !== 3) return
 
     nav.setTransitioning(true)
-    nav.selectSub(nodeId, [])
+    nav.selectSection(nodeId, [])
 
     setTimeout(() => {
       nav.setTransitioning(false)

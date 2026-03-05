@@ -53,8 +53,8 @@ from backend.models import (
     Category, 
     IRISState, 
     ColorTheme, 
-    get_subnodes_for_category,
-    SUBNODE_CONFIGS
+    get_sections_for_category,
+    SECTION_CONFIGS
 )
 
 logger.info("  - Importing audio components...")

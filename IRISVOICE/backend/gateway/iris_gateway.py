@@ -253,13 +253,13 @@ class IRISGateway:
             if "category" in state_update:
                 await session.state_manager.set_category(state_update["category"])
             
-            if "subnode" in state_update:
-                await session.state_manager.set_subnode(state_update["subnode"])
+            if "section" in state_update:
+                await session.state_manager.set_section(state_update["section"])
             
             if "fields" in state_update:
                 for field_update in state_update["fields"]:
                     await session.state_manager.update_field(
-                        field_update["subnode"],
+                        field_update["section"],
                         field_update["field"],
                         field_update["value"]
                     )

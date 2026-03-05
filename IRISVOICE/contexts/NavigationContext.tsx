@@ -8,58 +8,56 @@ import type {
   NavigationLevel, 
   NavigationConfig, 
   IrisOrbState,
-  HistoryEntry 
+  HistoryEntry,
+  Card
 } from "@/types/navigation"
 import { 
   DEFAULT_NAV_CONFIG, 
   STORAGE_KEY, 
   CONFIG_STORAGE_KEY,
-  MINI_NODE_VALUES_KEY
+  CARD_VALUES_KEY
 } from "@/types/navigation"
-import { MAIN_CATEGORY_IDS, SUB_NODE_IDS } from "@/data/navigation-ids"
-import { getMiniNodesForSubnode } from "@/data/mini-nodes"
+import { MAIN_CATEGORY_IDS, SECTION_IDS } from "@/data/navigation-ids"
+import { getCardsForSection } from "@/data/cards"
 
-const CONFIRMED_NODES_KEY = 'irisvoice_confirmed_nodes'
-
-// Mapping from main category to sub-node IDs
-const CATEGORY_TO_SUBNODES: Record<string, string[]> = {
+// Mapping from main category to section IDs
+const CATEGORY_TO_SECTIONS: Record<string, string[]> = {
   [MAIN_CATEGORY_IDS.VOICE]: [
-    SUB_NODE_IDS.VOICE_INPUT,
-    SUB_NODE_IDS.VOICE_OUTPUT,
-    SUB_NODE_IDS.VOICE_PROCESSING,
-    SUB_NODE_IDS.VOICE_MODEL,
+    SECTION_IDS.VOICE_INPUT,
+    SECTION_IDS.VOICE_OUTPUT,
+    SECTION_IDS.VOICE_WAKE,
+    SECTION_IDS.VOICE_SPEECH,
   ],
   [MAIN_CATEGORY_IDS.AGENT]: [
-    SUB_NODE_IDS.AGENT_MODEL_SELECTION,
-    SUB_NODE_IDS.AGENT_INFERENCE_MODE,
-    SUB_NODE_IDS.AGENT_IDENTITY,
-    SUB_NODE_IDS.AGENT_MEMORY,
+    SECTION_IDS.AGENT_MODEL_SELECTION,
+    SECTION_IDS.AGENT_INFERENCE_MODE,
+    SECTION_IDS.AGENT_IDENTITY,
+    SECTION_IDS.AGENT_MEMORY,
   ],
   [MAIN_CATEGORY_IDS.AUTOMATE]: [
-    SUB_NODE_IDS.AUTOMATE_TOOLS,
-    SUB_NODE_IDS.AUTOMATE_VISION,
-    SUB_NODE_IDS.AUTOMATE_WORKFLOWS,
-    SUB_NODE_IDS.AUTOMATE_SHORTCUTS,
-    SUB_NODE_IDS.AUTOMATE_GUI,
-    SUB_NODE_IDS.AUTOMATE_EXTENSIONS,
+    SECTION_IDS.AUTOMATE_TOOLS,
+    SECTION_IDS.AUTOMATE_VISION,
+    SECTION_IDS.AUTOMATE_DESKTOP_CONTROL,
+    SECTION_IDS.AUTOMATE_SKILLS,
+    SECTION_IDS.AUTOMATE_PROFILE,
   ],
   [MAIN_CATEGORY_IDS.SYSTEM]: [
-    SUB_NODE_IDS.SYSTEM_POWER,
-    SUB_NODE_IDS.SYSTEM_DISPLAY,
-    SUB_NODE_IDS.SYSTEM_STORAGE,
-    SUB_NODE_IDS.SYSTEM_NETWORK,
+    SECTION_IDS.SYSTEM_POWER,
+    SECTION_IDS.SYSTEM_DISPLAY,
+    SECTION_IDS.SYSTEM_STORAGE,
+    SECTION_IDS.SYSTEM_NETWORK,
   ],
   [MAIN_CATEGORY_IDS.CUSTOMIZE]: [
-    SUB_NODE_IDS.CUSTOMIZE_THEME,
-    SUB_NODE_IDS.CUSTOMIZE_STARTUP,
-    SUB_NODE_IDS.CUSTOMIZE_BEHAVIOR,
-    SUB_NODE_IDS.CUSTOMIZE_NOTIFICATIONS,
+    SECTION_IDS.CUSTOMIZE_THEME,
+    SECTION_IDS.CUSTOMIZE_STARTUP,
+    SECTION_IDS.CUSTOMIZE_BEHAVIOR,
+    SECTION_IDS.CUSTOMIZE_NOTIFICATIONS,
   ],
   [MAIN_CATEGORY_IDS.MONITOR]: [
-    SUB_NODE_IDS.MONITOR_ANALYTICS,
-    SUB_NODE_IDS.MONITOR_LOGS,
-    SUB_NODE_IDS.MONITOR_DIAGNOSTICS,
-    SUB_NODE_IDS.MONITOR_UPDATES,
+    SECTION_IDS.MONITOR_ANALYTICS,
+    SECTION_IDS.MONITOR_LOGS,
+    SECTION_IDS.MONITOR_DIAGNOSTICS,
+    SECTION_IDS.MONITOR_UPDATES,
   ],
 }
 
@@ -71,11 +69,10 @@ const initialState: NavState = {
   selectedSub: null,
   isTransitioning: false,
   transitionDirection: null,
-  // Mini node stack state (Level 3)
-  miniNodeStack: [],
-  activeMiniNodeIndex: 0,
-  confirmedMiniNodes: [],
-  miniNodeValues: {},
+  // Card stack state (Level 3)
+  cardStack: [],
+  activeCardIndex: 0,
+  cardValues: {},
   view: null,
 }
 
@@ -84,7 +81,7 @@ const initialState: NavState = {
  * 
  * CRITICAL RULES:
  * - Level 2: No requirements (showing main categories)
- * - Level 3: MUST have selectedMain (showing subnodes for a category)
+ * - Level 3: MUST have selectedMain (showing sections for a category)
  * 
  * @param state - Current navigation state
  * @returns true if state is valid, false otherwise
@@ -162,7 +159,7 @@ function navReducer(state: NavState, action: NavAction): NavState {
       nextState = {
         ...state,
         level: 2,
-        history: [...state.history, { level: 1, nodeId: null }],
+        history: [...state.history, { level: 1, categoryId: null }],
         transitionDirection: 'forward',
       }
       break
@@ -170,15 +167,15 @@ function navReducer(state: NavState, action: NavAction): NavState {
 
     case 'SELECT_MAIN': {
       // Allow transition even if level changed due to React batching
-      // Extract miniNodes from payload (default to empty array if not provided)
-      const miniNodes = action.payload.miniNodes || []
+      // Extract cards from payload (default to empty array if not provided)
+      const cards = action.payload.cards || []
       nextState = {
         ...state,
         level: 3,
-        selectedMain: action.payload.nodeId,
-        miniNodeStack: miniNodes,
-        activeMiniNodeIndex: miniNodes.length > 0 ? 0 : state.activeMiniNodeIndex,
-        history: [...state.history, { level: 2, nodeId: null }],
+        selectedMain: action.payload.categoryId,
+        cardStack: cards,
+        activeCardIndex: cards.length > 0 ? 0 : state.activeCardIndex,
+        history: [...state.history, { level: 2, categoryId: null }],
         transitionDirection: 'forward',
       }
       break
@@ -190,10 +187,10 @@ function navReducer(state: NavState, action: NavAction): NavState {
       nextState = {
         ...state,
         level: 3,
-        selectedSub: action.payload.subnodeId,
-        miniNodeStack: action.payload.miniNodes,
-        activeMiniNodeIndex: 0,
-        history: [...state.history, { level: 3, nodeId: state.selectedMain }],
+        selectedSub: action.payload.sectionId,
+        cardStack: action.payload.cards,
+        activeCardIndex: 0,
+        history: [...state.history, { level: 3, categoryId: state.selectedMain }],
         transitionDirection: 'forward',
       }
       break
@@ -210,24 +207,21 @@ function navReducer(state: NavState, action: NavAction): NavState {
       
       let newSelectedMain = state.selectedMain
       let newSelectedSub = state.selectedSub
-      let newMiniNodeStack = state.miniNodeStack
-      let newActiveMiniNodeIndex = state.activeMiniNodeIndex
-      let newConfirmedMiniNodes = state.confirmedMiniNodes
+      let newCardStack = state.cardStack
+      let newActiveCardIndex = state.activeCardIndex
 
       if (newLevel === 1) {
         newSelectedMain = null
         newSelectedSub = null
-        newMiniNodeStack = []
-        newActiveMiniNodeIndex = 0
-        newConfirmedMiniNodes = []
+        newCardStack = []
+        newActiveCardIndex = 0
       } else if (newLevel === 2) {
-        // Keep selectedMain so the main node remains highlighted at level 2
+        // Keep selectedMain so the main category remains highlighted at level 2
         newSelectedSub = null
-        newMiniNodeStack = []
-        newActiveMiniNodeIndex = 0
-        newConfirmedMiniNodes = []
+        newCardStack = []
+        newActiveCardIndex = 0
       }
-      // Level 3 state is preserved (miniNodeStack and activeMiniNodeIndex remain)
+      // Level 3 state is preserved (cardStack and activeCardIndex remain)
 
       nextState = {
         ...state,
@@ -235,9 +229,8 @@ function navReducer(state: NavState, action: NavAction): NavState {
         history: newHistory,
         selectedMain: newSelectedMain,
         selectedSub: newSelectedSub,
-        miniNodeStack: newMiniNodeStack,
-        activeMiniNodeIndex: newActiveMiniNodeIndex,
-        confirmedMiniNodes: newConfirmedMiniNodes,
+        cardStack: newCardStack,
+        activeCardIndex: newActiveCardIndex,
         transitionDirection: 'backward',
       }
       break
@@ -246,7 +239,7 @@ function navReducer(state: NavState, action: NavAction): NavState {
     case 'COLLAPSE_TO_IDLE': {
       nextState = {
         ...initialState,
-        miniNodeValues: state.miniNodeValues, // Persist values across sessions
+        cardValues: state.cardValues, // Persist values across sessions
         transitionDirection: 'backward',
       }
       break
@@ -291,123 +284,77 @@ function navReducer(state: NavState, action: NavAction): NavState {
       break
     }
 
-    // Mini node stack actions
+    // Card stack actions
     case 'ROTATE_STACK_FORWARD': {
-      if (state.level !== 3 || state.miniNodeStack.length === 0) {
+      if (state.level !== 3 || state.cardStack.length === 0) {
         nextState = state
         break
       }
-      const newIndex = (state.activeMiniNodeIndex + 1) % state.miniNodeStack.length
+      const newIndex = (state.activeCardIndex + 1) % state.cardStack.length
       nextState = {
         ...state,
-        activeMiniNodeIndex: newIndex,
+        activeCardIndex: newIndex,
       }
       break
     }
 
     case 'ROTATE_STACK_BACKWARD': {
-      if (state.level !== 3 || state.miniNodeStack.length === 0) {
+      if (state.level !== 3 || state.cardStack.length === 0) {
         nextState = state
         break
       }
-      const newIndex = state.activeMiniNodeIndex === 0 
-        ? state.miniNodeStack.length - 1 
-        : state.activeMiniNodeIndex - 1
+      const newIndex = state.activeCardIndex === 0 
+        ? state.cardStack.length - 1 
+        : state.activeCardIndex - 1
       nextState = {
         ...state,
-        activeMiniNodeIndex: newIndex,
+        activeCardIndex: newIndex,
       }
       break
     }
 
-    case 'JUMP_TO_MINI_NODE': {
+    case 'JUMP_TO_CARD': {
       if (state.level !== 3) {
         nextState = state
         break
       }
       const index = action.payload.index
-      if (index < 0 || index >= state.miniNodeStack.length) {
+      if (index < 0 || index >= state.cardStack.length) {
         nextState = state
         break
       }
       nextState = {
         ...state,
-        activeMiniNodeIndex: index,
+        activeCardIndex: index,
       }
       break
     }
 
-    case 'CONFIRM_MINI_NODE': {
+    case 'CONFIRM_CARD': {
       if (state.level !== 3) {
         nextState = state
         break
       }
       const { id, values } = action.payload
-      const miniNode = state.miniNodeStack.find(n => n.id === id)
-      if (!miniNode) {
-        nextState = state
-        break
-      }
-      
-      // Check if already confirmed
-      if (state.confirmedMiniNodes.some(n => n.id === id)) {
-        nextState = state
-        break
-      }
-      
-      // Limit to 8 confirmed nodes
-      if (state.confirmedMiniNodes.length >= 8) {
-        nextState = state
-        break
-      }
-      
-      const confirmedNode: import("@/types/navigation").ConfirmedNode = {
-        id,
-        label: miniNode.label,
-        icon: miniNode.icon,
-        values,
-        orbitAngle: ((state.confirmedMiniNodes.length * 45) - 90) % 360, // Start from top (-90°), spread 45° apart
-        timestamp: Date.now(),
-      }
       
       nextState = {
         ...state,
-        confirmedMiniNodes: [...state.confirmedMiniNodes, confirmedNode],
-        miniNodeValues: {
-          ...state.miniNodeValues,
+        cardValues: {
+          ...state.cardValues,
           [id]: values,
         },
       }
       break
     }
 
-    case 'RECALL_CONFIRMED_NODE': {
-      if (state.level !== 3) {
-        nextState = state
-        break
-      }
-      const nodeId = action.payload.id
-      const nodeIndex = state.miniNodeStack.findIndex(n => n.id === nodeId)
-      if (nodeIndex === -1) {
-        nextState = state
-        break
-      }
-      
+    case 'UPDATE_CARD_VALUE': {
+      const { cardId, fieldId, value } = action.payload
       nextState = {
         ...state,
-        activeMiniNodeIndex: nodeIndex,
-      }
-      break
-    }
-
-    case 'UPDATE_MINI_NODE_VALUE': {
-      const { nodeId, fieldId, value } = action.payload
-      nextState = {
-        ...state,
-        miniNodeValues: {
-          ...state.miniNodeValues,
-          [nodeId]: {
-            ...state.miniNodeValues[nodeId],
+        cardValues: {
+          ...state.cardValues,
+          [cardId]: {
+            ...state.cardValues[cardId],
             [fieldId]: value,
           },
         },
@@ -415,12 +362,11 @@ function navReducer(state: NavState, action: NavAction): NavState {
       break
     }
 
-    case 'CLEAR_MINI_NODE_STATE': {
+    case 'CLEAR_CARD_STATE': {
       nextState = {
         ...state,
-        miniNodeStack: [],
-        activeMiniNodeIndex: 0,
-        confirmedMiniNodes: [],
+        cardStack: [],
+        activeCardIndex: 0,
       }
       break
     }
@@ -435,23 +381,23 @@ function navReducer(state: NavState, action: NavAction): NavState {
   return nextState
 }
 
-function getIrisOrbState(state: NavState, mainNodeLabels: Record<string, string>, subNodeLabels: Record<string, string>): IrisOrbState {
+function getIrisOrbState(state: NavState, mainCategoryLabels: Record<string, string>, sectionLabels: Record<string, string>): IrisOrbState {
   switch (state.level) {
     case 1:
       return { label: 'IRIS', icon: 'home', showBackIndicator: false }
     case 2:
       return { label: 'IRIS', icon: 'close', showBackIndicator: true }
     case 3:
-      // Level 3 now shows WheelView with both sub-nodes and mini-nodes
+      // Level 3 now shows WheelView with both sections and cards
       if (state.selectedSub) {
         return { 
-          label: subNodeLabels[state.selectedSub] || state.selectedSub.toUpperCase(),
+          label: sectionLabels[state.selectedSub] || state.selectedSub.toUpperCase(),
           icon: 'back',
           showBackIndicator: true 
         }
       }
       return { 
-        label: state.selectedMain ? (mainNodeLabels[state.selectedMain] || state.selectedMain.toUpperCase()) : 'IRIS',
+        label: state.selectedMain ? (mainCategoryLabels[state.selectedMain] || state.selectedMain.toUpperCase()) : 'IRIS',
         icon: 'back',
         showBackIndicator: true 
       }
@@ -465,12 +411,12 @@ interface NavigationContextValue {
   config: NavigationConfig
   orbState: IrisOrbState
   dispatch: React.Dispatch<NavAction>
-  subnodes: Record<string, any[]> // Add subnodes to the context
+  sections: Record<string, any[]> // Add sections to the context
 
   // Functions that dispatch actions AND send WebSocket messages
   handleExpandToMain: () => void
-  handleSelectMain: (nodeId: string) => void
-  handleSelectSub: (subnodeId: string, miniNodes: import("@/types/navigation").MiniNode[]) => void
+  handleSelectMain: (categoryId: string) => void
+  handleSelectSection: (sectionId: string, cards: Card[]) => void
   handleGoBack: () => void
   handleCollapseToIdle: () => void
   handleIrisClick: () => void
@@ -478,36 +424,34 @@ interface NavigationContextValue {
   // Original dispatching functions (for internal use if needed)
   goBack: () => void
   expandToMain: () => void
-  selectMain: (nodeId: string) => void
-  selectSub: (subnodeId: string, miniNodes: import("@/types/navigation").MiniNode[]) => void
+  selectMain: (categoryId: string) => void
+  selectSection: (sectionId: string, cards: Card[]) => void
   collapseToIdle: () => void
   setTransitioning: (value: boolean) => void
   updateConfig: (newConfig: Partial<NavigationConfig>) => void
-  setNodeLabels: (main: Record<string, string>, sub: Record<string, string>) => void
-  // Mini node stack helpers
+  setCategoryLabels: (main: Record<string, string>, sub: Record<string, string>) => void
+  // Card stack helpers
   rotateStackForward: () => void
   rotateStackBackward: () => void
-  jumpToMiniNode: (index: number) => void
-  confirmMiniNode: (id: string, values: Record<string, any>) => void
-  updateMiniNodeValue: (nodeId: string, fieldId: string, value: any) => void
-  recallConfirmedNode: (id: string) => void
+  jumpToCard: (index: number) => void
+  confirmCard: (id: string, values: Record<string, any>) => void
+  updateCardValue: (cardId: string, fieldId: string, value: any) => void
   setMainView: (view: 'navigation' | 'chat') => void
   setView: (view: string | null) => void
 
   // WebSocket state and functions
-  wsConfirmedNodes: any[]
   currentCategory: string | null
-  currentSubnode: string | null
+  currentSection: string | null
   voiceState: "idle" | "listening" | "processing_conversation" | "processing_tool" | "speaking" | "error"
   audioLevel: number
   fieldValues: Record<string, any>
-  fieldErrors: Record<string, string> // Map of "subnodeId:fieldId" to error message
+  fieldErrors: Record<string, string> // Map of "sectionId:fieldId" to error message
   lastTextResponse: { text: string; sender: "assistant" } | null
   activeTheme: { primary: string; glow: string; font: string } // Add activeTheme from WebSocket
   selectCategory: (category: string) => void
-  selectSubnode: (subnodeId: string) => void
+  selectSectionWs: (sectionId: string) => void
   sendMessage: (type: string, payload?: any) => boolean
-  clearFieldError: (subnodeId: string, fieldId: string) => void
+  clearFieldError: (sectionId: string, fieldId: string) => void
   
   // Voice actions
   startVoiceCommand: () => void
@@ -526,14 +470,13 @@ const NavigationContext = createContext<NavigationContextValue | undefined>(unde
 export function NavigationProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(navReducer, initialState)
   const [config, setConfig] = useState<NavigationConfig>(DEFAULT_NAV_CONFIG)
-  const [mainNodeLabels, setMainNodeLabels] = useState<Record<string, string>>({})
-  const [subNodeLabels, setSubNodeLabels] = useState<Record<string, string>>({})
+  const [mainCategoryLabels, setMainCategoryLabels] = useState<Record<string, string>>({})
+  const [sectionLabels, setSectionLabels] = useState<Record<string, string>>({})
 
   // WebSocket integration
   const {
-    confirmedNodes: wsConfirmedNodes,
     currentCategory,
-    currentSubnode,
+    currentSection,
     voiceState,
     audioLevel,
     fieldValues,
@@ -541,10 +484,10 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     lastTextResponse,
     theme: activeTheme, // Expose theme from WebSocket as activeTheme
     selectCategory,
-    selectSubnode,
+    selectSection: selectSectionWs,
     sendMessage,
     clearFieldError,
-    subnodes, // This is the subnodes from WebSocket
+    sections, // This is the sections from WebSocket
     startVoiceCommand,
     endVoiceCommand,
     clearChat: wsClearChat,
@@ -555,7 +498,6 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   } = useIRISWebSocket()
 
   // Initialize from localStorage with migration support
-  // BUG-01/08 FIX: Consolidated into single RESTORE_STATE dispatch
   useEffect(() => {
     let restoredState = { ...initialState }
     let migrated = false
@@ -578,19 +520,40 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
           migrated = true
         }
         
-        // Preserve Mini_Node_Stack and miniNodeValues during migration
+        // Migrate old property names to new ones
+        if (parsed.miniNodeStack) {
+          parsed.cardStack = parsed.miniNodeStack
+          delete parsed.miniNodeStack
+          migrated = true
+        }
+        if (parsed.activeMiniNodeIndex !== undefined) {
+          parsed.activeCardIndex = parsed.activeMiniNodeIndex
+          delete parsed.activeMiniNodeIndex
+          migrated = true
+        }
+        if (parsed.miniNodeValues) {
+          parsed.cardValues = parsed.miniNodeValues
+          delete parsed.miniNodeValues
+          migrated = true
+        }
+        // Remove confirmedMiniNodes (feature removed)
+        if (parsed.confirmedMiniNodes) {
+          delete parsed.confirmedMiniNodes
+          migrated = true
+        }
+        
         restoredState = {
           ...parsed,
           level: normalizeLevel(parsed.level),
-          miniNodeStack: parsed.miniNodeStack || [],
-          miniNodeValues: parsed.miniNodeValues || {},
+          cardStack: parsed.cardStack || [],
+          cardValues: parsed.cardValues || {},
         }
         
         // Save migrated state back to localStorage
         if (migrated) {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(restoredState))
           if (process.env.NODE_ENV === 'development') {
-            console.log('[Migration] Navigation state migrated to 3-level system')
+            console.log('[Migration] Navigation state migrated to new terminology')
           }
         }
       }
@@ -604,23 +567,22 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
       restoredState = { ...initialState }
     }
 
-    // Step 2: Restore mini node values (merge into existing restoredState)
-    // BUG-01/08 FIX: No stale closure - using local variable, not state
+    // Step 2: Restore card values (merge into existing restoredState)
     try {
-      const savedValues = localStorage.getItem(MINI_NODE_VALUES_KEY)
+      const savedValues = localStorage.getItem(CARD_VALUES_KEY)
       if (savedValues) {
         const parsed = JSON.parse(savedValues)
-        // Merge with existing restoredState.miniNodeValues (from main state or empty)
-        restoredState.miniNodeValues = {
-          ...restoredState.miniNodeValues,
+        // Merge with existing restoredState.cardValues (from main state or empty)
+        restoredState.cardValues = {
+          ...restoredState.cardValues,
           ...parsed
         }
       }
     } catch (e) {
       if (process.env.NODE_ENV === 'development') {
-        console.error('[NavigationContext] Failed to restore mini node values from localStorage:', e)
+        console.error('[NavigationContext] Failed to restore card values from localStorage:', e)
       }
-      localStorage.removeItem(MINI_NODE_VALUES_KEY)
+      localStorage.removeItem(CARD_VALUES_KEY)
     }
 
     // Step 3: Single RESTORE_STATE dispatch with complete state
@@ -641,7 +603,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // BUG-01/08 FIX: Persist state with debounce and exclude animation transitions
+  // Persist state with debounce and exclude animation transitions
   useEffect(() => {
     // Skip persistence during animation transitions
     if (state.isTransitioning) return
@@ -655,10 +617,9 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
           mainView: state.mainView,
           selectedMain: state.selectedMain,
           selectedSub: state.selectedSub,
-          miniNodeStack: state.miniNodeStack,
-          activeMiniNodeIndex: state.activeMiniNodeIndex,
-          confirmedMiniNodes: state.confirmedMiniNodes,
-          miniNodeValues: state.miniNodeValues,
+          cardStack: state.cardStack,
+          activeCardIndex: state.activeCardIndex,
+          cardValues: state.cardValues,
           view: state.view,
           // Note: isTransitioning and transitionDirection are intentionally omitted
         }
@@ -675,10 +636,9 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     state.mainView,
     state.selectedMain,
     state.selectedSub,
-    state.miniNodeStack,
-    state.activeMiniNodeIndex,
-    state.confirmedMiniNodes,
-    state.miniNodeValues,
+    state.cardStack,
+    state.activeCardIndex,
+    state.cardValues,
     state.view,
     state.isTransitioning, // Included to re-run when transition ends
   ])
@@ -692,25 +652,16 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     }
   }, [config])
 
-  // Persist mini node values to localStorage
+  // Persist card values to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(MINI_NODE_VALUES_KEY, JSON.stringify(state.miniNodeValues))
+      localStorage.setItem(CARD_VALUES_KEY, JSON.stringify(state.cardValues))
     } catch (e) {
       // Ignore storage errors
     }
-  }, [state.miniNodeValues])
+  }, [state.cardValues])
 
-  // Persist confirmed nodes to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(CONFIRMED_NODES_KEY, JSON.stringify(state.confirmedMiniNodes))
-    } catch (e) {
-      // Ignore storage errors
-    }
-  }, [state.confirmedMiniNodes])
-
-  const orbState = useMemo(() => getIrisOrbState(state, mainNodeLabels, subNodeLabels), [state, mainNodeLabels, subNodeLabels])
+  const orbState = useMemo(() => getIrisOrbState(state, mainCategoryLabels, sectionLabels), [state, mainCategoryLabels, sectionLabels])
 
   // Wrapper functions that dispatch actions AND send WebSocket messages
   const handleExpandToMain = useCallback(() => {
@@ -718,44 +669,48 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     sendMessage('expand_to_main')
   }, [sendMessage])
 
-  const handleSelectMain = useCallback((nodeId: string) => {
-    // Aggregate all mini-nodes from all sub-nodes under this main category
-    const allMiniNodes: import("@/types/navigation").MiniNode[] = []
+  const handleSelectMain = useCallback((categoryId: string) => {
+    // Aggregate all cards from all sections under this main category
+    const allCards: Card[] = []
     
-    // First, try to get mini-nodes from WebSocket subnodes if they have the miniNodes property
-    const categorySubnodes = subnodes[nodeId] || []
+    // First, try to get cards from WebSocket sections if they have the cards property
+    const categorySections = sections[categoryId] || []
     
-    if (categorySubnodes.length > 0) {
-      for (const subnode of categorySubnodes) {
-        // Check if subnode has miniNodes property (from WebSocket)
-        if (subnode.miniNodes && Array.isArray(subnode.miniNodes)) {
-          allMiniNodes.push(...(subnode.miniNodes as import("@/types/navigation").MiniNode[]))
+    if (categorySections.length > 0) {
+      for (const section of categorySections) {
+        // Check if section has cards property (from WebSocket)
+        if (section.cards && Array.isArray(section.cards)) {
+          allCards.push(...(section.cards as Card[]))
         }
       }
     }
     
-    // If no mini-nodes found from WebSocket, use local SUB_NODES_WITH_MINI data
-    if (allMiniNodes.length === 0) {
-      const subnodeIds = CATEGORY_TO_SUBNODES[nodeId] || []
-      for (const subnodeId of subnodeIds) {
-        const miniNodes = getMiniNodesForSubnode(subnodeId)
-        if (miniNodes.length > 0) {
-          allMiniNodes.push(...miniNodes)
+    // If no cards found from WebSocket, use local data
+    if (allCards.length === 0) {
+      const sectionIds = CATEGORY_TO_SECTIONS[categoryId] || []
+      console.log(`[NavigationContext] Loading cards for category: ${categoryId}, sections:`, sectionIds)
+      for (const sectionId of sectionIds) {
+        const cards = getCardsForSection(sectionId)
+        console.log(`[NavigationContext] Section ${sectionId}: ${cards.length} cards`, cards.map(c => c.id))
+        if (cards.length > 0) {
+          allCards.push(...cards)
         }
       }
     }
     
-    // Dispatch with aggregated mini-nodes
+    console.log(`[NavigationContext] Total cards for ${categoryId}:`, allCards.length, allCards.map(c => c.id))
+    
+    // Dispatch with aggregated cards
     dispatch({ 
       type: 'SELECT_MAIN', 
-      payload: { nodeId, miniNodes: allMiniNodes } 
+      payload: { categoryId, cards: allCards } 
     })
-    sendMessage('select_category', { category: nodeId })
-  }, [subnodes, sendMessage])
+    sendMessage('select_category', { category: categoryId })
+  }, [sections, sendMessage])
 
-  const handleSelectSub = useCallback((subnodeId: string, miniNodes: import("@/types/navigation").MiniNode[]) => {
-    dispatch({ type: 'SELECT_SUB', payload: { subnodeId, miniNodes } })
-    sendMessage('select_subnode', { subnode_id: subnodeId })
+  const handleSelectSection = useCallback((sectionId: string, cards: Card[]) => {
+    dispatch({ type: 'SELECT_SUB', payload: { sectionId, cards } })
+    sendMessage('select_section', { section_id: sectionId })
   }, [sendMessage])
 
   const handleGoBack = useCallback(() => {
@@ -771,31 +726,27 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   // Original dispatching functions (for internal use if needed)
   const goBack = useCallback(() => dispatch({ type: 'GO_BACK' }), [])
   const expandToMain = useCallback(() => dispatch({ type: 'EXPAND_TO_MAIN' }), [])
-  const selectMain = useCallback((nodeId: string) => dispatch({ type: 'SELECT_MAIN', payload: { nodeId } }), [])
-  const selectSub = useCallback((subnodeId: string, miniNodes: import("@/types/navigation").MiniNode[]) => dispatch({ type: 'SELECT_SUB', payload: { subnodeId, miniNodes } }), [])
+  const selectMain = useCallback((categoryId: string) => dispatch({ type: 'SELECT_MAIN', payload: { categoryId } }), [])
+  const selectSection = useCallback((sectionId: string, cards: Card[]) => dispatch({ type: 'SELECT_SUB', payload: { sectionId, cards } }), [])
   const collapseToIdle = useCallback(() => dispatch({ type: 'COLLAPSE_TO_IDLE' }), [])
   const setTransitioning = useCallback((value: boolean) => dispatch({ type: 'SET_TRANSITIONING', payload: value }), [])
   const updateConfig = useCallback((newConfig: Partial<NavigationConfig>) => setConfig(prev => ({ ...prev, ...newConfig })), [])
-  const setNodeLabels = useCallback((main: Record<string, string>, sub: Record<string, string>) => {
-    setMainNodeLabels(main)
-    setSubNodeLabels(sub)
+  const setCategoryLabels = useCallback((main: Record<string, string>, sub: Record<string, string>) => {
+    setMainCategoryLabels(main)
+    setSectionLabels(sub)
   }, [])
 
-  // Mini node stack helpers
+  // Card stack helpers
   const rotateStackForward = useCallback(() => dispatch({ type: 'ROTATE_STACK_FORWARD' }), [])
   const rotateStackBackward = useCallback(() => dispatch({ type: 'ROTATE_STACK_BACKWARD' }), [])
-  const jumpToMiniNode = useCallback((index: number) => dispatch({ type: 'JUMP_TO_MINI_NODE', payload: { index } }), [])
-  const confirmMiniNode = useCallback((id: string, values: Record<string, any>) => {
+  const jumpToCard = useCallback((index: number) => dispatch({ type: 'JUMP_TO_CARD', payload: { index } }), [])
+  const confirmCard = useCallback((id: string, values: Record<string, any>) => {
     if (state.isTransitioning) return
-    dispatch({ type: 'CONFIRM_MINI_NODE', payload: { id, values } })
+    dispatch({ type: 'CONFIRM_CARD', payload: { id, values } })
   }, [state.isTransitioning])
-  const updateMiniNodeValue = useCallback((nodeId: string, fieldId: string, value: any) => {
-    dispatch({ type: 'UPDATE_MINI_NODE_VALUE', payload: { nodeId, fieldId, value } })
+  const updateCardValue = useCallback((cardId: string, fieldId: string, value: any) => {
+    dispatch({ type: 'UPDATE_CARD_VALUE', payload: { cardId, fieldId, value } })
   }, [])
-  const recallConfirmedNode = useCallback((id: string) => {
-    if (state.isTransitioning) return
-    dispatch({ type: 'RECALL_CONFIRMED_NODE', payload: { id } })
-  }, [state.isTransitioning])
 
   const setMainView = useCallback((view: 'navigation' | 'chat') => {
     dispatch({ type: 'SET_MAIN_VIEW', payload: { view } })
@@ -817,12 +768,12 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     config,
     orbState,
     dispatch,
-    subnodes,
+    sections,
 
     // Functions that dispatch actions AND send WebSocket messages
     handleExpandToMain,
     handleSelectMain,
-    handleSelectSub,
+    handleSelectSection,
     handleGoBack,
     handleCollapseToIdle,
     handleIrisClick,
@@ -831,26 +782,24 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     goBack,
     expandToMain,
     selectMain,
-    selectSub,
+    selectSection,
     collapseToIdle,
     setTransitioning,
     updateConfig,
-    setNodeLabels,
+    setCategoryLabels,
 
-    // Mini node stack helpers
+    // Card stack helpers
     rotateStackForward,
     rotateStackBackward,
-    jumpToMiniNode,
-    confirmMiniNode,
-    updateMiniNodeValue,
-    recallConfirmedNode,
+    jumpToCard,
+    confirmCard,
+    updateCardValue,
     setMainView,
     setView,
 
     // WebSocket state and functions
-    wsConfirmedNodes,
     currentCategory,
-    currentSubnode,
+    currentSection,
     voiceState,
     audioLevel,
     fieldValues,
@@ -858,7 +807,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     lastTextResponse,
     activeTheme, // Add activeTheme from WebSocket
     selectCategory,
-    selectSubnode,
+    selectSectionWs,
     sendMessage,
     clearFieldError,
     
@@ -879,12 +828,12 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     config,
     orbState,
     dispatch,
-    subnodes,
+    sections,
 
     // Functions that dispatch actions AND send WebSocket messages
     handleExpandToMain,
     handleSelectMain,
-    handleSelectSub,
+    handleSelectSection,
     handleGoBack,
     handleCollapseToIdle,
 
@@ -892,26 +841,24 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     goBack,
     expandToMain,
     selectMain,
-    selectSub,
+    selectSection,
     collapseToIdle,
     setTransitioning,
     updateConfig,
-    setNodeLabels,
+    setCategoryLabels,
 
-    // Mini node stack helpers
+    // Card stack helpers
     rotateStackForward,
     rotateStackBackward,
-    jumpToMiniNode,
-    confirmMiniNode,
-    updateMiniNodeValue,
-    recallConfirmedNode,
+    jumpToCard,
+    confirmCard,
+    updateCardValue,
     setMainView,
     setView,
 
     // WebSocket state and functions
-    wsConfirmedNodes,
     currentCategory,
-    currentSubnode,
+    currentSection,
     voiceState,
     audioLevel,
     fieldValues,
@@ -919,7 +866,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     lastTextResponse,
     activeTheme, // Add activeTheme to dependencies
     selectCategory,
-    selectSubnode,
+    selectSectionWs,
     sendMessage,
     clearFieldError,
     

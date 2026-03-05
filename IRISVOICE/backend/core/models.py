@@ -132,7 +132,7 @@ class WebSocketMessage(BaseModel):
 class StateSync(BaseModel):
     """State synchronization message."""
     category: Optional[str] = None
-    subnode: Optional[str] = None
+    section: Optional[str] = None
     field_values: Dict[str, Any] = Field(default_factory=dict)
     theme: Optional[Dict[str, str]] = None
     voice_state: Optional[VoiceState] = None
@@ -188,9 +188,8 @@ class SessionState(BaseModel):
     """Complete session state."""
     session_id: str
     category: Optional[str] = None
-    subnode: Optional[str] = None
+    section: Optional[str] = None
     field_values: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    confirmed_nodes: List[str] = Field(default_factory=list)
     theme: ThemeSettings = Field(default_factory=ThemeSettings)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

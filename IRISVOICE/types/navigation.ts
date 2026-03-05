@@ -1,4 +1,4 @@
-export type FieldType = "text" | "slider" | "dropdown" | "toggle" | "color" | "custom" | "section"
+export type FieldType = "text" | "slider" | "dropdown" | "toggle" | "color" | "custom" | "section" | "button" | "password"
 
 export type FieldValue = string | number | boolean | Record<string, unknown>;
 
@@ -17,22 +17,15 @@ export interface FieldConfig {
   // dropdown props
   options?: string[]
   loadOptions?: () => Promise<{ label: string; value: string }[]>
+  // button props
+  action?: string
 }
 
-export interface MiniNode {
+export interface Card {
   id: string
   label: string
   icon: string
   fields: FieldConfig[]
-}
-
-export interface ConfirmedNode {
-  id: string
-  label: string
-  icon: string
-  values: Record<string, FieldValue>
-  orbitAngle: number
-  timestamp: number
 }
 
 export type NavigationLevel = 1 | 2 | 3 | 4
@@ -60,7 +53,7 @@ export interface NavigationConfig {
 
 export interface HistoryEntry {
   level: NavigationLevel
-  nodeId: string | null
+  categoryId: string | null
 }
 
 export interface NavState {
@@ -70,11 +63,10 @@ export interface NavState {
   selectedSub: string | null
   isTransitioning: boolean
   transitionDirection: 'forward' | 'backward' | null
-  // Mini node stack state (Level 3)
-  miniNodeStack: MiniNode[]
-  activeMiniNodeIndex: number
-  confirmedMiniNodes: ConfirmedNode[]
-  miniNodeValues: Record<string, Record<string, FieldValue>> // nodeId -> fieldId -> value
+  // Card stack state (Level 3)
+  cardStack: Card[]
+  activeCardIndex: number
+  cardValues: Record<string, Record<string, FieldValue>> // cardId -> fieldId -> value
   view: string | null // Current view
   mainView: 'navigation' | 'chat' // Main application view
 }
@@ -83,20 +75,19 @@ export type NavAction =
   | { type: 'SET_VIEW'; payload: { view: string | null } }
   | { type: 'SET_MAIN_VIEW'; payload: { view: 'navigation' | 'chat' } }
   | { type: 'EXPAND_TO_MAIN' }
-  | { type: 'SELECT_MAIN'; payload: { nodeId: string; miniNodes?: MiniNode[] } }
-  | { type: 'SELECT_SUB'; payload: { subnodeId: string; miniNodes: MiniNode[] } }
+  | { type: 'SELECT_MAIN'; payload: { categoryId: string; cards?: Card[] } }
+  | { type: 'SELECT_SUB'; payload: { sectionId: string; cards: Card[] } }
   | { type: 'GO_BACK' }
   | { type: 'COLLAPSE_TO_IDLE' }
   | { type: 'SET_TRANSITIONING'; payload: boolean }
   | { type: 'RESTORE_STATE'; payload: NavState }
-  // Mini node stack actions
+  // Card stack actions
   | { type: 'ROTATE_STACK_FORWARD' }
   | { type: 'ROTATE_STACK_BACKWARD' }
-  | { type: 'JUMP_TO_MINI_NODE'; payload: { index: number } }
-  | { type: 'CONFIRM_MINI_NODE'; payload: { id: string; values: Record<string, FieldValue> } }
-  | { type: 'RECALL_CONFIRMED_NODE'; payload: { id: string } }
-  | { type: 'UPDATE_MINI_NODE_VALUE'; payload: { nodeId: string; fieldId: string; value: FieldValue } }
-  | { type: 'CLEAR_MINI_NODE_STATE' }
+  | { type: 'JUMP_TO_CARD'; payload: { index: number } }
+  | { type: 'CONFIRM_CARD'; payload: { id: string; sectionId?: string; values: Record<string, FieldValue> } }
+  | { type: 'UPDATE_CARD_VALUE'; payload: { cardId: string; sectionId?: string; fieldId: string; value: FieldValue } }
+  | { type: 'CLEAR_CARD_STATE' }
 
 export interface IrisOrbState {
   label: string
@@ -120,4 +111,4 @@ export const DEFAULT_NAV_CONFIG: NavigationConfig = {
 
 export const STORAGE_KEY = 'iris-nav-state'
 export const CONFIG_STORAGE_KEY = 'iris-nav-config'
-export const MINI_NODE_VALUES_KEY = 'iris-mini-node-values'
+export const CARD_VALUES_KEY = 'iris-card-values'

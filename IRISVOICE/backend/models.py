@@ -23,17 +23,37 @@ class Category(str, Enum):
 
 
 class FieldType(str, Enum):
-    """Input field types supported in mini-nodes"""
+    """Input field types supported in cards"""
     TEXT = "text"
     SLIDER = "slider"
     DROPDOWN = "dropdown"
     TOGGLE = "toggle"
     COLOR = "color"
     KEY_COMBO = "keyCombo"
+    # Extended types for frontend compatibility (mapped to base types with modifiers)
+    PASSWORD = "password"  # Maps to TEXT with sensitive=True
+    BUTTON = "button"      # Maps to TEXT with action trigger
+    CUSTOM = "custom"      # Maps to TEXT as placeholder
+
+
+# Type mapping documentation for frontend-backend compatibility
+FIELD_TYPE_MAPPINGS = {
+    # Frontend type -> (Backend type, Additional properties)
+    "password": ("TEXT", {"sensitive": True}),
+    "button": ("TEXT", {"is_action": True}),
+    "custom": ("TEXT", {"is_placeholder": True}),
+    # Base types pass through unchanged
+    "text": ("TEXT", {}),
+    "slider": ("SLIDER", {}),
+    "dropdown": ("DROPDOWN", {}),
+    "toggle": ("TOGGLE", {}),
+    "color": ("COLOR", {}),
+    "keyCombo": ("KEY_COMBO", {}),
+}
 
 
 class InputField(BaseModel):
-    """Configuration for a single input field in a mini-node"""
+    """Configuration for a single input field in a card"""
     id: str
     type: FieldType
     label: str
@@ -44,6 +64,11 @@ class InputField(BaseModel):
     max: Optional[Union[int, float]] = None
     step: Optional[Union[int, float]] = None
     unit: Optional[str] = None
+    # Extended type compatibility fields
+    sensitive: Optional[bool] = None  # True for password fields
+    is_action: Optional[bool] = None  # True for button fields
+    action: Optional[str] = None      # Action identifier for button fields
+    is_placeholder: Optional[bool] = None  # True for custom placeholder fields
     
     @field_validator('type')
     @classmethod
@@ -51,9 +76,23 @@ class InputField(BaseModel):
         if isinstance(v, str):
             return FieldType(v)
         return v
+    
+    def to_frontend_type(self) -> dict:
+        """Convert to frontend-compatible type representation"""
+        result = self.model_dump()
+        # Map extended types back to frontend representation
+        if self.type == FieldType.PASSWORD or self.sensitive:
+            result['type'] = 'password'
+        elif self.type == FieldType.BUTTON or self.is_action:
+            result['type'] = 'button'
+        elif self.type == FieldType.CUSTOM or self.is_placeholder:
+            result['type'] = 'custom'
+        else:
+            result['type'] = self.type.value
+        return result
 
 
-class SubNode(BaseModel):
+class Section(BaseModel):
     """A sub-node containing multiple input fields"""
     id: str
     label: str
@@ -81,47 +120,32 @@ class ColorTheme(BaseModel):
         return v.lower()
 
 
-class ConfirmedNode(BaseModel):
-    """A confirmed mini-node orbiting the IRIS center"""
-    id: str
-    label: str
-    icon: str
-    orbit_angle: float
-    values: Dict[str, Any]
-    category: str
-
-
-
-
 class IRISState(BaseModel):
     """Complete application state"""
     current_category: Optional[Category] = None
-    current_subnode: Optional[str] = None
+    current_section: Optional[str] = None
     field_values: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    
+    class Config:
+        populate_by_name = True
+        extra = 'forbid'  # Reject any extra fields not defined in the model
     active_theme: ColorTheme = Field(default_factory=ColorTheme)
-    confirmed_nodes: List[ConfirmedNode] = Field(default_factory=list)
     app_state: AppState = Field(default=AppState.STARTING)
     
     def get_category_values(self, category: str) -> Dict[str, Dict[str, Any]]:
-        """Get all field values for a category (all subnodes)"""
+        """Get all field values for a category (all sections)"""
         result = {}
-        subnodes = get_subnodes_for_category(category)
-        for subnode in subnodes:
-            if subnode.id in self.field_values:
-                result[subnode.id] = self.field_values[subnode.id]
+        sections = get_sections_for_category(category)
+        for section in sections:
+            if section.id in self.field_values:
+                result[section.id] = self.field_values[section.id]
         return result
     
-    def set_field_value(self, subnode_id: str, field_id: str, value: Any):
-        """Set a field value for a subnode"""
-        if subnode_id not in self.field_values:
-            self.field_values[subnode_id] = {}
-        self.field_values[subnode_id][field_id] = value
-    
-    def add_confirmed_node(self, node: ConfirmedNode):
-        """Add a confirmed node to orbit"""
-        # Remove existing if same id
-        self.confirmed_nodes = [n for n in self.confirmed_nodes if n.id != node.id]
-        self.confirmed_nodes.append(node)
+    def set_field_value(self, section_id: str, field_id: str, value: Any):
+        """Set a field value for a section"""
+        if section_id not in self.field_values:
+            self.field_values[section_id] = {}
+        self.field_values[section_id][field_id] = value
 
 
 # ============================================================================
@@ -140,24 +164,24 @@ class SelectCategoryMessage(BaseModel):
     category: Category
 
 
-class SelectSubnodeMessage(BaseModel):
-    """Client activates a subnode"""
-    type: str = "select_subnode"
-    subnode_id: str
+class SelectSectionMessage(BaseModel):
+    """Client activates a section"""
+    type: str = "select_section"
+    section_id: str
 
 
 class FieldUpdateMessage(BaseModel):
     """Client updates a field value"""
     type: str = "field_update"
-    subnode_id: str
+    section_id: str
     field_id: str
     value: Any
 
 
-class ConfirmMiniNodeMessage(BaseModel):
-    """Client confirms a mini-node"""
-    type: str = "confirm_mini_node"
-    subnode_id: str
+class ConfirmCardMessage(BaseModel):
+    """Client confirms a card"""
+    type: str = "confirm_card"
+    section_id: str
     values: Dict[str, Any]
 
 
@@ -184,13 +208,13 @@ class CategoryChangedMessage(BaseModel):
     """Server confirms category change"""
     type: str = "category_changed"
     category: Category
-    subnodes: List[SubNode]
+    sections: List[Section]
 
 
 class FieldUpdatedMessage(BaseModel):
     """Server confirms field update"""
     type: str = "field_updated"
-    subnode_id: str
+    section_id: str
     field_id: str
     value: Any
     valid: bool
@@ -203,10 +227,10 @@ class ValidationErrorMessage(BaseModel):
     error: str
 
 
-class MiniNodeConfirmedMessage(BaseModel):
-    """Server confirms mini-node and provides orbit position"""
-    type: str = "mini_node_confirmed"
-    subnode_id: str
+class CardConfirmedMessage(BaseModel):
+    """Server confirms card and provides orbit position"""
+    type: str = "card_confirmed"
+    section_id: str
     orbit_angle: float
 
 
@@ -237,77 +261,72 @@ class ModelStatusMessage(BaseModel):
 
 
 # ============================================================================
-# Subnode Configurations (mirrors frontend SUB_NODES)
+# Section Configurations (mirrors frontend sections)
 # ============================================================================
 
-SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
+SECTION_CONFIGS: Dict[str, List[Section]] = {
     "voice": [
-        SubNode(
+        Section(
             id="input",
             label="INPUT",
             icon="Mic",
             fields=[
                 InputField(id="input_device", type=FieldType.DROPDOWN, label="Input Device", options=["Default", "USB Microphone", "Headset", "Webcam"], value="Default"),
-                InputField(id="input_sensitivity", type=FieldType.SLIDER, label="Input Sensitivity", min=0, max=100, value=50, unit="%"),
+                InputField(id="input_volume", type=FieldType.SLIDER, label="Input Volume", min=0, max=100, value=50, unit="%"),
                 InputField(id="noise_gate", type=FieldType.TOGGLE, label="Noise Gate", value=False),
                 InputField(id="vad", type=FieldType.TOGGLE, label="VAD", value=True),
                 InputField(id="input_test", type=FieldType.TEXT, label="Input Test", placeholder="Test microphone", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="output",
             label="OUTPUT",
             icon="Volume2",
             fields=[
                 InputField(id="output_device", type=FieldType.DROPDOWN, label="Output Device", options=["Default", "Headphones", "Speakers", "HDMI"], value="Default"),
-                InputField(id="master_volume", type=FieldType.SLIDER, label="Master Volume", min=0, max=100, value=70, unit="%"),
+                InputField(id="output_volume", type=FieldType.SLIDER, label="Output Volume", min=0, max=100, value=70, unit="%"),
                 InputField(id="output_test", type=FieldType.TEXT, label="Output Test", placeholder="Test audio", value=""),
                 InputField(id="latency_compensation", type=FieldType.SLIDER, label="Latency Compensation", min=0, max=500, value=0, unit="ms"),
             ]
         ),
-        SubNode(
-            id="processing",
-            label="PROCESSING",
-            icon="AudioWaveform",
-            fields=[
-                InputField(id="noise_reduction", type=FieldType.TOGGLE, label="Noise Reduction", value=True),
-                InputField(id="echo_cancellation", type=FieldType.TOGGLE, label="Echo Cancellation", value=True),
-                InputField(id="voice_enhancement", type=FieldType.TOGGLE, label="Voice Enhancement", value=False),
-                InputField(id="automatic_gain", type=FieldType.TOGGLE, label="Automatic Gain", value=True),
-            ]
-        ),
-        SubNode(
-            id="audio_model",
-            label="AUDIO MODEL",
-            icon="Cpu",
-            fields=[
-                InputField(id="model_mode", type=FieldType.DROPDOWN, label="Model Mode", options=["native_audio", "api"], value="native_audio"),
-                # Native LFM Audio Model fields
-                InputField(id="native_audio_model_path", type=FieldType.TEXT, label="LFM Audio Model Path", placeholder="./models", value="./models"),
-                # API Model fields
-                InputField(id="api_base_url", type=FieldType.TEXT, label="API Base URL", placeholder="http://localhost:1234/v1", value="http://localhost:1234/v1"),
-                InputField(id="api_key", type=FieldType.TEXT, label="API Key (Optional)", placeholder="sk-...", value=""),
-                InputField(id="api_model", type=FieldType.TEXT, label="API Model Name", placeholder="local-model", value="local-model"),
-                # Common fields
-                InputField(id="temperature", type=FieldType.SLIDER, label="Temperature", min=0, max=2, step=0.1, value=0.7, unit=""),
-                InputField(id="max_tokens", type=FieldType.SLIDER, label="Max Tokens", min=256, max=8192, step=256, value=2048, unit=""),
-                InputField(id="connection_test", type=FieldType.TEXT, label="Connection Test", placeholder="Test connection", value=""),
-            ]
-        ),
     ],
     "agent": [
-        SubNode(
+        Section(
+            id="model_selection",
+            label="MODEL SELECTION",
+            icon="Brain",
+            fields=[
+                InputField(id="model_provider", type=FieldType.DROPDOWN, label="Provider", options=["local", "api", "vps"], value="local"),
+                InputField(id="use_same_model", type=FieldType.TOGGLE, label="Use Same Model for Both", value=True),
+                InputField(id="reasoning_model", type=FieldType.DROPDOWN, label="Reasoning Model", options=[], value=""),
+                InputField(id="tool_model", type=FieldType.DROPDOWN, label="Tool Model", options=[], value=""),
+                InputField(id="api_key", type=FieldType.TEXT, label="API Key", placeholder="sk-...", value=""),
+                InputField(id="vps_endpoint", type=FieldType.TEXT, label="VPS Endpoint", placeholder="http://vps.example.com", value=""),
+            ]
+        ),
+        Section(
+            id="inference_mode",
+            label="INFERENCE MODE",
+            icon="Cpu",
+            fields=[
+                InputField(id="agent_thinking_style", type=FieldType.DROPDOWN, label="Agent Thinking Style", options=["concise", "balanced", "thorough"], value="balanced"),
+                InputField(id="max_response_length", type=FieldType.DROPDOWN, label="Max Response Length", options=["short", "medium", "long"], value="medium"),
+                InputField(id="reasoning_effort", type=FieldType.DROPDOWN, label="Reasoning Effort", options=["fast", "balanced", "accurate"], value="balanced"),
+                InputField(id="tool_mode", type=FieldType.DROPDOWN, label="Tool Mode", options=["auto", "ask_first", "disabled"], value="auto"),
+            ]
+        ),
+        Section(
             id="identity",
             label="IDENTITY",
             icon="Smile",
             fields=[
-                InputField(id="assistant_name", type=FieldType.TEXT, label="Assistant Name", placeholder="IRIS", value="IRIS"),
-                InputField(id="personality", type=FieldType.DROPDOWN, label="Personality", options=["Professional", "Friendly", "Concise", "Creative", "Technical"], value="Friendly"),
+                InputField(id="agent_name", type=FieldType.TEXT, label="Agent Name", placeholder="IRIS", value="IRIS"),
+                InputField(id="persona", type=FieldType.DROPDOWN, label="Persona", options=["Professional", "Friendly", "Concise", "Creative", "Technical"], value="Friendly"),
                 InputField(id="knowledge", type=FieldType.DROPDOWN, label="Knowledge Focus", options=["General", "Coding", "Writing", "Research", "Conversation"], value="General"),
                 InputField(id="response_length", type=FieldType.DROPDOWN, label="Response Length", options=["Brief", "Balanced", "Detailed", "Comprehensive"], value="Balanced"),
             ]
         ),
-        SubNode(
+        Section(
             id="wake",
             label="WAKE",
             icon="Sparkles",
@@ -316,7 +335,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
 
 # ... (rest of the file)
 
-# In SUBNODE_CONFIGS["agent"][1] for the 'wake' subnode:
+# In SECTION_CONFIGS["agent"][1] for the 'wake' section:
                 InputField(
                     id="wake_phrase",
                     type=FieldType.DROPDOWN,
@@ -329,16 +348,18 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                     options=["jarvis", "hey computer", "computer", "bumblebee", "porcupine"],
                     value="jarvis"  # Default — well-known, no trademark issues, reliable detection
                 ),
-                InputField(id="detection_sensitivity", type=FieldType.SLIDER, label="Detection Sensitivity", min=0, max=100, value=70, unit="%"),
+                InputField(id="wake_word_sensitivity", type=FieldType.SLIDER, label="Wake Word Sensitivity", min=1, max=10, value=5),
+                InputField(id="voice_profile", type=FieldType.DROPDOWN, label="Voice Profile", options=["Default", "Personal", "Professional"], value="Default"),
                 InputField(id="activation_sound", type=FieldType.TOGGLE, label="Activation Sound", value=True),
                 InputField(id="sleep_timeout", type=FieldType.SLIDER, label="Sleep Timeout", min=5, max=300, value=60, unit="s"),
             ]
         ),
-        SubNode(
+        Section(
             id="speech",
             label="SPEECH",
             icon="MessageSquare",
             fields=[
+                InputField(id="tts_enabled", type=FieldType.TOGGLE, label="TTS Enabled", value=True),
                 InputField(id="tts_voice", type=FieldType.DROPDOWN, label="TTS Voice", options=["Nova", "Alloy", "Echo", "Fable", "Onyx", "Shimmer"], value="Nova"),
                 InputField(id="speaking_rate", type=FieldType.SLIDER, label="Speaking Rate", min=0.5, max=2, step=0.1, value=1.0, unit="x"),
                 InputField(id="pitch_adjustment", type=FieldType.SLIDER, label="Pitch Adjustment", min=-20, max=20, value=0, unit="semitones"),
@@ -346,21 +367,19 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="voice_cloning", type=FieldType.TEXT, label="Voice Cloning", placeholder="Upload audio path", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="memory",
             label="MEMORY",
             icon="Database",
             fields=[
-                InputField(id="context_visualization", type=FieldType.TEXT, label="Context Visualization", placeholder="View context", value=""),
-                InputField(id="token_count", type=FieldType.TEXT, label="Token Count", placeholder="0 tokens", value="0"),
-                InputField(id="conversation_history", type=FieldType.TEXT, label="Conversation History", placeholder="Browse history", value=""),
-                InputField(id="clear_memory", type=FieldType.TEXT, label="Clear Memory", placeholder="Clear", value=""),
-                InputField(id="export_memory", type=FieldType.TEXT, label="Export Memory", placeholder="Export", value=""),
+                InputField(id="memory_enabled", type=FieldType.TOGGLE, label="Memory Enabled", value=True),
+                InputField(id="context_window", type=FieldType.SLIDER, label="Context Window", min=5, max=50, value=10),
+                InputField(id="memory_persistence", type=FieldType.TOGGLE, label="Save Conversations", value=True),
             ]
         ),
     ],
     "automate": [
-        SubNode(
+        Section(
             id="tools",
             label="TOOLS",
             icon="Wrench",
@@ -371,7 +390,26 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="tool_categories", type=FieldType.TEXT, label="Tool Categories", placeholder="Filter", value=""),
             ]
         ),
-        SubNode(
+        Section(
+            id="skills",
+            label="SKILLS",
+            icon="Sparkles",
+            fields=[
+                InputField(id="skill_creation_enabled", type=FieldType.TOGGLE, label="Allow Agent to Create Skills", value=True),
+                InputField(id="skills_list", type=FieldType.TEXT, label="Learned Skills", placeholder="No skills learned yet", value=""),
+            ]
+        ),
+        Section(
+            id="profile",
+            label="PROFILE",
+            icon="User",
+            fields=[
+                InputField(id="user_profile_display", type=FieldType.TEXT, label="Your Profile", placeholder="Default Profile", value=""),
+                InputField(id="active_mode", type=FieldType.DROPDOWN, label="Active Mode", options=["default", "work", "personal", "focus"], value="default"),
+                InputField(id="modes_list", type=FieldType.TEXT, label="Your Modes", placeholder="No custom modes", value=""),
+            ]
+        ),
+        Section(
             id="vision",
             label="VISION",
             icon="Eye",
@@ -384,206 +422,162 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm-o4.5", "llava", "bakllava"], value="minicpm-o4.5"),
             ]
         ),
-        SubNode(
-            id="workflows",
-            label="WORKFLOWS",
-            icon="Layers",
-            fields=[
-                InputField(id="workflow_list", type=FieldType.TEXT, label="Workflow List", placeholder="Saved workflows", value=""),
-                InputField(id="create_workflow", type=FieldType.TEXT, label="Create Workflow", placeholder="Builder", value=""),
-                InputField(id="schedule", type=FieldType.TEXT, label="Schedule", placeholder="Schedule", value=""),
-                InputField(id="conditions", type=FieldType.TEXT, label="Conditions", placeholder="Conditions", value=""),
-            ]
-        ),
-        SubNode(
-            id="favorites",
-            label="FAVORITES",
-            icon="Star",
-            fields=[
-                InputField(id="favorite_commands", type=FieldType.TEXT, label="Favorite Commands", placeholder="Pinned actions", value=""),
-                InputField(id="recent_actions", type=FieldType.TEXT, label="Recent Actions", placeholder="Recent", value=""),
-                InputField(id="success_rate", type=FieldType.TEXT, label="Success Rate", placeholder="0%", value="0%"),
-                InputField(id="edit_favorites", type=FieldType.TEXT, label="Edit Favorites", placeholder="Edit", value=""),
-            ]
-        ),
-        SubNode(
-            id="shortcuts",
-            label="SHORTCUTS",
-            icon="Keyboard",
-            fields=[
-                InputField(id="global_hotkey", type=FieldType.TEXT, label="Global Hotkey", placeholder="Ctrl+Space", value="Ctrl+Space"),
-                InputField(id="voice_commands", type=FieldType.TEXT, label="Voice Commands", placeholder="Map commands", value=""),
-                InputField(id="gesture_triggers", type=FieldType.TEXT, label="Gesture Triggers", placeholder="Gestures", value=""),
-                InputField(id="key_combinations", type=FieldType.TEXT, label="Key Combinations", placeholder="Keys", value=""),
-            ]
-        ),
-        SubNode(
-            id="gui",
-            label="GUI AUTOMATION",
+        Section(
+            id="desktop_control",
+            label="DESKTOP CONTROL",
             icon="Monitor",
             fields=[
                 InputField(id="ui_tars_provider", type=FieldType.DROPDOWN, label="UI-TARS Provider", options=["cli_npx", "native_python", "api_cloud"], value="native_python"),
                 InputField(id="model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm_ollama", "anthropic", "volcengine", "local"], value="minicpm_ollama"),
-                InputField(id="api_key", type=FieldType.TEXT, label="API Key", placeholder="sk-...", value=""),
-                InputField(id="max_steps", type=FieldType.SLIDER, label="Max Automation Steps", min=5, max=50, value=25),
-                InputField(id="safety_confirmation", type=FieldType.TOGGLE, label="Require Confirmation", value=True),
-                InputField(id="debug_mode", type=FieldType.TOGGLE, label="Debug Logging", value=True),
-                InputField(id="test_automation", type=FieldType.TEXT, label="Test Automation", placeholder="Run test task", value=""),
+                InputField(id="vision_settings", type=FieldType.TEXT, label="Vision Settings", placeholder="Configure vision", value=""),
+                InputField(id="automation_rules", type=FieldType.TEXT, label="Automation Rules", placeholder="Rules", value=""),
+            ]
+        ),
+        Section(
+            id="extensions",
+            label="EXTENSIONS",
+            icon="Puzzle",
+            fields=[
+                InputField(id="mcp_servers", type=FieldType.TEXT, label="MCP Servers", placeholder="Configure servers", value=""),
+                InputField(id="extension_browser", type=FieldType.TEXT, label="Extension Browser", placeholder="Browse extensions", value=""),
+                InputField(id="installed_extensions", type=FieldType.TEXT, label="Installed", placeholder="Installed extensions", value=""),
             ]
         ),
     ],
     "system": [
-        SubNode(
+        Section(
             id="power",
             label="POWER",
             icon="Power",
             fields=[
-                InputField(id="shutdown", type=FieldType.TEXT, label="Shutdown", placeholder="Shutdown", value=""),
-                InputField(id="restart", type=FieldType.TEXT, label="Restart", placeholder="Restart", value=""),
-                InputField(id="sleep", type=FieldType.TEXT, label="Sleep", placeholder="Sleep", value=""),
-                InputField(id="lock_screen", type=FieldType.TEXT, label="Lock Screen", placeholder="Lock", value=""),
-                InputField(id="power_profile", type=FieldType.DROPDOWN, label="Power Profile", options=["Balanced", "Performance", "Battery"], value="Balanced"),
-                InputField(id="battery_status", type=FieldType.TEXT, label="Battery Status", placeholder="Battery", value=""),
+                InputField(id="startup_launch", type=FieldType.TOGGLE, label="Launch on Startup", value=True),
+                InputField(id="background_mode", type=FieldType.TOGGLE, label="Background Mode", value=True),
+                InputField(id="power_save", type=FieldType.TOGGLE, label="Power Save Mode", value=False),
             ]
         ),
-        SubNode(
+        Section(
             id="display",
             label="DISPLAY",
             icon="Monitor",
             fields=[
-                InputField(id="brightness", type=FieldType.SLIDER, label="Brightness", min=0, max=100, value=50, unit="%"),
-                InputField(id="resolution", type=FieldType.DROPDOWN, label="Resolution", options=["Auto", "1920x1080", "2560x1440", "3840x2160"], value="Auto"),
-                InputField(id="night_mode", type=FieldType.TOGGLE, label="Night Mode", value=False),
-                InputField(id="multi_monitor", type=FieldType.TEXT, label="Multi Monitor", placeholder="Arrange monitors", value=""),
-                InputField(id="color_profile", type=FieldType.DROPDOWN, label="Color Profile", options=["sRGB", "DCI-P3", "Adobe RGB"], value="sRGB"),
+                InputField(id="theme", type=FieldType.DROPDOWN, label="Theme", options=["dark", "light", "auto"], value="dark"),
+                InputField(id="accent_color", type=FieldType.COLOR, label="Accent Color", value="#00ff88"),
+                InputField(id="window_opacity", type=FieldType.SLIDER, label="Window Opacity", min=50, max=100, value=95, unit="%"),
+                InputField(id="font_size", type=FieldType.DROPDOWN, label="Font Size", options=["small", "medium", "large"], value="medium"),
             ]
         ),
-        SubNode(
+        Section(
             id="storage",
             label="STORAGE",
             icon="HardDrive",
             fields=[
-                InputField(id="disk_usage", type=FieldType.TEXT, label="Disk Usage", placeholder="Usage", value=""),
-                InputField(id="quick_folders", type=FieldType.TEXT, label="Quick Folders", placeholder="Desktop/Downloads/Documents", value=""),
-                InputField(id="cleanup", type=FieldType.TEXT, label="Cleanup", placeholder="Cleanup", value=""),
-                InputField(id="external_drives", type=FieldType.TEXT, label="External Drives", placeholder="Drives", value=""),
+                InputField(id="data_location", type=FieldType.TEXT, label="Data Location", placeholder="~/.iris", value="~/.iris"),
+                InputField(id="auto_cleanup", type=FieldType.TOGGLE, label="Auto Cleanup", value=True),
+                InputField(id="retention_days", type=FieldType.SLIDER, label="Retention (days)", min=7, max=365, value=30, unit="d"),
             ]
         ),
-        SubNode(
+        Section(
             id="network",
             label="NETWORK",
             icon="Wifi",
             fields=[
-                InputField(id="ethernet_status", type=FieldType.TEXT, label="Ethernet Status", placeholder="Connected", value=""),
-                InputField(id="vpn_connection", type=FieldType.DROPDOWN, label="VPN Connection", options=["None", "Work", "Personal"], value="None"),
-                InputField(id="bandwidth", type=FieldType.TEXT, label="Bandwidth", placeholder="0 Mbps", value=""),
-                InputField(id="network_settings", type=FieldType.TEXT, label="Network Settings", placeholder="Advanced", value=""),
+                InputField(id="offline_mode", type=FieldType.TOGGLE, label="Offline Mode", value=False),
+                InputField(id="proxy_settings", type=FieldType.TEXT, label="Proxy", placeholder="http://proxy:8080", value=""),
+                InputField(id="bandwidth_limit", type=FieldType.SLIDER, label="Bandwidth Limit", min=0, max=100, value=0, unit="Mbps"),
             ]
         ),
     ],
     "customize": [
-        SubNode(
+        Section(
             id="theme",
             label="THEME",
             icon="Palette",
             fields=[
-                InputField(id="theme_mode", type=FieldType.DROPDOWN, label="Theme Mode", options=["Dark", "Light", "Auto"], value="Dark"),
                 InputField(id="glow_color", type=FieldType.COLOR, label="Glow Color", value="#00ff88"),
-                InputField(id="state_colors", type=FieldType.TOGGLE, label="State Colors", value=False),
+                InputField(id="font_color", type=FieldType.COLOR, label="Font Color", value="#ffffff"),
+                InputField(id="state_colors_enabled", type=FieldType.TOGGLE, label="Enable State Colors", value=False),
                 InputField(id="idle_color", type=FieldType.COLOR, label="Idle Color", value="#00ff88"),
                 InputField(id="listening_color", type=FieldType.COLOR, label="Listening Color", value="#00aaff"),
                 InputField(id="processing_color", type=FieldType.COLOR, label="Processing Color", value="#a855f7"),
                 InputField(id="error_color", type=FieldType.COLOR, label="Error Color", value="#ff3355"),
             ]
         ),
-        SubNode(
+        Section(
             id="startup",
             label="STARTUP",
-            icon="Power",
+            icon="Rocket",
             fields=[
-                InputField(id="launch_startup", type=FieldType.TOGGLE, label="Launch at Startup", value=False),
-                InputField(id="startup_behavior", type=FieldType.DROPDOWN, label="Startup Behavior", options=["Show Widget", "Start Minimized", "Start Hidden"], value="Show Widget"),
-                InputField(id="welcome_message", type=FieldType.TOGGLE, label="Welcome Message", value=True),
-                InputField(id="default_state", type=FieldType.DROPDOWN, label="Default State", options=["Collapsed", "Expanded"], value="Collapsed"),
+                InputField(id="welcome_message", type=FieldType.TEXT, label="Welcome Message", placeholder="Welcome to IRIS", value="Welcome to IRIS"),
+                InputField(id="startup_sound", type=FieldType.TOGGLE, label="Startup Sound", value=True),
+                InputField(id="initial_mode", type=FieldType.DROPDOWN, label="Initial Mode", options=["voice", "chat", "idle"], value="voice"),
             ]
         ),
-        SubNode(
+        Section(
             id="behavior",
             label="BEHAVIOR",
             icon="Sliders",
             fields=[
-                InputField(id="confirm_destructive", type=FieldType.TOGGLE, label="Confirm Destructive", value=True),
-                InputField(id="undo_history", type=FieldType.SLIDER, label="Undo History", min=0, max=50, value=10, unit="actions"),
-                InputField(id="error_notifications", type=FieldType.DROPDOWN, label="Error Notifications", options=["Popup", "Banner", "Silent"], value="Popup"),
-                InputField(id="auto_save", type=FieldType.TOGGLE, label="Auto Save", value=True),
+                InputField(id="auto_listen", type=FieldType.TOGGLE, label="Auto Listen", value=False),
+                InputField(id="conversation_mode", type=FieldType.TOGGLE, label="Conversation Mode", value=True),
+                InputField(id="interruptible", type=FieldType.TOGGLE, label="Allow Interrupt", value=True),
             ]
         ),
-        SubNode(
+        Section(
             id="notifications",
             label="NOTIFICATIONS",
             icon="Bell",
             fields=[
-                InputField(id="dnd_toggle", type=FieldType.TOGGLE, label="Do Not Disturb", value=False),
-                InputField(id="dnd_schedule", type=FieldType.TEXT, label="DND Schedule", placeholder="Quiet hours", value=""),
-                InputField(id="notification_sound", type=FieldType.DROPDOWN, label="Notification Sound", options=["Default", "Chime", "Pulse", "Silent"], value="Default"),
-                InputField(id="banner_style", type=FieldType.DROPDOWN, label="Banner Style", options=["Native", "Custom", "Minimal"], value="Native"),
-                InputField(id="app_notifications", type=FieldType.TOGGLE, label="App Notifications", value=True),
+                InputField(id="desktop_notifications", type=FieldType.TOGGLE, label="Desktop Notifications", value=True),
+                InputField(id="sound_alerts", type=FieldType.TOGGLE, label="Sound Alerts", value=True),
+                InputField(id="do_not_disturb", type=FieldType.TOGGLE, label="Do Not Disturb", value=False),
             ]
         ),
     ],
     "monitor": [
-        SubNode(
+        Section(
             id="analytics",
             label="ANALYTICS",
             icon="BarChart3",
             fields=[
-                InputField(id="token_usage", type=FieldType.TEXT, label="Token Usage", placeholder="Usage", value=""),
-                InputField(id="response_latency", type=FieldType.TEXT, label="Response Latency", placeholder="Latency", value=""),
-                InputField(id="session_duration", type=FieldType.TEXT, label="Session Duration", placeholder="Duration", value=""),
-                InputField(id="command_history", type=FieldType.TEXT, label="Command History", placeholder="History", value=""),
-                InputField(id="cost_estimate", type=FieldType.TEXT, label="Cost Estimate", placeholder="Cost", value=""),
+                InputField(id="usage_stats", type=FieldType.TEXT, label="Usage Stats", placeholder="View stats", value=""),
+                InputField(id="performance_metrics", type=FieldType.TEXT, label="Performance", placeholder="View metrics", value=""),
+                InputField(id="export_data", type=FieldType.TEXT, label="Export", placeholder="Export data", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="logs",
             label="LOGS",
             icon="FileText",
             fields=[
-                InputField(id="system_logs", type=FieldType.TEXT, label="System Logs", placeholder="System", value=""),
-                InputField(id="voice_logs", type=FieldType.TEXT, label="Voice Logs", placeholder="Voice", value=""),
-                InputField(id="mcp_logs", type=FieldType.TEXT, label="MCP Logs", placeholder="MCP", value=""),
-                InputField(id="error_logs", type=FieldType.TEXT, label="Error Logs", placeholder="Errors", value=""),
-                InputField(id="export_logs", type=FieldType.TEXT, label="Export Logs", placeholder="Export", value=""),
+                InputField(id="system_logs", type=FieldType.TEXT, label="System Logs", placeholder="View logs", value=""),
+                InputField(id="error_logs", type=FieldType.TEXT, label="Error Logs", placeholder="View errors", value=""),
+                InputField(id="log_level", type=FieldType.DROPDOWN, label="Log Level", options=["debug", "info", "warn", "error"], value="info"),
             ]
         ),
-        SubNode(
+        Section(
             id="diagnostics",
             label="DIAGNOSTICS",
             icon="Stethoscope",
             fields=[
-                InputField(id="health_check", type=FieldType.TEXT, label="Health Check", placeholder="Run", value=""),
-                InputField(id="lfm_benchmark", type=FieldType.TEXT, label="LFM Benchmark", placeholder="Benchmark", value=""),
-                InputField(id="mcp_test", type=FieldType.TEXT, label="MCP Test", placeholder="Test MCP", value=""),
-                InputField(id="network_test", type=FieldType.TEXT, label="Network Test", placeholder="Test Network", value=""),
-                InputField(id="report_issue", type=FieldType.TEXT, label="Report Issue", placeholder="Report", value=""),
+                InputField(id="system_health", type=FieldType.TEXT, label="System Health", placeholder="Check health", value=""),
+                InputField(id="troubleshoot", type=FieldType.TEXT, label="Troubleshoot", placeholder="Run diagnostics", value=""),
+                InputField(id="debug_info", type=FieldType.TEXT, label="Debug Info", placeholder="View debug info", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="updates",
             label="UPDATES",
             icon="RefreshCw",
             fields=[
-                InputField(id="update_channel", type=FieldType.DROPDOWN, label="Update Channel", options=["Stable", "Beta", "Nightly"], value="Stable"),
-                InputField(id="check_updates", type=FieldType.TEXT, label="Check Updates", placeholder="Check", value=""),
-                InputField(id="current_version", type=FieldType.TEXT, label="Current Version", placeholder="v0.0.0", value=""),
-                InputField(id="changelog", type=FieldType.TEXT, label="Changelog", placeholder="View", value=""),
+                InputField(id="check_updates", type=FieldType.TEXT, label="Check Updates", placeholder="Check for updates", value=""),
                 InputField(id="auto_update", type=FieldType.TOGGLE, label="Auto Update", value=True),
+                InputField(id="release_channel", type=FieldType.DROPDOWN, label="Channel", options=["stable", "beta", "dev"], value="stable"),
             ]
         ),
     ],
 }
 
 
-def get_subnodes_for_category(category: str) -> List[SubNode]:
-    """Get subnode configuration for a category"""
-    return SUBNODE_CONFIGS.get(category, [])
+def get_sections_for_category(category: str) -> List[Section]:
+    """Get section configuration for a category"""
+    return SECTION_CONFIGS.get(category, [])

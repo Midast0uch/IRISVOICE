@@ -39,15 +39,15 @@ export const MAIN_CATEGORY_IDS = {
 } as const;
 
 /**
- * Sub-node IDs (Level 3 navigation)
+ * Section IDs (Level 3 navigation)
  * Organized by parent category for clarity
  */
-export const SUB_NODE_IDS = {
+export const SECTION_IDS = {
   // Voice category
   VOICE_INPUT: 'input',
   VOICE_OUTPUT: 'output',
-  VOICE_PROCESSING: 'processing',
-  VOICE_MODEL: 'model',
+  VOICE_WAKE: 'wake',
+  VOICE_SPEECH: 'speech',
   
   // Agent category
   AGENT_MODEL_SELECTION: 'model_selection',
@@ -58,10 +58,9 @@ export const SUB_NODE_IDS = {
   // Automate category
   AUTOMATE_TOOLS: 'tools',
   AUTOMATE_VISION: 'vision',
-  AUTOMATE_WORKFLOWS: 'workflows',
-  AUTOMATE_SHORTCUTS: 'shortcuts',
-  AUTOMATE_GUI: 'gui',
-  AUTOMATE_EXTENSIONS: 'extensions',
+  AUTOMATE_DESKTOP_CONTROL: 'desktop_control',
+  AUTOMATE_SKILLS: 'skills',
+  AUTOMATE_PROFILE: 'profile',
   
   // System category
   SYSTEM_POWER: 'power',
@@ -82,13 +81,18 @@ export const SUB_NODE_IDS = {
   MONITOR_UPDATES: 'updates',
 } as const;
 
+/** @deprecated Use SECTION_IDS instead */
+export const SUB_NODE_IDS = SECTION_IDS;
+
 /**
  * Type-safe ID types
  * Use these types in function signatures to ensure type safety
  */
 export type MainCategoryId = typeof MAIN_CATEGORY_IDS[keyof typeof MAIN_CATEGORY_IDS];
-export type SubNodeId = typeof SUB_NODE_IDS[keyof typeof SUB_NODE_IDS];
-export type NavigationId = MainCategoryId | SubNodeId;
+export type SectionId = typeof SECTION_IDS[keyof typeof SECTION_IDS];
+/** @deprecated Use SectionId instead */
+export type SubNodeId = SectionId;
+export type NavigationId = MainCategoryId | SectionId;
 
 /**
  * Validates that an ID matches the expected lowercase-kebab-case format
@@ -141,37 +145,37 @@ export const ID_MIGRATION_MAP: Record<string, string> = {
   'CUSTOMIZE': MAIN_CATEGORY_IDS.CUSTOMIZE,
   'MONITOR': MAIN_CATEGORY_IDS.MONITOR,
   
-  // Sub-nodes (old uppercase -> new lowercase)
-  'INPUT': SUB_NODE_IDS.VOICE_INPUT,
-  'OUTPUT': SUB_NODE_IDS.VOICE_OUTPUT,
-  'PROCESSING': SUB_NODE_IDS.VOICE_PROCESSING,
-  'MODEL': SUB_NODE_IDS.VOICE_MODEL,
+  // Sections (old uppercase -> new lowercase)
+  'INPUT': SECTION_IDS.VOICE_INPUT,
+  'OUTPUT': SECTION_IDS.VOICE_OUTPUT,
+  'WAKE': SECTION_IDS.VOICE_WAKE,
+  'SPEECH': SECTION_IDS.VOICE_SPEECH,
   
-  'MODEL_SELECTION': SUB_NODE_IDS.AGENT_MODEL_SELECTION,
-  'INFERENCE_MODE': SUB_NODE_IDS.AGENT_INFERENCE_MODE,
-  'IDENTITY': SUB_NODE_IDS.AGENT_IDENTITY,
-  'MEMORY': SUB_NODE_IDS.AGENT_MEMORY,
+  'MODEL_SELECTION': SECTION_IDS.AGENT_MODEL_SELECTION,
+  'INFERENCE_MODE': SECTION_IDS.AGENT_INFERENCE_MODE,
+  'IDENTITY': SECTION_IDS.AGENT_IDENTITY,
+  'MEMORY': SECTION_IDS.AGENT_MEMORY,
   
-  'TOOLS': SUB_NODE_IDS.AUTOMATE_TOOLS,
-  'VISION': SUB_NODE_IDS.AUTOMATE_VISION,
-  'WORKFLOWS': SUB_NODE_IDS.AUTOMATE_WORKFLOWS,
-  'SHORTCUTS': SUB_NODE_IDS.AUTOMATE_SHORTCUTS,
-  'GUI': SUB_NODE_IDS.AUTOMATE_GUI,
+  'TOOLS': SECTION_IDS.AUTOMATE_TOOLS,
+  'VISION': SECTION_IDS.AUTOMATE_VISION,
+  'SKILLS': SECTION_IDS.AUTOMATE_SKILLS,
+  'PROFILE': SECTION_IDS.AUTOMATE_PROFILE,
+  'GUI': SECTION_IDS.AUTOMATE_DESKTOP_CONTROL,
   
-  'POWER': SUB_NODE_IDS.SYSTEM_POWER,
-  'DISPLAY': SUB_NODE_IDS.SYSTEM_DISPLAY,
-  'STORAGE': SUB_NODE_IDS.SYSTEM_STORAGE,
-  'NETWORK': SUB_NODE_IDS.SYSTEM_NETWORK,
+  'POWER': SECTION_IDS.SYSTEM_POWER,
+  'DISPLAY': SECTION_IDS.SYSTEM_DISPLAY,
+  'STORAGE': SECTION_IDS.SYSTEM_STORAGE,
+  'NETWORK': SECTION_IDS.SYSTEM_NETWORK,
   
-  'THEME': SUB_NODE_IDS.CUSTOMIZE_THEME,
-  'STARTUP': SUB_NODE_IDS.CUSTOMIZE_STARTUP,
-  'BEHAVIOR': SUB_NODE_IDS.CUSTOMIZE_BEHAVIOR,
-  'NOTIFICATIONS': SUB_NODE_IDS.CUSTOMIZE_NOTIFICATIONS,
+  'THEME': SECTION_IDS.CUSTOMIZE_THEME,
+  'STARTUP': SECTION_IDS.CUSTOMIZE_STARTUP,
+  'BEHAVIOR': SECTION_IDS.CUSTOMIZE_BEHAVIOR,
+  'NOTIFICATIONS': SECTION_IDS.CUSTOMIZE_NOTIFICATIONS,
   
-  'ANALYTICS': SUB_NODE_IDS.MONITOR_ANALYTICS,
-  'LOGS': SUB_NODE_IDS.MONITOR_LOGS,
-  'DIAGNOSTICS': SUB_NODE_IDS.MONITOR_DIAGNOSTICS,
-  'UPDATES': SUB_NODE_IDS.MONITOR_UPDATES,
+  'ANALYTICS': SECTION_IDS.MONITOR_ANALYTICS,
+  'LOGS': SECTION_IDS.MONITOR_LOGS,
+  'DIAGNOSTICS': SECTION_IDS.MONITOR_DIAGNOSTICS,
+  'UPDATES': SECTION_IDS.MONITOR_UPDATES,
 };
 
 /**
@@ -195,8 +199,13 @@ export function isMainCategoryId(id: string): id is MainCategoryId {
 }
 
 /**
- * Checks if an ID is a sub-node
+ * Checks if an ID is a section
  */
+export function isSectionId(id: string): id is SectionId {
+  return Object.values(SECTION_IDS).includes(id as SectionId);
+}
+
+/** @deprecated Use isSectionId instead */
 export function isSubNodeId(id: string): id is SubNodeId {
-  return Object.values(SUB_NODE_IDS).includes(id as SubNodeId);
+  return isSectionId(id);
 }

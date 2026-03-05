@@ -17,9 +17,8 @@ export const SUBMENU_CONFIG = {
   rotations: 2,
 };
 
-export const MINI_NODE_STACK_CONFIG = {
+export const CARD_STACK_CONFIG = {
   size: 90,
-  sizeConfirmed: 90,
   borderRadius: 16,
   stackDepth: 50,
   maxVisible: 4,
@@ -32,20 +31,26 @@ export const MINI_NODE_STACK_CONFIG = {
   fieldGap: 12,
 };
 
+/** @deprecated Use CARD_STACK_CONFIG instead */
+export const MINI_NODE_STACK_CONFIG = CARD_STACK_CONFIG;
+
 export const ORBIT_CONFIG = {
   radius: 200,
   duration: 800,
   ease: [0.34, 1.56, 0.64, 1] as const,
 };
 
-export const NODE_POSITIONS = [
-  { index: 0, angle: -90, id: "voice", label: "VOICE", icon: Mic, hasSubnodes: true },
-  { index: 1, angle: -30, id: "agent", label: "AGENT", icon: Bot, hasSubnodes: true },
-  { index: 2, angle: 30, id: "automate", label: "AUTOMATE", icon: Cpu, hasSubnodes: true },
-  { index: 3, angle: 90, id: "system", label: "SYSTEM", icon: Settings, hasSubnodes: true },
-  { index: 4, angle: 150, id: "customize", label: "CUSTOMIZE", icon: Palette, hasSubnodes: true },
-  { index: 5, angle: 210, id: "monitor", label: "MONITOR", icon: Activity, hasSubnodes: true },
+export const CATEGORY_POSITIONS = [
+  { index: 0, angle: -90, id: "voice", label: "VOICE", icon: Mic, hasSections: true },
+  { index: 1, angle: -30, id: "agent", label: "AGENT", icon: Bot, hasSections: true },
+  { index: 2, angle: 30, id: "automate", label: "AUTOMATE", icon: Cpu, hasSections: true },
+  { index: 3, angle: 90, id: "system", label: "SYSTEM", icon: Settings, hasSections: true },
+  { index: 4, angle: 150, id: "customize", label: "CUSTOMIZE", icon: Palette, hasSections: true },
+  { index: 5, angle: 210, id: "monitor", label: "MONITOR", icon: Activity, hasSections: true },
 ];
+
+/** @deprecated Use CATEGORY_POSITIONS instead */
+export const NODE_POSITIONS = CATEGORY_POSITIONS;
 
 export const ICON_MAP: Record<string, ElementType> = {
   Mic, Brain, Bot, Settings, Database, Activity, Volume2, Headphones, Waveform,

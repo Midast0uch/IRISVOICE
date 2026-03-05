@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile } from 'lucide-react';
 import { useNavigation } from "@/contexts/NavigationContext";
+import { useBrandColor } from "@/contexts/BrandColorContext";
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
@@ -94,6 +95,7 @@ interface ChatWingProps {
   isOpen: boolean
   onClose: () => void
   onDashboardClick: () => void
+  onDashboardClose?: () => void
   sendMessage?: SendMessageFunction
   fieldValues?: Record<string, any>
   updateField?: (subnodeId: string, fieldId: string, value: any) => void
@@ -107,6 +109,7 @@ export function ChatWing({
   isOpen, 
   onClose, 
   onDashboardClick, 
+  onDashboardClose,
   sendMessage, 
   fieldValues, 
   updateField,
@@ -151,10 +154,12 @@ export function ChatWing({
   // Derive isTyping from agent processing state
   const isTyping = voiceState === "processing_conversation" || voiceState === "processing_tool";
   
-  // Get theme colors with fallback
-  const glowColor = activeTheme?.glow || "#00d4ff";
-  const primaryColor = activeTheme?.primary || "#00d4ff";
-  const fontColor = activeTheme?.font || "#ffffff";
+  // Get theme colors from BrandColorContext for real-time updates
+  const { getThemeConfig } = useBrandColor();
+  const brandTheme = getThemeConfig();
+  const glowColor = brandTheme.glow.color || "#00d4ff";
+  const primaryColor = brandTheme.glow.color || "#00d4ff";
+  const fontColor = brandTheme.text.primary || "#ffffff";
   
   // Get active conversation messages
   const activeConversation = conversations.find(c => c.id === activeConversationId);
@@ -856,23 +861,30 @@ ${message.text}`;
                 >
                   IRIS
                 </span>
-                {/* Dashboard - positioned next to IRIS text */}
+                {/* Dashboard - positioned next to IRIS text - toggles open/close */}
                 <button
                   onClick={() => {
-                    onDashboardClick();
+                    if (isDashboardOpen && onDashboardClose) {
+                      onDashboardClose();
+                    } else {
+                      onDashboardClick();
+                    }
                     closeDropdowns();
                   }}
                   className="p-1.5 rounded-lg transition-all duration-150"
-                  style={{ color: `${fontColor}60` }}
+                  style={{ 
+                    color: isDashboardOpen ? glowColor : `${fontColor}60`,
+                    backgroundColor: isDashboardOpen ? `${glowColor}15` : 'transparent'
+                  }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.color = glowColor;
                     e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.color = `${fontColor}60`;
-                    e.currentTarget.style.backgroundColor = 'transparent';
+                    e.currentTarget.style.color = isDashboardOpen ? glowColor : `${fontColor}60`;
+                    e.currentTarget.style.backgroundColor = isDashboardOpen ? `${glowColor}15` : 'transparent';
                   }}
-                  title="Open Dashboard"
+                  title={isDashboardOpen ? "Close Dashboard" : "Open Dashboard"}
                 >
                   <BarChart3 size={14} />
                 </button>

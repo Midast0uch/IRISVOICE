@@ -307,7 +307,7 @@ class AgentKernel:
         Configure VPS Gateway from settings.
         
         Args:
-            vps_config: Dictionary containing VPS configuration fields from agent.vps subnode
+            vps_config: Dictionary containing VPS configuration fields from agent.vps section
                 - enabled: bool - Enable VPS routing
                 - endpoints: List[str] - VPS endpoint URLs
                 - auth_token: str - Authentication token

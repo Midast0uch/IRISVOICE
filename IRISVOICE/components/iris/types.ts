@@ -1,4 +1,3 @@
-
 import type { ElementType } from "react";
 import type { UILayoutState } from "@/hooks/useUILayoutState";
 
@@ -13,14 +12,6 @@ export interface InputField {
   step?: number;
   unit?: string;
   defaultValue?: string | number | boolean;
-}
-
-export interface ConfirmedMiniNode {
-  id: string;
-  label: string;
-  icon: ElementType | string;
-  orbitAngle: number;
-  values: Record<string, string | number | boolean>;
 }
 
 export type OrbIcon = 'home' | 'close' | 'back'

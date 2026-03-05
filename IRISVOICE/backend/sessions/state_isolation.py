@@ -11,8 +11,8 @@ from typing import Dict, Optional, Any, List
 from datetime import datetime
 import weakref
 
-from ..core_models import IRISState, Category, ConfirmedNode, ColorTheme, AppState
-from ..core_models import get_subnodes_for_category
+from ..core_models import IRISState, Category, ColorTheme, AppState
+from ..core_models import get_sections_for_category
 from .memory_bounds import MemoryTracker
 
 
@@ -85,10 +85,9 @@ class IsolatedStateManager:
             # Create a copy to prevent external modification
             state_copy = IRISState(
                 current_category=self._state.current_category,
-                current_subnode=self._state.current_subnode,
+                current_section=self._state.current_section,
                 field_values=self._state.field_values.copy(),
                 active_theme=self._state.active_theme,
-                confirmed_nodes=self._state.confirmed_nodes.copy(),
                 selected_reasoning_model=self._state.selected_reasoning_model,
                 selected_tool_execution_model=self._state.selected_tool_execution_model
             )
@@ -100,11 +99,11 @@ class IsolatedStateManager:
             print(f"[{self.session_id}] set_category: before - {self._state.current_category}, new - {category}")
             
             # Save current state to navigation history before changing
-            self._navigation_history.append((self._state.current_category, self._state.current_subnode))
+            self._navigation_history.append((self._state.current_category, self._state.current_section))
             
             old_category = self._state.current_category
             self._state.current_category = category
-            self._state.current_subnode = None
+            self._state.current_section = None
             print(f"[{self.session_id}] set_category: after - {self._state.current_category}")
             
             # Track memory change
@@ -114,23 +113,23 @@ class IsolatedStateManager:
             if self._persistence_dir:
                 await self._save_state()
     
-    async def set_subnode(self, subnode_id: Optional[str]) -> None:
-        """Set current subnode with memory tracking"""
+    async def set_section(self, section_id: Optional[str]) -> None:
+        """Set current section with memory tracking"""
         async with self._lock:
             # Save current state to navigation history before changing
-            self._navigation_history.append((self._state.current_category, self._state.current_subnode))
+            self._navigation_history.append((self._state.current_category, self._state.current_section))
             
-            old_subnode = self._state.current_subnode
-            self._state.current_subnode = subnode_id
+            old_section = self._state.current_section
+            self._state.current_section = section_id
             
             # Track memory change
-            self._memory_tracker.track_state_change("subnode", old_subnode, subnode_id)
+            self._memory_tracker.track_state_change("section", old_section, section_id)
 
             # Auto-save if persistence is enabled
             if self._persistence_dir:
                 await self._save_state()
     
-    async def update_field(self, subnode_id: str, field_id: str, value: Any, timestamp: Optional[float] = None) -> tuple[bool, float]:
+    async def update_field(self, section_id: str, field_id: str, value: Any, timestamp: Optional[float] = None) -> tuple[bool, float]:
         """Update a field value with validation, memory tracking, and timestamp handling
         
         Special handling for model selection fields (reasoning_model, tool_execution_model):
@@ -164,8 +163,8 @@ class IsolatedStateManager:
                     return True, timestamp
                 
                 # Validate the value
-                if not await self._validate_field_value(subnode_id, field_id, value):
-                    print(f"[{self.session_id}] Field validation failed for {subnode_id}.{field_id}")
+                if not await self._validate_field_value(section_id, field_id, value):
+                    print(f"[{self.session_id}] Field validation failed for {section_id}.{field_id}")
                     return False, timestamp
                 
                 # Encrypt API keys before storage
@@ -176,7 +175,7 @@ class IsolatedStateManager:
                     print(f"[{self.session_id}] Encrypted API key for storage")
                 
                 # Check if we have a timestamp tracker for this field
-                field_key = f"{subnode_id}:{field_id}"
+                field_key = f"{section_id}:{field_id}"
                 if not hasattr(self, '_field_timestamps'):
                     self._field_timestamps: Dict[str, float] = {}
                 
@@ -187,19 +186,19 @@ class IsolatedStateManager:
                     return False, timestamp
                 
                 # Get old value for tracking
-                old_value = self._state.field_values.get(subnode_id, {}).get(field_id)
+                old_value = self._state.field_values.get(section_id, {}).get(field_id)
                 
                 # Update the field with encrypted value
-                if subnode_id not in self._state.field_values:
-                    self._state.field_values[subnode_id] = {}
+                if section_id not in self._state.field_values:
+                    self._state.field_values[section_id] = {}
                 
-                self._state.field_values[subnode_id][field_id] = stored_value
+                self._state.field_values[section_id][field_id] = stored_value
                 
                 # Update timestamp tracker
                 self._field_timestamps[field_key] = timestamp
                 
                 # Track memory change
-                self._memory_tracker.track_field_change(subnode_id, field_id, old_value, stored_value)
+                self._memory_tracker.track_field_change(section_id, field_id, old_value, stored_value)
 
                 # Auto-save if persistence is enabled with retry
                 if self._persistence_dir:
@@ -217,42 +216,21 @@ class IsolatedStateManager:
                 
                 return True, timestamp
             except Exception as e:
-                print(f"[{self.session_id}] Error updating field {subnode_id}.{field_id}: {e}")
+                print(f"[{self.session_id}] Error updating field {section_id}.{field_id}: {e}")
                 return False, timestamp
     
-    async def confirm_subnode(self, category: str, subnode_id: str, values: Dict[str, Any]) -> float:
-        """Confirm a subnode and add it to orbit with memory tracking"""
+    async def confirm_section(self, category: str, section_id: str, values: Dict[str, Any]) -> float:
+        """Confirm a section and save its values"""
         async with self._lock:
-            # Calculate orbit angle
-            existing_count = len(self._state.confirmed_nodes)
-            orbit_angle = -90 + (existing_count * 45)
+            # Save field values for this section
+            for field_id, value in values.items():
+                self._state.set_field_value(section_id, field_id, value)
             
-            # Get subnode info
-            subnodes = get_subnodes_for_category(category)
-            subnode = next((s for s in subnodes if s.id == subnode_id), None)
+            # Auto-save if persistence is enabled
+            if self._persistence_dir:
+                await self._save_state()
             
-            if subnode:
-                confirmed = ConfirmedNode(
-                    id=subnode_id,
-                    label=subnode.label,
-                    icon=subnode.icon,
-                    orbit_angle=orbit_angle,
-                    values=values,
-                    category=category
-                )
-                
-                # Remove existing if same id
-                self._state.confirmed_nodes = [n for n in self._state.confirmed_nodes if n.id != confirmed.id]
-                self._state.confirmed_nodes.append(confirmed)
-                
-                # Track memory change
-                self._memory_tracker.track_confirmed_node_change(subnode_id, values)
-                
-                # Auto-save if persistence is enabled
-                if self._persistence_dir:
-                    await self._save_state()
-            
-            return orbit_angle
+            return 0.0
     
     async def update_theme(self, glow_color: Optional[str] = None, font_color: Optional[str] = None, state_colors: Optional[dict] = None) -> None:
         """Update theme colors with memory tracking"""
@@ -284,29 +262,17 @@ class IsolatedStateManager:
             if self._persistence_dir:
                 await self._save_theme()
     
-    async def clear_confirmed_nodes(self) -> None:
-        """Clear all confirmed nodes with memory tracking"""
-        async with self._lock:
-            old_count = len(self._state.confirmed_nodes)
-            self._state.confirmed_nodes = []
-            
-            # Track memory change
-            self._memory_tracker.track_confirmed_nodes_clear(old_count)
-            
-            # Auto-save if persistence is enabled
-            if self._persistence_dir:
-                await self._save_all_categories()
     
     async def go_back(self) -> None:
         """Navigate back to the previous navigation state"""
         async with self._lock:
             if self._navigation_history:
                 # Pop the last navigation state from history
-                previous_category, previous_subnode = self._navigation_history.pop()
+                previous_category, previous_section = self._navigation_history.pop()
                 
                 # Restore the previous state without adding to history
                 self._state.current_category = previous_category
-                self._state.current_subnode = previous_subnode
+                self._state.current_section = previous_section
                 
                 # Auto-save if persistence is enabled
                 if self._persistence_dir:
@@ -317,7 +283,7 @@ class IsolatedStateManager:
         async with self._lock:
             # Clear navigation state
             self._state.current_category = None
-            self._state.current_subnode = None
+            self._state.current_section = None
             
             # Clear navigation history
             self._navigation_history.clear()
@@ -326,7 +292,7 @@ class IsolatedStateManager:
             if self._persistence_dir:
                 await self._save_state()
     
-    async def _validate_field_value(self, subnode_id: str, field_id: str, value: Any) -> bool:
+    async def _validate_field_value(self, section_id: str, field_id: str, value: Any) -> bool:
         """Validate a field value against its configuration"""
         # Import validation utilities
         from ..utils.api_validation import validate_openai_key, validate_api_url
@@ -353,14 +319,14 @@ class IsolatedStateManager:
             return True
         
         # Implementation copied from StateManager but adapted for async
-        category = self._get_category_for_subnode(subnode_id)
-        subnodes = get_subnodes_for_category(category)
+        category = self._get_category_for_section(section_id)
+        sections = get_sections_for_category(category)
         
-        subnode = next((s for s in subnodes if s.id == subnode_id), None)
-        if not subnode:
-            return True  # Unknown subnode, allow it
+        section = next((s for s in sections if s.id == section_id), None)
+        if not section:
+            return True  # Unknown section, allow it
         
-        for field in subnode.fields:
+        for field in section.fields:
             if field.id == field_id:
                 # Type-specific validation
                 if field.type.value == "slider":
@@ -386,8 +352,8 @@ class IsolatedStateManager:
         
         return True  # Unknown field, allow it
     
-    def _get_category_for_subnode(self, subnode_id: str) -> str:
-        """Derive category from subnode_id"""
+    def _get_category_for_section(self, section_id: str) -> str:
+        """Derive category from section_id"""
         category_map = {
             "input": "voice", "output": "voice", "processing": "voice", "model": "voice",
             "identity": "agent", "wake": "agent", "speech": "agent", "memory": "agent",
@@ -396,7 +362,7 @@ class IsolatedStateManager:
             "theme": "customize", "startup": "customize", "behavior": "customize", "notifications": "customize",
             "analytics": "monitor", "logs": "monitor", "diagnostics": "monitor", "updates": "monitor",
         }
-        return category_map.get(subnode_id, "misc")
+        return category_map.get(section_id, "misc")
     
     # Persistence methods
     async def _save_state(self):
@@ -482,26 +448,14 @@ class IsolatedStateManager:
             return False
         
         try:
-            # Collect field values for all subnodes in this category
+            # Collect field values for all sections in this category
             category_fields = {}
-            for subnode_id in self._state.field_values:
-                if self._get_category_for_subnode(subnode_id) == category:
-                    category_fields[subnode_id] = self._state.field_values[subnode_id]
+            for section_id in self._state.field_values:
+                if self._get_category_for_section(section_id) == category:
+                    category_fields[section_id] = self._state.field_values[section_id]
             
             data = {
                 'fields': category_fields,
-                'confirmed': [
-                    {
-                        'id': n.id,
-                        'label': n.label,
-                        'icon': n.icon,
-                        'orbit_angle': n.orbit_angle,
-                        'values': n.values,
-                        'category': n.category
-                    }
-                    for n in self._state.confirmed_nodes 
-                    if self._get_category_for_subnode(n.id) == category
-                ],
                 'last_updated': datetime.now().isoformat()
             }
             
@@ -650,23 +604,23 @@ class IsolatedStateManager:
             print(f"[{self.session_id}] Error restoring model selections: {e}")
     
     # Utility methods
-    async def get_field_value(self, subnode_id: str, field_id: str, default: Any = None) -> Any:
-        """Get a specific field value by subnode_id"""
-        return self._state.field_values.get(subnode_id, {}).get(field_id, default)
+    async def get_field_value(self, section_id: str, field_id: str, default: Any = None) -> Any:
+        """Get a specific field value by section_id"""
+        return self._state.field_values.get(section_id, {}).get(field_id, default)
     
-    async def get_decrypted_field_value(self, subnode_id: str, field_id: str, default: Any = None) -> Any:
+    async def get_decrypted_field_value(self, section_id: str, field_id: str, default: Any = None) -> Any:
         """
         Get a specific field value, decrypting if it's an API key.
         
         Args:
-            subnode_id: The subnode ID
+            section_id: The section ID
             field_id: The field ID
             default: Default value if field not found
             
         Returns:
             Decrypted value for API keys, plain value for other fields
         """
-        value = self._state.field_values.get(subnode_id, {}).get(field_id, default)
+        value = self._state.field_values.get(section_id, {}).get(field_id, default)
         
         # Decrypt API keys
         if field_id == "openai_api_key" and value:
@@ -675,12 +629,12 @@ class IsolatedStateManager:
         
         return value
     
-    async def get_masked_field_value(self, subnode_id: str, field_id: str, default: Any = None) -> Any:
+    async def get_masked_field_value(self, section_id: str, field_id: str, default: Any = None) -> Any:
         """
         Get a specific field value, masking if it's an API key.
         
         Args:
-            subnode_id: The subnode ID
+            section_id: The section ID
             field_id: The field ID
             default: Default value if field not found
             
@@ -688,7 +642,7 @@ class IsolatedStateManager:
             Masked value for API keys, plain value for other fields
         """
         # First decrypt the value
-        value = await self.get_decrypted_field_value(subnode_id, field_id, default)
+        value = await self.get_decrypted_field_value(section_id, field_id, default)
         
         # Mask API keys
         if field_id == "openai_api_key" and value:
@@ -697,16 +651,16 @@ class IsolatedStateManager:
         
         return value
     
-    async def get_subnode_field_values(self, subnode_id: str) -> Dict[str, Any]:
-        """Get all field values for a subnode"""
-        return self._state.field_values.get(subnode_id, {}).copy()
+    async def get_section_field_values(self, section_id: str) -> Dict[str, Any]:
+        """Get all field values for a section"""
+        return self._state.field_values.get(section_id, {}).copy()
     
     async def get_category_field_values(self, category: str) -> Dict[str, Dict[str, Any]]:
-        """Get all field values for all subnodes in a category"""
+        """Get all field values for all sections in a category"""
         result = {}
-        for subnode_id, values in self._state.field_values.items():
-            if self._get_category_for_subnode(subnode_id) == category:
-                result[subnode_id] = values.copy()
+        for section_id, values in self._state.field_values.items():
+            if self._get_category_for_section(section_id) == category:
+                result[section_id] = values.copy()
         return result
     
     def register_state_change_callback(self, callback: Any) -> None:

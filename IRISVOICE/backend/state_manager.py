@@ -5,7 +5,7 @@ Acts as a facade to the session-based state management system.
 import asyncio
 from typing import Any, Dict, Optional, List
 
-from .core_models import IRISState, Category, ConfirmedNode, ColorTheme
+from .core_models import IRISState, Category, ColorTheme
 from .sessions import get_session_manager, SessionManager, IRISession
 
 
@@ -46,13 +46,13 @@ class StateManager:
         """Update the application state across all sessions."""
         await self._session_manager.update_app_state_for_all_sessions(app_state)
 
-    async def set_subnode(self, session_id: str, subnode_id: Optional[str]) -> None:
-        """Set current subnode for a session"""
+    async def set_section(self, session_id: str, section_id: Optional[str]) -> None:
+        """Set current section for a session"""
         state_manager = await self._get_session_state_manager(session_id)
         if state_manager:
-            await state_manager.set_subnode(subnode_id)
+            await state_manager.set_section(section_id)
     
-    async def update_field(self, session_id: str, subnode_id: str, field_id: str, value: Any, timestamp: Optional[float] = None) -> tuple[bool, float]:
+    async def update_field(self, session_id: str, section_id: str, field_id: str, value: Any, timestamp: Optional[float] = None) -> tuple[bool, float]:
         """Update a field value for a session
         
         Returns:
@@ -61,14 +61,14 @@ class StateManager:
         """
         state_manager = await self._get_session_state_manager(session_id)
         if state_manager:
-            return await state_manager.update_field(subnode_id, field_id, value, timestamp)
+            return await state_manager.update_field(section_id, field_id, value, timestamp)
         return False, 0.0
     
-    async def confirm_subnode(self, session_id: str, category: str, subnode_id: str, values: Dict[str, Any]) -> Optional[float]:
-        """Confirm a subnode for a session"""
+    async def confirm_section(self, session_id: str, category: str, section_id: str, values: Dict[str, Any]) -> Optional[float]:
+        """Confirm a section for a session"""
         state_manager = await self._get_session_state_manager(session_id)
         if state_manager:
-            return await state_manager.confirm_subnode(category, subnode_id, values)
+            return await state_manager.confirm_section(category, section_id, values)
         return None
     
     async def update_theme(self, session_id: str, glow_color: Optional[str] = None, font_color: Optional[str] = None, state_colors: Optional[dict] = None) -> None:
@@ -77,12 +77,6 @@ class StateManager:
         if state_manager:
             await state_manager.update_theme(glow_color, font_color, state_colors)
     
-    async def clear_confirmed_nodes(self, session_id: str) -> None:
-        """Clear all confirmed nodes for a session"""
-        state_manager = await self._get_session_state_manager(session_id)
-        if state_manager:
-            await state_manager.clear_confirmed_nodes()
-
     async def go_back(self, session_id: str) -> None:
         """Navigate back in the UI for a session"""
         state_manager = await self._get_session_state_manager(session_id)
@@ -115,18 +109,18 @@ class StateManager:
     # Utility Methods (Delegated)
     # ========================================================================
     
-    async def get_field_value(self, session_id: str, subnode_id: str, field_id: str, default: Any = None) -> Any:
+    async def get_field_value(self, session_id: str, section_id: str, field_id: str, default: Any = None) -> Any:
         """Get a specific field value for a session"""
         state_manager = await self._get_session_state_manager(session_id)
         if state_manager:
-            return await state_manager.get_field_value(subnode_id, field_id, default)
+            return await state_manager.get_field_value(section_id, field_id, default)
         return default
     
-    async def get_subnode_field_values(self, session_id: str, subnode_id: str) -> Dict[str, Any]:
-        """Get all field values for a subnode"""
+    async def get_section_field_values(self, session_id: str, section_id: str) -> Dict[str, Any]:
+        """Get all field values for a section"""
         state_manager = await self._get_session_state_manager(session_id)
         if state_manager:
-            return await state_manager.get_subnode_field_values(subnode_id)
+            return await state_manager.get_section_field_values(section_id)
         return {}
 
     async def get_memory_usage(self, session_id: str) -> int:

@@ -284,16 +284,14 @@ class TestSessionModels:
         state = SessionState(
             session_id="test123",
             category="file_management",
-            subnode="read_file",
+            section="read_file",
             field_values={
                 "path": "/tmp/test.txt"
-            },
-            confirmed_nodes=["node1", "node2"]
+            }
         )
         
         assert state.session_id == "test123"
         assert state.category == "file_management"
-        assert len(state.confirmed_nodes) == 2
         assert isinstance(state.created_at, datetime)
 
 

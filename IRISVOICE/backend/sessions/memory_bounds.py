@@ -111,7 +111,7 @@ class MemoryTracker:
                 self.track_object_deletion(object())  # Dummy object to trigger cleanup
                 break
     
-    def track_field_change(self, subnode_id: str, field_id: str, old_value: Any, new_value: Any):
+    def track_field_change(self, section_id: str, field_id: str, old_value: Any, new_value: Any):
         """Track changes to state fields"""
         old_size = sys.getsizeof(old_value) if old_value is not None else 0
         new_size = sys.getsizeof(new_value) if new_value is not None else 0
@@ -122,7 +122,7 @@ class MemoryTracker:
             self._total_memory_bytes += size_delta
             
             # Track the field object
-            field_key = f"{subnode_id}:{field_id}"
+            field_key = f"{section_id}:{field_id}"
             # Implementation would track field objects here
     
     def track_state_change(self, change_type: str, old_value: Any, new_value: Any):
@@ -134,24 +134,6 @@ class MemoryTracker:
         with self._lock:
             self._state_size_bytes += size_delta
             self._total_memory_bytes += size_delta
-    
-    def track_confirmed_node_change(self, node_id: str, values: Dict[str, Any]):
-        """Track changes to confirmed nodes"""
-        node_size = sys.getsizeof(values)
-        
-        with self._lock:
-            self._state_size_bytes += node_size
-            self._total_memory_bytes += node_size
-    
-    def track_confirmed_nodes_clear(self, old_count: int):
-        """Track clearing of confirmed nodes"""
-        # Rough estimate - actual implementation would track individual nodes
-        estimated_size_per_node = 1024  # 1KB per node estimate
-        size_reduction = old_count * estimated_size_per_node
-        
-        with self._lock:
-            self._state_size_bytes -= size_reduction
-            self._total_memory_bytes -= size_reduction
     
     def track_theme_change(self, old_theme: dict, new_theme: dict):
         """Track theme changes"""
@@ -334,4 +316,4 @@ _global_memory_manager = GlobalMemoryManager()
 
 def get_global_memory_manager() -> GlobalMemoryManager:
     """Get the global memory manager"""
-    return _global_memory_manager
+    return _global_memory_manager# TEST  

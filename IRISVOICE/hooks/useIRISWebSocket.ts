@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useRef, useCallback } from "react"
 
 // WebSocket connection states
@@ -16,31 +15,20 @@ interface ColorTheme {
   error_color?: string
 }
 
-// Field values by subnode ID (flat structure)
+// Field values by section ID (flat structure)
 interface FieldValues {
-  [subnodeId: string]: {
+  [sectionId: string]: {
     [fieldId: string]: string | number | boolean
   }
-}
-
-// Confirmed node in orbit
-interface ConfirmedNode {
-  id: string
-  label: string
-  icon: string
-  orbit_angle: number
-  values: Record<string, string | number | boolean>
-  category: string
 }
 
 // Full IRIS state from backend
 interface IRISState {
   current_category: string | null
-  current_subnode: string | null
+  current_section: string | null
   field_values: FieldValues
   active_theme: ColorTheme
-  confirmed_nodes: ConfirmedNode[]
-  subnodes: Record<string, Record<string, unknown>[]>
+  sections: Record<string, Record<string, unknown>[]>
 }
 
 // Hook return type
@@ -68,10 +56,9 @@ interface UseIRISWebSocketReturn {
   connectionState: ConnectionState
   theme: ColorTheme
   fieldValues: FieldValues
-  subnodes: Record<string, Record<string, unknown>[]>
-  confirmedNodes: ConfirmedNode[]
+  sections: Record<string, Record<string, unknown>[]>
   currentCategory: string | null
-  currentSubnode: string | null
+  currentSection: string | null
   voiceState: VoiceState
   audioLevel: number
   lastTextResponse: TextResponseMessage | null
@@ -80,9 +67,9 @@ interface UseIRISWebSocketReturn {
   agentTools: Record<string, unknown> []
   agentSkills: Record<string, unknown> []
   selectCategory: (category: string) => void
-  selectSubnode: (subnodeId: string | null) => void
-  updateField: (subnodeId: string, fieldId: string, value: string | number | boolean) => void
-  confirmMiniNode: (subnodeId: string, values: Record<string, string | number | boolean>) => void
+  selectSection: (sectionId: string | null) => void
+  updateField: (sectionId: string, fieldId: string, value: string | number | boolean) => void
+  confirmCard: (sectionId: string, values: Record<string, string | number | boolean>) => void
   updateTheme: (glowColor?: string, fontColor?: string, stateColors?: { enabled?: boolean; idle?: string; listening?: string; processing?: string; error?: string }) => void
   requestState: () => void
   // Agent actions
@@ -99,8 +86,8 @@ interface UseIRISWebSocketReturn {
   getWakeWords: () => void
   getAudioDevices: () => void
   lastError: string | null
-  fieldErrors: Record<string, string> // Map of "subnodeId:fieldId" to error message
-  clearFieldError: (subnodeId: string, fieldId: string) => void
+  fieldErrors: Record<string, string> // Map of "sectionId:fieldId" to error message
+  clearFieldError: (sectionId: string, fieldId: string) => void
   onWakeDetected?: () => void
   // Vision state and actions
   visionStatus: VisionStatus
@@ -124,15 +111,14 @@ export function useIRISWebSocket(
   // Connection state
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected")
   const [lastError, setLastError] = useState<string | null>(null)
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({}) // Map of "subnodeId:fieldId" to error message
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({}) // Map of "sectionId:fieldId" to error message
 
   // IRIS state from backend
   const [theme, setTheme] = useState<ColorTheme>(DEFAULT_THEME)
   const [fieldValues, setFieldValues] = useState<FieldValues>({})
-  const [subnodes, setSubnodes] = useState<Record<string, Record<string, unknown>[]>>({})
-  const [confirmedNodes, setConfirmedNodes] = useState<ConfirmedNode[]>([])
+  const [sections, setSections] = useState<Record<string, Record<string, unknown>[]>>({})
   const [currentCategory, setCurrentCategory] = useState<string | null>(null)
-  const [currentSubnode, setCurrentSubnode] = useState<string | null>(null)
+  const [currentSection, setCurrentSection] = useState<string | null>(null)
   const [voiceState, setVoiceState] = useState<VoiceState>("idle")
   const [audioLevel, setAudioLevel] = useState<number>(0)
   const [lastTextResponse, setLastTextResponse] = useState<TextResponseMessage | null>(null)
@@ -178,7 +164,7 @@ export function useIRISWebSocket(
   const onNativeAudioResponseRef = useRef(onNativeAudioResponse)
   
   // Optimistic update tracking: store previous values for revert on validation error
-  const pendingUpdatesRef = useRef<Map<string, { subnodeId: string; fieldId: string; previousValue: string | number | boolean }>>(new Map())
+  const pendingUpdatesRef = useRef<Map<string, { sectionId: string; fieldId: string; previousValue: string | number | boolean }>>(new Map())
   
   // Timestamp tracking for out-of-order update handling
   const fieldTimestampsRef = useRef<Map<string, number>>(new Map())
@@ -309,12 +295,11 @@ export function useIRISWebSocket(
         const state: IRISState = payload.state as IRISState
         if (state && state.active_theme) setTheme(state.active_theme)
         if (state && state.field_values) setFieldValues(state.field_values)
-        if (state && state.subnodes) setSubnodes(state.subnodes)
-        if (state && state.confirmed_nodes) setConfirmedNodes(state.confirmed_nodes)
+        if (state && state.sections) setSections(state.sections)
         if (state && state.current_category !== undefined) setCurrentCategory(state.current_category)
-        if (state && state.current_subnode !== undefined) setCurrentSubnode(state.current_subnode)
+        if (state && state.current_section !== undefined) setCurrentSection(state.current_section)
         
-        // BUG-02 FIX: Dispatch CustomEvent for SidePanel listeners
+        // Dispatch CustomEvent for SidePanel listeners
         if (typeof window !== 'undefined' && state) {
           window.dispatchEvent(new CustomEvent('iris:initial_state', {
             detail: { state }
@@ -325,26 +310,27 @@ export function useIRISWebSocket(
 
       case "category_changed": {
         if (payload.category && typeof payload.category === 'string') setCurrentCategory(payload.category)
-        setCurrentSubnode(null)
+        setCurrentSection(null)
         break
       }
 
-      case "subnode_changed": {
-        if (payload.subnode_id !== undefined) setCurrentSubnode(typeof payload.subnode_id === 'string' ? payload.subnode_id : null)
+      case "section_changed": {
+        if (payload.section_id !== undefined) setCurrentSection(typeof payload.section_id === 'string' ? payload.section_id : null)
         break
       }
 
       case "field_updated": {
         // Optimistic update confirmed by server - remove from pending updates
-        const { subnode_id, field_id, value, timestamp } = payload as { 
-          subnode_id: string; 
-          field_id: string; 
+        const { section_id, field_id, value, timestamp } = payload as {
+          section_id: string;
+          field_id: string;
           value: string | number | boolean;
           timestamp?: number;
         }
+        const sectionId = section_id
         
-        if (subnode_id && field_id !== undefined) {
-          const updateKey = `${subnode_id}:${field_id}`
+        if (sectionId && field_id !== undefined) {
+          const updateKey = `${sectionId}:${field_id}`
           
           // Handle out-of-order updates using timestamps
           if (timestamp !== undefined) {
@@ -381,16 +367,16 @@ export function useIRISWebSocket(
           // Apply the update to state
           setFieldValues((prev) => ({
             ...prev,
-            [subnode_id]: {
-              ...prev[subnode_id] || {},
+            [sectionId]: {
+              ...prev[sectionId] || {},
               [field_id]: value,
             },
           }))
           
-          // GAP-03 FIX: Dispatch CustomEvent for SidePanel and other listeners
+          // Dispatch CustomEvent for SidePanel and other listeners
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('iris:field_updated', {
-              detail: { subnode_id, field_id, value, timestamp }
+              detail: { section_id: sectionId, field_id, value, timestamp }
             }))
           }
         }
@@ -398,16 +384,21 @@ export function useIRISWebSocket(
       }
 
       case "validation_error": {
-        // GAP-09 FIX: Handle flat payload structure from backend
+        // Handle flat payload structure from backend
         // Revert optimistic update on validation error
-        const { field_id, subnode_id, error } = payload as { field_id?: string; subnode_id?: string; error: string }
+        const { field_id, section_id, error } = payload as {
+          field_id?: string;
+          section_id?: string;
+          error: string
+        }
+        const sectionId = section_id
         
         console.error("[IRIS WebSocket] Validation error:", error, field_id)
         setLastError(typeof error === 'string' ? error : null)
         
         // Store field-specific error message
-        if (subnode_id && field_id) {
-          const updateKey = `${subnode_id}:${field_id}`
+        if (sectionId && field_id) {
+          const updateKey = `${sectionId}:${field_id}`
           setFieldErrors((prev) => ({
             ...prev,
             [updateKey]: typeof error === 'string' ? error : 'Validation failed',
@@ -419,8 +410,8 @@ export function useIRISWebSocket(
             // Revert to previous value
             setFieldValues((prev) => ({
               ...prev,
-              [subnode_id]: {
-                ...prev[subnode_id] || {},
+              [sectionId]: {
+                ...prev[sectionId] || {},
                 [field_id]: pendingUpdate.previousValue,
               },
             }))
@@ -429,14 +420,14 @@ export function useIRISWebSocket(
             pendingUpdatesRef.current.delete(updateKey)
             
             if (process.env.NODE_ENV !== 'production') {
-              console.log(`[IRIS WebSocket] Reverted field ${subnode_id}.${field_id} to previous value:`, pendingUpdate.previousValue)
+              console.log(`[IRIS WebSocket] Reverted field ${sectionId}.${field_id} to previous value:`, pendingUpdate.previousValue)
             }
           }
         }
         break
       }
 
-      case "mini_node_confirmed": {
+      case "card_confirmed": {
         // Server confirmed, state will be synced via state_sync
         break
       }
@@ -470,7 +461,7 @@ export function useIRISWebSocket(
           const newState = payload.state as VoiceState
           setVoiceState(newState)
           
-          // GAP-03 FIX: Dispatch CustomEvent for SidePanel and other listeners
+          // Dispatch CustomEvent for SidePanel and other listeners
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
               detail: { state: newState }
@@ -493,61 +484,23 @@ export function useIRISWebSocket(
         break
       }
 
-      case "pong": {
-        // Keep-alive response received, clear pong timeout
-        if (pongTimeoutRef.current) {
-          clearTimeout(pongTimeoutRef.current)
-          pongTimeoutRef.current = null
-        }
-        break
-      }
-
-      case "voice_command_started": {
-        // Voice command recording started
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Voice command started:", payload.message)
-        }
-        break
-      }
-
-      case "voice_command_ended": {
-        // Voice command recording ended
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Voice command ended:", payload.message)
-        }
-        break
-      }
-
-      case "voice_command_result": {
-        // Voice command processing result
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Voice command result:", payload)
-        }
-        break
-      }
-
-      case "native_audio_response": {
-        // Native audio response from LFM2-Audio model
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Native audio response:", payload)
-        }
-        // Call the callback if provided
-        if (onNativeAudioResponseRef.current) {
-          onNativeAudioResponseRef.current(payload)
-        }
-        break
-      }
-
       case "text_response": {
         // Text response from LFM2-8B-A1B model
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Text response:", payload)
         }
-        if (payload.text && typeof payload.text === 'string' && payload.sender === "assistant") {
+        if (payload.text && typeof payload.text === 'string') {
           setLastTextResponse({
-            text: typeof payload.text === 'string' ? payload.text : '',
-            sender: payload.sender
+            text: payload.text,
+            sender: "assistant"
           })
+          
+          // Dispatch CustomEvent for SidePanel and other listeners
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('iris:text_response', {
+              detail: { text: payload.text }
+            }))
+          }
         }
         break
       }
@@ -557,7 +510,9 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Agent status:", payload)
         }
-        setAgentStatus(payload)
+        if (payload.status) {
+          setAgentStatus(payload.status as Record<string, unknown>)
+        }
         break
       }
 
@@ -566,7 +521,9 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Agent tools:", payload)
         }
-        setAgentTools(Array.isArray(payload.tools) ? payload.tools as Record<string, unknown>[] : [])
+        if (payload.tools && Array.isArray(payload.tools)) {
+          setAgentTools(payload.tools as Record<string, unknown>[])
+        }
         break
       }
 
@@ -575,24 +532,17 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Tool result:", payload)
         }
-        if (payload.error) {
-          setLastError(typeof payload.error === 'string' ? payload.error : null)
-        }
+        // Tool results are handled by the agent kernel
         break
       }
 
-      case "wake_words_list": {
+      case "wake_words": {
         // Wake words list response
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Wake words:", payload)
         }
-        const wakeWordsList = payload.wake_words as {filename: string; display_name: string; platform: string; version: string}[] || []
-        setWakeWords(wakeWordsList)
-        // Dispatch custom event for SidePanel listeners
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('iris:wake_words_list', {
-            detail: { wake_words: wakeWordsList }
-          }))
+        if (payload.wake_words && Array.isArray(payload.wake_words)) {
+          setWakeWords(payload.wake_words as {filename: string; display_name: string; platform: string; version: string}[])
         }
         break
       }
@@ -602,15 +552,20 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Audio devices:", payload)
         }
-        const inputDevices = payload.input_devices as {name: string; index: number; sample_rate: number}[] || []
-        const outputDevices = payload.output_devices as {name: string; index: number; sample_rate: number}[] || []
-        setAudioInputDevices(inputDevices)
-        setAudioOutputDevices(outputDevices)
-        // Dispatch custom event for SidePanel listeners
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('iris:audio_devices', {
-            detail: { input_devices: inputDevices, output_devices: outputDevices }
-          }))
+        if (payload.input_devices && Array.isArray(payload.input_devices)) {
+          setAudioInputDevices(payload.input_devices as {name: string; index: number; sample_rate: number}[])
+        }
+        if (payload.output_devices && Array.isArray(payload.output_devices)) {
+          setAudioOutputDevices(payload.output_devices as {name: string; index: number; sample_rate: number}[])
+        }
+        break
+      }
+
+      case "pong": {
+        // Clear pong timeout on successful pong response
+        if (pongTimeoutRef.current) {
+          clearTimeout(pongTimeoutRef.current)
+          pongTimeoutRef.current = null
         }
         break
       }
@@ -620,69 +575,47 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Vision status:", payload)
         }
-        setVisionStatus({
-          status: (payload.status as "disabled" | "loading" | "enabled" | "error") || "disabled",
-          vram_usage_mb: payload.vram_usage_mb as number | null,
-          load_progress_percent: payload.load_progress_percent as number | null,
-          error_message: payload.error_message as string | null,
-          last_used: payload.last_used as string | null,
-          model_name: (payload.model_name as string) || "minicpm-o4.5",
-          quantization_enabled: (payload.quantization_enabled as boolean) ?? true,
-          is_available: (payload.is_available as boolean) || false
-        })
-        // Dispatch custom event for UI listeners
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('iris:vision_status', {
-            detail: payload
+        if (payload.status) {
+          setVisionStatus((prev) => ({
+            ...prev,
+            status: payload.status as VisionStatus['status'],
+            vram_usage_mb: typeof payload.vram_usage_mb === 'number' ? payload.vram_usage_mb : null,
+            load_progress_percent: typeof payload.load_progress_percent === 'number' ? payload.load_progress_percent : null,
+            error_message: typeof payload.error_message === 'string' ? payload.error_message : null,
+            last_used: typeof payload.last_used === 'string' ? payload.last_used : null,
+            is_available: payload.status === 'enabled'
           }))
         }
         break
       }
 
-      case "enable_vision": {
+      case "vision_enabled": {
         // Vision enabled confirmation
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Vision enabled:", payload)
         }
-        if (payload.success) {
-          setVisionStatus(prev => ({
-            ...prev,
-            status: "enabled",
-            vram_usage_mb: payload.vram_usage_mb as number | null,
-            quantization_enabled: (payload.quantization_enabled as boolean) ?? true
-          }))
-        } else {
-          setVisionStatus(prev => ({
-            ...prev,
-            status: "error",
-            error_message: (payload.error as string) || "Failed to enable vision"
-          }))
-          setLastError((payload.error as string) || "Failed to enable vision")
-        }
+        setVisionStatus((prev) => ({
+          ...prev,
+          status: 'enabled',
+          is_available: true,
+          load_progress_percent: 100,
+          vram_usage_mb: typeof payload.vram_usage_mb === 'number' ? payload.vram_usage_mb : null,
+        }))
         break
       }
 
-      case "disable_vision": {
+      case "vision_disabled": {
         // Vision disabled confirmation
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Vision disabled:", payload)
         }
-        if (payload.success) {
-          setVisionStatus(prev => ({
-            ...prev,
-            status: "disabled",
-            vram_usage_mb: null,
-            load_progress_percent: null,
-            error_message: null
-          }))
-        } else {
-          setVisionStatus(prev => ({
-            ...prev,
-            status: "error",
-            error_message: (payload.error as string) || "Failed to disable vision"
-          }))
-          setLastError((payload.error as string) || "Failed to disable vision")
-        }
+        setVisionStatus((prev) => ({
+          ...prev,
+          status: 'disabled',
+          is_available: false,
+          load_progress_percent: null,
+          vram_usage_mb: null,
+        }))
         break
       }
 
@@ -700,14 +633,7 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Skills reloaded:", payload)
         }
-        setAgentSkills(Array.isArray(payload.skills) ? payload.skills as Record<string, unknown>[] : [])
-        break
-      }
-
-      case "skills_error": {
-        // Skills reload error
-        console.error("[IRIS WebSocket] Skills error:", payload)
-        setLastError(typeof payload.error === 'string' ? payload.error : null)
+        // Skills are reloaded by the agent kernel
         break
       }
 
@@ -716,83 +642,16 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Available models:", payload)
         }
-        // Store available models in a way that can be accessed by components
-        // We'll dispatch a custom event that WheelView can listen to
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('iris:available_models', { 
-            detail: { models: payload.models || [] }
-          }))
-        }
+        // Models are handled by the requesting component
         break
       }
 
-      case "voice_command_error": {
-        // Voice command error
-        console.error("[IRIS WebSocket] Voice command error:", payload.error)
-        break
-      }
-
-      // GAP-08 FIX: Add error handler for backend error messages
-      case "error": {
-        const errorMessage = payload.message || payload.error || "Unknown error"
-        console.error("[IRIS WebSocket] Backend error:", errorMessage)
-        setLastError(typeof errorMessage === 'string' ? errorMessage : "Unknown error")
-        break
-      }
-
-      // GAP-04 FIX: Add handlers for backend messages without frontend handlers
-      case "subnodes": {
-        // Handle subnodes response - updates available subnodes for current category
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Subnodes received:", payload.subnodes)
-        }
-        if (payload.subnodes && Array.isArray(payload.subnodes) && currentCategory) {
-          setSubnodes((prev) => ({
-            ...prev,
-            [currentCategory]: payload.subnodes as Record<string, unknown>[]
-          }))
-        }
-        break
-      }
-
-      case "model_selection_updated": {
-        // Handle model selection update
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Model selection updated:", payload)
-        }
-        break
-      }
-
-      case "wake_word_selected": {
-        // Handle wake word selection
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Wake word selected:", payload)
-        }
-        break
-      }
-
-      case "cleanup_report":
-      case "cleanup_result": {
-        // Handle cleanup operations
-        if (process.env.NODE_ENV !== 'production') {
-          console.log(`[IRIS WebSocket] ${type}:`, payload)
-        }
-        break
-      }
-
-      case "category_expanded": {
-        // Handle category expansion confirmation
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Category expanded")
-        }
-        break
-      }
-
-      default:
-        // GAP-04 FIX: Only log unknown message types in development mode
+      default: {
+        // Only log unknown message types in development mode
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Unknown message type:", type, payload)
         }
+      }
     }
   }, [])
 
@@ -811,24 +670,24 @@ export function useIRISWebSocket(
     sendMessage("select_category", { category })
   }, [sendMessage])
 
-  const selectSubnode = useCallback((subnodeId: string | null) => {
-    if (subnodeId) {
-      sendMessage("select_subnode", { subnode_id: subnodeId })
+  const selectSection = useCallback((sectionId: string | null) => {
+    if (sectionId) {
+      sendMessage("select_section", { section_id: sectionId })
     } else {
       // Deselect - just update local state for now
-      setCurrentSubnode(null)
+      setCurrentSection(null)
     }
   }, [sendMessage])
 
-  const updateField = useCallback((subnodeId: string, fieldId: string, value: string | number | boolean) => {
+  const updateField = useCallback((sectionId: string, fieldId: string, value: string | number | boolean) => {
     // Store previous value for potential revert on validation error
-    const updateKey = `${subnodeId}:${fieldId}`
-    const previousValue = fieldValues[subnodeId]?.[fieldId]
+    const updateKey = `${sectionId}:${fieldId}`
+    const previousValue = fieldValues[sectionId]?.[fieldId]
     
     // Only track if we have a previous value (not first time setting)
     if (previousValue !== undefined) {
       pendingUpdatesRef.current.set(updateKey, {
-        subnodeId,
+        sectionId,
         fieldId,
         previousValue,
       })
@@ -837,18 +696,18 @@ export function useIRISWebSocket(
     // Optimistic local update - update UI immediately
     setFieldValues((prev) => ({
       ...prev,
-      [subnodeId]: {
-        ...prev[subnodeId],
+      [sectionId]: {
+        ...prev[sectionId],
         [fieldId]: value,
       },
     }))
 
     // Send to server for validation and persistence
-    sendMessage("field_update", { subnode_id: subnodeId, field_id: fieldId, value })
+    sendMessage("field_update", { section_id: sectionId, field_id: fieldId, value })
   }, [sendMessage, fieldValues])
 
-  const confirmMiniNode = useCallback((subnodeId: string, values: Record<string, string | number | boolean>) => {
-    sendMessage("confirm_mini_node", { subnode_id: subnodeId, values })
+  const confirmCard = useCallback((sectionId: string, values: Record<string, string | number | boolean>) => {
+    sendMessage("confirm_card", { section_id: sectionId, values })
   }, [sendMessage])
 
   const updateTheme = useCallback((glowColor?: string, fontColor?: string, stateColors?: { enabled?: boolean; idle?: string; listening?: string; processing?: string; error?: string }) => {
@@ -903,8 +762,8 @@ export function useIRISWebSocket(
   }, [sendMessage])
 
   // Clear field error
-  const clearFieldError = useCallback((subnodeId: string, fieldId: string) => {
-    const updateKey = `${subnodeId}:${fieldId}`
+  const clearFieldError = useCallback((sectionId: string, fieldId: string) => {
+    const updateKey = `${sectionId}:${fieldId}`
     setFieldErrors((prev) => {
       const newErrors = { ...prev }
       delete newErrors[updateKey]
@@ -978,10 +837,9 @@ export function useIRISWebSocket(
     connectionState,
     theme,
     fieldValues,
-    subnodes,
-    confirmedNodes,
+    sections,
     currentCategory,
-    currentSubnode,
+    currentSection,
     voiceState,
     audioLevel,
     lastTextResponse,
@@ -990,9 +848,9 @@ export function useIRISWebSocket(
     agentTools,
     agentSkills,
     selectCategory,
-    selectSubnode,
+    selectSection,
     updateField,
-    confirmMiniNode,
+    confirmCard,
     updateTheme,
     requestState,
     // Agent actions

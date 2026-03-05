@@ -3,7 +3,6 @@
 import React, { useState, useRef, useEffect } from "react"
 import { motion } from "framer-motion"
 import * as LucideIcons from "lucide-react"
-import type { ConfirmedNode } from "@/types/navigation"
 import { useIRISWebSocket } from "@/hooks/useIRISWebSocket"
 
 interface OrbitNodeProps {

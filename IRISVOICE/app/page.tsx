@@ -22,24 +22,32 @@ const LazyChatWing = lazy(() => import("@/components/chat-view") as any)
 const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-control-center") as any)
 
 export default function Home() {
-  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateMiniNodeValue } = useNavigation()
+  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateCardValue } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   
   // Initialize UI layout state machine
-  const { 
-    state: uiLayoutState, 
+  const {
+    state: uiLayoutState,
     spotlightState,
-    openChat, 
-    openDashboard, 
-    closeAll, 
+    openChat,
+    openDashboard,
+    openDashboardSolo,
+    openChatFromDashboard,
+    closeAll,
+    closeChat,
+    closeDashboard,
     toggleChatSpotlight,
     toggleDashboardSpotlight,
     restoreBalanced,
-    isChatOpen, 
+    isChatOpen,
+    isDashboardOpen,
     isBothOpen,
     isChatSpotlight,
     isDashboardSpotlight,
-    isBalanced
+    isBalanced,
+    activeDashboardTab,
+    setActiveDashboardTab,
+    browseMarketplace,
   } = useUILayoutState()
 
   // Enable keyboard navigation (Escape key to close wings, or restore balanced in spotlight)
@@ -106,7 +114,7 @@ export default function Home() {
       {/* Backdrop Blur - renders when wings are open */}
       <BackdropBlur uiState={uiLayoutState} />
       
-      {state.level !== 3 && (
+      {(state.level !== 3 || isChatOpen || isBothOpen) && (
         <motion.div 
           className="absolute inset-0 flex items-center justify-center"
           animate={{
@@ -118,7 +126,10 @@ export default function Home() {
             duration: 0.4,
             ease: [0.22, 1, 0.36, 1],
           }}
-          style={{ zIndex: 0 }}
+          style={{ 
+            zIndex: (isChatOpen || isBothOpen) ? 5 : 0,
+            pointerEvents: (isChatOpen || isBothOpen) ? 'none' : 'auto'
+          }}
         >
           <div className="flex flex-col items-center justify-center relative">
             <IrisOrb
@@ -152,9 +163,10 @@ export default function Home() {
               categoryId={state.selectedMain}
               glowColor={glowColor}
               expandedIrisSize={240}
-              initialValues={state.miniNodeValues}
+              initialValues={state.cardValues}
               onConfirm={handleWheelViewConfirm}
               onBackToCategories={handleWheelViewBack}
+              onBrowseMarketplace={browseMarketplace}
             />
           </WheelViewErrorBoundary>
         </Suspense>
@@ -164,22 +176,30 @@ export default function Home() {
       <Suspense fallback={null}>
         <LazyChatWing
           isOpen={isChatOpen || isBothOpen}
-          onClose={closeAll}
+          onClose={isBothOpen ? closeChat : closeAll}
           onDashboardClick={openDashboard}
+          onDashboardClose={closeChat}
           sendMessage={sendMessage}
           spotlightState={spotlightState}
           onSpotlightToggle={toggleChatSpotlight}
           isDashboardOpen={isBothOpen}
+          uiState={uiLayoutState}
         />
       </Suspense>
       
       {/* DashboardWing - sibling to ChatWing */}
       <DashboardWing
-        isOpen={isBothOpen}
-        onClose={closeAll}
+        isOpen={isDashboardOpen || isBothOpen}
+        onClose={isBothOpen ? closeDashboard : closeAll}
         sendMessage={sendMessage}
         spotlightState={spotlightState}
-        onSpotlightToggle={isBothOpen ? toggleDashboardSpotlight : undefined}
+        onSpotlightToggle={toggleDashboardSpotlight}
+        isSolo={isDashboardOpen}
+        uiState={uiLayoutState}
+        onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}
+        isChatOpen={isChatOpen || isBothOpen}
+        activeTab={activeDashboardTab}
+        onTabChange={setActiveDashboardTab}
       />
     </main>
   )

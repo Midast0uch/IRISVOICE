@@ -8,7 +8,7 @@ import { DualRingMechanism } from "./DualRingMechanism"
 import { SidePanel } from "./SidePanel"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
-import type { MiniNode, FieldValue } from "@/types/navigation"
+import type { Card, FieldValue } from "@/types/navigation"
 import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
 
 interface WheelViewProps {
@@ -18,6 +18,7 @@ interface WheelViewProps {
   initialValues?: Record<string, Record<string, FieldValue>>
   onConfirm: (values: Record<string, Record<string, FieldValue>>) => void
   onBackToCategories: () => void
+  onBrowseMarketplace?: () => void
 }
 
 function validateGlowColor(color: string): string {
@@ -36,8 +37,9 @@ export const WheelView: React.FC<WheelViewProps> = ({
   initialValues = {},
   onConfirm,
   onBackToCategories,
+  onBrowseMarketplace,
 }) => {
-  const { state, updateMiniNodeValue, voiceState, audioLevel, startVoiceCommand, endVoiceCommand, sendMessage, fieldErrors } = useNavigation()
+  const { state, updateCardValue, voiceState, audioLevel, startVoiceCommand, endVoiceCommand, sendMessage, fieldErrors } = useNavigation()
   const {
     getThemeConfig,
     basePlateColor,
@@ -52,7 +54,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
   } = useBrandColor()
 
   const glowColor = useMemo(() => validateGlowColor(rawGlowColor), [rawGlowColor])
-  const miniNodeStack = state.miniNodeStack || []
+  const cardStack = state.cardStack || []
 
   // Calculate if voice is active from NavigationContext
   const isVoiceActive = voiceState !== "idle"
@@ -68,13 +70,13 @@ export const WheelView: React.FC<WheelViewProps> = ({
   const [showPanel, setShowPanel] = useState(true)
   const [isAnimating, setIsAnimating] = useState(false)
 
-  const activeMiniNode = useMemo(() => {
-    return miniNodeStack[selectedIndex] || miniNodeStack[0]
-  }, [miniNodeStack, selectedIndex])
+  const activeCard = useMemo(() => {
+    return cardStack[selectedIndex] || cardStack[0]
+  }, [cardStack, selectedIndex])
 
   const fieldValues = useMemo(() => {
-    return state.miniNodeValues[activeMiniNode?.id] || {}
-  }, [state.miniNodeValues, activeMiniNode])
+    return state.cardValues[activeCard?.id] || {}
+  }, [state.cardValues, activeCard])
 
   const handleSelect = useCallback((index: number) => {
     if (isAnimating) return
@@ -85,10 +87,10 @@ export const WheelView: React.FC<WheelViewProps> = ({
   }, [isAnimating])
 
   const handleValueChange = useCallback((fieldId: string, value: FieldValue) => {
-    if (!activeMiniNode) return
+    if (!activeCard) return
 
     // Real-time synchronization for Theme Mode fields
-    if (activeMiniNode.id === 'theme-mode') {
+    if (activeCard.id === 'theme-mode') {
       switch (fieldId) {
         case 'active_theme':
           setTheme(value.toString().toLowerCase() as any)
@@ -118,19 +120,19 @@ export const WheelView: React.FC<WheelViewProps> = ({
     }
 
     // Update local state
-    updateMiniNodeValue(activeMiniNode.id, fieldId, value)
+    updateCardValue(activeCard.id, fieldId, value)
     
-    // Send update_field message to backend for all mini-nodes
+    // Send update_field message to backend for all cards
     // Map Card ID to Section ID using the navigation constants
-    const sectionId = CARD_TO_SECTION_ID[activeMiniNode.id]
+    const sectionId = CARD_TO_SECTION_ID[activeCard.id]
     if (sectionId) {
       sendMessage('update_field', {
-        subnode_id: sectionId,
+        section_id: sectionId,
         field_id: fieldId,
         value: value
       })
     }
-  }, [activeMiniNode, updateMiniNodeValue, sendMessage, setTheme, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, resetToThemeDefault])
+  }, [activeCard, updateCardValue, sendMessage, setTheme, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, resetToThemeDefault])
 
   const handleConfirm = useCallback(() => {
     if (isAnimating) return
@@ -140,13 +142,13 @@ export const WheelView: React.FC<WheelViewProps> = ({
     setConfirmFlash(true)
 
     setTimeout(() => {
-      onConfirm(state.miniNodeValues)
+      onConfirm(state.cardValues)
       setLineRetracted(false)
       setConfirmSpinning(false)
       setConfirmFlash(false)
       setIsAnimating(false)
     }, 900)
-  }, [isAnimating, onConfirm, state.miniNodeValues])
+  }, [isAnimating, onConfirm, state.cardValues])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -158,11 +160,11 @@ export const WheelView: React.FC<WheelViewProps> = ({
       switch (e.key) {
         case "ArrowRight":
         case "ArrowDown":
-          setSelectedIndex((prev) => (prev + 1) % miniNodeStack.length)
+          setSelectedIndex((prev) => (prev + 1) % cardStack.length)
           break
         case "ArrowLeft":
         case "ArrowUp":
-          setSelectedIndex((prev) => (prev - 1 + miniNodeStack.length) % miniNodeStack.length)
+          setSelectedIndex((prev) => (prev - 1 + cardStack.length) % cardStack.length)
           break
         case "Enter":
           handleConfirm()
@@ -175,7 +177,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [miniNodeStack.length, isAnimating, handleConfirm, onBackToCategories])
+  }, [cardStack.length, isAnimating, handleConfirm, onBackToCategories])
 
   // Cleanup click timer on unmount
   useEffect(() => {
@@ -186,7 +188,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
     }
   }, [])
 
-  if (miniNodeStack.length === 0) {
+  if (cardStack.length === 0) {
     return (
       <div className="absolute inset-0 flex items-center justify-center">
         <div className="text-white/40 text-sm">No settings available</div>
@@ -198,7 +200,20 @@ export const WheelView: React.FC<WheelViewProps> = ({
     <div
       className="absolute inset-0 flex items-center justify-center bg-transparent"
       onMouseDown={(e) => {
-        if (e.button === 0) getCurrentWindow().startDragging()
+        if (e.button === 0) {
+          try {
+            // Only try to use Tauri API if it exists (not available in browser dev mode)
+            if (typeof window !== 'undefined' && '__TAURI__' in window) {
+              const win = getCurrentWindow()
+              if (win && typeof win.startDragging === 'function') {
+                win.startDragging()
+              }
+            }
+          } catch (error) {
+            // Tauri not available (expected in browser dev mode)
+            console.debug('[WheelView] Tauri drag not available')
+          }
+        }
       }}
     >
       <div
@@ -281,7 +296,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
             />
 
             <DualRingMechanism
-              items={miniNodeStack}
+              items={cardStack}
               selectedIndex={selectedIndex}
               onSelect={handleSelect}
               glowColor={glowColor}
@@ -658,15 +673,16 @@ export const WheelView: React.FC<WheelViewProps> = ({
 
         {/* Side Panel: Positioning uses 240 as base for orbSize logic */}
         <AnimatePresence>
-          {showPanel && activeMiniNode && (
+          {showPanel && activeCard && (
             <SidePanel
-              miniNode={activeMiniNode}
+              card={activeCard}
               glowColor={glowColor}
               values={fieldValues}
               onValueChange={handleValueChange}
               onConfirm={handleConfirm}
               lineRetracted={lineRetracted}
               orbSize={300}
+              onBrowseMarketplace={onBrowseMarketplace}
             />
           )}
         </AnimatePresence>

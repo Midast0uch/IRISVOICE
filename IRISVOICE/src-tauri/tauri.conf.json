@@ -51,5 +51,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [{
+        "host": "oauth",
+        "pathPrefix": ["/callback"]
+      }],
+      "desktop": {
+        "schemes": ["iris"]
+      }
+    }
   }
 }

@@ -177,6 +177,177 @@ Users can toggle between three spotlight configurations: **balanced** (default p
 1. WHEN user clicks ChatActivationText THE SYSTEM SHALL open ChatWing (existing behavior preserved)
 2. WHEN user clicks dashboard icon in ChatWing THE SYSTEM SHALL open DashboardWing to `balanced` state (existing behavior)
 3. THE SYSTEM SHALL NOT change the existing UILayoutState transitions
-4. THE SYSTEM SHALL only enable spotlight controls when `uiState === UI_STATE_BOTH_OPEN`
-5. THE SYSTEM SHALL initialize `spotlightState` to `balanced` whenever entering `UI_STATE_BOTH_OPEN`
-6. THE SYSTEM SHALL hide/disable spotlight controls when `uiState !== UI_STATE_BOTH_OPEN`
+4. THE SYSTEM SHALL initialize `spotlightState` to `balanced` whenever entering `UI_STATE_BOTH_OPEN` from idle
+5. THE SYSTEM SHALL enable spotlight controls when `uiState === UI_STATE_BOTH_OPEN`
+6. THE SYSTEM SHALL enable `chatSpotlight` toggle when `uiState === UI_STATE_CHAT_OPEN`
+
+### Requirement 13: Single-Wing Close Behavior (NEW)
+
+**User Story:** As a user, I want clicking the exit icon in a wing to close only that specific wing while keeping the other wing open, allowing me to switch between single-wing views without returning to idle.
+
+#### Acceptance Criteria
+
+1. WHEN in `UI_STATE_BOTH_OPEN` AND user clicks Exit on ChatWing THE SYSTEM SHALL call `closeChat()` (not `closeAll()`)
+2. WHEN `closeChat()` is called from `UI_STATE_BOTH_OPEN` THE SYSTEM SHALL transition to `UI_STATE_DASHBOARD_OPEN`
+3. WHEN transitioning to `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL keep DashboardWing visible and interactive
+4. WHEN in `UI_STATE_BOTH_OPEN` AND user clicks Exit on DashboardWing THE SYSTEM SHALL call `closeDashboard()` (not `closeAll()`)
+5. WHEN `closeDashboard()` is called from `UI_STATE_BOTH_OPEN` THE SYSTEM SHALL transition to `UI_STATE_CHAT_OPEN`
+6. WHEN transitioning to `UI_STATE_CHAT_OPEN` from `UI_STATE_BOTH_OPEN` THE SYSTEM SHALL restore `chatSpotlight` state if it was active
+7. THE SYSTEM SHALL preserve wing content state (no remount) during single-wing close transitions
+8. THE SYSTEM SHALL animate single-wing transitions with spring physics (stiffness 280, damping 25)
+
+### Requirement 14: Dashboard Solo View (NEW)
+
+**User Story:** As a user, I want a solo dashboard view that mirrors the ChatWing's angled orientation when opened alone, ensuring visual consistency across both wing types.
+
+#### Acceptance Criteria
+
+1. THE SYSTEM SHALL support `UI_STATE_DASHBOARD_OPEN` state for dashboard-only view
+2. WHEN in `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL render DashboardWing at 280px width
+3. WHEN in `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL apply rotateY(-15deg) rotation (mirroring ChatWing)
+4. WHEN in `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL position DashboardWing at right: 3%
+5. WHEN in `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL render DashboardWing at full opacity (1.0)
+6. WHEN in `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL enable full pointer events on DashboardWing
+7. WHEN in `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL set DashboardWing z-index to 10
+8. THE SYSTEM SHALL provide `openDashboardSolo()` method to enter `UI_STATE_DASHBOARD_OPEN`
+9. WHEN `openDashboardSolo()` is called THE SYSTEM SHALL set `spotlightState` to `DASHBOARD_SPOTLIGHT`
+10. THE SYSTEM SHALL add `isSolo` prop to DashboardWing to distinguish solo vs shared view
+11. THE SYSTEM SHALL enable `toggleDashboardSpotlight()` when `uiState === UI_STATE_DASHBOARD_OPEN`
+12. WHEN in `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL render Iris Aperture icon in DashboardWing header
+13. WHEN user clicks Iris Aperture in solo dashboard view THE SYSTEM SHALL toggle between `DASHBOARD_SPOTLIGHT` and `BALANCED`
+14. WHEN in `DASHBOARD_SPOTLIGHT` solo mode THE SYSTEM SHALL expand DashboardWing to 380px width
+15. WHEN in `BALANCED` solo mode THE SYSTEM SHALL render DashboardWing at 280px width with -15deg rotation
+16. THE SYSTEM SHALL animate spotlight transitions in solo mode with spring physics (stiffness 280, damping 25)
+
+### Requirement 18: Chat Open from Dashboard (NEW)
+
+**User Story:** As a user, when I'm in dashboard-only solo view, I want to be able to open the ChatWing to return to the both-wing view without closing the dashboard first.
+
+#### Acceptance Criteria
+
+1. THE SYSTEM SHALL render a chat icon button in DashboardWing header between the notification icon and close icon
+2. THE chat icon SHALL only be visible when `onOpenChat` prop is provided AND chat is not already open
+3. THE SYSTEM SHALL provide `openChatFromDashboard()` method that transitions from `UI_STATE_DASHBOARD_OPEN` to `UI_STATE_BOTH_OPEN`
+4. WHEN `openChatFromDashboard()` is called THE SYSTEM SHALL preserve `DASHBOARD_SPOTLIGHT` state if active
+5. WHEN `openChatFromDashboard()` is called THE SYSTEM SHALL default to `BALANCED` if dashboard was not spotlighted
+6. THE SYSTEM SHALL pass `onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}` to DashboardWing
+7. THE SYSTEM SHALL pass `isChatOpen` prop to DashboardWing for visual state management
+8. WHEN user clicks chat icon in dashboard solo view THE SYSTEM SHALL transition to both-open view
+9. THE chat icon SHALL have hover effects matching other header icons
+10. THE chat icon SHALL close notification panel when clicked (if open)
+11. THE SYSTEM SHALL hide chat icon when in `UI_STATE_BOTH_OPEN` (chat already visible)
+12. THE transition from dashboard solo to both-open SHALL use spring animation (stiffness 280, damping 25)
+
+### Requirement 15: IrisOrb Dual-Close Behavior (NEW)
+
+**User Story:** As a user, I want clicking the IrisOrb while both wings are open to close both wings simultaneously in a synchronized animation, returning to the idle centered state.
+
+#### Acceptance Criteria
+
+1. WHEN `uiState === UI_STATE_BOTH_OPEN` AND user clicks IrisOrb THE SYSTEM SHALL call `closeAll()`
+2. WHEN `closeAll()` is called THE SYSTEM SHALL close both wings simultaneously
+3. THE SYSTEM SHALL use synchronized spring animations for dual-close transition
+4. THE SYSTEM SHALL maintain consistent animation timing (400-550ms) for dual-close
+5. WHEN dual-close completes THE SYSTEM SHALL transition to `UI_STATE_IDLE`
+6. THE SYSTEM SHALL ensure IrisOrb is centered and fully visible after dual-close
+7. THE SYSTEM SHALL reset `spotlightState` to `BALANCED` when dual-close completes
+8. THE SYSTEM SHALL clear `lastActiveWingRef` when dual-close completes
+
+### Requirement 16: Active Wing Tracking (NEW)
+
+**User Story:** As a developer, I want the system to track which wing was last active so state transitions can preserve the appropriate context.
+
+#### Acceptance Criteria
+
+1. THE SYSTEM SHALL maintain `lastActiveWingRef` with values: `'chat' | 'dashboard' | null`
+2. WHEN `openChat()` is called THE SYSTEM SHALL set `lastActiveWingRef.current = 'chat'`
+3. WHEN `openDashboardSolo()` is called THE SYSTEM SHALL set `lastActiveWingRef.current = 'dashboard'`
+4. WHEN `closeChat()` is called from `UI_STATE_BOTH_OPEN` THE SYSTEM SHALL set `lastActiveWingRef.current = 'dashboard'`
+5. WHEN `closeDashboard()` is called from `UI_STATE_BOTH_OPEN` THE SYSTEM SHALL set `lastActiveWingRef.current = 'chat'`
+6. WHEN entering `UI_STATE_BOTH_OPEN` THE SYSTEM SHALL set `lastActiveWingRef.current = null`
+7. THE SYSTEM SHALL expose `lastActiveWing` in the hook's return value for external use
+8. THE SYSTEM SHALL clear `lastActiveWingRef` when entering `UI_STATE_IDLE`
+
+### Requirement 17: Wing State Preservation (NEW)
+
+**User Story:** As a user, I want wing content to be preserved during single-wing close transitions, avoiding flickering or remounting of components.
+
+#### Acceptance Criteria
+
+1. WHEN transitioning from `UI_STATE_BOTH_OPEN` to `UI_STATE_CHAT_OPEN` THE SYSTEM SHALL NOT remount ChatWing
+2. WHEN transitioning from `UI_STATE_BOTH_OPEN` to `UI_STATE_DASHBOARD_OPEN` THE SYSTEM SHALL NOT remount DashboardWing
+3. THE SYSTEM SHALL use React key stability to prevent remounting during transitions
+4. WHEN a wing transitions from shared view to solo view THE SYSTEM SHALL preserve all internal state
+5. THE SYSTEM SHALL maintain scroll position during single-wing close transitions
+6. THE SYSTEM SHALL preserve notification panel state during single-wing close transitions
+7. THE SYSTEM SHALL ensure spotlight toggle state persists across single-wing transitions
+8. THE SYSTEM SHALL complete all state updates in a single render cycle to prevent flickering
+
+### Requirement 13: IrisOrb Visibility
+
+**User Story:** As a user, I want the IrisOrb (central aperture button) to remain visible whenever the ChatWing is open, providing visual continuity and a consistent anchor point.
+
+#### Acceptance Criteria
+
+1. WHEN `uiState === UI_STATE_CHAT_OPEN` THE SYSTEM SHALL render IrisOrb in the center of the screen
+2. WHEN `uiState === UI_STATE_BOTH_OPEN` THE SYSTEM SHALL render IrisOrb in the center of the screen
+3. WHEN IrisOrb is visible with wings open THE SYSTEM SHALL scale it to 85% of normal size
+4. WHEN IrisOrb is visible with wings open THE SYSTEM SHALL reduce opacity to 60%
+5. WHEN IrisOrb is visible with wings open THE SYSTEM SHALL apply 2px blur filter
+6. WHEN IrisOrb is visible with wings open THE SYSTEM SHALL set `pointerEvents: 'none'` to prevent interaction blocking
+7. WHEN IrisOrb is visible with wings open THE SYSTEM SHALL set z-index to 5 (behind wings)
+8. WHEN `uiState === UI_STATE_IDLE` THE SYSTEM SHALL render IrisOrb at full scale (100%), full opacity (100%), no blur, with `pointerEvents: 'auto'`
+
+### Requirement 14: Dashboard Icon Toggle
+
+**User Story:** As a user, I want the Dashboard icon in the ChatWing header to toggle the DashboardWing open and closed, making it easy to switch between chat-only and both-wing views.
+
+#### Acceptance Criteria
+
+1. THE SYSTEM SHALL render Dashboard icon in ChatWing header between Notifications and Close icons
+2. WHEN dashboard is NOT open THE SYSTEM SHALL display Dashboard icon at 60% opacity with neutral color
+3. WHEN dashboard IS open THE SYSTEM SHALL display Dashboard icon at 90% opacity with highlighted background
+4. WHEN user clicks Dashboard icon and dashboard is closed THE SYSTEM SHALL call `onDashboardClick()` to open dashboard
+5. WHEN user clicks Dashboard icon and dashboard is open THE SYSTEM SHALL call `onDashboardClose()` to close only the chat wing
+6. WHEN dashboard opens from chat-only view THE SYSTEM SHALL preserve `chatSpotlight` state if it was active
+7. THE SYSTEM SHALL apply hover effects to Dashboard icon in both states for discoverability
+
+### Requirement 15: Bidirectional State Transitions
+
+**User Story:** As a user, I want smooth bidirectional transitions between chat-only spotlight and both-wing states, allowing me to expand and collapse the dashboard without losing my chat context.
+
+#### Acceptance Criteria
+
+1. WHEN in `UI_STATE_CHAT_OPEN` with `chatSpotlight` active AND user opens dashboard THE SYSTEM SHALL preserve the `chatSpotlight` state in `wasChatSpotlightRef`
+2. WHEN transitioning from `UI_STATE_CHAT_OPEN` to `UI_STATE_BOTH_OPEN` THE SYSTEM SHALL maintain the spotlight state (not reset to balanced)
+3. WHEN in `UI_STATE_BOTH_OPEN` AND user clicks Dashboard icon to close THE SYSTEM SHALL call `closeChat()` method
+4. THE SYSTEM SHALL provide `closeChat()` method that closes only ChatWing while keeping DashboardWing visible
+5. WHEN `closeChat()` is called THE SYSTEM SHALL transition from `UI_STATE_BOTH_OPEN` to a dashboard-only view (not idle)
+6. THE SYSTEM SHALL NOT reset spotlight state when transitioning between `UI_STATE_CHAT_OPEN` and `UI_STATE_BOTH_OPEN`
+7. THE SYSTEM SHALL ONLY reset spotlight state to `balanced` when entering `UI_STATE_IDLE`
+
+### Requirement 16: Selective Close Behavior
+
+**User Story:** As a user, I want the ChatWing close button to behave contextually—closing only the chat when both wings are open, or closing everything when only chat is open.
+
+#### Acceptance Criteria
+
+1. WHEN in `UI_STATE_BOTH_OPEN` AND user clicks ChatWing close button THE SYSTEM SHALL call `closeChat()` (not `closeAll()`)
+2. WHEN in `UI_STATE_CHAT_OPEN` (only) AND user clicks ChatWing close button THE SYSTEM SHALL call `closeAll()`
+3. WHEN `closeChat()` is called from `UI_STATE_BOTH_OPEN` THE SYSTEM SHALL keep DashboardWing open and visible
+4. THE SYSTEM SHALL pass conditional `onClose` handler to ChatWing: `isBothOpen ? closeChat : closeAll`
+5. WHEN chat closes while dashboard remains open THE SYSTEM SHALL ensure IrisOrb remains visible
+6. THE SYSTEM SHALL wire `onDashboardClose={closeChat}` prop in page.tsx for dashboard toggle functionality
+
+### Requirement 17: State Preservation
+
+**User Story:** As a user, I want my chat spotlight state to be preserved when I temporarily open the dashboard and then close it, maintaining my preferred viewing configuration.
+
+#### Acceptance Criteria
+
+1. THE SYSTEM SHALL maintain `wasChatSpotlightRef` to track if user was in chat spotlight before opening dashboard
+2. WHEN `openDashboard()` is called from `UI_STATE_CHAT_OPEN` THE SYSTEM SHALL save current spotlight state to ref
+3. WHEN returning to chat-only view after closing dashboard THE SYSTEM SHALL restore the previous spotlight state
+4. THE SYSTEM SHALL clear `wasChatSpotlightRef` when entering `UI_STATE_IDLE`
+5. WHEN spotlight state is preserved across transitions THE SYSTEM SHALL animate smoothly to the restored state
+6. THE SYSTEM SHALL NOT persist spotlight state across full application restarts (session-only)

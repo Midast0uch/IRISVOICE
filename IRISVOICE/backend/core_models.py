@@ -30,17 +30,37 @@ class AppState(str, Enum):
 
 
 class FieldType(str, Enum):
-    """Input field types supported in mini-nodes"""
+    """Input field types supported in cards"""
     TEXT = "text"
     SLIDER = "slider"
     DROPDOWN = "dropdown"
     TOGGLE = "toggle"
     COLOR = "color"
     KEY_COMBO = "keyCombo"
+    # Extended types for frontend compatibility (mapped to base types with modifiers)
+    PASSWORD = "password"  # Maps to TEXT with sensitive=True
+    BUTTON = "button"      # Maps to TEXT with action trigger
+    CUSTOM = "custom"      # Maps to TEXT as placeholder
+
+
+# Type mapping documentation for frontend-backend compatibility
+FIELD_TYPE_MAPPINGS = {
+    # Frontend type -> (Backend type, Additional properties)
+    "password": ("TEXT", {"sensitive": True}),
+    "button": ("TEXT", {"is_action": True}),
+    "custom": ("TEXT", {"is_placeholder": True}),
+    # Base types pass through unchanged
+    "text": ("TEXT", {}),
+    "slider": ("SLIDER", {}),
+    "dropdown": ("DROPDOWN", {}),
+    "toggle": ("TOGGLE", {}),
+    "color": ("COLOR", {}),
+    "keyCombo": ("KEY_COMBO", {}),
+}
 
 
 class InputField(BaseModel):
-    """Configuration for a single input field in a mini-node"""
+    """Configuration for a single input field in a card"""
     id: str
     type: FieldType
     label: str
@@ -51,6 +71,11 @@ class InputField(BaseModel):
     max: Optional[Union[int, float]] = None
     step: Optional[Union[int, float]] = None
     unit: Optional[str] = None
+    # Extended type compatibility fields
+    sensitive: Optional[bool] = None  # True for password fields
+    is_action: Optional[bool] = None  # True for button fields
+    action: Optional[str] = None      # Action identifier for button fields
+    is_placeholder: Optional[bool] = None  # True for custom placeholder fields
     
     @field_validator('type')
     @classmethod
@@ -58,10 +83,24 @@ class InputField(BaseModel):
         if isinstance(v, str):
             return FieldType(v)
         return v
+    
+    def to_frontend_type(self) -> dict:
+        """Convert to frontend-compatible type representation"""
+        result = self.model_dump()
+        # Map extended types back to frontend representation
+        if self.type == FieldType.PASSWORD or self.sensitive:
+            result['type'] = 'password'
+        elif self.type == FieldType.BUTTON or self.is_action:
+            result['type'] = 'button'
+        elif self.type == FieldType.CUSTOM or self.is_placeholder:
+            result['type'] = 'custom'
+        else:
+            result['type'] = self.type.value
+        return result
 
 
-class SubNode(BaseModel):
-    """A sub-node containing multiple input fields"""
+class Section(BaseModel):
+    """A section containing multiple input fields"""
     id: str
     label: str
     icon: str  # Icon name as string (Lucide icon name)
@@ -88,23 +127,16 @@ class ColorTheme(BaseModel):
         return v.lower()
 
 
-class ConfirmedNode(BaseModel):
-    """A confirmed mini-node orbiting the IRIS center"""
-    id: str
-    label: str
-    icon: str
-    orbit_angle: float
-    values: Dict[str, Any]
-    category: str
-
-
 class IRISState(BaseModel):
     """Complete application state"""
     current_category: Optional[Category] = None
-    current_subnode: Optional[str] = None
+    current_section: Optional[str] = None
     field_values: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    
+    class Config:
+        populate_by_name = True
+        extra = 'forbid'  # Reject any extra fields not defined in the model
     active_theme: ColorTheme = Field(default_factory=ColorTheme)
-    confirmed_nodes: List[ConfirmedNode] = Field(default_factory=list)
     app_state: AppState = Field(default=AppState.STARTING)
     
     # Model selection (user-configurable dual-LLM)
@@ -112,25 +144,19 @@ class IRISState(BaseModel):
     selected_tool_execution_model: Optional[str] = None
     
     def get_category_values(self, category: str) -> Dict[str, Dict[str, Any]]:
-        """Get all field values for a category (all subnodes)"""
+        """Get all field values for a category (all sections)"""
         result = {}
-        subnodes = get_subnodes_for_category(category)
-        for subnode in subnodes:
-            if subnode.id in self.field_values:
-                result[subnode.id] = self.field_values[subnode.id]
+        sections = get_sections_for_category(category)
+        for section in sections:
+            if section.id in self.field_values:
+                result[section.id] = self.field_values[section.id]
         return result
     
-    def set_field_value(self, subnode_id: str, field_id: str, value: Any):
-        """Set a field value for a subnode"""
-        if subnode_id not in self.field_values:
-            self.field_values[subnode_id] = {}
-        self.field_values[subnode_id][field_id] = value
-    
-    def add_confirmed_node(self, node: ConfirmedNode):
-        """Add a confirmed node to orbit"""
-        # Remove existing if same id
-        self.confirmed_nodes = [n for n in self.confirmed_nodes if n.id != node.id]
-        self.confirmed_nodes.append(node)
+    def set_field_value(self, section_id: str, field_id: str, value: Any):
+        """Set a field value for a section"""
+        if section_id not in self.field_values:
+            self.field_values[section_id] = {}
+        self.field_values[section_id][field_id] = value
 
 
 # ============================================================================
@@ -149,24 +175,24 @@ class SelectCategoryMessage(BaseModel):
     category: Category
 
 
-class SelectSubnodeMessage(BaseModel):
-    """Client activates a subnode"""
-    type: str = "select_subnode"
-    subnode_id: str
+class SelectSectionMessage(BaseModel):
+    """Client activates a section"""
+    type: str = "select_section"
+    section_id: str
 
 
 class FieldUpdateMessage(BaseModel):
     """Client updates a field value"""
     type: str = "field_update"
-    subnode_id: str
+    section_id: str
     field_id: str
     value: Any
 
 
-class ConfirmMiniNodeMessage(BaseModel):
-    """Client confirms a mini-node"""
-    type: str = "confirm_mini_node"
-    subnode_id: str
+class ConfirmCardMessage(BaseModel):
+    """Client confirms a card"""
+    type: str = "confirm_card"
+    section_id: str
     values: Dict[str, Any]
 
 
@@ -193,13 +219,13 @@ class CategoryChangedMessage(BaseModel):
     """Server confirms category change"""
     type: str = "category_changed"
     category: Category
-    subnodes: List[SubNode]
+    sections: List[Section]
 
 
 class FieldUpdatedMessage(BaseModel):
     """Server confirms field update"""
     type: str = "field_updated"
-    subnode_id: str
+    section_id: str
     field_id: str
     value: Any
     valid: bool
@@ -212,10 +238,10 @@ class ValidationErrorMessage(BaseModel):
     error: str
 
 
-class MiniNodeConfirmedMessage(BaseModel):
-    """Server confirms mini-node and provides orbit position"""
-    type: str = "mini_node_confirmed"
-    subnode_id: str
+class CardConfirmedMessage(BaseModel):
+    """Server confirms card and provides orbit position"""
+    type: str = "card_confirmed"
+    section_id: str
     orbit_angle: float
 
 
@@ -245,13 +271,13 @@ class ModelStatusMessage(BaseModel):
     message: Optional[str] = None  # Optional message, e.g., for errors
 
 
-def get_subnodes_for_category(category: str) -> List[SubNode]:
-    """Get subnode configuration for a category"""
-    return SUBNODE_CONFIGS.get(category, [])
+def get_sections_for_category(category: str) -> List[Section]:
+    """Get section configuration for a category"""
+    return SECTION_CONFIGS.get(category, [])
 
-SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
+SECTION_CONFIGS: Dict[str, List[Section]] = {
     "voice": [
-        SubNode(
+        Section(
             id="input",
             label="INPUT",
             icon="Mic",
@@ -263,7 +289,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="auto_gain", type=FieldType.TOGGLE, label="Auto Gain", value=True),
             ]
         ),
-        SubNode(
+        Section(
             id="output",
             label="OUTPUT",
             icon="Volume2",
@@ -275,7 +301,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="limiter", type=FieldType.TOGGLE, label="Limiter", value=True),
             ]
         ),
-        SubNode(
+        Section(
             id="effects",
             label="EFFECTS",
             icon="Sparkles",
@@ -289,7 +315,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
         ),
     ],
     "agent": [
-        SubNode(
+        Section(
             id="inference_mode",
             label="INFERENCE MODE",
             icon="Server",
@@ -300,7 +326,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="openai_api_key", type=FieldType.TEXT, label="OpenAI API Key", placeholder="sk-...", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="model_selection",
             label="MODEL SELECTION",
             icon="BrainCircuit",
@@ -309,7 +335,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="tool_execution_model", type=FieldType.DROPDOWN, label="Tool Execution Model", options=[], value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="model",
             label="MODEL",
             icon="BrainCircuit",
@@ -321,7 +347,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="max_tokens", type=FieldType.SLIDER, label="Max Tokens", min=64, max=4096, value=1024),
             ]
         ),
-        SubNode(
+        Section(
             id="wake",
             label="WAKE",
             icon="Power",
@@ -333,7 +359,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="sleep_timeout", type=FieldType.SLIDER, label="Sleep Timeout", min=5, max=300, value=60, unit="s"),
             ]
         ),
-        SubNode(
+        Section(
             id="speech",
             label="SPEECH",
             icon="MessageSquare",
@@ -347,7 +373,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
         ),
     ],
     "automate": [
-        SubNode(
+        Section(
             id="hotkeys",
             label="HOTKEYS",
             icon="Keyboard",
@@ -359,7 +385,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="toggle_iris_panel", type=FieldType.KEY_COMBO, label="Toggle IRIS Panel", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="macros",
             label="MACROS",
             icon="Bot",
@@ -371,7 +397,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="macro_3_trigger", type=FieldType.TEXT, label="Macro 3 Trigger", placeholder="e.g., 'good night'", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="integrations",
             label="INTEGRATIONS",
             icon="Puzzle",
@@ -385,7 +411,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
         ),
     ],
     "system": [
-        SubNode(
+        Section(
             id="performance",
             label="PERFORMANCE",
             icon="Gauge",
@@ -397,7 +423,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="low_power_mode", type=FieldType.TOGGLE, label="Low Power Mode", value=False),
             ]
         ),
-        SubNode(
+        Section(
             id="storage",
             label="STORAGE",
             icon="Database",
@@ -409,7 +435,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="backup_settings", type=FieldType.TEXT, label="Backup Settings", placeholder="Backup", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="security",
             label="SECURITY",
             icon="Shield",
@@ -423,7 +449,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
         ),
     ],
     "customize": [
-        SubNode(
+        Section(
             id="theme",
             label="THEME",
             icon="Palette",
@@ -435,7 +461,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="font_size", type=FieldType.SLIDER, label="Font Size", min=8, max=24, value=14, unit="px"),
             ]
         ),
-        SubNode(
+        Section(
             id="ui",
             label="UI",
             icon="PanelsTopLeft",
@@ -447,7 +473,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="always_on_top", type=FieldType.TOGGLE, label="Always on Top", value=False),
             ]
         ),
-        SubNode(
+        Section(
             id="notifications",
             label="NOTIFICATIONS",
             icon="Bell",
@@ -461,7 +487,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
         ),
     ],
     "monitor": [
-        SubNode(
+        Section(
             id="metrics",
             label="METRICS",
             icon="LineChart",
@@ -473,7 +499,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="cost_estimate", type=FieldType.TEXT, label="Cost Estimate", placeholder="Cost", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="logs",
             label="LOGS",
             icon="FileText",
@@ -485,7 +511,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="export_logs", type=FieldType.TEXT, label="Export Logs", placeholder="Export", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="diagnostics",
             label="DIAGNOSTICS",
             icon="Stethoscope",
@@ -497,7 +523,7 @@ SUBNODE_CONFIGS: Dict[str, List[SubNode]] = {
                 InputField(id="report_issue", type=FieldType.TEXT, label="Report Issue", placeholder="Report", value=""),
             ]
         ),
-        SubNode(
+        Section(
             id="updates",
             label="UPDATES",
             icon="RefreshCw",

@@ -6,11 +6,13 @@ Routes incoming WebSocket messages to appropriate handlers based on message type
 import json
 import logging
 import time
-from typing import Dict, Any, Optional
+import httpx
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List
 
 from .ws_manager import WebSocketManager, get_websocket_manager
 from .state_manager import StateManager, get_state_manager
-from .core_models import Category, get_subnodes_for_category
+from .core_models import Category, get_sections_for_category
 from .agent import get_agent_kernel, get_lfm_audio_manager
 from .voice.voice_pipeline import get_voice_pipeline, VoiceState
 from .voice.wake_word_discovery import WakeWordDiscovery
@@ -59,6 +61,11 @@ class IRISGateway:
         # Initialize vision service (lazy loading - model not loaded until enabled)
         self._vision_service = get_vision_service()
         self._logger.info("[IRISGateway] Vision service initialized (lazy loading)")
+        
+        # Initialize model cache for lazy loading (5 minute TTL)
+        self._model_cache: Dict[str, tuple[List[str], datetime]] = {}
+        self._model_cache_ttl = timedelta(minutes=5)
+        self._logger.info("[IRISGateway] Model cache initialized (5 min TTL)")
     
     async def handle_message(self, client_id: str, message: dict) -> None:
         """
@@ -112,11 +119,10 @@ class IRISGateway:
             )
             
             # Route to appropriate handler based on message type
-            # GAP-02 FIX: Support both select_* (new) and set_* (legacy) message types
-            if msg_type in ["select_category", "select_subnode", "go_back", "set_category", "set_subnode"]:
+            if msg_type in ["select_category", "select_section", "go_back"]:
                 await self._handle_navigation(session_id, client_id, message)
             
-            elif msg_type in ["update_field", "update_theme", "confirm_mini_node"]:
+            elif msg_type in ["update_field", "update_theme", "confirm_card"]:
                 await self._handle_settings(session_id, client_id, message)
             
             elif msg_type == "set_model_selection":
@@ -145,6 +151,9 @@ class IRISGateway:
             
             elif msg_type == "get_available_models":
                 await self._handle_get_available_models(session_id, client_id, message)
+            
+            elif msg_type == "request_models":
+                await self._handle_request_models(session_id, client_id, message)
             
             elif msg_type == "get_audio_devices":
                 await self._handle_get_audio_devices(session_id, client_id)
@@ -214,8 +223,7 @@ class IRISGateway:
     
     async def _handle_navigation(self, session_id: str, client_id: str, message: dict) -> None:
         """
-        Handle navigation messages: select_category, select_subnode, go_back.
-        GAP-02 FIX: Supports both select_* (new) and set_* (legacy) message types.
+        Handle navigation messages: select_category, select_section, go_back.
         
         Args:
             session_id: Session ID
@@ -224,8 +232,7 @@ class IRISGateway:
         """
         msg_type = message.get("type")
         
-        # GAP-02: Handle both select_category and set_category (legacy)
-        if msg_type in ["select_category", "set_category"]:
+        if msg_type == "select_category":
             category = message.get("category") or message.get("payload", {}).get("category")
             
             if not category:
@@ -242,41 +249,36 @@ class IRISGateway:
             # Update state
             await self._state_manager.set_category(session_id, category_enum)
             
-            # Get subnodes for this category
-            subnodes = get_subnodes_for_category(category_enum)
+            # Get sections for this category
+            sections = get_sections_for_category(category_enum)
             
-            # Send confirmation with subnodes
+            # Send confirmation with sections
             await self._ws_manager.send_to_client(client_id, {
                 "type": "category_changed",
                 "payload": {
                     "category": category,
-                    "subnodes": [s.model_dump() for s in subnodes]
+                    "sections": [s.model_dump() for s in sections]
                 }
             })
             
             # Broadcast state update to other clients in session
             await self._broadcast_state_update(session_id, exclude_client=client_id)
         
-        # GAP-02: Handle both select_subnode and set_subnode (legacy)
-        elif msg_type in ["select_subnode", "set_subnode"]:
-            # GAP-02: Support both subnode_id (new) and subnode (legacy) field names
-            subnode_id = (message.get("subnode_id") or 
-                         message.get("subnode") or 
-                         message.get("payload", {}).get("subnode_id") or
-                         message.get("payload", {}).get("subnode"))
+        elif msg_type == "select_section":
+            section_id = message.get("section_id") or message.get("payload", {}).get("section_id")
             
-            if not subnode_id:
-                await self._send_validation_error(client_id, "subnode_id", "Subnode ID is required")
+            if not section_id:
+                await self._send_validation_error(client_id, "section_id", "Section ID is required")
                 return
             
             # Update state
-            await self._state_manager.set_subnode(session_id, subnode_id)
+            await self._state_manager.set_section(session_id, section_id)
             
             # Send confirmation
             await self._ws_manager.send_to_client(client_id, {
-                "type": "subnode_changed",
+                "type": "section_changed",
                 "payload": {
-                    "subnode_id": subnode_id
+                    "section_id": section_id
                 }
             })
             
@@ -292,7 +294,7 @@ class IRISGateway:
     
     async def _handle_settings(self, session_id: str, client_id: str, message: dict) -> None:
         """
-        Handle settings messages: update_field, update_theme, confirm_mini_node.
+        Handle settings messages: update_field, update_theme, confirm_card.
         
         Args:
             session_id: Session ID
@@ -303,27 +305,28 @@ class IRISGateway:
         payload = message.get("payload", {})
         
         if msg_type == "update_field":
-            subnode_id = message.get("subnode_id") or payload.get("subnode_id")
+            # Use only section_id (cleanup complete)
+            section_id = message.get("section_id") or payload.get("section_id")
             field_id = message.get("field_id") or payload.get("field_id")
             value = message.get("value") if "value" in message else payload.get("value")
             timestamp = payload.get("timestamp")  # Optional timestamp from client
             
-            if not subnode_id or not field_id:
+            if not section_id or not field_id:
                 await self._send_validation_error(
                     client_id,
                     "field",
-                    "Both subnode_id and field_id are required"
+                    "Both section_id and field_id are required"
                 )
                 return
             
             # Update field value with timestamp handling
             success, update_timestamp = await self._state_manager.update_field(
-                session_id, subnode_id, field_id, value, timestamp
+                session_id, section_id, field_id, value, timestamp
             )
             
             if success:
                 # Apply TTS configuration if agent.speech fields are updated
-                if subnode_id == "speech":
+                if section_id == "speech":
                     try:
                         lfm_audio_manager = get_lfm_audio_manager()
                         if field_id == "tts_voice":
@@ -373,11 +376,11 @@ class IRISGateway:
                     from ..utils.encryption import mask_api_key
                     response_value = mask_api_key(value)
                 
-                # Send confirmation with timestamp
+                # Send confirmation with timestamp - include both new and legacy field names
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "field_updated",
                     "payload": {
-                        "subnode_id": subnode_id,
+                        "section_id": section_id,
                         "field_id": field_id,
                         "value": response_value,
                         "valid": True,
@@ -391,7 +394,7 @@ class IRISGateway:
                     {
                         "type": "field_updated",
                         "payload": {
-                            "subnode_id": subnode_id,
+                            "section_id": section_id,
                             "field_id": field_id,
                             "value": response_value,
                             "valid": True,
@@ -441,12 +444,13 @@ class IRISGateway:
                     }
                 )
         
-        elif msg_type == "confirm_mini_node":
-            subnode_id = payload.get("subnode_id")
+        elif msg_type == "confirm_card":
+            # Use only section_id (cleanup complete)
+            section_id = payload.get("section_id")
             values = payload.get("values", {})
             
-            if not subnode_id:
-                await self._send_validation_error(client_id, "subnode_id", "Subnode ID is required")
+            if not section_id:
+                await self._send_validation_error(client_id, "section_id", "Section ID is required")
                 return
             
             # Get current category
@@ -455,20 +459,20 @@ class IRISGateway:
                 await self._send_error(client_id, "No active category")
                 return
             
-            # Confirm subnode
-            orbit_angle = await self._state_manager.confirm_subnode(
+            # Confirm section
+            orbit_angle = await self._state_manager.confirm_section(
                 session_id,
                 state.current_category.value,
-                subnode_id,
+                section_id,
                 values
             )
             
             if orbit_angle is not None:
                 # Send confirmation
                 await self._ws_manager.send_to_client(client_id, {
-                    "type": "mini_node_confirmed",
+                    "type": "card_confirmed",
                     "payload": {
-                        "subnode_id": subnode_id,
+                        "section_id": section_id,
                         "orbit_angle": orbit_angle
                     }
                 })
@@ -476,7 +480,7 @@ class IRISGateway:
                 # Broadcast state update
                 await self._broadcast_state_update(session_id, exclude_client=client_id)
             else:
-                await self._send_error(client_id, "Failed to confirm mini node")
+                await self._send_error(client_id, "Failed to confirm card")
     
     async def _handle_voice(self, session_id: str, client_id: str, message: dict) -> None:
         """
@@ -783,6 +787,101 @@ class IRISGateway:
                 "payload": {
                     "models": [],
                     "error": f"Failed to get available models: {str(e)}"
+                }
+            })
+    
+    async def _handle_request_models(self, session_id: str, client_id: str, message: dict) -> None:
+        """
+        Handle request_models message - lazy load models from Ollama with caching.
+        Task 7.4: Implements lazy loading for model dropdowns with 5-minute cache.
+        
+        Args:
+            session_id: Session ID
+            client_id: Client ID
+            message: Message dictionary with optional 'endpoint' in payload
+        """
+        payload = message.get("payload", {})
+        endpoint = payload.get("endpoint", "http://localhost:11434")
+        
+        # Check cache first
+        cached_models, cache_time = self._model_cache.get(endpoint, (None, None))
+        if cached_models and cache_time and (datetime.now() - cache_time) < self._model_cache_ttl:
+            self._logger.info(f"[IRISGateway] Returning cached models for {endpoint}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "models_loaded",
+                "payload": {
+                    "models": cached_models,
+                    "endpoint": endpoint,
+                    "cached": True
+                }
+            })
+            return
+        
+        # Fetch models from Ollama
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{endpoint}/api/tags")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    models = [model["name"] for model in data.get("models", [])]
+                    
+                    # Cache the results
+                    self._model_cache[endpoint] = (models, datetime.now())
+                    
+                    self._logger.info(f"[IRISGateway] Loaded {len(models)} models from Ollama at {endpoint}")
+                    
+                    await self._ws_manager.send_to_client(client_id, {
+                        "type": "models_loaded",
+                        "payload": {
+                            "models": models,
+                            "endpoint": endpoint,
+                            "cached": False
+                        }
+                    })
+                else:
+                    error_msg = f"Ollama returned status {response.status_code}"
+                    self._logger.error(f"[IRISGateway] {error_msg}")
+                    await self._ws_manager.send_to_client(client_id, {
+                        "type": "models_loaded",
+                        "payload": {
+                            "models": [],
+                            "endpoint": endpoint,
+                            "error": error_msg
+                        }
+                    })
+                    
+        except httpx.ConnectError as e:
+            error_msg = f"Cannot connect to Ollama at {endpoint}. Is Ollama running?"
+            self._logger.error(f"[IRISGateway] {error_msg}: {e}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "models_loaded",
+                "payload": {
+                    "models": [],
+                    "endpoint": endpoint,
+                    "error": error_msg
+                }
+            })
+        except httpx.TimeoutException:
+            error_msg = f"Connection to Ollama at {endpoint} timed out"
+            self._logger.error(f"[IRISGateway] {error_msg}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "models_loaded",
+                "payload": {
+                    "models": [],
+                    "endpoint": endpoint,
+                    "error": error_msg
+                }
+            })
+        except Exception as e:
+            error_msg = f"Failed to fetch models: {str(e)}"
+            self._logger.error(f"[IRISGateway] {error_msg}", exc_info=True)
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "models_loaded",
+                "payload": {
+                    "models": [],
+                    "endpoint": endpoint,
+                    "error": error_msg
                 }
             })
     

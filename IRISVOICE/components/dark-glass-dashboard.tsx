@@ -5,7 +5,7 @@ import { useState, memo, useMemo, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBrandColor } from '@/contexts/BrandColorContext';
 import { useNavigation } from '@/contexts/NavigationContext';
-import { SUB_NODES_WITH_MINI, getMiniNodesForSubnode, MINI_NODES_DATA } from '@/data/mini-nodes';
+import { CARDS_BY_SECTION, getCardsForSection, CARDS_DATA } from '@/data/cards';
 import { SECTION_TO_LABEL, SECTION_TO_ICON, CARD_TO_SECTION_ID } from '@/data/navigation-constants';
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, Eye, Globe,
@@ -16,7 +16,7 @@ import {
 interface DarkGlassDashboardProps {
   theme?: string;
   fieldValues?: Record<string, Record<string, string | number | boolean>>;
-  updateField?: (subnodeId: string, fieldId: string, value: any) => void;
+  updateField?: (sectionId: string, fieldId: string, value: any) => void;
 }
 
 const MAIN_NODES_DATA = [
@@ -72,11 +72,11 @@ const getIconComponent = (iconName: string) => {
   return iconMap[iconName] || Boxes;
 };
 
-// Helper function to convert mini-nodes fields to dashboard field format
-function convertMiniNodeFieldsToDashboardFields(miniNodes: any[]) {
+// Helper function to convert card fields to dashboard field format
+function convertCardFieldsToDashboardFields(cards: any[]) {
   const fields: any[] = [];
-  miniNodes.forEach(miniNode => {
-    miniNode.fields.forEach((field: any) => {
+  cards.forEach(card => {
+    card.fields.forEach((field: any) => {
       // Skip section fields as they're not rendered in dashboard
       if (field.type === 'section' || field.type === 'custom') return;
       
@@ -96,7 +96,7 @@ function convertMiniNodeFieldsToDashboardFields(miniNodes: any[]) {
   return fields;
 }
 
-// Generate SUB_NODES_DATA dynamically from mini-nodes.ts and navigation constants
+// Generate SECTIONS_DATA dynamically from cards.ts and navigation constants
 // This ensures all components use the same field IDs, labels, and options
 function useSubNodesData() {
   return useMemo(() => {
@@ -106,7 +106,7 @@ function useSubNodesData() {
           id: sectionId,
           label: SECTION_TO_LABEL[sectionId]?.toUpperCase() || sectionId.toUpperCase(),
           icon: getIconComponent(SECTION_TO_ICON[sectionId] || 'Boxes'),
-          fields: convertMiniNodeFieldsToDashboardFields(getMiniNodesForSubnode(sectionId))
+          fields: convertCardFieldsToDashboardFields(getCardsForSection(sectionId))
         };
       }
       
@@ -115,9 +115,9 @@ function useSubNodesData() {
     
     // Group sections by category
     const categoryMapping: Record<string, string[]> = {
-      voice: ['input', 'output', 'processing', 'model'],
+      voice: ['input', 'output', 'wake', 'speech'],
       agent: ['model_selection', 'inference_mode', 'identity', 'memory'],
-      automate: ['tools', 'vision', 'workflows', 'shortcuts', 'gui', 'extensions'],
+      automate: ['tools', 'vision', 'desktop_control', 'skills', 'profile'],
       system: ['power', 'display', 'storage', 'network'],
       customize: ['theme', 'startup', 'behavior', 'notifications'],
       monitor: ['analytics', 'logs', 'diagnostics', 'updates'],
@@ -135,30 +135,49 @@ function useSubNodesData() {
   }, []);
 }
 
-const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnodeId, updateField, fieldErrors, clearFieldError, availableModels, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; subnodeId?: string; updateField?: (subnodeId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (subnodeId: string, fieldId: string) => void; availableModels?: string[]; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
+const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, availableModels, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; availableModels?: string[]; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
   const [testResult, setTestResult] = useState<string | null>(null);
-  const value = fieldValues && subnodeId ? (fieldValues[subnodeId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
+  const value = fieldValues && sectionId ? (fieldValues[sectionId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
   
   // Get error message for this field
-  const errorKey = subnodeId && field.id ? `${subnodeId}:${field.id}` : null;
+  const errorKey = sectionId && field.id ? `${sectionId}:${field.id}` : null;
   const errorMessage = errorKey && fieldErrors ? fieldErrors[errorKey] : null;
   
-  // Conditional field rendering for inference_mode subnode
-  const inferenceMode = fieldValues && subnodeId === 'inference_mode' ? (fieldValues[subnodeId]?.['inference_mode'] ?? 'Local Models') : null;
+  // Conditional field rendering for inference_mode section
+  const inferenceMode = fieldValues && sectionId === 'inference_mode' ? (fieldValues[sectionId]?.['inference_mode'] ?? 'Local Models') : null;
   
   // Hide VPS fields unless VPS Gateway is selected
-  if (subnodeId === 'inference_mode' && (field.id === 'vps_url' || field.id === 'vps_api_key' || field.id === 'test_vps_connection') && inferenceMode !== 'VPS Gateway') {
+  if (sectionId === 'inference_mode' && (field.id === 'vps_url' || field.id === 'vps_api_key' || field.id === 'test_vps_connection') && inferenceMode !== 'VPS Gateway') {
     return null;
   }
   
   // Hide OpenAI fields unless OpenAI API is selected
-  if (subnodeId === 'inference_mode' && (field.id === 'openai_api_key' || field.id === 'test_openai_connection') && inferenceMode !== 'OpenAI API') {
+  if (sectionId === 'inference_mode' && (field.id === 'openai_api_key' || field.id === 'test_openai_connection') && inferenceMode !== 'OpenAI API') {
     return null;
   }
   
   // Hide GPU warning unless Local Models is selected
-  if (subnodeId === 'inference_mode' && field.id === 'local_gpu_warning' && inferenceMode !== 'Local Models') {
+  if (sectionId === 'inference_mode' && field.id === 'local_gpu_warning' && inferenceMode !== 'Local Models') {
+    return null;
+  }
+  
+  // Conditional field rendering for model_selection section
+  const modelProvider = fieldValues && sectionId === 'model_selection' ? (fieldValues[sectionId]?.['model_provider'] ?? 'local') : null;
+  const useSameModel = fieldValues && sectionId === 'model_selection' ? (fieldValues[sectionId]?.['use_same_model'] ?? true) : true;
+  
+  // Hide API key field unless provider is 'api'
+  if (sectionId === 'model_selection' && field.id === 'api_key' && modelProvider !== 'api') {
+    return null;
+  }
+  
+  // Hide VPS endpoint field unless provider is 'vps'
+  if (sectionId === 'model_selection' && field.id === 'vps_endpoint' && modelProvider !== 'vps') {
+    return null;
+  }
+  
+  // Hide tool_model dropdown when use_same_model is true
+  if (sectionId === 'model_selection' && field.id === 'tool_model' && useSameModel === true) {
     return null;
   }
   
@@ -166,12 +185,12 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
   // Store changes locally only - no backend updates until Confirm button is pressed
   const setValue = useCallback((newValue: any) => {
     // Clear error when user starts editing
-    if (errorMessage && subnodeId && field.id && clearFieldError) {
-      clearFieldError(subnodeId, field.id);
+    if (errorMessage && sectionId && field.id && clearFieldError) {
+      clearFieldError(sectionId, field.id);
     }
     
-    if (fieldValues && subnodeId && updateField) {
-      updateField(subnodeId, field.id, newValue);
+    if (fieldValues && sectionId && updateField) {
+      updateField(sectionId, field.id, newValue);
     } else {
       setLocalValue(newValue);
     }
@@ -179,7 +198,7 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
     // NOTE: Removed immediate update_field WebSocket messages
     // Field changes are stored locally only until Confirm button is pressed
     // This prevents premature backend initialization before user confirms configuration
-  }, [fieldValues, subnodeId, updateField, field.id, errorMessage, clearFieldError]);
+  }, [fieldValues, sectionId, updateField, field.id, errorMessage, clearFieldError]);
 
   const handleSliderClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -215,24 +234,24 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
   }
 
   if (field.type === 'dropdown') {
-    // Use available models for model_selection subnode dropdowns
+    // Use available models for model_selection section dropdowns
     let options = field.options || [];
-    if (subnodeId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_execution_model')) {
+    if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_execution_model')) {
       options = availableModels && availableModels.length > 0 ? availableModels : ['No models available'];
     }
     
-    // Use audio input devices for input subnode
-    if (subnodeId === 'input' && field.id === 'input_device') {
+    // Use audio input devices for input section
+    if (sectionId === 'input' && field.id === 'input_device') {
       options = audioInputDevices && audioInputDevices.length > 0 ? audioInputDevices : ['No input devices found'];
     }
     
-    // Use audio output devices for output subnode
-    if (subnodeId === 'output' && field.id === 'output_device') {
+    // Use audio output devices for output section
+    if (sectionId === 'output' && field.id === 'output_device') {
       options = audioOutputDevices && audioOutputDevices.length > 0 ? audioOutputDevices : ['No output devices found'];
     }
     
-    // Use wake words for wake subnode
-    if (subnodeId === 'wake' && field.id === 'wake_phrase') {
+    // Use wake words for wake section
+    if (sectionId === 'wake' && field.id === 'wake_phrase') {
       options = wakeWords && wakeWords.length > 0 ? wakeWords : ['No wake words found'];
     }
     
@@ -325,8 +344,8 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, subnode
 
   if (field.type === 'status') {
     // VPS status indicator
-    const vpsEnabled = fieldValues && subnodeId ? fieldValues[subnodeId]?.['enabled'] : false;
-    const vpsEndpoints = fieldValues && subnodeId ? fieldValues[subnodeId]?.['endpoints'] : '';
+    const vpsEnabled = fieldValues && sectionId ? fieldValues[sectionId]?.['enabled'] : false;
+    const vpsEndpoints = fieldValues && sectionId ? fieldValues[sectionId]?.['endpoints'] : '';
     const endpointCount = vpsEndpoints ? (vpsEndpoints as string).split(',').filter(e => e.trim()).length : 0;
     
     return (
@@ -442,18 +461,18 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
   // Connect to NavigationContext for WebSocket integration
   const {
     currentCategory,
-    currentSubnode,
-    subnodes: contextSubnodes,
+    currentSection,
+    sections: contextSections,
     fieldValues: contextFieldValues,
     fieldErrors,
     activeTheme, // Get activeTheme from backend via WebSocket
     voiceState, // Voice command state for visual feedback
     audioLevel, // Audio level for visualization
     selectCategory,
-    selectSubnode,
-    updateMiniNodeValue: contextUpdateMiniNodeValue,
+    selectSectionWs,
+    updateCardValue: contextUpdateCardValue,
     clearFieldError,
-    confirmMiniNode, // Connect onConfirm to confirmMiniNode()
+    confirmCard, // Connect onConfirm to confirmCard()
     sendMessage, // Add sendMessage for fetching available models
   } = useNavigation();
   
@@ -586,13 +605,13 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
 
   // Use context values if available, otherwise fall back to props
   const fieldValues = contextFieldValues || propFieldValues || {};
-  const updateField = propUpdateField || contextUpdateMiniNodeValue;
+  const updateField = propUpdateField || contextUpdateCardValue;
 
   const mainNodes = useMemo(() => MAIN_NODES_DATA, []);
   const subNodes = useSubNodesData();
 
-  const subnodesForTab = useMemo(() => subNodes[activeTab] || [], [subNodes, activeTab]);
-  const selectedSub = useMemo(() => activeSubnode ? subnodesForTab.find(s => s.id === activeSubnode) : null, [activeSubnode, subnodesForTab]);
+  const sectionsForTab = useMemo(() => subNodes[activeTab] || [], [subNodes, activeTab]);
+  const selectedSection = useMemo(() => activeSubnode ? sectionsForTab.find(s => s.id === activeSubnode) : null, [activeSubnode, sectionsForTab]);
 
   const handleTabClick = useCallback((id: string) => {
     setActiveTab(id);
@@ -605,27 +624,27 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
 
   const handleSubnodeClick = useCallback((id: string) => {
     setActiveSubnode(id);
-    // Send subnode selection to backend via NavigationContext
-    if (selectSubnode) {
-      selectSubnode(id);
+    // Send section selection to backend via NavigationContext
+    if (selectSectionWs) {
+      selectSectionWs(id);
     }
-  }, [selectSubnode]);
+  }, [selectSectionWs]);
 
-  const handleConfirmSubnode = useCallback(() => {
-    if (!selectedSub || !confirmMiniNode) return;
-    
-    // Gather all field values for this subnode
+  const handleConfirmSection = useCallback(() => {
+    if (!selectedSection || !confirmCard) return;
+
+    // Gather all field values for this section
     const values: Record<string, any> = {};
-    selectedSub.fields.forEach(field => {
-      const value = fieldValues[selectedSub.id]?.[field.id] ?? field.defaultValue;
+    selectedSection.fields.forEach(field => {
+      const value = fieldValues[selectedSection.id]?.[field.id] ?? field.defaultValue;
       if (value !== undefined) {
         values[field.id] = value;
       }
     });
-    
+
     // Send confirmation to backend via NavigationContext
-    confirmMiniNode(selectedSub.id, values);
-  }, [selectedSub, fieldValues, confirmMiniNode]);
+    confirmCard(selectedSection.id, values);
+  }, [selectedSection, fieldValues, confirmCard]);
 
   return (
     <div
@@ -834,15 +853,15 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
 
       {/* Content area */}
       <div className="flex-1 flex overflow-hidden relative z-10">
-        {/* Subnode list */}
+        {/* Section list */}
         <div className="w-[105px] border-r flex-shrink-0 overflow-y-auto" style={{ borderColor: `${glowColor}10` }}>
-          {subnodesForTab.map(sub => {
-            const Icon = sub.icon;
-            const isActive = activeSubnode === sub.id;
+          {sectionsForTab.map(section => {
+            const Icon = section.icon;
+            const isActive = activeSubnode === section.id;
             return (
               <button
-                key={sub.id}
-                onClick={() => handleSubnodeClick(sub.id)}
+                key={section.id}
+                onClick={() => handleSubnodeClick(section.id)}
                 className="w-full flex items-center gap-1.5 px-3 py-2 text-left transition-all"
                 style={{
                   background: isActive ? `${glowColor}15` : 'transparent',
@@ -851,7 +870,7 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
                 }}
               >
                 <Icon className="w-3 h-3 flex-shrink-0" style={{ color: isActive ? glowColor : 'inherit' }} />
-                <span className="text-[9px] font-medium tracking-wide truncate">{sub.label}</span>
+                <span className="text-[9px] font-medium tracking-wide truncate">{section.label}</span>
                 <ChevronRight className="w-2.5 h-2.5 ml-auto flex-shrink-0 opacity-40" />
               </button>
             );
@@ -861,9 +880,9 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
         {/* Fields panel */}
         <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col">
           <AnimatePresence mode="wait">
-            {selectedSub ? (
+            {selectedSection ? (
               <motion.div
-                key={selectedSub.id}
+                key={selectedSection.id}
                 initial={{ opacity: 0, x: 10 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
@@ -871,18 +890,18 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
                 className="space-y-4 flex-1 flex flex-col"
               >
                 <div className="flex items-center gap-1.5 mb-2 pb-1.5 border-b" style={{ borderColor: `${glowColor}15` }}>
-                  {(() => { const Icon = selectedSub.icon; return <Icon className="w-3.5 h-3.5" style={{ color: glowColor }} />; })()}
-                  <span className="text-[10px] font-semibold tracking-wider text-white/90">{selectedSub.label}</span>
+                  {(() => { const Icon = selectedSection.icon; return <Icon className="w-3.5 h-3.5" style={{ color: glowColor }} />; })()}
+                  <span className="text-[10px] font-semibold tracking-wider text-white/90">{selectedSection.label}</span>
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-4">
-                  {selectedSub.fields.map(field => (
-                    <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} subnodeId={selectedSub.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} />
+                  {selectedSection.fields.map(field => (
+                    <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={selectedSection.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} />
                   ))}
                 </div>
                 {/* Confirm button */}
                 <div className="mt-2 pt-2 border-t" style={{ borderColor: `${glowColor}15` }}>
                   <button
-                    onClick={handleConfirmSubnode}
+                    onClick={handleConfirmSection}
                     className="w-full py-1.5 rounded text-[9px] font-medium tracking-wider transition-all"
                     style={{
                       background: `${glowColor}20`,

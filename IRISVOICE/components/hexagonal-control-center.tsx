@@ -10,7 +10,7 @@ import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { Mic, Settings, Zap, Shield, Palette, BarChart3 } from "lucide-react"
 
 import { MAIN_CATEGORY_IDS, SUB_NODE_IDS } from "@/data/navigation-ids"
-import { getMiniNodesForSubnode } from "@/data/mini-nodes"
+import { getCardsForSection } from "@/data/cards"
 
 // Main node configuration with icons
 const MAIN_NODES = [
@@ -41,7 +41,7 @@ const SUB_NODES: Record<string, { id: string; label: string }[]> = {
     { id: SUB_NODE_IDS.AUTOMATE_VISION, label: "Vision" },
     { id: SUB_NODE_IDS.AUTOMATE_WORKFLOWS, label: "Workflows" },
     { id: SUB_NODE_IDS.AUTOMATE_SHORTCUTS, label: "Shortcuts" },
-    { id: SUB_NODE_IDS.AUTOMATE_GUI, label: "GUI" },
+    { id: SUB_NODE_IDS.AUTOMATE_DESKTOP_CONTROL, label: "Desktop Control" },
   ],
   [MAIN_CATEGORY_IDS.SYSTEM]: [
     { id: SUB_NODE_IDS.SYSTEM_POWER, label: "Power" },
@@ -77,9 +77,9 @@ export default function HexagonalControlCenter() {
     if (nav.state.level === 2) {
       nav.handleSelectMain(nodeId)
     } else if (nav.state.level === 3) {
-      // Load actual mini-nodes for the selected sub-node
-      const miniNodes = getMiniNodesForSubnode(nodeId)
-      nav.handleSelectSub(nodeId, miniNodes)
+      // Load actual cards for the selected section
+      const cards = getCardsForSection(nodeId)
+      nav.handleSelectSection(nodeId, cards)
     }
   }, [nav])
 
@@ -107,10 +107,10 @@ export default function HexagonalControlCenter() {
         isAnchor: false,
       }))
     } else if (nav.state.level === 3 && nav.state.selectedMain) {
-      const subNodes = (nav.subnodes[nav.state.selectedMain]?.length > 0) 
-        ? nav.subnodes[nav.state.selectedMain] 
+      const sections = (nav.sections[nav.state.selectedMain]?.length > 0)
+        ? nav.sections[nav.state.selectedMain]
         : (SUB_NODES[nav.state.selectedMain] || [])
-      return subNodes.map((node: { id: string; label: string }, index: number) => ({
+      return sections.map((node: { id: string; label: string }, index: number) => ({
         ...node,
         icon: Settings, // Default icon for sub-nodes
         angle: SUB_NODE_ANGLES[index] || 0,
@@ -119,7 +119,7 @@ export default function HexagonalControlCenter() {
       }))
     }
     return []
-  }, [nav.state.level, nav.state.selectedMain, nav.state.selectedSub, nav.subnodes])
+  }, [nav.state.level, nav.state.selectedMain, nav.state.selectedSub, nav.sections])
 
   if (!levelConfig.showNodes) {
     return null

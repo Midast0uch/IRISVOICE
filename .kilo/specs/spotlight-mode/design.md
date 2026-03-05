@@ -20,6 +20,9 @@ UILayoutState
 │   └── SpotlightState (sub-state)
 │       ├── balanced (default)
 │       └── chatSpotlight
+├── UI_STATE_DASHBOARD_OPEN (NEW)
+│   └── SpotlightState (sub-state)
+│       └── dashboardSpotlight (default)
 └── UI_STATE_BOTH_OPEN
     └── SpotlightState (sub-state)
         ├── balanced (default)
@@ -36,6 +39,34 @@ When only the ChatWing is open (`UI_STATE_CHAT_OPEN`), spotlight mode provides:
 - **Aperture button visible**: Embedded in header for toggle access
 
 This allows users to maximize chat space even when dashboard is not open.
+
+### Dashboard-Only View (NEW)
+
+When only the DashboardWing is open (`UI_STATE_DASHBOARD_OPEN`), it mirrors the ChatWing solo view:
+- **Width**: 280px (matching ChatWing default) or 380px when spotlighted
+- **Angled orientation**: rotateY(-15deg) for visual consistency (in balanced mode)
+- **Flat orientation**: rotateY(0deg) when in spotlight mode
+- **Right positioning**: Positioned at right side with consistent spacing
+- **Full opacity**: No background wing to dim
+- **Interactive**: Full pointer events enabled
+- **Aperture button visible**: Embedded in header for spotlight toggle (functional in solo mode)
+- **Chat icon visible**: Button to open ChatWing and return to both-open view
+
+**Spotlight Toggle in Solo Mode:**
+- Works identically to ChatWing solo spotlight toggle
+- Toggles between `BALANCED` (280px, -15deg rotation) and `DASHBOARD_SPOTLIGHT` (380px, 0deg rotation)
+- Spring animation for smooth transitions
+- Aperture icon morphs between diamond (balanced) and expanded (spotlight) states
+
+**Open Chat from Dashboard:**
+- Chat icon button in header (between notifications and close)
+- Only visible when in dashboard solo mode
+- Clicking transitions from `UI_STATE_DASHBOARD_OPEN` to `UI_STATE_BOTH_OPEN`
+- Preserves dashboard spotlight state if active
+- Uses spring animation for smooth transition
+- Icon has same hover/active styling as other header controls
+
+This provides visual symmetry between chat-only and dashboard-only solo views with equivalent spotlight functionality and bidirectional navigation.
 
 ### Integration Points
 
@@ -67,6 +98,9 @@ export interface UILayoutStateManager {
   openDashboard: () => void
   closeAll: () => void
   canTransition: (targetState: UILayoutState) => boolean
+  
+  // NEW: Selective close method
+  closeChat: () => void  // Closes only ChatWing, keeps Dashboard open
   
   // Spotlight properties (NEW)
   spotlightState: SpotlightState
@@ -225,21 +259,67 @@ interface IrisApertureIconProps {
 ### useUILayoutState.ts Extensions
 
 ```typescript
-// New: Spotlight state management
+// Spotlight state management
 const [spotlightState, setSpotlightState] = useState<SpotlightState>(SpotlightState.BALANCED);
 
-// New: Spotlight transition methods
+// NEW: Track chat spotlight state for bidirectional transitions
+const wasChatSpotlightRef = useRef<boolean>(false);
+
+// NEW: Selective close - closes only ChatWing, returns to dashboard-only or idle
+const closeChat = useCallback(() => {
+  if (uiState === UILayoutState.UI_STATE_BOTH_OPEN) {
+    // Close chat but keep dashboard open
+    setUiState(UILayoutState.UI_STATE_IDLE);  // Will show dashboard-only
+    // Note: DashboardWing visibility controlled by isBothOpen, so we need
+    // a dashboard-only state or handle this at page level
+    
+    // Reset spotlight state when leaving both-open
+    setSpotlightState(SpotlightState.BALANCED);
+    wasChatSpotlightRef.current = false;
+  } else if (uiState === UILayoutState.UI_STATE_CHAT_OPEN) {
+    // Close chat, go to idle
+    setUiState(UILayoutState.UI_STATE_IDLE);
+    setSpotlightState(SpotlightState.BALANCED);
+    wasChatSpotlightRef.current = false;
+  }
+}, [uiState]);
+
+// UPDATED: Open dashboard with chat spotlight preservation
+const openDashboard = useCallback(() => {
+  if (uiState === UILayoutState.UI_STATE_CHAT_OPEN) {
+    // Check if we were in chat spotlight before opening dashboard
+    const wasInChatSpotlight = spotlightState === SpotlightState.CHAT_SPOTLIGHT;
+    wasChatSpotlightRef.current = wasInChatSpotlight;
+  }
+  setUiState(UILayoutState.UI_STATE_BOTH_OPEN);
+  // Only default to balanced if we weren't preserving chat spotlight
+  if (!wasChatSpotlightRef.current) {
+    setSpotlightState(SpotlightState.BALANCED);
+  }
+}, [uiState, spotlightState]);
+
+// UPDATED: Toggle chat spotlight works in both CHAT_OPEN and BOTH_OPEN
 const toggleChatSpotlight = useCallback(() => {
-  if (uiState !== UILayoutState.UI_STATE_BOTH_OPEN) return;
-  setSpotlightState(prev => 
-    prev === SpotlightState.CHAT_SPOTLIGHT 
-      ? SpotlightState.BALANCED 
-      : SpotlightState.CHAT_SPOTLIGHT
-  );
+  if (uiState === UILayoutState.UI_STATE_BOTH_OPEN) {
+    // Toggle between balanced and chatSpotlight
+    setSpotlightState(prev => 
+      prev === SpotlightState.CHAT_SPOTLIGHT 
+        ? SpotlightState.BALANCED 
+        : SpotlightState.CHAT_SPOTLIGHT
+    );
+  } else if (uiState === UILayoutState.UI_STATE_CHAT_OPEN) {
+    // In chat-only mode, toggle expands/contracts the chat wing
+    setSpotlightState(prev => 
+      prev === SpotlightState.CHAT_SPOTLIGHT 
+        ? SpotlightState.BALANCED 
+        : SpotlightState.CHAT_SPOTLIGHT
+    );
+  }
 }, [uiState]);
 
 const toggleDashboardSpotlight = useCallback(() => {
-  if (uiState !== UILayoutState.UI_STATE_BOTH_OPEN) return;
+  // Allow spotlight toggle in both dashboard-open states (solo and both-open)
+  if (uiState !== UILayoutState.UI_STATE_BOTH_OPEN && uiState !== UILayoutState.UI_STATE_DASHBOARD_OPEN) return;
   setSpotlightState(prev => 
     prev === SpotlightState.DASHBOARD_SPOTLIGHT 
       ? SpotlightState.BALANCED 
@@ -251,10 +331,12 @@ const restoreBalanced = useCallback(() => {
   setSpotlightState(SpotlightState.BALANCED);
 }, []);
 
-// New: Reset spotlight when leaving BOTH_OPEN
+// UPDATED: Only reset spotlight when entering IDLE, not when transitioning
+// between chat-open and both-open
 useEffect(() => {
-  if (uiState !== UILayoutState.UI_STATE_BOTH_OPEN) {
+  if (uiState === UILayoutState.UI_STATE_IDLE) {
     setSpotlightState(SpotlightState.BALANCED);
+    wasChatSpotlightRef.current = false;
   }
 }, [uiState]);
 ```
@@ -297,8 +379,54 @@ interface ChatWingProps {
   // ... existing props ...
   spotlightState?: SpotlightState;
   onToggleSpotlight?: () => void;
+  isDashboardOpen?: boolean;  // NEW: Distinguishes single-wing vs both-wing context
+  onDashboardClose?: () => void;  // NEW: Called when dashboard toggle closes dashboard
 }
 ```
+
+### Dashboard Icon Toggle Behavior
+
+The Dashboard icon in the ChatWing header now toggles the DashboardWing open/close state:
+
+```typescript
+// Dashboard icon click handler in ChatWing
+const handleDashboardClick = () => {
+  if (isDashboardOpen && onDashboardClose) {
+    // Dashboard is open, close it and return to chat-only view
+    onDashboardClose();
+  } else {
+    // Dashboard is closed, open it
+    onDashboardClick();
+  }
+};
+```
+
+**Visual State Feedback:**
+- When dashboard is closed: Icon at 60% opacity, neutral color
+- When dashboard is open: Icon at 90% opacity, highlighted background
+- Hover effects apply in both states for discoverability
+
+### Close Button Conditional Behavior
+
+The ChatWing close button now behaves differently based on context:
+
+```typescript
+// In page.tsx - conditional close handler
+<LazyChatWing
+  isOpen={isChatOpen || isBothOpen}
+  onClose={isBothOpen ? closeChat : closeAll}  // NEW: Selective close
+  onDashboardClick={openDashboard}
+  onDashboardClose={closeChat}  // NEW: Dashboard close callback
+  ...
+/>
+```
+
+**Behavior Matrix:**
+
+| Context | Close Button Action | Result |
+|---------|---------------------|--------|
+| Only ChatWing open | closeAll() | Return to idle |
+| Both wings open | closeChat() | Dashboard remains, chat closes |
 
 ### DashboardWing Props Extension
 
@@ -312,6 +440,7 @@ interface DashboardWingProps {
 
 ## Sequence Diagram
 
+### Primary Flow: Idle → Chat → Both Open
 ```
 User clicks ChatActivationText
         │
@@ -319,6 +448,7 @@ User clicks ChatActivationText
 ┌─────────────────┐
 │   openChat()    │
 │ UI_STATE_CHAT_OPEN
+│ IrisOrb visible
 └─────────────────┘
         │
         ▼
@@ -329,6 +459,7 @@ User clicks Dashboard icon in ChatWing
 │ openDashboard() │
 │ UI_STATE_BOTH_OPEN
 │ spotlightState=BALANCED (default)
+│ Preserves chat spotlight if was in that state
 └─────────────────┘
         │
         ▼
@@ -353,6 +484,187 @@ User clicks Restore on ChatWing
 │ spotlightState=BALANCED
 └─────────────────┘
 ```
+
+### Single-Wing Close Transitions (NEW)
+```
+UI_STATE_BOTH_OPEN
+        │
+        │ User clicks Exit on ChatWing
+        ▼
+┌──────────────────────────────────┐
+│ closeChat()                       │
+│ - Transitions to UI_STATE_DASHBOARD_OPEN
+│ - DashboardWing remains visible   │
+│ - Sets dashboardSpotlight         │
+│ - Preserves content state         │
+└──────────────────────────────────┘
+        │
+        ▼
+UI_STATE_DASHBOARD_OPEN (solo view)
+        │
+        │ User clicks Exit on DashboardWing
+        ▼
+┌──────────────────────────────────┐
+│ closeDashboard()                  │
+│ - Transitions to UI_STATE_IDLE    │
+│ - Both wings closed               │
+│ - IrisOrb centered                │
+└──────────────────────────────────┘
+        │
+        ▼
+UI_STATE_IDLE
+
+Alternative: Reverse Direction
+
+UI_STATE_BOTH_OPEN
+        │
+        │ User clicks Exit on DashboardWing
+        ▼
+┌──────────────────────────────────┐
+│ closeDashboard()                  │
+│ - Transitions to UI_STATE_CHAT_OPEN
+│ - ChatWing remains visible        │
+│ - Restores chatSpotlight if was active
+│ - Preserves content state         │
+└──────────────────────────────────┘
+        │
+        ▼
+UI_STATE_CHAT_OPEN (solo view)
+        │
+        │ User clicks Exit on ChatWing
+        ▼
+┌──────────────────────────────────┐
+│ closeChat() / closeAll()          │
+│ - Transitions to UI_STATE_IDLE    │
+│ - Both wings closed               │
+│ - IrisOrb centered                │
+└──────────────────────────────────┘
+        │
+        ▼
+UI_STATE_IDLE
+```
+
+### IrisOrb Dual-Close Behavior
+```
+UI_STATE_BOTH_OPEN
+        │
+        │ User clicks IrisOrb (center)
+        ▼
+┌──────────────────────────────────┐
+│ handleSingleClick()               │
+│ - Calls closeAll()                │
+│ - Both wings close simultaneously │
+│ - Synchronized animation          │
+│ - Returns to UI_STATE_IDLE        │
+└──────────────────────────────────┘
+        │
+        ▼
+UI_STATE_IDLE (IrisOrb centered)
+```
+
+### Legacy: Bidirectional Dashboard Toggle
+```
+UI_STATE_CHAT_OPEN (chatSpotlight)
+        │
+        │ User clicks Dashboard icon
+        ▼
+┌──────────────────────────────────┐
+│ openDashboard()                   │
+│ - Transitions to UI_STATE_BOTH_OPEN
+│ - Preserves chatSpotlight state   │
+│ - Dashboard opens at balanced     │
+│ - IrisOrb remains visible         │
+└──────────────────────────────────┘
+        │
+        │ User clicks Dashboard icon again
+        ▼
+┌──────────────────────────────────┐
+│ onDashboardClose()                │
+│ - Calls closeChat()               │
+│ - Returns to UI_STATE_DASHBOARD_OPEN
+│ - Preserves dashboard visibility  │
+└──────────────────────────────────┘
+        │
+        ▼
+UI_STATE_DASHBOARD_OPEN (solo view)
+```
+
+### Dashboard Toggle Flow
+```
+User in UI_STATE_BOTH_OPEN
+        │
+        │ User clicks Dashboard icon in ChatWing header
+        ▼
+┌──────────────────────────────────┐
+│ Dashboard icon toggles state:     │
+│ IF dashboard is open:             │
+│   - onDashboardClose() → closeChat()
+│   - Returns to UI_STATE_CHAT_OPEN │
+│ IF dashboard is closed:           │
+│   - onDashboardClick() → openDashboard()
+│   - Opens to UI_STATE_BOTH_OPEN   │
+└──────────────────────────────────┘
+```
+
+### Close Button Behavior
+```
+User in UI_STATE_BOTH_OPEN
+        │
+        │ User clicks Close on ChatWing
+        ▼
+┌──────────────────────────────────┐
+│ onClose behavior:                 │
+│ IF isBothOpen:                    │
+│   - closeChat() only              │
+│   - Dashboard remains open        │
+│   - Returns to dashboard-only view│
+│ IF only ChatWing open:            │
+│   - closeAll()                    │
+│   - Returns to idle               │
+└──────────────────────────────────┘
+```
+
+## IrisOrb Visibility
+
+### Design Principle
+The IrisOrb (central aperture button) remains visible whenever the ChatWing is open, providing consistent visual anchor and quick access to the main interaction point.
+
+### Visibility Rules
+
+| UI State | IrisOrb Visible | Position | Scale | Opacity | zIndex |
+|----------|----------------|----------|-------|---------|--------|
+| UI_STATE_IDLE | Yes | Center | 1.0 | 1.0 | 0 |
+| UI_STATE_CHAT_OPEN | Yes | Center | 0.85 | 0.6 | 5 |
+| UI_STATE_BOTH_OPEN | Yes | Center | 0.85 | 0.6 | 5 |
+
+### Implementation
+
+```typescript
+// In page.tsx - IrisOrb container visibility
+{(state.level !== 3 || isChatOpen || isBothOpen) && (
+  <motion.div 
+    className="absolute inset-0 flex items-center justify-center"
+    animate={{
+      scale: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.85 : 1,
+      filter: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 'blur(2px)' : 'blur(0px)',
+      opacity: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.6 : 1,
+    }}
+    transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+    style={{ 
+      zIndex: (isChatOpen || isBothOpen) ? 5 : 0,
+      pointerEvents: (isChatOpen || isBothOpen) ? 'none' : 'auto'
+    }}
+  >
+    <IrisOrb ... />
+  </motion.div>
+)}
+```
+
+### Rationale
+- **Visual continuity**: Users can always see the central orb when chat is active
+- **Spatial reference**: Provides anchor point for the IRIS "personality"
+- **Non-blocking**: `pointerEvents: 'none'` when wings are open prevents interference
+- **Subtle presence**: Reduced scale and opacity keeps it from competing with wing content
 
 ## Key Design Decisions
 
