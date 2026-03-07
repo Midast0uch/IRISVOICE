@@ -280,9 +280,10 @@ class PorcupineWakeWordDetector:
     
     def cleanup(self):
         """Clean up Porcupine resources."""
-        if self.porcupine:
+        porcupine = getattr(self, "porcupine", None)
+        if porcupine:
             logger.info("[PorcupineDetector] Cleaning up Porcupine resources...")
-            self.porcupine.delete()
+            porcupine.delete()
             self.porcupine = None
     
     def __del__(self):
