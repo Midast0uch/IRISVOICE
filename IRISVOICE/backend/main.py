@@ -116,34 +116,6 @@ logger.info("Finished backend.main imports.")
 # Lifespan Management (Startup & Shutdown)
 # ============================================================================
 
-async def initialize_models_in_background():
-    """Load all required models in the background."""
-    state_manager = get_state_manager()
-    await state_manager.update_app_state(IRISState.LOADING_MODELS)
-    
-    logger.info("\n[BACKGROUND] Starting model initialization...")
-    try:
-        audio_engine = get_audio_engine()
-        await audio_engine.lfm_audio_manager.initialize()
-        
-        # You can add other model initializations here
-        # For example, initializing the personality engine
-        # get_personality_engine().initialize()
-        
-        logger.info("[BACKGROUND] All models initialized successfully.")
-        await state_manager.update_app_state(IRISState.READY)
-        
-    except asyncio.CancelledError:
-        logger.warning("[BACKGROUND] Model loading was cancelled.")
-        await state_manager.update_app_state(IRISState.ERROR)
-        
-    except Exception as e:
-        logger.error(f"\n[BACKGROUND_ERROR] Error during model initialization: {e}")
-        import traceback
-        traceback.print_exc()
-        await state_manager.update_app_state(IRISState.ERROR)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown events."""
