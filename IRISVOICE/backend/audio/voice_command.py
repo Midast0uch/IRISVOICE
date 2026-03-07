@@ -12,6 +12,7 @@ from enum import Enum
 
 from .vad import VADProcessor
 from .engine import AudioEngine
+from .pipeline import AudioPipeline
 
 
 class VoiceState(str, Enum):
@@ -58,9 +59,12 @@ class VoiceCommandHandler:
         # Callbacks
         self._on_state_change: Optional[Callable[[VoiceState, str], None]] = None
         self._on_command_result: Optional[Callable[[Dict[str, Any]], None]] = None
-        
-        # Preload the native audio model to avoid delays
-        self.preload_model()
+
+        # LAZY LOADING: Do NOT preload the audio model at startup.
+        # The model (LFM2.5-Audio-1.5B) is large and takes minutes to load.
+        # It will be loaded on first use inside _process_native_audio() only
+        # when the user explicitly enables voice features from the frontend.
+        # self.preload_model()  # DISABLED - eager loading blocked startup
         
     def preload_model(self):
         """Preload the native audio model to avoid delays during first use"""
