@@ -316,6 +316,13 @@ class ModelManager:
                 waveform = waveform.cpu().numpy()
                 if waveform.ndim == 1: waveform = waveform[np.newaxis, :]
 
+                # Resample from LFM2-Audio output rate (24kHz) to AudioPipeline rate (16kHz)
+                waveform_tensor = torch.from_numpy(waveform).float()
+                if waveform_tensor.dim() == 1:
+                    waveform_tensor = waveform_tensor.unsqueeze(0)
+                waveform_resampled = torchaudio.functional.resample(waveform_tensor, orig_freq=24000, new_freq=16000)
+                waveform = waveform_resampled.cpu().numpy()
+
                 debug_text = ""
                 if text_tokens:
                     for token in text_tokens:
