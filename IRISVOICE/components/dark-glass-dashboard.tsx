@@ -265,8 +265,8 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
             className="text-[13px] tabular-nums bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[120px]"
             style={errorMessage ? { borderColor: '#f87171' } : {}}
           >
-            {options?.map((opt: string) => (
-              <option key={opt} value={opt} className="bg-zinc-900">{opt}</option>
+            {options?.map((opt: string, idx: number) => (
+              <option key={`${opt}-${idx}`} value={opt} className="bg-zinc-900">{opt}</option>
             ))}
           </select>
         </div>
@@ -493,10 +493,11 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
         console.log('[DarkGlassDashboard] Received initial state:', state)
         
         // Extract field values from the state
-        // The state contains fieldValues per subnode/category
-        if (state.fieldValues) {
+        // BUG-02 FIX: Backend sends field_values (snake_case), not fieldValues (camelCase)
+        const fv = state.field_values || state.fieldValues
+        if (fv) {
           // Update field values from backend state
-          Object.entries(state.fieldValues).forEach(([subnodeId, values]) => {
+          Object.entries(fv).forEach(([subnodeId, values]) => {
             if (values && typeof values === 'object') {
               Object.entries(values).forEach(([fieldId, value]) => {
                 // Use updateField if available, otherwise use context

@@ -86,8 +86,8 @@ const DropdownFieldComponent: React.FC<DropdownFieldProps> = ({
           ) : normalizedOptions.length === 0 ? (
             <option value="">No options available</option>
           ) : (
-            normalizedOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
+            normalizedOptions.map((opt, i) => (
+              <option key={`${opt.value}-${i}`} value={opt.value}>
                 {opt.label}
               </option>
             ))
