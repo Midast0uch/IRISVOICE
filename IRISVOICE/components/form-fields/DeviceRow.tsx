@@ -23,7 +23,7 @@ export function DeviceRow({ label, options, value, onChange, glowColor }: Device
           const isSelected = option === value
           return (
             <motion.button
-              key={option}
+              key={`${option}-${idx}`}
               onClick={(e) => {
                 e.stopPropagation()
                 onChange(option)
