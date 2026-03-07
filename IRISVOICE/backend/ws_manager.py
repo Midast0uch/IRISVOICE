@@ -227,6 +227,28 @@ class WebSocketManager:
         """Get list of all connected client IDs."""
         return list(self.active_connections.keys())
 
+    def get_active_session_ids(self) -> List[str]:
+        """Return list of session IDs with at least one connected client."""
+        # Use client_to_session to find all sessions that have active clients
+        session_ids = []
+        seen = set()
+        for client_id, session_id in self._session_manager.client_to_session.items():
+            if session_id not in seen and client_id in self.active_connections:
+                seen.add(session_id)
+                session_ids.append(session_id)
+        return session_ids
+
+    def get_clients_for_session(self, session_id: str) -> List[str]:
+        """Return list of client_ids connected in a given session."""
+        session = self._session_manager.get_session(session_id)
+        if not session:
+            return []
+        # Filter to only clients that are actually in active_connections
+        return [
+            client_id for client_id in session.connected_clients
+            if client_id in self.active_connections
+        ]
+
 
 # Global instance
 _ws_manager: Optional[WebSocketManager] = None

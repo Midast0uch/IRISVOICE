@@ -175,6 +175,54 @@ async def lifespan(app: FastAPI):
         iris_gateway.set_voice_handler(voice_handler)
         logger.info("  - Voice handler wired to IRIS Gateway.")
 
+        # Wire Porcupine wake word → auto-trigger voice command
+        async def on_wake_word(wake_word_name: str):
+            """
+            Called from AudioEngine when Porcupine detects the wake word.
+            Simulates a voice_command_start on the most-recently-active session.
+            """
+            try:
+                ws_manager = get_websocket_manager()
+                active_sessions = ws_manager.get_active_session_ids()
+                if not active_sessions:
+                    logger.warning("[WakeWord] Wake word detected but no active sessions")
+                    return
+                session_id = active_sessions[0]
+                client_ids = ws_manager.get_clients_for_session(session_id)
+                client_id = client_ids[0] if client_ids else None
+                if client_id:
+                    logger.info(f"[WakeWord] '{wake_word_name}' → triggering voice for session {session_id}")
+                    await iris_gateway._handle_voice(
+                        session_id, client_id,
+                        {"type": "voice_command_start"},
+                        auto_stop=True
+                    )
+            except Exception as e:
+                logger.error(f"[WakeWord] Error routing wake word: {e}")
+
+        # Register wake word callback on AudioEngine
+        audio_engine.set_wake_word_callback(
+            lambda word: asyncio.run_coroutine_threadsafe(
+                on_wake_word(word),
+                asyncio.get_event_loop()
+            )
+        )
+
+        # Initialize Porcupine from user's WakeConfig setting (NOT hardcoded)
+        # get_wake_config().get_wake_phrase() returns user's chosen phrase from Voice > Wake Word UI
+        audio_engine.initialize_porcupine()   # reads phrase + sensitivity from WakeConfig
+
+        # Register live-update callback: when user changes wake word in settings, reinit Porcupine instantly
+        from backend.agent.wake_config import get_wake_config
+        get_wake_config().register_change_callback(audio_engine.reinitialize_porcupine)
+        logger.info("  - Porcupine live wake-word updates registered")
+
+        # Start the AudioEngine so Porcupine frame detection runs
+        if not audio_engine.start():
+            logger.warning("  - AudioEngine failed to start (mic may be unavailable)")
+        else:
+            logger.info("  - AudioEngine started — Porcupine wake word detection active")
+
         logger.info("  - Initializing agent kernel...")
         try:
             from backend.agent import get_agent_kernel

@@ -42,12 +42,22 @@ class WakeConfig:
         
         # Callback for when config changes
         self._on_change: Optional[callable] = None
-        
+
+        # Multi-callback list for register_change_callback()
+        self._change_callbacks = []
+
         WakeConfig._initialized = True
     
     def set_on_change_callback(self, callback: callable):
         """Set callback for config changes"""
         self._on_change = callback
+
+    def register_change_callback(self, callback) -> None:
+        """Register a callback to fire when wake phrase or sensitivity changes."""
+        if not hasattr(self, '_change_callbacks'):
+            self._change_callbacks = []
+        if callback not in self._change_callbacks:
+            self._change_callbacks.append(callback)
     
     def update_config(self, **kwargs) -> None:
         """Update wake configuration"""
@@ -66,12 +76,18 @@ class WakeConfig:
         
         if changed:
             logger.info(f"[WakeConfig] Updated: {kwargs}")
-            # Notify callback
+            # Notify legacy single callback
             if self._on_change:
                 try:
                     self._on_change(self.config)
                 except Exception as e:
                     logger.error(f"[WakeConfig] Callback error: {e}")
+            # Fire all registered change callbacks
+            for cb in getattr(self, '_change_callbacks', []):
+                try:
+                    cb()
+                except Exception as e:
+                    logger.warning(f"[WakeConfig] Change callback error: {e}")
     
     def get_config(self) -> Dict[str, Any]:
         """Get current wake configuration"""
