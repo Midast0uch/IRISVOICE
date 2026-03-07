@@ -58,6 +58,7 @@ class VoiceCommandHandler:
         
         # Session tracking
         self._active_session_id: str = "default"   # set by iris_gateway before start_recording()
+        self._auto_stop_mode: bool = False   # True when triggered by wake word (not double-click)
 
         # Callbacks
         self._on_state_change: Optional[Callable[[VoiceState, str], None]] = None
@@ -146,21 +147,22 @@ class VoiceCommandHandler:
         else:
             print("[VoiceCommand] Speech ended notification received but not recording")
                     
-    def start_recording(self) -> bool:
+    def start_recording(self, auto_stop: bool = False) -> bool:
         """Start voice recording using unified audio stream"""
+        self._auto_stop_mode = auto_stop
         if self.is_recording:
             return True
-            
+
         try:
             print("[VoiceCommand] Starting recording...")
-            
+
             # Play activation beep using AudioEngine's pipeline
             self._play_activation_beep()
-            
+
             # Initialize VAD if not already done (optional for native audio)
             if not self.vad_processor:
                 self.vad_processor = VADProcessor(enabled=True)
-            
+
             # Reset state
             self.is_recording = True
             self.audio_buffer = []
@@ -226,9 +228,14 @@ class VoiceCommandHandler:
                     # Speech was happening, now silence
                     self.silence_counter += 1
                     
-                    # If sustained silence, continue recording (user controls stop)
+                    # If sustained silence, auto-stop in wake word mode; else wait for user
                     if self.silence_counter >= self.silence_threshold:
-                        print(f"[VoiceCommand] Speech paused (silence detected: {self.silence_counter} frames), continuing... (waiting for user to stop)")
+                        if self._auto_stop_mode:
+                            # Wake word mode: auto-stop on sustained silence
+                            print("[VoiceCommand] Auto-stopping on silence (wake word mode)")
+                            self.stop_recording()
+                        else:
+                            print(f"[VoiceCommand] Speech paused (silence detected: {self.silence_counter} frames), continuing... (waiting for user to stop)")
                 else:
                     # Silence before speech started
                     self.silence_counter += 1
