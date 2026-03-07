@@ -3,6 +3,7 @@ IRIS Gateway - WebSocket Message Router
 Routes incoming WebSocket messages to appropriate handlers based on message type.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -14,9 +15,7 @@ from .ws_manager import WebSocketManager, get_websocket_manager
 from .state_manager import StateManager, get_state_manager
 from .core_models import Category, get_sections_for_category
 from .agent import get_agent_kernel, get_lfm_audio_manager
-from .voice.voice_pipeline import get_voice_pipeline, VoiceState
 from .voice.wake_word_discovery import WakeWordDiscovery
-from .audio.pipeline import AudioPipeline
 from .tools.cleanup_analyzer import CleanupAnalyzer
 from .vision.vision_service import VisionService, get_vision_service
 
@@ -43,7 +42,6 @@ class IRISGateway:
         """
         self._ws_manager = ws_manager or get_websocket_manager()
         self._state_manager = state_manager or get_state_manager()
-        self._voice_pipeline = get_voice_pipeline()
         self._logger = logging.getLogger(__name__)
         
         # Initialize wake word discovery
@@ -66,6 +64,9 @@ class IRISGateway:
         self._model_cache: Dict[str, tuple[List[str], datetime]] = {}
         self._model_cache_ttl = timedelta(minutes=5)
         self._logger.info("[IRISGateway] Model cache initialized (5 min TTL)")
+
+        self._voice_handler = None          # set via set_voice_handler() after construction
+        self._active_voice_client: dict = {}  # session_id -> client_id for wake word routing
     
     async def handle_message(self, client_id: str, message: dict) -> None:
         """
@@ -482,155 +483,179 @@ class IRISGateway:
             else:
                 await self._send_error(client_id, "Failed to confirm card")
     
-    async def _handle_voice(self, session_id: str, client_id: str, message: dict) -> None:
+    def set_voice_handler(self, voice_handler) -> None:
+        """Wire the VoiceCommandHandler so voice triggers can delegate to it."""
+        self._voice_handler = voice_handler
+        voice_handler.set_command_result_callback(self._on_voice_result)
+
+    async def _handle_voice(self, session_id: str, client_id: str, message: dict, auto_stop: bool = False) -> None:
         """
-        Handle voice messages: voice_command_start, voice_command_end.
-        GAP-02 FIX: Also supports voice_command (legacy from main.py).
-        
-        Routes voice commands to VoicePipeline and broadcasts state updates to all clients.
-        Sends audio level updates during listening state.
-        
-        Args:
-            session_id: Session ID
-            client_id: Client ID
-            message: Message dictionary
+        Handle voice_command_start / voice_command_end from double-click or wake word.
+        Delegates audio capture + LFM2-Audio processing to VoiceCommandHandler/ModelManager.
+        All 4 pillars run after transcription is received via _on_voice_result callback.
         """
         msg_type = message.get("type")
-        
-        # GAP-02: Handle legacy voice_command type by treating it as voice_command_start
         if msg_type == "voice_command":
             msg_type = "voice_command_start"
-        
+
         try:
             if msg_type == "voice_command_start":
-                self._logger.info(f"[Session: {session_id}] Starting voice command")
-                
-                # Start listening through VoicePipeline
-                success = await self._voice_pipeline.start_listening(session_id)
-                
-                if success:
-                    # BUG-03 FIX: Register async callbacks properly
-                    # Before: sync lambdas wrapping async methods - coroutine never awaited
-                    # After: async functions that properly await the async methods
-                    async def state_change_callback(state: VoiceState) -> None:
-                        await self._on_voice_state_change(session_id, state)
-                    
-                    async def audio_level_callback(level: float) -> None:
-                        await self._on_audio_level_update(session_id, level)
-                    
-                    self._voice_pipeline.register_state_callback(
-                        session_id,
-                        state_change_callback
-                    )
-                    self._voice_pipeline.register_audio_level_callback(
-                        session_id,
-                        audio_level_callback
-                    )
-                    
-                    # Send listening state to all clients
-                    await self._ws_manager.broadcast_to_session(
-                        session_id,
-                        {
-                            "type": "listening_state",
-                            "payload": {
-                                "state": "listening"
-                            }
-                        }
-                    )
-                else:
-                    # Send error state
-                    await self._ws_manager.broadcast_to_session(
-                        session_id,
-                        {
-                            "type": "listening_state",
-                            "payload": {
-                                "state": "error"
-                            }
-                        }
-                    )
-                    await self._send_error(client_id, "Failed to start voice command")
-            
-            elif msg_type == "voice_command_end":
-                self._logger.info(f"[Session: {session_id}] Ending voice command")
-                
-                # Stop listening through VoicePipeline
-                success = await self._voice_pipeline.stop_listening(session_id)
-                
-                if success:
-                    # Send processing state to all clients
-                    await self._ws_manager.broadcast_to_session(
-                        session_id,
-                        {
-                            "type": "listening_state",
-                            "payload": {
-                                "state": "processing_conversation"
-                            }
-                        }
-                    )
-                else:
-                    # Send error state
-                    await self._ws_manager.broadcast_to_session(
-                        session_id,
-                        {
-                            "type": "listening_state",
-                            "payload": {
-                                "state": "error"
-                            }
-                        }
-                    )
-                    await self._send_error(client_id, "Failed to stop voice command")
-        
-        except Exception as e:
-            self._logger.error(f"Error handling voice command: {e}", exc_info=True)
-            await self._ws_manager.broadcast_to_session(
-                session_id,
-                {
+                self._logger.info(f"[Session: {session_id}] Voice command start")
+
+                # Track which client triggered this so wake-word callback knows where to respond
+                self._active_voice_client[session_id] = client_id
+
+                # Broadcast LISTENING immediately so IrisOrb animates
+                await self._ws_manager.broadcast_to_session(session_id, {
                     "type": "listening_state",
-                    "payload": {
-                        "state": "error"
-                    }
-                }
+                    "payload": {"state": "listening"}
+                })
+
+                # Delegate recording to the shared VoiceCommandHandler
+                if self._voice_handler:
+                    self._voice_handler.set_active_session(session_id)
+                    success = self._voice_handler.start_recording(auto_stop=auto_stop)
+                    if not success:
+                        self._logger.warning(f"[Session: {session_id}] VoiceCommandHandler start_recording() failed")
+                else:
+                    self._logger.error("[Voice] VoiceCommandHandler not wired — call set_voice_handler()")
+                    await self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "listening_state", "payload": {"state": "error"}
+                    })
+
+            elif msg_type == "voice_command_end":
+                self._logger.info(f"[Session: {session_id}] Voice command end")
+
+                # Broadcast processing state immediately
+                await self._ws_manager.broadcast_to_session(session_id, {
+                    "type": "listening_state",
+                    "payload": {"state": "processing_conversation"}
+                })
+
+                # Delegate stop+process to VoiceCommandHandler
+                # _on_voice_result callback fires when LFM2-Audio finishes
+                if self._voice_handler:
+                    self._voice_handler.stop_recording()
+
+        except Exception as e:
+            self._logger.error(f"[Voice] Error in _handle_voice: {e}", exc_info=True)
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "listening_state", "payload": {"state": "error"}
+            })
+
+    def _on_voice_result(self, result: dict) -> None:
+        """
+        Callback fired by VoiceCommandHandler when LFM2-Audio finishes processing.
+        Extracts transcript + audio context and routes through 4-pillar pipeline.
+        Called from a background thread — uses asyncio.run_coroutine_threadsafe.
+        """
+        import asyncio
+        try:
+            transcript = result.get("transcript", "").strip()
+            audio_context = result.get("audio_context", "").strip()
+            session_id = result.get("session_id", "default")
+            client_id = self._active_voice_client.get(session_id)
+
+            if not transcript or not client_id:
+                self._logger.warning(f"[Voice] Empty transcript or unknown client for session {session_id}")
+                loop = asyncio.get_event_loop()
+                asyncio.run_coroutine_threadsafe(
+                    self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "listening_state", "payload": {"state": "idle"}
+                    }),
+                    loop
+                )
+                return
+
+            loop = asyncio.get_event_loop()
+            asyncio.run_coroutine_threadsafe(
+                self._process_voice_transcription(session_id, client_id, transcript, audio_context),
+                loop
             )
-            await self._send_error(client_id, f"Voice command error: {str(e)}")
-    
-    async def _on_voice_state_change(self, session_id: str, state: VoiceState) -> None:
+        except Exception as e:
+            self._logger.error(f"[Voice] _on_voice_result error: {e}", exc_info=True)
+
+    async def _process_voice_transcription(
+        self, session_id: str, client_id: str, transcript: str, audio_context: str
+    ) -> None:
         """
-        Callback for voice state changes
-        
-        Args:
-            session_id: Session ID
-            state: New voice state
+        Full 4-pillar pipeline after LFM2-Audio transcription:
+          Pillar 1 — ChatView: show user bubble (transcript) + assistant bubble (response)
+          Pillar 2 — Agent: lfm2-8b reasons, lfm2.5 executes (model-agnostic)
+          Pillar 3 — Tools: tool_bridge wired in process_text_message
+          Pillar 4 — Memory: injected via _get_memory_context in plan_task
         """
-        # Broadcast state change to all clients in session
-        await self._ws_manager.broadcast_to_session(
-            session_id,
-            {
+        import asyncio
+        loop = asyncio.get_event_loop()
+        try:
+            # Pillar 1A: Send transcript as user bubble in ChatView
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "text_response",
+                "payload": {"text": transcript, "sender": "user"}
+            })
+
+            # Pillar 2+3+4: Route through AgentKernel
+            # Build enriched message: transcript + what LFM2-Audio understood about the audio
+            enriched = transcript
+            if audio_context:
+                enriched = f"{transcript}\n\n[Audio context: {audio_context}]"
+
+            from .agent.agent_kernel import get_agent_kernel
+            agent_kernel = get_agent_kernel(session_id)
+
+            # Ensure tool bridge is wired (Pillar 3)
+            if agent_kernel._tool_bridge is None:
+                from .agent.tool_bridge import get_agent_tool_bridge
+                agent_kernel._tool_bridge = get_agent_tool_bridge()
+
+            # Run agent in executor (sync method)
+            response = await loop.run_in_executor(
+                None,
+                agent_kernel.process_text_message,
+                enriched,
+                session_id
+            )
+
+            # Pillar 1B: Speaking state + send response to ChatView
+            await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "listening_state",
-                "payload": {
-                    "state": state.value
-                }
-            }
-        )
-    
-    async def _on_audio_level_update(self, session_id: str, level: float) -> None:
-        """
-        Callback for audio level updates
-        
-        Args:
-            session_id: Session ID
-            level: Audio level (0.0 to 1.0)
-        """
-        # Broadcast audio level to all clients in session
-        await self._ws_manager.broadcast_to_session(
-            session_id,
-            {
-                "type": "audio_level",
-                "payload": {
-                    "level": level
-                }
-            }
-        )
-    
+                "payload": {"state": "speaking"}
+            })
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "text_response",
+                "payload": {"text": response, "sender": "assistant"}
+            })
+
+            # Pillar 1C: TTS playback
+            await loop.run_in_executor(None, self._speak_response, response)
+
+            # Done
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "listening_state",
+                "payload": {"state": "idle"}
+            })
+
+        except Exception as e:
+            self._logger.error(f"[Voice] Pipeline error for session {session_id}: {e}", exc_info=True)
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "listening_state", "payload": {"state": "error"}
+            })
+
+    def _speak_response(self, text: str) -> None:
+        """TTS + audio playback via TTSManager. Sync — call via run_in_executor."""
+        try:
+            from .agent.tts import get_tts_manager
+            from .audio.engine import get_audio_engine
+            tts = get_tts_manager()
+            audio_np = tts.synthesize(text)
+            if audio_np is not None and len(audio_np) > 0:
+                engine = get_audio_engine()
+                if engine.pipeline:
+                    engine.pipeline.play_audio(audio_np)
+        except Exception as e:
+            self._logger.error(f"[Voice] TTS error: {e}")
+
+
     async def _handle_chat(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle chat messages: text_message, clear_chat.
@@ -750,36 +775,142 @@ class IRISGateway:
     
     async def _handle_get_available_models(self, session_id: str, client_id: str, message: dict) -> None:
         """
-        Handle get_available_models message - return list of available models from all inference sources.
-        
+        Handle get_available_models message - dynamically query models from the active inference source.
+
+        Inference modes:
+        - "Local Models"  → query Ollama at configured endpoint (default http://localhost:11434)
+        - "VPS Gateway"   → probe vps_url/v1/models or return VPS fallback list
+        - "OpenAI API"    → query openai.com/v1/models with api_key or return GPT fallback list
+
         Args:
             session_id: Session ID
             client_id: Client ID
             message: Message dictionary
         """
         try:
-            # Get AgentKernel for this session
-            agent_kernel = get_agent_kernel(session_id)
-            
-            # Get available models from ModelRouter
-            if agent_kernel._model_router:
-                available_models = agent_kernel._model_router.get_available_models()
-                
-                await self._ws_manager.send_to_client(client_id, {
-                    "type": "available_models",
-                    "payload": {
-                        "models": available_models
-                    }
-                })
-            else:
-                # No model router available - return empty list (model-agnostic)
-                await self._ws_manager.send_to_client(client_id, {
-                    "type": "available_models",
-                    "payload": {
-                        "models": []
-                    }
-                })
-                
+            # Get session-specific field values
+            session_state = await self._state_manager._get_session_state_manager(session_id)
+
+            inference_mode = "Local Models"  # sensible default
+            vps_url = ""
+            openai_api_key = ""
+            ollama_endpoint = "http://localhost:11434"
+
+            if session_state:
+                inference_mode = await session_state.get_field_value("inference_mode", "inference_mode", "Local Models") or "Local Models"
+                vps_url = await session_state.get_field_value("inference_mode", "vps_url", "") or ""
+                openai_api_key = await session_state.get_field_value("inference_mode", "openai_api_key", "") or ""
+                # Also check legacy "model" section for ollama_endpoint
+                try:
+                    ep = await session_state.get_field_value("model", "ollama_endpoint", "")
+                    if ep:
+                        ollama_endpoint = ep
+                except Exception:
+                    pass
+
+            self._logger.info(
+                f"[Session: {session_id}] Getting available models for mode: {inference_mode}"
+            )
+
+            available_models = []
+
+            if inference_mode == "Local Models":
+                # Query Ollama for locally installed models
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as http_client:
+                        r = await http_client.get(f"{ollama_endpoint.rstrip('/')}/api/tags")
+                        if r.status_code == 200:
+                            tags = r.json().get("models", [])
+                            available_models = [
+                                {"id": m["name"], "name": m["name"], "source": "local"}
+                                for m in tags
+                            ]
+                            self._logger.info(
+                                f"[Session: {session_id}] Found {len(available_models)} Ollama model(s)"
+                            )
+                        else:
+                            self._logger.warning(
+                                f"[Session: {session_id}] Ollama returned status {r.status_code}"
+                            )
+                except Exception as ollama_err:
+                    self._logger.warning(
+                        f"[Session: {session_id}] Ollama not reachable at {ollama_endpoint}: {ollama_err}"
+                    )
+                # Return empty list if Ollama is not running — frontend will show "No options available"
+                # which tells the user to start Ollama
+
+            elif inference_mode == "OpenAI API":
+                # Try to query OpenAI models list if we have a valid key
+                if openai_api_key and openai_api_key.startswith("sk-"):
+                    try:
+                        async with httpx.AsyncClient(timeout=5.0) as http_client:
+                            r = await http_client.get(
+                                "https://api.openai.com/v1/models",
+                                headers={"Authorization": f"Bearer {openai_api_key}"}
+                            )
+                            if r.status_code == 200:
+                                models_data = r.json().get("data", [])
+                                # Filter to GPT models only, sorted by ID
+                                gpt_models = sorted(
+                                    [m for m in models_data if "gpt" in m.get("id", "")],
+                                    key=lambda m: m["id"]
+                                )
+                                available_models = [
+                                    {"id": m["id"], "name": m["id"], "source": "openai"}
+                                    for m in gpt_models
+                                ]
+                                self._logger.info(
+                                    f"[Session: {session_id}] Found {len(available_models)} OpenAI model(s)"
+                                )
+                    except Exception as openai_err:
+                        self._logger.warning(
+                            f"[Session: {session_id}] OpenAI API query failed: {openai_err}"
+                        )
+
+                # Fallback list if no key or query failed
+                if not available_models:
+                    available_models = [
+                        {"id": "gpt-4o", "name": "GPT-4o", "source": "openai"},
+                        {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "source": "openai"},
+                        {"id": "gpt-4", "name": "GPT-4", "source": "openai"},
+                        {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "source": "openai"},
+                    ]
+
+            elif inference_mode == "VPS Gateway":
+                # Try to query the VPS endpoint for models
+                if vps_url:
+                    try:
+                        async with httpx.AsyncClient(timeout=3.0) as http_client:
+                            r = await http_client.get(f"{vps_url.rstrip('/')}/v1/models")
+                            if r.status_code == 200:
+                                models_data = r.json().get("data", [])
+                                available_models = [
+                                    {"id": m["id"], "name": m["id"], "source": "vps"}
+                                    for m in models_data
+                                ]
+                                self._logger.info(
+                                    f"[Session: {session_id}] Found {len(available_models)} VPS model(s)"
+                                )
+                    except Exception as vps_err:
+                        self._logger.warning(
+                            f"[Session: {session_id}] VPS endpoint query failed: {vps_err}"
+                        )
+
+                # Fallback list if no endpoint or query failed
+                if not available_models:
+                    available_models = [
+                        {"id": "lfm2-8b", "name": "LFM2 8B", "source": "vps"},
+                        {"id": "lfm2.5-1.2b-instruct", "name": "LFM2.5 1.2B Instruct", "source": "vps"},
+                    ]
+
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "available_models",
+                "payload": {
+                    "models": available_models,
+                    "inference_mode": inference_mode
+                }
+            })
+
         except Exception as e:
             self._logger.error(f"Error getting available models: {e}", exc_info=True)
             await self._ws_manager.send_to_client(client_id, {
@@ -1036,8 +1167,8 @@ class IRISGateway:
     
     async def _handle_get_wake_words(self, session_id: str, client_id: str) -> None:
         """
-        Handle get_wake_words message - return discovered wake word files.
-        
+        Handle get_wake_words message - return built-in pvporcupine keywords + discovered .ppn files.
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -1047,35 +1178,51 @@ class IRISGateway:
                 f"[Session: {session_id}] Processing get_wake_words request",
                 extra={"session_id": session_id, "client_id": client_id}
             )
-            
-            # Get discovered wake word files
+
+            # 1. Get built-in pvporcupine keywords
+            from .agent.wake_config import SUPPORTED_PHRASES
+            builtin_list = [
+                {
+                    "filename": phrase.replace(" ", "_"),
+                    "display_name": phrase.title(),
+                    "platform": "builtin",
+                    "version": "builtin",
+                    "is_builtin": True
+                }
+                for phrase in SUPPORTED_PHRASES
+            ]
+
+            # 2. Get discovered .ppn custom wake word files
             discovered_files = self._wake_word_discovery.get_discovered_files()
-            
-            # Convert to serializable format
-            wake_words_list = [
+            custom_list = [
                 {
                     "filename": wf.filename,
                     "display_name": wf.display_name,
                     "platform": wf.platform,
-                    "version": wf.version
+                    "version": wf.version,
+                    "is_builtin": False
                 }
                 for wf in discovered_files
             ]
-            
+
+            # 3. Combine: built-ins first, then custom files
+            wake_words_list = builtin_list + custom_list
+
             self._logger.info(
-                f"[Session: {session_id}] Returning {len(wake_words_list)} wake word file(s)",
+                f"[Session: {session_id}] Returning {len(wake_words_list)} wake word(s) "
+                f"({len(builtin_list)} built-in, {len(custom_list)} custom)",
                 extra={"session_id": session_id, "client_id": client_id, "count": len(wake_words_list)}
             )
-            
-            # Send response to client
+
+            # Send response to client — type "wake_words" matches the frontend hook's case "wake_words"
             await self._ws_manager.send_to_client(client_id, {
-                "type": "wake_words_list",
+                "type": "wake_words",
                 "payload": {
                     "wake_words": wake_words_list,
                     "count": len(wake_words_list)
                 }
             })
-            
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error handling get_wake_words: {e}",
@@ -1475,10 +1622,11 @@ class IRISGateway:
         try:
             self._logger.info(f"[Session: {session_id}] Cleaning up session resources")
             
-            # Clean up voice pipeline callbacks
-            if self._voice_pipeline:
-                self._voice_pipeline.cleanup_session(session_id)
-            
+            # Clean up audio level broadcast tasks
+            task = self._audio_level_tasks.pop(session_id, None)
+            if task:
+                task.cancel()
+
             self._logger.info(f"[Session: {session_id}] Session cleanup completed")
             
         except Exception as e:
