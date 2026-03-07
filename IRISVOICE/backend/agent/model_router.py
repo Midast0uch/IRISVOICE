@@ -325,10 +325,24 @@ class ModelRouter:
     def get_reasoning_model(self) -> Optional[ModelWrapper]:
         """Get the reasoning model (lfm2-8b)."""
         return self.get_model("reasoning")
-    
+
     def get_execution_model(self) -> Optional[ModelWrapper]:
         """Get the execution model (lfm2.5-1.2b-instruct)."""
         return self.get_model("tool_execution")
+
+    def get_reasoning_model_id(self) -> Optional[str]:
+        """Return the ID string of the current reasoning model."""
+        model = self.get_reasoning_model()
+        if model:
+            return getattr(model, "model_id", None)
+        return list(self.models.keys())[0] if self.models else None
+
+    def get_execution_model_id(self) -> Optional[str]:
+        """Return the ID string of the current execution model."""
+        model = self.get_execution_model()
+        if model:
+            return getattr(model, "model_id", None)
+        return list(self.models.keys())[-1] if self.models else None
     
     def get_available_models(self) -> List[Dict[str, Any]]:
         """

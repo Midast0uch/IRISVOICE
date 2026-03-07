@@ -427,7 +427,7 @@ class AgentKernel:
         
         # Execute plan using execution model with timeout
         try:
-            execution_results = self.execute_plan(plan)
+            execution_results = asyncio.run(self.execute_plan(plan))
             # Accumulate results in TaskContext (fixes Bug 4)
             task.step_results = execution_results
         except TimeoutError as e:
@@ -583,17 +583,10 @@ Respond with a JSON object:
             if self._vps_gateway:
                 try:
                     logger.info("[AgentKernel] Using VPS Gateway for planning inference...")
-                    # Check if we're in an async context
                     try:
-                        loop = asyncio.get_running_loop()
-                        # We're in an async context, cannot use run_until_complete
-                        logger.warning("[AgentKernel] Cannot use VPS Gateway in sync method from async context, using direct model access")
-                        plan_response = None
-                    except RuntimeError:
-                        # No running loop, we can create one
                         plan_response = asyncio.run(
                             self._vps_gateway.infer(
-                                model="lfm2-8b",
+                                model=self._model_router.get_reasoning_model_id() or "lfm2-8b",
                                 prompt=planning_prompt,
                                 context={"conversation_history": context} if context else {},
                                 params={"max_tokens": 1024, "temperature": 0.7},
@@ -601,6 +594,12 @@ Respond with a JSON object:
                             )
                         )
                         logger.info("[AgentKernel] VPS Gateway inference complete")
+                    except RuntimeError as e:
+                        if "already running" in str(e):
+                            logger.warning("[AgentKernel] Event loop conflict — falling back to local model")
+                            plan_response = None
+                        else:
+                            raise
                 except TimeoutError:
                     logger.error("[AgentKernel] VPS Gateway inference timed out")
                     raise
@@ -687,34 +686,34 @@ Respond with a JSON object:
             logger.error(f"[AgentKernel] {error_msg}", exc_info=True)
             return {"error": error_msg}
 
-    def execute_plan(self, plan: Dict[str, Any]) -> List[Any]:
+    async def execute_plan(self, plan: Dict[str, Any]) -> List[Any]:
         """
         Execute a plan using lfm2.5-1.2b-instruct (execution model).
-        
+
         Args:
             plan: Plan dictionary from plan_task()
-            
+
         Returns:
             List of execution results for each step
         """
         results = []
         steps = plan.get("steps", [])
-        
+
         logger.info(f"[AgentKernel] Executing plan with {len(steps)} steps...")
-        
+
         for step in steps:
             try:
-                result = self.execute_step(step)
+                result = await self.execute_step(step)
                 results.append(result)
                 logger.debug(f"[AgentKernel] Step {step.get('step')} completed")
             except Exception as e:
                 error_result = {"error": f"Step {step.get('step')} failed: {e}"}
                 results.append(error_result)
                 logger.error(f"[AgentKernel] {error_result['error']}")
-        
+
         return results
-    
-    def execute_step(self, step: Dict[str, Any]) -> Any:
+
+    async def execute_step(self, step: Dict[str, Any]) -> Any:
         """
         Execute a single plan step using execution model with timeout and error handling.
         
@@ -791,17 +790,10 @@ Provide the execution result."""
             if self._vps_gateway:
                 try:
                     logger.info("[AgentKernel] Using VPS Gateway for execution inference...")
-                    # Check if we're in an async context
                     try:
-                        loop = asyncio.get_running_loop()
-                        # We're in an async context, cannot use run_until_complete
-                        logger.warning("[AgentKernel] Cannot use VPS Gateway in sync method from async context, using direct model access")
-                        result_text = None
-                    except RuntimeError:
-                        # No running loop, we can create one
                         result_text = asyncio.run(
                             self._vps_gateway.infer(
-                                model="lfm2.5-1.2b-instruct",
+                                model=self._model_router.get_execution_model_id() or "lfm2.5-1.2b-instruct",
                                 prompt=execution_prompt,
                                 context={},
                                 params={"max_tokens": 512, "temperature": 0.3},
@@ -809,6 +801,12 @@ Provide the execution result."""
                             )
                         )
                         logger.info("[AgentKernel] VPS Gateway execution inference complete")
+                    except RuntimeError as e:
+                        if "already running" in str(e):
+                            logger.warning("[AgentKernel] Event loop conflict — falling back to local model")
+                            result_text = None
+                        else:
+                            raise
                 except TimeoutError:
                     logger.error("[AgentKernel] VPS Gateway execution timed out")
                     raise
@@ -880,7 +878,7 @@ Provide the execution result."""
             if self._tool_bridge:
                 try:
                     # Execute tool through tool bridge
-                    tool_result = self._tool_bridge.execute_tool(tool_name, parameters)
+                    tool_result = await self._tool_bridge.execute_tool(tool_name, parameters)
                     if "error" in tool_result:
                         logger.warning(f"[AgentKernel] Tool execution error: {tool_result['error']}")
                         return {
@@ -1217,16 +1215,29 @@ _agent_kernel_instances: Dict[str, AgentKernel] = {}
 def get_agent_kernel(session_id: str = "default") -> AgentKernel:
     """
     Get or create an AgentKernel instance for a session.
-    
+    Auto-wires the memory interface (Pillar 4) when a new kernel is created.
+
     Args:
         session_id: Session identifier
-        
+
     Returns:
         AgentKernel instance for the session
     """
     global _agent_kernel_instances
-    
+
     if session_id not in _agent_kernel_instances:
-        _agent_kernel_instances[session_id] = AgentKernel(session_id=session_id)
-    
+        kernel = AgentKernel(session_id=session_id)
+
+        # Auto-wire Pillar 4 (Memory) — connects episodic/semantic memory to every session
+        try:
+            from backend.memory import get_memory_interface
+            memory = get_memory_interface()
+            if memory is not None:
+                kernel.set_memory_interface(memory)
+                logger.info(f"[AgentKernel] Memory interface wired for session {session_id}")
+        except Exception as e:
+            logger.warning(f"[AgentKernel] Memory interface not available for session {session_id}: {e}")
+
+        _agent_kernel_instances[session_id] = kernel
+
     return _agent_kernel_instances[session_id]
