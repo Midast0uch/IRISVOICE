@@ -1615,25 +1615,31 @@ class IRISGateway:
         """
         Clean up session resources including voice callbacks.
         GAP-06 & GAP-11 FIX: Unregisters voice callbacks and cleans up session resources.
-        
+
         Args:
             session_id: Session ID to clean up
         """
         try:
             self._logger.info(f"[Session: {session_id}] Cleaning up session resources")
-            
-            # Clean up audio level broadcast tasks
-            task = self._audio_level_tasks.pop(session_id, None)
-            if task:
-                task.cancel()
+
+            # Remove active voice client tracking
+            self._active_voice_client.pop(session_id, None)
+
+            # Reset per-session LFM ChatState
+            try:
+                from .audio.engine import get_audio_engine
+                engine = get_audio_engine()
+                if engine.model_manager and engine.model_manager.is_loaded:
+                    engine.model_manager.reset_session(session_id)
+            except Exception:
+                pass
 
             self._logger.info(f"[Session: {session_id}] Session cleanup completed")
-            
+
         except Exception as e:
             self._logger.error(
-                f"[Session: {session_id}] Error during session cleanup: {e}",
+                f"[Session: {session_id}] Error during cleanup: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "error": str(e)}
             )
     
     async def _handle_execute_tool(self, session_id: str, client_id: str, message: dict) -> None:
