@@ -56,6 +56,9 @@ class VoiceCommandHandler:
         self.frame_length = 512
         self.max_buffer_frames = 3000  # ~2 minutes max recording (prevents memory overflow)
         
+        # Session tracking
+        self._active_session_id: str = "default"   # set by iris_gateway before start_recording()
+
         # Callbacks
         self._on_state_change: Optional[Callable[[VoiceState, str], None]] = None
         self._on_command_result: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -113,8 +116,12 @@ class VoiceCommandHandler:
         """Set callback for state changes"""
         self._on_state_change = callback
         
+    def set_active_session(self, session_id: str) -> None:
+        """Set the session_id that owns the current recording."""
+        self._active_session_id = session_id
+
     def set_command_result_callback(self, callback: Callable[[Dict[str, Any]], None]):
-        """Set callback for command results"""
+        """Set callback fired when voice processing completes. Receives result dict."""
         self._on_command_result = callback
         
     def _set_state(self, new_state: VoiceState, message: str = ""):
@@ -313,8 +320,9 @@ class VoiceCommandHandler:
             # Use the main event loop from AudioEngine to run the async method
             future = asyncio.run_coroutine_threadsafe(
                 self.audio_engine.model_manager.process_native_audio_async(
-                    audio_tensor, 
-                    sample_rate=self.sample_rate
+                    audio_tensor,
+                    sample_rate=self.sample_rate,
+                    session_id=self._active_session_id
                 ),
                 self.audio_engine.get_main_loop()
             )
@@ -342,60 +350,50 @@ class VoiceCommandHandler:
             self._set_state(VoiceState.ERROR, f"Native audio processing failed: {e}")
             self._reset_state()
             
-    def _play_native_response(self, audio_response: np.ndarray, debug_text: Optional[str] = None):
-        """Play the native audio response using AudioEngine's pipeline"""
-        try:
-            print("[VoiceCommand] Playing native audio response...")
-            
-            # Check audio format and shape
-            print(f"[VoiceCommand] Audio input shape: {audio_response.shape}, ndim: {audio_response.ndim}")
-            
-            # Ensure we have a 1D mono audio array for playback
-            if audio_response.ndim > 1:
-                # If multi-dimensional, take the first channel or flatten
-                if audio_response.shape[0] == 1:
-                    audio_response = audio_response[0]  # Remove single dimension
-                else:
-                    # Take first channel if multiple channels
-                    audio_response = audio_response[0] if audio_response.shape[0] > 1 else audio_response.flatten()
-            
-            # Check audio levels
-            print(f"[VoiceCommand] Audio stats - min: {audio_response.min():.4f}, max: {audio_response.max():.4f}, mean: {audio_response.mean():.4f}")
-            
-            # Normalize and boost volume if needed
-            if audio_response.max() > 0:
-                # Normalize to prevent clipping
-                audio_response = audio_response / audio_response.max()
-                # Apply volume boost (2x amplification)
-                audio_response = audio_response * 2.0
-                # Clip to prevent distortion
-                audio_response = np.clip(audio_response, -1.0, 1.0)
-                print(f"[VoiceCommand] Normalized and boosted audio - min: {audio_response.min():.4f}, max: {audio_response.max():.4f}")
-            
-            # Use AudioEngine's pipeline for playback
-            if self.audio_engine.pipeline:
-                self.audio_engine.pipeline.play_audio(audio_response)
-                print("[VoiceCommand] Native audio response played successfully")
-            else:
-                print("[VoiceCommand] ERROR: AudioEngine pipeline not available for playback")
-                self._set_state(VoiceState.ERROR, "Audio playback failed: pipeline not available")
-                return
-            
-            # Send result callback
-            self._send_result({
-                "type": "native_audio_response",
-                "audio_shape": audio_response.shape,
-                "sample_rate": 24000,
-                "debug_text": debug_text,
-                "status": "success"
-            })
-            
-            self._set_state(VoiceState.SUCCESS, "Native audio response played")
-            
-        except Exception as e:
-            print(f"[VoiceCommand] Failed to play native audio response: {e}")
-            self._set_state(VoiceState.ERROR, f"Audio playback failed: {e}")
-            
+    def _play_native_response(self, audio_response, debug_text=None):
+        """
+        Parse LFM2-Audio structured text output and fire result callback.
+        Does NOT play audio directly — the 4-pillar pipeline handles TTS response.
+
+        Expected debug_text format from ModelManager:
+        [TRANSCRIPT]: <exact transcription>
+        [CONTEXT]: <one sentence about tone/urgency/intent>
+        """
+        transcript = ""
+        audio_context = ""
+
+        if debug_text:
+            # Parse structured output from ModelManager
+            for line in debug_text.splitlines():
+                line = line.strip()
+                if line.startswith("[TRANSCRIPT]:"):
+                    transcript = line.replace("[TRANSCRIPT]:", "").strip()
+                elif line.startswith("[CONTEXT]:"):
+                    audio_context = line.replace("[CONTEXT]:", "").strip()
+
+            # Fallback: if model didn't follow format, use full text as transcript
+            if not transcript and debug_text.strip():
+                transcript = debug_text.strip()
+                print(f"[VoiceCommand] Warning: LFM output not in expected format, using raw: '{transcript[:80]}'")
+
+        result = {
+            "type":          "voice_transcription",
+            "transcript":    transcript,
+            "audio_context": audio_context,
+            "session_id":    self._active_session_id,
+            "status":        "success" if transcript else "empty",
+        }
+
+        print(f"[VoiceCommand] Transcript: '{transcript[:80]}' | Context: '{audio_context[:60]}'")
+
+        # Fire callback to iris_gateway for 4-pillar processing
+        if self._on_command_result:
+            try:
+                self._on_command_result(result)
+            except Exception as e:
+                print(f"[VoiceCommand] Callback error: {e}")
+
+        self._set_state(VoiceState.SUCCESS, "Voice transcription complete")
         self._reset_state()
         
     def _send_result(self, result: Dict[str, Any]):
