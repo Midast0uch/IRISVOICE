@@ -15,6 +15,7 @@ from .ws_manager import WebSocketManager, get_websocket_manager
 from .state_manager import StateManager, get_state_manager
 from .core_models import Category, get_sections_for_category
 from .agent import get_agent_kernel, get_lfm_audio_manager
+from .audio.pipeline import AudioPipeline
 from .voice.wake_word_discovery import WakeWordDiscovery
 from .tools.cleanup_analyzer import CleanupAnalyzer
 from .vision.vision_service import VisionService, get_vision_service
