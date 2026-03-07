@@ -1,6 +1,6 @@
 """
 AudioEngine - Singleton audio processing engine for IRIS
-Manages voice pipeline, LFM2-Audio native inference, and audio I/O
+Manages voice pipeline, wake word detection (Porcupine), and audio I/O
 """
 import asyncio
 import logging
@@ -15,8 +15,7 @@ logger = logging.getLogger(__name__)
 from .model_manager import ModelManager
 from .pipeline import AudioPipeline
 from backend.ws_manager import get_websocket_manager
-# Lazy import to avoid circular dependency
-# from backend.agent import get_unified_conversation_manager, get_lfm_audio_manager
+from backend.voice.porcupine_detector import PorcupineWakeWordDetector
 
 
 class VoiceState(str, Enum):
@@ -37,38 +36,40 @@ class AudioEngine:
     4. LFM2-Audio native processing (16kHz -> 24kHz)
     5. Native audio output
     """
-    
+
     _instance: Optional['AudioEngine'] = None
     _initialized: bool = False
-    
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
         if AudioEngine._initialized:
             return
-            
+
         # Core components
         self.model_manager = ModelManager()
         self.pipeline: Optional[AudioPipeline] = None
-        # Lazy import to avoid circular dependency
-        from backend.agent import get_lfm_audio_manager
-        self.lfm_audio_manager = get_lfm_audio_manager()
-        
+
+        # Porcupine wake word detector (initialized lazily via initialize_porcupine())
+        self._porcupine: Optional[PorcupineWakeWordDetector] = None
+        self._porcupine_initialized: bool = False
+        self._on_wake_word_detected = None   # callback: (wake_word_name: str) -> None
+
         # State
         self._state = VoiceState.IDLE
         self._state_callbacks: list[Callable[[VoiceState], None]] = []
         self._is_running = False
         self._lock = threading.Lock()
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
-        
+
         try:
             self._main_loop = asyncio.get_running_loop()
         except RuntimeError:
             pass  # No running loop
-        
+
         self.config: Dict[str, Any] = {
             "input_device": None,
             "output_device": None,
@@ -81,7 +82,7 @@ class AudioEngine:
             "native_audio_enabled": True,
             "native_audio_model": "./models",
         }
-        
+
         AudioEngine._initialized = True
 
     @property
@@ -95,72 +96,74 @@ class AudioEngine:
         if self.pipeline:
             self.pipeline.add_frame_listener(callback)
 
-    def _handle_lfm_status_change(self, status: str):
-        """Handle status updates from LFM Audio Manager"""
-        logger.info(f"[AudioEngine] LFM Audio status: {status}")
-        if status == "processing":
-            self._set_state(VoiceState.PROCESSING_NATIVE_AUDIO)
-        elif status == "ready":
-            self._set_state(VoiceState.IDLE)
-        elif status == "error":
-            self._set_state(VoiceState.ERROR)
-
-    def _handle_lfm_transcription(self, text: str):
-        """Handle transcription updates from LFM Audio Manager"""
-        logger.info(f"[AudioEngine] LFM transcription: {text}")
-        # Broadcast transcription to WebSocket
-        from backend.ws_manager import get_websocket_manager
-        ws_manager = get_websocket_manager()
-        asyncio.create_task(ws_manager.broadcast({
-            "type": "lfm_transcription",
-            "text": text
-        }))
-
-    def _handle_lfm_audio_response(self, audio_data: bytes):
-        """Handle audio responses from LFM Audio Manager"""
-        logger.info(f"[AudioEngine] LFM audio response: {len(audio_data)} bytes")
-        # Play the audio response
-        if self.pipeline:
-            self.pipeline.play_audio(audio_data)
-            self._set_state(VoiceState.PLAYING_NATIVE_AUDIO)
-            # Return to listening state after playback
-            asyncio.create_task(self._return_to_listening_after_audio())
-
-    async def _return_to_listening_after_audio(self):
-        """Return to listening state after audio playback"""
-        await asyncio.sleep(0.5)  # Small delay
-        self._set_state(VoiceState.LISTENING)
-
     def _set_state(self, new_state: VoiceState):
         if self.state != new_state:
             old_state = self.state
             self._state = new_state
             logger.info(f"[AudioEngine] State: {old_state} -> {new_state}")
-            
+
             for callback in self._state_callbacks:
                 try:
                     callback(new_state)
                 except Exception as e:
                     logger.error(f"State callback error: {e}")
 
+    def initialize_porcupine(self, wake_phrase: Optional[str] = None, sensitivity: Optional[float] = None) -> bool:
+        """
+        Initialize Porcupine wake word detector using the user's chosen wake phrase.
+        wake_phrase defaults to WakeConfig setting (set via Voice > Wake Word in UI).
+        Called lazily — NOT at startup (avoids delay on low-spec PCs).
+        """
+        try:
+            from backend.agent.wake_config import get_wake_config
+            wake_config = get_wake_config()
+
+            # Read from user settings if not overridden
+            if wake_phrase is None:
+                wake_phrase = wake_config.get_wake_phrase()   # e.g. "jarvis", "hey computer"
+            if sensitivity is None:
+                sensitivity = wake_config.get_sensitivity()   # float 0–1 from UI slider
+
+            # Map user-friendly phrase to pvporcupine built-in keyword name
+            keyword = wake_phrase.lower().replace(" ", "_")   # "hey computer" -> "hey_computer"
+
+            self._porcupine = PorcupineWakeWordDetector(
+                builtin_keywords=[keyword],
+                sensitivities=[sensitivity]
+            )
+            self._porcupine_initialized = True
+            logger.info(f"[AudioEngine] Porcupine initialized — listening for '{wake_phrase}' (sensitivity={sensitivity:.2f})")
+            return True
+        except Exception as e:
+            logger.error(f"[AudioEngine] Porcupine init failed: {e}")
+            self._porcupine_initialized = False
+            return False
+
+    def reinitialize_porcupine(self) -> bool:
+        """
+        Reinitialize Porcupine after user changes wake phrase in settings.
+        Called by WakeConfig.on_change_callback — registered in main.py.
+        """
+        if self._porcupine:
+            try:
+                self._porcupine.cleanup()
+            except Exception:
+                pass
+            self._porcupine = None
+            self._porcupine_initialized = False
+        return self.initialize_porcupine()   # reads fresh values from WakeConfig
+
+    def set_wake_word_callback(self, callback) -> None:
+        """Set callback fired when wake word is detected. callback(wake_word_name: str) -> None"""
+        self._on_wake_word_detected = callback
+
+    def get_main_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """Return the main event loop stored during initialization."""
+        return self._main_loop
+
     def initialize(self) -> bool:
         try:
             logger.info("[AudioEngine] Initializing...")
-            
-            # IMPORTANT: lfm_audio_manager.initialize() is async and should be
-            # called from an async context at application startup (e.g., in main.py),
-            # not from here. We will assume it's initialized.
-            if self.config.get("native_audio_enabled", True):
-                # Only set callbacks if the manager is initialized
-                if self.lfm_audio_manager.is_initialized:
-                    # Setup callbacks
-                    self.lfm_audio_manager.set_callbacks(
-                        on_status_change=self._handle_lfm_status_change,
-                        on_transcription_update=self._handle_lfm_transcription,
-                        on_audio_response=self._handle_lfm_audio_response
-                    )
-                else:
-                    logger.info("[AudioEngine] LFMAudioManager not initialized yet. Callbacks will be set when it initializes.")
 
             if self.config.get("input_device") is None or self.config.get("output_device") is None:
                 try:
@@ -182,24 +185,24 @@ class AudioEngine:
                 sample_rate=self.config["sample_rate"],
                 frame_length=self.config["frame_length"]
             )
-            
+
             logger.info("[AudioEngine] Initialization complete")
             return True
-            
+
         except Exception as e:
             logger.error(f"[AudioEngine] Initialization failed: {e}")
             self._set_state(VoiceState.ERROR)
             return False
-    
+
     def start(self) -> bool:
         """Start the audio pipeline"""
         if self._is_running:
             return True
-            
+
         if not self.pipeline:
             if not self.initialize():
                 return False
-        
+
         try:
             logger.info("[AudioEngine] Starting audio pipeline...")
             self.pipeline.start(
@@ -209,12 +212,12 @@ class AudioEngine:
             self._set_state(VoiceState.IDLE)
             logger.info("[AudioEngine] Audio pipeline started")
             return True
-            
+
         except Exception as e:
             logger.error(f"[AudioEngine] Failed to start: {e}")
             self._set_state(VoiceState.ERROR)
             return False
-    
+
     def stop(self):
         """Stop the audio pipeline"""
         if self.pipeline:
@@ -222,31 +225,39 @@ class AudioEngine:
         self._is_running = False
         self._set_state(VoiceState.IDLE)
         logger.info("[AudioEngine] Audio pipeline stopped")
-    
+
     def _process_audio_frame(self, audio_frame: np.ndarray):
         """
-        Process incoming audio frame through the native audio pipeline:
-        1. Stream audio to LFM Audio Manager for processing
+        Process incoming audio frame.
+        - Porcupine wake word detection (lightweight, <1ms per frame)
+        - Notifies registered frame listeners (used by VoiceCommandHandler for buffering)
+        No longer streams every frame to lfm_audio_manager.
         """
         try:
-            if self.lfm_audio_manager and self.lfm_audio_manager.is_initialized:
-                # Asynchronously stream audio data to the LFM Audio Manager
-                asyncio.run_coroutine_threadsafe(
-                    self.lfm_audio_manager.process_audio_stream(audio_frame.tobytes()), 
-                    self._main_loop
-                )
+            # Wake word detection (only when Porcupine is initialized)
+            if self._porcupine_initialized and self._porcupine:
+                # Convert float32 [-1,1] → int16 PCM for Porcupine
+                pcm_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16).tolist()
+                frame_len = self._porcupine.frame_length
+                # Process in Porcupine-sized chunks
+                for i in range(0, len(pcm_int16) - frame_len + 1, frame_len):
+                    chunk = pcm_int16[i:i + frame_len]
+                    detected, word = self._porcupine.process_frame(chunk)
+                    if detected:
+                        logger.info(f"[AudioEngine] Wake word detected: '{word}'")
+                        if self._on_wake_word_detected:
+                            self._on_wake_word_detected(word)
+
         except Exception as e:
             logger.error(f"[AudioEngine] Frame processing error: {e}")
-    
 
-    
     def _broadcast_threadsafe(self, message: dict):
         """
         Broadcast a WebSocket message from any thread safely.
         Uses the stored main event loop with call_soon_threadsafe.
         """
         ws_manager = get_websocket_manager()
-        
+
         if self._main_loop and self._main_loop.is_running():
             self._main_loop.call_soon_threadsafe(
                 self._main_loop.create_task,
@@ -263,50 +274,34 @@ class AudioEngine:
             except Exception as e:
                 logger.error(f"[AudioEngine] WS broadcast error: {e}")
 
-
-
     def update_config(self, **kwargs):
         """Update engine configuration"""
         self.config.update(kwargs)
-        
+
         # Reinitialize if running
         if self._is_running:
             self.stop()
             self.initialize()
             self.start()
-    
+
     def cleanup(self):
         """Clean up resources"""
         try:
             print("[AudioEngine] Cleaning up...")
             self.stop()
-            
-            # Clean up LFM Audio Manager
-            if self.lfm_audio_manager:
+
+            # Clean up Porcupine wake word detector
+            if self._porcupine:
                 try:
-                    # Get the running loop or create a new one for cleanup
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # If loop is running, schedule the task
-                        loop.create_task(self.lfm_audio_manager.cleanup())
-                    else:
-                        # If loop is not running, run the coroutine directly
-                        loop.run_until_complete(self.lfm_audio_manager.cleanup())
-                except RuntimeError:
-                    # No event loop available, try to create one
-                    try:
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        new_loop.run_until_complete(self.lfm_audio_manager.cleanup())
-                        new_loop.close()
-                    except Exception as nested_e:
-                        print(f"[AudioEngine] Failed to cleanup LFM Audio Manager: {nested_e}")
-            
+                    self._porcupine.cleanup()
+                except Exception:
+                    pass
+
             print("[AudioEngine] Cleanup complete")
-            
+
         except Exception as e:
             print(f"[AudioEngine] Error during cleanup: {e}")
-    
+
     def get_status(self) -> Dict[str, Any]:
         """Get current engine status"""
         return {
@@ -314,7 +309,7 @@ class AudioEngine:
             "is_running": self._is_running,
             "config": self.config,
             "model_loaded": self.model_manager.is_loaded if self.model_manager else False,
-            "lfm_audio_initialized": self.lfm_audio_manager.is_initialized if self.lfm_audio_manager else False,
+            "porcupine_initialized": self._porcupine_initialized,
         }
 
 
