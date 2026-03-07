@@ -22,7 +22,17 @@ const nextConfig = {
     // This prevents memory spikes (7000+ MB) and extended freeze times during dev mode startup
     config.watchOptions = {
       ...config.watchOptions,
-      ignored: ['**/models/**', '**/node_modules/**', '**/.git/**', '**/.next/**']
+      // Exclude backend Python files and session data — they are never frontend source
+      // Backend session JSON files (backend/sessions/**) are written at runtime and
+      // would otherwise trigger constant Hot Module Replacement rebuilds.
+      ignored: [
+        '**/models/**',
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/.next/**',
+        '**/dist/**',
+        '**/backend/**',
+      ]
     };
     
     // Exclude model files from webpack asset processing
