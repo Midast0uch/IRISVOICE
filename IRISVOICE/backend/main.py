@@ -171,6 +171,10 @@ async def lifespan(app: FastAPI):
         app.state.iris_gateway = iris_gateway
         logger.info("  - IRIS Gateway initialized successfully.")
 
+        # Wire VoiceCommandHandler → iris_gateway for 4-pillar voice processing
+        iris_gateway.set_voice_handler(voice_handler)
+        logger.info("  - Voice handler wired to IRIS Gateway.")
+
         logger.info("  - Initializing agent kernel...")
         try:
             from backend.agent import get_agent_kernel
@@ -188,30 +192,33 @@ async def lifespan(app: FastAPI):
             logger.warning(f"  - Warning: Failed to initialize agent kernel: {e}")
             logger.info("  - Agent functionality will be unavailable.")
         
-        # Initialize Memory Foundation (after agent kernel for adapter access)
+        # Initialize Memory Foundation (non-blocking — biometric prompt removed).
+        # Encryption uses machine-derived key (hostname + UUID), no user input needed.
+        # The biometric/passphrase upgrade path remains as a future frontend setting.
         logger.info("  - Initializing memory system...")
         try:
             from backend.memory import initialise_memory
-            
+
             # Use agent kernel's model router as adapter if available
             adapter = None
             if hasattr(app.state, 'agent_kernel') and app.state.agent_kernel:
                 adapter = app.state.agent_kernel._model_router
-            
+
             if adapter:
                 memory = await initialise_memory(adapter=adapter)
                 app.state.memory = memory
-                
+
                 # Wire memory to agent kernel
                 if hasattr(app.state, 'agent_kernel') and app.state.agent_kernel:
                     app.state.agent_kernel.set_memory_interface(memory)
-                
+
                 logger.info("  - Memory system initialized successfully.")
             else:
-                logger.warning("  - Warning: Cannot initialize memory - no model adapter available")
+                logger.warning("  - Memory system: no model adapter available, skipping.")
+                app.state.memory = None
         except Exception as e:
-            logger.warning(f"  - Warning: Failed to initialize memory system: {e}")
-            logger.info("  - Memory functionality will be unavailable.")
+            logger.warning(f"  - Memory system init failed (non-critical): {e}")
+            app.state.memory = None
         
         logger.info("IRIS Backend startup completed successfully!")
         
@@ -292,17 +299,12 @@ async def websocket_endpoint(
         return
 
     try:
-        # Send initial state to the newly connected client
-        state_manager = get_state_manager()
-        current_state = await state_manager.get_state(active_session_id)
-        if current_state:
-            await ws_manager.send_to_client(client_id, {
-                "type": "initial_state",
-                "payload": {
-                    "state": current_state.model_dump()
-                }
-            })
-        
+        # BUG-05 FIX: Removed proactive initial_state send here.
+        # The frontend sends "request_state" on connect (useIRISWebSocket.ts onopen),
+        # which is handled by iris_gateway._handle_request_state and sends initial_state.
+        # Sending it here too caused a duplicate that was processed before the frontend
+        # was ready to handle it.
+
         # Register a callback for state changes
         session = get_session_manager().get_session(active_session_id)
         if session and session.state_manager:
