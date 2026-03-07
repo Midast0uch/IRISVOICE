@@ -1667,11 +1667,16 @@ class IRISGateway:
             
             # Get agent kernel from app state via global
             from backend.agent import get_agent_kernel
-            agent_kernel = get_agent_kernel()
-            
-            if agent_kernel and agent_kernel.tool_bridge:
+            from backend.agent.tool_bridge import get_agent_tool_bridge
+            agent_kernel = get_agent_kernel(session_id)
+
+            # Wire tool bridge if not already set
+            if agent_kernel and agent_kernel._tool_bridge is None:
+                agent_kernel._tool_bridge = get_agent_tool_bridge()
+
+            if agent_kernel and agent_kernel._tool_bridge:
                 try:
-                    result = await agent_kernel.tool_bridge.execute_tool(tool_name, parameters)
+                    result = await agent_kernel._tool_bridge.execute_tool(tool_name, parameters)
                     await self._ws_manager.send_to_client(client_id, {
                         "type": "tool_result",
                         "payload": {"tool": tool_name, "result": result}
