@@ -319,45 +319,84 @@ class KeyStorage:
             return False
 
 
+def _derive_machine_key(salt: bytes) -> bytes:
+    """
+    Derive a non-interactive machine-specific encryption key.
+
+    Uses a combination of hostname + a stable UUID stored in a local
+    file so the key survives restarts without requiring user input.
+    This is the server-mode fallback — no interactive prompts.
+
+    Args:
+        salt: Salt bytes for key derivation
+
+    Returns:
+        32-byte key
+    """
+    import socket
+    import uuid as _uuid
+    from pathlib import Path as _Path
+
+    machine_id_file = _Path("data/.machine_id")
+    try:
+        if machine_id_file.exists():
+            machine_uuid = machine_id_file.read_text().strip()
+        else:
+            machine_uuid = str(_uuid.uuid4())
+            machine_id_file.parent.mkdir(parents=True, exist_ok=True)
+            machine_id_file.write_text(machine_uuid)
+    except Exception:
+        machine_uuid = str(_uuid.getnode())  # MAC-address-based fallback
+
+    machine_passphrase = f"{socket.gethostname()}:{machine_uuid}"
+    logger.info("[Biometric] Using machine-derived encryption key (non-interactive server mode)")
+    return _derive_from_passphrase(machine_passphrase, salt)
+
+
 def initialize_memory_encryption(
     db_path: str = "data/memory.db",
     config_path: str = "data/memory_config.json"
 ) -> bytes:
     """
     Initialize memory encryption with automatic key management.
-    
-    This is the main entry point for memory system initialization.
-    It handles:
-    1. Checking for existing key in keychain
-    2. Prompting for passphrase if needed
-    3. Storing key securely for future use
-    
+
+    NON-BLOCKING server-safe priority order:
+    1. IRIS_MEMORY_KEY environment variable (development override)
+    2. Existing key stored in platform keychain
+    3. Machine-derived key (hostname + stable UUID) — no user prompt
+
     Args:
         db_path: Path to memory database
         config_path: Path to memory configuration
-    
+
     Returns:
         32-byte encryption key
     """
-    # First, try to retrieve existing key
+    salt = DEFAULT_SALT
+
+    # 1. Check environment variable (dev override)
+    env_key = derive_key_from_env()
+    if env_key is not None:
+        logger.info("[Biometric] Using IRIS_MEMORY_KEY environment variable")
+        return env_key
+
+    # 2. Try to retrieve existing key from keychain
     key = KeyStorage.retrieve_key()
-    
     if key is not None:
         logger.info("[Biometric] Using stored encryption key from keychain")
         return key
-    
-    # No stored key - derive new one
-    logger.info("[Biometric] No stored key found, deriving new key...")
-    key = derive_biometric_key()
-    
+
+    # 3. Non-interactive fallback: machine-derived key
+    # This keeps the server from blocking on getpass.getpass() at startup.
+    # Interactive passphrase setup can be added as a frontend setting later.
+    key = _derive_machine_key(salt)
+
     # Try to store for future use
     if KeyStorage.store_key(key):
-        print("\n✓ Encryption key stored securely in system keychain.")
-        print("  You won't need to enter your passphrase next time.\n")
+        logger.info("[Biometric] Machine-derived key stored in system keychain")
     else:
-        print("\n⚠ Could not store key in system keychain.")
-        print("  You'll need to enter your passphrase each time.\n")
-    
+        logger.info("[Biometric] Keychain unavailable — machine-derived key used in-memory only")
+
     return key
 
 

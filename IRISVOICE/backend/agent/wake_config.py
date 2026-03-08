@@ -19,9 +19,10 @@ class WakeConfig:
     _instance: Optional['WakeConfig'] = None
     _initialized: bool = False
     
-    # OpenWakeWord supported phrases (local, no API key needed)
+    # Porcupine built-in keywords (these are validated pvporcupine keyword names)
+    # "hey computer" is NOT a valid Porcupine built-in and has been removed
     DEFAULT_WAKE_PHRASE = "jarvis"
-    SUPPORTED_PHRASES = ["jarvis", "hey computer", "computer", "bumblebee", "porcupine"]
+    SUPPORTED_PHRASES = ["jarvis", "computer", "bumblebee", "porcupine"]
     
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -33,9 +34,10 @@ class WakeConfig:
             return
         
         self.config = {
-            "wake_word_enabled": True,  # Enabled for testing
-            "wake_phrase": "Jarvis",  # Default to Jarvis
-            "detection_sensitivity": 0.2,  # Balanced sensitivity for "Hey Jarvis"
+            "wake_word_enabled": True,
+            "wake_phrase": "jarvis",  # Default to Jarvis (builtin)
+            "custom_model_path": None,  # Path to custom .ppn file; None = use builtin
+            "detection_sensitivity": 0.5,  # 0.0-1.0; maps from UI slider 1-10
             "activation_sound": True,
             "sleep_timeout": 60,  # seconds
         }
@@ -98,8 +100,12 @@ class WakeConfig:
         return self.config["wake_phrase"]
     
     def get_sensitivity(self) -> float:
-        """Get detection sensitivity"""
+        """Get detection sensitivity (0.0-1.0)"""
         return self.config["detection_sensitivity"]
+
+    def get_custom_model_path(self) -> Optional[str]:
+        """Get path to custom .ppn wake word file, or None if using a builtin keyword."""
+        return self.config.get("custom_model_path")
     
     def should_play_activation_sound(self) -> bool:
         """Check if activation sound is enabled"""

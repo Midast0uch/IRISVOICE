@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, memo, useMemo, useCallback, useEffect } from 'react';
+import { CustomDropdown } from '@/components/ui/CustomDropdown';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBrandColor } from '@/contexts/BrandColorContext';
@@ -98,7 +99,7 @@ function convertCardFieldsToDashboardFields(cards: any[]) {
 
 // Generate SECTIONS_DATA dynamically from cards.ts and navigation constants
 // This ensures all components use the same field IDs, labels, and options
-function useSubNodesData() {
+function useSectionsData() {
   return useMemo(() => {
     const sections = Object.entries(CARD_TO_SECTION_ID).reduce((acc, [cardId, sectionId]) => {
       if (!acc[sectionId]) {
@@ -236,7 +237,7 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
   if (field.type === 'dropdown') {
     // Use available models for model_selection section dropdowns
     let options = field.options || [];
-    if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_execution_model')) {
+    if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_model')) {
       options = availableModels && availableModels.length > 0 ? availableModels : ['No models available'];
     }
     
@@ -259,16 +260,16 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
       <div className="py-3">
         <div className="flex items-center justify-between">
           <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
-          <select
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            className="text-[13px] tabular-nums bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[120px]"
-            style={errorMessage ? { borderColor: '#f87171' } : {}}
-          >
-            {options?.map((opt: string, idx: number) => (
-              <option key={`${opt}-${idx}`} value={opt} className="bg-zinc-900">{opt}</option>
-            ))}
-          </select>
+          <div className="max-w-[160px]">
+            <CustomDropdown
+              value={value}
+              options={options ?? []}
+              onChange={setValue}
+              glowColor={glowColor}
+              className="text-[13px] tabular-nums rounded px-1.5 py-0.5"
+              style={errorMessage ? { borderColor: '#f87171' } : undefined}
+            />
+          </div>
         </div>
         {errorMessage && (
           <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
@@ -448,8 +449,11 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
 });
 
 export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: propUpdateField }: DarkGlassDashboardProps) {
+  // activeTab / activeSection are LOCAL state for instant UI feedback.
+  // They are also kept in sync with NavigationContext (currentCategory / currentSection)
+  // so that WheelView navigation immediately reflects here and vice-versa.
   const [activeTab, setActiveTab] = useState('voice');
-  const [activeSubnode, setActiveSubnode] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [audioInputDevices, setAudioInputDevices] = useState<string[]>([]);
   const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>([]);
@@ -476,15 +480,63 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
     sendMessage, // Add sendMessage for fetching available models
   } = useNavigation();
   
-  // Use WebSocket theme glow color if available, otherwise fall back to local theme
-  // This ensures theme changes from backend apply within 100ms (WebSocket latency)
-  // Requirement 10.4: Update accent colors from activeTheme within 100ms
-  const glowColor = activeTheme?.glow || localTheme.glow.color;
+  // Sync local activeTab / activeSection from NavigationContext whenever WheelView (or any
+  // other component) changes the shared navigation state.  This makes the dashboard a live
+  // mirror of the global navigation — sections are synced automatically.
+  useEffect(() => {
+    if (currentCategory) setActiveTab(currentCategory);
+  }, [currentCategory]);
+
+  useEffect(() => {
+    // null means "deselected" — honour that too
+    if (currentSection !== undefined) setActiveSection(currentSection);
+  }, [currentSection]);
+
+  // Always-on listener for iris:audio_devices — devices may be fetched by WheelView
+  // before this panel navigates to input/output, so capture them unconditionally.
+  useEffect(() => {
+    const handleAudioDevices = (event: CustomEvent) => {
+      const inputDevices = event.detail.input_devices || [];
+      const outputDevices = event.detail.output_devices || [];
+      setAudioInputDevices(inputDevices.map((d: any) => d.name || d.index));
+      setAudioOutputDevices(outputDevices.map((d: any) => d.name || d.index));
+    };
+    window.addEventListener('iris:audio_devices', handleAudioDevices as EventListener);
+    return () => window.removeEventListener('iris:audio_devices', handleAudioDevices as EventListener);
+  }, []);
+
+  // Always-on listener for iris:wake_words_list
+  useEffect(() => {
+    const handleWakeWords = (event: CustomEvent) => {
+      const wakeWordsList = event.detail.wake_words || [];
+      setWakeWords(wakeWordsList.map((w: any) => w.display_name || w.filename));
+    };
+    window.addEventListener('iris:wake_words_list', handleWakeWords as EventListener);
+    return () => window.removeEventListener('iris:wake_words_list', handleWakeWords as EventListener);
+  }, []);
+
+  // Always-on listener for iris:available_models
+  useEffect(() => {
+    const handleAvailableModels = (event: CustomEvent) => {
+      const models = event.detail.models || [];
+      setAvailableModels(models.map((m: any) => m.name || m.id));
+    };
+    window.addEventListener('iris:available_models', handleAvailableModels as EventListener);
+    return () => window.removeEventListener('iris:available_models', handleAvailableModels as EventListener);
+  }, []);
+
+  // Use local BrandColorContext theme first (matches parent DashboardWing priority),
+  // falling back to WebSocket activeTheme only if local color is unavailable.
+  // This ensures both parent and child always display the same brand color.
+  const glowColor = localTheme.glow.color || activeTheme?.glow;
 
   // Fetch current configuration from backend on mount
   useEffect(() => {
     if (sendMessage) {
-      // Request current state from backend
+      // Request current state from backend.
+      // Note: get_audio_devices and get_wake_words are now sent automatically in the
+      // WebSocket onopen handler (useIRISWebSocket.ts) so they're guaranteed to arrive
+      // even if this component mounts before the socket finishes connecting.
       sendMessage('request_state', {})
       
       // Listen for initial state response
@@ -497,12 +549,12 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
         const fv = state.field_values || state.fieldValues
         if (fv) {
           // Update field values from backend state
-          Object.entries(fv).forEach(([subnodeId, values]) => {
+          Object.entries(fv).forEach(([sectionId, values]) => {
             if (values && typeof values === 'object') {
               Object.entries(values).forEach(([fieldId, value]) => {
                 // Use updateField if available, otherwise use context
                 if (propUpdateField) {
-                  propUpdateField(subnodeId, fieldId, value)
+                  propUpdateField(sectionId, fieldId, value)
                 }
               })
             }
@@ -538,94 +590,49 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
     }
   }, [voiceState]);
 
-  // Fetch available models when model_selection subnode is opened
+  // Fetch available models when model_selection section is opened
   useEffect(() => {
-    if (activeSubnode === 'model_selection' && sendMessage) {
-      // Send get_available_models message to backend
+    if (activeSection === 'model_selection' && sendMessage) {
       sendMessage('get_available_models', {});
-      
-      // Listen for the response via custom event
-      const handleAvailableModels = (event: CustomEvent) => {
-        const models = event.detail.models || [];
-        const modelOptions = models.map((m: any) => m.name || m.id);
-        setAvailableModels(modelOptions);
-      };
-      
-      window.addEventListener('iris:available_models', handleAvailableModels as EventListener);
-      
-      return () => {
-        window.removeEventListener('iris:available_models', handleAvailableModels as EventListener);
-      };
     }
-  }, [activeSubnode, sendMessage]);
+  }, [activeSection, sendMessage]);
 
-  // Fetch audio devices when input or output subnodes are opened
+  // Fetch audio devices when input or output section is opened
   useEffect(() => {
-    if ((activeSubnode === 'input' || activeSubnode === 'output') && sendMessage) {
-      // Send get_audio_devices message to backend
+    if ((activeSection === 'input' || activeSection === 'output') && sendMessage) {
       sendMessage('get_audio_devices', {});
-      
-      // Listen for the response via custom event
-      const handleAudioDevices = (event: CustomEvent) => {
-        const inputDevices = event.detail.input_devices || [];
-        const outputDevices = event.detail.output_devices || [];
-        const inputOptions = inputDevices.map((d: any) => d.name || d.index);
-        const outputOptions = outputDevices.map((d: any) => d.name || d.index);
-        setAudioInputDevices(inputOptions);
-        setAudioOutputDevices(outputOptions);
-      };
-      
-      window.addEventListener('iris:audio_devices', handleAudioDevices as EventListener);
-      
-      return () => {
-        window.removeEventListener('iris:audio_devices', handleAudioDevices as EventListener);
-      };
     }
-  }, [activeSubnode, sendMessage]);
+  }, [activeSection, sendMessage]);
 
-  // Fetch wake words when wake subnode is opened
+  // Fetch wake words when wake section is opened
   useEffect(() => {
-    if (activeSubnode === 'wake' && sendMessage) {
-      // Send get_wake_words message to backend
+    if (activeSection === 'wake' && sendMessage) {
       sendMessage('get_wake_words', {});
-      
-      // Listen for the response via custom event
-      const handleWakeWords = (event: CustomEvent) => {
-        const wakeWordsList = event.detail.wake_words || [];
-        const wakeWordOptions = wakeWordsList.map((w: any) => w.display_name || w.filename);
-        setWakeWords(wakeWordOptions);
-      };
-      
-      window.addEventListener('iris:wake_words_list', handleWakeWords as EventListener);
-      
-      return () => {
-        window.removeEventListener('iris:wake_words_list', handleWakeWords as EventListener);
-      };
     }
-  }, [activeSubnode, sendMessage]);
+  }, [activeSection, sendMessage]);
 
   // Use context values if available, otherwise fall back to props
   const fieldValues = contextFieldValues || propFieldValues || {};
   const updateField = propUpdateField || contextUpdateCardValue;
 
   const mainNodes = useMemo(() => MAIN_NODES_DATA, []);
-  const subNodes = useSubNodesData();
+  const sections = useSectionsData();
 
-  const sectionsForTab = useMemo(() => subNodes[activeTab] || [], [subNodes, activeTab]);
-  const selectedSection = useMemo(() => activeSubnode ? sectionsForTab.find(s => s.id === activeSubnode) : null, [activeSubnode, sectionsForTab]);
+  const sectionsForTab = useMemo(() => sections[activeTab] || [], [sections, activeTab]);
+  const selectedSection = useMemo(() => activeSection ? sectionsForTab.find(s => s.id === activeSection) : null, [activeSection, sectionsForTab]);
 
   const handleTabClick = useCallback((id: string) => {
     setActiveTab(id);
-    setActiveSubnode(null);
-    // Send category selection to backend via NavigationContext
+    setActiveSection(null);
+    // Sync shared navigation state so WheelView mirrors this selection
     if (selectCategory) {
       selectCategory(id);
     }
   }, [selectCategory]);
 
-  const handleSubnodeClick = useCallback((id: string) => {
-    setActiveSubnode(id);
-    // Send section selection to backend via NavigationContext
+  const handleSectionClick = useCallback((id: string) => {
+    setActiveSection(id);
+    // Sync shared navigation state so WheelView mirrors this selection
     if (selectSectionWs) {
       selectSectionWs(id);
     }
@@ -858,15 +865,15 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
         <div className="w-[105px] border-r flex-shrink-0 overflow-y-auto" style={{ borderColor: `${glowColor}10` }}>
           {sectionsForTab.map(section => {
             const Icon = section.icon;
-            const isActive = activeSubnode === section.id;
+            const isActive = activeSection === section.id;
             return (
               <button
                 key={section.id}
-                onClick={() => handleSubnodeClick(section.id)}
+                onClick={() => handleSectionClick(section.id)}
                 className="w-full flex items-center gap-1.5 px-3 py-2 text-left transition-all"
                 style={{
                   background: isActive ? `${glowColor}15` : 'transparent',
-                  color: isActive ? '#fff' : 'rgba(255,255,255,0.5)',
+                  color: isActive ? glowColor : 'rgba(255,255,255,0.5)',
                   borderLeft: isActive ? `2px solid ${glowColor}` : '2px solid transparent',
                 }}
               >
@@ -892,7 +899,7 @@ export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: 
               >
                 <div className="flex items-center gap-1.5 mb-2 pb-1.5 border-b" style={{ borderColor: `${glowColor}15` }}>
                   {(() => { const Icon = selectedSection.icon; return <Icon className="w-3.5 h-3.5" style={{ color: glowColor }} />; })()}
-                  <span className="text-[10px] font-semibold tracking-wider text-white/90">{selectedSection.label}</span>
+                  <span className="text-[10px] font-semibold tracking-wider" style={{ color: glowColor }}>{selectedSection.label}</span>
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-4">
                   {selectedSection.fields.map(field => (

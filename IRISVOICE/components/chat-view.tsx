@@ -98,7 +98,7 @@ interface ChatWingProps {
   onDashboardClose?: () => void
   sendMessage?: SendMessageFunction
   fieldValues?: Record<string, any>
-  updateField?: (subnodeId: string, fieldId: string, value: any) => void
+  updateField?: (sectionId: string, fieldId: string, value: any) => void
   // Spotlight Mode props
   spotlightState?: SpotlightStateType
   onSpotlightToggle?: () => void
@@ -192,48 +192,56 @@ export function ChatWing({
   // Handle incoming WebSocket messages from the navigation context
   useEffect(() => {
     if (lastTextResponse) {
-      const assistantMessage: Message = {
+      const isUserVoice = lastTextResponse.sender === "user"
+
+      // User voice transcriptions show as user bubbles (no TTS — server handles audio)
+      // Assistant responses show as assistant bubbles (client-side TTS highlighting)
+      const newMessage: Message = {
         id: (Date.now() + 1).toString(),
         text: lastTextResponse.text,
-        sender: "assistant",
+        sender: lastTextResponse.sender,
         timestamp: new Date(),
-        words: lastTextResponse.text.split(' '), // Split for potential TTS highlighting
-        currentWordIndex: -1,
-        feedback: null,
+        words: isUserVoice ? undefined : lastTextResponse.text.split(' '),
+        currentWordIndex: isUserVoice ? undefined : -1,
+        feedback: isUserVoice ? undefined : null,
       }
-      
+
       // Add to active conversation or create new one
       setConversations(prev => {
         if (activeConversationId) {
           // Add to existing conversation
-          return prev.map(conv => 
+          return prev.map(conv =>
             conv.id === activeConversationId
               ? {
                   ...conv,
-                  messages: [...conv.messages, assistantMessage],
-                  lastMessagePreview: assistantMessage.text.substring(0, 60),
+                  messages: [...conv.messages, newMessage],
+                  lastMessagePreview: newMessage.text.substring(0, 60),
                   timestamp: new Date()
                 }
               : conv
-          );
+          )
         } else {
           // Create new conversation
           const newConv: Conversation = {
             id: Date.now().toString(),
             title: `Conversation ${prev.length + 1}`,
-            preview: assistantMessage.text.substring(0, 60),
-            messages: [assistantMessage],
+            preview: newMessage.text.substring(0, 60),
+            messages: [newMessage],
             timestamp: new Date(),
             isPinned: false,
-            lastMessagePreview: assistantMessage.text.substring(0, 60)
-          };
-          setActiveConversationId(newConv.id);
-          return [...prev, newConv];
+            lastMessagePreview: newMessage.text.substring(0, 60)
+          }
+          setActiveConversationId(newConv.id)
+          return [...prev, newConv]
         }
-      });
-      
-      setCurrentTtsMessageId(assistantMessage.id);
-      setIsSpeaking(true);
+      })
+
+      // Only trigger client-side TTS word-highlight for assistant messages.
+      // Voice responses: TTS audio is played server-side via TTSManager.
+      if (!isUserVoice) {
+        setCurrentTtsMessageId(newMessage.id)
+        setIsSpeaking(true)
+      }
     }
   }, [lastTextResponse, activeConversationId])
   

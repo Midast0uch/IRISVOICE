@@ -327,51 +327,10 @@ class IRISGateway:
             )
             
             if success:
-                # Apply TTS configuration if agent.speech fields are updated
-                if section_id == "speech":
-                    try:
-                        lfm_audio_manager = get_lfm_audio_manager()
-                        if field_id == "tts_voice":
-                            lfm_audio_manager.update_voice_config(tts_voice=value)
-                            self._logger.info(f"[Session: {session_id}] Updated TTS voice to {value}")
-                        elif field_id == "speaking_rate":
-                            lfm_audio_manager.update_voice_config(speaking_rate=value)
-                            self._logger.info(f"[Session: {session_id}] Updated speaking rate to {value}")
-                    except Exception as e:
-                        self._logger.error(f"[Session: {session_id}] Error updating TTS configuration: {e}")
-                
-                # Apply model selection if reasoning_model or tool_execution_model fields are updated
-                if field_id in ["reasoning_model", "tool_execution_model"]:
-                    try:
-                        from .agent.agent_kernel import get_agent_kernel
-                        
-                        # Get the AgentKernel for this session
-                        agent_kernel = get_agent_kernel(session_id)
-                        
-                        # Get current state to retrieve both model selections
-                        state = await self._state_manager.get_state(session_id)
-                        if state:
-                            # Update the state with the new model selection
-                            if field_id == "reasoning_model":
-                                state.selected_reasoning_model = value
-                            elif field_id == "tool_execution_model":
-                                state.selected_tool_execution_model = value
-                            
-                            # Apply both model selections to AgentKernel
-                            success_apply = agent_kernel.set_model_selection(
-                                reasoning_model=state.selected_reasoning_model,
-                                tool_execution_model=state.selected_tool_execution_model
-                            )
-                            
-                            if success_apply:
-                                self._logger.info(f"[Session: {session_id}] Applied model selection: "
-                                                f"{field_id}={value}")
-                            else:
-                                self._logger.warning(f"[Session: {session_id}] Failed to apply model selection: "
-                                                   f"{field_id}={value}. Model may not be available.")
-                    except Exception as e:
-                        self._logger.error(f"[Session: {session_id}] Error applying model selection: {e}")
-                
+                # NOTE: Service reinitialization (TTS, model selection, audio devices) is
+                # intentionally deferred to confirm_card. update_field only persists the value
+                # to state so it is available when the user presses Confirm.
+
                 # Mask API keys in the response
                 response_value = value
                 if field_id == "openai_api_key" and value:
@@ -450,17 +409,154 @@ class IRISGateway:
             # Use only section_id (cleanup complete)
             section_id = payload.get("section_id")
             values = payload.get("values", {})
-            
+
             if not section_id:
                 await self._send_validation_error(client_id, "section_id", "Section ID is required")
                 return
-            
+
+            # Apply wake word configuration when the wake section is confirmed
+            if section_id == "wake" and values:
+                try:
+                    from .agent.wake_config import get_wake_config
+                    wake_config = get_wake_config()
+                    config_updates = {}
+
+                    wake_phrase = values.get("wake_phrase")
+                    if wake_phrase is not None:
+                        # Rescan to catch any .ppn files that may not have been visible at startup
+                        # (e.g., when running from a git worktree with an empty models/wake_words/)
+                        discovered = self._wake_word_discovery.scan_directory()
+                        # Case-insensitive match: "Hey IRIS" and "Hey Iris" both find the same file
+                        custom_file = next(
+                            (wf for wf in discovered
+                             if wf.display_name.lower() == wake_phrase.lower() and wf.platform != "builtin"),
+                            None
+                        )
+                        config_updates["wake_phrase"] = wake_phrase
+                        config_updates["custom_model_path"] = custom_file.path if custom_file else None
+
+                    sensitivity = values.get("wake_word_sensitivity")
+                    if sensitivity is not None:
+                        # UI slider is 1-10; Porcupine needs 0.0-1.0
+                        config_updates["detection_sensitivity"] = float(sensitivity) / 10.0
+
+                    wake_enabled = values.get("wake_word_enabled")
+                    if wake_enabled is not None:
+                        config_updates["wake_word_enabled"] = bool(wake_enabled)
+
+                    if config_updates:
+                        wake_config.update_config(**config_updates)
+                        self._logger.info(
+                            f"[Session: {session_id}] Wake config applied on confirm: {config_updates}",
+                            extra={"session_id": session_id, "client_id": client_id}
+                        )
+                except Exception as wc_e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying wake config on confirm: {wc_e}",
+                        extra={"session_id": session_id, "client_id": client_id}
+                    )
+
+            # Apply TTS configuration when speech section is confirmed
+            elif section_id == "speech" and values:
+                try:
+                    lfm_audio_manager = get_lfm_audio_manager()
+                    kwargs = {}
+                    if "tts_voice" in values:
+                        kwargs["tts_voice"] = values["tts_voice"]
+                    if "speaking_rate" in values:
+                        kwargs["speaking_rate"] = values["speaking_rate"]
+                    if kwargs:
+                        lfm_audio_manager.update_voice_config(**kwargs)
+                        self._logger.info(
+                            f"[Session: {session_id}] Speech config applied on confirm: {kwargs}",
+                            extra={"session_id": session_id, "client_id": client_id}
+                        )
+                except Exception as e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying speech config on confirm: {e}",
+                        extra={"session_id": session_id, "client_id": client_id}
+                    )
+
+            # Apply model selection when models section is confirmed
+            # CARD_TO_SECTION_ID maps 'models-card' -> 'model_selection'
+            elif section_id == "model_selection" and values:
+                try:
+                    from .agent.agent_kernel import get_agent_kernel
+                    kernel = get_agent_kernel(session_id)
+                    reasoning = values.get("reasoning_model")
+                    # cards.ts field is 'tool_model' (not 'tool_execution_model')
+                    tool_exec = values.get("tool_model") or values.get("tool_execution_model")
+                    if reasoning or tool_exec:
+                        success_apply = kernel.set_model_selection(
+                            reasoning_model=reasoning,
+                            tool_execution_model=tool_exec
+                        )
+                        if success_apply:
+                            self._logger.info(
+                                f"[Session: {session_id}] Model selection applied on confirm: "
+                                f"reasoning={reasoning}, tool={tool_exec}",
+                                extra={"session_id": session_id, "client_id": client_id}
+                            )
+                        else:
+                            self._logger.warning(
+                                f"[Session: {session_id}] Model selection may not be available: "
+                                f"reasoning={reasoning}, tool={tool_exec}",
+                                extra={"session_id": session_id, "client_id": client_id}
+                            )
+                    # If model_provider changed, auto-refresh the model list so dropdowns
+                    # update immediately without a separate get_available_models request.
+                    if "model_provider" in values:
+                        await self._handle_get_available_models(session_id, client_id, {})
+                except Exception as e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying model selection on confirm: {e}",
+                        extra={"session_id": session_id, "client_id": client_id}
+                    )
+
+            # Apply audio device selection when input section is confirmed
+            elif section_id == "input" and values:
+                try:
+                    from ..audio.engine import get_audio_engine
+                    engine = get_audio_engine()
+                    # Field ID is 'input_device' per data/cards.ts
+                    device = values.get("input_device")
+                    if device is not None and device != "":
+                        engine.update_config(input_device=device)
+                        self._logger.info(
+                            f"[Session: {session_id}] Input device applied on confirm: {device}",
+                            extra={"session_id": session_id, "client_id": client_id}
+                        )
+                except Exception as e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying input device on confirm: {e}",
+                        extra={"session_id": session_id, "client_id": client_id}
+                    )
+
+            # Apply audio device selection when output section is confirmed
+            elif section_id == "output" and values:
+                try:
+                    from ..audio.engine import get_audio_engine
+                    engine = get_audio_engine()
+                    # Field ID is 'output_device' per data/cards.ts
+                    device = values.get("output_device")
+                    if device is not None and device != "":
+                        engine.update_config(output_device=device)
+                        self._logger.info(
+                            f"[Session: {session_id}] Output device applied on confirm: {device}",
+                            extra={"session_id": session_id, "client_id": client_id}
+                        )
+                except Exception as e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying output device on confirm: {e}",
+                        extra={"session_id": session_id, "client_id": client_id}
+                    )
+
             # Get current category
             state = await self._state_manager.get_state(session_id)
             if not state or not state.current_category:
                 await self._send_error(client_id, "No active category")
                 return
-            
+
             # Confirm section
             orbit_angle = await self._state_manager.confirm_section(
                 session_id,
@@ -468,17 +564,18 @@ class IRISGateway:
                 section_id,
                 values
             )
-            
+
             if orbit_angle is not None:
-                # Send confirmation
+                # Send confirmation with section context so the UI can show feedback
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "card_confirmed",
                     "payload": {
                         "section_id": section_id,
-                        "orbit_angle": orbit_angle
+                        "orbit_angle": orbit_angle,
+                        "applied": True
                     }
                 })
-                
+
                 # Broadcast state update
                 await self._broadcast_state_update(session_id, exclude_client=client_id)
             else:
@@ -798,36 +895,55 @@ class IRISGateway:
             ollama_endpoint = "http://localhost:11434"
 
             if session_state:
-                inference_mode = await session_state.get_field_value("inference_mode", "inference_mode", "Local Models") or "Local Models"
-                vps_url = await session_state.get_field_value("inference_mode", "vps_url", "") or ""
-                openai_api_key = await session_state.get_field_value("inference_mode", "openai_api_key", "") or ""
-                # Also check legacy "model" section for ollama_endpoint
-                try:
-                    ep = await session_state.get_field_value("model", "ollama_endpoint", "")
-                    if ep:
-                        ollama_endpoint = ep
-                except Exception:
-                    pass
+                # model_provider is in section 'model_selection' (CARD_TO_SECTION_ID: models-card)
+                # Values: 'local' | 'api' | 'vps'  (set by the Provider dropdown in the Models card)
+                inference_mode = await session_state.get_field_value("model_selection", "model_provider", "local") or "local"
+                vps_url = await session_state.get_field_value("model_selection", "vps_endpoint", "") or ""
+                openai_api_key = await session_state.get_field_value("model_selection", "api_key", "") or ""
 
             self._logger.info(
-                f"[Session: {session_id}] Getting available models for mode: {inference_mode}"
+                f"[Session: {session_id}] Getting available models for provider: {inference_mode}"
             )
 
             available_models = []
 
-            if inference_mode == "Local Models":
+            # Vision-only models should NOT appear in reasoning/tool dropdowns.
+            # They belong exclusively in the vision_model dropdown.
+            _VISION_ONLY_PREFIXES = (
+                "minicpm", "llava", "bakllava", "llava-llama3", "llava-phi3",
+                "moondream", "cogvlm", "internvl",
+            )
+
+            def _is_vision_only(model_id: str) -> bool:
+                """Check if a model is vision-only based on its name/id.
+
+                Handles namespaced IDs like 'openbmb/minicpm-o4.5:latest' by
+                checking both the full name and the part after the last '/'.
+                """
+                name_lower = model_id.lower().split(":")[0]  # strip tag like ":latest"
+                # Also check the base name after namespace (e.g. "openbmb/minicpm-o4.5" → "minicpm-o4.5")
+                base_name = name_lower.rsplit("/", 1)[-1] if "/" in name_lower else name_lower
+                return (
+                    any(name_lower.startswith(p) for p in _VISION_ONLY_PREFIXES) or
+                    any(base_name.startswith(p) for p in _VISION_ONLY_PREFIXES)
+                )
+
+            if inference_mode == "local":
                 # Query Ollama for locally installed models
                 try:
                     async with httpx.AsyncClient(timeout=3.0) as http_client:
                         r = await http_client.get(f"{ollama_endpoint.rstrip('/')}/api/tags")
                         if r.status_code == 200:
                             tags = r.json().get("models", [])
+                            # Exclude vision-only models from reasoning/tool list
                             available_models = [
                                 {"id": m["name"], "name": m["name"], "source": "local"}
                                 for m in tags
+                                if not _is_vision_only(m["name"])
                             ]
                             self._logger.info(
-                                f"[Session: {session_id}] Found {len(available_models)} Ollama model(s)"
+                                f"[Session: {session_id}] Found {len(available_models)} Ollama model(s) "
+                                f"({len(tags) - len(available_models)} vision-only filtered out)"
                             )
                         else:
                             self._logger.warning(
@@ -837,10 +953,96 @@ class IRISGateway:
                     self._logger.warning(
                         f"[Session: {session_id}] Ollama not reachable at {ollama_endpoint}: {ollama_err}"
                     )
-                # Return empty list if Ollama is not running — frontend will show "No options available"
-                # which tells the user to start Ollama
 
-            elif inference_mode == "OpenAI API":
+                # Scan the local models/ directory for HuggingFace-format models
+                # (e.g. LFM2.5-1.2B-Instruct, LFM2-8B-A1B) that aren't in Ollama.
+                try:
+                    import subprocess
+                    from pathlib import Path
+
+                    # Resolve project root (handles git worktrees)
+                    project_dir = Path(__file__).parent.parent.resolve()
+                    models_dir = project_dir / "models"
+
+                    # If we're in a worktree, also check the main repo's models dir
+                    candidates = [models_dir]
+                    try:
+                        result = subprocess.run(
+                            ["git", "rev-parse", "--show-toplevel"],
+                            capture_output=True, text=True, timeout=3,
+                            cwd=str(project_dir),
+                        )
+                        common = subprocess.run(
+                            ["git", "rev-parse", "--git-common-dir"],
+                            capture_output=True, text=True, timeout=3,
+                            cwd=str(project_dir),
+                        )
+                        if result.returncode == 0 and common.returncode == 0:
+                            wt_root = Path(result.stdout.strip()).resolve()
+                            main_root = Path(common.stdout.strip()).resolve().parent
+                            if wt_root != main_root:
+                                try:
+                                    rel = project_dir.relative_to(wt_root)
+                                    main_models = main_root / rel / "models"
+                                    if main_models != models_dir:
+                                        candidates.append(main_models)
+                                except ValueError:
+                                    pass
+                    except Exception:
+                        pass
+
+                    ollama_ids = {m["id"] for m in available_models}
+                    for mdir in candidates:
+                        if not mdir.is_dir():
+                            continue
+                        for child in sorted(mdir.iterdir()):
+                            if not child.is_dir():
+                                continue
+                            config_file = child / "config.json"
+                            if not config_file.exists():
+                                continue
+                            # It's a HuggingFace model directory
+                            model_name = child.name
+                            if model_name in ollama_ids:
+                                continue
+                            if _is_vision_only(model_name):
+                                continue
+                            # Skip non-model dirs (cache, wake_words, etc.)
+                            if model_name.lower() in ("cache", "wake_words", "audio_detokenizer"):
+                                continue
+                            available_models.append({
+                                "id": str(child),
+                                "name": model_name,
+                                "source": "local_hf",
+                            })
+                    hf_count = sum(1 for m in available_models if m.get("source") == "local_hf")
+                    if hf_count:
+                        self._logger.info(
+                            f"[Session: {session_id}] Found {hf_count} local HuggingFace model(s)"
+                        )
+                except Exception as scan_err:
+                    self._logger.warning(
+                        f"[Session: {session_id}] Local model scan failed: {scan_err}"
+                    )
+
+                # Fallback: show popular Ollama models when the daemon is not running
+                # and no local HuggingFace models were found either
+                if not available_models:
+                    available_models = [
+                        {"id": "llama3.2", "name": "Llama 3.2 (3B)", "source": "local"},
+                        {"id": "llama3.2:1b", "name": "Llama 3.2 (1B)", "source": "local"},
+                        {"id": "llama3.1", "name": "Llama 3.1 (8B)", "source": "local"},
+                        {"id": "mistral", "name": "Mistral 7B", "source": "local"},
+                        {"id": "qwen2.5:3b", "name": "Qwen 2.5 (3B)", "source": "local"},
+                        {"id": "phi4", "name": "Phi-4 (14B)", "source": "local"},
+                        {"id": "deepseek-r1:7b", "name": "DeepSeek R1 (7B)", "source": "local"},
+                        {"id": "codellama", "name": "Code Llama", "source": "local"},
+                    ]
+                    self._logger.info(
+                        f"[Session: {session_id}] No models found — returning fallback list"
+                    )
+
+            elif inference_mode == "api":
                 # Try to query OpenAI models list if we have a valid key
                 if openai_api_key and openai_api_key.startswith("sk-"):
                     try:
@@ -877,7 +1079,7 @@ class IRISGateway:
                         {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "source": "openai"},
                     ]
 
-            elif inference_mode == "VPS Gateway":
+            elif inference_mode == "vps":
                 # Try to query the VPS endpoint for models
                 if vps_url:
                     try:
@@ -908,7 +1110,8 @@ class IRISGateway:
                 "type": "available_models",
                 "payload": {
                     "models": available_models,
-                    "inference_mode": inference_mode
+                    "model_provider": inference_mode,   # 'local' | 'api' | 'vps'
+                    "inference_mode": inference_mode    # kept for backward compat
                 }
             })
 
@@ -1180,8 +1383,8 @@ class IRISGateway:
                 extra={"session_id": session_id, "client_id": client_id}
             )
 
-            # 1. Get built-in pvporcupine keywords
-            from .agent.wake_config import SUPPORTED_PHRASES
+            # 1. Get built-in pvporcupine keywords from WakeConfig class attribute
+            from .agent.wake_config import WakeConfig
             builtin_list = [
                 {
                     "filename": phrase.replace(" ", "_"),
@@ -1190,11 +1393,12 @@ class IRISGateway:
                     "version": "builtin",
                     "is_builtin": True
                 }
-                for phrase in SUPPORTED_PHRASES
+                for phrase in WakeConfig.SUPPORTED_PHRASES
             ]
 
-            # 2. Get discovered .ppn custom wake word files
-            discovered_files = self._wake_word_discovery.get_discovered_files()
+            # 2. Rescan the wake words directory each time to pick up newly added .ppn files
+            #    (scan_directory is a fast glob — safe to call on each get_wake_words request)
+            discovered_files = self._wake_word_discovery.scan_directory()
             custom_list = [
                 {
                     "filename": wf.filename,
@@ -1317,9 +1521,14 @@ class IRISGateway:
                 extra={"session_id": session_id, "client_id": client_id, "wake_word_filename": filename}
             )
             
-            # Look up wake word file
+            # Look up wake word file — try cached results first, rescan if not found
             wake_word_file = self._wake_word_discovery.get_file_by_filename(filename)
-            
+            if not wake_word_file:
+                # Cache may be stale (e.g., select_wake_word called before get_wake_words).
+                # Rescan once to pick up newly visible .ppn files.
+                self._wake_word_discovery.scan_directory()
+                wake_word_file = self._wake_word_discovery.get_file_by_filename(filename)
+
             if not wake_word_file:
                 self._logger.warning(
                     f"[Session: {session_id}] Wake word file not found: {filename}",
@@ -1328,20 +1537,38 @@ class IRISGateway:
                 await self._send_error(client_id, f"Wake word file not found: {filename}")
                 return
             
-            # TODO: Load wake word file into PorcupineDetector
-            # This will be implemented when PorcupineDetector integration is ready
-            # For now, just acknowledge the selection
-            self._logger.info(
-                f"[Session: {session_id}] Wake word selected: {wake_word_file.display_name} "
-                f"(file: {wake_word_file.filename})",
-                extra={
-                    "session_id": session_id,
-                    "client_id": client_id,
-                    "wake_word_filename": wake_word_file.filename,
-                    "display_name": wake_word_file.display_name,
-                    "platform": wake_word_file.platform
-                }
-            )
+            # Update WakeConfig — the registered callback triggers reinitialize_porcupine().
+            # Custom .ppn files store the absolute path; built-ins use the keyword name.
+            try:
+                from .agent.wake_config import get_wake_config
+                wake_config = get_wake_config()
+                is_builtin = (wake_word_file.platform == "builtin")
+                if is_builtin:
+                    wake_config.update_config(
+                        wake_phrase=wake_word_file.display_name.lower(),
+                        custom_model_path=None
+                    )
+                else:
+                    wake_config.update_config(
+                        wake_phrase=wake_word_file.display_name,
+                        custom_model_path=wake_word_file.path
+                    )
+                self._logger.info(
+                    f"[Session: {session_id}] Wake word updated: '{wake_word_file.display_name}' "
+                    f"({'builtin' if is_builtin else wake_word_file.path})",
+                    extra={
+                        "session_id": session_id,
+                        "client_id": client_id,
+                        "wake_word_filename": wake_word_file.filename,
+                        "display_name": wake_word_file.display_name,
+                        "platform": wake_word_file.platform
+                    }
+                )
+            except Exception as cfg_e:
+                self._logger.error(
+                    f"[Session: {session_id}] Failed to update WakeConfig for wake word: {cfg_e}",
+                    extra={"session_id": session_id, "client_id": client_id}
+                )
             
             # Broadcast selection to all clients in session
             await self._ws_manager.broadcast_to_session(session_id, {

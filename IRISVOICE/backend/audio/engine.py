@@ -111,7 +111,8 @@ class AudioEngine:
     def initialize_porcupine(self, wake_phrase: Optional[str] = None, sensitivity: Optional[float] = None) -> bool:
         """
         Initialize Porcupine wake word detector using the user's chosen wake phrase.
-        wake_phrase defaults to WakeConfig setting (set via Voice > Wake Word in UI).
+        Supports both built-in pvporcupine keywords and custom .ppn model files.
+        wake_phrase/sensitivity default to WakeConfig settings (set via Voice > Wake Word in UI).
         Called lazily — NOT at startup (avoids delay on low-spec PCs).
         """
         try:
@@ -120,19 +121,80 @@ class AudioEngine:
 
             # Read from user settings if not overridden
             if wake_phrase is None:
-                wake_phrase = wake_config.get_wake_phrase()   # e.g. "jarvis", "hey computer"
+                wake_phrase = wake_config.get_wake_phrase()
             if sensitivity is None:
-                sensitivity = wake_config.get_sensitivity()   # float 0–1 from UI slider
+                sensitivity = wake_config.get_sensitivity()
 
-            # Map user-friendly phrase to pvporcupine built-in keyword name
-            keyword = wake_phrase.lower().replace(" ", "_")   # "hey computer" -> "hey_computer"
+            # Check if a custom .ppn model file has been selected
+            custom_model_path = wake_config.get_custom_model_path()
 
-            self._porcupine = PorcupineWakeWordDetector(
-                builtin_keywords=[keyword],
-                sensitivities=[sensitivity]
-            )
+            # Known pvporcupine built-in keyword names (lowercase)
+            _BUILTIN_KEYWORDS = {"jarvis", "computer", "bumblebee", "porcupine"}
+
+            if custom_model_path:
+                # Custom .ppn file (user-trained wake word, e.g. hey-iris_en_windows_v4_0_0.ppn)
+                self._porcupine = PorcupineWakeWordDetector(
+                    custom_model_path=custom_model_path,
+                    sensitivities=[sensitivity]
+                )
+                logger.info(
+                    f"[AudioEngine] Porcupine initialized — custom model '{wake_phrase}' "
+                    f"({custom_model_path}) sensitivity={sensitivity:.2f}"
+                )
+            elif wake_phrase.lower().replace(" ", "_") in _BUILTIN_KEYWORDS or wake_phrase.lower() in _BUILTIN_KEYWORDS:
+                # Built-in pvporcupine keyword (jarvis, computer, bumblebee, porcupine)
+                keyword = wake_phrase.lower().replace(" ", "_")
+                self._porcupine = PorcupineWakeWordDetector(
+                    builtin_keywords=[keyword],
+                    sensitivities=[sensitivity]
+                )
+                logger.info(
+                    f"[AudioEngine] Porcupine initialized — builtin '{keyword}' sensitivity={sensitivity:.2f}"
+                )
+            else:
+                # wake_phrase is not a built-in and custom_model_path is not set.
+                # Try to auto-discover a matching .ppn file via WakeWordDiscovery.
+                try:
+                    from backend.voice.wake_word_discovery import WakeWordDiscovery
+                    discovery = WakeWordDiscovery()
+                    discovered = discovery.scan_directory()
+                    match = next(
+                        (f for f in discovered if f.display_name.lower() == wake_phrase.lower()),
+                        None
+                    )
+                except Exception as disc_err:
+                    logger.warning(f"[AudioEngine] WakeWordDiscovery lookup failed: {disc_err}")
+                    match = None
+
+                if match:
+                    # Found the .ppn file — use it and update WakeConfig so future inits are fast
+                    wake_config.update_config(custom_model_path=match.path)
+                    self._porcupine = PorcupineWakeWordDetector(
+                        custom_model_path=match.path,
+                        sensitivities=[sensitivity]
+                    )
+                    logger.info(
+                        f"[AudioEngine] Porcupine initialized — auto-discovered custom model '{wake_phrase}' "
+                        f"({match.path}) sensitivity={sensitivity:.2f}"
+                    )
+                else:
+                    # Phrase not found as builtin or custom model — fall back to default to avoid a crash
+                    fallback = wake_config.DEFAULT_WAKE_PHRASE  # "jarvis"
+                    logger.warning(
+                        f"[AudioEngine] Wake phrase '{wake_phrase}' is not a built-in keyword and no "
+                        f"matching .ppn file was found. Falling back to '{fallback}'. "
+                        f"Select a valid wake word in Voice settings and press Confirm."
+                    )
+                    wake_config.update_config(wake_phrase=fallback, custom_model_path=None)
+                    self._porcupine = PorcupineWakeWordDetector(
+                        builtin_keywords=[fallback],
+                        sensitivities=[sensitivity]
+                    )
+                    logger.info(
+                        f"[AudioEngine] Porcupine initialized — fallback builtin '{fallback}' sensitivity={sensitivity:.2f}"
+                    )
+
             self._porcupine_initialized = True
-            logger.info(f"[AudioEngine] Porcupine initialized — listening for '{wake_phrase}' (sensitivity={sensitivity:.2f})")
             return True
         except Exception as e:
             logger.error(f"[AudioEngine] Porcupine init failed: {e}")

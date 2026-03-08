@@ -180,18 +180,61 @@ class AudioPipeline:
     
     @staticmethod
     def list_devices() -> List[dict]:
-        """List available audio devices"""
-        devices = []
-        
-        device_list = sd.query_devices()
-        for i in range(len(device_list)):
+        """List available audio devices, deduplicated across host APIs.
+
+        On Windows, sounddevice (PortAudio) enumerates every physical device
+        once per host API (MME, DirectSound, WASAPI, WDM-KS).  This results
+        in the same speaker/microphone appearing 3-4 times.  Additionally,
+        the MME host API truncates names to ~31 characters while WASAPI and
+        WDM show the full name, so exact string matching is insufficient.
+
+        Strategy:
+        - Build a list of all devices.
+        - For each new device, check if any already-seen device shares the
+          same first 31 characters (the MME truncation boundary).  If so,
+          merge capabilities and keep the longer (more descriptive) name.
+        - Skip system virtual devices (Sound Mapper, Primary Sound Driver)
+          that duplicate real defaults.
+        """
+        _SKIP_PREFIXES = (
+            "Microsoft Sound Mapper",
+            "Primary Sound Capture Driver",
+            "Primary Sound Driver",
+        )
+
+        raw_devices = sd.query_devices()
+        # key = first-31-chars of name (lowered), value = merged device dict
+        seen: dict[str, dict] = {}
+
+        for i in range(len(raw_devices)):
             info = sd.query_devices(i)
-            devices.append({
-                "index": i,
-                "name": info["name"],
-                "input": info["max_input_channels"] > 0,
-                "output": info["max_output_channels"] > 0,
-                "sample_rate": int(info["default_samplerate"])
-            })
-        
-        return devices
+            name: str = info["name"]
+            is_input = info["max_input_channels"] > 0
+            is_output = info["max_output_channels"] > 0
+
+            # Skip Windows virtual / mapper devices — they just duplicate the
+            # user's default device under a generic name.
+            if any(name.startswith(prefix) for prefix in _SKIP_PREFIXES):
+                continue
+
+            # Dedup key: first 31 chars lowered (MME truncation boundary)
+            key = name[:31].lower().rstrip()
+
+            if key in seen:
+                existing = seen[key]
+                existing["input"] = existing["input"] or is_input
+                existing["output"] = existing["output"] or is_output
+                # Keep the longer (more descriptive) version of the name
+                if len(name) > len(existing["name"]):
+                    existing["name"] = name
+                    existing["index"] = i  # prefer the longer-name entry's index
+            else:
+                seen[key] = {
+                    "index": i,
+                    "name": name,
+                    "input": is_input,
+                    "output": is_output,
+                    "sample_rate": int(info["default_samplerate"]),
+                }
+
+        return list(seen.values())

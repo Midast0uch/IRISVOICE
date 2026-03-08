@@ -293,5 +293,16 @@ class MiniCPMClient:
         logger.warning("[MiniCPMClient] update_config() is deprecated and has no effect")
 
 
+# Singleton instance for backward compatibility
+_client_instance: Optional[MiniCPMClient] = None
+
+def get_minicpm_client() -> MiniCPMClient:
+    """Get or create the singleton MiniCPMClient instance (deprecated)."""
+    global _client_instance
+    if _client_instance is None:
+        _client_instance = MiniCPMClient()
+    return _client_instance
+
+
 # Maintain backward compatibility for imports
-__all__ = ["MiniCPMClient"]
+__all__ = ["MiniCPMClient", "get_minicpm_client"]

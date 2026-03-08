@@ -9,7 +9,7 @@ import { useAnimationConfig } from "@/hooks/useAnimationConfig"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { Mic, Settings, Zap, Shield, Palette, BarChart3 } from "lucide-react"
 
-import { MAIN_CATEGORY_IDS, SUB_NODE_IDS } from "@/data/navigation-ids"
+import { MAIN_CATEGORY_IDS, SECTION_IDS } from "@/data/navigation-ids"
 import { getCardsForSection } from "@/data/cards"
 
 // Main node configuration with icons
@@ -22,50 +22,50 @@ const MAIN_NODES = [
   { id: MAIN_CATEGORY_IDS.MONITOR, label: "Monitor", icon: BarChart3 },
 ]
 
-// Sub-node configurations - using lowercase-kebab-case IDs from navigation-ids.ts
-const SUB_NODES: Record<string, { id: string; label: string }[]> = {
+// Section configurations - using lowercase-kebab-case IDs from navigation-ids.ts
+const SECTIONS: Record<string, { id: string; label: string }[]> = {
   [MAIN_CATEGORY_IDS.VOICE]: [
-    { id: SUB_NODE_IDS.VOICE_INPUT, label: "Input" },
-    { id: SUB_NODE_IDS.VOICE_OUTPUT, label: "Output" },
-    { id: SUB_NODE_IDS.VOICE_PROCESSING, label: "Processing" },
-    { id: SUB_NODE_IDS.VOICE_MODEL, label: "Model" },
+    { id: SECTION_IDS.VOICE_INPUT, label: "Input" },
+    { id: SECTION_IDS.VOICE_OUTPUT, label: "Output" },
+    { id: SECTION_IDS.VOICE_WAKE, label: "Wake Word" },
+    { id: SECTION_IDS.VOICE_SPEECH, label: "Speech" },
   ],
   [MAIN_CATEGORY_IDS.AGENT]: [
-    { id: SUB_NODE_IDS.AGENT_MODEL_SELECTION, label: "Models" },
-    { id: SUB_NODE_IDS.AGENT_INFERENCE_MODE, label: "Inference" },
-    { id: SUB_NODE_IDS.AGENT_IDENTITY, label: "Identity" },
-    { id: SUB_NODE_IDS.AGENT_MEMORY, label: "Memory" },
+    { id: SECTION_IDS.AGENT_MODEL_SELECTION, label: "Models" },
+    { id: SECTION_IDS.AGENT_INFERENCE_MODE, label: "Inference" },
+    { id: SECTION_IDS.AGENT_IDENTITY, label: "Identity" },
+    { id: SECTION_IDS.AGENT_MEMORY, label: "Memory" },
   ],
   [MAIN_CATEGORY_IDS.AUTOMATE]: [
-    { id: SUB_NODE_IDS.AUTOMATE_TOOLS, label: "Tools" },
-    { id: SUB_NODE_IDS.AUTOMATE_VISION, label: "Vision" },
-    { id: SUB_NODE_IDS.AUTOMATE_WORKFLOWS, label: "Workflows" },
-    { id: SUB_NODE_IDS.AUTOMATE_SHORTCUTS, label: "Shortcuts" },
-    { id: SUB_NODE_IDS.AUTOMATE_DESKTOP_CONTROL, label: "Desktop Control" },
+    { id: SECTION_IDS.AUTOMATE_TOOLS, label: "Tools" },
+    { id: SECTION_IDS.AUTOMATE_VISION, label: "Vision" },
+    { id: SECTION_IDS.AUTOMATE_SKILLS, label: "Skills" },
+    { id: SECTION_IDS.AUTOMATE_PROFILE, label: "Profile" },
+    { id: SECTION_IDS.AUTOMATE_DESKTOP_CONTROL, label: "Desktop Control" },
   ],
   [MAIN_CATEGORY_IDS.SYSTEM]: [
-    { id: SUB_NODE_IDS.SYSTEM_POWER, label: "Power" },
-    { id: SUB_NODE_IDS.SYSTEM_DISPLAY, label: "Display" },
-    { id: SUB_NODE_IDS.SYSTEM_STORAGE, label: "Storage" },
-    { id: SUB_NODE_IDS.SYSTEM_NETWORK, label: "Network" },
+    { id: SECTION_IDS.SYSTEM_POWER, label: "Power" },
+    { id: SECTION_IDS.SYSTEM_DISPLAY, label: "Display" },
+    { id: SECTION_IDS.SYSTEM_STORAGE, label: "Storage" },
+    { id: SECTION_IDS.SYSTEM_NETWORK, label: "Network" },
   ],
   [MAIN_CATEGORY_IDS.CUSTOMIZE]: [
-    { id: SUB_NODE_IDS.CUSTOMIZE_THEME, label: "Theme" },
-    { id: SUB_NODE_IDS.CUSTOMIZE_STARTUP, label: "Startup" },
-    { id: SUB_NODE_IDS.CUSTOMIZE_BEHAVIOR, label: "Behavior" },
-    { id: SUB_NODE_IDS.CUSTOMIZE_NOTIFICATIONS, label: "Notifications" },
+    { id: SECTION_IDS.CUSTOMIZE_THEME, label: "Theme" },
+    { id: SECTION_IDS.CUSTOMIZE_STARTUP, label: "Startup" },
+    { id: SECTION_IDS.CUSTOMIZE_BEHAVIOR, label: "Behavior" },
+    { id: SECTION_IDS.CUSTOMIZE_NOTIFICATIONS, label: "Notifications" },
   ],
   [MAIN_CATEGORY_IDS.MONITOR]: [
-    { id: SUB_NODE_IDS.MONITOR_ANALYTICS, label: "Analytics" },
-    { id: SUB_NODE_IDS.MONITOR_LOGS, label: "Logs" },
-    { id: SUB_NODE_IDS.MONITOR_DIAGNOSTICS, label: "Diagnostics" },
-    { id: SUB_NODE_IDS.MONITOR_UPDATES, label: "Updates" },
+    { id: SECTION_IDS.MONITOR_ANALYTICS, label: "Analytics" },
+    { id: SECTION_IDS.MONITOR_LOGS, label: "Logs" },
+    { id: SECTION_IDS.MONITOR_DIAGNOSTICS, label: "Diagnostics" },
+    { id: SECTION_IDS.MONITOR_UPDATES, label: "Updates" },
   ],
 }
 
 // Node positioning angles (6 nodes in a hexagonal pattern)
 const MAIN_NODE_ANGLES = [-90, -30, 30, 90, 150, 210]
-const SUB_NODE_ANGLES = [-90, 0, 90, 180]
+const SECTION_ANGLES = [-90, 0, 90, 180]
 
 export default function HexagonalControlCenter() {
   const nav = useNavigation()
@@ -109,11 +109,11 @@ export default function HexagonalControlCenter() {
     } else if (nav.state.level === 3 && nav.state.selectedMain) {
       const sections = (nav.sections[nav.state.selectedMain]?.length > 0)
         ? nav.sections[nav.state.selectedMain]
-        : (SUB_NODES[nav.state.selectedMain] || [])
+        : (SECTIONS[nav.state.selectedMain] || [])
       return sections.map((node: { id: string; label: string }, index: number) => ({
         ...node,
-        icon: Settings, // Default icon for sub-nodes
-        angle: SUB_NODE_ANGLES[index] || 0,
+        icon: Settings, // Default icon for sections
+        angle: SECTION_ANGLES[index] || 0,
         isActive: nav.state.selectedSub === node.id,
         isAnchor: false,
       }))

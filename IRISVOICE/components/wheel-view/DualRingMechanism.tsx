@@ -47,7 +47,7 @@ function hexToRgba(color: string, alpha: number): string {
  * SVG-based visualization of outer and inner orbital rings with clickable segments.
  * 
  * Features:
- * - Distributes mini-nodes across outer (first half) and inner (second half) rings
+ * - Distributes sections across outer (first half) and inner (second half) rings
  * - Outer ring: radius 0.42, stroke 28px, diamond markers
  * - Inner ring: radius 0.18, stroke 22px, circle markers, depth styling
  * - Rotation: Centers selected item at 12 o'clock using spring physics

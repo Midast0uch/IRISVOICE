@@ -97,11 +97,10 @@ export default function Home() {
     openChat()
   }
 
-  // Task 10.2: Wire up WheelView callbacks
-  const handleWheelViewConfirm = (values: Record<string, Record<string, any>>) => {
-    // Save miniNodeValues to context - already handled by updateMiniNodeValue in WheelView
-    // The values are already persisted through the context, so we just need to acknowledge
-    console.log("[Navigation] WheelView confirmed with values:", values)
+  // WheelView confirm: confirm_card is sent directly inside WheelView.handleConfirm.
+  // This callback exists to satisfy the prop type; no additional work needed here.
+  const handleWheelViewConfirm = (_values: Record<string, Record<string, any>>) => {
+    // confirm_card already dispatched by WheelView to the backend
   }
 
   const handleWheelViewBack = () => {

@@ -127,11 +127,31 @@ class ColorTheme(BaseModel):
         return v.lower()
 
 
+def _build_default_field_values() -> Dict[str, Dict[str, Any]]:
+    """BUG-04 FIX: Build default field_values from SECTION_CONFIGS.
+
+    Without this, IRISState starts with empty field_values={} and the
+    frontend never receives any default values from the backend on initial_state.
+    """
+    defaults: Dict[str, Dict[str, Any]] = {}
+    # SECTION_CONFIGS is defined later in this file but this function
+    # is only called at runtime (as a default_factory), not at import time.
+    for category_sections in SECTION_CONFIGS.values():
+        for section in category_sections:
+            section_defaults: Dict[str, Any] = {}
+            for field in section.fields:
+                if field.value is not None:
+                    section_defaults[field.id] = field.value
+            if section_defaults:
+                defaults[section.id] = section_defaults
+    return defaults
+
+
 class IRISState(BaseModel):
     """Complete application state"""
     current_category: Optional[Category] = None
     current_section: Optional[str] = None
-    field_values: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    field_values: Dict[str, Dict[str, Any]] = Field(default_factory=_build_default_field_values)
     
     class Config:
         populate_by_name = True
@@ -353,7 +373,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             icon="Power",
             fields=[
                 InputField(id="wake_word_enabled", type=FieldType.TOGGLE, label="Wake Word Enabled", value=True),
-                InputField(id="wake_phrase", type=FieldType.DROPDOWN, label="Wake Phrase", options=["Hey IRIS", "Computer"], value="Hey IRIS"),
+                InputField(id="wake_phrase", type=FieldType.DROPDOWN, label="Wake Phrase", options=["Jarvis", "Computer", "Bumblebee", "Porcupine"], value="Jarvis"),
                 InputField(id="detection_sensitivity", type=FieldType.SLIDER, label="Detection Sensitivity", min=0, max=100, value=70, unit="%"),
                 InputField(id="activation_sound", type=FieldType.TOGGLE, label="Activation Sound", value=True),
                 InputField(id="sleep_timeout", type=FieldType.SLIDER, label="Sleep Timeout", min=5, max=300, value=60, unit="s"),
@@ -369,6 +389,27 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
                 InputField(id="speaking_rate", type=FieldType.SLIDER, label="Speaking Rate", min=0.5, max=2, value=1, step=0.1),
                 InputField(id="pitch", type=FieldType.SLIDER, label="Pitch", min=-10, max=10, value=0, step=1),
                 InputField(id="intonation", type=FieldType.SLIDER, label="Intonation", min=0, max=100, value=50, unit="%"),
+            ]
+        ),
+        # BUG-03 FIX: Add sections that frontend expects but backend was missing
+        Section(
+            id="identity",
+            label="IDENTITY",
+            icon="User",
+            fields=[
+                InputField(id="agent_name", type=FieldType.TEXT, label="Agent Name", placeholder="Enter agent name...", value="Iris"),
+                InputField(id="persona", type=FieldType.DROPDOWN, label="Persona", options=["Professional", "Friendly", "Concise", "Creative", "Technical"], value="Friendly"),
+                InputField(id="greeting_message", type=FieldType.TEXT, label="Greeting Message", placeholder="Hello! How can I help you?", value="Hello! How can I help you?"),
+            ]
+        ),
+        Section(
+            id="memory",
+            label="MEMORY",
+            icon="Database",
+            fields=[
+                InputField(id="memory_enabled", type=FieldType.TOGGLE, label="Memory Enabled", value=True),
+                InputField(id="context_window", type=FieldType.SLIDER, label="Context Window", min=5, max=50, value=10),
+                InputField(id="memory_persistence", type=FieldType.TOGGLE, label="Save Conversations", value=True),
             ]
         ),
     ],
@@ -409,6 +450,55 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
                 InputField(id="home_assistant_url", type=FieldType.TEXT, label="Home Assistant URL", placeholder="http://homeassistant.local:8123", value=""),
             ]
         ),
+        # BUG-03 FIX: Add sections that frontend expects but backend was missing
+        Section(
+            id="tools",
+            label="TOOLS",
+            icon="Wrench",
+            fields=[
+                InputField(id="allowed_tools", type=FieldType.DROPDOWN, label="Allowed Tools", options=["All", "None", "Custom"], value="All"),
+                InputField(id="tool_confirmations", type=FieldType.TOGGLE, label="Require Confirmations", value=True),
+            ]
+        ),
+        Section(
+            id="vision",
+            label="VISION",
+            icon="Eye",
+            fields=[
+                InputField(id="vision_enabled", type=FieldType.TOGGLE, label="Vision Enabled", value=False),
+                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm-o4.5", "llava", "bakllava"], value="minicpm-o4.5"),
+            ]
+        ),
+        Section(
+            id="desktop_control",
+            label="DESKTOP CONTROL",
+            icon="Monitor",
+            fields=[
+                InputField(id="desktop_control_enabled", type=FieldType.TOGGLE, label="Desktop Control Enabled", value=False),
+                InputField(id="ui_tars_provider", type=FieldType.DROPDOWN, label="UI-TARS Provider", options=["cli_npx", "native_python", "api_cloud"], value="native_python"),
+                InputField(id="vision_model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm_ollama", "anthropic", "volcengine", "local"], value="minicpm_ollama"),
+                InputField(id="api_key", type=FieldType.TEXT, label="API Key", placeholder="sk-...", value=""),
+                InputField(id="max_steps", type=FieldType.SLIDER, label="Max Automation Steps", min=5, max=50, value=25),
+                InputField(id="require_confirmation", type=FieldType.TOGGLE, label="Require Confirmation", value=True),
+                InputField(id="use_vision_guidance", type=FieldType.TOGGLE, label="Use Vision Guidance", value=True),
+            ]
+        ),
+        Section(
+            id="skills",
+            label="SKILLS",
+            icon="Sparkles",
+            fields=[
+                InputField(id="skill_creation_enabled", type=FieldType.TOGGLE, label="Allow Agent to Create Skills", value=True),
+            ]
+        ),
+        Section(
+            id="profile",
+            label="PROFILE",
+            icon="User",
+            fields=[
+                InputField(id="active_mode", type=FieldType.DROPDOWN, label="Active Mode", options=["default", "work", "personal", "focus"], value="default"),
+            ]
+        ),
     ],
     "system": [
         Section(
@@ -445,6 +535,34 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
                 InputField(id="audit_log_level", type=FieldType.DROPDOWN, label="Audit Log Level", options=["None", "Basic", "Full"], value="Basic"),
                 InputField(id="allow_external_requests", type=FieldType.TOGGLE, label="Allow External Requests", value=False),
                 InputField(id="two_factor_auth", type=FieldType.TOGGLE, label="Two-Factor Auth", value=False),
+            ]
+        ),
+        # BUG-03 FIX: Add sections that frontend expects but backend was missing
+        Section(
+            id="power",
+            label="POWER",
+            icon="Power",
+            fields=[
+                InputField(id="auto_start", type=FieldType.TOGGLE, label="Auto Start on Boot", value=False),
+                InputField(id="minimize_to_tray", type=FieldType.TOGGLE, label="Minimize to Tray", value=True),
+            ]
+        ),
+        Section(
+            id="display",
+            label="DISPLAY",
+            icon="Monitor",
+            fields=[
+                InputField(id="window_opacity", type=FieldType.SLIDER, label="Window Opacity", min=20, max=100, value=95, unit="%"),
+                InputField(id="always_on_top", type=FieldType.TOGGLE, label="Always on Top", value=False),
+            ]
+        ),
+        Section(
+            id="network",
+            label="NETWORK",
+            icon="Wifi",
+            fields=[
+                InputField(id="websocket_url", type=FieldType.TEXT, label="WebSocket URL", placeholder="ws://localhost:8000/ws", value="ws://localhost:8000/ws"),
+                InputField(id="connection_timeout", type=FieldType.SLIDER, label="Timeout", min=5, max=60, value=30, unit="s"),
             ]
         ),
     ],
@@ -485,8 +603,37 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
                 InputField(id="auto_dismiss_delay", type=FieldType.SLIDER, label="Auto-Dismiss Delay", min=1, max=10, value=5, unit="s"),
             ]
         ),
+        # BUG-03 FIX: Add sections that frontend expects but backend was missing
+        Section(
+            id="startup",
+            label="STARTUP",
+            icon="Rocket",
+            fields=[
+                InputField(id="startup_page", type=FieldType.DROPDOWN, label="Startup Page", options=["Dashboard", "Chat", "Settings"], value="Dashboard"),
+                InputField(id="startup_behavior", type=FieldType.DROPDOWN, label="Startup Behavior", options=["Normal", "Minimized", "Fullscreen"], value="Normal"),
+            ]
+        ),
+        Section(
+            id="behavior",
+            label="BEHAVIOR",
+            icon="Sliders",
+            fields=[
+                InputField(id="confirm_exit", type=FieldType.TOGGLE, label="Confirm on Exit", value=True),
+                InputField(id="auto_save", type=FieldType.TOGGLE, label="Auto Save", value=True),
+            ]
+        ),
     ],
     "monitor": [
+        # BUG-03 FIX: Add analytics section that frontend expects
+        Section(
+            id="analytics",
+            label="ANALYTICS",
+            icon="BarChart3",
+            fields=[
+                InputField(id="view_analytics", type=FieldType.TEXT, label="View Analytics", placeholder="View", value=""),
+                InputField(id="export_report", type=FieldType.TEXT, label="Export Report", placeholder="Export", value=""),
+            ]
+        ),
         Section(
             id="metrics",
             label="METRICS",

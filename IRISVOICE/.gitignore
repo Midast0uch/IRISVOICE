@@ -46,4 +46,17 @@ tauri-build/
 
 # recordings
 recordings/
-"*.log"  
+
+# logs
+*.log
+backend/logs/
+
+# runtime session data (generated at runtime, never commit)
+backend/sessions/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*/
+backend/sessions/sess-*/
+
+# local machine ID
+data/.machine_id
+
+# claude project config (local only)
+.claude/

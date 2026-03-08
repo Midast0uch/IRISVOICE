@@ -133,21 +133,12 @@ class AgentKernel:
             self._initialization_error = f"Model Router initialization failed: {e}"
             self._model_router = None
         
-        try:
-            # Initialize VPS Gateway with default disabled config
-            # Configuration will be loaded from settings when available
-            logger.info("[AgentKernel] Initializing VPS Gateway...")
-            self._vps_config = VPSConfig(enabled=False)
-            
-            if self._model_router:
-                self._vps_gateway = VPSGateway(self._vps_config, self._model_router)
-                logger.info("[AgentKernel] VPS Gateway initialized (disabled by default)")
-            else:
-                logger.warning("[AgentKernel] VPS Gateway not initialized: Model Router unavailable")
-                
-        except Exception as e:
-            logger.error(f"[AgentKernel] Failed to initialize VPS Gateway: {e}")
-            self._vps_gateway = None
+        # VPS Gateway is lazy: only created when the user explicitly enables VPS mode
+        # via configure_vps(). Creating it per-session at startup is wasteful and triggers
+        # health-check loops for every WebSocket reconnect even when VPS is disabled.
+        self._vps_config = VPSConfig(enabled=False)
+        self._vps_gateway = None
+        logger.info("[AgentKernel] VPS Gateway deferred (lazy init — awaiting user VPS configuration)")
         
         try:
             # Initialize Conversation Memory
@@ -336,18 +327,22 @@ class AgentKernel:
                 offload_tools=vps_config.get("offload_tools", False)
             )
             
-            # Recreate VPS Gateway with new config
-            if self._model_router:
+            # Only create VPSGateway when user has explicitly enabled it.
+            # This prevents health-check loops on every reconnect when VPS is disabled.
+            if self._vps_config.enabled and self._model_router:
                 self._vps_gateway = VPSGateway(self._vps_config, self._model_router)
-                logger.info(f"[AgentKernel] VPS Gateway reconfigured: enabled={self._vps_config.enabled}, endpoints={len(self._vps_config.endpoints)}")
+                logger.info(f"[AgentKernel] VPS Gateway created: enabled={self._vps_config.enabled}, endpoints={len(self._vps_config.endpoints)}")
+            elif not self._vps_config.enabled:
+                # VPS disabled — clear any existing gateway to stop health checks
+                self._vps_gateway = None
+                logger.info("[AgentKernel] VPS Gateway disabled by user config")
             else:
                 logger.warning("[AgentKernel] Cannot configure VPS Gateway: Model Router unavailable")
-                
+
         except Exception as e:
             logger.error(f"[AgentKernel] Failed to configure VPS Gateway: {e}")
             self._vps_config = VPSConfig(enabled=False)
-            if self._model_router:
-                self._vps_gateway = VPSGateway(self._vps_config, self._model_router)
+            self._vps_gateway = None
 
     def process_text_message(self, text: str, session_id: Optional[str] = None) -> str:
         """
@@ -1241,3 +1236,33 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
         _agent_kernel_instances[session_id] = kernel
 
     return _agent_kernel_instances[session_id]
+
+
+def cleanup_agent_kernel(session_id: str) -> None:
+    """
+    Remove the AgentKernel instance for a session and release its resources.
+
+    Call this when a session expires (e.g., from session_manager.archive_inactive_sessions
+    or IRISession.cleanup) to prevent unbounded growth of _agent_kernel_instances.
+
+    Args:
+        session_id: Session identifier whose kernel should be cleaned up
+    """
+    global _agent_kernel_instances
+    kernel = _agent_kernel_instances.pop(session_id, None)
+    if kernel is not None:
+        try:
+            # Shut down VPS Gateway if it was active
+            if kernel._vps_gateway is not None:
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(kernel.shutdown_vps_gateway())
+                    else:
+                        loop.run_until_complete(kernel.shutdown_vps_gateway())
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[AgentKernel] Error during cleanup for session {session_id}: {e}")
+        logger.info(f"[AgentKernel] Kernel cleaned up for session {session_id}")

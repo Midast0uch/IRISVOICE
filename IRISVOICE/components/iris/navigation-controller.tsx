@@ -38,18 +38,18 @@ const LEVEL_CONFIGS: Record<NavigationLevel, LevelConfig> = {
   4: {
     orbRadius: 260,
     nodeSize: 180,
-    orbLabel: '', // Dynamic - sub-node name
+    orbLabel: '', // Dynamic - section name
     orbIcon: 'back',
     showBackIndicator: true,
   },
 }
 
 const MAIN_NODE_ANGLES = [-90, -30, 30, 90, 150, 210]
-const SUB_NODE_ANGLES = [-90, 0, 90, 180]
+const SECTION_ANGLES = [-90, 0, 90, 180]
 
 export interface NavigationControllerProps {
   mainNodes: Array<{ id: string; label: string }>
-  subNodes: Record<string, Array<{ id: string; label: string }>>
+  sectionNodes: Record<string, Array<{ id: string; label: string }>>
   onLevelChange?: (level: NavigationLevel, direction: 'forward' | 'backward' | null) => void
   onTransitionStart?: () => void
   onTransitionEnd?: () => void
@@ -57,7 +57,7 @@ export interface NavigationControllerProps {
 
 export function useNavigationController({
   mainNodes,
-  subNodes,
+  sectionNodes,
   onLevelChange,
   onTransitionStart,
   onTransitionEnd,
@@ -72,14 +72,14 @@ export function useNavigationController({
     })
 
     const subLabels: Record<string, string> = {}
-    Object.values(subNodes).forEach(nodes => {
+    Object.values(sectionNodes).forEach(nodes => {
       nodes.forEach(node => {
         subLabels[node.id] = node.label
       })
     })
 
     nav.setCategoryLabels(mainLabels, subLabels)
-  }, [mainNodes, subNodes, nav])
+  }, [mainNodes, sectionNodes, nav])
 
   useEffect(() => {
     if (onLevelChange) {
@@ -126,7 +126,7 @@ export function useNavigationController({
     }, animConfig.durations.entry)
   }, [nav, animConfig.durations.entry])
 
-  const handleSubNodeClick = useCallback((nodeId: string) => {
+  const handleSectionClick = useCallback((nodeId: string) => {
     if (nav.state.isTransitioning || nav.state.level !== 3) return
 
     nav.setTransitioning(true)
@@ -149,25 +149,25 @@ export function useNavigationController({
     }))
   }, [mainNodes, nav.state.level, nav.state.selectedMain])
 
-  const currentSubNodes = useMemo(() => {
+  const currentSections = useMemo(() => {
     if (nav.state.level < 3 || !nav.state.selectedMain) return []
-    const nodes = subNodes[nav.state.selectedMain] || []
+    const nodes = sectionNodes[nav.state.selectedMain] || []
     return nodes.map((node, index) => ({
       ...node,
-      angle: SUB_NODE_ANGLES[index] || 0,
+      angle: SECTION_ANGLES[index] || 0,
       isActive: nav.state.selectedSub === node.id,
     }))
-  }, [subNodes, nav.state.level, nav.state.selectedMain, nav.state.selectedSub])
+  }, [sectionNodes, nav.state.level, nav.state.selectedMain, nav.state.selectedSub])
 
   const showLiquidLine = nav.state.level === 4 && nav.state.selectedSub !== null
   const isLineRetracting = nav.state.transitionDirection === 'backward' && nav.state.level === 3
 
   const liquidLineAngle = useMemo(() => {
     if (!nav.state.selectedSub || !nav.state.selectedMain) return 0
-    const nodes = subNodes[nav.state.selectedMain] || []
+    const nodes = sectionNodes[nav.state.selectedMain] || []
     const index = nodes.findIndex(n => n.id === nav.state.selectedSub)
-    return SUB_NODE_ANGLES[index] || 0
-  }, [nav.state.selectedSub, nav.state.selectedMain, subNodes])
+    return SECTION_ANGLES[index] || 0
+  }, [nav.state.selectedSub, nav.state.selectedMain, sectionNodes])
 
   return {
     level: nav.state.level,
@@ -181,7 +181,7 @@ export function useNavigationController({
     animConfig,
 
     currentMainNodes,
-    currentSubNodes,
+    currentSections,
 
     showLiquidLine,
     isLineRetracting,
@@ -189,7 +189,7 @@ export function useNavigationController({
 
     handleIrisClick,
     handleMainNodeClick,
-    handleSubNodeClick,
+    handleSectionClick,
 
     goBack: nav.goBack,
     collapseToIdle: nav.collapseToIdle,

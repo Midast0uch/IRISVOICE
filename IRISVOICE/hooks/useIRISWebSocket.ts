@@ -37,7 +37,7 @@ type VoiceState = "idle" | "listening" | "processing_conversation" | "processing
 // Text response message type
 interface TextResponseMessage {
   text: string
-  sender: "assistant"
+  sender: "user" | "assistant"
 }
 
 interface VisionStatus {
@@ -216,8 +216,13 @@ export function useIRISWebSocket(
         setConnectionState("connected")
         reconnectAttemptsRef.current = 0
 
-        // Request initial state
+        // Request initial state, audio devices, and wake words immediately on open.
+        // These must be sent here (not in useEffect) because sendMessage() drops messages
+        // silently if the socket is not yet OPEN — onopen guarantees it is.
         ws.send(JSON.stringify({ type: "request_state", payload: {} }))
+        ws.send(JSON.stringify({ type: "get_audio_devices", payload: {} }))
+        ws.send(JSON.stringify({ type: "get_wake_words", payload: {} }))
+        ws.send(JSON.stringify({ type: "get_available_models", payload: {} }))
       }
 
       ws.onmessage = (event) => {
@@ -280,7 +285,14 @@ export function useIRISWebSocket(
 
   // Handle incoming messages
   const handleMessage = useCallback((message: Record<string, unknown>) => {
-    const { type, ...payload } = message
+    const type = message.type
+    // BUG-01 FIX: Extract payload correctly.
+    // Backend sends EITHER { type, payload: {...} } (nested) OR { type, key1, key2 } (flat).
+    // Old code `const { type, ...payload } = message` double-nested when backend used "payload" key,
+    // producing { payload: { actual_data } } instead of { actual_data }.
+    const payload: Record<string, unknown> = (message.payload && typeof message.payload === 'object')
+      ? (message.payload as Record<string, unknown>)
+      : (() => { const { type: _t, payload: _p, ...rest } = message; return rest; })()
 
     switch (type) {
       case "full_state": {
@@ -428,7 +440,16 @@ export function useIRISWebSocket(
       }
 
       case "card_confirmed": {
-        // Server confirmed, state will be synced via state_sync
+        // Server confirmed the section — dispatch event so UI can show feedback
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:card_confirmed', {
+            detail: {
+              section_id: payload.section_id,
+              applied: payload.applied ?? true,
+              error: payload.error ?? null
+            }
+          }))
+        }
         break
       }
 
@@ -490,9 +511,12 @@ export function useIRISWebSocket(
           console.log("[IRIS WebSocket] Text response:", payload)
         }
         if (payload.text && typeof payload.text === 'string') {
+          const sender = (payload.sender === "user" || payload.sender === "assistant")
+            ? payload.sender
+            : "assistant"
           setLastTextResponse({
             text: payload.text,
-            sender: "assistant"
+            sender
           })
           
           // Dispatch CustomEvent for SidePanel and other listeners
@@ -544,6 +568,15 @@ export function useIRISWebSocket(
         if (payload.wake_words && Array.isArray(payload.wake_words)) {
           setWakeWords(payload.wake_words as {filename: string; display_name: string; platform: string; version: string}[])
         }
+        // Dispatch CustomEvent for SidePanel and other listeners
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:wake_words_list', {
+            detail: {
+              wake_words: payload.wake_words || [],
+              count: payload.count || 0
+            }
+          }))
+        }
         break
       }
 
@@ -557,6 +590,15 @@ export function useIRISWebSocket(
         }
         if (payload.output_devices && Array.isArray(payload.output_devices)) {
           setAudioOutputDevices(payload.output_devices as {name: string; index: number; sample_rate: number}[])
+        }
+        // Dispatch CustomEvent for SidePanel and other listeners
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:audio_devices', {
+            detail: {
+              input_devices: payload.input_devices || [],
+              output_devices: payload.output_devices || []
+            }
+          }))
         }
         break
       }
@@ -642,7 +684,56 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Available models:", payload)
         }
-        // Models are handled by the requesting component
+        // Dispatch CustomEvent for SidePanel and other listeners
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:available_models', {
+            detail: { models: payload.models || [] }
+          }))
+        }
+        break
+      }
+
+      case "wake_word_selected": {
+        // Backend confirms a wake word was selected (e.g., from another client)
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:wake_word_selected', { detail: payload }))
+        }
+        break
+      }
+
+      case "model_selection_updated": {
+        // Backend confirms model selection was applied
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:model_selection_updated', { detail: payload }))
+        }
+        break
+      }
+
+      case "skills_error": {
+        // Backend reports a skill execution error
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn("[IRIS WebSocket] Skills error:", payload)
+        }
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skills_error', { detail: payload }))
+        }
+        break
+      }
+
+      case "connection_test_result": {
+        // VPS connection test result
+        if (process.env.NODE_ENV !== 'production') {
+          console.log("[IRIS WebSocket] Connection test result:", payload)
+        }
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:connection_test_result', { detail: payload }))
+        }
+        break
+      }
+
+      case "cleanup_report":
+      case "cleanup_result": {
+        // Session cleanup reports — no UI action needed
         break
       }
 
@@ -754,10 +845,24 @@ export function useIRISWebSocket(
 
   // Voice command methods
   const startVoiceCommand = useCallback(() => {
+    // Optimistic update: show listening animation immediately without waiting for backend
+    setVoiceState("listening")
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
+        detail: { state: "listening" }
+      }))
+    }
     sendMessage("voice_command_start", {})
   }, [sendMessage])
 
   const endVoiceCommand = useCallback(() => {
+    // Optimistic update: reset to idle immediately
+    setVoiceState("idle")
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
+        detail: { state: "idle" }
+      }))
+    }
     sendMessage("voice_command_end", {})
   }, [sendMessage])
 

@@ -446,7 +446,7 @@ interface NavigationContextValue {
   audioLevel: number
   fieldValues: Record<string, any>
   fieldErrors: Record<string, string> // Map of "sectionId:fieldId" to error message
-  lastTextResponse: { text: string; sender: "assistant" } | null
+  lastTextResponse: { text: string; sender: "user" | "assistant" } | null
   activeTheme: { primary: string; glow: string; font: string } // Add activeTheme from WebSocket
   selectCategory: (category: string) => void
   selectSectionWs: (sectionId: string) => void

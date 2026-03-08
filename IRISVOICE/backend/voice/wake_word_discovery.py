@@ -9,6 +9,7 @@ Scans the wake_words directory for .ppn files and provides metadata extraction.
 import os
 import logging
 import re
+import subprocess
 from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel, Field
@@ -46,19 +47,88 @@ class WakeWordDiscovery:
     def __init__(self, wake_words_dir: Optional[str] = None):
         """
         Initialize wake word discovery service.
-        
+
         Args:
             wake_words_dir: Path to wake words directory. Defaults to models/wake_words
                           relative to project root.
         """
         if wake_words_dir is None:
-            # Default to models/wake_words relative to project root
-            base_dir = Path(__file__).parent.parent.parent
-            wake_words_dir = base_dir / "models" / "wake_words"
-        
+            # Build a priority list of candidate directories and pick the first one
+            # that actually contains .ppn files. This handles:
+            #   - Running from the original project root
+            #   - Running from a git worktree (which may have an empty models/wake_words/)
+            #   - Running from any other working directory
+            candidates = [
+                # 1. CWD-relative (where the user launched the backend from)
+                Path.cwd() / "models" / "wake_words",
+                # 2. File-relative: 3 levels up from backend/voice/wake_word_discovery.py
+                #    -> resolves to the IRISVOICE project root
+                Path(__file__).parent.parent.parent / "models" / "wake_words",
+                # 3. One more level up (handles deeper nesting like worktrees)
+                Path(__file__).parent.parent.parent.parent / "models" / "wake_words",
+            ]
+
+            # 4. Git-based: find the main worktree (handles git worktree setups where
+            #    the worktree's models/wake_words/ is empty but the main project has .ppn files)
+            #
+            # The project may be a SUBDIRECTORY of the git repo root (e.g. repo at
+            # C:\dev\ with IRISVOICE\ inside it).  We compute the relative offset of
+            # the current project root (3 levels up from this file) from the current
+            # worktree root and apply the same offset to the main repo root so we land
+            # in the right folder (e.g. C:\dev\IRISVOICE\models\wake_words\).
+            try:
+                file_dir = Path(__file__).parent
+                # Current worktree root
+                toplevel_result = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, timeout=5, cwd=str(file_dir),
+                )
+                # Main repo root (parent of git-common-dir)
+                common_result = subprocess.run(
+                    ["git", "rev-parse", "--git-common-dir"],
+                    capture_output=True, text=True, timeout=5, cwd=str(file_dir),
+                )
+                if toplevel_result.returncode == 0 and common_result.returncode == 0:
+                    worktree_root = Path(toplevel_result.stdout.strip()).resolve()
+                    main_repo_root = Path(common_result.stdout.strip()).resolve().parent
+
+                    # project_root is 3 levels up from this file:
+                    # backend/voice/wake_word_discovery.py -> backend/voice -> backend -> IRISVOICE
+                    project_root = file_dir.parent.parent.resolve()
+
+                    try:
+                        # Relative path from the worktree root to the project root
+                        # e.g. "IRISVOICE" when repo root is one level above IRISVOICE/
+                        rel = project_root.relative_to(worktree_root)
+                        main_project_root = main_repo_root / rel
+                    except ValueError:
+                        # project_root is not under worktree_root — fall back to repo root
+                        main_project_root = main_repo_root
+
+                    git_candidate = main_project_root / "models" / "wake_words"
+                    if git_candidate not in candidates:
+                        candidates.append(git_candidate)
+                        logger.debug(
+                            f"[WakeWordDiscovery] Added git main worktree candidate: {git_candidate}"
+                        )
+            except Exception as git_err:
+                logger.debug(f"[WakeWordDiscovery] Git worktree detection skipped: {git_err}")
+
+            wake_words_dir = candidates[-1]  # fallback: last candidate (dir may not exist, scan handles it)
+            for candidate in candidates:
+                if candidate.exists() and list(candidate.glob("*.ppn")):
+                    wake_words_dir = candidate
+                    logger.info(f"[WakeWordDiscovery] Found .ppn files in: {candidate}")
+                    break
+            else:
+                logger.warning(
+                    f"[WakeWordDiscovery] No .ppn files found in any candidate directory. "
+                    f"Searched: {[str(c) for c in candidates]}"
+                )
+
         self._wake_words_dir = Path(wake_words_dir)
         self._discovered_files: List[WakeWordFile] = []
-        
+
         logger.info(f"[WakeWordDiscovery] Initialized with directory: {self._wake_words_dir}")
     
     def scan_directory(self) -> List[WakeWordFile]:

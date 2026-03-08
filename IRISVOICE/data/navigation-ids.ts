@@ -8,7 +8,7 @@
  * 4. IDs must match between:
  *    - Navigation state (selectedMain, selectedSub)
  *    - WebSocket messages
- *    - Data files (mini-nodes.ts, etc.)
+ *    - Data files (cards.ts, etc.)
  *    - Backend API endpoints
  * 
  * Convention: lowercase-kebab-case

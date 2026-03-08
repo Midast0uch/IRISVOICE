@@ -372,7 +372,6 @@ class IsolatedStateManager:
             return
 
         state_file = self._persistence_dir / "session_state.json"
-        print(f"Saving state to {state_file}")
         try:
             # Create backup before saving
             if state_file.exists():
@@ -405,15 +404,12 @@ class IsolatedStateManager:
         
         # Try loading from main file first
         try:
-            print(f"Loading state from {state_file}")
             if state_file.exists():
                 async with aiofiles.open(state_file, 'r', encoding='utf-8') as f:
                     data = await f.read()
-                    print(f"Read state data: {data}")
                     self._state = IRISState.model_validate_json(data)
                     return
-            else:
-                print("State file does not exist")
+            # No state file on first run — start with defaults (not an error)
         except json.JSONDecodeError as e:
             print(f"Corrupted state file for session {self.session_id}: {e}")
             # Try loading from backup

@@ -52,9 +52,8 @@ export const ChatActivationText = React.memo(function ChatActivationText({
 
   return (
     <motion.div
-      className="fixed left-1/2 -translate-x-1/2 cursor-pointer"
+      className="relative cursor-pointer"
       style={{
-        top: "60%",
         zIndex: 1,
         pointerEvents: "auto"
       }}

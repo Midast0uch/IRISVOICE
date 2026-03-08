@@ -14,11 +14,9 @@ import numpy as np
 import torch
 import torchaudio
 
-try:
-    from liquid_audio import LFM2AudioModel, LFM2AudioProcessor, ChatState
-    LIQUID_AUDIO_AVAILABLE = True
-except ImportError:
-    LIQUID_AUDIO_AVAILABLE = False
+# liquid_audio is imported lazily inside load_model() to avoid blocking startup.
+# (Some versions trigger network calls or CUDA init at module import time.)
+LIQUID_AUDIO_AVAILABLE: bool | None = None  # None = not yet checked
 
 
 class ModelManager:
@@ -72,9 +70,10 @@ class ModelManager:
     def is_loaded(self) -> bool:
         return self._is_loaded
 
-    def _get_or_create_chat_state(self, session_id: str = "default") -> "ChatState":
+    def _get_or_create_chat_state(self, session_id: str = "default"):
         """Get or create a per-session ChatState with the structured system prompt."""
         if session_id not in self._session_chat_states:
+            ChatState = globals().get("ChatState")
             cs = ChatState(self.processor)
             cs.new_turn("system")
             cs.add_text(self.system_prompt)
@@ -117,7 +116,7 @@ class ModelManager:
             "loaded": self._is_loaded,
             "repo": self.DEFAULT_MODEL_REPO,
             "device": str(self.model.device) if self.model else "not loaded",
-            "library": "liquid-audio" if LIQUID_AUDIO_AVAILABLE else "not available",
+            "library": "liquid-audio" if LIQUID_AUDIO_AVAILABLE else ("not available" if LIQUID_AUDIO_AVAILABLE is False else "not checked"),
             "chat_state_active": len(self._session_chat_states) > 0
         }
 
@@ -167,6 +166,21 @@ class ModelManager:
         Load LFM2-Audio model from HuggingFace
         Returns True if successful
         """
+        global LIQUID_AUDIO_AVAILABLE
+
+        # Lazy import of liquid_audio — deferred from module level to avoid
+        # blocking the backend startup with network/CUDA init inside the library.
+        if LIQUID_AUDIO_AVAILABLE is None:
+            try:
+                from liquid_audio import LFM2AudioModel as _LFM2AudioModel, LFM2AudioProcessor as _LFM2AudioProcessor, ChatState as _ChatState  # noqa: F401
+                LIQUID_AUDIO_AVAILABLE = True
+                # Store refs in module globals so the rest of this method can use them
+                globals()["LFM2AudioModel"] = _LFM2AudioModel
+                globals()["LFM2AudioProcessor"] = _LFM2AudioProcessor
+                globals()["ChatState"] = _ChatState
+            except ImportError:
+                LIQUID_AUDIO_AVAILABLE = False
+
         # Check system resources before loading (low-spec PC guard)
         resources = self._check_system_resources()
         if not resources["sufficient"]:
@@ -185,6 +199,9 @@ class ModelManager:
             print("[ModelManager] Error: liquid-audio package not found.")
             print("[ModelManager] Run: pip install liquid-audio")
             return False
+
+        LFM2AudioModel = globals()["LFM2AudioModel"]
+        LFM2AudioProcessor = globals()["LFM2AudioProcessor"]
 
         try:
             print(f"[ModelManager] Loading {self.DEFAULT_MODEL_REPO} using liquid-audio...")

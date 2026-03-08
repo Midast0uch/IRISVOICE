@@ -1,9 +1,9 @@
 "use client"
 
-import React, { useState, useCallback, useEffect, useMemo } from "react"
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { ArrowLeft } from "lucide-react"
-import { getCurrentWindow } from "@tauri-apps/api/window"
+import { useManualDragWindow } from "@/hooks/useManualDragWindow"
 import { DualRingMechanism } from "./DualRingMechanism"
 import { SidePanel } from "./SidePanel"
 import { useNavigation } from "@/contexts/NavigationContext"
@@ -39,7 +39,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
   onBackToCategories,
   onBrowseMarketplace,
 }) => {
-  const { state, updateCardValue, voiceState, audioLevel, startVoiceCommand, endVoiceCommand, sendMessage, fieldErrors } = useNavigation()
+  const { state, updateCardValue, voiceState, audioLevel, startVoiceCommand, endVoiceCommand, sendMessage, fieldErrors, selectSectionWs } = useNavigation()
   const {
     getThemeConfig,
     basePlateColor,
@@ -58,6 +58,11 @@ export const WheelView: React.FC<WheelViewProps> = ({
 
   // Calculate if voice is active from NavigationContext
   const isVoiceActive = voiceState !== "idle"
+
+  // Drag-to-move: attach to the outer container so the entire WheelView widget
+  // can be grabbed and repositioned, matching IrisOrb / other navigation states.
+  const containerRef = useRef<HTMLDivElement>(null)
+  const { handleMouseDown: handleDragMouseDown } = useManualDragWindow(containerRef)
 
   const lastClickTime = React.useRef<number>(0)
   const clickCount = React.useRef<number>(0)
@@ -83,8 +88,19 @@ export const WheelView: React.FC<WheelViewProps> = ({
     setIsAnimating(true)
     setSelectedIndex(index)
     setShowPanel(true)
+
+    // Sync dashboard: map selected card's ID to its section ID so the
+    // dashboard highlights the same section without manual coordination.
+    const selectedCard = cardStack[index]
+    if (selectedCard) {
+      const sectionId = CARD_TO_SECTION_ID[selectedCard.id]
+      if (sectionId && selectSectionWs) {
+        selectSectionWs(sectionId)
+      }
+    }
+
     setTimeout(() => setIsAnimating(false), 500)
-  }, [isAnimating])
+  }, [isAnimating, cardStack, selectSectionWs])
 
   const handleValueChange = useCallback((fieldId: string, value: FieldValue) => {
     if (!activeCard) return
@@ -119,18 +135,14 @@ export const WheelView: React.FC<WheelViewProps> = ({
       }
     }
 
-    // Update local state
+    // Update local state only — service changes are deferred to Confirm (confirm_card).
     updateCardValue(activeCard.id, fieldId, value)
-    
-    // Send update_field message to backend for all cards
-    // Map Card ID to Section ID using the navigation constants
-    const sectionId = CARD_TO_SECTION_ID[activeCard.id]
-    if (sectionId) {
-      sendMessage('update_field', {
-        section_id: sectionId,
-        field_id: fieldId,
-        value: value
-      })
+
+    // Special case: when model_provider changes, fetch the available models for the
+    // newly selected backend so the model dropdowns update before the user confirms.
+    // This is a READ-only operation and does not reinitialize any service.
+    if (fieldId === "model_provider") {
+      sendMessage("get_available_models", { model_provider: value })
     }
   }, [activeCard, updateCardValue, sendMessage, setTheme, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, resetToThemeDefault])
 
@@ -142,13 +154,23 @@ export const WheelView: React.FC<WheelViewProps> = ({
     setConfirmFlash(true)
 
     setTimeout(() => {
+      // Send confirm_card for the active card's section with all current field values.
+      // This is the single authoritative signal for the backend to apply service changes.
+      const sectionId = activeCard ? CARD_TO_SECTION_ID[activeCard.id] : null
+      if (sectionId && activeCard) {
+        const sectionValues = state.cardValues[activeCard.id] ?? {}
+        sendMessage('confirm_card', {
+          section_id: sectionId,
+          values: sectionValues
+        })
+      }
       onConfirm(state.cardValues)
       setLineRetracted(false)
       setConfirmSpinning(false)
       setConfirmFlash(false)
       setIsAnimating(false)
     }, 900)
-  }, [isAnimating, onConfirm, state.cardValues])
+  }, [isAnimating, onConfirm, state.cardValues, activeCard, sendMessage])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -198,23 +220,10 @@ export const WheelView: React.FC<WheelViewProps> = ({
 
   return (
     <div
+      ref={containerRef}
       className="absolute inset-0 flex items-center justify-center bg-transparent"
-      onMouseDown={(e) => {
-        if (e.button === 0) {
-          try {
-            // Only try to use Tauri API if it exists (not available in browser dev mode)
-            if (typeof window !== 'undefined' && '__TAURI__' in window) {
-              const win = getCurrentWindow()
-              if (win && typeof win.startDragging === 'function') {
-                win.startDragging()
-              }
-            }
-          } catch (error) {
-            // Tauri not available (expected in browser dev mode)
-            console.debug('[WheelView] Tauri drag not available')
-          }
-        }
-      }}
+      onMouseDown={handleDragMouseDown}
+      style={{ cursor: "grab" }}
     >
       <div
         className="relative flex items-center justify-start pointer-events-none"

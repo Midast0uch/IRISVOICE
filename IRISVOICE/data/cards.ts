@@ -1,30 +1,7 @@
 import type { Card } from "@/types/navigation"
 
-// Load options functions for audio devices
-const loadInputDevices = async () => {
-  // This would typically call the backend to get actual devices
-  // For now, return a static list as a fallback
-  return [
-    { label: 'Default', value: 'Default' },
-    { label: 'USB Microphone', value: 'USB Microphone' },
-    { label: 'Headset', value: 'Headset' },
-    { label: 'Webcam', value: 'Webcam' }
-  ]
-}
-
-const loadOutputDevices = async () => {
-  // This would typically call the backend to get actual devices
-  // For now, return a static list as a fallback
-  return [
-    { label: 'Default', value: 'Default' },
-    { label: 'Headphones', value: 'Headphones' },
-    { label: 'Speakers', value: 'Speakers' },
-    { label: 'HDMI', value: 'HDMI' }
-  ]
-}
-
 // Card definitions for each section
-// Keys must match section IDs from navigation-ids.ts SUB_NODE_IDS
+// Keys must match section IDs from navigation-ids.ts SECTION_IDS
 
 export const CARDS_BY_SECTION: Record<string, Card[]> = {
   // ============================================================================
@@ -42,8 +19,8 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'input_device',
           type: 'dropdown',
           label: 'Device',
-          loadOptions: loadInputDevices,
-          defaultValue: 'Default'
+          options: [],
+          defaultValue: ''
         },
         {
           id: 'input_volume',
@@ -87,8 +64,8 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'output_device',
           type: 'dropdown',
           label: 'Device',
-          loadOptions: loadOutputDevices,
-          defaultValue: 'Default'
+          options: [],
+          defaultValue: ''
         },
         {
           id: 'output_volume',
@@ -135,7 +112,9 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'wake_phrase',
           type: 'dropdown',
           label: 'Wake Phrase',
-          options: ['jarvis', 'hey computer', 'computer', 'bumblebee', 'porcupine'],
+          // Options are populated dynamically from backend (get_wake_words WebSocket message).
+          // Built-ins + any custom .ppn files in models/wake_words/ are returned at runtime.
+          options: [],
           defaultValue: 'jarvis'
         },
         {

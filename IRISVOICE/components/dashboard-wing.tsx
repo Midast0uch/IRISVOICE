@@ -55,7 +55,7 @@ interface DashboardWingProps {
   onClose: () => void
   sendMessage?: SendMessageFunction
   fieldValues?: Record<string, any>
-  updateField?: (subnodeId: string, fieldId: string, value: any) => void
+  updateField?: (sectionId: string, fieldId: string, value: any) => void
   // Spotlight Mode props
   spotlightState?: SpotlightState
   onSpotlightToggle?: () => void

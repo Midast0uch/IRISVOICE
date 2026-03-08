@@ -188,8 +188,11 @@ class SessionManager:
         session = IRISession(session_id, config)
         self.sessions[session_id] = session
         
-        # Initialize the session's state manager with persistence directory
-        persistence_dir = f"backend/sessions/{session_id}"
+        # Initialize the session's state manager with persistence directory.
+        # NOTE: state_isolation.initialize() appends session_id itself, so we
+        # pass only the parent directory — not the session-specific subdirectory.
+        # Result: backend/sessions/{session_id}/session_state.json (not doubled).
+        persistence_dir = "backend/sessions"
         await session.state_manager.initialize(persistence_dir)
         
         return session_id
@@ -276,7 +279,14 @@ class SessionManager:
         session = self.sessions.pop(session_id, None)
         if session:
             await session.cleanup()
-            
+
+            # Release AgentKernel for this session to prevent memory leaks
+            try:
+                from ..agent.agent_kernel import cleanup_agent_kernel
+                cleanup_agent_kernel(session_id)
+            except Exception as e:
+                print(f"[SessionManager] Error cleaning up AgentKernel for session {session_id}: {e}")
+
             # Remove client associations
             clients_to_remove = [
                 client_id for client_id, sid in self.client_to_session.items()

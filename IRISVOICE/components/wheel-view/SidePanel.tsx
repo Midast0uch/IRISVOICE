@@ -3,36 +3,6 @@
 import React, { useMemo, useCallback, useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 
-// Extension Manager Hook (Phase 2)
-const useExtensionManager = () => {
-  const [mcpServers, setMcpServers] = useState([]);
-  const [skills, setSkills] = useState([]);
-  const [savedWorkflows, setSavedWorkflows] = useState([]);
-
-  const manageMcpServer = (serverId: string, action: 'add' | 'remove' | 'configure') => {
-    console.log(`[Phase 2] MCP Server ${action}: ${serverId}`);
-    // TODO: Implement in Phase 2
-  };
-
-  const manageSkill = (skillId: string, action: 'enable' | 'disable' | 'configure') => {
-    console.log(`[Phase 2] Skill ${action}: ${skillId}`);
-    // TODO: Implement in Phase 2
-  };
-
-  const manageWorkflow = (workflowId: string, action: 'save' | 'delete' | 'execute') => {
-    console.log(`[Phase 2] Workflow ${action}: ${workflowId}`);
-    // TODO: Implement in Phase 2
-  };
-
-  return {
-    mcpServers,
-    skills,
-    savedWorkflows,
-    manageMcpServer,
-    manageSkill,
-    manageWorkflow
-  };
-};
 import { ENERGY_CYCLE } from '@/lib/timing-config'
 import { Check, Palette } from "lucide-react"
 import { ConnectionLine } from "./ConnectionLine"
@@ -60,14 +30,14 @@ interface SidePanelProps {
 /**
  * SidePanel Component
  * 
- * Displays input fields for the selected mini-node with glowing connection line.
+ * Displays input fields for the selected section with glowing connection line.
  * Features:
  * - Position: Right side of orb (orbSize/2 + 12px offset)
  * - Width: 100px (narrow for vertical space)
  * - Max height: 560px
  * - Styling: Glass-morphism (backdrop blur, transparency)
  * - Connection line with spring extension/retraction
- * - Crossfade transitions when switching mini-nodes
+ * - Crossfade transitions when switching sections
  * - Empty state handling
  * 
  * Validates: Requirements 5.1, 5.2, 5.5, 5.6, 5.7, 11.2, 11.7, 13.3, 15.2, 15.3
@@ -128,12 +98,14 @@ export const SidePanel: React.FC<SidePanelProps> = ({
       // Extract field values from the state
       // BUG-07 FIX: Use CARD_TO_SECTION_ID mapping for correct lookup
       // Backend stores values under Section IDs, not Card IDs
-      if (state.fieldValues && card.id) {
+      // BUG-02 FIX: Backend sends field_values (snake_case), not fieldValues (camelCase)
+      const fv = state.field_values || state.fieldValues
+      if (fv && card.id) {
         const sectionId = CARD_TO_SECTION_ID[card.id] || card.id
-        const subnodeValues = state.fieldValues[sectionId]
-        if (subnodeValues) {
+        const sectionValues = fv[sectionId]
+        if (sectionValues) {
           // Update values from backend state
-          Object.entries(subnodeValues).forEach(([fieldId, value]) => {
+          Object.entries(sectionValues).forEach(([fieldId, value]) => {
             onValueChange(fieldId, value as FieldValue)
           })
         }
@@ -147,7 +119,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     }
   }, [sendMessage, card.id, onValueChange])
 
-  // Fetch available models when models-card mini-node is active
+  // Fetch available models when models-card section is active
   useEffect(() => {
     if (card.id === 'models-card') {
       // Send get_available_models message to backend
@@ -168,9 +140,9 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     }
   }, [card.id, sendMessage])
 
-  // Fetch audio devices when input-device or output-device mini-nodes are active
+  // Fetch audio devices when microphone-card or speaker-card sections are active
   useEffect(() => {
-    if (card.id === 'input-device' || card.id === 'output-device') {
+    if (card.id === 'microphone-card' || card.id === 'speaker-card') {
       // Send get_audio_devices message to backend
       sendMessage('get_audio_devices', {})
       
@@ -192,7 +164,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     }
   }, [card.id, sendMessage])
 
-  // Fetch wake words when wake-word-card mini-node is active
+  // Fetch wake words when wake-word-card section is active
   useEffect(() => {
     if (card.id === 'wake-word-card') {
       // Send get_wake_words message to backend
@@ -223,7 +195,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     (field: FieldConfig) => {
       const fieldValue = values[field.id] ?? field.defaultValue
 
-      // Conditional field rendering for inference-card mini-node
+      // Conditional field rendering for inference-card section
       if (card.id === 'inference-card') {
         const inferenceMode = values['inference_mode'] ?? 'Local Models'
         
@@ -243,25 +215,49 @@ export const SidePanel: React.FC<SidePanelProps> = ({
         }
       }
 
-      // For models-card mini-node, use available models for dropdowns
+      // Conditional field rendering for models-card section
+      if (card.id === 'models-card') {
+        const modelProvider = values['model_provider'] ?? 'local'
+        const useSameModel = values['use_same_model'] ?? true
+
+        // Hide API key field unless provider is 'api'
+        if (field.id === 'api_key' && modelProvider !== 'api') return null
+        // Hide VPS endpoint field unless provider is 'vps'
+        if (field.id === 'vps_endpoint' && modelProvider !== 'vps') return null
+        // Hide tool_model dropdown when use_same_model is true
+        if (field.id === 'tool_model' && useSameModel === true) return null
+      }
+
+      // Resolve dropdown options. WebSocket-fetched data takes priority over static loadOptions.
+      // When real backend data is available, fieldLoadOptions is cleared so DropdownField
+      // uses the `options` prop directly instead of calling the static loadOptions function.
       let fieldOptions = field.options ?? []
-      if (card.id === 'models-card' && (field.id === 'reasoning_model' || field.id === 'tool_execution_model')) {
+      let fieldLoadOptions = field.loadOptions
+
+      // For models-card section, use available models for dropdowns
+      if (card.id === 'models-card' && (field.id === 'reasoning_model' || field.id === 'tool_model')) {
         fieldOptions = availableModels.length > 0 ? availableModels : ['No models available']
+        fieldLoadOptions = undefined
       }
 
-      // For input-device mini-node, use audio input devices
-      if (card.id === 'input-device' && field.id === 'input_device') {
-        fieldOptions = audioInputDevices.length > 0 ? audioInputDevices : ['No input devices found']
+      // For microphone-card section, use audio input devices from backend
+      if (card.id === 'microphone-card' && field.id === 'input_device') {
+        // Show real devices from backend; empty until backend responds (no static fallback)
+        fieldOptions = audioInputDevices.length > 0 ? audioInputDevices : []
+        fieldLoadOptions = undefined
       }
 
-      // For output-device mini-node, use audio output devices
-      if (card.id === 'output-device' && field.id === 'output_device') {
-        fieldOptions = audioOutputDevices.length > 0 ? audioOutputDevices : ['No output devices found']
+      // For speaker-card section, use audio output devices from backend
+      if (card.id === 'speaker-card' && field.id === 'output_device') {
+        // Show real devices from backend; empty until backend responds (no static fallback)
+        fieldOptions = audioOutputDevices.length > 0 ? audioOutputDevices : []
+        fieldLoadOptions = undefined
       }
 
-      // For wake-word-card mini-node, use wake words
+      // For wake-word-card section, use wake words from backend
       if (card.id === 'wake-word-card' && field.id === 'wake_phrase') {
         fieldOptions = wakeWords.length > 0 ? wakeWords : ['No wake words found']
+        fieldLoadOptions = undefined
       }
 
       switch (field.type) {
@@ -311,7 +307,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               label={field.label}
               value={(fieldValue as string) ?? ""}
               options={fieldOptions}
-              loadOptions={field.loadOptions}
+              loadOptions={fieldLoadOptions}
               onChange={(value) => onValueChange(field.id, value)}
               glowColor={glowColor}
             />
@@ -373,7 +369,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           return null
       }
     },
-    [values, onValueChange, glowColor, card.id, availableModels]
+    [values, onValueChange, glowColor, card.id, availableModels, audioInputDevices, audioOutputDevices, wakeWords]
   )
 
   // Memoize field list for performance (Requirement 12.2)
@@ -675,7 +671,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                       No settings available
                     </span>
                     <p className="text-[9px] text-white/30 mt-2 leading-relaxed px-2">
-                      This mini-node has no configurable fields
+                      This section has no configurable fields
                     </p>
                   </div>
                 ) : (

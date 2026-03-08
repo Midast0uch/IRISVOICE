@@ -294,6 +294,17 @@ app.add_middleware(
 
 logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
 
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root():
+    """Root endpoint — confirms the IRIS backend is running. HEAD supported for health checks."""
+    return {"status": "ok", "service": "iris-voice", "timestamp": datetime.now().isoformat()}
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Suppress browser favicon 404 noise."""
+    from fastapi.responses import Response
+    return Response(status_code=204)
+
 @app.get("/api/voice/status")
 async def voice_status():
     return {"status": "ok", "service": "iris-voice", "timestamp": datetime.now().isoformat()}

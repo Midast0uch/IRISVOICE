@@ -7,12 +7,12 @@
  * CRITICAL RULES:
  * 1. All Card IDs MUST end with `-card` suffix
  * 2. Section IDs use snake_case format
- * 3. These mappings must stay in sync with navigation-ids.ts and mini-nodes.ts
+ * 3. These mappings must stay in sync with navigation-ids.ts and cards.ts
  */
 
 /**
  * Maps Card IDs to their parent Section IDs
- * This replaces the old MININODE_TO_SUBNODE_ID constant
+ * This replaces the old legacy card-to-section mapping constants
  */
 export const CARD_TO_SECTION_ID: Record<string, string> = {
   // Voice
