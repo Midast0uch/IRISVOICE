@@ -1,6 +1,8 @@
+"use client"
+
 /**
  * IntegrationsContext
- * 
+ *
  * React Context for managing integrations WebSocket connection.
  * Provides a single WebSocket connection per component tree with proper
  * lifecycle management and automatic reconnection.
