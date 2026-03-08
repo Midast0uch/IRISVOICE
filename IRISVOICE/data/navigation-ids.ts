@@ -61,6 +61,7 @@ export const SECTION_IDS = {
   AUTOMATE_DESKTOP_CONTROL: 'desktop_control',
   AUTOMATE_SKILLS: 'skills',
   AUTOMATE_PROFILE: 'profile',
+  AUTOMATE_INTEGRATIONS: 'integrations',
   
   // System category
   SYSTEM_POWER: 'power',

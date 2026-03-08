@@ -33,6 +33,7 @@ export const CARD_TO_SECTION_ID: Record<string, string> = {
   'desktop-control-card': 'desktop_control',
   'skills-card': 'skills',
   'profile-card': 'profile',
+  'integrations-card': 'integrations',
 
   // System
   'power-card': 'power',
@@ -70,6 +71,7 @@ export const SECTION_TO_LABEL: Record<string, string> = {
   desktop_control: 'Desktop Control',
   skills: 'Skills',
   profile: 'Profile',
+  integrations: 'Integrations',
   power: 'Power',
   display: 'Display',
   storage: 'Storage',
@@ -102,6 +104,7 @@ export const SECTION_TO_ICON: Record<string, string> = {
   desktop_control: 'Monitor',
   skills: 'Sparkles',
   profile: 'User',
+  integrations: 'Puzzle',
   power: 'Power',
   display: 'Monitor',
   storage: 'HardDrive',

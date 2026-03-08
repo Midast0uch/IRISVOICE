@@ -5,6 +5,7 @@ import './globals.css'
 import { NavigationProvider } from "@/contexts/NavigationContext"
 import { BrandColorProvider } from "@/contexts/BrandColorContext"
 import { TransitionProvider } from "@/contexts/TransitionContext"
+import { IntegrationsProvider } from "@/contexts/IntegrationsContext"
 import { TransitionIndicator } from "@/components/ui/transition-indicator"
 import { TransitionSwitch } from "@/components/ui/transition-switch"
 
@@ -52,7 +53,9 @@ export default function RootLayout({
         <BrandColorProvider>
           <TransitionProvider>
             <NavigationProvider>
-              {children}
+              <IntegrationsProvider>
+                {children}
+              </IntegrationsProvider>
               {/* Transition testing components removed - they were interfering with widget drag */}
               {/* <TransitionIndicator /> */}
               {/* <TransitionSwitch /> */}

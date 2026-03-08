@@ -20,6 +20,11 @@ enabled_skills:
     enabled: true
     description: "Launch applications and open files"
 
+  # Meta skills
+  - name: "skill-creator"
+    enabled: true
+    description: "Guide for creating new IRIS skills to extend capabilities and personalise the user's experience"
+
   # Custom skills (user-defined)
   # Add your custom skills below:
   # - name: "my_custom_skill"

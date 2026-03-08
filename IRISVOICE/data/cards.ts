@@ -460,6 +460,17 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
     }
   ],
 
+  // integrations section - integrations-card
+  // Fields array is empty — content is rendered by IntegrationListPanel in SidePanel
+  integrations: [
+    {
+      id: 'integrations-card',
+      label: 'Integrations',
+      icon: 'Puzzle',
+      fields: []
+    }
+  ],
+
   // profile section - profile-card
   profile: [
     {

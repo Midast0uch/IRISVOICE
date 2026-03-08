@@ -26,6 +26,7 @@ class PersonalityProfile:
     humor: str = "subtle"  # none/subtle/moderate/playful
     empathy: str = "moderate"  # low/moderate/high/very_high
     knowledge: str = "general"  # general/technical/creative/analytical
+    user_profile: str = ""  # Free-text personal context: name, goals, preferences
 
 
 class PersonalityManager:
@@ -111,7 +112,10 @@ class PersonalityManager:
         
         if "knowledge" in identity:
             updates["knowledge"] = identity["knowledge"].lower()
-        
+
+        if "user_profile" in identity:
+            updates["user_profile"] = identity["user_profile"]
+
         # Apply updates
         if updates:
             self.update_profile(**updates)
@@ -167,14 +171,15 @@ class PersonalityManager:
     
     def get_system_prompt(self) -> str:
         """
-        Generate system prompt based on personality configuration
-        
+        Generate system prompt based on personality configuration.
+        Includes personality traits, IRISVOICE app context, user profile, and loaded skills.
+
         Returns:
-            System prompt string incorporating personality traits
+            System prompt string incorporating personality traits and app context
         """
         if self._cache_valid and self._system_prompt:
             return self._system_prompt
-        
+
         # Build personality-aware system prompt
         tone_desc = self._get_tone_description()
         formality_desc = self._get_formality_description()
@@ -182,7 +187,7 @@ class PersonalityManager:
         humor_desc = self._get_humor_description()
         empathy_desc = self._get_empathy_description()
         knowledge_desc = self._get_knowledge_description()
-        
+
         prompt = f"""You are {self.profile.assistant_name}, an AI assistant with the following personality:
 
 Tone: {tone_desc}
@@ -192,11 +197,70 @@ Humor: {humor_desc}
 Empathy: {empathy_desc}
 Knowledge Focus: {knowledge_desc}
 
-Embody these traits naturally in your responses. Be helpful, accurate, and maintain consistency with your personality throughout the conversation."""
-        
+Embody these traits naturally in your responses. Be helpful, accurate, and maintain consistency with your personality throughout the conversation.
+
+## IRISVOICE — Your Operating Environment
+
+You run inside IRISVOICE, a local voice-first AI assistant platform. Your role is to be a personalised assistant for whatever this user needs — not a generic chatbot.
+
+### UI Surfaces
+- **WheelView** — radial control wheel for configuring voice, agent, automation, and system settings
+- **DashboardWing** — dark glass side panel with detailed settings tabs and an Integrations Marketplace
+
+### Your Capabilities
+- Answer questions and carry on conversation on any topic
+- Use MCP tools: file operations, web browsing, app launching, system control, GUI automation
+- Help users CREATE NEW SKILLS via the skill-creator skill to extend your own capabilities
+- Adapt to the user's personal context, goals, and preferences over time
+
+### Skill System
+Skills are SKILL.md files in `backend/agent/skills/<skill-name>/`. When a user asks you to do something you cannot do well, guide them through creating a new skill using the skill-creator skill. Skills extend your capabilities and personalise your behaviour for this specific user.
+
+### Guiding Principle
+You are not a generic chatbot — you are this user's personal AI assistant. Use your tools proactively, remember context within the conversation, and suggest how IRISVOICE features and skills can help the user accomplish their goals."""
+
+        # Append user profile if set
+        if self.profile.user_profile.strip():
+            prompt += f"\n\n## User Profile\n{self.profile.user_profile.strip()}"
+
+        # Append loaded skills block
+        skills_block = self._build_skills_block()
+        if skills_block:
+            prompt += f"\n\n{skills_block}"
+
         self._system_prompt = prompt
         self._cache_valid = True
         return prompt
+
+    def _build_skills_block(self) -> str:
+        """
+        Build the skills section of the system prompt by loading all installed skills.
+
+        Returns:
+            Formatted skills block string, or empty string on any error.
+        """
+        try:
+            from .skills.skills_loader import load_all_skills, extract_description
+            skills = load_all_skills()
+            if not skills:
+                return ""
+
+            lines = [
+                "## Loaded Skills\n",
+                "The following skills are available to guide your behaviour in specific domains:\n",
+            ]
+            for skill_name, content in skills.items():
+                description = extract_description(content)
+                lines.append(f"- **{skill_name}**: {description}")
+
+            lines.append(
+                "\nWhen a user's request matches a skill's domain, apply the knowledge "
+                "and workflows from that skill's SKILL.md."
+            )
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"[PersonalityManager] Could not load skills: {e}")
+            return ""
     
     def _get_tone_description(self) -> str:
         """Get description for tone"""
