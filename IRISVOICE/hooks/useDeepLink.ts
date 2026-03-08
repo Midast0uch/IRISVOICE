@@ -101,8 +101,13 @@ export function useDeepLink(options: UseDeepLinkOptions = {}): void {
   useEffect(() => {
     let isMounted = true;
 
-    // Listen for deep link events from Tauri
+    // Listen for deep link events from Tauri.
+    // Guard with isTauri() — calling listen() outside Tauri throws because
+    // window.__TAURI_INTERNALS__ (transformCallback) is not defined in browsers.
     const setupListener = async () => {
+      if (!isTauri()) {
+        return; // Deep link events are only available inside the Tauri shell
+      }
       try {
         const unlisten = await listen<string>('deep-link', (event) => {
           if (isMounted && event.payload) {

@@ -233,8 +233,11 @@ export function IntegrationsProvider({
         }
       };
       
-      ws.onerror = (error) => {
-        console.error('[IntegrationsContext] WebSocket error:', error);
+      ws.onerror = () => {
+        // Browser WebSocket onerror events carry no useful detail (always an empty Event).
+        // Downgrade to warn — this fires every time the backend is offline, which is normal
+        // during development. The onclose handler will manage reconnection.
+        console.warn('[IntegrationsContext] WebSocket connection failed (backend may be offline)');
         setError('WebSocket connection error');
       };
       
