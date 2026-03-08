@@ -114,7 +114,14 @@ class PersonalityManager:
             updates["knowledge"] = identity["knowledge"].lower()
 
         if "user_profile" in identity:
-            updates["user_profile"] = identity["user_profile"]
+            user_profile = str(identity["user_profile"])
+            if len(user_profile) > 5000:
+                logger.warning(
+                    f"[PersonalityManager] user_profile truncated from "
+                    f"{len(user_profile)} to 5000 characters"
+                )
+                user_profile = user_profile[:5000]
+            updates["user_profile"] = user_profile
 
         # Apply updates
         if updates:
@@ -259,7 +266,7 @@ You are not a generic chatbot — you are this user's personal AI assistant. Use
             )
             return "\n".join(lines)
         except Exception as e:
-            logger.warning(f"[PersonalityManager] Could not load skills: {e}")
+            logger.warning(f"[PersonalityManager] Could not load skills: {e}", exc_info=True)
             return ""
     
     def _get_tone_description(self) -> str:

@@ -14,7 +14,7 @@ specialised knowledge, workflows, and tools. Think of them as "onboarding guides
 domains or tasks — they transform IRIS from a general-purpose assistant into a specialised agent
 equipped with procedural knowledge tailored to the user.
 
-**Skills directory:** `backend/agent/skills/`
+**Skills directory:** `IRISVOICE/backend/agent/skills/` (relative to the project root)
 
 Skills are loaded automatically at startup by `skills_loader.py`. After creating a new skill, the
 `PersonalityManager` cache must be invalidated (call `update_profile()` or restart the backend)
@@ -80,10 +80,10 @@ For each example, identify what reusable resources would help:
 
 ### Step 3: Create the Skill Directory
 
-Create the skill directory inside `backend/agent/skills/`:
+Create the skill directory inside `IRISVOICE/backend/agent/skills/` (project root relative):
 
 ```
-backend/agent/skills/<skill-name>/
+IRISVOICE/backend/agent/skills/<skill-name>/
 └── SKILL.md
 ```
 
@@ -103,9 +103,9 @@ Keep SKILL.md lean. Move detailed reference material to `references/` files.
 ### Step 5: Activate the Skill
 
 After creating the skill:
-1. Tell the user: "Skill created at `backend/agent/skills/<skill-name>/SKILL.md`"
+1. Tell the user: "Skill created at `IRISVOICE/backend/agent/skills/<skill-name>/SKILL.md`"
 2. The skill will be loaded next time the backend starts or the personality cache refreshes
-3. Optionally update `backend/agent/skills/config.yaml` to document the new skill
+3. Optionally update `IRISVOICE/backend/agent/skills/config.yaml` to document the new skill
 
 ### Step 6: Iterate
 
@@ -124,6 +124,6 @@ Update SKILL.md and test again.
 
 1. Ask: "Where do you store notes? What format? What operations do you want — create, search, summarise?"
 2. Plan: references/ for note format spec, scripts/ for search script if needed
-3. Create `backend/agent/skills/notes-manager/SKILL.md`
+3. Create `IRISVOICE/backend/agent/skills/notes-manager/SKILL.md`
 4. Write SKILL.md with the note-taking workflow
 5. Tell user the skill is created and what triggers it

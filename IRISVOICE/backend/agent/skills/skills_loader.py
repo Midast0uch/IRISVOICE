@@ -53,27 +53,55 @@ def load_all_skills() -> Dict[str, str]:
 def extract_description(skill_content: str) -> str:
     """
     Pull the 'description:' value from YAML frontmatter.
-    Falls back to the first non-empty, non-YAML line.
+    Falls back to the first non-empty, non-header line after the frontmatter closes.
 
     Args:
         skill_content: Full text of a SKILL.md file.
 
     Returns:
-        A single-line description string.
+        A single-line description string (max ~120 chars, word-boundary truncated).
     """
     in_frontmatter = False
+    frontmatter_seen = False
+
     for line in skill_content.splitlines():
         stripped = line.strip()
         if stripped == "---":
-            in_frontmatter = not in_frontmatter
+            if not frontmatter_seen:
+                # Opening delimiter
+                in_frontmatter = True
+                frontmatter_seen = True
+            else:
+                # Closing delimiter
+                in_frontmatter = False
             continue
         if in_frontmatter and stripped.startswith("description:"):
             return stripped.split(":", 1)[1].strip().strip('"').strip("'")
 
-    # Fallback: first non-empty, non-YAML-marker line outside frontmatter
+    # Fallback: first non-empty, non-header line AFTER the frontmatter closes.
+    # Re-scan with proper frontmatter tracking so YAML fields are skipped.
+    in_frontmatter = False
+    frontmatter_seen = False
+    frontmatter_closed = False
+
     for line in skill_content.splitlines():
         stripped = line.strip()
-        if stripped and not stripped.startswith("#") and stripped != "---":
-            return stripped[:120]
+        if stripped == "---":
+            if not frontmatter_seen:
+                in_frontmatter = True
+                frontmatter_seen = True
+            elif in_frontmatter:
+                in_frontmatter = False
+                frontmatter_closed = True
+            continue
+        if in_frontmatter:
+            continue  # Skip all YAML content inside frontmatter
+        if stripped and not stripped.startswith("#"):
+            # Word-boundary truncation with ellipsis
+            if len(stripped) <= 120:
+                return stripped
+            truncated = stripped[:120]
+            last_space = truncated.rfind(" ")
+            return (truncated[:last_space] if last_space > 80 else truncated) + "…"
 
     return "(no description)"
