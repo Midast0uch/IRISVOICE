@@ -54,6 +54,16 @@ backend/logs/
 # runtime session data (generated at runtime, never commit)
 backend/sessions/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*/
 backend/sessions/sess-*/
+backend/sessions/session_*/
+backend/sessions/test*/
+
+# encrypted database + WAL files (runtime, machine-specific)
+data/memory.db
+data/memory.db-shm
+data/memory.db-wal
+
+# voice reference audio (large binary, machine-specific)
+data/voice_clone_ref.wav
 
 # local machine ID
 data/.machine_id
