@@ -1278,11 +1278,7 @@ Respond with a JSON object:
             # Uses the openai Python client pointed at the LM Studio local server.
             if plan_response is None and self._model_provider == "lmstudio":
                 try:
-                    from openai import OpenAI as _OpenAI
-                    _lms = _OpenAI(
-                        base_url=f"{self._lmstudio_endpoint}/v1",
-                        api_key="lm-studio",  # LM Studio accepts any non-empty string
-                    )
+                    _lms = self._get_lmstudio_client()
                     _lms_resp = _lms.chat.completions.create(
                         model=self._selected_reasoning_model or "local-model",
                         messages=[{"role": "user", "content": planning_prompt}],
@@ -1627,11 +1623,7 @@ Provide the execution result."""
             # LM Studio execution inference
             if result_text is None and self._model_provider == "lmstudio":
                 try:
-                    from openai import OpenAI as _OpenAI
-                    _lms_exec = _OpenAI(
-                        base_url=f"{self._lmstudio_endpoint}/v1",
-                        api_key="lm-studio",
-                    )
+                    _lms_exec = self._get_lmstudio_client()
                     _lms_exec_resp = _lms_exec.chat.completions.create(
                         model=self._selected_tool_execution_model or "local-model",
                         messages=[{"role": "user", "content": execution_prompt}],
@@ -1913,11 +1905,7 @@ If any tools failed, address those issues in your response.
             _sel_synth = self._selected_reasoning_model or ""
             if not reasoning_model and self._model_provider == "lmstudio":
                 try:
-                    from openai import OpenAI as _OpenAI
-                    _lms_synth = _OpenAI(
-                        base_url=f"{self._lmstudio_endpoint}/v1",
-                        api_key="lm-studio",
-                    )
+                    _lms_synth = self._get_lmstudio_client()
                     _lms_synth_resp = _lms_synth.chat.completions.create(
                         model=_sel_synth or "local-model",
                         messages=[{"role": "user", "content": synthesis_prompt}],

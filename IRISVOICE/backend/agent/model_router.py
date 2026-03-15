@@ -14,13 +14,7 @@ from typing import List, Optional, Dict, Any
 logger = logging.getLogger(__name__)
 from .model_wrapper import ModelWrapper
 
-# Try to import torch for GPU memory tracking
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-    logger.warning("[ModelRouter] torch not available - GPU memory tracking disabled")
+TORCH_AVAILABLE = False  # checked lazily on first GPU-memory query
 
 
 class InferenceMode(Enum):
@@ -54,9 +48,11 @@ class ModelRouter:
         Args:
             operation: Description of the operation (e.g., "before loading", "after loading")
         """
-        if not TORCH_AVAILABLE:
+        try:
+            import torch
+        except ImportError:
             return
-        
+
         if torch.cuda.is_available():
             for i in range(torch.cuda.device_count()):
                 allocated = torch.cuda.memory_allocated(i) / (1024 ** 3)  # Convert to GB
@@ -189,8 +185,12 @@ class ModelRouter:
             self.models.clear()
             
             # Force garbage collection to free GPU memory
-            if TORCH_AVAILABLE and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
             
             # Log GPU memory after unloading
             self._log_gpu_memory("after unloading")

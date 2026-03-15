@@ -9,10 +9,17 @@ loading and interaction details.
 import os
 import logging
 from typing import Any, Dict, List, Optional
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger(__name__)
+
+# Lazy imports — torch and transformers are only needed when a local model is
+# actually loaded.  Importing them at module level adds 10-30 s to startup.
+try:
+    import torch as _torch_module
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _torch_module = None  # type: ignore
+    _TORCH_AVAILABLE = False
 
 class ModelWrapper:
     """Wraps an AI model, providing a standard interface for loading and generation."""
@@ -22,7 +29,8 @@ class ModelWrapper:
         self.model_path = model_path
         self.capabilities = capabilities
         self.constraints = constraints or {}
-        self.device = self.constraints.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        _cuda = _TORCH_AVAILABLE and _torch_module.cuda.is_available()
+        self.device = self.constraints.get("device", "cuda" if _cuda else "cpu")
         self.dtype = self.constraints.get("dtype", "auto")
         self.model = None
         self.tokenizer = None
@@ -41,6 +49,8 @@ class ModelWrapper:
 
         logger.info(f"[{self.model_id}] Loading model from: {self.model_path}")
         try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
             # Map string dtype to torch dtype
             torch_dtype_map = {
@@ -79,7 +89,7 @@ class ModelWrapper:
             messages,
             add_generation_prompt=True,
             return_tensors="pt",
-        ).to(self.device)
+        ).to(self.device)  # type: ignore[union-attr]
 
         # Default generation parameters
         default_gen_kwargs = {
@@ -127,6 +137,7 @@ class ModelWrapper:
         try:
             # Try a minimal generation to verify the model works
             test_input = "Hello"
+            import torch
             input_ids = self.tokenizer.encode(test_input, return_tensors="pt").to(self.device)
             with torch.no_grad():
                 _ = self.model.generate(input_ids, max_new_tokens=1, do_sample=False)

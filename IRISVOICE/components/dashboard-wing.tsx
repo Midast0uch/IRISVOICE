@@ -738,7 +738,7 @@ export function DashboardWing({
                         <ArrowRightIcon size={12} style={{ color: fontColor, opacity: 0.6 }} />
                       </button>
                       <button
-                        onClick={() => iframeRef.current?.contentWindow?.location.reload()}
+                        onClick={() => { if (iframeRef.current) iframeRef.current.src = iframeRef.current.src }}
                         className="p-1 rounded hover:bg-white/5 transition-colors"
                         title="Reload"
                       >

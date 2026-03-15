@@ -187,6 +187,24 @@ async def lifespan(app: FastAPI):
             )
         )
 
+        # Auto-discover .ppn files and configure WakeConfig before Porcupine init.
+        # This runs before register_change_callback so no callbacks fire here.
+        from backend.agent.wake_config import get_wake_config as _get_wake_cfg
+        _wake_cfg = _get_wake_cfg()
+        if not _wake_cfg.get_custom_model_path():
+            try:
+                from backend.voice.wake_word_discovery import WakeWordDiscovery
+                _discovered = WakeWordDiscovery().scan_directory()
+                if _discovered:
+                    _best = _discovered[0]
+                    _wake_cfg.config["custom_model_path"] = _best.path
+                    _wake_cfg.config["wake_phrase"] = _best.display_name.lower()
+                    logger.info(
+                        f"  - Wake word auto-configured: '{_best.display_name}' → {_best.path}"
+                    )
+            except Exception as _disc_err:
+                logger.warning(f"  - Wake word auto-discovery failed: {_disc_err}")
+
         # Initialize Porcupine from user's WakeConfig setting (NOT hardcoded)
         # get_wake_config().get_wake_phrase() returns user's chosen phrase from Voice > Wake Word UI
         audio_engine.initialize_porcupine()   # reads phrase + sensitivity from WakeConfig

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile } from 'lucide-react';
+import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink } from 'lucide-react';
 import { useNavigation } from "@/contexts/NavigationContext";
 import { useBrandColor } from "@/contexts/BrandColorContext";
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
@@ -25,9 +25,9 @@ interface Notification {
 export type ContentType = 'markdown' | 'email' | 'video' | 'picture' | 'text';
 
 const MESSAGE_THRESHOLDS = {
-  TRUNCATE_AT: 150,
-  DOCUMENT_MODE_AT: 300,
-  WARNING_AT: 1000
+  TRUNCATE_AT: 500,       // plain text expand/collapse threshold (raised for bigger windows)
+  DOCUMENT_MODE_AT: 400,  // artifact card threshold — only for structured content, never plain text
+  WARNING_AT: 3000
 } as const;
 
 const ContentTypePatterns = {
@@ -1313,7 +1313,9 @@ ${message.text}`;
                     const contentType = getContentType(message);
                     const isExpanded = isMessageExpanded(message.id);
                     const shouldTruncate = charCount > MESSAGE_THRESHOLDS.TRUNCATE_AT;
-                    const isDocumentMode = charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
+                    // Only structured content (markdown, email, etc.) becomes an artifact card.
+                    // Plain text always flows as chat — never collapses to a document card.
+                    const isDocumentMode = contentType !== 'text' && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
                     
                     // Content type icon mapping
                     const ContentTypeIcon = ({ size = 12 }: { size?: number }) => {
@@ -1359,17 +1361,6 @@ ${message.text}`;
                             {isDocumentMode ? (
                               // Document mode for long messages
                               <div className="mt-1">
-                                <div className="flex items-center gap-2 mb-2">
-                                  <ContentTypeIcon size={16} />
-                                  <span className="text-[10px] font-medium" style={{ color: fontColor }}>
-                                    {ContentTypeLabels[contentType]}
-                                  </span>
-                                  {charCount > MESSAGE_THRESHOLDS.WARNING_AT && (
-                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
-                                      Large
-                                    </span>
-                                  )}
-                                </div>
                                 <p className="text-[13px] leading-relaxed text-white/85 line-clamp-3">
                                   {message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT)}...
                                 </p>
@@ -1386,6 +1377,21 @@ ${message.text}`;
                                   >
                                     View full document
                                   </button>
+                                  {onOpenBrowserUrl && (
+                                    <button
+                                      onClick={() => {
+                                        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;padding:2rem;max-width:800px;margin:0 auto;line-height:1.6;white-space:pre-wrap;word-break:break-word}</style></head><body>${message.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</body></html>`;
+                                        onOpenBrowserUrl(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+                                      }}
+                                      className="p-1.5 rounded transition-colors"
+                                      style={{ color: `${fontColor}60` }}
+                                      onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+                                      onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                      title="Open in browser tab"
+                                    >
+                                      <ExternalLink size={14} />
+                                    </button>
+                                  )}
                                   <button
                                     onClick={() => handleShareMessage(message)}
                                     className="p-1.5 rounded transition-colors"
@@ -1537,17 +1543,6 @@ ${message.text}`;
                             {isDocumentMode ? (
                               // Document mode for long messages
                               <div className="mt-1">
-                                <div className="flex items-center gap-2 mb-2">
-                                  <ContentTypeIcon size={16} />
-                                  <span className="text-[10px] font-medium" style={{ color: fontColor }}>
-                                    {ContentTypeLabels[contentType]}
-                                  </span>
-                                  {charCount > MESSAGE_THRESHOLDS.WARNING_AT && (
-                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
-                                      Large
-                                    </span>
-                                  )}
-                                </div>
                                 <p className="text-[13px] leading-relaxed text-white/85 line-clamp-3">
                                   {message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT)}...
                                 </p>
@@ -1564,6 +1559,21 @@ ${message.text}`;
                                   >
                                     View full document
                                   </button>
+                                  {onOpenBrowserUrl && (
+                                    <button
+                                      onClick={() => {
+                                        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;padding:2rem;max-width:800px;margin:0 auto;line-height:1.6;white-space:pre-wrap;word-break:break-word}</style></head><body>${message.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</body></html>`;
+                                        onOpenBrowserUrl(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+                                      }}
+                                      className="p-1.5 rounded transition-colors"
+                                      style={{ color: `${fontColor}60` }}
+                                      onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+                                      onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                                      title="Open in browser tab"
+                                    >
+                                      <ExternalLink size={14} />
+                                    </button>
+                                  )}
                                   <button
                                     onClick={() => handleShareMessage(message)}
                                     className="p-1.5 rounded transition-colors"
