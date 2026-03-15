@@ -104,19 +104,22 @@ interface ChatWingProps {
   spotlightState?: SpotlightStateType
   onSpotlightToggle?: () => void
   isDashboardOpen?: boolean
+  // Browser passthrough — called when user clicks a URL in chat
+  onOpenBrowserUrl?: (url: string) => void
 }
 
-export function ChatWing({ 
-  isOpen, 
-  onClose, 
-  onDashboardClick, 
+export function ChatWing({
+  isOpen,
+  onClose,
+  onDashboardClick,
   onDashboardClose,
-  sendMessage, 
-  fieldValues, 
+  sendMessage,
+  fieldValues,
   updateField,
   spotlightState = SpotlightState.BALANCED,
   onSpotlightToggle,
-  isDashboardOpen = false
+  isDashboardOpen = false,
+  onOpenBrowserUrl,
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
@@ -696,6 +699,36 @@ ${message.text}`;
   const closeDropdowns = () => {
     setShowNotifications(false);
     setShowHistory(false);
+  };
+
+  // Render message text with clickable URL links
+  const renderWithLinks = (text: string) => {
+    const urlRegex = /https?:\/\/[^\s<>"')\]]+/g;
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = urlRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(text.slice(lastIndex, match.index));
+      }
+      const url = match[0];
+      parts.push(
+        <span
+          key={match.index}
+          onClick={() => onOpenBrowserUrl?.(url)}
+          className="underline cursor-pointer transition-opacity hover:opacity-70"
+          style={{ color: glowColor }}
+          title={`Open in browser: ${url}`}
+        >
+          {url}
+        </span>
+      );
+      lastIndex = match.index + url.length;
+    }
+    if (lastIndex < text.length) {
+      parts.push(text.slice(lastIndex));
+    }
+    return parts.length > 1 ? <>{parts}</> : text;
   };
 
   // Permission response handlers
@@ -1428,7 +1461,7 @@ ${message.text}`;
                               </div>
                             ) : (
                               // Short message - display fully
-                              <p className="text-[13px] leading-relaxed text-white/90">{message.text}</p>
+                              <p className="text-[13px] leading-relaxed text-white/90">{renderWithLinks(message.text)}</p>
                             )}
                           </motion.div>
                         ) : message.sender === 'assistant' ? (
@@ -1627,7 +1660,7 @@ ${message.text}`;
                                   <motion.span
                                     key={idx}
                                     initial={idx === message.currentWordIndex ? { opacity: 0.5 } : false}
-                                    animate={{ 
+                                    animate={{
                                       opacity: idx === message.currentWordIndex ? 1 : idx < (message.currentWordIndex || -1) ? 0.7 : 0.85,
                                       color: idx === message.currentWordIndex ? glowColor : 'rgba(255,255,255,0.85)',
                                     }}
@@ -1635,7 +1668,7 @@ ${message.text}`;
                                   >
                                     {word}{' '}
                                   </motion.span>
-                                )) : message.text}
+                                )) : renderWithLinks(message.text)}
                               </div>
                             )}
                             

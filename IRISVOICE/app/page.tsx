@@ -48,6 +48,8 @@ export default function Home() {
     activeDashboardTab,
     setActiveDashboardTab,
     browseMarketplace,
+    browseTo,
+    browserUrl,
   } = useUILayoutState()
 
   // Enable keyboard navigation (Escape key to close wings, or restore balanced in spotlight)
@@ -185,9 +187,10 @@ export default function Home() {
           onSpotlightToggle={toggleChatSpotlight}
           isDashboardOpen={isBothOpen}
           uiState={uiLayoutState}
+          onOpenBrowserUrl={browseTo}
         />
       </Suspense>
-      
+
       {/* DashboardWing - sibling to ChatWing */}
       <DashboardWing
         isOpen={isDashboardOpen || isBothOpen}
@@ -201,6 +204,7 @@ export default function Home() {
         isChatOpen={isChatOpen || isBothOpen}
         activeTab={activeDashboardTab}
         onTabChange={setActiveDashboardTab}
+        initialBrowserUrl={browserUrl}
       />
     </main>
   )

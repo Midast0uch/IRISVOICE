@@ -356,6 +356,249 @@ async def get_mode():
         return {"mode": "personal"}
 
 
+# ── Developer mode: Git / Diff / Projects APIs ────────────────────────────────
+# These endpoints power the iris-launcher developer sidebar pages with live
+# data from the IRISVOICE git repository.
+
+import subprocess as _subprocess
+
+def _run_git(*args: str, cwd: Optional[str] = None) -> str:
+    """Run a git command and return stdout. Raises on non-zero exit."""
+    result = _subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        cwd=cwd or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip())
+    return result.stdout.strip()
+
+
+@app.get("/api/git/status")
+async def git_status():
+    """Return current git branch, clean/dirty state, and uncommitted files."""
+    try:
+        branch = _run_git("rev-parse", "--abbrev-ref", "HEAD")
+        status_output = _run_git("status", "--porcelain")
+        uncommitted = [line[3:] for line in status_output.splitlines() if line.strip()]
+        clean = len(uncommitted) == 0
+        # Last commit hash + message
+        last_commit = _run_git("log", "-1", "--format=%h")
+        last_commit_msg = _run_git("log", "-1", "--format=%s")
+        # Last merge-base with main as "last good"
+        try:
+            last_good = _run_git("log", "--merges", "-1", "--format=%h") or last_commit
+        except Exception:
+            last_good = last_commit
+        return {
+            "branch": branch,
+            "clean": clean,
+            "lastCommit": last_commit,
+            "lastCommitMessage": last_commit_msg,
+            "lastGoodCommit": last_good,
+            "uncommittedFiles": uncommitted,
+        }
+    except Exception as e:
+        logger.error(f"[API] git status failed: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/git/log")
+async def git_log(limit: int = 20):
+    """Return recent commit history."""
+    try:
+        # format: hash|subject|relative-time|auto(bool)
+        raw = _run_git("log", f"-{limit}", "--format=%h|%s|%cr|%ae")
+        commits = []
+        for line in raw.splitlines():
+            parts = line.split("|", 3)
+            if len(parts) == 4:
+                h, msg, t, author = parts
+                commits.append({
+                    "hash": h,
+                    "message": msg,
+                    "time": t,
+                    "auto": "agent" in msg.lower() or "auto" in msg.lower(),
+                })
+        return {"commits": commits}
+    except Exception as e:
+        logger.error(f"[API] git log failed: {e}")
+        return {"commits": [], "error": str(e)}
+
+
+@app.post("/api/git/commit")
+async def git_commit(request: dict):
+    """Commit all staged + unstaged changes with the given message."""
+    message = request.get("message", "user: manual commit from iris-launcher")
+    try:
+        _run_git("add", "-A")
+        _run_git("commit", "-m", message)
+        return {"status": "ok", "message": message}
+    except Exception as e:
+        logger.error(f"[API] git commit failed: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/git/rollback")
+async def git_rollback(request: dict):
+    """Hard-reset to the given commit hash (defaults to HEAD~1)."""
+    target = request.get("target", "HEAD~1")
+    try:
+        _run_git("reset", "--hard", target)
+        return {"status": "ok", "target": target}
+    except Exception as e:
+        logger.error(f"[API] git rollback failed: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# In-memory pending write queue — agent_kernel appends here when developer mode
+# writes are queued; launcher approves/rejects via the API.
+_pending_writes: list = []
+_pending_writes_lock = asyncio.Lock()
+
+
+@app.get("/api/diff/pending")
+async def diff_pending():
+    """Return all queued pending writes awaiting diff review."""
+    async with _pending_writes_lock:
+        return {"pending": list(_pending_writes)}
+
+
+@app.post("/api/diff/approve")
+async def diff_approve(request: dict):
+    """Approve a pending write by id — actually writes the file to disk."""
+    write_id = request.get("id")
+    async with _pending_writes_lock:
+        write = next((w for w in _pending_writes if w["id"] == write_id), None)
+        if not write:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Write not found")
+        # Write file to disk
+        try:
+            path = write["path"]
+            content = write.get("content", "")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            _pending_writes[:] = [w for w in _pending_writes if w["id"] != write_id]
+            return {"status": "ok", "path": path}
+        except Exception as e:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/diff/reject")
+async def diff_reject(request: dict):
+    """Reject a pending write by id — drops it from the queue."""
+    write_id = request.get("id")
+    async with _pending_writes_lock:
+        before = len(_pending_writes)
+        _pending_writes[:] = [w for w in _pending_writes if w["id"] != write_id]
+        if len(_pending_writes) == before:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Write not found")
+        return {"status": "ok"}
+
+
+@app.get("/api/projects")
+async def get_projects():
+    """Return discovered IRIS project directories."""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    projects = []
+    # Always include the running IRISVOICE project
+    try:
+        branch = _run_git("rev-parse", "--abbrev-ref", "HEAD")
+    except Exception:
+        branch = "unknown"
+    try:
+        mode_resp = await get_mode()
+        current_mode = mode_resp.get("mode", "personal")  # type: ignore[union-attr]
+    except Exception:
+        current_mode = "personal"
+    projects.append({
+        "id": "irisvoice",
+        "name": "IRISVOICE",
+        "path": base,
+        "mode": current_mode,
+        "driveType": "local",
+        "branch": branch,
+        "active": True,
+    })
+    return {"projects": projects}
+
+
+# ── AutoResearch API ──────────────────────────────────────────────────────────
+
+@app.get("/api/research/status")
+async def research_status():
+    """Return current AutoResearch runner state and recent cycle reports."""
+    try:
+        from backend.agent.auto_research import get_auto_research_runner
+        runner = get_auto_research_runner()
+        return runner.get_status()
+    except ValueError:
+        return {"running": False, "cycles_completed": 0, "recent_reports": [], "note": "not_initialized"}
+    except Exception as e:
+        return {"running": False, "cycles_completed": 0, "recent_reports": [], "error": str(e)}
+
+
+@app.post("/api/research/start")
+async def research_start(request: dict):
+    """Start the AutoResearch loop.  Optional body: {"interval": 1800}"""
+    interval = float(request.get("interval", 1800))
+    try:
+        from backend.agent.auto_research import get_auto_research_runner
+        from backend.memory import get_memory_interface
+        memory = get_memory_interface()
+        if memory is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=503, detail="Memory system not yet initialised")
+        runner = get_auto_research_runner(memory_interface=memory, interval=interval)
+        runner.start()
+        logger.info(f"[API] AutoResearch started (interval={interval}s)")
+        return {"status": "ok", "running": True, "interval": interval}
+    except Exception as e:
+        logger.error(f"[API] Failed to start AutoResearch: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/research/stop")
+async def research_stop():
+    """Stop the AutoResearch loop gracefully."""
+    try:
+        from backend.agent.auto_research import get_auto_research_runner
+        runner = get_auto_research_runner()
+        runner.stop()
+        return {"status": "ok", "running": False}
+    except ValueError:
+        return {"status": "ok", "running": False, "note": "not_initialized"}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/research/run_now")
+async def research_run_now():
+    """Trigger one research cycle immediately (does not start the loop)."""
+    try:
+        from backend.agent.auto_research import get_auto_research_runner
+        from backend.memory import get_memory_interface
+        memory = get_memory_interface()
+        if memory is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=503, detail="Memory system not yet initialised")
+        runner = get_auto_research_runner(memory_interface=memory)
+        asyncio.create_task(runner._run_cycle())
+        return {"status": "ok", "message": "Single research cycle triggered"}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================================================
 # WebSocket Endpoint
 # ============================================================================

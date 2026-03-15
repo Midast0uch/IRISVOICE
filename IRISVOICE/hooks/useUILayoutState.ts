@@ -73,6 +73,9 @@ export function useUILayoutState() {
   
   // Dashboard tab state for cross-interface navigation
   const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardTab>('dashboard')
+
+  // Browser URL state — updated when ChatView clicks a link
+  const [browserUrl, setBrowserUrl] = useState<string | undefined>(undefined)
   
   // Track if we were in chat spotlight before opening dashboard (for bidirectional transitions)
   const wasChatSpotlightRef = useRef(false)
@@ -307,6 +310,21 @@ export function useUILayoutState() {
   }, [])
 
   /**
+   * Cross-interface navigation: Open a URL in the browser tab
+   * Opens dashboard, switches to browser tab, and sets the URL
+   */
+  const browseTo = useCallback((url: string) => {
+    setBrowserUrl(url)
+    setActiveDashboardTab('browser')
+    if (uiState === UILayoutState.UI_STATE_IDLE) {
+      transitionTo(UILayoutState.UI_STATE_DASHBOARD_OPEN, 'forward')
+    } else if (uiState === UILayoutState.UI_STATE_CHAT_OPEN) {
+      transitionTo(UILayoutState.UI_STATE_BOTH_OPEN, 'forward')
+    }
+    // If dashboard is already open (solo or both), just switch tab + update URL
+  }, [uiState, transitionTo])
+
+  /**
    * Cross-interface navigation: Browse Marketplace
    * Opens dashboard and switches to marketplace tab
    */
@@ -447,5 +465,7 @@ export function useUILayoutState() {
     browseMarketplace,
     viewActivity,
     viewLogs,
+    browseTo,
+    browserUrl,
   }
 }
