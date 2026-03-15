@@ -811,9 +811,14 @@ class IRISGateway:
                 "type": "listening_state",
                 "payload": {"state": "speaking"}
             })
+            thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
             await self._ws_manager.send_to_client(client_id, {
                 "type": "text_response",
-                "payload": {"text": response, "sender": "assistant"}
+                "payload": {
+                    "text": response,
+                    "sender": "assistant",
+                    **({"thinking": thinking} if thinking else {}),
+                }
             })
 
             # Pillar 1C: TTS — get a conversational spoken version for long responses.
@@ -932,11 +937,15 @@ class IRISGateway:
                 )
 
                 # Send response to client (text only — no TTS for chat messages)
+                # Include any thinking the model produced so ChatView can show it
+                # in a collapsible block without cluttering the main response.
+                thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "text_response",
                     "payload": {
                         "text": response,
-                        "sender": "assistant"
+                        "sender": "assistant",
+                        **({"thinking": thinking} if thinking else {}),
                     }
                 })
 

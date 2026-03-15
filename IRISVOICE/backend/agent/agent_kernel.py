@@ -113,6 +113,10 @@ class AgentKernel:
 
         # LM Studio base URL — set via configure_lmstudio() when confirm_card fires
         self._lmstudio_endpoint: str = "http://localhost:1234"
+
+        # Thinking extracted from the most recent _respond_direct call.
+        # Set before returning so iris_gateway can include it in the text_response payload.
+        self._pending_thinking: str = ""
         
         # VPS configuration (loaded from settings)
         self._vps_config: Optional[VPSConfig] = None
@@ -363,36 +367,57 @@ class AgentKernel:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _strip_thinking(text: str) -> str:
-        """Remove chain-of-thought reasoning from model output.
+    def _parse_thinking(text: str) -> tuple:
+        """Split model output into (thinking: str, response: str).
 
-        Handles three forms:
-        1. <think>…</think> XML tags (Qwen3 thinking mode with tags)
-        2. <thinking>…</thinking> XML tags (DeepSeek-style)
-        3. Untagged preamble — lines that start with the model narrating its own
-           reasoning ("Okay, the user is asking...", "Let me think...", etc.)
-           that appear before a blank line separator or a direct answer.
+        Handles three forms of chain-of-thought output:
+        1. <think>…</think> XML tags  (Qwen3 thinking mode)
+        2. <thinking>…</thinking> XML tags  (DeepSeek-style)
+        3. Untagged preamble paragraphs where the model narrates its reasoning
+           ("Okay, the user is asking…", "Let me think…", etc.) before a blank
+           line that separates it from the real answer.
+
+        Returns:
+            (thinking, clean_response) — thinking is an empty string when none found.
         """
         import re
-        # Strip tagged blocks first
+
+        thinking_parts: list = []
+
+        # Extract tagged blocks
+        for m in re.finditer(r"<think>(.*?)</think>", text, flags=re.DOTALL):
+            thinking_parts.append(m.group(1).strip())
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+
+        for m in re.finditer(r"<thinking>(.*?)</thinking>", text, flags=re.DOTALL):
+            thinking_parts.append(m.group(1).strip())
         text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
+
         text = text.strip()
 
-        # Strip untagged reasoning preamble: paragraphs that open with known
-        # self-narration phrases, separated from the real answer by a blank line.
+        # Strip untagged reasoning preamble: leading paragraphs that open with
+        # known self-narration phrases, separated from the answer by a blank line.
         _PREAMBLE_OPENERS = re.compile(
             r"^(okay[,.]?|alright[,.]?|let me|i need to|i should|i will|"
             r"the user (is|has|wants|asked)|looking at|wait[,.]?|"
-            r"so[,.]? (the|i|let)|hmm[,.]?)",
+            r"so[,.]?\s+(the|i|let)|hmm[,.]?)",
             re.IGNORECASE,
         )
-        # Split on blank-line paragraph boundaries
         paragraphs = re.split(r"\n{2,}", text)
-        # Drop leading paragraphs that look like internal monologue
         while len(paragraphs) > 1 and _PREAMBLE_OPENERS.match(paragraphs[0].strip()):
-            paragraphs.pop(0)
-        return "\n\n".join(paragraphs).strip()
+            thinking_parts.append(paragraphs.pop(0).strip())
+        clean = "\n\n".join(paragraphs).strip()
+
+        return "\n\n".join(thinking_parts), clean
+
+    @staticmethod
+    def _strip_thinking(text: str) -> str:
+        """Return the clean response with all thinking/reasoning removed.
+        Convenience wrapper around _parse_thinking for callers that only need
+        the response (planning, synthesis, spoken-version calls).
+        """
+        _, clean = AgentKernel._parse_thinking(text)
+        return clean
 
     @staticmethod
     def _needs_planning(text: str) -> bool:
@@ -454,12 +479,16 @@ class AgentKernel:
                     messages=messages,
                     max_tokens=-1,    # -1 = unlimited for LM Studio (local model, no billing cap)
                     temperature=0.6,  # Qwen3 recommended; slightly more decisive
-                    # Disable Qwen3 chain-of-thought thinking mode in LM Studio so the model
-                    # responds directly instead of narrating its reasoning in the output.
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    # Thinking enabled — model reasons when it needs to.
+                    # _parse_thinking splits the <think> block from the clean response;
+                    # the thinking is stored in _pending_thinking for ChatView to display
+                    # as a collapsible section, leaving the response itself clean.
+                    extra_body={"chat_template_kwargs": {"enable_thinking": True}},
                 )
                 reply = resp.choices[0].message.content or ""
-                return self._strip_thinking(reply)
+                thinking, clean = self._parse_thinking(reply)
+                self._pending_thinking = thinking
+                return clean
 
             # Ollama (model IDs contain ":")
             if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
@@ -475,7 +504,9 @@ class AgentKernel:
                 )
                 if r.status_code == 200:
                     reply = r.json().get("message", {}).get("content", "")
-                    return self._strip_thinking(reply)
+                    thinking, clean = self._parse_thinking(reply)
+                    self._pending_thinking = thinking
+                    return clean
 
             # Local loaded model
             reasoning_model = None
@@ -485,7 +516,9 @@ class AgentKernel:
                 reasoning_model = self._model_router.get_reasoning_model()
             if reasoning_model:
                 reply = reasoning_model.generate(text)
-                return self._strip_thinking(reply)
+                thinking, clean = self._parse_thinking(reply)
+                self._pending_thinking = thinking
+                return clean
 
         except Exception as e:
             logger.error(f"[AgentKernel] Direct response error: {e}", exc_info=True)
@@ -574,7 +607,10 @@ class AgentKernel:
         # Use provided session_id or fall back to instance session_id
         if session_id is None:
             session_id = self.session_id
-        
+
+        # Reset thinking from any previous call so stale data never leaks
+        self._pending_thinking = ""
+
         # Check if agent is available
         if self._initialization_error:
             error_msg = f"Agent kernel is not available: {self._initialization_error}"

@@ -78,6 +78,7 @@ interface Message {
   words?: string[]; // For TTS word highlighting
   currentWordIndex?: number; // Current word being spoken
   feedback?: 'positive' | 'negative' | null; // User feedback on AI responses
+  thinking?: string; // Chain-of-thought from the model, shown in a collapsible block
 }
 
 // Thread-based conversation structure
@@ -144,6 +145,8 @@ export function ChatWing({
   
   // Smart message length handling state
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
+  // Thinking block expand/collapse — collapsed by default
+  const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [documentModalMessage, setDocumentModalMessage] = useState<Message | null>(null);
   const [messageContentTypes, setMessageContentTypes] = useState<Record<string, ContentType>>({});
   
@@ -205,6 +208,7 @@ export function ChatWing({
         words: isUserVoice ? undefined : lastTextResponse.text.split(' '),
         currentWordIndex: isUserVoice ? undefined : -1,
         feedback: isUserVoice ? undefined : null,
+        thinking: lastTextResponse.thinking || undefined,
       }
 
       // Add to active conversation or create new one
@@ -1454,6 +1458,48 @@ ${message.text}`;
                               </span>
                             </div>
                             
+                            {/* Collapsible thinking block — only shown when model produced reasoning */}
+                            {message.thinking && (
+                              <div className="mb-2">
+                                <button
+                                  onClick={() => setExpandedThinking(prev => {
+                                    const next = new Set(prev);
+                                    next.has(message.id) ? next.delete(message.id) : next.add(message.id);
+                                    return next;
+                                  })}
+                                  className="flex items-center gap-1.5 text-[9px] font-medium tracking-wide uppercase transition-colors"
+                                  style={{ color: 'rgba(255,255,255,0.3)' }}
+                                  aria-expanded={expandedThinking.has(message.id)}
+                                >
+                                  {expandedThinking.has(message.id)
+                                    ? <><ChevronUp size={10} /> Hide thinking</>
+                                    : <><ChevronDown size={10} /> Show thinking</>}
+                                </button>
+                                <AnimatePresence>
+                                  {expandedThinking.has(message.id) && (
+                                    <motion.div
+                                      initial={{ height: 0, opacity: 0 }}
+                                      animate={{ height: 'auto', opacity: 1 }}
+                                      exit={{ height: 0, opacity: 0 }}
+                                      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                                      className="overflow-hidden"
+                                    >
+                                      <div
+                                        className="mt-1.5 p-2.5 rounded text-[11px] leading-relaxed whitespace-pre-wrap font-mono"
+                                        style={{
+                                          color: 'rgba(255,255,255,0.35)',
+                                          background: 'rgba(255,255,255,0.03)',
+                                          borderLeft: '2px solid rgba(255,255,255,0.08)',
+                                        }}
+                                      >
+                                        {message.thinking}
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </div>
+                            )}
+
                             {/* Message content with smart length handling and TTS highlighting */}
                             {isDocumentMode ? (
                               // Document mode for long messages

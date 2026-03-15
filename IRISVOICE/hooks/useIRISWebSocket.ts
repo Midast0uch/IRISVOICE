@@ -38,6 +38,7 @@ type VoiceState = "idle" | "listening" | "processing_conversation" | "processing
 interface TextResponseMessage {
   text: string
   sender: "user" | "assistant"
+  thinking?: string  // chain-of-thought from the model, shown in collapsible block
 }
 
 interface VisionStatus {
@@ -579,7 +580,10 @@ export function useIRISWebSocket(
             : "assistant"
           setLastTextResponse({
             text: payload.text,
-            sender
+            sender,
+            ...(payload.thinking && typeof payload.thinking === 'string'
+              ? { thinking: payload.thinking }
+              : {}),
           })
           
           // Dispatch CustomEvent for SidePanel and other listeners
