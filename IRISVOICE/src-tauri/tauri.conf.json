@@ -18,7 +18,7 @@
         "height": 680,
         "minWidth": 680,
         "minHeight": 680,
-        "resizable": false,
+        "resizable": true,
         "maximizable": false,
         "decorations": false,
         "transparent": true,
@@ -48,6 +48,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/iris-backend"
     ]
   },
   "plugins": {

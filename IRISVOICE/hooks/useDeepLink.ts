@@ -142,8 +142,12 @@ export function useDeepLink(options: UseDeepLinkOptions = {}): void {
  * Standalone function to check if running in Tauri environment
  */
 export function isTauri(): boolean {
-  return typeof window !== 'undefined' && 
-         typeof (window as any).__TAURI__ !== 'undefined';
+  // Tauri v2 uses __TAURI_INTERNALS__; v1 used __TAURI__.
+  // Check both so this works across versions.
+  return typeof window !== 'undefined' && (
+    typeof (window as any).__TAURI_INTERNALS__ !== 'undefined' ||
+    typeof (window as any).__TAURI__ !== 'undefined'
+  );
 }
 
 /**

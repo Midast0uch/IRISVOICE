@@ -20,6 +20,10 @@ fn main() {
             window.set_shadow(false).ok();
             window.set_always_on_top(true).ok();
             window.set_skip_taskbar(true).ok();
+            // Must be resizable=true so the JS API can expand/contract the window
+            // when chat/dashboard wings open.  The user cannot drag-resize because
+            // there are no window decorations, so this doesn't expose a resize handle.
+            window.set_resizable(true).ok();
 
             let min_size = PhysicalSize::new(680u32, 680u32);
             window.set_min_size(Some(min_size)).ok();
