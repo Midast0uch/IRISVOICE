@@ -406,6 +406,13 @@ class AgentKernel:
         for msg in context[-8:]:
             messages.append(msg)
 
+        # Guard: some model Jinja templates (e.g. Qwen3) reject requests with no user turn.
+        # If context was empty (e.g. memory exception path) or somehow ends on an assistant
+        # message, append the current text explicitly so the API call never sees a
+        # messages list with zero user messages.
+        if not messages or messages[-1]["role"] != "user":
+            messages.append({"role": "user", "content": text})
+
         try:
             # LM Studio (OpenAI-compatible)
             if self._model_provider == "lmstudio":

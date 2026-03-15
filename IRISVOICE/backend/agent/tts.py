@@ -157,11 +157,18 @@ class TTSManager:
 
         encode_dict = self._get_encode_dict(lux)
         if encode_dict is None:
-            logger.warning(
-                f"[TTSManager] Voice reference not found at {_CLONE_REF}. "
-                "Place a 3-5s WAV of your target voice there, then restart IRIS. "
-                "Falling back to Built-in TTS."
-            )
+            if _CLONE_REF.exists():
+                logger.warning(
+                    f"[TTSManager] Voice reference encoding failed (torchcodec/FFmpeg unavailable). "
+                    "Install FFmpeg full-shared (e.g. 'winget install ffmpeg') and restart IRIS. "
+                    "Falling back to Built-in TTS."
+                )
+            else:
+                logger.warning(
+                    f"[TTSManager] Voice reference not found at {_CLONE_REF}. "
+                    "Place a 3-5s WAV of your target voice there, then restart IRIS. "
+                    "Falling back to Built-in TTS."
+                )
             return self._synthesize_pyttsx(text)
 
         try:
