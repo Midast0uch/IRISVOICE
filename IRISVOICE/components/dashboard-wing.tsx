@@ -1,8 +1,8 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { X, Bell, MessageSquare, AlertTriangle, Shield, Loader, CheckCircle, Info, AlertCircle, LayoutDashboard, Activity, FileText, Store } from 'lucide-react'
+import { X, Bell, MessageSquare, AlertTriangle, Shield, Loader, CheckCircle, Info, AlertCircle, LayoutDashboard, Activity, FileText, Store, Globe, RotateCcw, ArrowLeft, ArrowRight as ArrowRightIcon, Home } from 'lucide-react'
 import { DarkGlassDashboard } from "./dark-glass-dashboard"
 import { ActivityPanel } from "./dashboard/ActivityPanel"
 import { LogsPanel } from "./dashboard/LogsPanel"
@@ -48,7 +48,7 @@ const getNotificationIcon = (type: string, glowColor: string) => {
   }
 };
 
-export type DashboardTab = 'dashboard' | 'activity' | 'logs' | 'marketplace';
+export type DashboardTab = 'dashboard' | 'activity' | 'logs' | 'marketplace' | 'browser';
 
 interface DashboardWingProps {
   isOpen: boolean
@@ -68,10 +68,13 @@ interface DashboardWingProps {
   // Tab navigation
   activeTab?: DashboardTab
   onTabChange?: (tab: DashboardTab) => void
+  // Browser tab initial URL (set by ChatView when user clicks a link)
+  initialBrowserUrl?: string
 }
 
 const TABS: { id: DashboardTab; label: string; icon: React.ElementType }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'browser', label: 'Browser', icon: Globe },
   { id: 'activity', label: 'Activity', icon: Activity },
   { id: 'logs', label: 'Logs', icon: FileText },
   { id: 'marketplace', label: 'Marketplace', icon: Store },
@@ -91,13 +94,41 @@ export function DashboardWing({
   isChatOpen = false,
   activeTab: controlledActiveTab,
   onTabChange,
+  initialBrowserUrl,
 }: DashboardWingProps) {
   const { voiceState } = useNavigation()
   const { getThemeConfig } = useBrandColor()
-  
+
   // Tab state (controlled or uncontrolled)
   const [internalActiveTab, setInternalActiveTab] = useState<DashboardTab>('dashboard');
   const activeTab = controlledActiveTab ?? internalActiveTab;
+
+  // ── Browser tab state ────────────────────────────────────────────────
+  const [browserUrl, setBrowserUrl] = useState<string>(initialBrowserUrl || 'https://www.google.com')
+  const [browserInput, setBrowserInput] = useState<string>(initialBrowserUrl || 'https://www.google.com')
+  const [browserLoading, setBrowserLoading] = useState(false)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  // Sync initial URL when prop changes (e.g. ChatView opens a link)
+  useEffect(() => {
+    if (initialBrowserUrl) {
+      setBrowserUrl(initialBrowserUrl)
+      setBrowserInput(initialBrowserUrl)
+    }
+  }, [initialBrowserUrl])
+
+  const handleBrowserNavigate = (url: string) => {
+    // Ensure URL has a protocol
+    const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`
+    setBrowserUrl(normalized)
+    setBrowserInput(normalized)
+  }
+
+  const handleBrowserInputSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleBrowserNavigate(browserInput)
+    }
+  }
   
   const handleTabChange = (tab: DashboardTab) => {
     if (onTabChange) {
@@ -675,6 +706,83 @@ export function DashboardWing({
                       glowColor={glowColor}
                       fontColor={fontColor}
                     />
+                  </motion.div>
+                )}
+
+                {activeTab === 'browser' && (
+                  <motion.div
+                    key="browser"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="h-full flex flex-col"
+                  >
+                    {/* Browser toolbar */}
+                    <div
+                      className="flex items-center gap-1.5 px-2 py-1.5 border-b shrink-0"
+                      style={{ borderColor: `${glowColor}22` }}
+                    >
+                      <button
+                        onClick={() => iframeRef.current?.contentWindow?.history.back()}
+                        className="p-1 rounded hover:bg-white/5 transition-colors"
+                        title="Back"
+                      >
+                        <ArrowLeft size={12} style={{ color: fontColor, opacity: 0.6 }} />
+                      </button>
+                      <button
+                        onClick={() => iframeRef.current?.contentWindow?.history.forward()}
+                        className="p-1 rounded hover:bg-white/5 transition-colors"
+                        title="Forward"
+                      >
+                        <ArrowRightIcon size={12} style={{ color: fontColor, opacity: 0.6 }} />
+                      </button>
+                      <button
+                        onClick={() => iframeRef.current?.contentWindow?.location.reload()}
+                        className="p-1 rounded hover:bg-white/5 transition-colors"
+                        title="Reload"
+                      >
+                        <RotateCcw size={12} style={{ color: fontColor, opacity: 0.6 }} />
+                      </button>
+                      <button
+                        onClick={() => handleBrowserNavigate('https://www.google.com')}
+                        className="p-1 rounded hover:bg-white/5 transition-colors"
+                        title="Home"
+                      >
+                        <Home size={12} style={{ color: fontColor, opacity: 0.6 }} />
+                      </button>
+                      <input
+                        value={browserInput}
+                        onChange={(e) => setBrowserInput(e.target.value)}
+                        onKeyDown={handleBrowserInputSubmit}
+                        placeholder="Enter URL or search…"
+                        className="flex-1 text-[10px] rounded px-2 py-0.5 bg-white/5 border outline-none focus:bg-white/10 transition-colors font-mono truncate"
+                        style={{
+                          borderColor: `${glowColor}33`,
+                          color: fontColor,
+                        }}
+                        spellCheck={false}
+                      />
+                    </div>
+
+                    {/* iframe */}
+                    <div className="flex-1 relative overflow-hidden rounded-b">
+                      {browserLoading && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-10">
+                          <Loader size={20} className="animate-spin" style={{ color: glowColor }} />
+                        </div>
+                      )}
+                      <iframe
+                        ref={iframeRef}
+                        src={browserUrl}
+                        title="IRIS Browser"
+                        className="w-full h-full border-0"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation-by-user-activation"
+                        onLoad={() => setBrowserLoading(false)}
+                        onLoadStart={() => setBrowserLoading(true)}
+                        style={{ background: '#000' }}
+                      />
+                    </div>
                   </motion.div>
                 )}
               </AnimatePresence>
