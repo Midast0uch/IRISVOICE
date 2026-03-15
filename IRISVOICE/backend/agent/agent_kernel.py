@@ -452,7 +452,7 @@ class AgentKernel:
                 resp = client.chat.completions.create(
                     model=sel,
                     messages=messages,
-                    max_tokens=800,   # enough room for a complete answer even after any preamble
+                    max_tokens=-1,    # -1 = unlimited for LM Studio (local model, no billing cap)
                     temperature=0.6,  # Qwen3 recommended; slightly more decisive
                     # Disable Qwen3 chain-of-thought thinking mode in LM Studio so the model
                     # responds directly instead of narrating its reasoning in the output.
@@ -524,7 +524,7 @@ class AgentKernel:
                 resp = client.chat.completions.create(
                     model=sel,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=120,
+                    max_tokens=-1,    # unlimited — local model, let it finish cleanly
                     temperature=0.5,
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
@@ -926,8 +926,9 @@ Respond with a JSON object:
                     _lms_resp = _lms.chat.completions.create(
                         model=self._selected_reasoning_model or "local-model",
                         messages=[{"role": "user", "content": planning_prompt}],
-                        max_tokens=512,   # planning only needs a short JSON plan
+                        max_tokens=-1,
                         temperature=0.2,  # low temp = faster, more deterministic JSON
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     plan_response = _lms_resp.choices[0].message.content
                     logger.info(
@@ -1027,7 +1028,7 @@ Respond with a JSON object:
                 try:
                     plan_response = reasoning_model.generate(
                         planning_prompt,
-                        max_tokens=512,
+                        max_tokens=-1,
                         temperature=0.2
                     )
                 except Exception as e:
@@ -1039,7 +1040,7 @@ Respond with a JSON object:
                         reasoning_model.load()
                         plan_response = reasoning_model.generate(
                             planning_prompt,
-                            max_tokens=512,
+                            max_tokens=-1,
                             temperature=0.2
                         )
                         logger.info("[AgentKernel] Model restarted successfully")
@@ -1274,8 +1275,9 @@ Provide the execution result."""
                     _lms_exec_resp = _lms_exec.chat.completions.create(
                         model=self._selected_tool_execution_model or "local-model",
                         messages=[{"role": "user", "content": execution_prompt}],
-                        max_tokens=512,
+                        max_tokens=-1,
                         temperature=0.3,
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     result_text = _lms_exec_resp.choices[0].message.content
                     logger.info("[AgentKernel] LM Studio execution inference successful")
@@ -1358,7 +1360,7 @@ Provide the execution result."""
                 try:
                     result_text = execution_model.generate(
                         execution_prompt,
-                        max_tokens=512,
+                        max_tokens=-1,
                         temperature=0.3
                     )
                 except Exception as e:
@@ -1370,7 +1372,7 @@ Provide the execution result."""
                         execution_model.load()
                         result_text = execution_model.generate(
                             execution_prompt,
-                            max_tokens=512,
+                            max_tokens=-1,
                             temperature=0.3
                         )
                         logger.info("[AgentKernel] Model restarted successfully")
@@ -1559,8 +1561,9 @@ If any tools failed, address those issues in your response.
                     _lms_synth_resp = _lms_synth.chat.completions.create(
                         model=_sel_synth or "local-model",
                         messages=[{"role": "user", "content": synthesis_prompt}],
-                        max_tokens=1024,
+                        max_tokens=-1,
                         temperature=0.7,
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     _synth_text = _lms_synth_resp.choices[0].message.content
                     if _synth_text:
