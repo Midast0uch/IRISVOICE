@@ -1,0 +1,26 @@
+{
+  "fields": {
+    "input": {
+      "input_device": "Default",
+      "input_sensitivity": 50,
+      "noise_gate": false,
+      "vad": true,
+      "auto_gain": true
+    },
+    "output": {
+      "output_device": "Default",
+      "master_volume": 80,
+      "enable_spatial": false,
+      "audio_ducking": 20,
+      "limiter": true
+    },
+    "model": {
+      "lfm_type": "Local",
+      "local_model_path": "",
+      "cloud_api_key": "",
+      "temperature": 0.8,
+      "max_tokens": 1024
+    }
+  },
+  "last_updated": "2026-03-15T10:32:04.703061"
+}

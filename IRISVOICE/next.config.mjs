@@ -10,13 +10,25 @@ const nextConfig = {
     unoptimized: true,
   },
   experimental: {
-    optimizePackageImports: ['lucide-react'],
+    // optimizePackageImports enables barrel-import tree-shaking so only used
+    // icons/components are bundled instead of the entire library.
+    // framer-motion, rxjs, and lodash are heavy; tree-shaking them cuts
+    // cold-start parse time significantly.
+    optimizePackageImports: [
+      'lucide-react',
+      'framer-motion',
+      'motion-dom',
+      'motion-utils',
+      'rxjs',
+      'lodash',
+      'zod',
+    ],
   },
   compiler: {
     removeConsole: { exclude: ['error'] },
   },
   // Limit webpack memory and caching
-  webpack: (config, { isServer }) => {
+  webpack: (config, { isServer, dev }) => {
     // Exclude models directory from webpack processing and watching
     // Models are loaded lazily by the backend on-demand (see backend/agent/lfm_audio_manager.py)
     // This prevents memory spikes (7000+ MB) and extended freeze times during dev mode startup
@@ -31,7 +43,7 @@ const nextConfig = {
       // backslash (Windows) so this works cross-platform without path normalisation.
       ignored: /[/\\](node_modules|\.git|\.next|dist|backend|models)[/\\]/,
     };
-    
+
     // Exclude model files from webpack asset processing
     // Model file types (.bin, .safetensors) should not be processed by webpack
     config.module.rules.push({
@@ -39,8 +51,10 @@ const nextConfig = {
       type: 'javascript/auto',
       exclude: /models\//,
     });
-    
-    if (!isServer) {
+
+    // Named module/chunk IDs aid stack-trace debugging but add significant
+    // overhead during dev compilation. Only enable them in production builds.
+    if (!isServer && !dev) {
       config.optimization = {
         ...config.optimization,
         moduleIds: 'named',
@@ -49,7 +63,7 @@ const nextConfig = {
     }
     return config;
   },
-  // Next.js 16 enables Turbopack by default. We run with `next dev --webpack`
+  // Next.js 16 enables Turbopack by default. We run with `next dev --no-turbopack`
   // (see .claude/launch.json) so webpack's watchOptions.ignored above can exclude
   // backend/sessions/*.json — preventing constant HMR rebuilds from backend writes.
   // turbopack: {} silences the "webpack config without turbopack config" warning.

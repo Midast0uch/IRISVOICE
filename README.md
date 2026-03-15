@@ -8,7 +8,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Wake Word Detection**: Custom "hey iris" wake word using Picovoice Porcupine
 - **End-to-End Audio Processing**: LFM 2.5 audio model handles complete audio pipeline
 - **Voice Commands**: Natural language voice interaction with double-click activation
-- **Text-to-Speech**: High-quality speech synthesis with configurable voices
+- **Text-to-Speech**: LuxTTS voice cloning (offline, CUDA/CPU) with pyttsx3 SAPI5 fallback
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
 
 ### 🤖 AI Agent System
@@ -17,6 +17,8 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
 - **Personality System**: Configurable assistant personality and behavior
 - **Conversation Memory**: Context-aware conversations with memory management
+- **Mycelium Memory Layer**: Coordinate-graph memory system — 40–60% fewer context tokens, higher retrieval precision (⚠️ integration tests pending)
+- **Kyudo Security Layer**: Typed transport channels prevent adversarial memory injection
 - **VPS Gateway**: Optional remote model inference with automatic fallback
 
 ### 🎨 User Interface
@@ -520,6 +522,7 @@ npm test -- --coverage
 - **[Model System](./backend/agent/README_MODEL_SYSTEM.md)**: Dual-LLM architecture
 - **[Audio Engine](./backend/voice/README_AUDIO_ENGINE.md)**: Voice pipeline documentation
 - **[Porcupine Setup](./backend/voice/README_PORCUPINE.md)**: Wake word configuration
+- **[Mycelium Architecture](./IRISVOICE/docs/mycelium-architecture.md)**: Coordinate-graph memory layer — components, Kyudo security, integration points, test plan
 
 ### API Endpoints
 
@@ -624,6 +627,31 @@ For issues and questions:
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: February 2026  
+**Version**: 3.0.0
+**Last Updated**: March 2026
 **Status**: Production Ready ✅
+
+---
+
+## v3.0 Changelog
+
+### Memory
+- **Mycelium Layer implemented** — coordinate-graph memory system replaces flat prose injection. Expected 40–60% reduction in context token consumption. ⚠️ Integration tests pending before production enablement.
+- **Kyudo Layer implemented** — precision and security foundation for Mycelium. HyphaChannel typed transport (SYSTEM/USER/VERIFIED/EXTERNAL/UNTRUSTED), cell-wall zone permeability, and quorum-sensing threat response. Adversarial content cannot elevate its own channel trust level.
+
+### Voice & Audio
+- **TTS migrated to LuxTTS** — replaced Coqui TTS (Python 3.12-incompatible) with LuxTTS / ZipVoice. Supports voice cloning via `data/voice_clone_ref.wav` (3–5s reference recommended). Falls back to pyttsx3 SAPI5 if reference file is absent.
+- **STT migrated to RealtimeSTT** — replaced LFM audio model + manual VAD with RealtimeSTT (faster-whisper/tiny + silero-VAD). Fully offline, ~40MB model, CPU-friendly.
+- **Porcupine upgraded to v4.x** — `pvporcupine>=4.0.0` required for v4 `.ppn` model files. Existing `_PORCUPINE_NEEDS_ACCESS_KEY` guard handles v1.x and v4.x transparently.
+
+### UI / UX
+- **Dynamic window sizing** — Tauri window expands when ChatView or DashboardWing open. Wings are 2× their previous width. Window snaps back to 680×680 on idle or WheelView navigation.
+- **Double-click voice toggle** — IrisOrb double-click now correctly toggles voice (start if idle, stop if active).
+
+### Agent
+- **Duplicate user message bug fixed** — `agent_kernel.py` no longer appends the user message twice, resolving LM Studio 400 "No user query found" errors.
+- **Model alias mapping added** — `LFM2-8B-A1B`, `brain`, `LFM2.5-1.2B-Instruct`, `executor` are all valid model IDs; normalized internally to canonical VPS names.
+
+### Infrastructure
+- **WebSocket resilience hardened** — unlimited reconnect with capped exponential backoff (30s max), ±20% jitter, stability reset after 10s connected, send queue for messages during disconnect windows, sequence numbers on all outgoing messages, readiness check before connect attempt.
+- **Session race condition fixed** — `session_id` now passed directly from `main.py` to `iris_gateway.handle_message`, eliminating "No session found" errors under heartbeat-disconnect race.

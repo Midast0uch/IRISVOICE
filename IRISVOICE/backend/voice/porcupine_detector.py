@@ -6,6 +6,7 @@ This module provides wake word detection using Picovoice's Porcupine engine.
 Supports both custom-trained wake word models and built-in Porcupine keywords.
 """
 
+import inspect as _inspect
 import os
 import logging
 from typing import Optional, List, Tuple
@@ -16,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+
+# pvporcupine v1.x does not accept an access_key; v2.x+ requires one.
+# Detect at import time so both versions are supported transparently.
+_PORCUPINE_NEEDS_ACCESS_KEY: bool = (
+    'access_key' in _inspect.signature(pvporcupine.create).parameters
+)
 
 
 class PorcupineWakeWordDetector:
@@ -54,13 +61,17 @@ class PorcupineWakeWordDetector:
             sensitivities: List of sensitivity values (0.0-1.0) for each wake word
                           Higher values reduce false positives but may increase false negatives
         """
-        # Get access key from parameter or environment
-        self.access_key = access_key or os.getenv("PICOVOICE_ACCESS_KEY")
-        if not self.access_key:
-            raise ValueError(
-                "Picovoice access key not provided. "
-                "Set PICOVOICE_ACCESS_KEY environment variable or pass access_key parameter."
-            )
+        # access_key is only required for pvporcupine v2+; v1.x works without one.
+        if _PORCUPINE_NEEDS_ACCESS_KEY:
+            self.access_key = access_key or os.getenv("PICOVOICE_ACCESS_KEY")
+            if not self.access_key:
+                raise ValueError(
+                    "Picovoice access key not provided. "
+                    "Set PICOVOICE_ACCESS_KEY environment variable or pass access_key parameter. "
+                    "Get a free key at https://console.picovoice.ai/"
+                )
+        else:
+            self.access_key = None  # pvporcupine v1.x does not use an access key
         
         self.custom_model_path = custom_model_path
         self.builtin_keywords = builtin_keywords or []
@@ -138,20 +149,22 @@ class PorcupineWakeWordDetector:
             logger.info(f"[PorcupineDetector] Total wake words: {len(keyword_paths) + len(keywords)}")
             logger.info(f"[PorcupineDetector] Total sensitivities: {len(self.sensitivities)}")
             
+            # Build base kwargs — only include access_key for pvporcupine v2+
+            _ak: dict = {"access_key": self.access_key} if _PORCUPINE_NEEDS_ACCESS_KEY else {}
+
             # Create Porcupine with appropriate parameters
             if keyword_paths and keywords:
                 # Mix of custom and built-in
                 # When mixing, sensitivities should match keyword_paths + keywords order
                 keyword_paths_count = len(keyword_paths)
-                keywords_count = len(keywords)
                 sensitivities_for_paths = self.sensitivities[:keyword_paths_count]
                 sensitivities_for_keywords = self.sensitivities[keyword_paths_count:]
-                
+
                 logger.info(f"[PorcupineDetector] Sensitivities for paths: {sensitivities_for_paths}")
                 logger.info(f"[PorcupineDetector] Sensitivities for keywords: {sensitivities_for_keywords}")
-                
+
                 self.porcupine = pvporcupine.create(
-                    access_key=self.access_key,
+                    **_ak,
                     keyword_paths=keyword_paths,
                     keywords=keywords,
                     sensitivities=self.sensitivities
@@ -159,14 +172,14 @@ class PorcupineWakeWordDetector:
             elif keyword_paths:
                 # Only custom models
                 self.porcupine = pvporcupine.create(
-                    access_key=self.access_key,
+                    **_ak,
                     keyword_paths=keyword_paths,
                     sensitivities=self.sensitivities
                 )
             else:
                 # Only built-in keywords
                 self.porcupine = pvporcupine.create(
-                    access_key=self.access_key,
+                    **_ak,
                     keywords=keywords,
                     sensitivities=self.sensitivities
                 )

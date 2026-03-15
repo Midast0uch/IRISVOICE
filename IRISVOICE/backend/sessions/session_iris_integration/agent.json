@@ -1,0 +1,29 @@
+{
+  "fields": {
+    "wake": {
+      "wake_word_enabled": true,
+      "wake_phrase": "Jarvis",
+      "detection_sensitivity": 70,
+      "activation_sound": true,
+      "sleep_timeout": 60
+    },
+    "speech": {
+      "auto_start_speak": true,
+      "voice_style": "Friendly",
+      "speaking_rate": 1,
+      "pitch": 0,
+      "intonation": 50
+    },
+    "identity": {
+      "agent_name": "Iris",
+      "persona": "Friendly",
+      "greeting_message": "Hello! How can I help you?"
+    },
+    "memory": {
+      "memory_enabled": true,
+      "context_window": 10,
+      "memory_persistence": true
+    }
+  },
+  "last_updated": "2026-03-15T10:31:48.802910"
+}

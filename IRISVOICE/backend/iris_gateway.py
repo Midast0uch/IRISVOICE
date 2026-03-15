@@ -14,11 +14,13 @@ from typing import Dict, Any, Optional, List
 from .ws_manager import WebSocketManager, get_websocket_manager
 from .state_manager import StateManager, get_state_manager
 from .core_models import Category, get_sections_for_category
-from .agent import get_agent_kernel, get_lfm_audio_manager
+from .agent import get_agent_kernel
+from .agent.tts import get_tts_manager
 from .audio.pipeline import AudioPipeline
 from .voice.wake_word_discovery import WakeWordDiscovery
 from .tools.cleanup_analyzer import CleanupAnalyzer
 from .vision.vision_service import VisionService, get_vision_service
+from .integrations import get_integration_handler
 
 logger = logging.getLogger(__name__)
 
@@ -68,24 +70,41 @@ class IRISGateway:
 
         self._voice_handler = None          # set via set_voice_handler() after construction
         self._active_voice_client: dict = {}  # session_id -> client_id for wake word routing
+        # Captured once the first async message is handled; used by sync callbacks
+        # (e.g. _on_voice_result) that need to dispatch back to the event loop from
+        # a background thread without calling asyncio.get_event_loop() in that thread.
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # Pre-warm the default TTS model in a background thread so first speech
+        # does not block on a cold Coqui model load.
+        import threading
+        threading.Thread(target=self._prewarm_tts, daemon=True, name="tts-prewarm").start()
     
-    async def handle_message(self, client_id: str, message: dict) -> None:
+    async def handle_message(self, client_id: str, message: dict, session_id: Optional[str] = None) -> None:
         """
         Main message dispatcher. Routes incoming WebSocket messages to appropriate handlers.
-        
+
         Error Handling:
         - Parse errors: Log and send error response, continue processing
         - Invalid message format: Log and send error response
         - Unknown message types: Log warning and send error response
         - Handler exceptions: Log with context and send error response
-        
+
         Args:
             client_id: ID of the client sending the message
             message: Message dictionary with 'type' and optional 'payload'
-        
+            session_id: Session ID pre-resolved by the caller (avoids race with disconnect)
+
         Raises:
             ValueError: If message format is invalid
         """
+        # Capture the running loop once so background-thread callbacks can use it.
+        if self._main_loop is None:
+            try:
+                self._main_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+
         try:
             # Validate message format
             if not isinstance(message, dict):
@@ -95,7 +114,7 @@ class IRISGateway:
                 )
                 await self._send_error(client_id, "Invalid message format: expected dict")
                 return
-            
+
             msg_type = message.get("type")
             if not msg_type:
                 self._logger.error(
@@ -104,9 +123,11 @@ class IRISGateway:
                 )
                 await self._send_error(client_id, "Invalid message format: missing 'type' field")
                 return
-            
-            # Get session ID for this client
-            session_id = self._ws_manager.get_session_id_for_client(client_id)
+
+            # Resolve session ID — use caller-supplied value when available to avoid
+            # the race where heartbeat disconnect removes the mapping before we look it up.
+            if session_id is None:
+                session_id = self._ws_manager.get_session_id_for_client(client_id)
             if not session_id:
                 self._logger.error(
                     f"No session found for client {client_id}",
@@ -196,7 +217,19 @@ class IRISGateway:
             
             elif msg_type == "message_exported":
                 await self._handle_message_exported(session_id, client_id, message)
-            
+
+            elif msg_type in {
+                "integration_list", "integration_enable", "integration_disable",
+                "integration_state", "integration_oauth_callback",
+                "integration_credentials_auth", "integration_telegram_auth",
+                "integration_restart", "integration_forget", "app_cleanup",
+                "activity_get_recent", "logs_subscribe", "logs_get_history",
+                "logs_unsubscribe", "marketplace_preference_store",
+                "marketplace_preferences_get", "marketplace_recommendations_get",
+            }:
+                # Delegate to the integration subsystem handler
+                await get_integration_handler().handle_message(client_id, message)
+
             else:
                 self._logger.warning(
                     f"Unknown message type: {msg_type}",
@@ -334,7 +367,7 @@ class IRISGateway:
                 # Mask API keys in the response
                 response_value = value
                 if field_id == "openai_api_key" and value:
-                    from ..utils.encryption import mask_api_key
+                    from .utils.encryption import mask_api_key
                     response_value = mask_api_key(value)
                 
                 # Send confirmation with timestamp - include both new and legacy field names
@@ -459,21 +492,23 @@ class IRISGateway:
             # Apply TTS configuration when speech section is confirmed
             elif section_id == "speech" and values:
                 try:
-                    lfm_audio_manager = get_lfm_audio_manager()
+                    tts = get_tts_manager()
                     kwargs = {}
+                    if "tts_enabled" in values:
+                        kwargs["tts_enabled"] = values["tts_enabled"]
                     if "tts_voice" in values:
                         kwargs["tts_voice"] = values["tts_voice"]
                     if "speaking_rate" in values:
-                        kwargs["speaking_rate"] = values["speaking_rate"]
+                        kwargs["speaking_rate"] = float(values["speaking_rate"])
                     if kwargs:
-                        lfm_audio_manager.update_voice_config(**kwargs)
+                        tts.update_config(**kwargs)
                         self._logger.info(
-                            f"[Session: {session_id}] Speech config applied on confirm: {kwargs}",
+                            f"[Session: {session_id}] TTS config applied: {kwargs}",
                             extra={"session_id": session_id, "client_id": client_id}
                         )
                 except Exception as e:
                     self._logger.error(
-                        f"[Session: {session_id}] Error applying speech config on confirm: {e}",
+                        f"[Session: {session_id}] Error applying TTS config: {e}",
                         extra={"session_id": session_id, "client_id": client_id}
                     )
 
@@ -486,25 +521,51 @@ class IRISGateway:
                     reasoning = values.get("reasoning_model")
                     # cards.ts field is 'tool_model' (not 'tool_execution_model')
                     tool_exec = values.get("tool_model") or values.get("tool_execution_model")
-                    if reasoning or tool_exec:
-                        success_apply = kernel.set_model_selection(
-                            reasoning_model=reasoning,
-                            tool_execution_model=tool_exec
+                    provider = values.get("model_provider")  # "local" | "vps" | "api"
+
+                    # Always pass the provider so the kernel knows which inference
+                    # backend to route to (Ollama / VPS / OpenAI).
+                    kernel.set_model_selection(
+                        reasoning_model=reasoning,
+                        tool_execution_model=tool_exec,
+                        model_provider=provider,
+                    )
+                    self._logger.info(
+                        f"[Session: {session_id}] Model selection applied on confirm: "
+                        f"reasoning={reasoning}, tool={tool_exec}, provider={provider}",
+                        extra={"session_id": session_id, "client_id": client_id}
+                    )
+
+                    # Wire up the correct inference backend based on provider.
+                    if provider == "lmstudio":
+                        # LM Studio uses an OpenAI-compatible local API — no gateway object needed.
+                        # Just store the endpoint so the kernel inference blocks can use it.
+                        lms_endpoint = values.get("lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
+                        kernel.configure_lmstudio(lms_endpoint)
+                        kernel.configure_vps({"enabled": False})
+                        self._logger.info(
+                            f"[Session: {session_id}] LM Studio configured: {lms_endpoint}",
+                            extra={"session_id": session_id}
                         )
-                        if success_apply:
+                    elif provider == "vps":
+                        vps_endpoint = values.get("vps_endpoint", "")
+                        vps_token = values.get("vps_token", "")
+                        if vps_endpoint:
+                            kernel.configure_vps({
+                                "enabled": True,
+                                "endpoints": [vps_endpoint],
+                                "auth_token": vps_token or None,
+                            })
                             self._logger.info(
-                                f"[Session: {session_id}] Model selection applied on confirm: "
-                                f"reasoning={reasoning}, tool={tool_exec}",
-                                extra={"session_id": session_id, "client_id": client_id}
+                                f"[Session: {session_id}] VPS gateway configured: {vps_endpoint}",
+                                extra={"session_id": session_id}
                             )
-                        else:
-                            self._logger.warning(
-                                f"[Session: {session_id}] Model selection may not be available: "
-                                f"reasoning={reasoning}, tool={tool_exec}",
-                                extra={"session_id": session_id, "client_id": client_id}
-                            )
-                    # If model_provider changed, auto-refresh the model list so dropdowns
-                    # update immediately without a separate get_available_models request.
+                    elif provider in ("local", "api"):
+                        # Disable VPS gateway if user switched away from VPS mode
+                        kernel.configure_vps({"enabled": False})
+
+                    # Refresh model dropdown so UI reflects available models for the
+                    # new provider immediately.
                     if "model_provider" in values:
                         await self._handle_get_available_models(session_id, client_id, {})
                 except Exception as e:
@@ -516,11 +577,14 @@ class IRISGateway:
             # Apply audio device selection when input section is confirmed
             elif section_id == "input" and values:
                 try:
-                    from ..audio.engine import get_audio_engine
+                    from .audio.engine import get_audio_engine
                     engine = get_audio_engine()
                     # Field ID is 'input_device' per data/cards.ts
                     device = values.get("input_device")
                     if device is not None and device != "":
+                        # UI sends device names (strings); resolve to integer index so
+                        # sounddevice doesn't encounter multiple host-API matches.
+                        device = self._resolve_device_index(device, want_input=True)
                         engine.update_config(input_device=device)
                         self._logger.info(
                             f"[Session: {session_id}] Input device applied on confirm: {device}",
@@ -535,11 +599,13 @@ class IRISGateway:
             # Apply audio device selection when output section is confirmed
             elif section_id == "output" and values:
                 try:
-                    from ..audio.engine import get_audio_engine
+                    from .audio.engine import get_audio_engine
                     engine = get_audio_engine()
                     # Field ID is 'output_device' per data/cards.ts
                     device = values.get("output_device")
                     if device is not None and device != "":
+                        # UI sends device names (strings); resolve to integer index.
+                        device = self._resolve_device_index(device, want_input=False)
                         engine.update_config(output_device=device)
                         self._logger.info(
                             f"[Session: {session_id}] Output device applied on confirm: {device}",
@@ -624,11 +690,24 @@ class IRISGateway:
             elif msg_type == "voice_command_end":
                 self._logger.info(f"[Session: {session_id}] Voice command end")
 
-                # Broadcast processing state immediately
-                await self._ws_manager.broadcast_to_session(session_id, {
-                    "type": "listening_state",
-                    "payload": {"state": "processing_conversation"}
-                })
+                # Only show processing state if there's real audio buffered.
+                # Avoids the orb getting stuck in processing_conversation when
+                # the user clicks stop before speaking (empty buffer).
+                has_audio = (
+                    self._voice_handler is not None
+                    and len(getattr(self._voice_handler, "audio_buffer", [])) > 30
+                )
+                if has_audio:
+                    await self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "listening_state",
+                        "payload": {"state": "processing_conversation"}
+                    })
+                else:
+                    # No real audio — snap straight to idle
+                    await self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "listening_state",
+                        "payload": {"state": "idle"}
+                    })
 
                 # Delegate stop+process to VoiceCommandHandler
                 # _on_voice_result callback fires when LFM2-Audio finishes
@@ -647,16 +726,22 @@ class IRISGateway:
         Extracts transcript + audio context and routes through 4-pillar pipeline.
         Called from a background thread — uses asyncio.run_coroutine_threadsafe.
         """
-        import asyncio
         try:
             transcript = result.get("transcript", "").strip()
             audio_context = result.get("audio_context", "").strip()
             session_id = result.get("session_id", "default")
             client_id = self._active_voice_client.get(session_id)
 
+            # Use the loop captured during the first async message dispatch.
+            # Never call asyncio.get_event_loop() here — this runs in a background
+            # thread and that call raises "no current event loop" on Python 3.10+.
+            loop = self._main_loop
+            if loop is None or not loop.is_running():
+                self._logger.error("[Voice] _on_voice_result: main event loop not available")
+                return
+
             if not transcript or not client_id:
                 self._logger.warning(f"[Voice] Empty transcript or unknown client for session {session_id}")
-                loop = asyncio.get_event_loop()
                 asyncio.run_coroutine_threadsafe(
                     self._ws_manager.broadcast_to_session(session_id, {
                         "type": "listening_state", "payload": {"state": "idle"}
@@ -665,7 +750,6 @@ class IRISGateway:
                 )
                 return
 
-            loop = asyncio.get_event_loop()
             asyncio.run_coroutine_threadsafe(
                 self._process_voice_transcription(session_id, client_id, transcript, audio_context),
                 loop
@@ -684,7 +768,7 @@ class IRISGateway:
           Pillar 4 — Memory: injected via _get_memory_context in plan_task
         """
         import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             # Pillar 1A: Send transcript as user bubble in ChatView
             await self._ws_manager.send_to_client(client_id, {
@@ -738,17 +822,49 @@ class IRISGateway:
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "listening_state", "payload": {"state": "error"}
             })
+            # Auto-reset orb to idle after a brief pause so the error state is visible
+            await asyncio.sleep(2.0)
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "listening_state", "payload": {"state": "idle"}
+            })
+
+    def _prewarm_tts(self) -> None:
+        """Pre-load LuxTTS and encode voice reference in a background thread at startup."""
+        try:
+            from .agent.tts import get_tts_manager
+            tts = get_tts_manager()
+            if tts.config.get("tts_voice") == "Built-in":
+                return
+            lux = tts._get_lux()
+            tts._get_encode_dict(lux)
+            self._logger.info("[IRISGateway] LuxTTS pre-warmed successfully")
+        except Exception as e:
+            self._logger.warning(f"[IRISGateway] TTS pre-warm failed (non-fatal): {e}")
 
     def _speak_response(self, text: str) -> None:
-        """TTS + audio playback via TTSManager. Sync — call via run_in_executor."""
+        """TTS + audio playback via TTSManager. Sync — call via run_in_executor.
+
+        Splits the response into sentences so the first sentence plays as soon as
+        it is synthesized rather than waiting for the entire paragraph to be ready.
+        """
+        import re
         try:
             from .agent.tts import get_tts_manager
             from .audio.engine import get_audio_engine
             tts = get_tts_manager()
-            audio_np = tts.synthesize(text)
-            if audio_np is not None and len(audio_np) > 0:
-                engine = get_audio_engine()
-                if engine.pipeline:
+            engine = get_audio_engine()
+            if not engine.pipeline:
+                return
+
+            # Split at sentence boundaries (.  !  ?  …  newline)
+            sentences = re.split(r'(?<=[.!?…])\s+|\n+', text.strip())
+            sentences = [s.strip() for s in sentences if s.strip()]
+            if not sentences:
+                return
+
+            for sentence in sentences:
+                audio_np = tts.synthesize(sentence)
+                if audio_np is not None and len(audio_np) > 0:
                     engine.pipeline.play_audio(audio_np)
         except Exception as e:
             self._logger.error(f"[Voice] TTS error: {e}")
@@ -768,31 +884,37 @@ class IRISGateway:
         
         if msg_type == "text_message":
             text = payload.get("text")
-            
+
             if not text:
                 await self._send_validation_error(client_id, "text", "Message text is required")
                 return
-            
+
             # Get AgentKernel for this session
             try:
                 agent_kernel = get_agent_kernel(session_id)
-                
+
                 # Wire tool bridge if not already set (enables real tool execution)
                 from backend.agent.tool_bridge import get_agent_tool_bridge
                 if agent_kernel._tool_bridge is None:
                     agent_kernel._tool_bridge = get_agent_tool_bridge()
-                
+
+                # Signal UI: model is preparing response (shows typing indicator)
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "listening_state",
+                    "payload": {"state": "processing_conversation"}
+                })
+
                 # Process message synchronously (AgentKernel.process_text_message is sync)
                 # Run in executor to avoid blocking the event loop
                 import asyncio
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(
                     None,
                     agent_kernel.process_text_message,
                     text,
                     session_id
                 )
-                
+
                 # Send response to client
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "text_response",
@@ -801,9 +923,23 @@ class IRISGateway:
                         "sender": "assistant"
                     }
                 })
-                
+
+                # TTS: speak the response if enabled
+                await loop.run_in_executor(None, self._speak_response, response)
+
+                # Signal UI: back to idle
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "listening_state",
+                    "payload": {"state": "idle"}
+                })
+
             except Exception as e:
                 self._logger.error(f"Error processing text message: {e}", exc_info=True)
+                # Reset UI state before reporting error
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "listening_state",
+                    "payload": {"state": "idle"}
+                })
                 await self._send_error(client_id, f"Agent kernel error: {str(e)}")
         
         elif msg_type == "clear_chat":
@@ -889,17 +1025,18 @@ class IRISGateway:
             # Get session-specific field values
             session_state = await self._state_manager._get_session_state_manager(session_id)
 
-            inference_mode = "Local Models"  # sensible default
+            inference_mode = "lmstudio"  # sensible default — LM Studio is the recommended local provider
             vps_url = ""
             openai_api_key = ""
             ollama_endpoint = "http://localhost:11434"
+            lmstudio_endpoint = "http://localhost:1234"
 
             if session_state:
-                # model_provider is in section 'model_selection' (CARD_TO_SECTION_ID: models-card)
-                # Values: 'local' | 'api' | 'vps'  (set by the Provider dropdown in the Models card)
-                inference_mode = await session_state.get_field_value("model_selection", "model_provider", "local") or "local"
+                # model_provider: 'lmstudio' | 'local' | 'api' | 'vps'
+                inference_mode = await session_state.get_field_value("model_selection", "model_provider", "lmstudio") or "lmstudio"
                 vps_url = await session_state.get_field_value("model_selection", "vps_endpoint", "") or ""
                 openai_api_key = await session_state.get_field_value("model_selection", "api_key", "") or ""
+                lmstudio_endpoint = await session_state.get_field_value("model_selection", "lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
 
             self._logger.info(
                 f"[Session: {session_id}] Getting available models for provider: {inference_mode}"
@@ -1042,6 +1179,52 @@ class IRISGateway:
                         f"[Session: {session_id}] No models found — returning fallback list"
                     )
 
+            elif inference_mode == "lmstudio":
+                # LM Studio exposes an OpenAI-compatible REST API at localhost:1234.
+                # Query /v1/models to get whatever model(s) the user currently has loaded.
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as http_client:
+                        r = await http_client.get(
+                            f"{lmstudio_endpoint.rstrip('/')}/v1/models",
+                            headers={"Authorization": "Bearer lm-studio"},
+                        )
+                        if r.status_code == 200:
+                            models_data = r.json().get("data", [])
+                            available_models = [
+                                {
+                                    "id": m["id"],
+                                    "name": m.get("id", m["id"]),
+                                    "source": "lmstudio",
+                                }
+                                for m in models_data
+                                if not _is_vision_only(m.get("id", ""))
+                            ]
+                            self._logger.info(
+                                f"[Session: {session_id}] LM Studio: found {len(available_models)} model(s)"
+                            )
+                        else:
+                            self._logger.warning(
+                                f"[Session: {session_id}] LM Studio returned status {r.status_code}"
+                            )
+                except Exception as lms_err:
+                    self._logger.warning(
+                        f"[Session: {session_id}] LM Studio not reachable at {lmstudio_endpoint}: {lms_err}"
+                    )
+
+                # Fallback: common models users load in LM Studio
+                if not available_models:
+                    available_models = [
+                        {"id": "local-model", "name": "Currently Loaded Model", "source": "lmstudio"},
+                        {"id": "llama-3.2-3b-instruct", "name": "Llama 3.2 3B Instruct", "source": "lmstudio"},
+                        {"id": "llama-3.1-8b-instruct", "name": "Llama 3.1 8B Instruct", "source": "lmstudio"},
+                        {"id": "mistral-7b-instruct-v0.3", "name": "Mistral 7B Instruct", "source": "lmstudio"},
+                        {"id": "qwen2.5-7b-instruct", "name": "Qwen 2.5 7B Instruct", "source": "lmstudio"},
+                        {"id": "deepseek-r1-distill-qwen-7b", "name": "DeepSeek R1 7B", "source": "lmstudio"},
+                    ]
+                    self._logger.info(
+                        f"[Session: {session_id}] LM Studio unreachable — showing fallback model list"
+                    )
+
             elif inference_mode == "api":
                 # Try to query OpenAI models list if we have a valid key
                 if openai_api_key and openai_api_key.startswith("sk-"):
@@ -1110,7 +1293,7 @@ class IRISGateway:
                 "type": "available_models",
                 "payload": {
                     "models": available_models,
-                    "model_provider": inference_mode,   # 'local' | 'api' | 'vps'
+                    "model_provider": inference_mode,   # 'lmstudio' | 'local' | 'api' | 'vps'
                     "inference_mode": inference_mode    # kept for backward compat
                 }
             })
@@ -1325,7 +1508,7 @@ class IRISGateway:
                     return
                 
                 # Test the connection
-                from ..utils.openai_connection_test import test_openai_connection
+                from .utils.openai_connection_test import test_openai_connection
                 success, message = await test_openai_connection(api_key, api_url)
                 
                 # Send result to client
@@ -2112,7 +2295,7 @@ class IRISGateway:
         """
         Send validation error message to client.
         GAP-09 FIX: Uses flat payload structure for consistency.
-        
+
         Args:
             client_id: Client ID
             field_id: Field ID that failed validation
@@ -2123,6 +2306,49 @@ class IRISGateway:
             "field_id": field_id,
             "error": error_message
         })
+
+    def _resolve_device_index(self, device: Any, want_input: bool) -> Any:
+        """Resolve a device name string to an integer sounddevice index.
+
+        The UI dropdown populates with device *names* (strings).  Passing a
+        name to sounddevice raises "Multiple input/output devices found" on
+        Windows because the same physical device appears under MME, DirectSound,
+        WASAPI, and WDM-KS host APIs.  AudioPipeline.list_devices() already
+        deduplicates those and returns the best integer index for each device,
+        so we look up by name here.
+
+        If the value is already an int (or can't be matched), it is returned as-is.
+        """
+        if isinstance(device, int):
+            return device
+        if not isinstance(device, str) or device == "":
+            return device
+        try:
+            devices = AudioPipeline.list_devices()
+            # Exact match first
+            for d in devices:
+                if want_input and not d.get("input"):
+                    continue
+                if not want_input and not d.get("output"):
+                    continue
+                if d["name"] == device:
+                    return d["index"]
+            # Prefix match (handles MME name truncation at 31 chars)
+            key = device[:31].lower().rstrip()
+            for d in devices:
+                if want_input and not d.get("input"):
+                    continue
+                if not want_input and not d.get("output"):
+                    continue
+                if d["name"][:31].lower().rstrip() == key:
+                    return d["index"]
+            self._logger.warning(
+                f"[IRISGateway] Could not resolve device name '{device}' to an index — "
+                f"using name as-is (may cause multiple-device error)"
+            )
+        except Exception as e:
+            self._logger.error(f"[IRISGateway] Error resolving device index for '{device}': {e}")
+        return device
 
 
 # Global instance

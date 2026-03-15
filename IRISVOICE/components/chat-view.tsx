@@ -720,9 +720,9 @@ ${message.text}`;
 
   // Spotlight dynamic styles
   const getSpotlightWidth = () => {
-    if (isInChatSpotlight) return 340; // Spotlight width
-    if (isInDashboardSpotlight) return 180; // Background width
-    return 255; // Balanced width
+    if (isInChatSpotlight) return 680; // Spotlight width (2×)
+    if (isInDashboardSpotlight) return 360; // Background width (2×)
+    return 510; // Balanced width (2×)
   };
 
   const getSpotlightTransform = () => {

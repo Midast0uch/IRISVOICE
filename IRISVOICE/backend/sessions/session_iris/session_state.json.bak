@@ -1,0 +1,232 @@
+{
+  "current_category": "voice",
+  "current_section": "input",
+  "field_values": {
+    "input": {
+      "input_device": "Microphone (V8)",
+      "input_sensitivity": 50,
+      "noise_gate": true,
+      "vad": true,
+      "auto_gain": true,
+      "input_volume": 100
+    },
+    "output": {
+      "output_device": "Headphones (WG1)",
+      "master_volume": 80,
+      "enable_spatial": false,
+      "audio_ducking": 20,
+      "limiter": true,
+      "latency_compensation": 190,
+      "output_volume": 99
+    },
+    "effects": {
+      "reverb": 10,
+      "equalizer": "None",
+      "compression": 30,
+      "stereo_width": 50,
+      "pitch_shift": 0
+    },
+    "inference_mode": {
+      "inference_mode": "Local Models",
+      "vps_url": "",
+      "vps_api_key": "",
+      "openai_api_key": "",
+      "reasoning_effort": "fast",
+      "tool_mode": "ask_first",
+      "agent_thinking_style": "balanced"
+    },
+    "model_selection": {
+      "reasoning_model": "qwen/qwen3.5-9b",
+      "tool_execution_model": "",
+      "use_same_model": false,
+      "tool_model": "LFM2.5-1.2B-Instruct",
+      "model_provider": "lmstudio",
+      "lmstudio_endpoint": "http://192.168.0.32:1234"
+    },
+    "model": {
+      "lfm_type": "Local",
+      "local_model_path": "",
+      "cloud_api_key": "",
+      "temperature": 0.8,
+      "max_tokens": 1024
+    },
+    "wake": {
+      "wake_word_enabled": true,
+      "wake_phrase": "Hey Iris",
+      "detection_sensitivity": 70,
+      "activation_sound": true,
+      "sleep_timeout": 60,
+      "wake_word_sensitivity": 10,
+      "voice_profile": "Personal"
+    },
+    "speech": {
+      "auto_start_speak": true,
+      "voice_style": "Friendly",
+      "speaking_rate": 1,
+      "pitch": 0,
+      "intonation": 50,
+      "tts_voice": "Cloned Voice"
+    },
+    "identity": {
+      "agent_name": "Iris",
+      "persona": "Friendly",
+      "greeting_message": "Hello! How can I help you?"
+    },
+    "memory": {
+      "memory_enabled": true,
+      "context_window": 50,
+      "memory_persistence": true
+    },
+    "hotkeys": {
+      "push_to_talk": "",
+      "toggle_mute": "",
+      "quick_command": "",
+      "replay_last": "",
+      "toggle_iris_panel": ""
+    },
+    "macros": {
+      "macro_1_trigger": "",
+      "macro_1_action": "",
+      "macro_2_trigger": "",
+      "macro_2_action": "",
+      "macro_3_trigger": ""
+    },
+    "integrations": {
+      "discord_token": "",
+      "obs_websocket_url": "",
+      "philips_hue_bridge_ip": "",
+      "spotify_client_id": "",
+      "home_assistant_url": ""
+    },
+    "tools": {
+      "allowed_tools": "All",
+      "tool_confirmations": true
+    },
+    "vision": {
+      "vision_enabled": true,
+      "vision_model": "minicpm-o4.5"
+    },
+    "desktop_control": {
+      "desktop_control_enabled": true,
+      "ui_tars_provider": "native_python",
+      "vision_model_provider": "minicpm_ollama",
+      "api_key": "",
+      "max_steps": 47,
+      "require_confirmation": true,
+      "use_vision_guidance": true
+    },
+    "skills": {
+      "skill_creation_enabled": true
+    },
+    "profile": {
+      "active_mode": "personal"
+    },
+    "performance": {
+      "enable_gpu": true,
+      "cpu_cores": 4,
+      "ram_allocation": 4,
+      "model_offload": 50,
+      "low_power_mode": false
+    },
+    "storage": {
+      "log_retention_days": 7,
+      "max_log_size_mb": 100,
+      "session_history_path": "",
+      "clear_cache": "",
+      "backup_settings": ""
+    },
+    "security": {
+      "enable_sandboxing": true,
+      "data_encryption": true,
+      "audit_log_level": "Basic",
+      "allow_external_requests": false,
+      "two_factor_auth": false
+    },
+    "power": {
+      "auto_start": false,
+      "minimize_to_tray": true
+    },
+    "display": {
+      "window_opacity": 95,
+      "always_on_top": false
+    },
+    "network": {
+      "websocket_url": "ws://localhost:8000/ws",
+      "connection_timeout": 30
+    },
+    "theme": {
+      "primary_color": "#00ff88",
+      "glow_color": "#00ff88",
+      "font_color": "#ffffff",
+      "layout_mode": "Spacious",
+      "font_size": 14
+    },
+    "ui": {
+      "show_tooltips": true,
+      "animation_speed": 1,
+      "blur_intensity": 20,
+      "hide_on_startup": false,
+      "always_on_top": false
+    },
+    "notifications": {
+      "enable_notifications": true,
+      "notification_sound": "Default",
+      "show_wake_notification": true,
+      "show_error_notification": true,
+      "auto_dismiss_delay": 5
+    },
+    "startup": {
+      "startup_page": "Dashboard",
+      "startup_behavior": "Normal"
+    },
+    "behavior": {
+      "confirm_exit": true,
+      "auto_save": true
+    },
+    "analytics": {
+      "view_analytics": "",
+      "export_report": ""
+    },
+    "metrics": {
+      "token_usage": "",
+      "response_latency": "",
+      "session_duration": "",
+      "command_history": "",
+      "cost_estimate": ""
+    },
+    "logs": {
+      "system_logs": "",
+      "voice_logs": "",
+      "mcp_logs": "",
+      "error_logs": "",
+      "export_logs": ""
+    },
+    "diagnostics": {
+      "health_check": "",
+      "lfm_benchmark": "",
+      "mcp_test": "",
+      "network_test": "",
+      "report_issue": ""
+    },
+    "updates": {
+      "update_channel": "Stable",
+      "check_updates": "",
+      "current_version": "",
+      "changelog": "",
+      "auto_update": true
+    }
+  },
+  "active_theme": {
+    "primary": "#00ff88",
+    "glow": "#00ff88",
+    "font": "#ffffff",
+    "state_colors_enabled": false,
+    "idle_color": "#00ff88",
+    "listening_color": "#00aaff",
+    "processing_color": "#a855f7",
+    "error_color": "#ff3355"
+  },
+  "app_state": "starting",
+  "selected_reasoning_model": "qwen/qwen3.5-9b",
+  "selected_tool_execution_model": "LFM2.5-1.2B-Instruct"
+}

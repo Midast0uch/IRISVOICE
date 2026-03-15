@@ -1,0 +1,9 @@
+{
+  "fields": {
+    "tools": {
+      "allowed_tools": "All",
+      "tool_confirmations": true
+    }
+  },
+  "last_updated": "2026-03-15T10:31:56.819925"
+}

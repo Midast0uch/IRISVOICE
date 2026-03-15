@@ -130,16 +130,25 @@ class AudioPipeline:
         """This is called (from a separate thread) for each audio block."""
         if status:
             logger.info(status, file=sys.stderr)
-        if self._is_running and self._on_audio_frame is not None:
+        if self._is_running:
             # The input data is a numpy array, take the first channel
             audio_frame = indata[:, 0].astype(np.float32)
-            
+
             # Buffer audio if buffering is enabled
             with self._buffer_lock:
                 if self._is_buffering:
                     self._audio_buffer.append(audio_frame)
-            
-            self._on_audio_frame(audio_frame)
+
+            # Primary callback (e.g. AudioEngine._process_audio_frame)
+            if self._on_audio_frame is not None:
+                self._on_audio_frame(audio_frame)
+
+            # Notify all registered frame listeners (e.g. VoiceCommandHandler._capture_frame)
+            for listener in self._frame_listeners:
+                try:
+                    listener(audio_frame)
+                except Exception as exc:
+                    logger.error(f"[AudioPipeline] Frame listener error: {exc}")
     
     def play_audio(self, audio_data: np.ndarray):
         """Play audio through output stream"""
@@ -150,11 +159,14 @@ class AudioPipeline:
             return
         
         try:
-            # Convert float to int16
-            pcm = (audio_data * 32767).astype(np.int16).tobytes()
-            
-            logger.info(f"[AudioPipeline] Writing {len(pcm)} bytes to output stream...")
-            self._output_stream.write(pcm)
+            # sounddevice OutputStream defaults to float32.
+            # Ensure the data is float32 and clamped to [-1.0, 1.0].
+            # Previously this converted to int16 bytes which caused a
+            # "dtype mismatch: bytes vs float32" error in sd.OutputStream.write().
+            audio_float = np.clip(audio_data.astype(np.float32), -1.0, 1.0)
+
+            logger.info(f"[AudioPipeline] Writing {len(audio_float)} frames to output stream...")
+            self._output_stream.write(audio_float)
             logger.info("[AudioPipeline] Write complete")
         except Exception as e:
             logger.error(f"[AudioPipeline] Output error: {e}")

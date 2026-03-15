@@ -326,15 +326,12 @@ class AudioEngine:
                 ws_manager.broadcast(message)
             )
         else:
-            # Fallback: try to get a running loop
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(ws_manager.broadcast(message))
-                else:
-                    logger.debug(f"[AudioEngine] (WS skip: no running loop) {message.get('type', 'unknown')}")
-            except Exception as e:
-                logger.error(f"[AudioEngine] WS broadcast error: {e}")
+            # _main_loop was not captured at startup (AudioEngine initialised
+            # before the asyncio event loop started).  Skip the broadcast rather
+            # than calling asyncio.get_event_loop() from a background thread,
+            # which raises "There is no current event loop in thread '...'" on
+            # Python 3.10+.
+            logger.debug(f"[AudioEngine] (WS skip: no main loop ref) {message.get('type', 'unknown')}")
 
     def update_config(self, **kwargs):
         """Update engine configuration"""

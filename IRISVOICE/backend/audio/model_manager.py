@@ -101,11 +101,15 @@ class ModelManager:
             except Exception:
                 pass
 
-        # LFM2.5-Audio-1.5B needs ~4GB RAM (CPU) or ~3GB VRAM (GPU)
+        # LFM2.5-Audio-1.5B (1.5B params, float32 on CPU) ≈ 6 GB on disk but
+        # only ~3 GB resident in RAM once loaded.  The old 4 GB hard limit was
+        # too conservative and blocked users who had used the model before.
+        # Keep a 2 GB soft floor; anything above that we attempt the load and
+        # let PyTorch raise OOM if the system truly cannot handle it.
         if torch.cuda.is_available():
-            result["sufficient"] = result["vram_gb"] >= 3.0
+            result["sufficient"] = result["vram_gb"] >= 2.0
         else:
-            result["sufficient"] = result["ram_gb"] >= 4.0
+            result["sufficient"] = result["ram_gb"] >= 2.0
 
         return result
 
@@ -181,14 +185,22 @@ class ModelManager:
             except ImportError:
                 LIQUID_AUDIO_AVAILABLE = False
 
-        # Check system resources before loading (low-spec PC guard)
+        # Check system resources before loading (low-spec PC guard).
+        # This is now a WARNING, not a hard block — the user may have freed memory
+        # since the check or the model may fit despite the estimate being pessimistic.
+        # PyTorch will raise an OOM error naturally if the load genuinely fails.
         resources = self._check_system_resources()
         if not resources["sufficient"]:
             if torch.cuda.is_available():
-                print(f"[ModelManager] Insufficient VRAM ({resources['vram_gb']:.1f}GB free, need 3GB). Cannot load LFM2-Audio.")
+                print(
+                    f"[ModelManager] Low VRAM ({resources['vram_gb']:.1f}GB free). "
+                    "Attempting CPU fallback load — may be slow."
+                )
             else:
-                print(f"[ModelManager] Insufficient RAM ({resources['ram_gb']:.1f}GB free, need 4GB). Cannot load LFM2-Audio.")
-            return False
+                print(
+                    f"[ModelManager] Low RAM ({resources['ram_gb']:.1f}GB free). "
+                    "Attempting load anyway — will fail gracefully if OOM."
+                )
 
         # Check if we have a corrupted download (missing model weights)
         if self._check_for_corrupted_download():
@@ -206,15 +218,31 @@ class ModelManager:
         try:
             print(f"[ModelManager] Loading {self.DEFAULT_MODEL_REPO} using liquid-audio...")
 
-            # Device selection
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            dtype = torch.float16 if device == "cuda" else torch.float32
-
-            # CPU-only override for low-spec: if VRAM < 3GB but CUDA available, use CPU
-            if device == "cuda" and resources.get("vram_gb", 0) < 3.0:
-                print("[ModelManager] Low VRAM detected — using CPU inference (slower but safe)")
+            # Device selection for LFM2.5-Audio-1.5B:
+            # - float16 on GPU:  ~3 GB VRAM
+            # - float32 on CPU:  ~3 GB RAM, ~2-5s inference (safe alongside Ollama)
+            #
+            # We default to CPU because Ollama already occupies VRAM and PyTorch
+            # cannot see how much Ollama has reserved.  Loading LFM audio on top of
+            # an Ollama-occupied GPU causes OOM crashes.
+            #
+            # CPU override threshold: require ≥ 8 GB *free* VRAM before using GPU.
+            # This leaves enough headroom for Ollama + LFM audio without OOM.
+            _free_vram = resources.get("vram_gb", 0) if torch.cuda.is_available() else 0
+            if torch.cuda.is_available() and _free_vram >= 8.0:
+                device = "cuda"
+                dtype = torch.float16
+                print(f"[ModelManager] {_free_vram:.1f} GB VRAM free — loading on GPU")
+            else:
                 device = "cpu"
                 dtype = torch.float32
+                if torch.cuda.is_available():
+                    print(
+                        f"[ModelManager] Only {_free_vram:.1f} GB VRAM free (< 8 GB threshold). "
+                        "Using CPU to avoid conflict with Ollama — inference will be ~2-5s."
+                    )
+                else:
+                    print("[ModelManager] No GPU detected — using CPU")
 
             print(f"[ModelManager] Target device: {device}, dtype: {dtype}")
 

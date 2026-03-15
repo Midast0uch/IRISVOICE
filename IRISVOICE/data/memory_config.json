@@ -1,0 +1,22 @@
+{
+  "db_path": "data/memory.db",
+  "encryption_enabled": false,
+  "compression": {
+    "threshold": 0.80,
+    "keep_ratio": 0.60
+  },
+  "distillation": {
+    "enabled": true,
+    "interval_hours": 4,
+    "idle_threshold_minutes": 10
+  },
+  "retention": {
+    "enabled": true,
+    "episode_retention_days": 90,
+    "min_score_to_preserve": 0.8
+  },
+  "privacy": {
+    "audit_logging": true,
+    "audit_retention_days": 30
+  }
+}

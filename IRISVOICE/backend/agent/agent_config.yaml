@@ -10,21 +10,22 @@ communication:
 
 # Model settings
 models:
-  - id: "brain"
-    path: "./models/LFM2-8B-A1B"
-    capabilities: ["reasoning", "planning"]
-    constraints:
-      device: "cuda"
-      dtype: "bfloat16"
-    optional: false  # If true, startup continues if model fails to load
-
+  # ── Model setup ─────────────────────────────────────────────────────────────
+  # With LM Studio selected as provider, models are loaded in LM Studio and
+  # accessed via localhost:1234.  The path/device/dtype fields below only apply
+  # when using direct HuggingFace loading (provider = "local" without LM Studio).
+  #
+  # Recommended split for 8 GB VRAM (RTX 2070):
+  #   brain    → any ~9B reasoning model at Q4_K_M  (~5 GB VRAM)
+  #   executor → any ~1B tool-call model at Q4_K_M  (~1 GB VRAM)
+  # Select actual model names in the IRIS Settings → Configure → Models card.
   - id: "executor"
     path: "./models/LFM2.5-1.2B-Instruct"
     capabilities: ["tool_execution", "instruction_following"]
     constraints:
-      device: "cuda"
-      dtype: "bfloat16"
-    optional: false
+      device: "cpu"
+      dtype: "float32"
+    optional: true   # optional=true: startup continues if file is missing
 
   - id: "vision"
     # MiniCPM is pre-loaded and accessed via a dedicated toolkit, so no path is needed here.

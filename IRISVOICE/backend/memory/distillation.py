@@ -62,12 +62,16 @@ class DistillationProcess:
         self.memory = memory_interface
         self.adapter = adapter
         self.config = config or DistillationConfig()
-        
+
         # Activity tracking
         self._last_activity = time.time()
         self._last_distillation = 0.0
         self._is_running = False
         self._task: Optional[asyncio.Task] = None
+
+        # Mycelium maintenance counters (Req 13.8)
+        self._mycelium_distillation_count: int = 0
+        self._interrupt_requested: bool = False
         
         logger.info(
             f"[DistillationProcess] Initialized "
@@ -189,10 +193,17 @@ class DistillationProcess:
             
             # Update timestamp
             self._last_distillation = time.time()
-            
+
             # Trigger skill crystallisation
             await self._run_skill_crystallisation()
-            
+
+            # Mycelium maintenance sequence (Req 13.8–13.14)
+            # Guard: only run when idle ≥ DISTILLATION_IDLE_THRESHOLD seconds
+            idle_seconds = (time.time() - self._last_activity)
+            mycelium = getattr(self.memory, "_mycelium", None)
+            if mycelium is not None and idle_seconds >= 600:
+                await self._run_mycelium_maintenance(episodes, mycelium)
+
         except Exception as e:
             # SILENT FAILURE: Log but don't crash
             logger.error(f"[DistillationProcess] Distillation failed: {e}")
@@ -300,12 +311,107 @@ class DistillationProcess:
         try:
             # Import here to avoid circular dependency
             from backend.memory.skills import SkillCrystalliser
-            
+
             crystalliser = SkillCrystalliser(self.memory, self.adapter)
             count = await crystalliser.scan_and_crystallise()
-            
+
             if count > 0:
                 logger.info(f"[DistillationProcess] Crystallised {count} skills")
-                
+
         except Exception as e:
             logger.error(f"[DistillationProcess] Skill crystallisation failed: {e}")
+
+    async def _run_mycelium_maintenance(
+        self, episodes: List[Dict[str, Any]], mycelium: Any
+    ) -> None:
+        """
+        Run the full Mycelium maintenance sequence after a distillation cycle (Req 13.8–13.14).
+
+        Steps (each guarded by an interrupt check):
+          1. ingest_statement() for each recent episode's task_summary
+          2. ingest_sessions() with recent episode timestamps
+          3. ingest_conduct_outcomes() with all episodes
+          4. run_maintenance() — full 5-step pass (decay/condense/expand/lm-decay/render)
+
+        Interrupt-safe: stops cleanly after each atomic step if a new session starts.
+        Every 50 distillation cycles, logs token-saving stats.
+
+        Args:
+            episodes: Recent episode dicts from distillation.
+            mycelium: MyceliumInterface instance from self.memory._mycelium.
+        """
+        try:
+            self._interrupt_requested = False
+
+            # Step 1 — ingest episode text into coordinate graph
+            for ep in episodes:
+                if self._interrupt_requested:
+                    logger.debug("[DistillationProcess] Mycelium interrupted after ingest_statement")
+                    return
+                text = ep.get("task_summary", "") or ep.get("full_content", "")
+                if text:
+                    try:
+                        mycelium.ingest_statement(text)
+                    except Exception as _e:
+                        logger.debug("[DistillationProcess] ingest_statement failed: %s", _e)
+
+            if self._interrupt_requested:
+                return
+
+            # Step 2 — ingest session timestamps for chrono space
+            try:
+                timestamps = [
+                    ep.get("created_at", 0.0) for ep in episodes
+                    if ep.get("created_at")
+                ]
+                if timestamps:
+                    mycelium.ingest_sessions(timestamps)
+            except Exception as _e:
+                logger.debug("[DistillationProcess] ingest_sessions failed: %s", _e)
+
+            if self._interrupt_requested:
+                return
+
+            # Step 3 — ingest conduct outcomes
+            try:
+                mycelium.ingest_conduct_outcomes(episodes)
+            except Exception as _e:
+                logger.debug("[DistillationProcess] ingest_conduct_outcomes failed: %s", _e)
+
+            if self._interrupt_requested:
+                return
+
+            # Step 4 — full maintenance pass
+            try:
+                mycelium.run_maintenance()
+            except Exception as _e:
+                logger.error("[DistillationProcess] run_maintenance failed: %s", _e)
+
+            # Every 50 cycles log token-saving trend
+            self._mycelium_distillation_count += 1
+            if self._mycelium_distillation_count % 50 == 0:
+                try:
+                    stats = mycelium.get_stats()
+                    logger.info(
+                        "[DistillationProcess] Mycelium stats after %d cycles: "
+                        "mature=%s nodes=%s landmarks=%s avg_ctx_tokens=%s",
+                        self._mycelium_distillation_count,
+                        stats.get("is_mature"),
+                        stats.get("node_count"),
+                        stats.get("landmark_count"),
+                        stats.get("avg_context_tokens_per_task"),
+                    )
+                except Exception:
+                    pass
+
+        except Exception as exc:
+            logger.error("[DistillationProcess] Mycelium maintenance failed: %s", exc)
+
+    def request_interrupt(self) -> None:
+        """
+        Signal the Mycelium maintenance loop to stop at the next safe checkpoint.
+
+        Call this when a new session starts to ensure maintenance does not block
+        the new session's context path generation.
+        """
+        self._interrupt_requested = True

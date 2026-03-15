@@ -22,6 +22,10 @@ from backend.memory.embedding import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
+# Default source channel level before kyudo.py is wired (Phase 9).
+# HyphaChannel.EXTERNAL — overridden when kyudo.py is wired in Phase 9.
+_DEFAULT_PRE_KYUDO_CHANNEL: int = 1
+
 # Episode dataclass is imported from episodic.py - single source of truth
 
 
@@ -57,7 +61,26 @@ class MemoryInterface:
         self.context = ContextManager(adapter)
         self.embed = EmbeddingService()
         self.adapter = adapter
-        
+
+        # Mycelium coordinate memory layer (Req 13.1–13.5)
+        # Opens a dedicated connection to the same encrypted DB for the coordinate graph.
+        # WAL mode allows concurrent readers — no contention with episodic/semantic.
+        self._mycelium = None
+        try:
+            from backend.memory.db import open_encrypted_memory, initialise_mycelium_schema
+            from backend.memory.mycelium import MyceliumInterface
+            _mycelium_conn = open_encrypted_memory(db_path, biometric_key)
+            initialise_mycelium_schema(_mycelium_conn)
+            self._mycelium = MyceliumInterface(_mycelium_conn)
+            self._mycelium.ingest_hardware()
+            # Share Mycelium reference with EpisodicStore for resonance indexing (Req 13.6)
+            self.episodic._mycelium = self._mycelium
+            # Share with SemanticStore for coordinate ingestion on every fact write (Task 8.4)
+            self.semantic._mycelium = self._mycelium
+            logger.info("[MemoryInterface] Mycelium coordinate layer initialised")
+        except Exception as _myc_err:
+            logger.warning("[MemoryInterface] Mycelium init failed (non-fatal): %s", _myc_err)
+
         logger.info("[MemoryInterface] Initialized with encrypted storage")
     
     # ═══════════════════════════════════════════════════════════════════════
@@ -80,13 +103,27 @@ class MemoryInterface:
         Returns:
             Context string ready for model prompt
         """
-        header = self.semantic.get_startup_header()
+        # Mycelium coordinate path — replaces prose header when graph is mature (Req 13.3)
+        coordinate_path = ""
+        if self._mycelium is not None:
+            try:
+                coordinate_path = self._mycelium.get_context_path(task, session_id)
+            except Exception as _cp_err:
+                logger.debug("[MemoryInterface] get_context_path failed: %s", _cp_err)
+
+        if coordinate_path:
+            # Inject compact coordinate path in place of prose header
+            header = coordinate_path
+        else:
+            # Fallback: existing semantic prose header (new installs / immature graph)
+            header = self.semantic.get_startup_header()
+
         episodic = self.episodic.assemble_episodic_context(task)
-        
+
         context = self.context.assemble_for_task(
             session_id, task, header, episodic
         )
-        
+
         logger.debug(f"[MemoryInterface] Assembled context ({len(context)} chars)")
         return context
     
@@ -190,6 +227,12 @@ class MemoryInterface:
             session_id: Session identifier
         """
         self.context.clear_session(session_id)
+        # Mycelium session cleanup (Req 13.5)
+        if self._mycelium is not None:
+            try:
+                self._mycelium.clear_session(session_id)
+            except Exception as _myc_err:
+                logger.debug("[MemoryInterface] Mycelium clear_session failed: %s", _myc_err)
         logger.debug(f"[MemoryInterface] Cleared session {session_id[:8]}")
     
     # ═══════════════════════════════════════════════════════════════════════
@@ -210,7 +253,36 @@ class MemoryInterface:
         """
         score = self._score_outcome(episode)
         episode_id = self.episodic.store(episode, score)
-        
+
+        # Mycelium: record outcome → crystallise landmark → clear session (Req 13.4)
+        if self._mycelium is not None:
+            try:
+                from backend.memory.mycelium.store import MemoryPath
+                # Retrieve the current session's path for outcome recording
+                # (empty path is safe — record_path_outcome handles empty node list)
+                empty_path = MemoryPath(
+                    nodes=[], cumulative_score=score,
+                    token_encoding="", spaces_covered=[],
+                    traversal_id=""
+                )
+                myc_outcome = (
+                    "hit" if score >= 0.8
+                    else "partial" if score >= 0.5
+                    else "miss"
+                )
+                self._mycelium.record_outcome(
+                    empty_path, myc_outcome,
+                    episode.session_id, episode.task_summary
+                )
+                self._mycelium.crystallize_landmark(
+                    session_id=episode.session_id,
+                    cumulative_score=score,
+                    outcome=myc_outcome,
+                    task_entry_label=episode.task_summary,
+                )
+            except Exception as _myc_err:
+                logger.debug("[MemoryInterface] Mycelium episode wiring failed: %s", _myc_err)
+
         logger.info(
             f"[MemoryInterface] Stored episode {episode_id[:8]}... "
             f"(score: {score}, type: {episode.outcome_type})"

@@ -172,11 +172,18 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.error(f"[WakeWord] Error routing wake word: {e}")
 
-        # Register wake word callback on AudioEngine
+        # Register wake word callback on AudioEngine.
+        # IMPORTANT: asyncio.get_event_loop() must NOT be called inside the
+        # lambda — that lambda fires from the sounddevice callback thread which
+        # has no event loop, causing "There is no current event loop in thread
+        # 'Dummy-N'" errors and the coroutine to be garbage-collected without
+        # being awaited.  Capture the running loop here (in the async lifespan
+        # context) and reference the closure variable instead.
+        _main_loop = asyncio.get_running_loop()
         audio_engine.set_wake_word_callback(
             lambda word: asyncio.run_coroutine_threadsafe(
                 on_wake_word(word),
-                asyncio.get_event_loop()
+                _main_loop
             )
         )
 
@@ -397,7 +404,7 @@ async def handle_message(client_id: str, session_id: str, message: dict):
     
     # GAP-01: Delegate all other message handling to IRISGateway
     iris_gateway = get_iris_gateway()
-    await iris_gateway.handle_message(client_id, message)
+    await iris_gateway.handle_message(client_id, message, session_id=session_id)
 
 
 async def handle_memory_message(client_id: str, session_id: str, message: dict):

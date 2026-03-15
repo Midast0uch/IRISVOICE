@@ -10,6 +10,11 @@ import logging
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
+# TYPE_CHECKING guard avoids circular import at runtime
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from backend.memory.mycelium.interface import MyceliumInterface
+
 from backend.memory.db import open_encrypted_memory, Connection
 
 logger = logging.getLogger(__name__)
@@ -62,7 +67,10 @@ class SemanticStore:
         self.db_path = db_path
         self.biometric_key = biometric_key
         self._db: Optional[Connection] = None
-        
+
+        # Injected by MemoryInterface after both stores are initialized (Task 8.4)
+        self._mycelium: Optional[Any] = None
+
         # Initialize schema on first access
         self._init_schema()
         logger.info("[SemanticStore] Initialized")
@@ -140,9 +148,19 @@ class SemanticStore:
         
         row = cursor.fetchone()
         self.db.commit()
-        
+
         new_version = row[0] if row else 1
         logger.debug(f"[SemanticStore] Updated {category}.{key} -> v{new_version}")
+
+        # Fire-and-forget: flow the updated fact into the coordinate graph (Task 8.4).
+        # NEVER let Mycelium errors block a semantic write.
+        if self._mycelium is not None:
+            try:
+                fact_text = f"{category} {key}: {value}"
+                self._mycelium.ingest_statement(fact_text)
+            except Exception as _exc:  # noqa: BLE001
+                logger.debug("[SemanticStore] ingest_statement failed (non-fatal): %s", _exc)
+
         return new_version
     
     def get(self, category: str, key: str) -> Optional[SemanticEntry]:

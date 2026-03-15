@@ -18,8 +18,6 @@
         "height": 680,
         "minWidth": 680,
         "minHeight": 680,
-        "maxWidth": 680,
-        "maxHeight": 680,
         "resizable": false,
         "maximizable": false,
         "decorations": false,

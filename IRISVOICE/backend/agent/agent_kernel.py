@@ -104,6 +104,15 @@ class AgentKernel:
         # Model selection (user-configurable dual-LLM)
         self._selected_reasoning_model: Optional[str] = None
         self._selected_tool_execution_model: Optional[str] = None
+        # Provider the user selected in the UI.
+        # "lmstudio" → LM Studio OpenAI-compatible API (localhost:1234)  ← recommended
+        # "local"    → Ollama (http://localhost:11434)
+        # "vps"      → VPS Gateway (self._vps_gateway)
+        # "api"      → OpenAI API (cloud)
+        self._model_provider: str = "uninitialized"
+
+        # LM Studio base URL — set via configure_lmstudio() when confirm_card fires
+        self._lmstudio_endpoint: str = "http://localhost:1234"
         
         # VPS configuration (loaded from settings)
         self._vps_config: Optional[VPSConfig] = None
@@ -344,16 +353,115 @@ class AgentKernel:
             self._vps_config = VPSConfig(enabled=False)
             self._vps_gateway = None
 
+    def configure_lmstudio(self, endpoint: str) -> None:
+        """Store the LM Studio base URL for inference routing."""
+        self._lmstudio_endpoint = endpoint.rstrip("/")
+        logger.info(f"[AgentKernel] LM Studio endpoint configured: {self._lmstudio_endpoint}")
+
+    # ------------------------------------------------------------------
+    # Helpers: thinking-token stripping, planning gate, direct response
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _strip_thinking(text: str) -> str:
+        """Remove <think>…</think> and <thinking>…</thinking> blocks from model output."""
+        import re
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
+        return text.strip()
+
+    @staticmethod
+    def _needs_planning(text: str) -> bool:
+        """
+        Return True only when the message explicitly requests a tool-backed action.
+        Conversational messages, greetings, and simple questions bypass planning entirely.
+        """
+        t = text.lower()
+        TOOL_TRIGGERS = [
+            "search", "find", "look up", "look for", "open", "launch", "start app",
+            "create", "write a file", "run", "execute", "install", "delete", "remove",
+            "screenshot", "take a photo", "click", "automate", "schedule",
+            "remind me", "set alarm", "set timer", "play music", "stop music",
+            "download", "upload", "send email", "browse",
+        ]
+        return any(trigger in t for trigger in TOOL_TRIGGERS)
+
+    def _respond_direct(self, text: str, context: List[Dict]) -> str:
+        """
+        Respond directly to the user without planning or tool execution.
+        This is the default path for all conversational and non-tool messages.
+        """
+        system_prompt = (
+            "You are IRIS, a helpful, warm, and personable AI voice assistant. "
+            "Respond naturally and concisely."
+        )
+        if self._personality:
+            try:
+                system_prompt = self._personality.get_system_prompt()
+            except Exception:
+                pass
+
+        # context already contains the current user message (added before this call)
+        messages: List[Dict] = [{"role": "system", "content": system_prompt}]
+        for msg in context[-8:]:
+            messages.append(msg)
+
+        try:
+            # LM Studio (OpenAI-compatible)
+            if self._model_provider == "lmstudio":
+                from openai import OpenAI as _OpenAI
+                client = _OpenAI(base_url=f"{self._lmstudio_endpoint}/v1", api_key="lm-studio")
+                sel = self._selected_reasoning_model or "local-model"
+                resp = client.chat.completions.create(
+                    model=sel,
+                    messages=messages,
+                    max_tokens=200,   # conversational answers are short; fewer = faster
+                    temperature=0.6,  # Qwen3 recommended; slightly more decisive
+                )
+                reply = resp.choices[0].message.content or ""
+                return self._strip_thinking(reply)
+
+            # Ollama (model IDs contain ":")
+            if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
+                import requests as _req
+                r = _req.post(
+                    "http://localhost:11434/api/chat",
+                    json={
+                        "model": self._selected_reasoning_model,
+                        "messages": messages,
+                        "stream": False,
+                    },
+                    timeout=30,
+                )
+                if r.status_code == 200:
+                    reply = r.json().get("message", {}).get("content", "")
+                    return self._strip_thinking(reply)
+
+            # Local loaded model
+            reasoning_model = None
+            if self._model_router and self._selected_reasoning_model:
+                reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
+            if not reasoning_model and self._model_router:
+                reasoning_model = self._model_router.get_reasoning_model()
+            if reasoning_model:
+                reply = reasoning_model.generate(text)
+                return self._strip_thinking(reply)
+
+        except Exception as e:
+            logger.error(f"[AgentKernel] Direct response error: {e}", exc_info=True)
+
+        return "Hello! How can I help you?"
+
     def process_text_message(self, text: str, session_id: Optional[str] = None) -> str:
         """
         Process a text message with dual-LLM coordination.
-        
+
         Workflow:
         1. Add user message to conversation memory
-        2. Plan task using lfm2-8b (reasoning model)
-        3. Execute plan using lfm2.5-1.2b-instruct (execution model)
+        2. Plan task using reasoning model
+        3. Execute plan using execution model
         4. Generate response and add to conversation memory
-        
+
         Args:
             text: User's text message
             session_id: Optional session ID (uses instance session_id if not provided)
@@ -392,7 +500,23 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] Conversation memory error: {e}")
             context = []  # Continue with empty context
 
-        # Create TaskContext with initial data
+        # ── Direct path (default): skip planning for non-tool messages ──────────
+        # Planning only runs when the message explicitly requests a tool-backed
+        # action (search, open, create, etc.).  Everything else — greetings,
+        # questions, conversation — goes straight to _respond_direct() which
+        # calls the model with no JSON schema overhead.
+        if not self._needs_planning(text):
+            logger.info("[AgentKernel] Direct response path (no planning needed)")
+            response = self._respond_direct(text, context)
+            try:
+                self._conversation_memory.add_message("assistant", response)
+            except Exception:
+                pass
+            logger.info(f"[AgentKernel] Direct response: {response[:50]}...")
+            return response
+
+        # ── Planning path: only reached for tool-trigger messages ────────────
+        # Create TaskContext to carry full context through pipeline
         task = TaskContext(
             task_id=task_id,
             user_message=text,
@@ -414,16 +538,16 @@ class AgentKernel:
             logger.error(f"[AgentKernel] {error_response}", exc_info=True)
             self._conversation_memory.add_message("assistant", error_response)
             return error_response
-        
+
         if "error" in plan:
             error_response = f"Error planning task: {plan['error']}"
             self._conversation_memory.add_message("assistant", error_response)
             return error_response
-        
+
         # Execute plan using execution model with timeout
         try:
             execution_results = asyncio.run(self.execute_plan(plan))
-            # Accumulate results in TaskContext (fixes Bug 4)
+            # Accumulate results in TaskContext
             task.step_results = execution_results
         except TimeoutError as e:
             error_response = f"Request timed out during execution: {e}"
@@ -435,8 +559,8 @@ class AgentKernel:
             logger.error(f"[AgentKernel] {error_response}", exc_info=True)
             self._conversation_memory.add_message("assistant", error_response)
             return error_response
-        
-        # Generate final response using brain synthesis (fixes Bug 2)
+
+        # Generate final response using brain synthesis
         response = self._synthesize_response(task, execution_results)
         
         # Add assistant response to conversation memory
@@ -490,11 +614,12 @@ class AgentKernel:
             Plan dictionary with steps, or error dictionary
             
         Raises:
-            TimeoutError: If inference exceeds 30 seconds
+            TimeoutError: If inference exceeds timeout
         """
         start_time = time.time()
-        timeout_seconds = 30
-        
+        # 120s: LM Studio with a 9B model can take 30-60s for first token on cold start
+        timeout_seconds = 120
+
         try:
             logger.info("[AgentKernel] Planning task with reasoning model...")
             
@@ -508,13 +633,33 @@ class AgentKernel:
                         if reasoning_model:
                             logger.info(f"[AgentKernel] Using user-selected reasoning model: {self._selected_reasoning_model}")
                         else:
-                            logger.warning(f"[AgentKernel] Selected model {self._selected_reasoning_model} unavailable, falling back to default")
-                            reasoning_model = self._model_router.get_reasoning_model()
-                            if reasoning_model:
-                                default_model_id = getattr(reasoning_model, 'model_id', 'unknown')
-                                logger.info(f"[AgentKernel] Fallback successful: using default reasoning model {default_model_id}")
+                            # Only fall back to the default local stub when neither Ollama
+                            # nor VPS will handle this request.  If ":" is in the model ID
+                            # it is an Ollama model (e.g. "llama3.2:3b"); if VPS is wired
+                            # the VPS block below handles it.  In those cases we MUST NOT
+                            # fall back — the stub is broken and produces garbage output.
+                            _sel_check = self._selected_reasoning_model
+                            _ollama_will_handle = ":" in _sel_check
+                            _vps_will_handle = bool(self._vps_gateway)
+                            _lmstudio_will_handle = self._model_provider == "lmstudio"
+                            if not _ollama_will_handle and not _vps_will_handle and not _lmstudio_will_handle:
+                                logger.warning(
+                                    f"[AgentKernel] Selected model {_sel_check} unavailable, "
+                                    "falling back to default local model"
+                                )
+                                reasoning_model = self._model_router.get_reasoning_model()
+                                if reasoning_model:
+                                    default_model_id = getattr(reasoning_model, 'model_id', 'unknown')
+                                    logger.info(f"[AgentKernel] Fallback: using default reasoning model {default_model_id}")
+                            else:
+                                _dest = "LM Studio" if _lmstudio_will_handle else ("Ollama" if _ollama_will_handle else "VPS")
+                                logger.info(
+                                    f"[AgentKernel] Selected model '{_sel_check}' not in local cache — "
+                                    f"will route to {_dest}"
+                                )
+                                # reasoning_model stays None; inference block handles it
                     else:
-                        # Use default reasoning model
+                        # No model selected — use default reasoning model
                         reasoning_model = self._model_router.get_reasoning_model()
                         if reasoning_model:
                             default_model_id = getattr(reasoning_model, 'model_id', 'unknown')
@@ -522,19 +667,79 @@ class AgentKernel:
                 except Exception as e:
                     logger.error(f"[AgentKernel] Error getting reasoning model: {e}")
                     return {"error": f"Failed to access reasoning model: {e}"}
-            
+
             # Handle model unavailability
             if not reasoning_model:
                 if self._single_model_mode and self._available_model_id:
-                    # Fall back to available model
+                    # Fall back to the single available local model
                     logger.warning("[AgentKernel] Reasoning model unavailable, using fallback model")
                     try:
                         reasoning_model = self._model_router.models.get(self._available_model_id)
                     except Exception as e:
                         logger.error(f"[AgentKernel] Error accessing fallback model: {e}")
                         return {"error": f"Failed to access fallback model: {e}"}
+                elif self._model_provider == "lmstudio":
+                    # LM Studio is configured — reasoning_model stays None; the LM Studio
+                    # inference block below handles it via localhost:1234.
+                    logger.info(
+                        "[AgentKernel] No local model loaded; delegating planning to LM Studio"
+                    )
+                elif self._vps_gateway:
+                    # VPS Gateway is configured — no local model required.
+                    # reasoning_model stays None; the VPS inference block below handles it.
+                    logger.info(
+                        "[AgentKernel] No local reasoning model; delegating planning to VPS Gateway"
+                    )
+                elif self._selected_reasoning_model and self._model_router:
+                    # The user confirmed a model but it isn't in _model_router.models yet.
+                    # Two sub-cases:
+                    # A) Ollama model — ID contains ":" (e.g. "llama3.2:3b")
+                    #    → handled in the Ollama inference block below.
+                    #    NOTE: provider="local" means LFM local file, NOT Ollama.
+                    #    Only ":" in the ID identifies an Ollama model.
+                    # B) LFM HuggingFace model (provider="local", no ":" in ID)
+                    #    → trigger load_models() now so the model dict is populated.
+                    _sel = self._selected_reasoning_model
+                    _is_ollama = ":" in _sel  # ONLY colon-format IDs go to Ollama
+                    if _is_ollama:
+                        logger.info(
+                            f"[AgentKernel] Ollama model '{_sel}' selected; "
+                            "will infer via localhost:11434"
+                        )
+                        # reasoning_model stays None — Ollama block below handles inference
+                    else:
+                        # LFM lazy-load path (provider="local", model file on disk)
+                        logger.info(
+                            f"[AgentKernel] LFM model '{_sel}' not loaded; triggering lazy load..."
+                        )
+                        try:
+                            self._model_router.load_models()
+                            reasoning_model = self._model_router.models.get(_sel)
+                            if reasoning_model is None:
+                                _all = list(self._model_router.models.values())
+                                if _all:
+                                    reasoning_model = _all[0]
+                                    logger.info(
+                                        "[AgentKernel] Exact model not found after lazy load; "
+                                        f"using first available: {list(self._model_router.models.keys())[0]}"
+                                    )
+                        except Exception as _lazy_err:
+                            logger.warning(f"[AgentKernel] Lazy load failed: {_lazy_err}")
+                        if not reasoning_model:
+                            return {
+                                "error": (
+                                    f"Local model '{_sel}' could not be loaded. "
+                                    "Check that the model file exists in the models/ directory, "
+                                    "or switch to an Ollama or VPS model in Settings → Configure."
+                                )
+                            }
                 else:
-                    return {"error": "Reasoning model not available"}
+                    return {
+                        "error": (
+                            "No inference backend configured. "
+                            "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
+                        )
+                    }
             
             # Build planning prompt with personality and context
             system_prompt = ""
@@ -584,7 +789,7 @@ Respond with a JSON object:
                                 model=self._model_router.get_reasoning_model_id() or "lfm2-8b",
                                 prompt=planning_prompt,
                                 context={"conversation_history": context} if context else {},
-                                params={"max_tokens": 1024, "temperature": 0.7},
+                                params={"max_tokens": 512, "temperature": 0.2},
                                 session_id=self.session_id
                             )
                         )
@@ -602,13 +807,102 @@ Respond with a JSON object:
                     logger.warning(f"[AgentKernel] VPS Gateway inference failed, falling back to direct model: {e}")
                     plan_response = None
             
+            # LM Studio inference (OpenAI-compatible local API at localhost:1234).
+            # Triggered when provider == "lmstudio" and no prior backend produced a response.
+            # Uses the openai Python client pointed at the LM Studio local server.
+            if plan_response is None and self._model_provider == "lmstudio":
+                try:
+                    from openai import OpenAI as _OpenAI
+                    _lms = _OpenAI(
+                        base_url=f"{self._lmstudio_endpoint}/v1",
+                        api_key="lm-studio",  # LM Studio accepts any non-empty string
+                    )
+                    _lms_resp = _lms.chat.completions.create(
+                        model=self._selected_reasoning_model or "local-model",
+                        messages=[{"role": "user", "content": planning_prompt}],
+                        max_tokens=512,   # planning only needs a short JSON plan
+                        temperature=0.2,  # low temp = faster, more deterministic JSON
+                    )
+                    plan_response = _lms_resp.choices[0].message.content
+                    logger.info(
+                        f"[AgentKernel] LM Studio planning inference successful "
+                        f"(model: {self._selected_reasoning_model}, endpoint: {self._lmstudio_endpoint})"
+                    )
+                except Exception as _lms_err:
+                    logger.warning(f"[AgentKernel] LM Studio planning inference failed: {_lms_err}")
+
+            # Ollama local inference — runs when the model ID contains ":" which is
+            # the Ollama format (e.g. "llama3.2:3b", "mistral:7b", "kimi-k2.5:cloud").
+            # NOTE: provider="local" means LFM local file — it does NOT go to Ollama.
+            # Only colon-format IDs are Ollama models.
+            if plan_response is None and self._selected_reasoning_model and (
+                ":" in self._selected_reasoning_model
+            ):
+                try:
+                    import requests as _req
+                    _ollama_resp = _req.post(
+                        "http://localhost:11434/api/chat",
+                        json={
+                            "model": self._selected_reasoning_model,
+                            "messages": [{"role": "user", "content": planning_prompt}],
+                            "stream": False,
+                        },
+                        timeout=60,
+                    )
+                    if _ollama_resp.status_code == 200:
+                        plan_response = (
+                            _ollama_resp.json().get("message", {}).get("content", "")
+                        )
+                        logger.info(
+                            f"[AgentKernel] Ollama planning inference successful "
+                            f"(model: {self._selected_reasoning_model})"
+                        )
+                    else:
+                        logger.warning(
+                            f"[AgentKernel] Ollama returned HTTP {_ollama_resp.status_code} "
+                            f"for model '{self._selected_reasoning_model}': "
+                            f"{_ollama_resp.text[:200]}"
+                        )
+                except Exception as _ollama_err:
+                    logger.warning(
+                        f"[AgentKernel] Ollama planning inference failed: {_ollama_err}"
+                    )
+
             # Fall back to direct model access if VPS Gateway not available or failed
             if plan_response is None:
+                # If there is no local model to fall back to we cannot continue.
+                if reasoning_model is None:
+                    # Produce a context-aware error message.
+                    _sel_err = self._selected_reasoning_model or ""
+                    if self._vps_gateway:
+                        _err_msg = (
+                            "VPS inference failed and no local model is loaded. "
+                            "Check your VPS connection or configure a local model in Settings."
+                        )
+                    elif ":" in _sel_err:
+                        _model_name = _sel_err.split(":")[0]
+                        _err_msg = (
+                            f"Ollama model '{_sel_err}' is not available. "
+                            f"Make sure Ollama is running and the model is pulled: "
+                            f"ollama pull {_model_name}"
+                        )
+                    elif _sel_err:
+                        _err_msg = (
+                            f"Model '{_sel_err}' could not be loaded. "
+                            "Check that the model file exists, or select a different model in Settings → Configure."
+                        )
+                    else:
+                        _err_msg = (
+                            "No inference backend configured. "
+                            "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
+                        )
+                    return {"error": _err_msg}
+
                 # Check timeout before loading model
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
                     raise TimeoutError(f"Planning timed out after {elapsed:.1f}s")
-                
+
                 # Load model if needed with error handling
                 try:
                     if not reasoning_model.is_loaded():
@@ -627,8 +921,8 @@ Respond with a JSON object:
                 try:
                     plan_response = reasoning_model.generate(
                         planning_prompt,
-                        max_tokens=1024,
-                        temperature=0.7
+                        max_tokens=512,
+                        temperature=0.2
                     )
                 except Exception as e:
                     logger.error(f"[AgentKernel] Model inference failed: {e}")
@@ -639,8 +933,8 @@ Respond with a JSON object:
                         reasoning_model.load()
                         plan_response = reasoning_model.generate(
                             planning_prompt,
-                            max_tokens=1024,
-                            temperature=0.7
+                            max_tokens=512,
+                            temperature=0.2
                         )
                         logger.info("[AgentKernel] Model restarted successfully")
                     except Exception as restart_error:
@@ -658,17 +952,22 @@ Respond with a JSON object:
                 logger.info(f"[AgentKernel] Plan generated with {len(plan.get('steps', []))} steps in {elapsed:.2f}s")
                 return plan
             except json.JSONDecodeError:
-                # If not valid JSON, create a simple plan
-                logger.warning("[AgentKernel] Failed to parse plan as JSON, creating simple plan")
+                # Model returned free-form text rather than JSON.
+                # Treat the entire response as the user-facing reply — do NOT use
+                # "respond_to_user" as the action string because execute_step would
+                # return that keyword verbatim to the frontend.
+                logger.warning("[AgentKernel] Failed to parse plan as JSON, using raw text as response")
+                _raw_text = self._strip_thinking(plan_response) if plan_response else "I'm not sure how to respond to that."
                 return {
-                    "analysis": plan_response[:200],
+                    "analysis": _raw_text[:200],
                     "requires_tools": False,
+                    "_raw_response": _raw_text,   # consumed by _synthesize_response
                     "steps": [
                         {
                             "step": 1,
-                            "action": "respond_to_user",
+                            "action": _raw_text,   # the ACTUAL text, not a keyword
                             "tool": None,
-                            "parameters": {"response": plan_response}
+                            "parameters": {}
                         }
                     ]
                 }
@@ -719,11 +1018,12 @@ Respond with a JSON object:
             Execution result
             
         Raises:
-            TimeoutError: If execution exceeds 30 seconds
+            TimeoutError: If execution exceeds timeout
         """
         start_time = time.time()
-        timeout_seconds = 30
-        
+        # 120s: matches plan_task — LM Studio 9B model can be slow on first token
+        timeout_seconds = 120
+
         tool_name = step.get("tool")
         parameters = step.get("parameters", {})
         action = step.get("action", "")
@@ -742,13 +1042,28 @@ Respond with a JSON object:
                     if execution_model:
                         logger.info(f"[AgentKernel] Using user-selected tool execution model: {self._selected_tool_execution_model}")
                     else:
-                        logger.warning(f"[AgentKernel] Selected model {self._selected_tool_execution_model} unavailable, falling back to default")
-                        execution_model = self._model_router.get_execution_model()
-                        if execution_model:
-                            default_model_id = getattr(execution_model, 'model_id', 'unknown')
-                            logger.info(f"[AgentKernel] Fallback successful: using default tool execution model {default_model_id}")
+                        # Only fall back to default stub when Ollama/VPS won't handle it.
+                        _sel_exec_check = self._selected_tool_execution_model
+                        _ollama_exec_will_handle = ":" in _sel_exec_check
+                        _vps_exec_will_handle = bool(self._vps_gateway)
+                        _lmstudio_exec_will_handle = self._model_provider == "lmstudio"
+                        if not _ollama_exec_will_handle and not _vps_exec_will_handle and not _lmstudio_exec_will_handle:
+                            logger.warning(
+                                f"[AgentKernel] Selected model {_sel_exec_check} unavailable, "
+                                "falling back to default local execution model"
+                            )
+                            execution_model = self._model_router.get_execution_model()
+                            if execution_model:
+                                default_model_id = getattr(execution_model, 'model_id', 'unknown')
+                                logger.info(f"[AgentKernel] Fallback: using default execution model {default_model_id}")
+                        else:
+                            _exec_dest = "LM Studio" if _lmstudio_exec_will_handle else ("Ollama" if _ollama_exec_will_handle else "VPS")
+                            logger.info(
+                                f"[AgentKernel] Exec model '{_sel_exec_check}' not in local cache — "
+                                f"will route to {_exec_dest}"
+                            )
                 else:
-                    # Use default execution model
+                    # No model selected — use default execution model
                     execution_model = self._model_router.get_execution_model()
                     if execution_model:
                         default_model_id = getattr(execution_model, 'model_id', 'unknown')
@@ -756,17 +1071,50 @@ Respond with a JSON object:
             except Exception as e:
                 logger.error(f"[AgentKernel] Error getting execution model: {e}")
                 return {"error": f"Failed to access execution model: {e}", "success": False}
-        
+
         # Handle model unavailability
         if not execution_model:
             if self._single_model_mode and self._available_model_id:
-                # Fall back to available model
+                # Fall back to the single available local model
                 logger.warning("[AgentKernel] Execution model unavailable, using fallback model")
                 try:
                     execution_model = self._model_router.models.get(self._available_model_id)
                 except Exception as e:
                     logger.error(f"[AgentKernel] Error accessing fallback model: {e}")
                     return {"error": f"Failed to access fallback model: {e}", "success": False}
+            elif self._model_provider == "lmstudio":
+                # LM Studio configured — execution_model stays None; LM Studio block handles it.
+                logger.info(
+                    "[AgentKernel] No local execution model; delegating execution to LM Studio"
+                )
+            elif self._vps_gateway:
+                # VPS Gateway is configured — execution_model stays None; handled below.
+                logger.info(
+                    "[AgentKernel] No local execution model; delegating execution to VPS Gateway"
+                )
+            elif self._selected_tool_execution_model and self._model_router:
+                _sel_exec = self._selected_tool_execution_model
+                _is_ollama_exec = ":" in _sel_exec  # ONLY colon-format IDs are Ollama
+                if _is_ollama_exec:
+                    logger.info(
+                        f"[AgentKernel] Ollama execution model '{_sel_exec}' selected; "
+                        "will infer via localhost:11434"
+                    )
+                    # execution_model stays None — Ollama block below handles it
+                else:
+                    # LFM lazy-load for execution model
+                    if not self._model_router.models:
+                        try:
+                            self._model_router.load_models()
+                        except Exception as _le:
+                            logger.warning(f"[AgentKernel] Lazy load (exec) failed: {_le}")
+                    execution_model = self._model_router.models.get(_sel_exec)
+                    if execution_model is None:
+                        _all_exec = list(self._model_router.models.values())
+                        if _all_exec:
+                            execution_model = _all_exec[-1]  # prefer last (smallest/fastest)
+                    if not execution_model:
+                        return {"error": "Execution model not available", "success": False}
             else:
                 return {"error": "Execution model not available", "success": False}
         
@@ -809,13 +1157,78 @@ Provide the execution result."""
                     logger.warning(f"[AgentKernel] VPS Gateway execution inference failed, falling back to direct model: {e}")
                     result_text = None
             
+            # LM Studio execution inference
+            if result_text is None and self._model_provider == "lmstudio":
+                try:
+                    from openai import OpenAI as _OpenAI
+                    _lms_exec = _OpenAI(
+                        base_url=f"{self._lmstudio_endpoint}/v1",
+                        api_key="lm-studio",
+                    )
+                    _lms_exec_resp = _lms_exec.chat.completions.create(
+                        model=self._selected_tool_execution_model or "local-model",
+                        messages=[{"role": "user", "content": execution_prompt}],
+                        max_tokens=512,
+                        temperature=0.3,
+                    )
+                    result_text = _lms_exec_resp.choices[0].message.content
+                    logger.info("[AgentKernel] LM Studio execution inference successful")
+                except Exception as _lms_exec_err:
+                    logger.warning(f"[AgentKernel] LM Studio execution inference failed: {_lms_exec_err}")
+
+            # Ollama local execution inference — only for colon-format model IDs.
+            # provider="local" means LFM local file; it does NOT route to Ollama.
+            if result_text is None and self._selected_tool_execution_model and (
+                ":" in self._selected_tool_execution_model
+            ):
+                try:
+                    import requests as _req
+                    _ollama_exec_resp = _req.post(
+                        "http://localhost:11434/api/chat",
+                        json={
+                            "model": self._selected_tool_execution_model,
+                            "messages": [{"role": "user", "content": execution_prompt}],
+                            "stream": False,
+                        },
+                        timeout=60,
+                    )
+                    if _ollama_exec_resp.status_code == 200:
+                        result_text = (
+                            _ollama_exec_resp.json().get("message", {}).get("content", "")
+                        )
+                        logger.info(
+                            f"[AgentKernel] Ollama execution inference successful "
+                            f"(model: {self._selected_tool_execution_model})"
+                        )
+                    else:
+                        logger.warning(
+                            f"[AgentKernel] Ollama execution returned HTTP "
+                            f"{_ollama_exec_resp.status_code}"
+                        )
+                except Exception as _ollama_exec_err:
+                    logger.warning(
+                        f"[AgentKernel] Ollama execution inference failed: {_ollama_exec_err}"
+                    )
+
             # Fall back to direct model access if VPS Gateway not available or failed
             if result_text is None:
+                # If VPS failed and there is no local execution model, cannot continue.
+                if execution_model is None:
+                    return {
+                        "tool": tool_name,
+                        "action": action,
+                        "error": (
+                            "VPS inference failed and no local execution model is loaded. "
+                            "Check your VPS connection or configure a local model in Settings."
+                        ),
+                        "success": False,
+                    }
+
                 # Check timeout before loading model
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
                     raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
-                
+
                 # Load model if needed with error handling
                 try:
                     if not execution_model.is_loaded():
@@ -994,9 +1407,15 @@ Provide the execution result."""
         Returns:
             Synthesized response from the brain model
         """
+        # Short-circuit: if the plan already contains a raw free-form response
+        # (model didn't output JSON), return it directly without a second model call.
+        if task.plan and task.plan.get("_raw_response"):
+            logger.info("[AgentKernel] Using raw plan response (no synthesis needed)")
+            return task.plan["_raw_response"]
+
         # Get results summary for the brain
         results_summary = task.get_results_summary()
-        
+
         # Build synthesis prompt for the brain
         synthesis_prompt = f"""User request: {task.user_message}
 
@@ -1008,27 +1427,69 @@ If any tools failed, address those issues in your response.
 """
         
         try:
-            # Get reasoning model for synthesis
+            # Get reasoning model for synthesis — only use local model if it's
+            # actually loaded.  Do NOT call get_reasoning_model() as a fallback here:
+            # that can return a broken/unloaded stub which echoes garbage like
+            # "respond_to_user" back to the user verbatim.
             reasoning_model = None
-            if self._model_router:
-                if self._selected_reasoning_model:
-                    reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
-                if not reasoning_model:
-                    reasoning_model = self._model_router.get_reasoning_model()
-            
+            if self._model_router and self._selected_reasoning_model:
+                reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
+
             if reasoning_model:
-                # Call the brain model for synthesis
-                response = reasoning_model.generate(synthesis_prompt)
+                # Call the loaded local/LFM model for synthesis
+                response = self._strip_thinking(reasoning_model.generate(synthesis_prompt))
                 logger.info("[AgentKernel] Brain synthesized response with tool results context")
                 return response
-            else:
-                # Fall back to template-based response
-                logger.warning("[AgentKernel] No reasoning model available, using fallback response")
-                return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
-                
+
+            # Try LM Studio synthesis
+            _sel_synth = self._selected_reasoning_model or ""
+            if not reasoning_model and self._model_provider == "lmstudio":
+                try:
+                    from openai import OpenAI as _OpenAI
+                    _lms_synth = _OpenAI(
+                        base_url=f"{self._lmstudio_endpoint}/v1",
+                        api_key="lm-studio",
+                    )
+                    _lms_synth_resp = _lms_synth.chat.completions.create(
+                        model=_sel_synth or "local-model",
+                        messages=[{"role": "user", "content": synthesis_prompt}],
+                        max_tokens=1024,
+                        temperature=0.7,
+                    )
+                    _synth_text = _lms_synth_resp.choices[0].message.content
+                    if _synth_text:
+                        logger.info("[AgentKernel] LM Studio synthesized response")
+                        return self._strip_thinking(_synth_text)
+                except Exception as _lms_synth_err:
+                    logger.warning(f"[AgentKernel] LM Studio synthesis failed: {_lms_synth_err}")
+
+            # Try Ollama if the selected model is an Ollama model (colon-format ID)
+            if not reasoning_model and ":" in _sel_synth:
+                try:
+                    import requests as _req
+                    _r = _req.post(
+                        "http://localhost:11434/api/chat",
+                        json={
+                            "model": _sel_synth,
+                            "messages": [{"role": "user", "content": synthesis_prompt}],
+                            "stream": False,
+                        },
+                        timeout=60,
+                    )
+                    if _r.status_code == 200:
+                        _synth_text = _r.json().get("message", {}).get("content", "")
+                        if _synth_text:
+                            logger.info("[AgentKernel] Ollama synthesized response")
+                            return self._strip_thinking(_synth_text)
+                except Exception as _ollama_synth_err:
+                    logger.warning(f"[AgentKernel] Ollama synthesis failed: {_ollama_synth_err}")
+
+            # Template-based fallback (no model available)
+            logger.warning("[AgentKernel] No model for synthesis — using template response")
+            return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
+
         except Exception as e:
             logger.error(f"[AgentKernel] Error in brain synthesis: {e}")
-            # Fall back to template-based response
             return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
     
     def get_status(self) -> Dict[str, Any]:
@@ -1127,42 +1588,64 @@ If any tools failed, address those issues in your response.
             self._personality.load_from_config(config)
             logger.info("[AgentKernel] Personality configuration updated")
     
-    def set_model_selection(self, reasoning_model: Optional[str] = None, tool_execution_model: Optional[str] = None) -> bool:
+    # Maps legacy/local model names to their canonical VPS/API identifiers.
+    # This allows saved settings that used local model path names to resolve
+    # correctly against VPS available-model IDs without requiring a migration.
+    _MODEL_ALIASES: Dict[str, str] = {
+        # Legacy local model directory name → canonical ID (executor only; brain removed)
+        "LFM2.5-1.2B-Instruct": "lfm2.5-1.2b-instruct",
+        "executor":              "lfm2.5-1.2b-instruct",
+        # NOTE: LFM2-8B-A1B / "brain" / "lfm2-8b" aliases are intentionally absent.
+        # That model is not in use — removing the aliases prevents accidental routing.
+    }
+
+    def _normalize_model_id(self, model_id: Optional[str]) -> Optional[str]:
+        """Translate legacy or local model IDs to their canonical identifiers."""
+        if model_id is None:
+            return None
+        normalized = self._MODEL_ALIASES.get(model_id, model_id)
+        if normalized != model_id:
+            logger.debug(f"[AgentKernel] Model ID alias resolved: '{model_id}' -> '{normalized}'")
+        return normalized
+
+    def set_model_selection(
+        self,
+        reasoning_model: Optional[str] = None,
+        tool_execution_model: Optional[str] = None,
+        model_provider: Optional[str] = None,
+    ) -> bool:
         """
         Set user-selected models for reasoning and tool execution.
-        
+
         Args:
-            reasoning_model: Model ID for reasoning tasks (None to use default)
-            tool_execution_model: Model ID for tool execution tasks (None to use default)
-            
+            reasoning_model:    Model ID for reasoning tasks (None to clear)
+            tool_execution_model: Model ID for tool execution tasks (None to clear)
+            model_provider:     Provider the user chose: "local" | "vps" | "api"
+
         Returns:
-            True if models were set successfully, False otherwise
+            True always — selections are stored unconditionally so that:
+            • Ollama model IDs (e.g. "llama3.2:3b") aren't rejected because
+              ModelRouter doesn't list them.
+            • LFM local models aren't rejected when lazy loading is active and
+              the models dict is still empty.
+            Inference-time routing is responsible for surfacing "not available".
         """
+        # Normalize aliases (e.g. "LFM2-8B-A1B" → "lfm2-8b")
+        reasoning_model = self._normalize_model_id(reasoning_model)
+        tool_execution_model = self._normalize_model_id(tool_execution_model)
+
         try:
-            # Validate that selected models are available
-            if reasoning_model and self._model_router:
-                available_models = self._model_router.get_available_models()
-                available_ids = [m["id"] for m in available_models]
-                
-                if reasoning_model not in available_ids:
-                    logger.error(f"[AgentKernel] Reasoning model '{reasoning_model}' not available. Available: {available_ids}")
-                    return False
-            
-            if tool_execution_model and self._model_router:
-                available_models = self._model_router.get_available_models()
-                available_ids = [m["id"] for m in available_models]
-                
-                if tool_execution_model not in available_ids:
-                    logger.error(f"[AgentKernel] Tool execution model '{tool_execution_model}' not available. Available: {available_ids}")
-                    return False
-            
-            # Set the selected models
             self._selected_reasoning_model = reasoning_model
             self._selected_tool_execution_model = tool_execution_model
-            
-            logger.info(f"[AgentKernel] Model selection updated: reasoning={reasoning_model}, tool_execution={tool_execution_model}")
+            if model_provider:
+                self._model_provider = model_provider
+
+            logger.info(
+                f"[AgentKernel] Model selection updated: reasoning={reasoning_model}, "
+                f"tool_execution={tool_execution_model}, provider={self._model_provider}"
+            )
             return True
-            
+
         except Exception as e:
             logger.error(f"[AgentKernel] Failed to set model selection: {e}")
             return False
@@ -1256,11 +1739,13 @@ def cleanup_agent_kernel(session_id: str) -> None:
             if kernel._vps_gateway is not None:
                 import asyncio
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
+                    # Prefer the already-running loop (cleanup called from async context).
+                    # Fall back to a fresh asyncio.run() if called from a sync context.
+                    try:
+                        loop = asyncio.get_running_loop()
                         loop.create_task(kernel.shutdown_vps_gateway())
-                    else:
-                        loop.run_until_complete(kernel.shutdown_vps_gateway())
+                    except RuntimeError:
+                        asyncio.run(kernel.shutdown_vps_gateway())
                 except Exception:
                     pass
         except Exception as e:

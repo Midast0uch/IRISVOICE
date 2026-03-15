@@ -102,7 +102,7 @@ class IntegrationMessageHandler:
     async def _handle_list(self, client_id: str, payload: Dict[str, Any]) -> None:
         """Handle request to list all integrations."""
         # Get all integrations from registry
-        all_integrations = self.registry_loader.list_integrations()
+        all_integrations = self.registry_loader.get_all_integrations()
         
         # Get states for each
         states = self.lifecycle_manager.get_all_states()

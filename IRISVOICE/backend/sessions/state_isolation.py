@@ -225,11 +225,22 @@ class IsolatedStateManager:
             # Save field values for this section
             for field_id, value in values.items():
                 self._state.set_field_value(section_id, field_id, value)
-            
+
+            # Keep top-level model-selection fields in sync so
+            # _restore_model_selections() can find them after a reconnect,
+            # regardless of which code path triggered the confirm.
+            if section_id == "model_selection":
+                if "reasoning_model" in values:
+                    self._state.selected_reasoning_model = values["reasoning_model"]
+                if "tool_model" in values:
+                    self._state.selected_tool_execution_model = values["tool_model"]
+                elif "tool_execution_model" in values:
+                    self._state.selected_tool_execution_model = values["tool_execution_model"]
+
             # Auto-save if persistence is enabled
             if self._persistence_dir:
                 await self._save_state()
-            
+
             return 0.0
     
     async def update_theme(self, glow_color: Optional[str] = None, font_color: Optional[str] = None, state_colors: Optional[dict] = None) -> None:
@@ -520,57 +531,91 @@ class IsolatedStateManager:
             return None
     
     async def _save_json(self, filename: str, data: Dict[str, Any]) -> None:
-        """Save JSON file atomically with error handling"""
+        """Save JSON file atomically with error handling.
+
+        On Windows, os.replace() can fail with PermissionError / WinError 5 when
+        the destination file is held open by another coroutine.  We retry up to 3
+        times with a short backoff before falling back to a direct (non-atomic)
+        write so that session state is never silently lost.
+        """
         if not self._persistence_dir:
             return
-        
+
+        import asyncio
+        import os
+        import shutil
+        import aiofiles
+
         filepath = self._persistence_dir / filename
         temp_path = filepath.with_suffix('.tmp')
-        
+        json_text = json.dumps(data, indent=2, ensure_ascii=False)
+
         try:
-            import aiofiles
             # Write to temp file
             async with aiofiles.open(temp_path, 'w', encoding='utf-8') as f:
-                await f.write(json.dumps(data, indent=2, ensure_ascii=False))
-            
-            # Atomic rename
-            import os
+                await f.write(json_text)
+
+            # fsync the temp file so data reaches disk before rename
             if hasattr(os, 'fsync'):
-                # Open in binary mode for fsync
                 fd = os.open(str(temp_path), os.O_RDWR)
                 try:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-            
-            os.replace(str(temp_path), str(filepath))
-            
-        except PermissionError as e:
-            print(f"Permission error saving {filename} for session {self.session_id}: {e}")
-            # Clean up temp file if it exists
-            if temp_path.exists():
+
+            # Atomic rename — retry on Windows PermissionError (WinError 5)
+            last_err: Exception | None = None
+            for attempt in range(3):
                 try:
-                    temp_path.unlink()
-                except:
-                    pass
-            raise
-        except OSError as e:
-            print(f"OS error saving {filename} for session {self.session_id}: {e}")
-            # Clean up temp file if it exists
-            if temp_path.exists():
+                    os.replace(str(temp_path), str(filepath))
+                    last_err = None
+                    break  # success
+                except PermissionError as e:
+                    last_err = e
+                    await asyncio.sleep(0.05 * (attempt + 1))  # 50 ms, 100 ms, 150 ms
+
+            if last_err is not None:
+                # Final fallback: shutil.move copies and then removes the source,
+                # avoiding the rename restriction when the target is briefly locked.
                 try:
-                    temp_path.unlink()
-                except:
-                    pass
-            raise
+                    shutil.move(str(temp_path), str(filepath))
+                    logger.warning(
+                        f"[StateIsolation] os.replace failed for {filename} "
+                        f"(session {self.session_id}), used shutil.move fallback: {last_err}"
+                    )
+                except Exception as move_err:
+                    # Absolute last resort: write directly to the target file
+                    try:
+                        async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
+                            await f.write(json_text)
+                        logger.warning(
+                            f"[StateIsolation] shutil.move also failed for {filename} "
+                            f"(session {self.session_id}), used direct write: {move_err}"
+                        )
+                    except Exception as direct_err:
+                        logger.error(
+                            f"[StateIsolation] All save strategies failed for {filename} "
+                            f"(session {self.session_id}): {direct_err}"
+                        )
+                        raise
+                    finally:
+                        # Clean up the temp file if it still exists
+                        try:
+                            if temp_path.exists():
+                                temp_path.unlink()
+                        except Exception:
+                            pass
+
         except Exception as e:
-            print(f"Error saving {filename} for session {self.session_id}: {e}")
-            # Clean up temp file if it exists
-            if temp_path.exists():
-                try:
+            logger.error(
+                f"[StateIsolation] Error saving {filename} for session {self.session_id}: {e}"
+            )
+            # Best-effort cleanup of the temp file
+            try:
+                if temp_path.exists():
                     temp_path.unlink()
-                except:
-                    pass
+            except Exception:
+                pass
             raise
     
     async def _restore_model_selections(self):
@@ -578,21 +623,50 @@ class IsolatedStateManager:
         try:
             # Import here to avoid circular dependency
             from ..agent.agent_kernel import get_agent_kernel
-            
+
             # Get the AgentKernel for this session
             agent_kernel = get_agent_kernel(self.session_id)
-            
-            # Restore model selections if they exist in state
-            if self._state.selected_reasoning_model or self._state.selected_tool_execution_model:
+
+            # Two paths for finding the saved model selection:
+            #
+            # Path A) confirm_card goes through update_field() which sets the
+            #         top-level selected_reasoning_model / selected_tool_execution_model
+            #         fields on IRISSessionState.
+            #
+            # Path B) confirm_section() (used by some code paths) calls
+            #         _state.set_field_value() directly, which only populates
+            #         field_values["model_selection"]["reasoning_model"] — the
+            #         top-level fields stay None.
+            #
+            # We check both paths so neither falls through silently.
+            ms_fv = self._state.field_values.get("model_selection", {})
+
+            reasoning = (
+                self._state.selected_reasoning_model
+                or ms_fv.get("reasoning_model")
+            )
+            tool_exec = (
+                self._state.selected_tool_execution_model
+                or ms_fv.get("tool_model")
+                or ms_fv.get("tool_execution_model")
+            )
+            provider = ms_fv.get("model_provider")
+
+            # Restore model selections if they exist in state.
+            # Also restore model_provider from field_values so Ollama / VPS / API
+            # routing works correctly after a reconnect.
+            if reasoning or tool_exec:
                 success = agent_kernel.set_model_selection(
-                    reasoning_model=self._state.selected_reasoning_model,
-                    tool_execution_model=self._state.selected_tool_execution_model
+                    reasoning_model=reasoning,
+                    tool_execution_model=tool_exec,
+                    model_provider=provider,
                 )
-                
+
                 if success:
                     print(f"[{self.session_id}] Restored model selections: "
-                          f"reasoning={self._state.selected_reasoning_model}, "
-                          f"tool_execution={self._state.selected_tool_execution_model}")
+                          f"reasoning={reasoning}, "
+                          f"tool_execution={tool_exec}, "
+                          f"provider={provider}")
                 else:
                     print(f"[{self.session_id}] Warning: Failed to restore model selections. "
                           f"Models may not be available.")

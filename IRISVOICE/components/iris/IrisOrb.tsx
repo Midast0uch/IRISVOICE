@@ -207,8 +207,8 @@ export function IrisOrb({
   const audioLevelScale = isListening ? 1 + (audioLevel * 0.15) : 1 // Scale glow by up to 15% based on audio level
 
   const handleInterceptedClick = useCallback(() => {
-    // Stop voice command if listening
-    if (isListening) {
+    // Stop voice command if any voice state is active (listening, processing, speaking)
+    if (isVoiceActive) {
       endVoiceCommand()
       return // Intercept: don't propagate to the prop's navigation logic
     }
@@ -222,16 +222,17 @@ export function IrisOrb({
 
     // Not active and at idle state, proceed with normal prop logic (navigation)
     if (onClick) onClick()
-  }, [isListening, endVoiceCommand, uiState, onClick])
+  }, [isVoiceActive, endVoiceCommand, uiState, onClick])
 
-  // BUG-04 FIX: Memoize double-click handler to prevent stale closure
+  // Double-click toggles voice: starts if idle, stops if active
   const handleDoubleClick = useCallback(() => {
-    // Double-click starts voice command
-    if (!isListening) {
+    if (isVoiceActive) {
+      endVoiceCommand()
+    } else {
       startVoiceCommand()
     }
     if (onDoubleClick) onDoubleClick()
-  }, [isListening, startVoiceCommand, onDoubleClick])
+  }, [isVoiceActive, startVoiceCommand, endVoiceCommand, onDoubleClick])
 
   const { handleMouseDown } = useManualDragWindow(
     orbRef,

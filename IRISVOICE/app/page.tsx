@@ -22,7 +22,7 @@ const LazyChatWing = lazy(() => import("@/components/chat-view") as any)
 const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-control-center") as any)
 
 export default function Home() {
-  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateCardValue } = useNavigation()
+  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   
   // Initialize UI layout state machine
@@ -67,8 +67,10 @@ export default function Home() {
 
   const handleSingleClick = useCallback(() => {
     // Phase 121: Single-click to stop voice engine if active
+    // Use endVoiceCommand (optimistic reset) instead of raw sendMessage
+    // so voiceState snaps to idle immediately without waiting for backend
     if (voiceState !== "idle") {
-      sendMessage("voice_command_end", {})
+      endVoiceCommand()
       return
     }
 
@@ -84,14 +86,14 @@ export default function Home() {
     } else {
       handleExpandToMain()
     }
-  }, [voiceState, uiLayoutState, state.level, sendMessage, closeAll, handleGoBack, handleExpandToMain])
+  }, [voiceState, uiLayoutState, state.level, endVoiceCommand, closeAll, handleGoBack, handleExpandToMain])
 
   const handleDoubleClick = useCallback(() => {
     // Phase 121: Double-click to start voice engine if idle
     if (voiceState === "idle") {
-      sendMessage("voice_command_start", {})
+      startVoiceCommand()
     }
-  }, [voiceState, sendMessage])
+  }, [voiceState, startVoiceCommand])
 
   const handleChatClick = () => {
     openChat()

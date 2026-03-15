@@ -164,8 +164,12 @@ export function IntegrationsProvider({
   const messageListenersRef = useRef<((msg: WebSocketMessage) => void)[]>([]);
   const pendingRequestsRef = useRef<Map<string, { resolve: (value: any) => void; reject: (error: any) => void }>>(new Map());
   
-  // Get WebSocket URL
-  const wsUrl = customWsUrl || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws';
+  // Get WebSocket URL.
+  // Must include a client_id path segment — the backend only registers
+  // @app.websocket("/ws/{client_id}") so bare "/ws" always gets a 403.
+  // Use a dedicated "iris_integration" slot to avoid conflicting with the
+  // primary "iris" connection opened by useIRISWebSocket.
+  const wsUrl = customWsUrl || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/iris_integration';
   
   // Deep link handling for OAuth callbacks
   useDeepLink({
@@ -244,6 +248,18 @@ export function IntegrationsProvider({
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+
+          // Respond to backend-initiated heartbeat pings immediately.
+          // The backend's _heartbeat_loop sends {"type":"ping"} every 30s and
+          // disconnects if no pong arrives within 5s.  Without this, the
+          // iris_integration connection is killed every ~35s.
+          if (message.type === 'ping') {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'pong', payload: {} }));
+            }
+            return; // pings are internal — don't forward to listeners
+          }
+
           // Notify all registered listeners
           messageListenersRef.current.forEach(listener => listener(message));
         } catch (e) {

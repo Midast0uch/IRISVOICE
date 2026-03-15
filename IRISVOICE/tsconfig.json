@@ -38,6 +38,11 @@
   ],
   "exclude": [
     "node_modules",
+    "backend",
+    "models",
+    "dist/static",
+    "dist/server",
+    "dist/standalone",
     "test-*.ts",
     "test-*.tsx",
     "**/*.test.ts",

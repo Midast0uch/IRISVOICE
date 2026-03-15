@@ -153,8 +153,12 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'tts_voice',
           type: 'dropdown',
           label: 'Voice',
-          options: ['Nova', 'Alloy', 'Echo', 'Fable', 'Onyx', 'Shimmer'],
-          defaultValue: 'Nova'
+          // LuxTTS voice cloning (requires data/voice_clone_ref.wav) + pyttsx3 fallback
+          options: [
+            'Cloned Voice',
+            'Built-in',
+          ],
+          defaultValue: 'Cloned Voice'
         },
         {
           id: 'speaking_rate',
@@ -183,8 +187,8 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'model_provider',
           type: 'dropdown',
           label: 'Provider',
-          options: ['local', 'api', 'vps'],
-          defaultValue: 'local'
+          options: ['lmstudio', 'local', 'api', 'vps'],
+          defaultValue: 'lmstudio'
         },
         {
           id: 'use_same_model',
@@ -205,6 +209,13 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           label: 'Tool Model',
           options: [], // Populated dynamically
           defaultValue: ''
+        },
+        {
+          id: 'lmstudio_endpoint',
+          type: 'text',
+          label: 'LM Studio Endpoint',
+          placeholder: 'http://localhost:1234',
+          defaultValue: 'http://localhost:1234'
         },
         {
           id: 'api_key',

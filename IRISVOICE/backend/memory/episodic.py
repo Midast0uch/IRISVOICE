@@ -60,7 +60,10 @@ class EpisodicStore:
         self.biometric_key = biometric_key
         self._db: Optional[Connection] = None
         self._embed = EmbeddingService()
-        
+
+        # Optional Mycelium reference — injected by MemoryInterface after init (Req 13.6)
+        self._mycelium: Any = None
+
         # Initialize schema on first access
         self._init_schema()
         logger.info("[EpisodicStore] Initialized")
@@ -246,7 +249,18 @@ class EpisodicStore:
             embedding_blob
         ))
         self.db.commit()
-        
+
+        # Mycelium: index this episode against the current coordinate state (Req 13.6)
+        if self._mycelium is not None:
+            try:
+                self._mycelium.episode_indexer.index_episode(
+                    episode_id=episode_id,
+                    session_id=episode.session_id,
+                    source_channel=None,  # HyphaChannel wired in Phase 9
+                )
+            except Exception:
+                pass  # MUST NOT block episode storage
+
         logger.debug(f"[EpisodicStore] Stored new episode {episode_id[:8]}... (score: {score})")
         return episode_id
     
@@ -295,11 +309,25 @@ class EpisodicStore:
             except (json.JSONDecodeError, TypeError):
                 continue
         
-        # Sort by similarity (highest first) and return top N
+        # Sort by similarity (highest first) and select top N
         scored_episodes.sort(key=lambda x: x[0], reverse=True)
-        
         results = [ep for _, ep in scored_episodes[:limit]]
-        
+
+        # Mycelium: augment with coordinate resonance (Req 11.6–11.8)
+        if self._mycelium is not None and results:
+            try:
+                # Annotate with cosine_score and outcome fields for resonance scoring
+                for ep in results:
+                    ep.setdefault("cosine_score", ep.get("similarity", 0.0))
+                    ep.setdefault("outcome", "success")
+                    ep.setdefault("episode_id", ep.get("id", ""))
+                results = self._mycelium.resonance_scorer.augment_retrieval(
+                    session_id="",   # No active session context here; best-effort
+                    candidates=results,
+                )
+            except Exception:
+                pass  # Fallback to cosine-only ranking on any error
+
         logger.debug(f"[EpisodicStore] Found {len(results)} similar episodes for task: {task[:50]}...")
         return results
     
@@ -364,19 +392,33 @@ class EpisodicStore:
         """
         successes = self.retrieve_similar(task, limit=3, min_score=0.6)
         failures = self.retrieve_failures(task, limit=2)
-        
+
+        # Mycelium: use resonance-aware format_context which omits suppressed successes
+        # and always includes failure warnings (Req 11.11)
+        if self._mycelium is not None:
+            try:
+                # Annotate failure candidates for resonance scorer
+                for ep in failures:
+                    ep.setdefault("cosine_score", ep.get("similarity", 0.0))
+                    ep.setdefault("outcome", "failure")
+                    ep.setdefault("episode_id", ep.get("id", ""))
+                    ep.setdefault("summary", f"{ep.get('task_summary', '')} — {ep.get('failure_reason', '')}")
+                for ep in successes:
+                    ep.setdefault("summary", ep.get("task_summary", ""))
+                return self._mycelium.resonance_scorer.format_context(successes, failures)
+            except Exception:
+                pass  # Fallback to plain format below
+
+        # Plain format (used when Mycelium is not available)
         parts = []
-        
         if successes:
             parts.append("RELEVANT PAST SUCCESSES:")
             for ep in successes:
                 parts.append(f"  - {ep['task_summary']} (score: {ep['outcome_score']})")
-        
         if failures:
             parts.append("WARNINGS FROM PAST FAILURES:")
             for ep in failures:
                 parts.append(f"  - {ep['task_summary']}: {ep['failure_reason']}")
-        
         return "\n".join(parts)
     
     def get_stats(self) -> Dict[str, Any]:

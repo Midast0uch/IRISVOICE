@@ -127,10 +127,10 @@ export function DashboardWing({
 
   // Spotlight dynamic styles
   const getSpotlightWidth = () => {
-    if (isInDashboardSpotlight) return 380; // Spotlight width (works in solo and both-open)
-    if (isSolo) return 280; // Solo balanced width
-    if (isInChatSpotlight) return 180; // Background width when chat is spotlighted
-    return 280; // Balanced width
+    if (isInDashboardSpotlight) return 760; // Spotlight width (2×)
+    if (isSolo) return 560; // Solo balanced width (2×)
+    if (isInChatSpotlight) return 360; // Background width when chat is spotlighted (2×)
+    return 560; // Balanced width (2×)
   };
 
   const getSpotlightTransform = () => {

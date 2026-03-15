@@ -44,28 +44,67 @@ class WebSocketManager:
         """
         try:
             if client_id in self.active_connections:
-                logger.debug(f"Client {client_id} already connected.")
-                return self._session_manager.client_to_session.get(client_id)
-            
+                # A new WebSocket arrived for an already-registered client_id.
+                # This happens when the frontend reconnects before the backend has
+                # cleaned up the stale entry (e.g. during the rapid reconnect loop).
+                # Remove the stale entry and fall through to accept + register the
+                # fresh WebSocket.  Do NOT return early: the new websocket object
+                # has not been accepted yet and must be accepted below, otherwise
+                # websocket.receive_text() will raise "WebSocket is not connected."
+                logger.info(
+                    f"Client {client_id} reconnecting — replacing stale connection entry"
+                )
+                stale_ws = self.active_connections.pop(client_id)
+                # Cancel old heartbeat before closing stale socket
+                if client_id in self._heartbeat_tasks:
+                    self._heartbeat_tasks[client_id].cancel()
+                    del self._heartbeat_tasks[client_id]
+                try:
+                    await stale_ws.close()
+                except Exception:
+                    pass  # already closed or in error state; ignore
+
             # Accept WebSocket connection with error handling
             try:
                 await websocket.accept()
             except Exception as e:
                 logger.error(f"Failed to accept WebSocket connection for client {client_id}: {e}", exc_info=True)
                 return None
-            
+
             self.active_connections[client_id] = websocket
             
             # Create or get session with error handling
             try:
+                # Derive a stable session_id from the client_id when none is
+                # provided.  This ensures that a reconnecting client (after a
+                # brief network blip or a backend-initiated ping timeout) always
+                # returns to the same logical session and reloads any confirmed
+                # field values that were persisted to disk.
                 if session_id is None:
-                    session_id = await self._session_manager.create_session()
-                    # Initialize the state for the new session
-                    await self._state_manager.initialize_session_state(session_id)
-                elif not self._session_manager.get_session(session_id):
-                    # If client requests a specific session that doesn't exist, create it
+                    session_id = f"session_{client_id}"
+
+                existing_session = self._session_manager.get_session(session_id)
+                if existing_session is not None:
+                    # Quick reconnect — session still alive in memory.
+                    # Cancel any pending garbage-collection that was scheduled
+                    # when the client previously disconnected.
+                    existing_session.cleanup_scheduled = False
+                    existing_session.is_active = True
+                    await existing_session.touch()
+                    logger.info(
+                        f"Client {client_id} re-joined existing session {session_id}"
+                    )
+                else:
+                    # First connect, or session was purged after a long
+                    # absence.  create_session() initialises the state manager
+                    # and loads the persisted JSON from
+                    # backend/sessions/{session_id}/session_state.json if it
+                    # exists, so confirmed values survive backend restarts.
                     await self._session_manager.create_session(session_id=session_id)
-                    await self._state_manager.initialize_session_state(session_id)
+                    logger.info(
+                        f"Client {client_id} started session {session_id} "
+                        f"(loaded from disk if prior state existed)"
+                    )
             except Exception as e:
                 logger.error(f"Failed to create/restore session for client {client_id}: {e}", exc_info=True)
                 # Clean up connection

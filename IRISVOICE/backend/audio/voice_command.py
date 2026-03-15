@@ -1,18 +1,33 @@
 """
-Voice Command Handler - Native Audio processing for IRIS
-Handles audio capture and native audio-to-audio conversation
+Voice Command Handler — RealtimeSTT pipeline for IRIS.
+
+Replaces the previous LFM audio model + manual VAD + fallback transcription chain
+with RealtimeSTT (KoljaB/RealtimeSTT), which bundles faster-whisper + silero-VAD.
+
+Wake word detection (Porcupine) is still handled upstream by WakeWordDetector in
+pipeline.py.  This handler focuses solely on post-wake-word recording and
+transcription.
+
+Flow:
+  1. iris_gateway calls start_recording(auto_stop=True)  ← wake word path
+     or start_recording(auto_stop=False)                 ← double-click path
+  2. AudioEngine frame listener (_capture_frame) feeds int16 PCM bytes to
+     RealtimeSTT via recorder.feed_audio()
+  3. RealtimeSTT's built-in silero-VAD detects end-of-speech automatically
+     (auto_stop=True) or stop_recording() is called by the user (manual stop)
+  4. recorder.text() unblocks → _on_transcription_complete fires
+  5. _on_command_result callback → iris_gateway._on_voice_result → agent pipeline
 """
-import asyncio
+
+import logging
 import threading
-import os
 import numpy as np
-import torch
 from typing import Optional, Callable, Dict, Any
 from enum import Enum
 
-from .vad import VADProcessor
 from .engine import AudioEngine
-from .pipeline import AudioPipeline
+
+logger = logging.getLogger(__name__)
 
 
 class VoiceState(str, Enum):
@@ -26,422 +41,246 @@ class VoiceState(str, Enum):
 
 class VoiceCommandHandler:
     """
-    Handles native audio conversation:
-    1. Audio capture on orb hold/double-click
-    2. VAD for speech detection (optional)
-    3. Native audio processing (16kHz -> 24kHz)
-    4. Audio response playback
+    Records user speech after wake word detection and transcribes with RealtimeSTT.
+
+    Uses faster-whisper (tiny model, ~40 MB) + silero-VAD via RealtimeSTT.
+    No LFM audio model, no manual ring buffer, no fallback chain required.
     """
-    
+
     def __init__(self, audio_engine: AudioEngine):
         self.audio_engine = audio_engine
-        self.pipeline: Optional[AudioPipeline] = None
-        self.vad_processor: Optional[VADProcessor] = None
-        
+        self._recorder = None           # lazy-init AudioToTextRecorder
+
         # State
         self.state = VoiceState.IDLE
         self.is_recording = False
-        self.audio_buffer = []
-        self.silence_counter = 0
-        self.speech_started = False
-        self._overflow_stop_requested = False  # Flag for buffer overflow
-        
-        # Audio frame listener registration
-        self._frame_listener_registered = False
-        
+        # audio_buffer length is checked by iris_gateway (> 30 frames = has real audio).
+        # We append None sentinels so the count stays correct without storing raw audio.
+        self.audio_buffer: list = []
+
         # Configuration
-        self.silence_threshold = 30  # ~1 second of silence
-        self.min_speech_frames = 10  # ~0.3 seconds minimum speech
-        self.sample_rate = 16000  # Input sample rate (microphone)
-        self.frame_length = 512
-        self.max_buffer_frames = 3000  # ~2 minutes max recording (prevents memory overflow)
-        
+        self.sample_rate = 16000        # AudioEngine input sample rate
+
         # Session tracking
-        self._active_session_id: str = "default"   # set by iris_gateway before start_recording()
-        self._auto_stop_mode: bool = False   # True when triggered by wake word (not double-click)
+        self._active_session_id: str = "default"
+        self._auto_stop_mode: bool = False
 
         # Callbacks
         self._on_state_change: Optional[Callable[[VoiceState, str], None]] = None
         self._on_command_result: Optional[Callable[[Dict[str, Any]], None]] = None
 
-        # LAZY LOADING: Do NOT preload the audio model at startup.
-        # The model (LFM2.5-Audio-1.5B) is large and takes minutes to load.
-        # It will be loaded on first use inside _process_native_audio() only
-        # when the user explicitly enables voice features from the frontend.
-        # self.preload_model()  # DISABLED - eager loading blocked startup
-        
-    def preload_model(self):
-        """Preload the native audio model to avoid delays during first use"""
-        def _load():
-            try:
-                print("[VoiceCommand] Preloading native audio model...")
-                if not self.audio_engine.model_manager.is_loaded:
-                    if self.audio_engine.model_manager.load_model():
-                        print("[VoiceCommand] Native audio model preloaded successfully")
-                    else:
-                        print("[VoiceCommand] Failed to preload native audio model")
-                else:
-                    print("[VoiceCommand] Native audio model already loaded")
-            except Exception as e:
-                print(f"[VoiceCommand] Error preloading model: {e}")
-        
-        # Run in background thread to not block startup
-        threading.Thread(target=_load, daemon=True).start()
-    
-    def _play_activation_beep(self):
-        """Play activation beep using AudioEngine's pipeline"""
-        try:
-            print("[VoiceCommand] Playing activation beep...")
-            
-            # Generate beep sound
-            sample_rate = 24000
-            duration = 0.1
-            frequency = 880
-            t = np.linspace(0, duration, int(sample_rate * duration))
-            beep_wave = 0.3 * np.sin(2 * np.pi * frequency * t)
-            
-            # Convert to int16
-            beep_wave = (beep_wave * 32767).astype(np.int16)
-            
-            # Use AudioEngine's pipeline for beep
-            if self.audio_engine.pipeline:
-                self.audio_engine.pipeline.play_audio(beep_wave)
-                print("[VoiceCommand] Activation beep played")
-            else:
-                print("[VoiceCommand] ERROR: AudioEngine pipeline not available for beep")
-                
-        except Exception as e:
-            print(f"[VoiceCommand] Failed to play activation beep: {e}")
-            
-    def set_state_callback(self, callback: Callable[[VoiceState, str], None]):
-        """Set callback for state changes"""
+        # Internal
+        self._frame_listener_registered = False
+        self._transcription_thread: Optional[threading.Thread] = None
+        self._recorder_lock = threading.Lock()   # guards lazy-init of _recorder
+
+    # -------------------------------------------------------------------------
+    # Public API  (interface identical to the old VoiceCommandHandler)
+    # -------------------------------------------------------------------------
+
+    def set_state_callback(self, callback: Callable[[VoiceState, str], None]) -> None:
+        """Register callback fired on every state transition."""
         self._on_state_change = callback
-        
+
+    def set_command_result_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """Register callback fired with the transcription result dict."""
+        self._on_command_result = callback
+
     def set_active_session(self, session_id: str) -> None:
         """Set the session_id that owns the current recording."""
         self._active_session_id = session_id
 
-    def set_command_result_callback(self, callback: Callable[[Dict[str, Any]], None]):
-        """Set callback fired when voice processing completes. Receives result dict."""
-        self._on_command_result = callback
-        
-    def _set_state(self, new_state: VoiceState, message: str = ""):
-        """Update state and notify callbacks"""
-        if self.state != new_state:
-            old_state = self.state
-            self.state = new_state
-            print(f"[VoiceCommand] State: {old_state} -> {new_state}")
-            
-            if self._on_state_change:
-                try:
-                    self._on_state_change(new_state, message)
-                except Exception as e:
-                    print(f"[VoiceCommand] State callback error: {e}")
-    
-    def on_speech_ended(self):
-        """Handle speech ended notification from AudioEngine"""
-        if self.is_recording:
-            print("[VoiceCommand] Speech ended notification received from AudioEngine")
-            # Stop recording and process the captured audio
-            self.stop_recording()
-        else:
-            print("[VoiceCommand] Speech ended notification received but not recording")
-                    
+    def get_status(self) -> Dict[str, Any]:
+        """Return current handler status."""
+        return {
+            "state": self.state.value,
+            "is_recording": self.is_recording,
+            "buffer_size": len(self.audio_buffer),
+            "silence_counter": 0,           # handled internally by RealtimeSTT
+            "speech_started": self.is_recording,
+        }
+
     def start_recording(self, auto_stop: bool = False) -> bool:
-        """Start voice recording using unified audio stream"""
+        """
+        Begin recording user speech.
+
+        Args:
+            auto_stop: True for wake-word-triggered recording (silero-VAD ends it
+                       automatically); False for double-click (user clicks stop).
+
+        Returns:
+            True if recording started successfully.
+        """
         self._auto_stop_mode = auto_stop
         if self.is_recording:
             return True
 
         try:
-            print("[VoiceCommand] Starting recording...")
-
-            # Play activation beep using AudioEngine's pipeline
+            logger.info("[VoiceCommand] Starting recording (RealtimeSTT)...")
             self._play_activation_beep()
 
-            # Initialize VAD if not already done (optional for native audio)
-            if not self.vad_processor:
-                self.vad_processor = VADProcessor(enabled=True)
-
-            # Reset state
             self.is_recording = True
             self.audio_buffer = []
-            self.silence_counter = 0
-            self.speech_started = False
-            self._overflow_stop_requested = False
-            
-            # Register frame listener with AudioEngine's unified pipeline
+
+            # Register AudioEngine frame listener once (kept for lifetime of handler)
             if not self._frame_listener_registered:
                 if self.audio_engine.pipeline:
                     self.audio_engine.register_frame_listener(self._capture_frame)
                     self._frame_listener_registered = True
-                    print("[VoiceCommand] Registered frame listener with AudioEngine")
                 else:
-                    print("[VoiceCommand] ERROR: AudioEngine pipeline not available for frame listener registration")
+                    logger.error("[VoiceCommand] AudioEngine pipeline not available")
                     self._set_state(VoiceState.ERROR, "Audio pipeline not ready")
+                    self.is_recording = False
                     return False
-            
-            self._set_state(VoiceState.RECORDING, "Listening...")
-            print("[VoiceCommand] Recording started using unified audio stream")
-            return True
-            
-        except Exception as e:
-            print(f"[VoiceCommand] Failed to start recording: {e}")
-            self._set_state(VoiceState.ERROR, f"Recording failed: {e}")
-            return False
-            
-    def _capture_frame(self, audio_frame: np.ndarray):
-        """Capture audio frame during recording"""
-        if not self.is_recording:
-            return
-            
-        # Check for overflow stop request (set by buffer overflow)
-        if self._overflow_stop_requested:
-            self._overflow_stop_requested = False
-            self.stop_recording()
-            return
-            
-        # Add to buffer with overflow protection
-        if len(self.audio_buffer) < self.max_buffer_frames:
-            self.audio_buffer.append(audio_frame)
-            # Only log every 100 frames to reduce spam
-            if len(self.audio_buffer) % 100 == 0:
-                print(f"[VoiceCommand] Buffer: {len(self.audio_buffer)} frames")
-        else:
-            # Buffer full - mark for auto-stop (don't call stop_recording from audio thread)
-            print(f"[VoiceCommand] Buffer full ({len(self.audio_buffer)} frames) - will auto-stop")
-            self._overflow_stop_requested = True
-        
-        # Check for speech using VAD (optional for native audio)
-        if self.vad_processor:
-            is_speech = self.vad_processor.process(audio_frame)
-            
-            if is_speech:
-                # Speech detected
-                if not self.speech_started:
-                    self.speech_started = True
-                    print("[VoiceCommand] Speech started")
-                self.silence_counter = 0
-            else:
-                # Silence detected
-                if self.speech_started:
-                    # Speech was happening, now silence
-                    self.silence_counter += 1
-                    
-                    # If sustained silence, auto-stop in wake word mode; else wait for user
-                    if self.silence_counter >= self.silence_threshold:
-                        if self._auto_stop_mode:
-                            # Wake word mode: auto-stop on sustained silence
-                            print("[VoiceCommand] Auto-stopping on silence (wake word mode)")
-                            self.stop_recording()
-                        else:
-                            print(f"[VoiceCommand] Speech paused (silence detected: {self.silence_counter} frames), continuing... (waiting for user to stop)")
-                else:
-                    # Silence before speech started
-                    self.silence_counter += 1
-                    
-                    # If too much silence before speech, continue recording (user controls stop)
-                    if self.silence_counter >= 60:  # ~2 seconds
-                        print("[VoiceCommand] No speech detected yet, continuing...")
-                        
-    def stop_recording(self):
-        """Stop recording and process native audio using unified stream"""
-        if not self.is_recording:
-            return
-            
-        print("[VoiceCommand] Stopping recording...")
-        
-        # Add a minimum threshold check for the audio buffer
-        # Assuming self.chunk_size is defined elsewhere or derived from frame_length
-        # For now, using a placeholder if not explicitly defined
-        chunk_size = self.frame_length # Assuming frame_length is the chunk size
-        min_audio_frames = int(self.sample_rate * 0.5 / chunk_size) # 0.5 seconds
-        if len(self.audio_buffer) < min_audio_frames:
-            print(f"[VoiceCommand] Audio too short: {len(self.audio_buffer)} frames, skipping processing")
-            self.is_recording = False
-            self.audio_buffer = []
-            self._set_state(VoiceState.IDLE, "Recording too short")
-            return
-        
-        # Don't stop the unified pipeline - just stop recording state
-        self.is_recording = False
-        
-        # Check if we have audio
-        if len(self.audio_buffer) == 0:
-            print("[VoiceCommand] No audio captured")
-            self._set_state(VoiceState.ERROR, "No audio captured")
-            self._reset_state()
-            return
-            
-        # Check minimum speech duration (optional for native audio)
-        total_frames = len(self.audio_buffer)
-        if total_frames < self.min_speech_frames:
-            print(f"[VoiceCommand] Audio too short: {total_frames} frames")
-            self._set_state(VoiceState.ERROR, "Audio too short")
-            self._reset_state()
-            return
-            
-        # Process the native audio in background thread
-        print(f"[VoiceCommand] Processing {total_frames} frames...")
-        self._set_state(VoiceState.PROCESSING, "Processing...")
-        
-        # Combine audio buffer efficiently
-        print(f"[VoiceCommand] Concatenating {len(self.audio_buffer)} frames...")
-        audio_data = np.concatenate(self.audio_buffer)
-        print(f"[VoiceCommand] Audio data shape: {audio_data.shape}, size: {audio_data.nbytes / 1024 / 1024:.2f} MB")
-        
-        # Convert to torch tensor (required for LFM2-Audio)
-        import torch
-        audio_tensor = torch.from_numpy(audio_data).float()
-        print(f"[VoiceCommand] Converted to torch tensor: {audio_tensor.shape}, dtype: {audio_tensor.dtype}")
-        
-        # Process in background thread
-        process_thread = threading.Thread(
-            target=self._process_native_audio,
-            args=(audio_tensor,),
-            daemon=True
-        )
-        process_thread.start()
-        
-    def _process_native_audio(self, audio_tensor: torch.Tensor):
-        """Process captured audio using native audio model in background thread"""
-        try:
-            # Set CPU affinity to limit CPU core usage (max 4 cores)
-            if hasattr(os, 'sched_setaffinity'):
-                cpu_count = min(4, os.cpu_count() or 4)
-                os.sched_setaffinity(0, list(range(cpu_count)))
-                print(f"[VoiceCommand] Limited processing to {cpu_count} CPU cores")
-            
-            # Ensure native audio model is loaded
-            if not self.audio_engine.model_manager.is_loaded:
-                print("[VoiceCommand] Loading native audio model...")
-                if not self.audio_engine.model_manager.load_model():
-                    print("[VoiceCommand] Failed to load native audio model")
-                    self._set_state(VoiceState.ERROR, "Native audio model not available")
-                    self._reset_state()
-                    return
-            
-            # Process native audio (16kHz input -> 24kHz output) using async method
-            print(f"[VoiceCommand] Processing native audio: {len(audio_tensor)} samples...")
-            
-            # Use the main event loop from AudioEngine to run the async method
-            future = asyncio.run_coroutine_threadsafe(
-                self.audio_engine.model_manager.process_native_audio_async(
-                    audio_tensor,
-                    sample_rate=self.sample_rate,
-                    session_id=self._active_session_id
-                ),
-                self.audio_engine.get_main_loop()
+
+            # Start blocking transcription in background thread
+            self._transcription_thread = threading.Thread(
+                target=self._run_transcription,
+                daemon=True,
+                name="iris-realtimestt",
             )
-            
-            # Wait for the result
-            response_audio, debug_text = future.result()
-            
-            if response_audio is None or len(response_audio) == 0:
-                print("[VoiceCommand] No audio response generated")
-                self._set_state(VoiceState.ERROR, "No audio response")
-                self._reset_state()
-                return
-                
-            print(f"[VoiceCommand] Generated audio response: {response_audio.shape} @ 24kHz")
-            if debug_text:
-                print(f"[VoiceCommand] Debug text: '{debug_text}'")
-            
-            # Play the native audio response
-            self._play_native_response(response_audio, debug_text)
-            
+            self._transcription_thread.start()
+
+            self._set_state(VoiceState.RECORDING, "Listening...")
+            return True
+
         except Exception as e:
-            print(f"[VoiceCommand] Native audio processing error: {e}")
-            import traceback
-            traceback.print_exc()
-            self._set_state(VoiceState.ERROR, f"Native audio processing failed: {e}")
-            self._reset_state()
-            
-    def _play_native_response(self, audio_response, debug_text=None):
+            logger.error(f"[VoiceCommand] Failed to start recording: {e}")
+            self._set_state(VoiceState.ERROR, f"Recording failed: {e}")
+            self.is_recording = False
+            return False
+
+    def stop_recording(self) -> None:
         """
-        Parse LFM2-Audio structured text output and fire result callback.
-        Does NOT play audio directly — the 4-pillar pipeline handles TTS response.
-
-        Expected debug_text format from ModelManager:
-        [TRANSCRIPT]: <exact transcription>
-        [CONTEXT]: <one sentence about tone/urgency/intent>
+        Stop recording (called by user double-click stop or iris_gateway).
+        Signals RealtimeSTT to transcribe captured audio and return.
         """
-        transcript = ""
-        audio_context = ""
+        if not self.is_recording:
+            return
 
-        if debug_text:
-            # Parse structured output from ModelManager
-            for line in debug_text.splitlines():
-                line = line.strip()
-                if line.startswith("[TRANSCRIPT]:"):
-                    transcript = line.replace("[TRANSCRIPT]:", "").strip()
-                elif line.startswith("[CONTEXT]:"):
-                    audio_context = line.replace("[CONTEXT]:", "").strip()
+        logger.info("[VoiceCommand] Stopping recording (user requested)...")
 
-            # Fallback: if model didn't follow format, use full text as transcript
-            if not transcript and debug_text.strip():
-                transcript = debug_text.strip()
-                print(f"[VoiceCommand] Warning: LFM output not in expected format, using raw: '{transcript[:80]}'")
+        try:
+            if self._recorder is not None:
+                # stop() causes the blocking text() call in _run_transcription to
+                # process any buffered audio and return the partial transcript.
+                self._recorder.stop()
+        except Exception as e:
+            logger.warning(f"[VoiceCommand] Error stopping recorder: {e}")
+        # _run_transcription thread finishes and calls _on_transcription_complete
 
-        result = {
+    # -------------------------------------------------------------------------
+    # Internal
+    # -------------------------------------------------------------------------
+
+    def _get_recorder(self):
+        """Lazy-init the RealtimeSTT AudioToTextRecorder (single instance, reused).
+
+        Thread-safe: _recorder_lock prevents _capture_frame and _run_transcription
+        from racing to create two separate instances on the first recording.
+        """
+        if self._recorder is None:
+            with self._recorder_lock:
+                if self._recorder is None:   # double-checked locking
+                    from RealtimeSTT import AudioToTextRecorder
+                    self._recorder = AudioToTextRecorder(
+                        use_microphone=False,
+                        spinner=False,
+                        model="tiny",                       # ~40 MB, fast, CPU-friendly
+                        language="en",
+                        silero_sensitivity=0.4,
+                        post_speech_silence_duration=1.0,   # 1 s silence → end of speech
+                        min_length_of_recording=0.3,        # ignore sub-300 ms blips
+                        enable_realtime_transcription=False, # streaming not needed
+                    )
+                    logger.info("[VoiceCommand] RealtimeSTT recorder initialised (faster-whisper/tiny)")
+        return self._recorder
+
+    def _run_transcription(self) -> None:
+        """Background thread: blocks on recorder.text() until speech ends."""
+        try:
+            recorder = self._get_recorder()
+            logger.info("[VoiceCommand] Waiting for speech (RealtimeSTT)...")
+
+            # Blocks until silero-VAD detects end-of-speech OR stop() is called
+            transcript = recorder.text()
+            self._on_transcription_complete(transcript or "")
+
+        except Exception as e:
+            logger.error(f"[VoiceCommand] Transcription error: {e}", exc_info=True)
+            self.is_recording = False
+            self._set_state(VoiceState.ERROR, f"Transcription failed: {e}")
+            threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
+
+    def _on_transcription_complete(self, transcript: str) -> None:
+        """Called when recorder.text() returns with a transcript."""
+        self.is_recording = False
+        transcript = transcript.strip()
+
+        logger.info(f"[VoiceCommand] Transcript: '{transcript[:80]}'")
+
+        if not transcript:
+            logger.info("[VoiceCommand] Empty transcript — ignoring")
+            self._set_state(VoiceState.IDLE, "")
+            return
+
+        result: Dict[str, Any] = {
             "type":          "voice_transcription",
             "transcript":    transcript,
-            "audio_context": audio_context,
+            "audio_context": "",
             "session_id":    self._active_session_id,
-            "status":        "success" if transcript else "empty",
+            "status":        "success",
         }
 
-        print(f"[VoiceCommand] Transcript: '{transcript[:80]}' | Context: '{audio_context[:60]}'")
+        self._set_state(VoiceState.PROCESSING, "Processing...")
 
-        # Fire callback to iris_gateway for 4-pillar processing
         if self._on_command_result:
             try:
                 self._on_command_result(result)
             except Exception as e:
-                print(f"[VoiceCommand] Callback error: {e}")
+                logger.error(f"[VoiceCommand] Callback error: {e}")
 
         self._set_state(VoiceState.SUCCESS, "Voice transcription complete")
-        self._reset_state()
-        
-    def _send_result(self, result: Dict[str, Any]):
-        """Send command result to callback"""
-        if self._on_command_result:
-            try:
-                self._on_command_result(result)
-            except Exception as e:
-                print(f"[VoiceCommand] Result callback error: {e}")
-                
-    def _reset_state(self):
-        """Reset to idle state"""
-        self.audio_buffer = []
-        self.silence_counter = 0
-        self.speech_started = False
-        
-        # Return to idle after a delay
-        def return_to_idle():
-            self._set_state(VoiceState.IDLE, "")
-            
-        timer = threading.Timer(2.0, return_to_idle)
-        timer.start()
-        
-    def cancel_recording(self):
-        """Cancel recording without processing using unified stream"""
+        threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
+
+    def _capture_frame(self, audio_frame: np.ndarray) -> None:
+        """
+        AudioEngine frame listener.  Converts float32 frame to int16 PCM bytes
+        and feeds it to RealtimeSTT, which handles VAD internally.
+        """
         if not self.is_recording:
             return
-            
-        print("[VoiceCommand] Canceling recording...")
-        
-        # Don't stop the unified pipeline - just stop recording state
-        self.is_recording = False
-        self._set_state(VoiceState.IDLE, "Recording canceled")
-        self._reset_state()
-        
-    def get_status(self) -> Dict[str, Any]:
-        """Get current status"""
-        return {
-            "state": self.state.value,
-            "is_recording": self.is_recording,
-            "buffer_size": len(self.audio_buffer),
-            "silence_counter": self.silence_counter,
-            "speech_started": self.speech_started,
-        }
+
+        # Sentinel append keeps len(audio_buffer) accurate for iris_gateway check
+        self.audio_buffer.append(None)
+
+        # float32 [-1, 1] → int16 PCM bytes at 16 kHz
+        audio_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16)
+
+        try:
+            self._get_recorder().feed_audio(audio_int16.tobytes())
+        except Exception:
+            pass  # Never propagate exceptions to the audio callback thread
+
+    def _play_activation_beep(self) -> None:
+        """Play a short 880 Hz confirmation beep via the AudioEngine pipeline."""
+        try:
+            sample_rate = 24000
+            duration = 0.1
+            t = np.linspace(0, duration, int(sample_rate * duration))
+            beep = (0.3 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+            if self.audio_engine.pipeline:
+                self.audio_engine.pipeline.play_audio(beep)
+        except Exception as e:
+            logger.warning(f"[VoiceCommand] Beep failed: {e}")
+
+    def _set_state(self, new_state: VoiceState, message: str = "") -> None:
+        """Update internal state and fire the state-change callback."""
+        if self.state != new_state:
+            logger.info(f"[VoiceCommand] State: {self.state} → {new_state}")
+            self.state = new_state
+            if self._on_state_change:
+                try:
+                    self._on_state_change(new_state, message)
+                except Exception as e:
+                    logger.error(f"[VoiceCommand] State callback error: {e}")

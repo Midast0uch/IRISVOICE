@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react"
 import { useNavigation } from "@/contexts/NavigationContext"
 import type { DashboardTab } from "@/components/dashboard-wing"
+import { useWindowResize } from "@/hooks/useWindowResize"
 
 // Re-export DashboardTab for convenience
 export type { DashboardTab }
@@ -63,9 +64,12 @@ export function useUILayoutState() {
   const [uiState, setUIState] = useState<UILayoutState>(UILayoutState.UI_STATE_IDLE)
   const [isTransitioning, setIsTransitioning] = useState(false)
   const [transitionDirection, setTransitionDirection] = useState<TransitionDirection>(null)
-  
+
   // Spotlight state (works in both UI_STATE_CHAT_OPEN and UI_STATE_BOTH_OPEN)
   const [spotlightState, setSpotlightState] = useState<SpotlightState>(SpotlightState.BALANCED)
+
+  // Window resize — fires whenever layout or spotlight state changes
+  const { resize } = useWindowResize()
   
   // Dashboard tab state for cross-interface navigation
   const [activeDashboardTab, setActiveDashboardTab] = useState<DashboardTab>('dashboard')
@@ -389,6 +393,15 @@ export function useUILayoutState() {
       wasChatSpotlightRef.current = false
     }
   }, [uiState])
+
+  /**
+   * Tauri window resize — expand/contract the native window to fit the current
+   * UI layout + spotlight combination.  Fires after every state change so the
+   * window always matches what's visible on screen.
+   */
+  useEffect(() => {
+    resize(uiState as any, spotlightState as any)
+  }, [uiState, spotlightState, resize])
 
   return {
     // Current state

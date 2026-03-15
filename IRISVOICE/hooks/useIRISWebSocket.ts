@@ -102,6 +102,11 @@ const DEFAULT_THEME: ColorTheme = {
   font: "#ffffff",
 }
 
+// WebSocket resilience constants (module-level — stable references across renders)
+const NON_QUEUEABLE_TYPES = new Set(['ping', 'pong'])
+const RECONNECT_MAX_DELAY = 30_000   // 30 s ceiling
+const STABILITY_THRESHOLD = 10_000  // reset backoff counter after 10 s of uptime
+
 export function useIRISWebSocket(
   url: string = "ws://127.0.0.1:8000/ws/iris",
   autoConnect: boolean = true,
@@ -162,7 +167,12 @@ export function useIRISWebSocket(
   const pongTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const onWakeDetectedRef = useRef(onWakeDetected)
   const onNativeAudioResponseRef = useRef(onNativeAudioResponse)
-  
+
+  // Resilience: sequence counter, send queue, connection-stability tracking
+  const seqRef = useRef(0)
+  const messageQueueRef = useRef<Array<{ type: string; payload: Record<string, unknown> }>>([])
+  const connectedAtRef = useRef<number | null>(null)
+
   // Optimistic update tracking: store previous values for revert on validation error
   const pendingUpdatesRef = useRef<Map<string, { sectionId: string; fieldId: string; previousValue: string | number | boolean }>>(new Map())
   
@@ -197,14 +207,47 @@ export function useIRISWebSocket(
     }
   }, [])
 
-  // Connect to WebSocket
-  const connect = useCallback(() => {
+  // ─── scheduleReconnect ───────────────────────────────────────────────────
+  // Shared helper used by both the readiness check and ws.onclose.
+  // Unlimited retries with exponential backoff capped at RECONNECT_MAX_DELAY.
+  const scheduleReconnect = useCallback(() => {
+    if (!autoConnect) return
+    const base = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), RECONNECT_MAX_DELAY)
+    const jitter = base * 0.2 * (Math.random() - 0.5)  // ±10 %
+    const delay = Math.round(base + jitter)
+    reconnectAttemptsRef.current++
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[IRIS WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
+    }
+    reconnectTimeoutRef.current = setTimeout(() => connect(), delay)
+  // connect is added to deps below after its declaration
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoConnect])
+
+  // ─── connect ─────────────────────────────────────────────────────────────
+  const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return // Already connected
     }
 
     setConnectionState("connecting")
     setLastError(null)
+
+    // Fix 1 — Readiness check: probe the HTTP health endpoint before opening
+    // the WebSocket socket. This prevents noisy ECONNREFUSED WebSocket errors
+    // when the backend is still starting or temporarily down.
+    const httpUrl = url.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/ws.*$/, '/')
+    try {
+      await fetch(httpUrl, { signal: AbortSignal.timeout(2000) })
+    } catch {
+      // Backend not reachable — skip WebSocket, schedule a backoff retry
+      if (process.env.NODE_ENV !== 'production') {
+        console.log("[IRIS WebSocket] Backend not reachable, will retry...")
+      }
+      setConnectionState("disconnected")
+      scheduleReconnect()
+      return
+    }
 
     try {
       const ws = new WebSocket(url)
@@ -214,15 +257,26 @@ export function useIRISWebSocket(
           console.log("[IRIS WebSocket] Connected")
         }
         setConnectionState("connected")
-        reconnectAttemptsRef.current = 0
+        reconnectAttemptsRef.current = 0     // reset backoff counter on success
+        connectedAtRef.current = Date.now()  // Fix 2 — record connection time
 
-        // Request initial state, audio devices, and wake words immediately on open.
-        // These must be sent here (not in useEffect) because sendMessage() drops messages
-        // silently if the socket is not yet OPEN — onopen guarantees it is.
-        ws.send(JSON.stringify({ type: "request_state", payload: {} }))
-        ws.send(JSON.stringify({ type: "get_audio_devices", payload: {} }))
-        ws.send(JSON.stringify({ type: "get_wake_words", payload: {} }))
-        ws.send(JSON.stringify({ type: "get_available_models", payload: {} }))
+        // Fix 4 — reset sequence counter on each fresh connection
+        seqRef.current = 0
+
+        // Burst messages on open (seq-tagged)
+        ws.send(JSON.stringify({ type: "request_state",     payload: {}, seq: seqRef.current++ }))
+        ws.send(JSON.stringify({ type: "get_audio_devices", payload: {}, seq: seqRef.current++ }))
+        ws.send(JSON.stringify({ type: "get_wake_words",    payload: {}, seq: seqRef.current++ }))
+        ws.send(JSON.stringify({ type: "get_available_models", payload: {}, seq: seqRef.current++ }))
+
+        // Fix 3 — flush the send queue accumulated while disconnected
+        const queued = messageQueueRef.current.splice(0)
+        for (const msg of queued) {
+          ws.send(JSON.stringify({ type: msg.type, payload: msg.payload, seq: seqRef.current++ }))
+        }
+        if (process.env.NODE_ENV !== 'production' && queued.length > 0) {
+          console.log(`[IRIS WebSocket] Flushed ${queued.length} queued message(s)`)
+        }
       }
 
       ws.onmessage = (event) => {
@@ -234,8 +288,8 @@ export function useIRISWebSocket(
         }
       }
 
-      ws.onerror = (error) => {
-        // WebSocket errors don't contain detailed info - just log connection failed
+      ws.onerror = () => {
+        // WebSocket errors don't expose useful detail — just set status
         console.warn("[IRIS WebSocket] Connection failed - backend may be offline")
         setConnectionState("error")
         setLastError("Backend offline - running in standalone mode")
@@ -258,21 +312,19 @@ export function useIRISWebSocket(
           pongTimeoutRef.current = null
         }
 
-        // Auto-reconnect with exponential backoff (1s, 2s, 4s) up to 3 attempts
-        if (autoConnect && reconnectAttemptsRef.current < 3) {
-          const delay = 1000 * Math.pow(2, reconnectAttemptsRef.current) // 1s, 2s, 4s
-          reconnectAttemptsRef.current++
-
-          if (process.env.NODE_ENV !== 'production') {
-            console.log(`[IRIS WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/3)`)
-          }
-
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect()
-          }, delay)
-        } else if (reconnectAttemptsRef.current >= 3) {
-          setLastError("Backend offline - running in standalone mode")
+        // Fix 2 — if the connection was stable (≥ STABILITY_THRESHOLD ms), reset
+        // the backoff counter so the next attempt is fast rather than at 30 s.
+        const wasStable =
+          connectedAtRef.current !== null &&
+          Date.now() - connectedAtRef.current >= STABILITY_THRESHOLD
+        if (wasStable) {
+          reconnectAttemptsRef.current = 0
         }
+        connectedAtRef.current = null
+
+        // Fix 2 — no hard cap: always retry while autoConnect is true
+        setLastError("Backend offline - running in standalone mode")
+        scheduleReconnect()
       }
 
       wsRef.current = ws
@@ -280,8 +332,9 @@ export function useIRISWebSocket(
       console.error("[IRIS WebSocket] Failed to create connection:", err)
       setConnectionState("error")
       setLastError("Failed to create connection")
+      scheduleReconnect()
     }
-  }, [url, autoConnect])
+  }, [url, autoConnect, scheduleReconnect])
 
   // Handle incoming messages
   const handleMessage = useCallback((message: Record<string, unknown>) => {
@@ -603,8 +656,17 @@ export function useIRISWebSocket(
         break
       }
 
+      case "ping": {
+        // Backend-initiated heartbeat ping — respond immediately to keep connection alive.
+        // The backend's _heartbeat_loop in ws_manager.py sends a ping every 30s and
+        // disconnects the client if no pong arrives within 5s. Without this handler the
+        // connection is forcibly closed every ~35s causing the recurring reconnect loop.
+        sendMessage("pong", {})
+        break
+      }
+
       case "pong": {
-        // Clear pong timeout on successful pong response
+        // Clear pong timeout on successful pong response (frontend-initiated ping)
         if (pongTimeoutRef.current) {
           clearTimeout(pongTimeoutRef.current)
           pongTimeoutRef.current = null
@@ -746,13 +808,22 @@ export function useIRISWebSocket(
     }
   }, [])
 
-  // Send message helper
+  // Send message helper — Fix 3 (queue) + Fix 4 (sequence numbers)
   const sendMessage = useCallback((type: string, payload: Record<string, unknown> = {}) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type, payload }))
+      wsRef.current.send(JSON.stringify({ type, payload, seq: seqRef.current++ }))
       return true
     }
-    console.warn("[IRIS WebSocket] Not connected, message dropped:", type)
+    // Not connected: queue non-ephemeral messages for delivery on next reconnect
+    if (!NON_QUEUEABLE_TYPES.has(type)) {
+      if (messageQueueRef.current.length >= 50) {
+        messageQueueRef.current.shift()  // drop oldest to prevent unbounded growth
+      }
+      messageQueueRef.current.push({ type, payload })
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`[IRIS WebSocket] Queued message (not connected): ${type}`)
+      }
+    }
     return false
   }, [])
 

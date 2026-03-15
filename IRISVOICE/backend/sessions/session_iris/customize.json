@@ -1,0 +1,27 @@
+{
+  "fields": {
+    "theme": {
+      "primary_color": "#00ff88",
+      "glow_color": "#00ff88",
+      "font_color": "#ffffff",
+      "layout_mode": "Spacious",
+      "font_size": 14
+    },
+    "notifications": {
+      "enable_notifications": true,
+      "notification_sound": "Default",
+      "show_wake_notification": true,
+      "show_error_notification": true,
+      "auto_dismiss_delay": 5
+    },
+    "startup": {
+      "startup_page": "Dashboard",
+      "startup_behavior": "Normal"
+    },
+    "behavior": {
+      "confirm_exit": true,
+      "auto_save": true
+    }
+  },
+  "last_updated": "2026-03-15T10:31:57.307282"
+}
