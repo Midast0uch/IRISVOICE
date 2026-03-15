@@ -317,6 +317,45 @@ async def voice_status():
     return {"status": "ok", "service": "iris-voice", "timestamp": datetime.now().isoformat()}
 
 
+# ── Launcher mode endpoint ─────────────────────────────────────────────────────
+# The iris-launcher web app calls POST /api/mode to switch between
+# personal and developer mode.  Developer mode injects PROJECT.md into
+# the agent system prompt so the local model has full codebase context.
+
+@app.post("/api/mode")
+async def set_mode(request: dict):
+    """Set launcher mode ('personal' or 'developer').
+
+    Called by the iris-launcher when the user selects a mode.
+    Body: {"mode": "developer"} or {"mode": "personal"}
+    """
+    mode = request.get("mode", "personal")
+    if mode not in ("personal", "developer"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Invalid mode: {mode!r}. Must be 'personal' or 'developer'.")
+    try:
+        from backend.agent import get_agent_kernel
+        kernel = get_agent_kernel()
+        kernel.set_launcher_mode(mode)
+        logger.info(f"[API] Launcher mode set to: {mode}")
+        return {"status": "ok", "mode": mode}
+    except Exception as e:
+        logger.error(f"[API] Failed to set mode: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mode")
+async def get_mode():
+    """Return the current launcher mode."""
+    try:
+        from backend.agent import get_agent_kernel
+        kernel = get_agent_kernel()
+        return {"mode": kernel._launcher_mode}
+    except Exception:
+        return {"mode": "personal"}
+
+
 # ============================================================================
 # WebSocket Endpoint
 # ============================================================================

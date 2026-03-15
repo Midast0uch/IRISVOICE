@@ -123,7 +123,13 @@ class AgentKernel:
         
         # Internet access control (default: False to match UI default)
         self._internet_access_enabled: bool = False
-        
+
+        # Launcher mode: "personal" (default) or "developer"
+        # Developer mode injects PROJECT.md into every system prompt so the
+        # local agent has full codebase context and can modify source files.
+        self._launcher_mode: str = "personal"
+        self._developer_context: Optional[str] = None  # cached PROJECT.md content
+
         # Initialize components
         self._initialize_components()
 
@@ -362,6 +368,72 @@ class AgentKernel:
         self._lmstudio_endpoint = endpoint.rstrip("/")
         logger.info(f"[AgentKernel] LM Studio endpoint configured: {self._lmstudio_endpoint}")
 
+    def set_launcher_mode(self, mode: str) -> None:
+        """Set the launcher mode ('personal' or 'developer').
+
+        In developer mode the agent's system prompt is augmented with
+        PROJECT.md so the local model has full codebase context and can
+        read/write source files, run git commands, and commit to
+        ``iris-agent-dev``.
+        """
+        prev = self._launcher_mode
+        self._launcher_mode = mode
+        self._developer_context = None  # invalidate cached context
+        logger.info(f"[AgentKernel] Launcher mode changed: {prev} → {mode}")
+
+    def _get_developer_context(self) -> str:
+        """Load and cache the PROJECT.md developer context string.
+
+        Returns empty string if the file cannot be found (non-fatal).
+        """
+        if self._developer_context is not None:
+            return self._developer_context
+        import pathlib
+        # Walk up from this file's location to find PROJECT.md
+        here = pathlib.Path(__file__).parent
+        for _ in range(6):
+            candidate = here / "PROJECT.md"
+            if candidate.exists():
+                self._developer_context = candidate.read_text(encoding="utf-8")
+                logger.info(f"[AgentKernel] Loaded developer context from {candidate}")
+                return self._developer_context
+            here = here.parent
+        logger.warning("[AgentKernel] PROJECT.md not found — developer context unavailable")
+        self._developer_context = ""
+        return ""
+
+    def _build_system_prompt(self) -> str:
+        """Return the full system prompt for the current launcher mode.
+
+        Personal mode: personality system prompt only.
+        Developer mode: personality prompt + PROJECT.md appended so the
+        agent always knows the codebase layout and must commit to
+        ``iris-agent-dev``.
+        """
+        base = (
+            "You are IRIS, a helpful, warm, and personable AI voice assistant. "
+            "Respond naturally and concisely."
+        )
+        if self._personality:
+            try:
+                base = self._personality.get_system_prompt()
+            except Exception:
+                pass
+
+        if self._launcher_mode == "developer":
+            dev_ctx = self._get_developer_context()
+            if dev_ctx:
+                base = (
+                    base
+                    + "\n\n"
+                    + "--- DEVELOPER MODE ACTIVE ---\n"
+                    + "You have full access to the IRISVOICE source code. "
+                    + "Always commit changes to the ``iris-agent-dev`` branch. "
+                    + "Never commit to main or IRISVOICEv.3.\n\n"
+                    + dev_ctx
+                )
+        return base
+
     # ------------------------------------------------------------------
     # Helpers: thinking-token stripping, planning gate, direct response
     # ------------------------------------------------------------------
@@ -440,15 +512,7 @@ class AgentKernel:
         Respond directly to the user without planning or tool execution.
         This is the default path for all conversational and non-tool messages.
         """
-        system_prompt = (
-            "You are IRIS, a helpful, warm, and personable AI voice assistant. "
-            "Respond naturally and concisely."
-        )
-        if self._personality:
-            try:
-                system_prompt = self._personality.get_system_prompt()
-            except Exception:
-                pass
+        system_prompt = self._build_system_prompt()
 
         # Build context window: last 8 messages, always starting with a user turn.
         # Qwen3 (and most models) require the first non-system message to be "user".
@@ -873,15 +937,7 @@ class AgentKernel:
         # Build the initial message list (system + conversation history + user turn).
         # The loop will append assistant + tool messages on each iteration until the
         # model emits finish_reason="stop", at which point we have the final answer.
-        system_prompt = (
-            "You are IRIS, a helpful, warm, and capable AI assistant with access to tools. "
-            "Think through tasks step by step, use tools when needed, and give clear answers."
-        )
-        if self._personality:
-            try:
-                system_prompt = self._personality.get_system_prompt()
-            except Exception:
-                pass
+        system_prompt = self._build_system_prompt()
 
         loop_messages: List[Dict] = [{"role": "system", "content": system_prompt}]
         context_window = list(context[-6:])
