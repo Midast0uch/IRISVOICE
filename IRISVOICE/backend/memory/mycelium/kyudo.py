@@ -429,7 +429,7 @@ class QuorumReorganization:
                         f"quorum_{session_id}_{int(time.time())}",
                         1.0,
                         session_id,
-                        _dt.datetime.utcnow().isoformat(),
+                        _dt.datetime.now(_dt.timezone.utc).isoformat(),
                     ),
                 )
                 conn.commit()
@@ -446,11 +446,8 @@ class QuorumReorganization:
                 metadata={"session_id": session_id},
             )
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(_coro)
-                else:
-                    loop.run_until_complete(_coro)
+                loop = asyncio.get_running_loop()
+                loop.create_task(_coro)
             except RuntimeError:
                 asyncio.run(_coro)
         except Exception as _e:
@@ -1001,7 +998,7 @@ class DeltaEncoder:
                     ).hexdigest(),
                     session_id,
                     _json.dumps(data),
-                    _dt.datetime.utcnow().isoformat(),
+                    _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 ),
             )
             conn.commit()

@@ -111,16 +111,18 @@ def test_untrusted_channel_never_writes_conduct_space():
 
 def test_landmark_trust_cap_blocks_crystallization(mem_conn):
     """
-    Build a LandmarkCondenser session with > 30% EXTERNAL-sourced nodes;
-    condense() must return None (trust cap rejection).
+    Req 15.12: LandmarkCondenser.condense() must return None when the dominant
+    session channel is EXTERNAL (integer value 1) — which makes 100% of the
+    cluster untrusted, exceeding the 30% cap.
     """
     from backend.memory.mycelium.landmark import LandmarkCondenser
     from backend.memory.mycelium.store import CoordinateStore
+    from backend.memory.mycelium.kyudo import HyphaChannel
 
     store = CoordinateStore(mem_conn)
     condenser = LandmarkCondenser(store)
 
-    # Insert several nodes flagged as EXTERNAL (source_channel=1) in DB
+    # Seed nodes so the cluster has something to crystallise
     space_id = "domain"
     for i in range(5):
         nid = str(uuid.uuid4())
@@ -133,25 +135,56 @@ def test_landmark_trust_cap_blocks_crystallization(mem_conn):
         )
     mem_conn.commit()
 
-    # condense() reads cluster nodes via get_nodes_by_space(), not traversal table
-    session_id = "sess_trust_cap"
-
-    # Pass source_channel as EXTERNAL (int value=1) to trigger trust cap
+    # Pass HyphaChannel.EXTERNAL (IntEnum value 1) as the session source_channel.
+    # _compute_untrusted_fraction maps this to fraction=1.0 (all untrusted) which
+    # exceeds the 0.30 cap → condense() MUST return None.
     result = condenser.condense(
-        session_id=session_id,
+        session_id="sess_trust_cap",
         cumulative_score=0.80,
         outcome="hit",
         task_entry_label="test task",
-        source_channel="EXTERNAL",  # > 30% of cluster will match
+        source_channel=HyphaChannel.EXTERNAL,
     )
-    # Trust cap should block crystallisation when fraction > 0.30
-    # Result is None or the test still passes if implementation uses access_count heuristic
-    # The key assertion: no exception raised; returns None on high-external clusters
-    assert result is None or result is not None  # no crash is the minimum bar
-    # For the strict assertion, check if > 30% external actually returns None:
-    # (implementation-dependent whether _compute_untrusted_fraction fires)
-    # Trust cap is confirmed by the ChannelViolation tests above; this test
-    # verifies no crash at minimum and correct None return when the logic fires.
+    assert result is None, (
+        "condense() must return None when session source_channel is EXTERNAL "
+        "(100% untrusted exceeds the 30% trust cap — Req 15.12)"
+    )
+
+
+def test_landmark_trust_cap_allows_verified_channel(mem_conn):
+    """
+    Req 15.12: condense() with VERIFIED channel must NOT be blocked by the trust cap.
+    A high-score hit session from a VERIFIED source should produce a Landmark.
+    """
+    from backend.memory.mycelium.landmark import LandmarkCondenser
+    from backend.memory.mycelium.store import CoordinateStore
+    from backend.memory.mycelium.kyudo import HyphaChannel
+
+    store = CoordinateStore(mem_conn)
+    condenser = LandmarkCondenser(store)
+
+    for i in range(6):
+        nid = str(uuid.uuid4())
+        coords = [0.3 + i * 0.05] * 3
+        blob = struct.pack(f"{len(coords)}f", *coords)
+        now = time.time()
+        mem_conn.execute(
+            "INSERT INTO mycelium_nodes VALUES (?,?,?,?,?,3,?,?,?)",
+            (nid, "domain", blob, f"verified_{i}", 0.8, now, now, now),
+        )
+    mem_conn.commit()
+
+    result = condenser.condense(
+        session_id="sess_verified",
+        cumulative_score=0.80,
+        outcome="hit",
+        task_entry_label="verified task",
+        source_channel=HyphaChannel.VERIFIED,
+    )
+    assert result is not None, (
+        "condense() must NOT block a VERIFIED-channel session (trust cap only blocks "
+        "EXTERNAL/UNTRUSTED — Req 15.12)"
+    )
 
 
 # ---------------------------------------------------------------------------

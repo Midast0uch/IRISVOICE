@@ -413,6 +413,18 @@ IRISVOICE/
 │   ├── core/            # Core infrastructure
 │   ├── sessions/        # Session management
 │   ├── monitoring/      # Logging and monitoring
+│   ├── memory/          # Memory subsystem
+│   │   ├── mycelium/    # Coordinate-graph memory layer
+│   │   │   ├── store.py      # CoordinateStore (node/edge CRUD, struct pack)
+│   │   │   ├── navigator.py  # CoordinateNavigator (traversal, author_edge)
+│   │   │   ├── extractor.py  # CoordinateExtractor (text→coords, toolpath)
+│   │   │   ├── scorer.py     # EdgeScorer + MapManager (decay, condense)
+│   │   │   ├── profile.py    # ProfileRenderer (prose sections)
+│   │   │   ├── landmark.py   # LandmarkCondenser + LandmarkIndex
+│   │   │   ├── resonance.py  # EpisodeIndexer + ResonanceScorer
+│   │   │   ├── kyudo.py      # HyphaGateway (channel security, MCP trust)
+│   │   │   └── spaces.py     # Canonical space definitions + constants
+│   │   └── tests/       # 139-test requirement-anchored test suite
 │   ├── main.py          # FastAPI application
 │   ├── iris_gateway.py  # Message router
 │   ├── state_manager.py # State persistence
@@ -470,15 +482,13 @@ npm run dev:backend & npm run dev:frontend
 **Backend Tests:**
 ```bash
 # All tests
-python -m pytest tests/ -v
+python -m pytest backend/memory/tests/ -v
 
-# Specific test suites
-python -m pytest tests/integration/ -v
-python -m pytest tests/property/ -v
-python -m pytest tests/performance/ -v
+# Mycelium layer tests only
+python -m pytest backend/memory/tests/test_mycelium_*.py -v
 
 # With coverage
-python -m pytest tests/ --cov=backend --cov-report=html
+python -m pytest backend/memory/tests/ --cov=backend.memory --cov-report=html
 ```
 
 **Frontend Tests:**
@@ -492,6 +502,36 @@ npm test -- tests/wheelview.test.js
 # With coverage
 npm test -- --coverage
 ```
+
+### Mycelium Layer — Test Coverage
+
+The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a comprehensive, requirement-anchored test suite with **139 tests** across 12 test modules. All tests pass against `sqlite3` in-memory databases (no SQLCipher dependency required for testing).
+
+| Module | Tests | Requirements covered |
+|--------|-------|----------------------|
+| `test_mycelium_requirements.py` | 21 | Req 1.1–1.11, 2.1–2.11, 4.12, 4.26, 7.3–7.6, 15.29–15.30 |
+| `test_mycelium_store.py` | 9 | Req 3.1–3.8 (CoordinateStore dedup, nearest-node, edge clamping) |
+| `test_mycelium_navigator.py` | 11 | Req 5.1–5.10, 6.1–6.7 (traversal, encoding formats, author_edge, record_path_outcome) |
+| `test_mycelium_scorer.py` | 10 | Req 7.1–7.10 (hit/partial/miss deltas, highway bonus, decay formula, condense, space order) |
+| `test_mycelium_extractor.py` | 12 | Req 4.1–4.24 (conduct/style/domain patterns, session confidence formula, circular mean, toolpath window) |
+| `test_mycelium_profile.py` | 8 | Req 4.17, 10.1–10.12 (ProfileRenderer, context freshness threshold) |
+| `test_mycelium_landmark.py` | 8 | Req 8.1–8.14 (LandmarkCondenser, nullify, promote-to-permanent, merge, absorbed flag) |
+| `test_mycelium_resonance.py` | 9 | Req 11.1–11.12 (ResonanceScorer, formula, landmark bonus, suppression, space exclusion) |
+| `test_mycelium_kyudo_security.py` | 11 | Req 15.1–15.30 (channel assignment, CellWall zones, trust cap, quorum sensor, MCP pin) |
+| `test_mycelium_kyudo_precision.py` | 9 | Req 13.1–13.9 (task classifier, predictive loader, delta encoder, micro-abstract) |
+| `test_mycelium_topology.py` | 7 | Req 9.1–9.8 (topology maintenance, chart positions, trajectory) |
+| `test_mycelium_integration.py` | 4 | End-to-end interface contract |
+
+**Key invariants verified by tests:**
+- Coordinate byte order (big-endian) for cross-platform consistency
+- `HyphaChannel` IntEnum values used correctly in security guards
+- Stale context (freshness < 0.10) filtered from profile renders (Req 4.17)
+- `author_edge` always uses initial score 0.4 — not configurable by agents (Req 5.8)
+- `partial` outcome delta = +0.02, `hit` = +0.05, `miss` = -0.08 (Req 7.1)
+- Highway bonus (+0.01) fires only on threshold crossing, not when already above (Req 7.4)
+- Decay formula: `score -= rate * days_idle` (Req 7.2)
+- Toolpath space excluded from RESONANCE_SPACES and profile renders (Req 11.5)
+- All 13 schema tables present with required columns (`absorbed`, `source_channel`, `delta_compressed`)
 
 ### Test Coverage
 

@@ -25,7 +25,8 @@ def _seed_spaces(conn):
 
 def _insert_node(conn, space_id, coords, label="n", confidence=0.8, access_count=3):
     nid = str(uuid.uuid4())
-    blob = struct.pack(f"{len(coords)}f", *coords)
+    # Use big-endian ('>') to match CoordinateStore._pack_coords / _unpack_coords
+    blob = struct.pack(f">{len(coords)}f", *coords)
     now = time.time()
     conn.execute(
         "INSERT INTO mycelium_nodes VALUES (?,?,?,?,?,?,?,?,?)",
@@ -122,17 +123,46 @@ def test_stale_context_excluded_from_render(mem_conn):
         assert "stale_project" not in section
 
 
-def test_stale_context_excluded_from_navigation(mem_conn):
-    """Stale context node (freshness=0.05) is not returned by navigate_from_task."""
+def test_stale_context_excluded_from_profile_render(mem_conn):
+    """
+    Req 4.17: context node with freshness < 0.10 MUST NOT appear in
+    ProfileRenderer._render_context() output.
+
+    The requirement places this constraint on profile rendering, not navigation.
+    A stale context node (freshness=0.05) must produce an empty/absent context section.
+    """
     _seed_spaces(mem_conn)
     store = CoordinateStore(mem_conn)
-    _insert_node(mem_conn, "context", [0.5, 0.5, 0.3, 0.05, 0.5], "stale_nav")
+    # freshness axis is index 3; 0.05 < 0.10 threshold → stale
+    _insert_node(mem_conn, "context", [0.5, 0.5, 0.3, 0.05], "stale_project")
 
-    from backend.memory.mycelium.navigator import CoordinateNavigator, SessionRegistry
-    registry = SessionRegistry()
-    navigator = CoordinateNavigator(store, registry)
-    path = navigator.navigate_from_task("some task", "sess_stale")
+    index = LandmarkIndex(mem_conn)
+    renderer = ProfileRenderer(store, index)
+    renderer.render_dirty_sections()
 
-    # Stale context node should not appear in path
-    stale_nodes = [n for n in path.nodes if n.space_id == "context" and hasattr(n, "label") and n.label == "stale_nav"]
-    assert len(stale_nodes) == 0 or True  # Navigation may not filter by freshness — verify no crash
+    section = renderer.get_profile_section("context")
+    # Stale node freshness=0.05 is below the 0.10 threshold — section must be empty
+    assert not section or section.strip() == "", (
+        f"Req 4.17: stale context node (freshness=0.05) must not appear in profile render, "
+        f"got: {section!r}"
+    )
+
+
+def test_active_context_appears_in_profile_render(mem_conn):
+    """
+    Req 4.17 (positive case): context node with freshness = 0.80 (above 0.10)
+    MUST produce a non-empty context section in ProfileRenderer output.
+    """
+    _seed_spaces(mem_conn)
+    store = CoordinateStore(mem_conn)
+    # freshness = 0.80 → active
+    _insert_node(mem_conn, "context", [0.5, 0.5, 0.3, 0.80], "active_project")
+
+    index = LandmarkIndex(mem_conn)
+    renderer = ProfileRenderer(store, index)
+    renderer.render_dirty_sections()
+
+    section = renderer.get_profile_section("context")
+    assert section and len(section.strip()) > 0, (
+        "Req 4.17: active context node (freshness=0.80) must produce a non-empty profile section"
+    )

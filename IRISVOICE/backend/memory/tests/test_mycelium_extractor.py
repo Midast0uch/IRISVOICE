@@ -137,3 +137,125 @@ def test_context_dedup_strict_project_id(mem_conn):
             row = mem_conn.execute("SELECT COUNT(*) FROM mycelium_nodes WHERE space_id='context'").fetchone()
             # At minimum 1 node; if project_ids differ enough, 2
             assert row[0] >= 1
+
+
+def test_extract_sessions_confidence_formula(mem_conn):
+    """
+    Req 4.9: confidence = min(0.3 + 0.05 * n, 0.9).
+    5 timestamps → 0.3 + 0.25 = 0.55.
+    10 timestamps → 0.3 + 0.50 = 0.80.
+    20 timestamps → capped at 0.90.
+    """
+    _seed_spaces(mem_conn)
+    store = CoordinateStore(mem_conn)
+    extractor = CoordinateExtractor(store)
+
+    base = time.time()
+
+    # 5 timestamps → expected confidence = 0.55
+    ts5 = [base - i * 3600 for i in range(5)]
+    r5 = extractor.extract_from_sessions(ts5)
+    assert r5 is not None
+    _, _, conf5, _ = r5
+    assert conf5 == pytest.approx(0.55, abs=0.01), (
+        f"Req 4.9: 5 samples → confidence 0.55, got {conf5}"
+    )
+
+    # 10 timestamps → expected confidence = 0.80
+    ts10 = [base - i * 3600 for i in range(10)]
+    r10 = extractor.extract_from_sessions(ts10)
+    assert r10 is not None
+    _, _, conf10, _ = r10
+    assert conf10 == pytest.approx(0.80, abs=0.01), (
+        f"Req 4.9: 10 samples → confidence 0.80, got {conf10}"
+    )
+
+    # 20 timestamps → capped at 0.90
+    ts20 = [base - i * 3600 for i in range(20)]
+    r20 = extractor.extract_from_sessions(ts20)
+    assert r20 is not None
+    _, _, conf20, _ = r20
+    assert conf20 == pytest.approx(0.90, abs=0.01), (
+        f"Req 4.9: 20 samples → confidence capped at 0.90, got {conf20}"
+    )
+
+
+def test_extract_sessions_circular_mean_midnight_stable(mem_conn):
+    """
+    Req 4.5: circular mean handles midnight boundary (23:00 and 01:00 sessions
+    should produce a peak near midnight, not noon).
+    """
+    _seed_spaces(mem_conn)
+    store = CoordinateStore(mem_conn)
+    extractor = CoordinateExtractor(store)
+
+    # 5 timestamps at 23:00 and 01:00 UTC — naive average would give 12:00 (wrong)
+    # Circular mean should give ~0 or ~24 (midnight)
+    day = 86400
+    ts = [
+        23 * 3600,        # 23:00
+        25 * 3600,        # 01:00 (next day)
+        23 * 3600 + day,  # 23:00
+        25 * 3600 + day,  # 01:00
+        24 * 3600,        # 00:00
+    ]
+    result = extractor.extract_from_sessions(ts)
+    assert result is not None
+    _, coords, _, _ = result
+    peak_hour = coords[0]
+    # Peak should be near midnight (0 or 24), not near noon (12)
+    distance_from_midnight = min(peak_hour, 24 - peak_hour)
+    assert distance_from_midnight < 6, (
+        f"Req 4.5: circular mean for midnight sessions → peak near midnight, got {peak_hour:.2f}h"
+    )
+
+
+def test_toolpath_minimum_3_strict(mem_conn):
+    """
+    Req 4.20: toolpath node is written only after ≥3 observations per tool per session.
+    2 observations → no node. 3rd observation → node written.
+    """
+    _seed_spaces(mem_conn)
+    store = CoordinateStore(mem_conn)
+    extractor = CoordinateExtractor(store)
+
+    session_id = "strict_min3_sess"
+    tool = "pytest"
+
+    extractor.ingest_tool_call(tool, True, 0, 5, session_id)
+    extractor.ingest_tool_call(tool, True, 1, 5, session_id)
+
+    count_after_2 = mem_conn.execute(
+        "SELECT COUNT(*) FROM mycelium_nodes WHERE space_id='toolpath'"
+    ).fetchone()[0]
+    assert count_after_2 == 0, (
+        f"Req 4.20: no toolpath node before 3rd observation, got {count_after_2}"
+    )
+
+    extractor.ingest_tool_call(tool, True, 2, 5, session_id)
+
+    count_after_3 = mem_conn.execute(
+        "SELECT COUNT(*) FROM mycelium_nodes WHERE space_id='toolpath'"
+    ).fetchone()[0]
+    assert count_after_3 >= 1, (
+        f"Req 4.20: toolpath node must be written after 3rd observation, got {count_after_3}"
+    )
+
+
+def test_domain_keyword_confidence_04(mem_conn):
+    """
+    Req 4.4: all stated-value extractions have confidence == 0.4.
+    Domain keyword matches must also use 0.4.
+    """
+    _seed_spaces(mem_conn)
+    store = CoordinateStore(mem_conn)
+    extractor = CoordinateExtractor(store)
+
+    # "machine learning" matches the ai domain pattern in _DOMAIN_KEYWORDS
+    results = extractor.extract_from_statement("building a machine learning model")
+    domain_results = [r for r in results if r[0] == "domain"]
+    assert len(domain_results) > 0, "Expected domain extraction for 'machine learning'"
+    for _, _, conf, _ in domain_results:
+        assert conf == pytest.approx(0.4, abs=0.01), (
+            f"Req 4.4: domain extractions must have confidence 0.4, got {conf}"
+        )

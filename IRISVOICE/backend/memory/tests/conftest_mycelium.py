@@ -67,7 +67,10 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             task_summary  TEXT,
             outcome       TEXT,
             cumulative_score REAL,
-            created_at    REAL
+            path_score    REAL,
+            tokens_saved  INTEGER,
+            created_at       REAL,
+            delta_compressed INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS mycelium_landmarks (
