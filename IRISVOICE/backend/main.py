@@ -163,7 +163,7 @@ async def lifespan(app: FastAPI):
                 client_ids = ws_manager.get_clients_for_session(session_id)
                 client_id = client_ids[0] if client_ids else None
                 if client_id:
-                    logger.info(f"[WakeWord] '{wake_word_name}' → triggering voice for session {session_id}")
+                    logger.info(f"[WakeWord] '{wake_word_name}' -> triggering voice for session {session_id}")
                     await iris_gateway._handle_voice(
                         session_id, client_id,
                         {"type": "voice_command_start"},
@@ -200,7 +200,7 @@ async def lifespan(app: FastAPI):
                     _wake_cfg.config["custom_model_path"] = _best.path
                     _wake_cfg.config["wake_phrase"] = _best.display_name.lower()
                     logger.info(
-                        f"  - Wake word auto-configured: '{_best.display_name}' → {_best.path}"
+                        f"  - Wake word auto-configured: '{_best.display_name}' -> {_best.path}"
                     )
             except Exception as _disc_err:
                 logger.warning(f"  - Wake word auto-discovery failed: {_disc_err}")

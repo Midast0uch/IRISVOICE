@@ -65,39 +65,34 @@ export function useWindowResize() {
   const baseXRef = useRef<number | null>(null)
   const baseYRef = useRef<number | null>(null)
 
-  useEffect(() => {
-    if (!isTauri()) return
-    ;(async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window')
-        const pos    = await getCurrentWindow().outerPosition()
-        const factor = window.devicePixelRatio || 1
-        baseXRef.current = pos.x / factor
-        baseYRef.current = pos.y / factor
-      } catch {
-        // Non-fatal: resize won't fire but app still works
-      }
-    })()
-  }, [])
+  // Base position is now captured lazily inside `resize` on first call,
+  // which avoids the timing race where resize fires before this effect resolves.
 
   const resize = useCallback(
     async (ui: UIStr, spotlight: SpotlightStr) => {
       if (!isTauri()) return
-      if (baseXRef.current === null || baseYRef.current === null) return
-
-      const { width, xOffset } = computeDims(ui, spotlight)
-      const targetX = baseXRef.current + xOffset
-      const targetY = baseYRef.current
 
       try {
         const { getCurrentWindow }  = await import('@tauri-apps/api/window')
         const { LogicalSize, LogicalPosition } = await import('@tauri-apps/api/dpi')
         const win = getCurrentWindow()
+
+        // Lazily capture the base (idle) window position on first call.
+        // The window hasn't moved yet at this point, so outerPosition() returns
+        // the original idle position regardless of which state triggered the call.
+        if (baseXRef.current === null || baseYRef.current === null) {
+          const pos    = await win.outerPosition()
+          const factor = window.devicePixelRatio || 1
+          baseXRef.current = pos.x / factor
+          baseYRef.current = pos.y / factor
+        }
+
+        const { width, xOffset } = computeDims(ui, spotlight)
         // Move first so the window expands from the correct visual edge
-        await win.setPosition(new LogicalPosition(targetX, targetY))
+        await win.setPosition(new LogicalPosition(baseXRef.current + xOffset, baseYRef.current))
         await win.setSize(new LogicalSize(width, WIN_H))
       } catch {
-        // Non-fatal
+        // Non-fatal: resize fails gracefully in dev/browser mode
       }
     },
     []

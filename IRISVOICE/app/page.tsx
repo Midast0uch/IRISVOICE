@@ -12,6 +12,7 @@ import { useUILayoutState, UILayoutState, SpotlightState } from "@/hooks/useUILa
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation"
 import { BackdropBlur } from "@/components/backdrop-blur"
 import { DashboardWing } from "@/components/dashboard-wing"
+import { isTauri } from "@/hooks/useDeepLink"
 
 // Lazy load heavy components for faster initial page load
 // Note: Using 'any' here due to TypeScript/React.lazy() compatibility issues with Next.js 16/React 19
@@ -62,6 +63,17 @@ export default function Home() {
 
   // Phase 124: Single source of truth for expansion to prevent stuck states
   const isExpanded = state.level > 1
+
+  // In Tauri the window dynamically expands to fit wings. The orb must stay
+  // centered in the fixed 680px "home" column (to the right of the chat panel).
+  // In browser mode the viewport is already wide enough so no offset is needed.
+  const chatPanelWidth = (() => {
+    if (!isTauri()) return 0
+    if (!isChatOpen && !isBothOpen) return 0
+    if (isChatSpotlight) return 680
+    if (isDashboardSpotlight) return 360
+    return 510 // balanced
+  })()
 
   // Get theme configuration for WheelView
   const theme = getThemeConfig()
@@ -118,41 +130,52 @@ export default function Home() {
       <BackdropBlur uiState={uiLayoutState} />
       
       {(state.level !== 3 || isChatOpen || isBothOpen) && (
-        <motion.div 
-          className="absolute inset-0 flex items-center justify-center"
-          animate={{
-            scale: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.85 : 1,
-            filter: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 'blur(2px)' : 'blur(0px)',
-            opacity: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.6 : 1,
-          }}
-          transition={{
-            duration: 0.4,
-            ease: [0.22, 1, 0.36, 1],
-          }}
-          style={{ 
+        /* Positioning wrapper: in Tauri, pins the orb to the center of its 680px home column */
+        <div
+          className={chatPanelWidth === 0 ? "absolute inset-0 flex items-center justify-center" : "fixed"}
+          style={chatPanelWidth > 0 ? {
+            left: chatPanelWidth + 340,
+            top: '50%',
+            transform: 'translateX(-50%) translateY(-50%)',
             zIndex: (isChatOpen || isBothOpen) ? 5 : 0,
-            pointerEvents: (isChatOpen || isBothOpen) ? 'none' : 'auto'
+            pointerEvents: (isChatOpen || isBothOpen) ? 'none' : 'auto',
+          } : {
+            zIndex: (isChatOpen || isBothOpen) ? 5 : 0,
+            pointerEvents: (isChatOpen || isBothOpen) ? 'none' : 'auto',
           }}
         >
-          <div className="flex flex-col items-center justify-center relative">
-            <IrisOrb
-              onClick={handleSingleClick}
-              onDoubleClick={handleDoubleClick}
-              isExpanded={isExpanded}
-              centerLabel={orbState.label}
-              size={175}
-              glowColor={glowColor}
-              wakeFlash={false}
-            />
-            <div className="mt-12"> {/* Increased margin top for more spacing */}
-              <ChatActivationText
-                onClick={handleChatClick}
-                navigationLevel={state.level}
-                uiState={uiLayoutState}
+          <motion.div
+            className="flex items-center justify-center"
+            animate={{
+              scale: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.85 : 1,
+              filter: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 'blur(2px)' : 'blur(0px)',
+              opacity: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.6 : 1,
+            }}
+            transition={{
+              duration: 0.4,
+              ease: [0.22, 1, 0.36, 1],
+            }}
+          >
+            <div className="flex flex-col items-center justify-center relative">
+              <IrisOrb
+                onClick={handleSingleClick}
+                onDoubleClick={handleDoubleClick}
+                isExpanded={isExpanded}
+                centerLabel={orbState.label}
+                size={175}
+                glowColor={glowColor}
+                wakeFlash={false}
               />
+              <div className="mt-12">
+                <ChatActivationText
+                  onClick={handleChatClick}
+                  navigationLevel={state.level}
+                  uiState={uiLayoutState}
+                />
+              </div>
             </div>
-          </div>
-        </motion.div>
+          </motion.div>
+        </div>
       )}
       {state.level === 2 && (
         <Suspense fallback={<div className="text-white/50">Loading...</div>}>

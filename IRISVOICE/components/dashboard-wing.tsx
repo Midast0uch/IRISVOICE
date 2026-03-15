@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { X, Bell, MessageSquare, AlertTriangle, Shield, Loader, CheckCircle, Info, AlertCircle, LayoutDashboard, Activity, FileText, Store, Globe, RotateCcw, ArrowLeft, ArrowRight as ArrowRightIcon, Home } from 'lucide-react'
+import { X, Bell, MessageSquare, AlertTriangle, Shield, Loader, CheckCircle, Info, AlertCircle, LayoutDashboard, Activity, FileText, Store, Globe, RotateCcw, ArrowLeft, ArrowRight as ArrowRightIcon, Home, ExternalLink } from 'lucide-react'
 import { DarkGlassDashboard } from "./dark-glass-dashboard"
 import { ActivityPanel } from "./dashboard/ActivityPanel"
 import { LogsPanel } from "./dashboard/LogsPanel"
@@ -107,7 +107,9 @@ export function DashboardWing({
   const [browserUrl, setBrowserUrl] = useState<string>(initialBrowserUrl || 'https://www.google.com')
   const [browserInput, setBrowserInput] = useState<string>(initialBrowserUrl || 'https://www.google.com')
   const [browserLoading, setBrowserLoading] = useState(false)
+  const [iframeBlocked, setIframeBlocked] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Sync initial URL when prop changes (e.g. ChatView opens a link)
   useEffect(() => {
@@ -120,8 +122,38 @@ export function DashboardWing({
   const handleBrowserNavigate = (url: string) => {
     // Ensure URL has a protocol
     const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`
+    setIframeBlocked(false)
     setBrowserUrl(normalized)
     setBrowserInput(normalized)
+  }
+
+  const handleOpenExternal = () => {
+    // In Tauri, window.open with _blank opens in the system default browser.
+    // In a standard browser it opens a new tab.
+    window.open(browserUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  const handleIframeLoad = () => {
+    if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current)
+    setBrowserLoading(false)
+    // Try to detect a blocked frame (browser sets document to empty/about:blank when blocked)
+    try {
+      const doc = iframeRef.current?.contentDocument
+      if (doc && (doc.body?.innerHTML === '' || doc.location?.href === 'about:blank')) {
+        setIframeBlocked(true)
+      } else {
+        setIframeBlocked(false)
+      }
+    } catch {
+      // Cross-origin: can't read contentDocument — site loaded but is cross-origin (normal)
+      setIframeBlocked(false)
+    }
+  }
+
+  const handleIframeError = () => {
+    if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current)
+    setBrowserLoading(false)
+    setIframeBlocked(true)
   }
 
   const handleBrowserInputSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -763,13 +795,40 @@ export function DashboardWing({
                         }}
                         spellCheck={false}
                       />
+                      <button
+                        onClick={handleOpenExternal}
+                        className="p-1 rounded hover:bg-white/5 transition-colors flex-shrink-0"
+                        title="Open in system browser"
+                      >
+                        <ExternalLink size={11} style={{ color: glowColor, opacity: 0.8 }} />
+                      </button>
                     </div>
 
                     {/* iframe */}
                     <div className="flex-1 relative overflow-hidden rounded-b">
-                      {browserLoading && (
+                      {browserLoading && !iframeBlocked && (
                         <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-10">
                           <Loader size={20} className="animate-spin" style={{ color: glowColor }} />
+                        </div>
+                      )}
+                      {iframeBlocked && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10 px-6 text-center"
+                          style={{ background: 'rgba(5,5,15,0.96)' }}>
+                          <Globe size={28} style={{ color: `${glowColor}80` }} />
+                          <p className="text-[11px] font-medium" style={{ color: fontColor }}>
+                            This site blocks embedding
+                          </p>
+                          <p className="text-[10px]" style={{ color: `${fontColor}60` }}>
+                            {browserUrl}
+                          </p>
+                          <button
+                            onClick={handleOpenExternal}
+                            className="mt-1 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium transition-colors"
+                            style={{ background: `${glowColor}20`, color: glowColor, border: `1px solid ${glowColor}40` }}
+                          >
+                            <ExternalLink size={11} />
+                            Open in system browser
+                          </button>
                         </div>
                       )}
                       <iframe
@@ -777,10 +836,10 @@ export function DashboardWing({
                         src={browserUrl}
                         title="IRIS Browser"
                         className="w-full h-full border-0"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation-by-user-activation"
-                        onLoad={() => setBrowserLoading(false)}
-                        onLoadStart={() => setBrowserLoading(true)}
-                        style={{ background: '#000' }}
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation-by-user-activation allow-presentation"
+                        onLoad={handleIframeLoad}
+                        onError={handleIframeError}
+                        style={{ background: '#000', visibility: iframeBlocked ? 'hidden' : 'visible' }}
                       />
                     </div>
                   </motion.div>
