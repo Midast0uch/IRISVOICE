@@ -95,6 +95,10 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             from_landmark_id  TEXT,
             to_landmark_id    TEXT,
             score             REAL DEFAULT 0.4,
+            edge_type         TEXT DEFAULT 'co_activation',
+            traversal_count   INTEGER DEFAULT 0,
+            hit_count         INTEGER DEFAULT 0,
+            miss_count        INTEGER DEFAULT 0,
             created_at        REAL,
             last_traversed    REAL
         );

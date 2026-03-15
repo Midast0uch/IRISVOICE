@@ -116,12 +116,52 @@ All data encrypted at rest using AES-256 via SQLCipher.
 # Run all memory tests
 pytest backend/memory/tests/ -v
 
-# Run specific test file
-pytest backend/memory/tests/test_interface.py -v
+# Run Mycelium layer tests only
+pytest backend/memory/tests/test_mycelium*.py -v
 
 # Run with coverage
 pytest backend/memory/tests/ --cov=backend.memory
 ```
+
+## Mycelium Layer
+
+The Mycelium coordinate graph is a 7-space embedding layer that builds a persistent model of the user's working style, domain knowledge, hardware, and active context. It sits beneath `MemoryInterface` and is accessed exclusively through `MyceliumInterface`.
+
+### Coordinate Spaces
+
+| Space | Axes | Purpose |
+|-------|------|---------|
+| `domain` | domain_id, proficiency, recency | Knowledge domain expertise |
+| `style` | formality, verbosity, directness | Communication preferences |
+| `conduct` | autonomy, iteration, depth, confirmation, correction | Working behaviour |
+| `chrono` | peak_hour, avg_session_len, consistency | Temporal patterns |
+| `capability` | gpu_tier, ram, docker, tailscale, os_id | Hardware environment |
+| `context` | project_id, stack_id, constraints, freshness | Active projects |
+| `toolpath` | tool_id, frequency, success_rate, avg_seq_pos | Tool usage patterns |
+
+### Mycelium Test Coverage
+
+| Area | Confidence | Test File |
+|------|-----------|-----------|
+| Core math (edge scoring, decay, highway, condense) | ~95% | `test_mycelium_scorer.py` |
+| Security gates (HyphaChannel, CellWall, trust cap) | ~90% | `test_mycelium_kyudo_security.py` |
+| Schema integrity (13 tables, all columns) | ~95% | `test_mycelium_requirements.py` |
+| Coordinate encoding format | ~95% | `test_mycelium_navigator.py` |
+| Space constants and thresholds | ~95% | `test_mycelium_requirements.py` |
+| Orchestration pipeline (maturity, context path, maintenance) | ~95% | `test_mycelium_orchestration.py` |
+| Profile prose (6 spaces, constraint levels, render order) | ~95% | `test_mycelium_profile_prose.py` |
+| Production environment (schema idempotency, hardware probe) | ~90% | `test_mycelium_production_env.py` |
+| MCP trust registry | ~90% | `test_mycelium_requirements.py` |
+| Landmark lifecycle (crystallise, merge, absorb) | ~85% | `test_mycelium_landmark.py`, `test_mycelium_profile_prose.py` |
+
+**Total: 232 tests, 0 failures** (1 skipped: SQLCipher not installed in CI)
+
+### Production Notes
+
+- **Database:** SQLCipher-encrypted `data/memory.db` — all mycelium tests use plain sqlite3 in-memory; the SQLCipher path is covered by the cipher guard test which skips if sqlcipher3 is not installed.
+- **Single connection:** One shared `sqlcipher3.Connection` per process. Mycelium components never open their own connections. Do not share the connection across OS threads without an external lock.
+- **No `print()`:** All logging uses the `logging` module. `print()` is forbidden in all mycelium modules.
+- **Kyudo security layer:** `HyphaChannel` is an `IntEnum`. Always pass the enum member (e.g., `HyphaChannel.EXTERNAL`) not the string `"EXTERNAL"` when calling trust/channel APIs.
 
 ## Dependencies
 
