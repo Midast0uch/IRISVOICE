@@ -293,10 +293,10 @@ export function DashboardWing({
             mass: 0.8
           }}
           style={{ 
-            right: '3%',
+            right: 252,
             top: '50%',
             width: getSpotlightWidth(),
-            height: '50vh',
+            height: '88vh',
             perspective: '800px',
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),

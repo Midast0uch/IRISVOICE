@@ -189,21 +189,25 @@ class AutoResearchRunner:
             self._running = False
             logger.info("[AutoResearch] Loop exited after %d cycles", self._cycles_completed)
 
-    async def _run_cycle(self) -> None:
+    async def _run_cycle(self, override_candidate: Optional[Dict[str, Any]] = None) -> None:
         cycle_id = str(uuid.uuid4())[:8]
         t0 = time.time()
         logger.info("[AutoResearch] Cycle %s starting", cycle_id)
 
-        # 1. Pick a skill candidate from memory (synchronous)
-        candidate = self._pick_skill_candidate()
+        # 1. Pick a candidate from memory — or use the caller-supplied one
+        if override_candidate is not None:
+            candidate = override_candidate
+        else:
+            candidate = self._pick_skill_candidate()
         if not candidate:
-            logger.info("[AutoResearch] No crystallised skills found — skipping cycle")
+            logger.info("[AutoResearch] No candidate found — skipping cycle")
             self._cycles_completed += 1
             return
 
         skill_name = candidate.get("name", "unknown")
         original_desc = candidate.get("description", "")
-        logger.info("[AutoResearch] Evaluating skill: %s", skill_name)
+        candidate_category = candidate.get("_category", "named_skills")
+        logger.info("[AutoResearch] Evaluating: %s (category=%s)", skill_name, candidate_category)
 
         # 2. Score baseline
         baseline_score = await self._score_skill_description(original_desc, skill_name)
@@ -231,7 +235,7 @@ class AutoResearchRunner:
         # 5. Persist best variant if it improved
         improved = best_variant is not None
         if improved and best_variant:
-            self._persist_variant(skill_name, best_variant)
+            self._persist_variant(skill_name, best_variant, category=candidate_category)
             logger.info(
                 "[AutoResearch] Skill '%s' improved: %.4f → %.4f",
                 skill_name, baseline_score, best_score,
@@ -262,28 +266,58 @@ class AutoResearchRunner:
     # ── Memory helpers ────────────────────────────────────────────────────
 
     def _pick_skill_candidate(self) -> Optional[Dict[str, Any]]:
-        """Return the lowest-scored crystallised skill from semantic memory."""
+        """
+        Return the lowest-confidence entry from semantic memory across all categories.
+
+        Prefers entries in 'named_skills' for backward compatibility, but will
+        fall through to any other stored category so that ad-hoc research topics
+        queued by the user are also eligible for improvement.
+        """
         try:
-            # SemanticStore.get_by_category returns List[SemanticEntry]
-            entries = self._memory.semantic.get_by_category("named_skills")
-            if not entries:
+            # Collect entries from all available categories
+            all_entries: List[Any] = []
+            categories_to_scan = ["named_skills", "auto_research", "research_topics"]
+            for cat in categories_to_scan:
+                try:
+                    entries = self._memory.semantic.get_by_category(cat)
+                    for e in entries:
+                        setattr(e, "_category", cat)
+                    all_entries.extend(entries)
+                except Exception:
+                    pass
+
+            if not all_entries:
                 return None
+
             # Pick entry with lowest confidence (most room for improvement)
-            worst = min(entries, key=lambda e: getattr(e, "confidence", 1.0))
+            worst = min(all_entries, key=lambda e: getattr(e, "confidence", 1.0))
             raw = getattr(worst, "value", "{}")
             data = json.loads(raw) if isinstance(raw, str) else raw
+            category = getattr(worst, "_category", "named_skills")
+            name = (
+                data.get("name")
+                or data.get("topic")
+                or (worst.key if hasattr(worst, "key") else "unknown")
+            )
+            description = data.get("description") or data.get("content") or str(raw)
             return {
-                "name": data.get("name", worst.key if hasattr(worst, "key") else "unknown"),
-                "description": data.get("description", raw),
+                "name": name,
+                "description": description,
                 "score": getattr(worst, "confidence", 0.5),
                 "_key": getattr(worst, "key", ""),
+                "_category": category,
             }
         except Exception as exc:
-            logger.error("[AutoResearch] Failed to fetch skills: %s", exc)
+            logger.error("[AutoResearch] Failed to fetch candidates: %s", exc)
             return None
 
-    def _persist_variant(self, skill_name: str, variant: SkillVariant) -> None:
-        """Update the skill description in semantic memory with the improved variant."""
+    def _persist_variant(
+        self,
+        skill_name: str,
+        variant: SkillVariant,
+        category: str = "named_skills",
+    ) -> None:
+        """Update the entry in semantic memory with the improved variant."""
         try:
             import json as _json
             payload = _json.dumps({
@@ -293,10 +327,10 @@ class AutoResearchRunner:
                 "improved_at": time.time(),
                 "previous": variant.original_description,
             })
-            skill_key = f"skill_{skill_name.lower().replace(' ', '_')}_ar"
+            entry_key = f"ar_{skill_name.lower().replace(' ', '_')}"
             self._memory.semantic.update(
-                category="named_skills",
-                key=skill_key,
+                category=category,
+                key=entry_key,
                 value=payload,
                 confidence=0.87,
                 source="auto_research",
@@ -339,13 +373,15 @@ class AutoResearchRunner:
     async def _generate_variants(
         self, skill_name: str, original: str
     ) -> List[SkillVariant]:
-        """Ask the LLM to propose VARIANTS_PER_SKILL improved descriptions."""
+        """Ask the LLM to propose VARIANTS_PER_SKILL improved versions of anything."""
         prompt = (
-            f"You are improving skill definitions for an AI assistant.\n\n"
-            f"Skill name: {skill_name}\n"
-            f"Current description:\n{original}\n\n"
-            f"Generate {VARIANTS_PER_SKILL} improved descriptions for this skill. "
-            f"Each should be clearer, more actionable, and better guide the agent.\n"
+            f"You are an expert at improving content quality.\n\n"
+            f"Topic: {skill_name}\n"
+            f"Current version:\n{original}\n\n"
+            f"Generate {VARIANTS_PER_SKILL} improved versions. "
+            f"Each should be clearer, more useful, more actionable, or more accurate than the current version. "
+            f"Adapt your improvements to whatever the content represents — it may be a skill definition, "
+            f"a behaviour description, a process, an explanation, or any other kind of text.\n"
             f"Return a JSON array of {VARIANTS_PER_SKILL} strings. "
             f"No other text, only the JSON array."
         )
@@ -369,34 +405,38 @@ class AutoResearchRunner:
             logger.error("[AutoResearch] Failed to generate variants: %s", exc)
             return []
 
-    async def _score_skill_description(self, description: str, skill_name: str) -> float:
+    async def _score_skill_description(
+        self, description: str, skill_name: str, memory_category: Optional[str] = None
+    ) -> float:
         """
-        Score a skill description by:
-        1. Checking if Mycelium recognises it (resonance query)
-        2. Asking the LLM to rate its quality (0-10) and normalising
+        Score any piece of content by:
+        1. Memory confidence (if a stored entry exists for this topic)
+        2. LLM quality rating (0-10)
         """
         scores: List[float] = []
 
-        # Memory confidence score — use the stored confidence of this skill entry
+        # Memory confidence — search the given category (or named_skills as fallback)
+        search_category = memory_category or "named_skills"
         try:
-            entries = self._memory.semantic.get_by_category("named_skills")
+            entries = self._memory.semantic.get_by_category(search_category)
             for e in entries:
                 data_raw = getattr(e, "value", "{}")
                 data = json.loads(data_raw) if isinstance(data_raw, str) else data_raw
-                if data.get("name") == skill_name:
+                stored_name = data.get("name") or data.get("topic") or getattr(e, "key", "")
+                if stored_name == skill_name:
                     conf = float(getattr(e, "confidence", 0.5))
                     scores.append(min(conf, 1.0))
                     break
         except Exception:
             pass
 
-        # LLM self-rating
+        # LLM self-rating — generic enough for any content type
         try:
             prompt = (
-                f"Rate the quality of this skill description for an AI assistant "
-                f"on a scale from 0 to 10. Return only the number.\n\n"
-                f"Skill: {skill_name}\n"
-                f"Description: {description}"
+                f"Rate the quality of the following content on a scale from 0 to 10. "
+                f"Consider clarity, usefulness, and accuracy. Return only the number.\n\n"
+                f"Topic: {skill_name}\n"
+                f"Content: {description}"
             )
             raw = await self._lm_complete(prompt, max_tokens=10)
             digits = "".join(c for c in raw if c.isdigit() or c == ".")

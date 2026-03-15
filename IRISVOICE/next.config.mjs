@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'export',   // Tauri needs a static bundle — no Node.js server at runtime
   distDir: 'dist',
   compress: true,
   productionBrowserSourceMaps: false,

@@ -809,10 +809,10 @@ ${message.text}`;
             mass: 0.8
           }}
           style={{ 
-            left: '3%',
+            left: 252,
             top: '50%',
             width: getSpotlightWidth(),
-            height: '50vh',
+            height: '88vh',
             perspective: '800px',
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),

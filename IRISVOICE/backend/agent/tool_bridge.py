@@ -281,6 +281,27 @@ class AgentToolBridge:
 
             # Shell — developer mode command runner (sandboxed to repo directory)
             {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)", "parameters": {"command": {"type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
+
+            # AutoResearch — general-purpose improvement loop
+            {
+                "name": "run_research",
+                "description": (
+                    "Run the AutoResearch improvement loop on anything — skills, behaviours, explanations, "
+                    "processes, response styles, or any topic you want to get better at. "
+                    "Use action='run_now' with topic+content to immediately research and improve any text or concept. "
+                    "Use action='start' to begin the background timer loop (auto-picks the lowest-confidence stored item each cycle), "
+                    "action='stop' to halt it, or action='status' to see recent results. "
+                    "Examples: improve how IRIS handles Python debugging, improve a response template, improve a workflow."
+                ),
+                "parameters": {
+                    "action": {"type": "string", "enum": ["run_now", "start", "stop", "status"], "description": "What to do"},
+                    "topic": {"type": "string", "description": "What to improve — a short label like 'Python debugging' or 'response formatting'. Used with run_now."},
+                    "content": {"type": "string", "description": "The current version of the text/concept to improve. If omitted, picks the lowest-confidence item from memory. Used with run_now."},
+                    "test_prompts": {"type": "array", "items": {"type": "string"}, "description": "Optional: custom test prompts to benchmark variants against (only used with run_now)"},
+                    "interval": {"type": "number", "description": "Optional: loop interval in seconds when using action=start (default 1800)"},
+                },
+                "category": "research",
+            },
         ])
         
         return tools
@@ -669,6 +690,9 @@ class AgentToolBridge:
             if tool_name in git_tools:
                 return await self._execute_dev_tool(tool_name, params, session_id)
 
+            if tool_name == "run_research":
+                return await self._execute_research_tool(params, session_id)
+
             error_result = {"error": f"Unknown tool: {tool_name}"}
             
             # Log unknown tool error
@@ -837,6 +861,70 @@ class AgentToolBridge:
                 return {"success": False, "error": str(exc)}
 
         return {"error": f"Unknown dev tool: {tool_name}"}
+
+    async def _execute_research_tool(self, params: Dict, session_id: str) -> Dict:
+        """Handle the run_research agent tool — delegates to AutoResearchRunner."""
+        action = params.get("action", "status")
+        try:
+            from backend.agent.auto_research import get_auto_research_runner
+            runner = get_auto_research_runner()
+        except Exception as exc:
+            return {"success": False, "error": f"AutoResearch runner not available: {exc}"}
+
+        if action == "status":
+            return {"success": True, **runner.get_status()}
+
+        if action == "start":
+            interval = params.get("interval")
+            if interval is not None:
+                try:
+                    runner._interval = float(interval)
+                except (TypeError, ValueError):
+                    pass
+            runner.start()
+            return {"success": True, "message": f"AutoResearch loop started (interval={runner._interval}s)"}
+
+        if action == "stop":
+            runner.stop()
+            return {"success": True, "message": "AutoResearch loop stop requested"}
+
+        if action == "run_now":
+            topic = params.get("topic")
+            content = params.get("content")
+            test_prompts = params.get("test_prompts")
+
+            # Temporarily override benchmark prompts if caller supplied custom ones
+            _orig_prompts = None
+            if test_prompts and isinstance(test_prompts, list) and test_prompts:
+                from backend.agent import auto_research as _ar_mod
+                _orig_prompts = _ar_mod.BENCHMARK_PROMPTS
+                _ar_mod.BENCHMARK_PROMPTS = test_prompts
+
+            # Build an override candidate when topic/content are provided directly
+            override_candidate = None
+            if topic:
+                override_candidate = {
+                    "name": topic,
+                    "description": content or topic,
+                    "score": 0.5,
+                    "_key": "",
+                    "_category": "research_topics",
+                }
+
+            try:
+                asyncio.create_task(runner._run_cycle(override_candidate=override_candidate))
+                parts = ["Research cycle triggered"]
+                if topic:
+                    parts.append(f"topic='{topic}'")
+                if test_prompts:
+                    parts.append(f"{len(test_prompts)} custom prompt(s)")
+                return {"success": True, "message": " — ".join(parts)}
+            finally:
+                if _orig_prompts is not None:
+                    from backend.agent import auto_research as _ar_mod
+                    _ar_mod.BENCHMARK_PROMPTS = _orig_prompts
+
+        return {"success": False, "error": f"Unknown action: {action}"}
 
     def get_status(self) -> Dict:
         """
