@@ -364,11 +364,35 @@ class AgentKernel:
 
     @staticmethod
     def _strip_thinking(text: str) -> str:
-        """Remove <think>…</think> and <thinking>…</thinking> blocks from model output."""
+        """Remove chain-of-thought reasoning from model output.
+
+        Handles three forms:
+        1. <think>…</think> XML tags (Qwen3 thinking mode with tags)
+        2. <thinking>…</thinking> XML tags (DeepSeek-style)
+        3. Untagged preamble — lines that start with the model narrating its own
+           reasoning ("Okay, the user is asking...", "Let me think...", etc.)
+           that appear before a blank line separator or a direct answer.
+        """
         import re
+        # Strip tagged blocks first
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
         text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
-        return text.strip()
+        text = text.strip()
+
+        # Strip untagged reasoning preamble: paragraphs that open with known
+        # self-narration phrases, separated from the real answer by a blank line.
+        _PREAMBLE_OPENERS = re.compile(
+            r"^(okay[,.]?|alright[,.]?|let me|i need to|i should|i will|"
+            r"the user (is|has|wants|asked)|looking at|wait[,.]?|"
+            r"so[,.]? (the|i|let)|hmm[,.]?)",
+            re.IGNORECASE,
+        )
+        # Split on blank-line paragraph boundaries
+        paragraphs = re.split(r"\n{2,}", text)
+        # Drop leading paragraphs that look like internal monologue
+        while len(paragraphs) > 1 and _PREAMBLE_OPENERS.match(paragraphs[0].strip()):
+            paragraphs.pop(0)
+        return "\n\n".join(paragraphs).strip()
 
     @staticmethod
     def _needs_planning(text: str) -> bool:
@@ -428,8 +452,11 @@ class AgentKernel:
                 resp = client.chat.completions.create(
                     model=sel,
                     messages=messages,
-                    max_tokens=200,   # conversational answers are short; fewer = faster
+                    max_tokens=800,   # enough room for a complete answer even after any preamble
                     temperature=0.6,  # Qwen3 recommended; slightly more decisive
+                    # Disable Qwen3 chain-of-thought thinking mode in LM Studio so the model
+                    # responds directly instead of narrating its reasoning in the output.
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
                 reply = resp.choices[0].message.content or ""
                 return self._strip_thinking(reply)
@@ -497,8 +524,9 @@ class AgentKernel:
                 resp = client.chat.completions.create(
                     model=sel,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=80,
+                    max_tokens=120,
                     temperature=0.5,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
                 spoken = self._strip_thinking(resp.choices[0].message.content or "")
                 if spoken.strip():

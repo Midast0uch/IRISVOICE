@@ -444,6 +444,7 @@ interface NavigationContextValue {
   currentCategory: string | null
   currentSection: string | null
   voiceState: "idle" | "listening" | "processing_conversation" | "processing_tool" | "speaking" | "error"
+  isChatTyping: boolean
   audioLevel: number
   fieldValues: Record<string, any>
   fieldErrors: Record<string, string> // Map of "sectionId:fieldId" to error message
@@ -479,6 +480,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     currentCategory,
     currentSection,
     voiceState,
+    isChatTyping,
     audioLevel,
     fieldValues,
     fieldErrors,
@@ -802,6 +804,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     currentCategory,
     currentSection,
     voiceState,
+    isChatTyping,
     audioLevel,
     fieldValues,
     fieldErrors,

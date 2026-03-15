@@ -128,7 +128,7 @@ export function ChatWing({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const { lastTextResponse, voiceState, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
+  const { lastTextResponse, voiceState, isChatTyping, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
   
   // Notification system state
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -151,8 +151,9 @@ export function ChatWing({
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [draggedFileType, setDraggedFileType] = useState<'image' | 'video' | 'file' | null>(null);
   
-  // Derive isTyping from agent processing state
-  const isTyping = voiceState === "processing_conversation" || voiceState === "processing_tool";
+  // Derive isTyping: use isChatTyping for text messages (won't animate the orb),
+  // and voiceState for voice pipeline processing/tool states.
+  const isTyping = isChatTyping || voiceState === "processing_tool";
   
   // Get theme colors from BrandColorContext for real-time updates
   const { getThemeConfig } = useBrandColor();

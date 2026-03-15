@@ -914,10 +914,10 @@ class IRISGateway:
                 if agent_kernel._tool_bridge is None:
                     agent_kernel._tool_bridge = get_agent_tool_bridge()
 
-                # Signal UI: model is preparing response (shows typing indicator)
+                # Signal ChatView: AI is processing (typing indicator only — does NOT affect orb)
                 await self._ws_manager.send_to_client(client_id, {
-                    "type": "listening_state",
-                    "payload": {"state": "processing_conversation"}
+                    "type": "chat_typing",
+                    "payload": {"active": True}
                 })
 
                 # Process message synchronously (AgentKernel.process_text_message is sync)
@@ -940,18 +940,18 @@ class IRISGateway:
                     }
                 })
 
-                # Signal UI: back to idle
+                # Clear ChatView typing indicator
                 await self._ws_manager.send_to_client(client_id, {
-                    "type": "listening_state",
-                    "payload": {"state": "idle"}
+                    "type": "chat_typing",
+                    "payload": {"active": False}
                 })
 
             except Exception as e:
                 self._logger.error(f"Error processing text message: {e}", exc_info=True)
-                # Reset UI state before reporting error
+                # Clear typing indicator on error
                 await self._ws_manager.send_to_client(client_id, {
-                    "type": "listening_state",
-                    "payload": {"state": "idle"}
+                    "type": "chat_typing",
+                    "payload": {"active": False}
                 })
                 await self._send_error(client_id, f"Agent kernel error: {str(e)}")
         

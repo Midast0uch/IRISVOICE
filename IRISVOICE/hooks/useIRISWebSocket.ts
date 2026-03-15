@@ -85,6 +85,7 @@ interface UseIRISWebSocketReturn {
   // Device actions
   getWakeWords: () => void
   getAudioDevices: () => void
+  isChatTyping: boolean
   lastError: string | null
   fieldErrors: Record<string, string> // Map of "sectionId:fieldId" to error message
   clearFieldError: (sectionId: string, fieldId: string) => void
@@ -127,6 +128,9 @@ export function useIRISWebSocket(
   const [voiceState, setVoiceState] = useState<VoiceState>("idle")
   const [audioLevel, setAudioLevel] = useState<number>(0)
   const [lastTextResponse, setLastTextResponse] = useState<TextResponseMessage | null>(null)
+  // True while a text_message is being processed — drives ChatView typing indicator
+  // independently of voiceState so the IrisOrb never animates for typed messages.
+  const [isChatTyping, setIsChatTyping] = useState<boolean>(false)
   
   // Agent state
   const [agentStatus, setAgentStatus] = useState<Record<string, unknown> | null>(null)
@@ -547,6 +551,12 @@ export function useIRISWebSocket(
             setAudioLevel(0)
           }
         }
+        break
+      }
+
+      case "chat_typing": {
+        // Typing indicator for text_message flow — does NOT affect voiceState/IrisOrb
+        setIsChatTyping(payload.active === true)
         break
       }
 
@@ -1045,6 +1055,7 @@ export function useIRISWebSocket(
     lastError,
     fieldErrors,
     clearFieldError,
+    isChatTyping,
     // Vision state and actions
     visionStatus,
     enableVision,
