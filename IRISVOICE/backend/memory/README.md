@@ -147,6 +147,7 @@ The Mycelium coordinate graph is a 7-space embedding layer that builds a persist
 | Security gates (HyphaChannel, CellWall, trust cap) | ~90% | `test_mycelium_kyudo_security.py` |
 | Schema integrity (13 tables, all columns) | ~95% | `test_mycelium_requirements.py` |
 | Coordinate encoding format | ~95% | `test_mycelium_navigator.py` |
+| Data navigation (keyword match, fallback, traversal, session, edges) | ~95% | `test_mycelium_navigator.py` |
 | Space constants and thresholds | ~95% | `test_mycelium_requirements.py` |
 | Orchestration pipeline (maturity, context path, maintenance) | ~95% | `test_mycelium_orchestration.py` |
 | Profile prose (6 spaces, constraint levels, render order) | ~95% | `test_mycelium_profile_prose.py` |
@@ -154,7 +155,7 @@ The Mycelium coordinate graph is a 7-space embedding layer that builds a persist
 | MCP trust registry | ~90% | `test_mycelium_requirements.py` |
 | Landmark lifecycle (crystallise, merge, absorb) | ~85% | `test_mycelium_landmark.py`, `test_mycelium_profile_prose.py` |
 
-**Total: 232 tests, 0 failures** (1 skipped: SQLCipher not installed in CI)
+**Total: 253 tests, 0 failures** (1 skipped: SQLCipher not installed in CI)
 
 ### Production Notes
 
