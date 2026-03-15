@@ -183,9 +183,20 @@ class TTSManager:
                 audio = audio / peak * 0.9
             logger.info(f"[TTSManager] LuxTTS synthesized {len(audio)} samples")
             return audio
+        except RuntimeError as e:
+            if "Kernel size can't be greater than actual input size" in str(e):
+                # Text is too short for LuxTTS vocoder convolution kernel.
+                # Fall back to pyttsx3 for very short utterances.
+                logger.warning(
+                    f"[TTSManager] LuxTTS: text too short for vocoder ({len(text)} chars), "
+                    "falling back to Built-in TTS."
+                )
+                return self._synthesize_pyttsx(text)
+            logger.error(f"[TTSManager] LuxTTS synthesis error: {e}", exc_info=True)
+            return self._synthesize_pyttsx(text)
         except Exception as e:
             logger.error(f"[TTSManager] LuxTTS synthesis error: {e}", exc_info=True)
-            return None
+            return self._synthesize_pyttsx(text)
 
     # ------------------------------------------------------------------
     # pyttsx3 fallback (Built-in / Windows SAPI5)

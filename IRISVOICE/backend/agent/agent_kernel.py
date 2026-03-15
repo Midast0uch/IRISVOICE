@@ -401,16 +401,22 @@ class AgentKernel:
             except Exception:
                 pass
 
-        # context already contains the current user message (added before this call)
+        # Build context window: last 8 messages, always starting with a user turn.
+        # Qwen3 (and most models) require the first non-system message to be "user".
+        # A mid-conversation slice can begin with an assistant turn when the rolling
+        # window cuts between a user→assistant pair — strip any leading assistant
+        # messages so the pattern is always [system, user, assistant?, user, …].
+        context_window = list(context[-8:])
+        while context_window and context_window[0]["role"] != "user":
+            context_window.pop(0)
+
         messages: List[Dict] = [{"role": "system", "content": system_prompt}]
-        for msg in context[-8:]:
+        for msg in context_window:
             messages.append(msg)
 
-        # Guard: some model Jinja templates (e.g. Qwen3) reject requests with no user turn.
-        # If context was empty (e.g. memory exception path) or somehow ends on an assistant
-        # message, append the current text explicitly so the API call never sees a
-        # messages list with zero user messages.
-        if not messages or messages[-1]["role"] != "user":
+        # Final guard: if context was empty (memory exception path) or somehow
+        # ends on an assistant message, append the current text explicitly.
+        if not context_window or messages[-1]["role"] != "user":
             messages.append({"role": "user", "content": text})
 
         try:
@@ -456,8 +462,7 @@ class AgentKernel:
 
         except Exception as e:
             logger.error(f"[AgentKernel] Direct response error: {e}", exc_info=True)
-
-        return "Hello! How can I help you?"
+            raise
 
     def process_text_message(self, text: str, session_id: Optional[str] = None) -> str:
         """
@@ -514,7 +519,11 @@ class AgentKernel:
         # calls the model with no JSON schema overhead.
         if not self._needs_planning(text):
             logger.info("[AgentKernel] Direct response path (no planning needed)")
-            response = self._respond_direct(text, context)
+            try:
+                response = self._respond_direct(text, context)
+            except Exception as e:
+                logger.error(f"[AgentKernel] LLM call failed: {e}")
+                return f"[IRIS error: could not reach language model — {type(e).__name__}]"
             try:
                 self._conversation_memory.add_message("assistant", response)
             except Exception:
