@@ -130,6 +130,12 @@ class AgentKernel:
         self._launcher_mode: str = "personal"
         self._developer_context: Optional[str] = None  # cached PROJECT.md content
 
+        # Cached OpenAI client for LM Studio — created once, reused on every call.
+        # Rebuilding _OpenAI() per-call recreates the full httpx connection pool,
+        # adding unnecessary overhead on every message.  Invalidated in
+        # configure_lmstudio() whenever the endpoint URL changes.
+        self._lmstudio_client: Optional[Any] = None
+
         # Initialize components
         self._initialize_components()
 
@@ -366,7 +372,75 @@ class AgentKernel:
     def configure_lmstudio(self, endpoint: str) -> None:
         """Store the LM Studio base URL for inference routing."""
         self._lmstudio_endpoint = endpoint.rstrip("/")
+        self._lmstudio_client = None  # invalidate cached client — endpoint changed
         logger.info(f"[AgentKernel] LM Studio endpoint configured: {self._lmstudio_endpoint}")
+
+    def _get_lmstudio_client(self) -> Any:
+        """Return a cached OpenAI-compatible client pointed at LM Studio.
+
+        The client is created once and reused for the lifetime of this
+        AgentKernel instance (or until the endpoint changes).  Reusing the
+        client preserves the underlying httpx connection pool so that every
+        inference call does NOT pay the cost of TCP handshake + connection
+        setup — especially important for localhost where the overhead is small
+        but still measurable (~5-20 ms per call).
+
+        Invalidated by configure_lmstudio() when the base URL changes.
+        """
+        if self._lmstudio_client is None:
+            from openai import OpenAI as _OpenAI
+            self._lmstudio_client = _OpenAI(
+                base_url=f"{self._lmstudio_endpoint}/v1",
+                api_key="lm-studio",
+            )
+            logger.debug(
+                f"[AgentKernel] Created LM Studio client → {self._lmstudio_endpoint}/v1"
+            )
+        return self._lmstudio_client
+
+    def prewarm_lmstudio(self) -> None:
+        """Send a minimal 1-token request to LM Studio so it loads the model into VRAM now.
+
+        LM Studio cold-starts the model on the FIRST real inference request, which
+        can take 20-30 seconds for a 9B-parameter model (VRAM load from SSD).
+        Calling this immediately after the user confirms an LM Studio endpoint causes
+        the model to load in the background, so it is already hot by the time the user
+        sends their first message.
+
+        Called from a daemon thread — never blocks the caller.
+        """
+        import threading
+
+        def _do_prewarm() -> None:
+            t0 = time.perf_counter()
+            try:
+                model = self._selected_reasoning_model or "local-model"
+                logger.info(
+                    f"[AgentKernel] Pre-warming LM Studio model '{model}' at {self._lmstudio_endpoint} …"
+                )
+                client = self._get_lmstudio_client()
+                client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=1,
+                    temperature=0.0,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+                elapsed = time.perf_counter() - t0
+                logger.info(
+                    f"[AgentKernel] LM Studio pre-warm complete in {elapsed:.2f}s "
+                    f"— model is hot and ready"
+                )
+            except Exception as e:
+                elapsed = time.perf_counter() - t0
+                # Non-fatal: LM Studio may not be running yet, or the model ID is wrong.
+                # The first real user message will still work (just with the cold-start delay).
+                logger.warning(
+                    f"[AgentKernel] LM Studio pre-warm failed after {elapsed:.2f}s "
+                    f"(non-fatal): {e}"
+                )
+
+        threading.Thread(target=_do_prewarm, daemon=True, name="lmstudio-prewarm").start()
 
     def set_launcher_mode(self, mode: str) -> None:
         """Set the launcher mode ('personal' or 'developer').
@@ -535,8 +609,7 @@ class AgentKernel:
         try:
             # LM Studio (OpenAI-compatible)
             if self._model_provider == "lmstudio":
-                from openai import OpenAI as _OpenAI
-                client = _OpenAI(base_url=f"{self._lmstudio_endpoint}/v1", api_key="lm-studio")
+                client = self._get_lmstudio_client()
                 sel = self._selected_reasoning_model or "local-model"
                 resp = client.chat.completions.create(
                     model=sel,
@@ -615,8 +688,7 @@ class AgentKernel:
         )
         try:
             if self._model_provider == "lmstudio":
-                from openai import OpenAI as _OpenAI
-                client = _OpenAI(base_url=f"{self._lmstudio_endpoint}/v1", api_key="lm-studio")
+                client = self._get_lmstudio_client()
                 sel = self._selected_reasoning_model or "local-model"
                 resp = client.chat.completions.create(
                     model=sel,
@@ -723,11 +795,7 @@ class AgentKernel:
             try:
                 # ── LM Studio (OpenAI-compatible API) ────────────────────────
                 if self._model_provider == "lmstudio":
-                    from openai import OpenAI as _OpenAI
-                    client = _OpenAI(
-                        base_url=f"{self._lmstudio_endpoint}/v1",
-                        api_key="lm-studio",
-                    )
+                    client = self._get_lmstudio_client()
                     sel = self._selected_reasoning_model or "local-model"
 
                     call_kwargs: Dict[str, Any] = dict(
@@ -901,18 +969,24 @@ class AgentKernel:
         # Create TaskContext to carry full context through pipeline (fixes Bug 3, 4, 5, 6)
         import uuid
         task_id = str(uuid.uuid4())
-        
+        _t_start = time.perf_counter()
+
         try:
             # Add user message to conversation memory
             self._conversation_memory.add_message("user", text)
             logger.info(f"[AgentKernel] Processing text message: {text[:50]}...")
-            
+
             # Get conversation context
             context = self._conversation_memory.get_context()
         except Exception as e:
             # Handle conversation memory errors gracefully
             logger.warning(f"[AgentKernel] Conversation memory error: {e}")
             context = []  # Continue with empty context
+
+        _t_memory = time.perf_counter()
+        logger.debug(
+            f"[Timing] memory.get_context: {(_t_memory - _t_start) * 1000:.1f} ms"
+        )
 
         # ── Direct path (default): skip planning for non-tool messages ──────────
         # Planning only runs when the message explicitly requests a tool-backed
@@ -922,7 +996,13 @@ class AgentKernel:
         if not self._needs_planning(text):
             logger.info("[AgentKernel] Direct response path (no planning needed)")
             try:
+                _t_llm_start = time.perf_counter()
                 response = self._respond_direct(text, context)
+                _t_llm_end = time.perf_counter()
+                logger.info(
+                    f"[Timing] LLM call (_respond_direct): {(_t_llm_end - _t_llm_start) * 1000:.0f} ms  |  "
+                    f"total process_text_message: {(_t_llm_end - _t_start) * 1000:.0f} ms"
+                )
             except Exception as e:
                 logger.error(f"[AgentKernel] LLM call failed: {e}")
                 return f"[IRIS error: could not reach language model — {type(e).__name__}]"

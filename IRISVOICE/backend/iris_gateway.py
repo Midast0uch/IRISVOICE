@@ -547,6 +547,11 @@ class IRISGateway:
                             f"[Session: {session_id}] LM Studio configured: {lms_endpoint}",
                             extra={"session_id": session_id}
                         )
+                        # Pre-warm: fire a 1-token request so LM Studio loads the model
+                        # into VRAM right now.  Without this the cold-start delay (20-30 s
+                        # for a 9 B model) falls on the user's first chat message.
+                        # Runs in a daemon thread — does not block the confirm_card response.
+                        kernel.prewarm_lmstudio()
                     elif provider == "vps":
                         vps_endpoint = values.get("vps_endpoint", "")
                         vps_token = values.get("vps_token", "")
@@ -912,12 +917,26 @@ class IRISGateway:
 
             # Get AgentKernel for this session
             try:
+                import time as _time
+                _t_gate = _time.perf_counter()
+
                 agent_kernel = get_agent_kernel(session_id)
+                _t_kernel = _time.perf_counter()
+                self._logger.debug(
+                    f"[Timing] get_agent_kernel: {(_t_kernel - _t_gate) * 1000:.1f} ms",
+                    extra={"session_id": session_id}
+                )
 
                 # Wire tool bridge if not already set (enables real tool execution)
                 from backend.agent.tool_bridge import get_agent_tool_bridge
                 if agent_kernel._tool_bridge is None:
                     agent_kernel._tool_bridge = get_agent_tool_bridge()
+
+                _t_bridge = _time.perf_counter()
+                self._logger.debug(
+                    f"[Timing] tool_bridge wire: {(_t_bridge - _t_kernel) * 1000:.1f} ms",
+                    extra={"session_id": session_id}
+                )
 
                 # Signal ChatView: AI is processing (typing indicator only — does NOT affect orb)
                 await self._ws_manager.send_to_client(client_id, {
@@ -929,11 +948,18 @@ class IRISGateway:
                 # Run in executor to avoid blocking the event loop
                 import asyncio
                 loop = asyncio.get_running_loop()
+                _t_exec_start = _time.perf_counter()
                 response = await loop.run_in_executor(
                     None,
                     agent_kernel.process_text_message,
                     text,
                     session_id
+                )
+                _t_exec_end = _time.perf_counter()
+                self._logger.info(
+                    f"[Timing] process_text_message (executor): {(_t_exec_end - _t_exec_start) * 1000:.0f} ms  |  "
+                    f"gateway overhead: {(_t_exec_start - _t_gate) * 1000:.1f} ms",
+                    extra={"session_id": session_id}
                 )
 
                 # Send response to client (text only — no TTS for chat messages)
