@@ -915,7 +915,7 @@ class IRISGateway:
                     session_id
                 )
 
-                # Send response to client
+                # Send response to client (text only — no TTS for chat messages)
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "text_response",
                     "payload": {
@@ -923,9 +923,6 @@ class IRISGateway:
                         "sender": "assistant"
                     }
                 })
-
-                # TTS: speak the response if enabled
-                await loop.run_in_executor(None, self._speak_response, response)
 
                 # Signal UI: back to idle
                 await self._ws_manager.send_to_client(client_id, {
