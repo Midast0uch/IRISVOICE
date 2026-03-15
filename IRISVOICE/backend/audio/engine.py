@@ -65,6 +65,9 @@ class AudioEngine:
         self._lock = threading.Lock()
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
 
+        # TTS interrupt: set True to stop in-progress speech at the next sentence boundary
+        self._speech_interrupted: bool = False
+
         try:
             self._main_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -218,6 +221,23 @@ class AudioEngine:
     def set_wake_word_callback(self, callback) -> None:
         """Set callback fired when wake word is detected. callback(wake_word_name: str) -> None"""
         self._on_wake_word_detected = callback
+
+    def interrupt_speech(self) -> None:
+        """Signal any in-progress TTS playback to stop at the next sentence boundary.
+
+        Thread-safe — can be called from the wake-word callback thread or the
+        WebSocket handler.  The flag is consumed (reset to False) by
+        is_speech_interrupted(), so callers don't need to clear it manually.
+        """
+        self._speech_interrupted = True
+
+    def is_speech_interrupted(self) -> bool:
+        """Return True (and reset the flag) if interrupt_speech() was called since
+        the last check.  Designed to be polled inside the TTS sentence loop."""
+        if self._speech_interrupted:
+            self._speech_interrupted = False
+            return True
+        return False
 
     def get_main_loop(self) -> Optional[asyncio.AbstractEventLoop]:
         """Return the main event loop stored during initialization."""

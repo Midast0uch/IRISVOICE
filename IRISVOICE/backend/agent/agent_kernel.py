@@ -464,6 +464,68 @@ class AgentKernel:
             logger.error(f"[AgentKernel] Direct response error: {e}", exc_info=True)
             raise
 
+    # Word count above which we generate a shorter spoken variant for TTS.
+    _SPOKEN_WORD_LIMIT: int = 40
+
+    def get_spoken_version(self, text: str) -> str:
+        """Return a TTS-friendly spoken variant of *text*.
+
+        For short responses (≤ _SPOKEN_WORD_LIMIT words) the original text is
+        returned unchanged — it is already suitable for speech.
+
+        For longer responses a second, fast LLM call is made asking the model
+        to distil the answer into 1-2 conversational sentences.  The full
+        text still goes to ChatView; only this shorter version is spoken.
+
+        Falls back to the original text if the LLM call fails or returns
+        nothing useful.
+        """
+        if len(text.split()) <= self._SPOKEN_WORD_LIMIT:
+            return text
+
+        prompt = (
+            "The following is a detailed AI response. "
+            "Rewrite it as 1-2 short spoken sentences in a casual, conversational tone. "
+            "No bullet points, no markdown, no lists — just natural speech a voice assistant would say:\n\n"
+            f"{text}"
+        )
+        try:
+            if self._model_provider == "lmstudio":
+                from openai import OpenAI as _OpenAI
+                client = _OpenAI(base_url=f"{self._lmstudio_endpoint}/v1", api_key="lm-studio")
+                sel = self._selected_reasoning_model or "local-model"
+                resp = client.chat.completions.create(
+                    model=sel,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=80,
+                    temperature=0.5,
+                )
+                spoken = self._strip_thinking(resp.choices[0].message.content or "")
+                if spoken.strip():
+                    logger.debug(f"[AgentKernel] Spoken version: {spoken!r}")
+                    return spoken
+
+            if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
+                import requests as _req
+                r = _req.post(
+                    "http://localhost:11434/api/chat",
+                    json={
+                        "model": self._selected_reasoning_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                    },
+                    timeout=20,
+                )
+                if r.status_code == 200:
+                    spoken = self._strip_thinking(r.json().get("message", {}).get("content", ""))
+                    if spoken.strip():
+                        return spoken
+
+        except Exception as e:
+            logger.warning(f"[AgentKernel] get_spoken_version LLM call failed: {e}")
+
+        return text  # fallback: speak full response
+
     def process_text_message(self, text: str, session_id: Optional[str] = None) -> str:
         """
         Process a text message with dual-LLM coordination.

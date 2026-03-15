@@ -666,6 +666,14 @@ class IRISGateway:
             if msg_type == "voice_command_start":
                 self._logger.info(f"[Session: {session_id}] Voice command start")
 
+                # Interrupt any TTS currently playing so the user's new voice turn
+                # isn't drowned out by the previous response being spoken.
+                try:
+                    from .audio.engine import get_audio_engine
+                    get_audio_engine().interrupt_speech()
+                except Exception:
+                    pass  # non-fatal — audio engine may not be up yet
+
                 # Track which client triggered this so wake-word callback knows where to respond
                 self._active_voice_client[session_id] = client_id
 
@@ -798,7 +806,7 @@ class IRISGateway:
                 session_id
             )
 
-            # Pillar 1B: Speaking state + send response to ChatView
+            # Pillar 1B: Speaking state + send FULL response to ChatView
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "listening_state",
                 "payload": {"state": "speaking"}
@@ -808,8 +816,12 @@ class IRISGateway:
                 "payload": {"text": response, "sender": "assistant"}
             })
 
-            # Pillar 1C: TTS playback
-            await loop.run_in_executor(None, self._speak_response, response)
+            # Pillar 1C: TTS — get a conversational spoken version for long responses.
+            # Short replies (<=40 words) are spoken verbatim.  Long ones get a
+            # second fast LLM call that distils them to 1-2 spoken sentences.
+            # ChatView always receives the full text above.
+            spoken = await loop.run_in_executor(None, agent_kernel.get_spoken_version, response)
+            await loop.run_in_executor(None, self._speak_response, spoken)
 
             # Done
             await self._ws_manager.broadcast_to_session(session_id, {
@@ -863,6 +875,10 @@ class IRISGateway:
                 return
 
             for sentence in sentences:
+                # Stop between sentences if wake word or double-click triggered
+                if engine.is_speech_interrupted():
+                    self._logger.info("[Voice] TTS interrupted — new voice command started")
+                    break
                 audio_np = tts.synthesize(sentence)
                 if audio_np is not None and len(audio_np) > 0:
                     engine.pipeline.play_audio(audio_np)
