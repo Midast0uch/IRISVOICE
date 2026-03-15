@@ -17,6 +17,8 @@ Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6
 
 import asyncio
 import logging
+import os
+import subprocess
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
@@ -266,7 +268,19 @@ class AgentToolBridge:
             
             # GUI Automation
             {"name": "gui_automate_click", "description": "Automated GUI click", "parameters": {"x": {"type": "integer"}, "y": {"type": "integer"}}, "category": "gui", "server": "gui_automation"},
-            {"name": "gui_automate_type", "description": "Automated GUI typing", "parameters": {"text": {"type": "string"}}, "category": "gui", "server": "gui_automation"}
+            {"name": "gui_automate_type", "description": "Automated GUI typing", "parameters": {"text": {"type": "string"}}, "category": "gui", "server": "gui_automation"},
+
+            # Git — developer mode source control
+            {"name": "git_status", "description": "Show working tree status (staged, unstaged, untracked files)", "parameters": {"repo_path": {"type": "string", "description": "Absolute path to the git repo (optional, defaults to IRISVOICE root)"}}, "category": "git"},
+            {"name": "git_diff", "description": "Show diff of staged or unstaged changes", "parameters": {"repo_path": {"type": "string"}, "staged": {"type": "boolean", "description": "If true, show staged diff; otherwise unstaged"}}, "category": "git"},
+            {"name": "git_log", "description": "Show recent commit history", "parameters": {"repo_path": {"type": "string"}, "n": {"type": "integer", "description": "Number of commits to show (default 10)"}}, "category": "git"},
+            {"name": "git_commit", "description": "Stage all changed files and create a commit", "parameters": {"message": {"type": "string", "description": "Commit message"}, "repo_path": {"type": "string"}}, "category": "git"},
+            {"name": "git_create_branch", "description": "Create and switch to a new branch", "parameters": {"branch": {"type": "string", "description": "New branch name"}, "repo_path": {"type": "string"}}, "category": "git"},
+            {"name": "git_checkout", "description": "Switch to an existing branch", "parameters": {"branch": {"type": "string"}, "repo_path": {"type": "string"}}, "category": "git"},
+            {"name": "git_push", "description": "Push current branch to origin", "parameters": {"repo_path": {"type": "string"}, "force": {"type": "boolean", "description": "Force push (default false)"}}, "category": "git"},
+
+            # Shell — developer mode command runner (sandboxed to repo directory)
+            {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)", "parameters": {"command": {"type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
         ])
         
         return tools
@@ -645,7 +659,16 @@ class AgentToolBridge:
             if tool_name in mcp_tools:
                 server_name, mcp_tool_name = mcp_tools[tool_name]
                 return await self.execute_mcp_tool(server_name, mcp_tool_name, params, session_id)
-            
+
+            # Git + Shell tools — executed inline via subprocess
+            git_tools = {
+                "git_status", "git_diff", "git_log",
+                "git_commit", "git_create_branch", "git_checkout",
+                "git_push", "run_command",
+            }
+            if tool_name in git_tools:
+                return await self._execute_dev_tool(tool_name, params, session_id)
+
             error_result = {"error": f"Unknown tool: {tool_name}"}
             
             # Log unknown tool error
@@ -691,6 +714,130 @@ class AgentToolBridge:
             
             return error_result
     
+    # ------------------------------------------------------------------
+    # Developer tools — git and shell, executed via subprocess
+    # ------------------------------------------------------------------
+
+    # Default repo root: two levels up from this file (…/IRISVOICE)
+    _DEFAULT_REPO: str = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..")
+    )
+
+    async def _execute_dev_tool(self, tool_name: str, params: Dict, session_id: str) -> Dict:
+        """Execute git or shell commands for developer mode.
+
+        All commands run inside the repo directory by default.  The caller can
+        pass a ``repo_path`` / ``cwd`` parameter to override the working directory,
+        but paths outside the project tree are rejected to prevent accidents.
+        """
+        # Resolve working directory
+        cwd_param = params.get("repo_path") or params.get("cwd") or self._DEFAULT_REPO
+        cwd = os.path.normpath(cwd_param)
+        repo_root = os.path.normpath(self._DEFAULT_REPO)
+
+        # Safety: reject paths outside the project tree
+        if not cwd.startswith(repo_root):
+            return {"error": f"Working directory '{cwd}' is outside the project root. Aborting."}
+
+        def _run(cmd: list, timeout: int = 30) -> Dict:
+            """Run a subprocess and return {stdout, stderr, returncode}."""
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                return {
+                    "success": result.returncode == 0,
+                    "stdout": result.stdout.strip(),
+                    "stderr": result.stderr.strip(),
+                    "returncode": result.returncode,
+                }
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": f"Command timed out after {timeout}s"}
+            except Exception as exc:
+                return {"success": False, "error": str(exc)}
+
+        # ── git_status ──────────────────────────────────────────────
+        if tool_name == "git_status":
+            return _run(["git", "status", "--short", "--branch"])
+
+        # ── git_diff ────────────────────────────────────────────────
+        if tool_name == "git_diff":
+            cmd = ["git", "diff"]
+            if params.get("staged"):
+                cmd.append("--staged")
+            return _run(cmd)
+
+        # ── git_log ─────────────────────────────────────────────────
+        if tool_name == "git_log":
+            n = int(params.get("n", 10))
+            return _run(["git", "log", f"-{n}", "--oneline", "--decorate"])
+
+        # ── git_commit ──────────────────────────────────────────────
+        if tool_name == "git_commit":
+            message = params.get("message", "").strip()
+            if not message:
+                return {"success": False, "error": "Commit message is required"}
+            add = _run(["git", "add", "-A"])
+            if not add["success"]:
+                return {"success": False, "error": f"git add failed: {add['stderr']}"}
+            return _run(["git", "commit", "-m", message])
+
+        # ── git_create_branch ───────────────────────────────────────
+        if tool_name == "git_create_branch":
+            branch = params.get("branch", "").strip()
+            if not branch:
+                return {"success": False, "error": "Branch name is required"}
+            return _run(["git", "checkout", "-b", branch])
+
+        # ── git_checkout ────────────────────────────────────────────
+        if tool_name == "git_checkout":
+            branch = params.get("branch", "").strip()
+            if not branch:
+                return {"success": False, "error": "Branch name is required"}
+            return _run(["git", "checkout", branch])
+
+        # ── git_push ────────────────────────────────────────────────
+        if tool_name == "git_push":
+            cmd = ["git", "push", "--set-upstream", "origin", "HEAD"]
+            if params.get("force"):
+                cmd.append("--force-with-lease")
+            return _run(cmd, timeout=60)
+
+        # ── run_command ─────────────────────────────────────────────
+        if tool_name == "run_command":
+            raw = params.get("command", "").strip()
+            if not raw:
+                return {"success": False, "error": "command is required"}
+            # Block obviously destructive commands
+            _BLOCKED = ("rm -rf /", "rmdir /s /q C:\\", "format ", "del /f /s /q C:\\")
+            if any(raw.startswith(b) for b in _BLOCKED):
+                return {"success": False, "error": "Blocked: destructive system command"}
+            # Shell=True so pipes, &&, etc. work — still sandboxed to cwd
+            try:
+                result = subprocess.run(
+                    raw, shell=True, cwd=cwd,
+                    capture_output=True, text=True,
+                    timeout=120, encoding="utf-8", errors="replace",
+                )
+                return {
+                    "success": result.returncode == 0,
+                    "stdout": result.stdout.strip(),
+                    "stderr": result.stderr.strip(),
+                    "returncode": result.returncode,
+                }
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": "Command timed out after 120s"}
+            except Exception as exc:
+                return {"success": False, "error": str(exc)}
+
+        return {"error": f"Unknown dev tool: {tool_name}"}
+
     def get_status(self) -> Dict:
         """
         Get status of all connected services.
