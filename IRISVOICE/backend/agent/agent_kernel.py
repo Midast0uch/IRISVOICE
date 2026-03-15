@@ -587,6 +587,218 @@ class AgentKernel:
 
         return text  # fallback: speak full response
 
+    # ── Tool definitions for OpenAI-compatible function calling ─────────────
+
+    def _get_openai_tools(self) -> List[Dict]:
+        """Convert tool_bridge tool list to OpenAI-compatible function-calling format.
+
+        Each entry becomes:
+          {"type": "function", "function": {"name": …, "description": …, "parameters": {…}}}
+        """
+        if not self._tool_bridge:
+            return []
+        openai_tools: List[Dict] = []
+        for t in self._tool_bridge.get_available_tools():
+            props: Dict[str, Any] = {}
+            required: List[str] = []
+            for pname, pspec in t.get("parameters", {}).items():
+                props[pname] = {
+                    "type": pspec.get("type", "string"),
+                    "description": pspec.get("description", ""),
+                }
+                if not pspec.get("optional", False):
+                    required.append(pname)
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "parameters": {
+                        "type": "object",
+                        "properties": props,
+                        "required": required,
+                    },
+                },
+            })
+        return openai_tools
+
+    # ── ReAct agentic loop ───────────────────────────────────────────────────
+
+    def _run_agentic_loop(self, messages: List[Dict], session_id: str) -> str:
+        """ReAct agentic loop — the core of multi-step task execution.
+
+        Calls the LLM with tool definitions.  If the model returns
+        ``finish_reason="tool_calls"`` the tools are executed and their results
+        are appended to the message history before the next LLM call.  This
+        repeats until the model produces a ``finish_reason="stop"`` response,
+        which is returned as the final answer.
+
+        Why this replaces the old plan→execute→synthesize pipeline
+        ────────────────────────────────────────────────────────────
+        The old pipeline asked the model to emit a static JSON plan upfront,
+        then executed it blindly.  The model never saw tool results, so it
+        could not adapt when a step failed or produced unexpected output.  This
+        loop (ReAct pattern) lets the model observe each result and decide what
+        to do next — enabling genuine multi-step reasoning and recovery.
+
+        Args:
+            messages: Initial message list (system + conversation history + user turn).
+            session_id: Passed through to tool_bridge for session isolation.
+
+        Returns:
+            The model's final clean response string.
+        """
+        MAX_ITERATIONS = 8
+        tools = self._get_openai_tools()
+
+        for iteration in range(MAX_ITERATIONS):
+            logger.info(
+                f"[AgentLoop] Iteration {iteration + 1}/{MAX_ITERATIONS}, "
+                f"messages={len(messages)}, tools={len(tools)}"
+            )
+            try:
+                # ── LM Studio (OpenAI-compatible API) ────────────────────────
+                if self._model_provider == "lmstudio":
+                    from openai import OpenAI as _OpenAI
+                    client = _OpenAI(
+                        base_url=f"{self._lmstudio_endpoint}/v1",
+                        api_key="lm-studio",
+                    )
+                    sel = self._selected_reasoning_model or "local-model"
+
+                    call_kwargs: Dict[str, Any] = dict(
+                        model=sel,
+                        messages=messages,
+                        max_tokens=-1,
+                        temperature=0.6,
+                        # Thinking OFF during tool-call iterations — models need
+                        # clean JSON for tool_calls; thinking can be re-enabled
+                        # on the final free-response turn if desired.
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    )
+                    if tools:
+                        call_kwargs["tools"] = tools
+                        call_kwargs["tool_choice"] = "auto"
+
+                    resp = client.chat.completions.create(**call_kwargs)
+                    choice = resp.choices[0]
+
+                    # Model finished without requesting any tool — return response
+                    if choice.finish_reason == "stop" or not choice.message.tool_calls:
+                        content = choice.message.content or ""
+                        thinking, clean = self._parse_thinking(content)
+                        self._pending_thinking = thinking
+                        return clean
+
+                    # Model wants to use one or more tools
+                    if choice.message.tool_calls:
+                        # Serialize the assistant turn so the model keeps its own
+                        # tool_call references in subsequent context passes
+                        messages.append({
+                            "role": "assistant",
+                            "content": choice.message.content or "",
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                                for tc in choice.message.tool_calls
+                            ],
+                        })
+
+                        for tc in choice.message.tool_calls:
+                            t_name = tc.function.name
+                            try:
+                                t_args = json.loads(tc.function.arguments)
+                            except Exception:
+                                t_args = {}
+
+                            logger.info(
+                                f"[AgentLoop] Tool call: {t_name}({list(t_args.keys())})"
+                            )
+
+                            # Execute tool — tool_bridge.execute_tool is async;
+                            # asyncio.run() is safe here because process_text_message
+                            # runs inside a thread-pool executor (no event loop in thread).
+                            try:
+                                if self._tool_bridge:
+                                    t_result = asyncio.run(
+                                        self._tool_bridge.execute_tool(
+                                            t_name, t_args, session_id
+                                        )
+                                    )
+                                else:
+                                    t_result = {"error": "Tool bridge not available"}
+                            except RuntimeError as run_err:
+                                # asyncio.run() can fail if called from inside an
+                                # already-running loop (shouldn't happen here, but just
+                                # in case the executor shares a loop in a future version)
+                                logger.warning(
+                                    f"[AgentLoop] asyncio.run failed: {run_err} — using ThreadPoolExecutor"
+                                )
+                                import concurrent.futures
+                                loop = asyncio.new_event_loop()
+                                try:
+                                    t_result = loop.run_until_complete(
+                                        self._tool_bridge.execute_tool(
+                                            t_name, t_args, session_id
+                                        )
+                                    )
+                                finally:
+                                    loop.close()
+                            except Exception as exec_err:
+                                logger.error(
+                                    f"[AgentLoop] Tool {t_name} raised: {exec_err}"
+                                )
+                                t_result = {"error": str(exec_err), "tool": t_name}
+
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": (
+                                    json.dumps(t_result)
+                                    if isinstance(t_result, dict)
+                                    else str(t_result)
+                                ),
+                            })
+                        continue  # next iteration — model sees tool results
+
+                # ── Fallback for non-LM-Studio providers ─────────────────────
+                # Ollama and local models don't support tool calling yet;
+                # fall back to a direct conversational response.
+                last_user = next(
+                    (m["content"] for m in reversed(messages) if m["role"] == "user"),
+                    "",
+                )
+                ctx = [m for m in messages if m["role"] in ("user", "assistant")][-8:]
+                return self._respond_direct(last_user, ctx)
+
+            except Exception as loop_err:
+                logger.error(
+                    f"[AgentLoop] Iteration {iteration + 1} error: {loop_err}",
+                    exc_info=True,
+                )
+                if iteration == 0:
+                    raise  # Let caller handle on first iteration
+                break
+
+        # Max iterations reached — ask model to summarise what it found
+        logger.warning(f"[AgentLoop] Max iterations ({MAX_ITERATIONS}) reached")
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user"),
+            "your request",
+        )
+        summary_ctx = [
+            m for m in messages if m["role"] in ("user", "assistant")
+        ][-6:]
+        return self._respond_direct(
+            f"Summarise what you found so far for: {last_user}", summary_ctx
+        )
+
     def process_text_message(self, text: str, session_id: Optional[str] = None) -> str:
         """
         Process a text message with dual-LLM coordination.
@@ -657,90 +869,66 @@ class AgentKernel:
             logger.info(f"[AgentKernel] Direct response: {response[:50]}...")
             return response
 
-        # ── Planning path: only reached for tool-trigger messages ────────────
-        # Create TaskContext to carry full context through pipeline
-        task = TaskContext(
-            task_id=task_id,
-            user_message=text,
-            session_id=session_id,
-            conversation_history=context
+        # ── Agentic loop path: for tool-trigger messages ─────────────────────
+        # Build the initial message list (system + conversation history + user turn).
+        # The loop will append assistant + tool messages on each iteration until the
+        # model emits finish_reason="stop", at which point we have the final answer.
+        system_prompt = (
+            "You are IRIS, a helpful, warm, and capable AI assistant with access to tools. "
+            "Think through tasks step by step, use tools when needed, and give clear answers."
         )
+        if self._personality:
+            try:
+                system_prompt = self._personality.get_system_prompt()
+            except Exception:
+                pass
 
-        # Plan task using reasoning model with timeout
+        loop_messages: List[Dict] = [{"role": "system", "content": system_prompt}]
+        context_window = list(context[-6:])
+        while context_window and context_window[0]["role"] != "user":
+            context_window.pop(0)
+        for msg in context_window:
+            loop_messages.append(msg)
+        if not context_window or loop_messages[-1]["role"] != "user":
+            loop_messages.append({"role": "user", "content": text})
+
         try:
-            plan = self.plan_task(text, context)
-            task.plan = plan  # Store plan in TaskContext
-        except TimeoutError as e:
-            error_response = f"Request timed out while planning: {e}"
-            logger.error(f"[AgentKernel] {error_response}")
-            self._conversation_memory.add_message("assistant", error_response)
-            return error_response
+            response = self._run_agentic_loop(loop_messages, session_id or self.session_id)
         except Exception as e:
-            error_response = f"Error planning task: {e}"
-            logger.error(f"[AgentKernel] {error_response}", exc_info=True)
-            self._conversation_memory.add_message("assistant", error_response)
-            return error_response
+            logger.error(f"[AgentKernel] Agentic loop failed: {e}", exc_info=True)
+            try:
+                response = self._respond_direct(text, context)
+            except Exception:
+                response = "[IRIS error: could not process request]"
 
-        if "error" in plan:
-            error_response = f"Error planning task: {plan['error']}"
-            self._conversation_memory.add_message("assistant", error_response)
-            return error_response
-
-        # Execute plan using execution model with timeout
-        try:
-            execution_results = asyncio.run(self.execute_plan(plan))
-            # Accumulate results in TaskContext
-            task.step_results = execution_results
-        except TimeoutError as e:
-            error_response = f"Request timed out during execution: {e}"
-            logger.error(f"[AgentKernel] {error_response}")
-            self._conversation_memory.add_message("assistant", error_response)
-            return error_response
-        except Exception as e:
-            error_response = f"Error executing plan: {e}"
-            logger.error(f"[AgentKernel] {error_response}", exc_info=True)
-            self._conversation_memory.add_message("assistant", error_response)
-            return error_response
-
-        # Generate final response using brain synthesis
-        response = self._synthesize_response(task, execution_results)
-        
         # Add assistant response to conversation memory
         try:
             self._conversation_memory.add_message("assistant", response)
         except Exception as e:
-            # Log but don't fail if memory update fails
             logger.warning(f"[AgentKernel] Failed to save response to conversation memory: {e}")
-        
-        # Record task for session-level memory continuity (fixes Bug 6)
+
+        # Record task for session-level memory continuity
         try:
-            task.completed_at = time.time()
-            had_failures = any(
-                isinstance(r, dict) and "error" in r
-                for r in execution_results
-            )
-            tool_names_used = list(set(
-                r.get("tool", "unknown")
-                for r in execution_results
-                if isinstance(r, dict)
-            ))
-            
+            import uuid as _uuid
             task_record = TaskRecord(
-                task_id=task.task_id,
-                user_message=task.user_message,
+                task_id=task_id,
+                user_message=text,
                 summary=response,
-                step_count=len(execution_results),
-                had_failures=had_failures,
-                tool_names_used=tool_names_used,
-                started_at=task.started_at,
-                completed_at=task.completed_at,
-                session_id=task.session_id
+                step_count=len([m for m in loop_messages if m.get("role") == "tool"]),
+                had_failures=False,
+                tool_names_used=[
+                    m.get("content", "")[:30]
+                    for m in loop_messages
+                    if m.get("role") == "tool"
+                ],
+                started_at=time.time(),
+                completed_at=time.time(),
+                session_id=session_id or self.session_id,
             )
             self._conversation_memory.record_task(task_record)
-            logger.info(f"[AgentKernel] Recorded task {task.task_id} to session memory")
         except Exception as e:
             logger.warning(f"[AgentKernel] Failed to record task: {e}")
-        
+
         logger.info(f"[AgentKernel] Generated response: {response[:50]}...")
         return response
 
