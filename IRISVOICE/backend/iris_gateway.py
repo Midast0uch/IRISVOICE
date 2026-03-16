@@ -746,29 +746,39 @@ class IRISGateway:
             elif msg_type == "voice_command_end":
                 self._logger.info(f"[Session: {session_id}] Voice command end")
 
-                # Only show processing state if there's real audio buffered.
-                # Avoids the orb getting stuck in processing_conversation when
-                # the user clicks stop before speaking (empty buffer).
+                is_auto_stop = getattr(self._voice_handler, "_auto_stop_mode", False)
                 has_audio = (
                     self._voice_handler is not None
                     and len(getattr(self._voice_handler, "audio_buffer", [])) > 30
                 )
-                if has_audio:
-                    await self._ws_manager.broadcast_to_session(session_id, {
-                        "type": "listening_state",
-                        "payload": {"state": "processing_conversation"}
-                    })
-                else:
-                    # No real audio — snap straight to idle
+
+                if is_auto_stop:
+                    # Wake-word path: user clicked to CANCEL the recording.
+                    # The VAD was running automatically; clicking means "never
+                    # mind — go back to idle" (nothing said, or wants to redo).
+                    # Skip Whisper entirely so the orb doesn't stay frozen while
+                    # Whisper processes background noise.
                     await self._ws_manager.broadcast_to_session(session_id, {
                         "type": "listening_state",
                         "payload": {"state": "idle"}
                     })
-
-                # Delegate stop+process to VoiceCommandHandler
-                # _on_voice_result callback fires when LFM2-Audio finishes
-                if self._voice_handler:
-                    self._voice_handler.stop_recording()
+                    if self._voice_handler:
+                        self._voice_handler.cancel_recording()
+                else:
+                    # Manual double-click path: user explicitly stopped the
+                    # recording and wants the audio processed.
+                    if has_audio:
+                        await self._ws_manager.broadcast_to_session(session_id, {
+                            "type": "listening_state",
+                            "payload": {"state": "processing_conversation"}
+                        })
+                    else:
+                        await self._ws_manager.broadcast_to_session(session_id, {
+                            "type": "listening_state",
+                            "payload": {"state": "idle"}
+                        })
+                    if self._voice_handler:
+                        self._voice_handler.stop_recording()
 
         except Exception as e:
             self._logger.error(f"[Voice] Error in _handle_voice: {e}", exc_info=True)
@@ -989,22 +999,47 @@ class IRISGateway:
                 producer_thread = threading.Thread(target=_producer, daemon=True, name="tts-producer")
                 producer_thread.start()
 
-                # Consumer: play each chunk as soon as it arrives
+                # Consumer: play each chunk as soon as it arrives.
+                # Greedy accumulation: after receiving a chunk, immediately
+                # drain any additional chunks the producer has already queued.
+                # Concatenating them into one array before calling play_audio()
+                # eliminates the silent gap that appears between sentences when
+                # Python overhead (queue.get + function call) occurs while the
+                # output stream is idle between consecutive write() calls.
                 while True:
-                    chunk = audio_queue.get()
+                    chunk = audio_queue.get()        # wait for first chunk
                     if chunk is _SENTINEL:
                         break
                     if engine.is_speech_interrupted():
                         interrupted.set()
                         self._logger.info("[Voice] TTS interrupted — draining queue")
-                        # Drain remaining items so the producer thread can unblock
                         while not audio_queue.empty():
                             try:
                                 audio_queue.get_nowait()
                             except queue.Empty:
                                 break
                         break
-                    engine.pipeline.play_audio(chunk)
+
+                    # Greedily collect any already-synthesised chunks so they
+                    # are played in a single write() with no gaps between them.
+                    chunks = [chunk]
+                    sentinel_seen = False
+                    while True:
+                        try:
+                            extra = audio_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if extra is _SENTINEL:
+                            sentinel_seen = True
+                            break
+                        chunks.append(extra)
+
+                    import numpy as _np
+                    combined = _np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+                    engine.pipeline.play_audio(combined)
+
+                    if sentinel_seen:
+                        break
 
                 producer_thread.join(timeout=5)
             finally:

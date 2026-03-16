@@ -72,8 +72,12 @@ class VoiceCommandHandler:
         self._active_session_id: str = "default"
         self._auto_stop_mode: bool = False
 
-        # Stop signal (set by stop_recording or VAD)
+        # Stop signal (set by stop_recording / cancel_recording / VAD)
         self._stop_event = threading.Event()
+        # Cancel flag: when True, _run_transcription skips Whisper entirely
+        # and returns IDLE immediately.  Used when the user explicitly clicks
+        # to cancel a wake-word recording before speaking.
+        self._cancelled: bool = False
 
         # Callbacks
         self._on_state_change: Optional[Callable[[VoiceState, str], None]] = None
@@ -122,7 +126,24 @@ class VoiceCommandHandler:
         """
         self._auto_stop_mode = auto_stop
         if self.is_recording:
-            return True
+            # A new wake-word arrived while a recording is already in progress.
+            # Cancel the existing take silently so the new one can start fresh.
+            # Without this, the second "hey iris" is silently swallowed and the
+            # orb stays frozen until the first recording times out.
+            logger.info("[VoiceCommand] New recording requested while already recording — cancelling previous take")
+            self.cancel_recording()
+            # The transcription thread checks _stop_event every ~15 ms (VAD poll
+            # interval).  Give it a short window to set is_recording=False before
+            # we continue; 50 ms is more than enough.
+            import time as _t
+            for _ in range(4):          # up to 4 × 15 ms = 60 ms
+                if not self.is_recording:
+                    break
+                _t.sleep(0.015)
+            if self.is_recording:
+                # Still hasn't stopped — don't double-start, caller will retry
+                logger.warning("[VoiceCommand] Previous recording thread didn't stop in time — skipping new start")
+                return False
 
         try:
             logger.info("[VoiceCommand] Starting recording (faster-whisper)...")
@@ -131,6 +152,7 @@ class VoiceCommandHandler:
             self.is_recording = True
             self.audio_buffer = []
             self._raw_frames = []
+            self._cancelled = False   # clear any stale cancel from the previous take
             self._stop_event.clear()
 
             # Register AudioEngine frame listener once (kept for lifetime of handler)
@@ -169,6 +191,21 @@ class VoiceCommandHandler:
         if not self.is_recording:
             return
         logger.info("[VoiceCommand] Stopping recording (user requested)...")
+        self._stop_event.set()
+
+    def cancel_recording(self) -> None:
+        """
+        Cancel recording WITHOUT transcribing — used when the user explicitly
+        clicks the orb to abort a wake-word recording or to restart.
+
+        Sets _cancelled so _run_transcription skips Whisper entirely and
+        immediately returns the handler to IDLE.  Safe to call even if no
+        recording is in progress (no-op).
+        """
+        if not self.is_recording:
+            return
+        logger.info("[VoiceCommand] Recording cancelled by user — skipping transcription")
+        self._cancelled = True
         self._stop_event.set()
 
     # -------------------------------------------------------------------------
@@ -236,6 +273,17 @@ class VoiceCommandHandler:
                 self._stop_event.wait()
 
             self.is_recording = False
+
+            # Check for explicit user cancellation BEFORE running Whisper.
+            # cancel_recording() sets this flag when the user clicks the orb
+            # to abort a wake-word recording (nothing said, or wants to redo).
+            # Clearing it here is safe because _cancelled is only written by
+            # cancel_recording() and only read/cleared in this thread.
+            if self._cancelled:
+                self._cancelled = False
+                logger.info("[VoiceCommand] Recording cancelled — skipping transcription")
+                self._set_state(VoiceState.IDLE, "")
+                return
 
             if not self._raw_frames:
                 logger.info("[VoiceCommand] No audio captured — ignoring")
