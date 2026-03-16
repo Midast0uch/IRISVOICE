@@ -972,6 +972,25 @@ class IRISGateway:
             if not sentences:
                 return
 
+            # Group sentences into word-count chunks (~20 words each).
+            # At ~3 words/sec speaking rate, 20 words ≈ 6–7 s of audio.
+            # Synthesis of one chunk takes ~0.5–2 s, so the producer always
+            # finishes the NEXT chunk well before the consumer exhausts the
+            # CURRENT one — eliminating inter-sentence silence gaps entirely.
+            _TARGET_WORDS = 20
+            chunks: list = []
+            _pending: list = []
+            _pending_words = 0
+            for _sent in sentences:
+                _pending.append(_sent)
+                _pending_words += len(_sent.split())
+                if _pending_words >= _TARGET_WORDS:
+                    chunks.append(" ".join(_pending))
+                    _pending = []
+                    _pending_words = 0
+            if _pending:
+                chunks.append(" ".join(_pending))
+
             # 2. Shared state between producer and consumer
             _SENTINEL = object()          # signals "producer finished"
             audio_queue: queue.Queue = queue.Queue(maxsize=2)  # bounded: at most 2 chunks ahead
@@ -980,14 +999,14 @@ class IRISGateway:
             # 3. Synthesiser thread (producer)
             def _producer():
                 try:
-                    for sentence in sentences:
+                    for chunk in chunks:
                         if interrupted.is_set():
                             break
-                        audio_np = tts.synthesize(sentence)
+                        audio_np = tts.synthesize(chunk)
                         if audio_np is not None and len(audio_np) > 0:
                             audio_queue.put(audio_np)      # blocks if consumer is slow (back-pressure)
                         else:
-                            self._logger.debug(f"[Voice] TTS skipped empty/short: {sentence!r}")
+                            self._logger.debug(f"[Voice] TTS skipped empty/short chunk: {chunk[:40]!r}")
                 except Exception as exc:
                     self._logger.error(f"[Voice] Producer error: {exc}")
                 finally:
@@ -1020,9 +1039,9 @@ class IRISGateway:
                                 break
                         break
 
-                    # Greedily collect any already-synthesised chunks so they
-                    # are played in a single write() with no gaps between them.
-                    chunks = [chunk]
+                    # Greedily collect any already-synthesised audio arrays so
+                    # they are played in a single write() with no gaps between them.
+                    audio_arrays = [chunk]
                     sentinel_seen = False
                     while True:
                         try:
@@ -1032,10 +1051,10 @@ class IRISGateway:
                         if extra is _SENTINEL:
                             sentinel_seen = True
                             break
-                        chunks.append(extra)
+                        audio_arrays.append(extra)
 
                     import numpy as _np
-                    combined = _np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+                    combined = _np.concatenate(audio_arrays) if len(audio_arrays) > 1 else audio_arrays[0]
                     engine.pipeline.play_audio(combined)
 
                     if sentinel_seen:
