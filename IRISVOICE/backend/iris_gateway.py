@@ -825,6 +825,7 @@ class IRISGateway:
         """
         import asyncio
         loop = asyncio.get_running_loop()
+        _pipeline_ok = False
         try:
             # Pillar 1A: Send transcript as user bubble in ChatView
             await self._ws_manager.send_to_client(client_id, {
@@ -876,22 +877,27 @@ class IRISGateway:
             spoken = await loop.run_in_executor(None, agent_kernel.get_spoken_version, response)
             await loop.run_in_executor(None, self._speak_response, spoken)
 
-            # Done
-            await self._ws_manager.broadcast_to_session(session_id, {
-                "type": "listening_state",
-                "payload": {"state": "idle"}
-            })
+            _pipeline_ok = True
 
         except Exception as e:
             self._logger.error(f"[Voice] Pipeline error for session {session_id}: {e}", exc_info=True)
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "listening_state", "payload": {"state": "error"}
             })
-            # Auto-reset orb to idle after a brief pause so the error state is visible
+            # Brief error flash so the user can see something went wrong
             await asyncio.sleep(2.0)
+
+        finally:
+            # Always reset orb to idle — this fires whether the pipeline succeeded,
+            # raised an exception, or the client reconnected mid-response.
+            # Without this finally the orb can get stuck in "speaking" or
+            # "processing_conversation" if any broadcast above is lost.
             await self._ws_manager.broadcast_to_session(session_id, {
-                "type": "listening_state", "payload": {"state": "idle"}
+                "type": "listening_state",
+                "payload": {"state": "idle"}
             })
+            if _pipeline_ok:
+                self._logger.debug(f"[Voice] Pipeline complete for session {session_id}")
 
     def _prewarm_tts(self) -> None:
         """Pre-load LuxTTS and encode voice reference in a background thread at startup."""

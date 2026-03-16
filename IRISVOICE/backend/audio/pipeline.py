@@ -96,12 +96,20 @@ class AudioPipeline:
                 blocksize=self.frame_length
             )
             
-            # Start output stream
+            # Start output stream.
+            # blocksize is intentionally omitted (defaults to 0 = automatic).
+            # The input stream uses blocksize=frame_length so Porcupine receives
+            # exactly 512-frame chunks per callback.  The OUTPUT stream must NOT
+            # share that constraint — sd.OutputStream.write() raises
+            # SoundDeviceError if the audio array length is not an exact
+            # multiple of blocksize.  LuxTTS resamples 48 kHz → 16 kHz which
+            # produces lengths that are rarely multiples of 512, so nearly
+            # every write would fail and be silently swallowed, causing the
+            # choppy / missing-audio behaviour.
             self._output_stream = sd.OutputStream(
                 device=self.output_device,
                 channels=self.channels,
                 samplerate=self.sample_rate,
-                blocksize=self.frame_length
             )
             
             # Start streams

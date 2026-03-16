@@ -188,7 +188,14 @@ class WebSocketManager:
                     # Record send time BEFORE awaiting so the timestamp is
                     # accurate even if send_to_client takes a moment.
                     ping_sent_at = datetime.now()
-                    await self.send_to_client(client_id, {"type": "ping", "payload": {}})
+                    sent = await self.send_to_client(client_id, {"type": "ping", "payload": {}})
+                    if not sent:
+                        # send_to_client already called disconnect() for us when
+                        # the underlying write failed.  Stop the heartbeat loop
+                        # WITHOUT logging a spurious "did not respond to ping"
+                        # warning — the socket was simply already gone.
+                        logger.debug(f"Client {client_id} unreachable during ping — heartbeat stopping")
+                        break
                     logger.debug(f"Sent ping to client {client_id}")
 
                     # Wait for pong response
