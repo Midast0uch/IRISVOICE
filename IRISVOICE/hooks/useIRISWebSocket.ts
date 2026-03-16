@@ -168,8 +168,6 @@ export function useIRISWebSocket(
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
-  const pingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const pongTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const onWakeDetectedRef = useRef(onWakeDetected)
   const onNativeAudioResponseRef = useRef(onNativeAudioResponse)
 
@@ -197,14 +195,6 @@ export function useIRISWebSocket(
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
-    }
-    if (pingTimeoutRef.current) {
-      clearTimeout(pingTimeoutRef.current)
-      pingTimeoutRef.current = null
-    }
-    if (pongTimeoutRef.current) {
-      clearTimeout(pongTimeoutRef.current)
-      pongTimeoutRef.current = null
     }
     if (wsRef.current) {
       wsRef.current.close()
@@ -306,16 +296,6 @@ export function useIRISWebSocket(
         }
         setConnectionState("disconnected")
         wsRef.current = null
-
-        // Clear ping/pong timers
-        if (pingTimeoutRef.current) {
-          clearTimeout(pingTimeoutRef.current)
-          pingTimeoutRef.current = null
-        }
-        if (pongTimeoutRef.current) {
-          clearTimeout(pongTimeoutRef.current)
-          pongTimeoutRef.current = null
-        }
 
         // Fix 2 — if the connection was stable (≥ STABILITY_THRESHOLD ms), reset
         // the backoff counter so the next attempt is fast rather than at 30 s.
@@ -680,11 +660,10 @@ export function useIRISWebSocket(
       }
 
       case "pong": {
-        // Clear pong timeout on successful pong response (frontend-initiated ping)
-        if (pongTimeoutRef.current) {
-          clearTimeout(pongTimeoutRef.current)
-          pongTimeoutRef.current = null
-        }
+        // Backend responded to a pong — no action needed on the frontend.
+        // The frontend no longer sends its own pings; the backend drives the
+        // heartbeat.  This case is kept so the message doesn't fall through to
+        // the "unknown type" warning branch.
         break
       }
 
@@ -988,42 +967,13 @@ export function useIRISWebSocket(
     return cleanup
   }, [autoConnect, connect, cleanup])
 
-  // Keep-alive ping with pong timeout
-  useEffect(() => {
-    if (!isConnected) return
-
-    const sendPing = () => {
-      sendMessage("ping", {})
-      
-      // Set pong timeout — 30 s to match backend PONG_TIMEOUT.
-      // The previous 5 s window caused the frontend to close the connection
-      // whenever the asyncio event loop was busy with LLM inference or TTS
-      // synthesis and the pong reply was delayed.
-      pongTimeoutRef.current = setTimeout(() => {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn("[IRIS WebSocket] Pong timeout - connection may be lost")
-        }
-        // Close connection to trigger reconnect
-        if (wsRef.current) {
-          wsRef.current.close()
-        }
-      }, 30000)
-    }
-
-    // Send initial ping
-    sendPing()
-
-    // Ping every 30 seconds
-    const interval = setInterval(sendPing, 30000)
-
-    return () => {
-      clearInterval(interval)
-      if (pongTimeoutRef.current) {
-        clearTimeout(pongTimeoutRef.current)
-        pongTimeoutRef.current = null
-      }
-    }
-  }, [isConnected, sendMessage])
+  // No frontend-initiated heartbeat.
+  // The backend drives the ping/pong cycle (PING_INTERVAL=30s, PONG_TIMEOUT=30s).
+  // The frontend responds to backend pings with pong (see case "ping" in handleMessage).
+  // Having a competing frontend heartbeat that closes the socket on pong-timeout
+  // caused spurious disconnects whenever the backend asyncio event loop was briefly
+  // busy (TTS synthesis, model loading, subprocess calls) and the pong reply arrived
+  // a few seconds late.  Removing it eliminates that class of disconnect entirely.
 
   return {
     isConnected,

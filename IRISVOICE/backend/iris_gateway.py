@@ -1337,40 +1337,50 @@ class IRISGateway:
 
                 # Scan the local models/ directory for HuggingFace-format models
                 # (e.g. LFM2.5-1.2B-Instruct, LFM2-8B-A1B) that aren't in Ollama.
+                # NOTE: subprocess.run() blocks the asyncio event loop; use
+                # run_in_executor to perform the git worktree discovery off-thread.
                 try:
-                    import subprocess
                     from pathlib import Path
+                    import concurrent.futures as _cf
 
                     # Resolve project root (handles git worktrees)
                     project_dir = Path(__file__).parent.parent.resolve()
                     models_dir = project_dir / "models"
 
-                    # If we're in a worktree, also check the main repo's models dir
-                    candidates = [models_dir]
-                    try:
-                        result = subprocess.run(
-                            ["git", "rev-parse", "--show-toplevel"],
-                            capture_output=True, text=True, timeout=3,
-                            cwd=str(project_dir),
-                        )
-                        common = subprocess.run(
-                            ["git", "rev-parse", "--git-common-dir"],
-                            capture_output=True, text=True, timeout=3,
-                            cwd=str(project_dir),
-                        )
-                        if result.returncode == 0 and common.returncode == 0:
-                            wt_root = Path(result.stdout.strip()).resolve()
-                            main_root = Path(common.stdout.strip()).resolve().parent
-                            if wt_root != main_root:
-                                try:
-                                    rel = project_dir.relative_to(wt_root)
-                                    main_models = main_root / rel / "models"
-                                    if main_models != models_dir:
-                                        candidates.append(main_models)
-                                except ValueError:
-                                    pass
-                    except Exception:
-                        pass
+                    # If we're in a worktree, also check the main repo's models dir.
+                    # Run the blocking git commands in a thread so the event loop
+                    # stays free to handle WebSocket messages (including ping/pong).
+                    def _find_model_dirs():
+                        import subprocess
+                        dirs = [models_dir]
+                        try:
+                            result = subprocess.run(
+                                ["git", "rev-parse", "--show-toplevel"],
+                                capture_output=True, text=True, timeout=3,
+                                cwd=str(project_dir),
+                            )
+                            common = subprocess.run(
+                                ["git", "rev-parse", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=3,
+                                cwd=str(project_dir),
+                            )
+                            if result.returncode == 0 and common.returncode == 0:
+                                wt_root = Path(result.stdout.strip()).resolve()
+                                main_root = Path(common.stdout.strip()).resolve().parent
+                                if wt_root != main_root:
+                                    try:
+                                        rel = project_dir.relative_to(wt_root)
+                                        main_models = main_root / rel / "models"
+                                        if main_models != models_dir:
+                                            dirs.append(main_models)
+                                    except ValueError:
+                                        pass
+                        except Exception:
+                            pass
+                        return dirs
+
+                    loop = asyncio.get_event_loop()
+                    candidates = await loop.run_in_executor(None, _find_model_dirs)
 
                     ollama_ids = {m["id"] for m in available_models}
                     for mdir in candidates:
