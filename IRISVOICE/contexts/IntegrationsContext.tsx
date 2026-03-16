@@ -157,7 +157,14 @@ export function IntegrationsProvider({
   const [recommendations, setRecommendations] = useState<RecommendedIntegration[]>([]);
   const [preferencesLoading, setPreferencesLoading] = useState(false);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
-  
+  // Ref mirrors the state value so onclose closures can read the current count
+  // without adding reconnectAttempts to connect()'s useCallback deps.
+  // Adding reconnectAttempts to connect()'s deps caused a reconnect storm:
+  //   onclose → setReconnectAttempts → re-render → new connect fn → useEffect
+  //   cleanup calls disconnect() → useEffect immediately calls connect() again,
+  //   producing two simultaneous WebSocket connections on every reconnect.
+  const reconnectAttemptsRef = useRef(0);
+
   // WebSocket ref
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -209,27 +216,31 @@ export function IntegrationsProvider({
       ws.onopen = () => {
         console.log('[IntegrationsContext] WebSocket connected');
         setIsConnected(true);
+        reconnectAttemptsRef.current = 0;
         setReconnectAttempts(0);
         setError(null);
-        
+
         // Request integration list on connect
         sendMessage({ type: 'integration_list', payload: {} });
       };
-      
+
       ws.onclose = () => {
         console.log('[IntegrationsContext] WebSocket disconnected');
         setIsConnected(false);
         wsRef.current = null;
-        
-        // Attempt reconnection if not at max attempts
-        if (reconnectAttempts < maxReconnectAttempts) {
-          const nextAttempt = reconnectAttempts + 1;
+
+        // Use the ref (not state) for the backoff calculation so that this
+        // closure never becomes stale and never forces connect() to be recreated.
+        const currentAttempts = reconnectAttemptsRef.current;
+        if (currentAttempts < maxReconnectAttempts) {
+          const nextAttempt = currentAttempts + 1;
           const delay = Math.min(reconnectInterval * Math.pow(2, nextAttempt - 1), 30000);
-          
+
           console.log(`[IntegrationsContext] Reconnecting in ${delay}ms (attempt ${nextAttempt}/${maxReconnectAttempts})`);
-          
+
           reconnectTimeoutRef.current = setTimeout(() => {
-            setReconnectAttempts(nextAttempt);
+            reconnectAttemptsRef.current = nextAttempt;
+            setReconnectAttempts(nextAttempt); // display only — does NOT trigger connect() recreation
             connect();
           }, delay);
         } else {
@@ -270,7 +281,10 @@ export function IntegrationsProvider({
       console.error('[IntegrationsContext] Failed to create WebSocket:', e);
       setError('Failed to create WebSocket connection');
     }
-  }, [wsUrl, reconnectAttempts, maxReconnectAttempts, reconnectInterval]);
+  // reconnectAttempts intentionally omitted — use reconnectAttemptsRef instead to
+  // avoid recreating connect() on every retry, which would cause useEffect to fire
+  // disconnect()+connect() simultaneously with the setTimeout callback.
+  }, [wsUrl, maxReconnectAttempts, reconnectInterval]);
   
   // Send message through WebSocket
   const sendMessage = useCallback((message: WebSocketMessage): void => {
@@ -299,6 +313,7 @@ export function IntegrationsProvider({
   // Manual reconnect
   const reconnect = useCallback(() => {
     disconnect();
+    reconnectAttemptsRef.current = 0;
     setReconnectAttempts(0);
     setError(null);
     connect();

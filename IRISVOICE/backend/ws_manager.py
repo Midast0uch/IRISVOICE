@@ -21,8 +21,13 @@ class WebSocketManager:
     Includes ping/pong heartbeat mechanism to maintain connections.
     """
     
-    PING_INTERVAL = 30  # seconds
-    PONG_TIMEOUT = 5    # seconds
+    PING_INTERVAL = 30  # seconds between pings
+    PONG_TIMEOUT = 30   # seconds to wait for pong after sending ping
+    # PONG_TIMEOUT was previously 5 s, which caused spurious disconnects.
+    # During LLM inference + TTS synthesis the asyncio event loop can be
+    # backlogged for several seconds, preventing the pong message from being
+    # processed before the 5 s window expired.  30 s gives plenty of headroom
+    # while still catching genuinely dead connections (which never pong at all).
     
     def __init__(self, session_manager: Optional[SessionManager] = None, state_manager: Optional[StateManager] = None):
         self.active_connections: Dict[str, WebSocket] = {}
@@ -54,15 +59,31 @@ class WebSocketManager:
                 logger.info(
                     f"Client {client_id} reconnecting — replacing stale connection entry"
                 )
-                stale_ws = self.active_connections.pop(client_id)
-                # Cancel old heartbeat before closing stale socket
+                self.active_connections.pop(client_id)
+                # Cancel the stale heartbeat task.
                 if client_id in self._heartbeat_tasks:
                     self._heartbeat_tasks[client_id].cancel()
                     del self._heartbeat_tasks[client_id]
-                try:
-                    await stale_ws.close()
-                except Exception:
-                    pass  # already closed or in error state; ignore
+                # Do NOT call stale_ws.close() here.
+                # Starlette's WebSocket.close() immediately sets
+                # application_state = DISCONNECTED before sending the close
+                # frame.  If the old coroutine is mid-way through
+                # receive_text() — which checks application_state — it will
+                # raise RuntimeError("WebSocket is not connected. Need to call
+                # 'accept' first.") instead of the expected WebSocketDisconnect.
+                # That RuntimeError escapes to the except-Exception handler in
+                # websocket_endpoint, logs a spurious ERROR, and can run the
+                # finally block before the new socket is fully registered,
+                # disrupting the fresh connection.
+                #
+                # Correct behaviour: just evict the stale entry from the dict
+                # and cancel its heartbeat.  The old coroutine will receive a
+                # natural WebSocketDisconnect once the client closes the
+                # underlying TCP connection (which happens immediately in
+                # virtually all browser reconnect scenarios).  The
+                # owns_connection guard in the finally block of
+                # websocket_endpoint then prevents the stale coroutine from
+                # evicting the newly-registered socket.
 
             # Accept WebSocket connection with error handling
             try:
@@ -164,22 +185,27 @@ class WebSocketManager:
                 
                 # Send ping with error handling
                 try:
+                    # Record send time BEFORE awaiting so the timestamp is
+                    # accurate even if send_to_client takes a moment.
+                    ping_sent_at = datetime.now()
                     await self.send_to_client(client_id, {"type": "ping", "payload": {}})
                     logger.debug(f"Sent ping to client {client_id}")
-                    
+
                     # Wait for pong response
                     await asyncio.sleep(self.PONG_TIMEOUT)
-                    
-                    # Check if pong was received within timeout
-                    if client_id in self._last_pong:
-                        time_since_pong = (datetime.now() - self._last_pong[client_id]).total_seconds()
-                        if time_since_pong > self.PONG_TIMEOUT + self.PING_INTERVAL:
-                            logger.warning(
-                                f"Client {client_id} did not respond to ping within {self.PONG_TIMEOUT}s, disconnecting",
-                                extra={"client_id": client_id, "timeout": self.PONG_TIMEOUT}
-                            )
-                            self.disconnect(client_id)
-                            break
+
+                    # Reliable check: did we receive a pong AFTER we sent this ping?
+                    # Comparing timestamps avoids the old "time_since_pong > 35s"
+                    # arithmetic which fired spuriously when the asyncio event loop
+                    # was busy (LLM/TTS) and the pong landed just after the window.
+                    last_pong = self._last_pong.get(client_id)
+                    if last_pong is None or last_pong < ping_sent_at:
+                        logger.warning(
+                            f"Client {client_id} did not respond to ping within {self.PONG_TIMEOUT}s, disconnecting",
+                            extra={"client_id": client_id, "timeout": self.PONG_TIMEOUT}
+                        )
+                        self.disconnect(client_id)
+                        break
                 except Exception as e:
                     logger.error(
                         f"Error in heartbeat for client {client_id}: {e}",
@@ -219,30 +245,39 @@ class WebSocketManager:
         websocket = self.active_connections.get(client_id)
         if not websocket:
             return False
-        
+
         try:
             await websocket.send_json(message)
             return True
         except Exception as e:
             logger.error(f"Error sending to {client_id}: {e}")
-            self.disconnect(client_id)
+            # Identity check: only remove the stale socket that failed.
+            # A concurrent reconnect may have already replaced active_connections[client_id]
+            # with a fresh (accepted) socket — don't evict that new connection.
+            if self.active_connections.get(client_id) is websocket:
+                self.disconnect(client_id)
             return False
-    
+
     async def broadcast(self, message: dict, exclude_clients: Optional[Set[str]] = None):
         """Broadcast a message to all connected clients."""
         if exclude_clients is None:
             exclude_clients = set()
 
-        disconnected_clients = []
-        for client_id, websocket in self.active_connections.items():
+        # Snapshot the dict so mutations during iteration (reconnects) don't
+        # cause RuntimeError.  Store (client_id, websocket) pairs so the
+        # identity check below can avoid evicting a freshly-reconnected socket.
+        snapshot = list(self.active_connections.items())
+        disconnected: list[tuple[str, object]] = []
+        for client_id, websocket in snapshot:
             if client_id not in exclude_clients:
                 try:
                     await websocket.send_json(message)
                 except Exception:
-                    disconnected_clients.append(client_id)
-        
-        for client_id in disconnected_clients:
-            self.disconnect(client_id)
+                    disconnected.append((client_id, websocket))
+
+        for client_id, websocket in disconnected:
+            if self.active_connections.get(client_id) is websocket:
+                self.disconnect(client_id)
 
     async def broadcast_to_session(self, session_id: str, message: dict, exclude_clients: Optional[Set[str]] = None):
         """Broadcast a message to all clients in a specific session."""

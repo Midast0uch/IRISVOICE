@@ -152,26 +152,19 @@ class AudioPipeline:
     
     def play_audio(self, audio_data: np.ndarray):
         """Play audio through output stream"""
-        logger.info(f"[AudioPipeline] play_audio called with shape: {audio_data.shape}, dtype: {audio_data.dtype}")
-        
+        logger.debug(f"[AudioPipeline] play_audio: {len(audio_data)} frames, dtype={audio_data.dtype}")
+
         if not self._output_stream:
-            logger.warning(f"[AudioPipeline] Cannot play: output stream is not initialized (device: {self.output_device})")
+            logger.warning(f"[AudioPipeline] Cannot play: output stream not initialised (device: {self.output_device})")
             return
-        
+
         try:
             # sounddevice OutputStream defaults to float32.
             # Ensure the data is float32 and clamped to [-1.0, 1.0].
-            # Previously this converted to int16 bytes which caused a
-            # "dtype mismatch: bytes vs float32" error in sd.OutputStream.write().
             audio_float = np.clip(audio_data.astype(np.float32), -1.0, 1.0)
-
-            logger.info(f"[AudioPipeline] Writing {len(audio_float)} frames to output stream...")
             self._output_stream.write(audio_float)
-            logger.info("[AudioPipeline] Write complete")
         except Exception as e:
             logger.error(f"[AudioPipeline] Output error: {e}")
-            import traceback
-            traceback.print_exc()
     
     def clear_buffer(self):
         """Clear audio buffer"""

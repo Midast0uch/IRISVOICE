@@ -182,13 +182,43 @@ class VoiceCommandHandler:
                 if self._whisper is None:
                     from faster_whisper import WhisperModel
                     logger.info("[VoiceCommand] Loading faster-whisper tiny/int8 on CPU...")
+                    # Always use CPU for STT even when CUDA is available.
+                    # LuxTTS already owns the GPU for synthesis; keeping STT on CPU
+                    # avoids CUDA context serialisation and is fast enough — tiny/int8
+                    # transcribes a 3 s clip in ~80 ms on any modern CPU.
                     self._whisper = WhisperModel(
                         "tiny",
                         device="cpu",
                         compute_type="int8",
+                        num_workers=1,          # single-threaded is fine for our latency target
+                        cpu_threads=4,          # cap so we don't starve the LuxTTS thread
                     )
                     logger.info("[VoiceCommand] faster-whisper ready")
         return self._whisper
+
+    def warm_up(self) -> None:
+        """
+        Pre-load the Whisper model and run one silent inference in a daemon
+        thread so the FIRST real transcription has zero model-load latency.
+
+        Call this once during backend startup (after AudioEngine initialises).
+        Safe to call multiple times — subsequent calls are no-ops.
+        """
+        if self._whisper is not None:
+            return  # already loaded
+
+        def _do_warm_up():
+            try:
+                model = self._get_whisper()
+                # Run a silent 0.5 s array through the pipeline to trigger
+                # any lazy ONNX/CTranslate2 kernel compilation.
+                silence = np.zeros(int(self.sample_rate * 0.5), dtype=np.float32)
+                list(model.transcribe(silence, language="en", beam_size=1)[0])
+                logger.info("[VoiceCommand] Whisper warm-up complete — first transcription will be instant")
+            except Exception as exc:
+                logger.warning(f"[VoiceCommand] Whisper warm-up failed (non-fatal): {exc}")
+
+        threading.Thread(target=_do_warm_up, daemon=True, name="iris-stt-warmup").start()
 
     def _run_transcription(self) -> None:
         """
@@ -223,6 +253,10 @@ class VoiceCommandHandler:
             segments, _ = whisper.transcribe(
                 audio_np,
                 language="en",
+                beam_size=1,                # 3× faster than default beam_size=5; quality
+                                            # loss is negligible for conversational STT on tiny
+                best_of=1,                  # no random sampling — deterministic, fastest path
+                condition_on_previous_text=False,   # prevents hallucination drift between clips
                 vad_filter=True,            # faster-whisper built-in VAD for clean segments
                 vad_parameters={"min_silence_duration_ms": 300},
             )

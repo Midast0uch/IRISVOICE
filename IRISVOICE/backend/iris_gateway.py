@@ -6,10 +6,42 @@ Routes incoming WebSocket messages to appropriate handlers based on message type
 import asyncio
 import json
 import logging
+import queue
+import re
+import threading
 import time
 import httpx
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
+
+# ---------------------------------------------------------------------------
+# Pre-compiled regex patterns — used by _clean_for_speech and _speak_response.
+# Compiled once at import time to avoid re.compile() overhead on every call.
+# ---------------------------------------------------------------------------
+_RE_EMOJI = re.compile(
+    "[\U0001F300-\U0001F9FF"   # misc symbols, emoticons, transport, food…
+    "\U00002702-\U000027B0"    # dingbats
+    "\U0001FA00-\U0001FA6F"    # chess, medical …
+    "\U0001FA70-\U0001FAFF"    # clothing, science …
+    "\U00002500-\U00002BEF"    # CJK / box-drawing misc
+    "\U0001F004-\U0001F0CF"    # mahjong / playing cards
+    "\U0001F170-\U0001F171"    # blood-type buttons
+    "\U0001F191-\U0001F251"    # enclosed characters
+    "]+",
+    flags=re.UNICODE,
+)
+_RE_MD_HEADING  = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_RE_MD_BULLET   = re.compile(r"^\s*[-*•]\s+", re.MULTILINE)
+_RE_MD_BOLD     = re.compile(r"\*\*(.*?)\*\*")
+_RE_MD_ITALIC   = re.compile(r"\*(.*?)\*")
+_RE_MD_CODE     = re.compile(r"`(.*?)`")
+_RE_EXCLAIM     = re.compile(r"!+")
+_RE_QUESTION_DOT = re.compile(r"\?\.")
+_RE_MULTI_DOT   = re.compile(r"\.{2,}")
+_RE_MULTI_SPACE = re.compile(r" +")
+_RE_MULTI_NL    = re.compile(r"\n{2,}")
+# Sentence boundary: punctuation followed by whitespace (used in split + get_spoken_version)
+_RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
 
 from .ws_manager import WebSocketManager, get_websocket_manager
 from .state_manager import StateManager, get_state_manager
@@ -675,11 +707,18 @@ class IRISGateway:
             if msg_type == "voice_command_start":
                 self._logger.info(f"[Session: {session_id}] Voice command start")
 
-                # Interrupt any TTS currently playing so the user's new voice turn
-                # isn't drowned out by the previous response being spoken.
+                # Interrupt TTS only if it is currently playing.
+                # Calling interrupt_speech() unconditionally sets
+                # _speech_interrupted = True and the flag persists until the
+                # playback loop in _speak_response() consumes it.  If no TTS
+                # was running, the flag stays True and the *next* TTS response
+                # bails immediately at the is_speech_interrupted() check —
+                # producing silence even though the orb animates as "speaking".
                 try:
                     from .audio.engine import get_audio_engine
-                    get_audio_engine().interrupt_speech()
+                    engine = get_audio_engine()
+                    if engine._tts_active:
+                        engine.interrupt_speech()
                 except Exception:
                     pass  # non-fatal — audio engine may not be up yet
 
@@ -867,43 +906,105 @@ class IRISGateway:
         except Exception as e:
             self._logger.warning(f"[IRISGateway] TTS pre-warm failed (non-fatal): {e}")
 
+    @staticmethod
+    def _clean_for_speech(text: str) -> str:
+        """Sanitise *text* before sending to the TTS engine.
+
+        Removes emoji (which LuxTTS spells out letter-by-letter or skips
+        unpredictably), strips markdown formatting, and replaces exclamation
+        marks with periods so the cloned voice delivers a calm, measured tone
+        instead of the overly energetic delivery that occurs when the model
+        generates sentences ending in '!'.
+        """
+        # Use module-level pre-compiled patterns — no per-call re.compile() cost.
+        text = _RE_EMOJI.sub("", text)
+        text = _RE_MD_HEADING.sub("", text)
+        text = _RE_MD_BULLET.sub("", text)
+        text = _RE_MD_BOLD.sub(r"\1", text)
+        text = _RE_MD_ITALIC.sub(r"\1", text)
+        text = _RE_MD_CODE.sub(r"\1", text)
+        text = _RE_EXCLAIM.sub(".", text)
+        text = _RE_QUESTION_DOT.sub("?", text)
+        text = _RE_MULTI_DOT.sub(".", text)
+        text = _RE_MULTI_SPACE.sub(" ", text)
+        text = _RE_MULTI_NL.sub("\n", text)
+        return text.strip()
+
     def _speak_response(self, text: str) -> None:
         """TTS + audio playback via TTSManager. Sync — call via run_in_executor.
 
-        Splits the response into sentences so the first sentence plays as soon as
-        it is synthesized rather than waiting for the entire paragraph to be ready.
+        Producer-consumer pipeline for minimal first-word latency:
+          • Synthesiser thread: pops sentences one-by-one, synthesises each,
+            pushes float32 arrays onto an audio_queue.
+          • This thread (consumer): pops from audio_queue and plays immediately,
+            so playback of sentence N overlaps with synthesis of sentence N+1.
+
+        Total time drops from  Σ(synth_i + play_i)
+                           to  synth_0 + Σ max(play_i, synth_{i+1}) + play_last
         """
-        import re
         try:
             from .agent.tts import get_tts_manager
             from .audio.engine import get_audio_engine
-            tts = get_tts_manager()
+            tts    = get_tts_manager()
             engine = get_audio_engine()
             if not engine.pipeline:
                 return
 
-            # Split at sentence boundaries (.  !  ?  …  newline)
-            sentences = re.split(r'(?<=[.!?…])\s+|\n+', text.strip())
-            sentences = [s.strip() for s in sentences if s.strip()]
+            # 1. Sanitise text and split into sentences upfront (cheap, CPU-only)
+            text      = self._clean_for_speech(text)
+            sentences = [s.strip() for s in _RE_SENTENCE_SPLIT.split(text.strip()) if s.strip()]
             if not sentences:
                 return
 
-            # Suppress Porcupine while IRIS is speaking:
-            # (1) prevents speaker audio from bleeding into the mic and causing false detections
-            # (2) gives the LuxTTS synthesis thread full CPU without audio-callback competition
+            # 2. Shared state between producer and consumer
+            _SENTINEL = object()          # signals "producer finished"
+            audio_queue: queue.Queue = queue.Queue(maxsize=2)  # bounded: at most 2 chunks ahead
+            interrupted = threading.Event()
+
+            # 3. Synthesiser thread (producer)
+            def _producer():
+                try:
+                    for sentence in sentences:
+                        if interrupted.is_set():
+                            break
+                        audio_np = tts.synthesize(sentence)
+                        if audio_np is not None and len(audio_np) > 0:
+                            audio_queue.put(audio_np)      # blocks if consumer is slow (back-pressure)
+                        else:
+                            self._logger.debug(f"[Voice] TTS skipped empty/short: {sentence!r}")
+                except Exception as exc:
+                    self._logger.error(f"[Voice] Producer error: {exc}")
+                finally:
+                    audio_queue.put(_SENTINEL)             # always signal done
+
+            # 4. Suppress Porcupine while IRIS is speaking
             engine.set_tts_active(True)
             try:
-                for sentence in sentences:
-                    # Stop between sentences if wake word or double-click triggered
-                    if engine.is_speech_interrupted():
-                        self._logger.info("[Voice] TTS interrupted — new voice command started")
+                producer_thread = threading.Thread(target=_producer, daemon=True, name="tts-producer")
+                producer_thread.start()
+
+                # Consumer: play each chunk as soon as it arrives
+                while True:
+                    chunk = audio_queue.get()
+                    if chunk is _SENTINEL:
                         break
-                    audio_np = tts.synthesize(sentence)
-                    if audio_np is not None and len(audio_np) > 0:
-                        engine.pipeline.play_audio(audio_np)
+                    if engine.is_speech_interrupted():
+                        interrupted.set()
+                        self._logger.info("[Voice] TTS interrupted — draining queue")
+                        # Drain remaining items so the producer thread can unblock
+                        while not audio_queue.empty():
+                            try:
+                                audio_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                        break
+                    engine.pipeline.play_audio(chunk)
+
+                producer_thread.join(timeout=5)
             finally:
-                # Always re-enable wake word detection, even if synthesis raised
+                # Always re-enable wake word detection, even if an error occurred
                 engine.set_tts_active(False)
+
         except Exception as e:
             self._logger.error(f"[Voice] TTS error: {e}")
 

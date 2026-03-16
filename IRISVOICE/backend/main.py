@@ -138,6 +138,11 @@ async def lifespan(app: FastAPI):
         voice_handler = VoiceCommandHandler(audio_engine)
         app.state.voice_handler = voice_handler
 
+        # Pre-load faster-whisper in a background thread so the first real
+        # transcription after a wake word has no model-load latency.
+        voice_handler.warm_up()
+        logger.info("  - faster-whisper warm-up started in background")
+
         logger.info("  - Initializing IRIS Gateway...")
         iris_gateway = get_iris_gateway()
         app.state.iris_gateway = iris_gateway
@@ -151,15 +156,34 @@ async def lifespan(app: FastAPI):
         async def on_wake_word(wake_word_name: str):
             """
             Called from AudioEngine when Porcupine detects the wake word.
-            Simulates a voice_command_start on the most-recently-active session.
+            Simulates a voice_command_start on the main UI session.
+
+            Routing priority:
+            1. session_iris (the main IRIS UI client — always preferred)
+            2. Any active session whose name does NOT contain "integration"
+            3. First available session as last resort
+
+            This prevents wake words from being accidentally routed to the
+            iris_integration session (a background session that connects before
+            the main UI session and would otherwise always be first in the list).
             """
             try:
                 ws_manager = get_websocket_manager()
-                active_sessions = ws_manager.get_active_session_ids()
-                if not active_sessions:
-                    logger.warning("[WakeWord] Wake word detected but no active sessions")
-                    return
-                session_id = active_sessions[0]
+
+                # Priority 1: the canonical main-UI session for client "iris"
+                session_id = ws_manager.get_session_id_for_client("iris")
+
+                if not session_id:
+                    # Priority 2: any active session that is not an integration session
+                    active_sessions = ws_manager.get_active_session_ids()
+                    if not active_sessions:
+                        logger.warning("[WakeWord] Wake word detected but no active sessions")
+                        return
+                    session_id = next(
+                        (s for s in active_sessions if "integration" not in s),
+                        active_sessions[0]
+                    )
+
                 client_ids = ws_manager.get_clients_for_session(session_id)
                 client_id = client_ids[0] if client_ids else None
                 if client_id:
@@ -169,6 +193,8 @@ async def lifespan(app: FastAPI):
                         {"type": "voice_command_start"},
                         auto_stop=True
                     )
+                else:
+                    logger.warning(f"[WakeWord] Session {session_id} has no connected clients")
             except Exception as e:
                 logger.error(f"[WakeWord] Error routing wake word: {e}")
 
@@ -665,24 +691,45 @@ async def websocket_endpoint(
 
     except WebSocketDisconnect:
         logger.info(f"Client {client_id} disconnected.")
-        # GAP-11 FIX: Clean up session resources on disconnect
-        if active_session_id:
+    except RuntimeError as e:
+        # Starlette raises RuntimeError("WebSocket is not connected. Need to
+        # call 'accept' first.") when receive_text() is called on a socket
+        # whose application_state is no longer CONNECTED.  This happens when
+        # the client reconnects and ws_manager.connect() (now fixed to NOT call
+        # stale_ws.close()) replaces the stale entry — the old coroutine's
+        # receive_text() will eventually see a disconnect naturally.  Log at
+        # INFO, not ERROR, so it doesn't look like a crash.
+        if "WebSocket is not connected" in str(e) or "accept" in str(e):
+            logger.info(f"Client {client_id}: stale socket superseded by reconnect (normal)")
+        else:
+            logger.error(f"Error in WebSocket for client {client_id}: {e}")
+    except Exception as e:
+        logger.error(f"Error in WebSocket for client {client_id}: {e}")
+    finally:
+        # Race-condition guard: compute ownership once and reuse for both
+        # cleanup_session and disconnect.
+        #
+        # A fast reconnect calls ws_manager.connect() which pops the stale
+        # entry, accepts the new socket, and re-inserts it — all BEFORE this
+        # finally block executes.  If we blindly cleaned up the session or
+        # called disconnect() here we would:
+        #   1. Tear down the session the new connection just set up (causing
+        #      it to immediately fail and trigger another reconnect loop).
+        #   2. Evict the new socket from active_connections, orphaning it and
+        #      producing "WebSocket is not connected. Need to call 'accept'
+        #      first." on the very next send/receive.
+        #
+        # By checking identity we only clean up when THIS coroutine still owns
+        # the connection — i.e., this was a normal disconnect, not a reconnect.
+        owns_connection = ws_manager.active_connections.get(client_id) is websocket
+        if active_session_id and owns_connection:
             try:
                 iris_gateway = get_iris_gateway()
                 await iris_gateway.cleanup_session(active_session_id)
             except Exception as cleanup_error:
                 logger.error(f"Error cleaning up session {active_session_id}: {cleanup_error}")
-    except Exception as e:
-        logger.error(f"Error in WebSocket for client {client_id}: {e}")
-    finally:
-        # GAP-11 FIX: Ensure cleanup happens even on errors
-        if active_session_id:
-            try:
-                iris_gateway = get_iris_gateway()
-                await iris_gateway.cleanup_session(active_session_id)
-            except Exception as cleanup_error:
-                logger.error(f"Error in final cleanup for session {active_session_id}: {cleanup_error}")
-        ws_manager.disconnect(client_id)
+        if owns_connection:
+            ws_manager.disconnect(client_id)
 
 
 # ============================================================================

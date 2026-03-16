@@ -673,8 +673,8 @@ export function useIRISWebSocket(
       case "ping": {
         // Backend-initiated heartbeat ping — respond immediately to keep connection alive.
         // The backend's _heartbeat_loop in ws_manager.py sends a ping every 30s and
-        // disconnects the client if no pong arrives within 5s. Without this handler the
-        // connection is forcibly closed every ~35s causing the recurring reconnect loop.
+        // disconnects the client if no pong arrives within 30s (PONG_TIMEOUT).
+        // Without this handler the connection is forcibly closed every ~60s.
         sendMessage("pong", {})
         break
       }
@@ -995,7 +995,10 @@ export function useIRISWebSocket(
     const sendPing = () => {
       sendMessage("ping", {})
       
-      // Set pong timeout (5 seconds)
+      // Set pong timeout — 30 s to match backend PONG_TIMEOUT.
+      // The previous 5 s window caused the frontend to close the connection
+      // whenever the asyncio event loop was busy with LLM inference or TTS
+      // synthesis and the pong reply was delayed.
       pongTimeoutRef.current = setTimeout(() => {
         if (process.env.NODE_ENV !== 'production') {
           console.warn("[IRIS WebSocket] Pong timeout - connection may be lost")
@@ -1004,7 +1007,7 @@ export function useIRISWebSocket(
         if (wsRef.current) {
           wsRef.current.close()
         }
-      }, 5000)
+      }, 30000)
     }
 
     // Send initial ping

@@ -689,12 +689,28 @@ class AgentKernel:
                 self._pending_thinking = thinking
                 return clean
 
+            # No provider matched — this session's kernel has not been configured yet.
+            # Return an informative message instead of None (which causes a TypeError
+            # in the caller when it tries response[:50]).
+            logger.error(
+                f"[AgentKernel] _respond_direct: no model provider matched for session "
+                f"'{self.session_id}' (provider={self._model_provider!r}, "
+                f"model={self._selected_reasoning_model!r}). "
+                "Was set_model_selection() called for this session?"
+            )
+            return (
+                "I'm not connected to a language model yet. "
+                "Please select a model in IRIS settings and try again."
+            )
+
         except Exception as e:
             logger.error(f"[AgentKernel] Direct response error: {e}", exc_info=True)
             raise
 
-    # Word count above which we generate a shorter spoken variant for TTS.
+    # Word count above which we extract a shorter spoken variant for TTS.
     _SPOKEN_WORD_LIMIT: int = 40
+    # Maximum spoken word count (first-N-sentences extraction hard cap).
+    _SPOKEN_MAX_WORDS: int = 60
 
     def get_spoken_version(self, text: str) -> str:
         """Return a TTS-friendly spoken variant of *text*.
@@ -702,56 +718,37 @@ class AgentKernel:
         For short responses (≤ _SPOKEN_WORD_LIMIT words) the original text is
         returned unchanged — it is already suitable for speech.
 
-        For longer responses a second, fast LLM call is made asking the model
-        to distil the answer into 1-2 conversational sentences.  The full
-        text still goes to ChatView; only this shorter version is spoken.
-
-        Falls back to the original text if the LLM call fails or returns
-        nothing useful.
+        For longer responses the first 1-2 sentences are extracted and returned.
+        A second LLM call was previously used here, but Qwen3 models generate
+        3 000–4 000 thinking tokens even with enable_thinking=False, which
+        exhausts the KV cache and adds 30+ seconds of latency per utterance.
+        The sentence-extraction approach produces comparable quality with zero
+        additional latency and no risk of KV-cache overflow.
         """
+        import re
+
         if len(text.split()) <= self._SPOKEN_WORD_LIMIT:
             return text
 
-        prompt = (
-            "The following is a detailed AI response. "
-            "Rewrite it as 1-2 short spoken sentences in a casual, conversational tone. "
-            "No bullet points, no markdown, no lists — just natural speech a voice assistant would say:\n\n"
-            f"{text}"
-        )
-        try:
-            if self._model_provider == "lmstudio":
-                client = self._get_lmstudio_client()
-                sel = self._selected_reasoning_model or "local-model"
-                resp = client.chat.completions.create(
-                    model=sel,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=-1,    # unlimited — local model, let it finish cleanly
-                    temperature=0.5,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                )
-                spoken = self._strip_thinking(resp.choices[0].message.content or "")
-                if spoken.strip():
-                    logger.debug(f"[AgentKernel] Spoken version: {spoken!r}")
-                    return spoken
+        # Split on sentence-ending punctuation followed by whitespace.
+        # Keep the delimiter attached to the sentence it ends.
+        sentences = re.split(r'(?<=[.!?…])\s+', text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
 
-            if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
-                import requests as _req
-                r = _req.post(
-                    "http://localhost:11434/api/chat",
-                    json={
-                        "model": self._selected_reasoning_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": False,
-                    },
-                    timeout=20,
-                )
-                if r.status_code == 200:
-                    spoken = self._strip_thinking(r.json().get("message", {}).get("content", ""))
-                    if spoken.strip():
-                        return spoken
+        spoken_words: list[str] = []
+        for sentence in sentences:
+            words = sentence.split()
+            if spoken_words and len(spoken_words) + len(words) > self._SPOKEN_MAX_WORDS:
+                break
+            spoken_words.extend(words)
+            # Stop after the first sentence if we already have enough words.
+            if len(spoken_words) >= self._SPOKEN_WORD_LIMIT:
+                break
 
-        except Exception as e:
-            logger.warning(f"[AgentKernel] get_spoken_version LLM call failed: {e}")
+        spoken = " ".join(spoken_words).strip()
+        if spoken:
+            logger.debug(f"[AgentKernel] Spoken version ({len(spoken_words)} words): {spoken!r}")
+            return spoken
 
         return text  # fallback: speak full response
 
@@ -1042,6 +1039,9 @@ class AgentKernel:
                 self._conversation_memory.add_message("assistant", response)
             except Exception:
                 pass
+            if response is None:
+                logger.error("[AgentKernel] _respond_direct returned None — returning fallback")
+                response = "I wasn't able to generate a response. Please check the model connection."
             logger.info(f"[AgentKernel] Direct response: {response[:50]}...")
             return response
 
@@ -2133,6 +2133,20 @@ If any tools failed, address those issues in your response.
                 f"[AgentKernel] Model selection updated: reasoning={reasoning_model}, "
                 f"tool_execution={tool_execution_model}, provider={self._model_provider}"
             )
+
+            # Propagate to all peer kernels so secondary sessions (e.g.
+            # session_iris_integration used by the wake-word path) stay in sync
+            # with the model the user just selected in the main UI session.
+            for peer_id, peer_kernel in _agent_kernel_instances.items():
+                if peer_kernel is not self:
+                    peer_kernel._selected_reasoning_model = reasoning_model
+                    peer_kernel._selected_tool_execution_model = tool_execution_model
+                    if model_provider:
+                        peer_kernel._model_provider = model_provider
+                    logger.debug(
+                        f"[AgentKernel] Propagated model config to peer session '{peer_id}'"
+                    )
+
             return True
 
         except Exception as e:
@@ -2204,6 +2218,34 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
                 logger.info(f"[AgentKernel] Memory interface wired for session {session_id}")
         except Exception as e:
             logger.warning(f"[AgentKernel] Memory interface not available for session {session_id}: {e}")
+
+        # Inherit model configuration from any already-configured kernel.
+        #
+        # Context: the user configures a model once (in session_iris / the main UI
+        # session).  Secondary sessions — such as session_iris_integration which is
+        # created when the wake-word fires — are spun up lazily with no model
+        # provider set.  Without this inheritance every wake-word-triggered response
+        # returns None from _respond_direct, crashing the voice pipeline.
+        #
+        # We look for the first peer kernel whose provider is not the default
+        # "uninitialized" sentinel and copy its full model configuration.
+        if kernel._model_provider == "uninitialized":
+            for peer_id, peer_kernel in _agent_kernel_instances.items():
+                if peer_kernel._model_provider not in (None, "uninitialized"):
+                    kernel.set_model_selection(
+                        reasoning_model=peer_kernel._selected_reasoning_model,
+                        tool_execution_model=peer_kernel._selected_tool_execution_model,
+                        model_provider=peer_kernel._model_provider,
+                    )
+                    # Also copy the LM Studio endpoint in case it was customised.
+                    kernel._lmstudio_endpoint = peer_kernel._lmstudio_endpoint
+                    logger.info(
+                        f"[AgentKernel] Session '{session_id}' inherited model config "
+                        f"from '{peer_id}' "
+                        f"(provider={peer_kernel._model_provider!r}, "
+                        f"model={peer_kernel._selected_reasoning_model!r})"
+                    )
+                    break
 
         _agent_kernel_instances[session_id] = kernel
 

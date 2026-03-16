@@ -28,6 +28,46 @@ os.environ.setdefault('HF_HUB_DISABLE_SYMLINKS_WARNING', '1')
 # Now import and run uvicorn
 import uvicorn
 
+# ---------------------------------------------------------------------------
+# Port cleanup: kill any existing process holding port 8000 so we never
+# see "error while attempting to bind on address ('127.0.0.1', 8000)".
+# ---------------------------------------------------------------------------
+def _kill_port(port: int) -> None:
+    """Terminate any process listening on *port* (Windows + Unix)."""
+    import subprocess
+    try:
+        if sys.platform == "win32":
+            # netstat -ano lists all TCP listeners; find our port, extract PID
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True
+            )
+            for line in result.stdout.splitlines():
+                if f":{port} " in line and "LISTENING" in line:
+                    parts = line.split()
+                    pid = int(parts[-1])
+                    if pid and pid != os.getpid():
+                        subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                       capture_output=True)
+                        print(f"   Killed stale process PID {pid} on port {port}")
+        else:
+            # lsof -ti :<port> returns PID(s) listening on that port
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True, text=True
+            )
+            for pid_str in result.stdout.strip().splitlines():
+                pid = int(pid_str)
+                if pid and pid != os.getpid():
+                    os.kill(pid, signal.SIGTERM)
+                    print(f"   Killed stale process PID {pid} on port {port}")
+    except Exception as exc:
+        # Non-fatal: if we can't kill the old process, uvicorn will fail with
+        # a clear bind error rather than silently misbehaving.
+        print(f"   Warning: could not clear port {port}: {exc}")
+
+_kill_port(8000)
+
 # Global flag for graceful shutdown
 shutdown_flag = False
 

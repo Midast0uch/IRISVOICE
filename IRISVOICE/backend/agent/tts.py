@@ -181,7 +181,7 @@ class TTSManager:
             peak = np.abs(audio).max()
             if peak > 0:
                 audio = audio / peak * 0.9
-            logger.info(f"[TTSManager] LuxTTS synthesized {len(audio)} samples")
+            logger.debug(f"[TTSManager] LuxTTS synthesized {len(audio)} samples ({len(audio)/16000:.2f}s)")
             return audio
         except RuntimeError as e:
             if "Kernel size can't be greater than actual input size" in str(e):
