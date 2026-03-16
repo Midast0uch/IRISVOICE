@@ -68,6 +68,11 @@ class AudioEngine:
         # TTS interrupt: set True to stop in-progress speech at the next sentence boundary
         self._speech_interrupted: bool = False
 
+        # TTS active: Porcupine skips wake-word detection while IRIS is speaking to
+        # (a) avoid false triggers from speaker audio bleeding into the mic, and
+        # (b) reduce CPU load so TTS synthesis threads aren't starved.
+        self._tts_active: bool = False
+
         try:
             self._main_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -222,6 +227,17 @@ class AudioEngine:
         """Set callback fired when wake word is detected. callback(wake_word_name: str) -> None"""
         self._on_wake_word_detected = callback
 
+    def set_tts_active(self, active: bool) -> None:
+        """Mark TTS playback as active/inactive.
+
+        While active, Porcupine wake-word processing is suppressed:
+        - Prevents speaker output from bleeding into the mic and triggering false detections.
+        - Reduces CPU load so the LuxTTS synthesis thread is not starved of frames.
+        Call set_tts_active(True) before the first sentence plays and
+        set_tts_active(False) once playback finishes.
+        """
+        self._tts_active = active
+
     def interrupt_speech(self) -> None:
         """Signal any in-progress TTS playback to stop at the next sentence boundary.
 
@@ -316,8 +332,8 @@ class AudioEngine:
         No longer streams every frame to lfm_audio_manager.
         """
         try:
-            # Wake word detection (only when Porcupine is initialized)
-            if self._porcupine_initialized and self._porcupine:
+            # Wake word detection (only when Porcupine is initialized and TTS is not playing)
+            if self._porcupine_initialized and self._porcupine and not self._tts_active:
                 # Convert float32 [-1,1] → int16 PCM for Porcupine
                 pcm_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16).tolist()
                 frame_len = self._porcupine.frame_length

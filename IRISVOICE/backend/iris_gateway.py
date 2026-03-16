@@ -884,14 +884,22 @@ class IRISGateway:
             if not sentences:
                 return
 
-            for sentence in sentences:
-                # Stop between sentences if wake word or double-click triggered
-                if engine.is_speech_interrupted():
-                    self._logger.info("[Voice] TTS interrupted — new voice command started")
-                    break
-                audio_np = tts.synthesize(sentence)
-                if audio_np is not None and len(audio_np) > 0:
-                    engine.pipeline.play_audio(audio_np)
+            # Suppress Porcupine while IRIS is speaking:
+            # (1) prevents speaker audio from bleeding into the mic and causing false detections
+            # (2) gives the LuxTTS synthesis thread full CPU without audio-callback competition
+            engine.set_tts_active(True)
+            try:
+                for sentence in sentences:
+                    # Stop between sentences if wake word or double-click triggered
+                    if engine.is_speech_interrupted():
+                        self._logger.info("[Voice] TTS interrupted — new voice command started")
+                        break
+                    audio_np = tts.synthesize(sentence)
+                    if audio_np is not None and len(audio_np) > 0:
+                        engine.pipeline.play_audio(audio_np)
+            finally:
+                # Always re-enable wake word detection, even if synthesis raised
+                engine.set_tts_active(False)
         except Exception as e:
             self._logger.error(f"[Voice] TTS error: {e}")
 

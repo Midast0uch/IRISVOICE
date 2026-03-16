@@ -37,7 +37,7 @@ class WakeConfig:
             "wake_word_enabled": True,
             "wake_phrase": "jarvis",  # Default to Jarvis (builtin)
             "custom_model_path": None,  # Path to custom .ppn file; None = use builtin
-            "detection_sensitivity": 0.5,  # 0.0-1.0; maps from UI slider 1-10
+            "detection_sensitivity": 0.65,  # 0.0-1.0; raised from 0.5 — catches more accent/pronunciation variations
             "activation_sound": True,
             "sleep_timeout": 60,  # seconds
         }

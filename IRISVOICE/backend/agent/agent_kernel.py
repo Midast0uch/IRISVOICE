@@ -513,6 +513,39 @@ class AgentKernel:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _needs_thinking(text: str) -> bool:
+        """
+        Return True only for messages that genuinely benefit from chain-of-thought
+        reasoning.  Simple conversational questions and greetings skip thinking mode,
+        cutting latency from ~30s to ~5s on Qwen3-9B.
+
+        Thinking is reserved for: multi-step analysis, code/debugging, planning,
+        comparisons, math, and anything that asks the model to reason deeply.
+        """
+        t = text.lower().strip()
+
+        # Very short messages are almost always conversational
+        if len(t.split()) < 6:
+            return False
+
+        THINKING_TRIGGERS = [
+            # Reasoning keywords
+            "why ", "how does", "how do", "explain", "analyse", "analyze",
+            "compare", "difference between", "pros and cons", "trade-off",
+            "step by step", "walk me through", "break down",
+            # Code / debugging
+            "debug", "fix the", "what's wrong", "error in", "refactor",
+            "write a function", "write code", "implement", "algorithm",
+            # Planning / strategy
+            "plan", "strategy", "best way to", "should i", "recommend",
+            "what would you do", "help me design", "architect",
+            # Math / logic
+            "calculate", "compute", "solve", "equation", "proof",
+            "if ", "given that", "assuming",
+        ]
+        return any(trigger in t for trigger in THINKING_TRIGGERS)
+
+    @staticmethod
     def _parse_thinking(text: str) -> tuple:
         """Split model output into (thinking: str, response: str).
 
@@ -611,16 +644,15 @@ class AgentKernel:
             if self._model_provider == "lmstudio":
                 client = self._get_lmstudio_client()
                 sel = self._selected_reasoning_model or "local-model"
+                # Only enable thinking for complex queries — skips 300-1000 extra tokens
+                # for simple conversational messages, cutting latency from ~30s → ~5s.
+                use_thinking = self._needs_thinking(text)
                 resp = client.chat.completions.create(
                     model=sel,
                     messages=messages,
                     max_tokens=-1,    # -1 = unlimited for LM Studio (local model, no billing cap)
                     temperature=0.6,  # Qwen3 recommended; slightly more decisive
-                    # Thinking enabled — model reasons when it needs to.
-                    # _parse_thinking splits the <think> block from the clean response;
-                    # the thinking is stored in _pending_thinking for ChatView to display
-                    # as a collapsible section, leaving the response itself clean.
-                    extra_body={"chat_template_kwargs": {"enable_thinking": True}},
+                    extra_body={"chat_template_kwargs": {"enable_thinking": use_thinking}},
                 )
                 reply = resp.choices[0].message.content or ""
                 thinking, clean = self._parse_thinking(reply)
