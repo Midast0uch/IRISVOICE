@@ -197,9 +197,13 @@ class IRISGateway:
             elif msg_type == "execute_tool":
                 await self._handle_execute_tool(session_id, client_id, message)
             
+            elif msg_type == "tts_play":
+                # Frontend play-icon clicked — speak the supplied text via TTS
+                await self._handle_tts_play(session_id, client_id, message)
+
             elif msg_type == "ping":
                 await self._ws_manager.send_to_client(client_id, {"type": "pong", "payload": {}})
-            
+
             elif msg_type == "pong":
                 await self._ws_manager.handle_pong(client_id)
             
@@ -903,6 +907,29 @@ class IRISGateway:
         except Exception as e:
             self._logger.error(f"[Voice] TTS error: {e}")
 
+    async def _handle_tts_play(self, session_id: str, client_id: str, message: dict) -> None:
+        """
+        Handle tts_play message sent when the user clicks the play icon in ChatView.
+        Runs TTS synthesis + playback in an executor so the event loop stays free.
+        """
+        text = (message.get("payload") or {}).get("text", "").strip()
+        if not text:
+            return
+        import asyncio
+        loop = asyncio.get_running_loop()
+        try:
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "listening_state",
+                "payload": {"state": "speaking"},
+            })
+            await loop.run_in_executor(None, self._speak_response, text)
+        except Exception as e:
+            self._logger.error(f"[Voice] tts_play error: {e}")
+        finally:
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "listening_state",
+                "payload": {"state": "idle"},
+            })
 
     async def _handle_chat(self, session_id: str, client_id: str, message: dict) -> None:
         """
