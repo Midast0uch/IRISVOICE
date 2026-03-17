@@ -366,6 +366,13 @@ For issues or questions:
 
 ## Version History
 
+### v3.0.0 (Latest)
+- ✅ **Unified Chat Interface**: Integrated action buttons directly into the main input row.
+- ✅ **Precision Alignment**: Reduced right-side margin to `12px` for perfect vertical synchronization with HUD header elements.
+- ✅ **High-Density Action Zone**: Grouped Send, Plus, and Liquid Metal Divider with a tight `gap-2` for a compact, professional feel.
+- ✅ **Enhanced Vertical Balance**: Added `mb-2` lift to action grouping and extended Liquid Metal Divider to `h-8`.
+- ✅ **Dynamic Input**: Implemented auto-expanding `textarea` with smooth height transitions.
+
 ### v2.0.0 (Current)
 - ✅ Lazy loading of local models
 - ✅ Inference mode selection (Local/VPS/OpenAI)

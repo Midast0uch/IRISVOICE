@@ -192,13 +192,12 @@ export function MarketplaceScreen({
     <div className="h-full flex flex-col">
       {/* Header */}
       <div
-        className="h-14 flex items-center justify-between px-4 border-b flex-shrink-0"
+        className="h-14 flex items-center justify-between pl-12 pr-24 border-b flex-shrink-0"
         style={{ borderColor: `${glowColor}15` }}
       >
         <div className="flex items-center gap-3">
           <div
             className="w-8 h-8 rounded-lg flex items-center justify-center"
-            style={{ backgroundColor: `${glowColor}15` }}
           >
             <Sparkles size={16} style={{ color: glowColor }} />
           </div>
@@ -235,7 +234,7 @@ export function MarketplaceScreen({
       </div>
 
       {/* Search Bar */}
-      <div className="px-4 py-3 flex-shrink-0">
+      <div className="pl-12 pr-24 py-4 flex-shrink-0">
         <div
           className="flex items-center gap-2 px-3 py-2 rounded-lg border"
           style={{
@@ -266,7 +265,7 @@ export function MarketplaceScreen({
 
       {/* Category Tabs */}
       <div
-        className="flex items-center gap-1 px-4 pb-3 border-b overflow-x-auto scrollbar-hide flex-shrink-0"
+        className="flex items-center gap-1 pl-12 pr-24 pb-3 border-b overflow-x-auto scrollbar-hide flex-shrink-0"
         style={{ borderColor: `${glowColor}10` }}
       >
         {CATEGORIES.map((category) => {
@@ -295,7 +294,7 @@ export function MarketplaceScreen({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto pl-12 pr-24 py-6 space-y-4">
         {/* Loading State */}
         {isLoading ? (
           <div className="flex items-center justify-center h-32">
@@ -418,7 +417,7 @@ function FeaturedCard({ integration, glowColor, fontColor, onInstall }: Featured
   return (
     <motion.div
       whileHover={{ scale: 1.02 }}
-      className="relative p-4 rounded-xl border overflow-hidden group cursor-pointer"
+      className="relative p-6 rounded-xl border group cursor-pointer mx-1 mb-1"
       style={{
         backgroundColor: "rgba(10,10,20,0.6)",
         borderColor: `${glowColor}20`,
@@ -427,7 +426,7 @@ function FeaturedCard({ integration, glowColor, fontColor, onInstall }: Featured
     >
       {/* Gradient overlay */}
       <div
-        className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+        className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl overflow-hidden"
         style={{
           background: `linear-gradient(135deg, ${glowColor}10 0%, transparent 50%)`,
         }}
@@ -532,7 +531,7 @@ function IntegrationCard({ integration, glowColor, fontColor, onInstall, compact
   return (
     <motion.div
       whileHover={{ scale: 1.02 }}
-      className="p-3 rounded-xl border cursor-pointer transition-colors"
+      className="p-5 rounded-xl border cursor-pointer transition-colors mx-1 mb-1"
       style={{
         backgroundColor: "rgba(10,10,20,0.4)",
         borderColor: `${glowColor}15`,
@@ -602,7 +601,7 @@ function RecommendedCard({ recommendation, glowColor, fontColor, onInstall, comp
     return (
       <motion.div
         whileHover={{ backgroundColor: "rgba(255,255,255,0.03)" }}
-        className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors relative overflow-hidden"
+        className="flex items-center gap-3 p-4 rounded-lg border cursor-pointer transition-colors relative mx-1"
         style={{
           backgroundColor: "rgba(10,10,20,0.4)",
           borderColor: `${glowColor}30`,
@@ -660,7 +659,7 @@ function RecommendedCard({ recommendation, glowColor, fontColor, onInstall, comp
   return (
     <motion.div
       whileHover={{ scale: 1.02 }}
-      className="relative p-4 rounded-xl border overflow-hidden group cursor-pointer"
+      className="relative p-6 rounded-xl border group cursor-pointer mx-1 mb-1"
       style={{
         backgroundColor: "rgba(10,10,20,0.6)",
         borderColor: `${glowColor}30`,

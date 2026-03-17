@@ -1,39 +1,65 @@
 'use client';
 
-import { useState, memo, useMemo, useCallback, useEffect } from 'react';
+import { useState, memo, useMemo, useCallback, useEffect, useRef } from 'react';
 import { CustomDropdown } from '@/components/ui/CustomDropdown';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBrandColor } from '@/contexts/BrandColorContext';
 import { useNavigation } from '@/contexts/NavigationContext';
+import type { MainCategoryId } from '@/data/navigation-ids';
 import { CARDS_BY_SECTION, getCardsForSection, CARDS_DATA } from '@/data/cards';
 import { SECTION_TO_LABEL, SECTION_TO_ICON, CARD_TO_SECTION_ID } from '@/data/navigation-constants';
+import { ActivityPanel } from './dashboard/ActivityPanel';
+import { LogsPanel } from './dashboard/LogsPanel';
+import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import {
-  Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, Eye, Globe,
-  // Additional icons for section mapping
-  Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play
+  Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
+  Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
+  LayoutDashboard, ShoppingBag, Menu, User, ArrowLeft, RotateCcw, Home, ArrowRight as ArrowRightIcon, ExternalLink, History, AlertCircle
 } from 'lucide-react';
 
 interface DarkGlassDashboardProps {
   theme?: string;
   fieldValues?: Record<string, Record<string, string | number | boolean>>;
   updateField?: (sectionId: string, fieldId: string, value: any) => void;
+  onClose?: () => void;
+  onNotificationsClick?: () => void;
+  unreadCount?: number;
+  spotlightState?: any; // From @/hooks/useUILayoutState
+  uiState?: any;        // From @/hooks/useUILayoutState
+  onOpenChat?: () => void;
 }
 
+const ACCENT_COLOR = '#00d4aa';
+
 const MAIN_NODES_DATA = [
-  { id: 'voice', label: 'VOICE', icon: Mic },
-  { id: 'agent', label: 'AGENT', icon: Bot },
-  { id: 'automate', label: 'AUTO', icon: Cpu },
-  { id: 'system', label: 'SYS', icon: Settings },
-  { id: 'customize', label: 'CUSTOM', icon: Palette },
-  { id: 'monitor', label: 'MON', icon: Activity },
+  { id: 'voice', label: 'Voice', icon: MicVocal },
+  { id: 'agent', label: 'Agent', icon: Brain },
+  { id: 'automate', label: 'Automate', icon: Workflow },
+  { id: 'system', label: 'System', icon: Settings },
+  { id: 'customize', label: 'Customize', icon: Palette },
+  { id: 'monitor', label: 'Monitor', icon: BarChart3 },
 ];
+
+const CATEGORY_LABELS: Record<string, string> = {
+  input: 'Input',
+  output: 'Output',
+  wake: 'Wake Word',
+  speech: 'Speech',
+  dashboard: 'Settings',
+  browser: 'Browser',
+  activity: 'Activity',
+  logs: 'Logs',
+  marketplace: 'Marketplace',
+};
 
 // Helper function to map icon names from SECTION_TO_ICON to Lucide components
 const getIconComponent = (iconName: string) => {
   const iconMap: Record<string, React.ComponentType<any>> = {
     'Mic': Mic,
     'Volume2': Volume2,
+    'Volume1': Volume1,
+    'MicVocal': MicVocal,
     'Cpu': Cpu,
     'Brain': Brain,
     'Shield': Shield,
@@ -78,9 +104,6 @@ function convertCardFieldsToDashboardFields(cards: any[]) {
   const fields: any[] = [];
   cards.forEach(card => {
     card.fields.forEach((field: any) => {
-      // Skip section fields as they're not rendered in dashboard
-      if (field.type === 'section' || field.type === 'custom') return;
-      
       fields.push({
         id: field.id,
         label: field.label,
@@ -98,7 +121,6 @@ function convertCardFieldsToDashboardFields(cards: any[]) {
 }
 
 // Generate SECTIONS_DATA dynamically from cards.ts and navigation constants
-// This ensures all components use the same field IDs, labels, and options
 function useSectionsData() {
   return useMemo(() => {
     const sections = Object.entries(CARD_TO_SECTION_ID).reduce((acc, [cardId, sectionId]) => {
@@ -117,6 +139,11 @@ function useSectionsData() {
     // Group sections by category
     const categoryMapping: Record<string, string[]> = {
       voice: ['input', 'output', 'wake', 'speech'],
+      dashboard: ['analytics', 'logs', 'diagnostics', 'updates'],
+      browser: ['sessions'],
+      activity: ['logs'],
+      logs: ['analytics'],
+      marketplace: ['updates'],
       agent: ['model_selection', 'inference_mode', 'identity', 'memory'],
       automate: ['tools', 'vision', 'desktop_control', 'skills', 'profile'],
       system: ['power', 'display', 'storage', 'network'],
@@ -136,56 +163,22 @@ function useSectionsData() {
   }, []);
 }
 
+// Determine field category for layout
+function getFieldCategory(field: any, sectionId: string): 'config' | 'visualizer' | 'toggles' {
+  const fieldId = field.id.toLowerCase();
+  if (field.type === 'toggle') return 'toggles';
+  if (fieldId.includes('volume') || fieldId.includes('gain') || fieldId.includes('level')) return 'visualizer';
+  return 'config';
+}
+
 const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, availableModels, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; availableModels?: string[]; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
-  const [testResult, setTestResult] = useState<string | null>(null);
   const value = fieldValues && sectionId ? (fieldValues[sectionId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
   
-  // Get error message for this field
   const errorKey = sectionId && field.id ? `${sectionId}:${field.id}` : null;
   const errorMessage = errorKey && fieldErrors ? fieldErrors[errorKey] : null;
   
-  // Conditional field rendering for inference_mode section
-  const inferenceMode = fieldValues && sectionId === 'inference_mode' ? (fieldValues[sectionId]?.['inference_mode'] ?? 'Local Models') : null;
-  
-  // Hide VPS fields unless VPS Gateway is selected
-  if (sectionId === 'inference_mode' && (field.id === 'vps_url' || field.id === 'vps_api_key' || field.id === 'test_vps_connection') && inferenceMode !== 'VPS Gateway') {
-    return null;
-  }
-  
-  // Hide OpenAI fields unless OpenAI API is selected
-  if (sectionId === 'inference_mode' && (field.id === 'openai_api_key' || field.id === 'test_openai_connection') && inferenceMode !== 'OpenAI API') {
-    return null;
-  }
-  
-  // Hide GPU warning unless Local Models is selected
-  if (sectionId === 'inference_mode' && field.id === 'local_gpu_warning' && inferenceMode !== 'Local Models') {
-    return null;
-  }
-  
-  // Conditional field rendering for model_selection section
-  const modelProvider = fieldValues && sectionId === 'model_selection' ? (fieldValues[sectionId]?.['model_provider'] ?? 'local') : null;
-  const useSameModel = fieldValues && sectionId === 'model_selection' ? (fieldValues[sectionId]?.['use_same_model'] ?? true) : true;
-  
-  // Hide API key field unless provider is 'api'
-  if (sectionId === 'model_selection' && field.id === 'api_key' && modelProvider !== 'api') {
-    return null;
-  }
-  
-  // Hide VPS endpoint field unless provider is 'vps'
-  if (sectionId === 'model_selection' && field.id === 'vps_endpoint' && modelProvider !== 'vps') {
-    return null;
-  }
-  
-  // Hide tool_model dropdown when use_same_model is true
-  if (sectionId === 'model_selection' && field.id === 'tool_model' && useSameModel === true) {
-    return null;
-  }
-  
-  // Use updateField from context if available, otherwise use local state
-  // Store changes locally only - no backend updates until Confirm button is pressed
   const setValue = useCallback((newValue: any) => {
-    // Clear error when user starts editing
     if (errorMessage && sectionId && field.id && clearFieldError) {
       clearFieldError(sectionId, field.id);
     }
@@ -195,10 +188,6 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     } else {
       setLocalValue(newValue);
     }
-    
-    // NOTE: Removed immediate update_field WebSocket messages
-    // Field changes are stored locally only until Confirm button is pressed
-    // This prevents premature backend initialization before user confirms configuration
   }, [fieldValues, sectionId, updateField, field.id, errorMessage, clearFieldError]);
 
   const handleSliderClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -210,70 +199,78 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     setValue(newValue);
   }, [field.min, field.max, setValue]);
 
+  if (field.type === 'section') {
+    return (
+      <div className="pt-4 pb-1 border-b border-white/5 mb-2 col-span-full">
+        <span className="text-[9px] font-black uppercase tracking-[0.2em] text-white/30">
+          {field.label}
+        </span>
+      </div>
+    );
+  }
+
+  if (field.type === 'custom') {
+    return (
+      <div className="py-2 col-span-full">
+        <button
+          onClick={() => setValue("trigger")}
+          className="w-full py-2 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all"
+          style={{
+            background: `${glowColor}15`,
+            border: `1px solid ${glowColor}44`,
+            color: glowColor
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = `${glowColor}25`
+            e.currentTarget.style.borderColor = `${glowColor}66`
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = `${glowColor}15`
+            e.currentTarget.style.borderColor = `${glowColor}44`
+          }}
+        >
+          {field.label}
+        </button>
+      </div>
+    );
+  }
+
   if (field.type === 'toggle') {
     return (
-      <div className="py-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
-          <button
-            onClick={() => setValue(!value)}
-            className="relative w-7 h-3.5 rounded-full transition-colors"
-            style={{ backgroundColor: value ? glowColor : 'rgba(255,255,255,0.15)' }}
-          >
-            <motion.span
-              className="absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white"
-              animate={{ left: value ? '14px' : '2px' }}
-              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-            />
-          </button>
-        </div>
-        {errorMessage && (
-          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
-        )}
+      <div className="flex items-center justify-between py-1.5 px-1">
+        <span className="text-[11px] font-medium tracking-wide text-white/60">{field.label}</span>
+        <button
+          onClick={() => setValue(!value)}
+          className="relative w-8 h-4 rounded-full transition-colors"
+          style={{ backgroundColor: value ? glowColor : 'rgba(255,255,255,0.1)' }}
+        >
+          <motion.span
+            className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm"
+            animate={{ left: value ? '18px' : '2px' }}
+          />
+        </button>
       </div>
     );
   }
 
   if (field.type === 'dropdown') {
-    // Use available models for model_selection section dropdowns
     let options = field.options || [];
-    if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_model')) {
-      options = availableModels && availableModels.length > 0 ? availableModels : ['No models available'];
-    }
-    
-    // Use audio input devices for input section
-    if (sectionId === 'input' && field.id === 'input_device') {
-      options = audioInputDevices && audioInputDevices.length > 0 ? audioInputDevices : ['No input devices found'];
-    }
-    
-    // Use audio output devices for output section
-    if (sectionId === 'output' && field.id === 'output_device') {
-      options = audioOutputDevices && audioOutputDevices.length > 0 ? audioOutputDevices : ['No output devices found'];
-    }
-    
-    // Use wake words for wake section
-    if (sectionId === 'wake' && field.id === 'wake_phrase') {
-      options = wakeWords && wakeWords.length > 0 ? wakeWords : ['No wake words found'];
-    }
+    if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_model')) options = availableModels || [];
+    if (sectionId === 'input' && field.id === 'input_device') options = audioInputDevices || [];
+    if (sectionId === 'output' && field.id === 'output_device') options = audioOutputDevices || [];
     
     return (
-      <div className="py-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
-          <div className="max-w-[160px]">
-            <CustomDropdown
-              value={value}
-              options={options ?? []}
-              onChange={setValue}
-              glowColor={glowColor}
-              className="text-[13px] tabular-nums rounded px-1.5 py-0.5"
-              style={errorMessage ? { borderColor: '#f87171' } : undefined}
-            />
-          </div>
+      <div className="flex items-center justify-between py-2 gap-6 group/field px-1">
+        <span className="text-[11px] font-semibold tracking-wide text-white/50 group-hover/field:text-white/80 transition-colors truncate">{field.label}</span>
+        <div className="flex-1 max-w-[320px]">
+          <CustomDropdown
+            value={value}
+            options={options}
+            onChange={setValue}
+            glowColor={glowColor}
+            className="text-[10px] py-1 px-3 h-8 w-full"
+          />
         </div>
-        {errorMessage && (
-          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
-        )}
       </div>
     );
   }
@@ -283,662 +280,397 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     const max = field.max ?? 100;
     const pct = ((Number(value) - min) / (max - min)) * 100;
     return (
-      <div className="py-3">
-        <div className="flex items-center justify-between mb-0.5">
-          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
-          <span className="text-[13px] tabular-nums" style={{ color: errorMessage ? '#f87171' : glowColor }}>{Math.round(Number(value))}{field.unit || ''}</span>
+      <div className="py-2 px-1">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[11px] font-medium tracking-wide text-white/60">{field.label}</span>
+          <span className="text-[10px] tabular-nums" style={{ color: glowColor }}>{Math.round(Number(value))}{field.unit || ''}</span>
         </div>
-        <div
-          className="relative h-1.5 bg-white/10 rounded-full cursor-pointer"
-          onClick={handleSliderClick}
-        >
-          <div className="absolute left-0 top-0 h-full rounded-full" style={{ width: `${pct}%`, background: errorMessage ? '#f87171' : glowColor }} />
-        </div>
-        {errorMessage && (
-          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
-        )}
-      </div>
-    );
-  }
-
-  if (field.type === 'text') {
-    return (
-      <div className="py-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
-          <input
-            type="text"
-            value={value as string}
-            placeholder={field.placeholder}
-            onChange={(e) => setValue(e.target.value)}
-            className="text-[13px] tabular-nums bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[120px] text-right"
-            style={errorMessage ? { borderColor: '#f87171' } : {}}
-          />
-        </div>
-        {errorMessage && (
-          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
-        )}
-      </div>
-    );
-  }
-
-  if (field.type === 'password') {
-    return (
-      <div className="py-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
-          <input
-            type="password"
-            value={value as string}
-            placeholder={field.placeholder}
-            onChange={(e) => setValue(e.target.value)}
-            className="text-[13px] tabular-nums bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-white outline-none max-w-[120px] text-right"
-            style={errorMessage ? { borderColor: '#f87171' } : {}}
-          />
-        </div>
-        {errorMessage && (
-          <div className="mt-1 text-[8px] text-red-400">{errorMessage}</div>
-        )}
-      </div>
-    );
-  }
-
-  if (field.type === 'status') {
-    // VPS status indicator
-    const vpsEnabled = fieldValues && sectionId ? fieldValues[sectionId]?.['enabled'] : false;
-    const vpsEndpoints = fieldValues && sectionId ? fieldValues[sectionId]?.['endpoints'] : '';
-    const endpointCount = vpsEndpoints ? (vpsEndpoints as string).split(',').filter(e => e.trim()).length : 0;
-    
-    return (
-      <div className="py-3">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
-        </div>
-        <div className="bg-white/5 rounded px-2 py-1.5 space-y-1">
-          <div className="flex items-center justify-between">
-            <span className="text-[8px] text-white/50">VPS Mode</span>
-            <div className="flex items-center gap-1">
-              <div 
-                className="w-1.5 h-1.5 rounded-full" 
-                style={{ backgroundColor: vpsEnabled ? '#10b981' : '#6b7280' }}
-              />
-              <span className="text-[8px]" style={{ color: vpsEnabled ? '#10b981' : '#6b7280' }}>
-                {vpsEnabled ? 'Enabled' : 'Disabled'}
-              </span>
-            </div>
-          </div>
-          {vpsEnabled && (
-            <>
-              <div className="flex items-center justify-between">
-                <span className="text-[8px] text-white/50">Endpoints</span>
-                <span className="text-[8px] text-white/70">{endpointCount} configured</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[8px] text-white/50">Health</span>
-                <span className="text-[8px] text-yellow-400">Checking...</span>
-              </div>
-            </>
-          )}
-          {!vpsEnabled && (
-            <div className="text-[8px] text-white/40 text-center py-0.5">
-              Enable VPS to offload inference
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (field.type === 'button') {
-    const handleTestConnection = async () => {
-      setTestResult('Testing...');
-      // Simulate connection test - in real implementation, this would call backend
-      setTimeout(() => {
-        setTestResult('Connection successful');
-        setTimeout(() => setTestResult(null), 3000);
-      }, 1000);
-    };
-
-    return (
-      <div className="py-1">
-        <button
-          onClick={handleTestConnection}
-          className="w-full py-1.5 rounded text-[9px] font-medium tracking-wider transition-all"
-          style={{
-            background: `${glowColor}20`,
-            color: glowColor,
-            border: `1px solid ${glowColor}40`,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = `${glowColor}30`;
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = `${glowColor}20`;
-          }}
-        >
-          {field.label}
-        </button>
-        {testResult && (
-          <div className="mt-1 text-[8px] text-center" style={{ color: testResult.includes('successful') ? '#10b981' : glowColor }}>
-            {testResult}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (field.type === 'info') {
-    return (
-      <div className="py-1">
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded px-2 py-1.5">
-          <div className="flex items-start gap-1.5">
-            <span className="text-yellow-500 text-[10px] mt-0.5">⚠</span>
-            <span className="text-[8px] text-yellow-200/90 leading-relaxed">{field.defaultValue}</span>
-          </div>
+        <div className="relative h-1 bg-white/5 rounded-full cursor-pointer" onClick={handleSliderClick}>
+          <div className="absolute left-0 top-0 h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: glowColor }} />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex items-center justify-between py-3">
-      <span className="text-[11px] font-medium tracking-wider text-white/70">{field.label}</span>
-      <span className="text-[13px] tabular-nums text-white/40 truncate max-w-[120px]">{field.placeholder || value || '-'}</span>
+    <div className="flex items-center justify-between py-1.5 px-1">
+      <span className="text-[11px] font-medium tracking-wide text-white/60">{field.label}</span>
+      <span className="text-[11px] text-white/30">{value || '-'}</span>
     </div>
   );
 });
 
-export function DarkGlassDashboard({ fieldValues: propFieldValues, updateField: propUpdateField }: DarkGlassDashboardProps) {
-  // activeTab / activeSection are LOCAL state for instant UI feedback.
-  // They are also kept in sync with NavigationContext (currentCategory / currentSection)
-  // so that WheelView navigation immediately reflects here and vice-versa.
-  const [activeTab, setActiveTab] = useState('voice');
-  const [activeSection, setActiveSection] = useState<string | null>(null);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [audioInputDevices, setAudioInputDevices] = useState<string[]>([]);
-  const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>([]);
-  const [wakeWords, setWakeWords] = useState<string[]>([]);
-  const [showError, setShowError] = useState(false);
+export function DarkGlassDashboard({ 
+  fieldValues: propFieldValues, 
+  updateField: propUpdateField,
+  onClose,
+  onNotificationsClick,
+  unreadCount = 0,
+  spotlightState,
+  uiState,
+  onOpenChat
+}: DarkGlassDashboardProps) {
+  const [activeTab, setActiveTab] = useState<string>('voice');
+  const [activeSubApp, setActiveSubApp] = useState<string | null>(null);
+  const [isRailExpanded, setIsRailExpanded] = useState(true);
+  const [isSidebarHidden, setIsSidebarHidden] = useState(false);
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['input', 'model_selection', 'tools', 'power', 'theme', 'analytics']));
+  const [isApplying, setIsApplying] = useState(false);
+  
+  const [browserUrl, setBrowserUrl] = useState<string>('https://www.google.com');
+  const [browserInput, setBrowserInput] = useState<string>('https://www.google.com');
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
   const { getThemeConfig } = useBrandColor();
   const localTheme = getThemeConfig();
 
-  // Connect to NavigationContext for WebSocket integration
   const {
     currentCategory,
-    currentSection,
-    sections: contextSections,
     fieldValues: contextFieldValues,
     fieldErrors,
-    activeTheme, // Get activeTheme from backend via WebSocket
-    voiceState, // Voice command state for visual feedback
-    audioLevel, // Audio level for visualization
+    voiceState,
     selectCategory,
     selectSectionWs,
     updateCardValue: contextUpdateCardValue,
     clearFieldError,
-    confirmCard, // Connect onConfirm to confirmCard()
-    sendMessage, // Add sendMessage for fetching available models
+    confirmCard,
+    sendMessage,
   } = useNavigation();
-  
-  // Sync local activeTab / activeSection from NavigationContext whenever WheelView (or any
-  // other component) changes the shared navigation state.  This makes the dashboard a live
-  // mirror of the global navigation — sections are synced automatically.
-  useEffect(() => {
-    if (currentCategory) setActiveTab(currentCategory);
-  }, [currentCategory]);
 
-  useEffect(() => {
-    // null means "deselected" — honour that too
-    if (currentSection !== undefined) setActiveSection(currentSection);
-  }, [currentSection]);
-
-  // Always-on listener for iris:audio_devices — devices may be fetched by WheelView
-  // before this panel navigates to input/output, so capture them unconditionally.
-  useEffect(() => {
-    const handleAudioDevices = (event: CustomEvent) => {
-      const inputDevices = event.detail.input_devices || [];
-      const outputDevices = event.detail.output_devices || [];
-      setAudioInputDevices(inputDevices.map((d: any) => d.name || d.index));
-      setAudioOutputDevices(outputDevices.map((d: any) => d.name || d.index));
-    };
-    window.addEventListener('iris:audio_devices', handleAudioDevices as EventListener);
-    return () => window.removeEventListener('iris:audio_devices', handleAudioDevices as EventListener);
-  }, []);
-
-  // Always-on listener for iris:wake_words_list
-  useEffect(() => {
-    const handleWakeWords = (event: CustomEvent) => {
-      const wakeWordsList = event.detail.wake_words || [];
-      setWakeWords(wakeWordsList.map((w: any) => w.display_name || w.filename));
-    };
-    window.addEventListener('iris:wake_words_list', handleWakeWords as EventListener);
-    return () => window.removeEventListener('iris:wake_words_list', handleWakeWords as EventListener);
-  }, []);
-
-  // Always-on listener for iris:available_models
-  useEffect(() => {
-    const handleAvailableModels = (event: CustomEvent) => {
-      const models = event.detail.models || [];
-      setAvailableModels(models.map((m: any) => m.name || m.id));
-    };
-    window.addEventListener('iris:available_models', handleAvailableModels as EventListener);
-    return () => window.removeEventListener('iris:available_models', handleAvailableModels as EventListener);
-  }, []);
-
-  // Use local BrandColorContext theme first (matches parent DashboardWing priority),
-  // falling back to WebSocket activeTheme only if local color is unavailable.
-  // This ensures both parent and child always display the same brand color.
-  const glowColor = localTheme.glow.color || activeTheme?.glow;
-
-  // Fetch current configuration from backend on mount
-  useEffect(() => {
-    if (sendMessage) {
-      // Request current state from backend.
-      // Note: get_audio_devices and get_wake_words are now sent automatically in the
-      // WebSocket onopen handler (useIRISWebSocket.ts) so they're guaranteed to arrive
-      // even if this component mounts before the socket finishes connecting.
-      sendMessage('request_state', {})
-      
-      // Listen for initial state response
-      const handleInitialState = (event: CustomEvent) => {
-        const state = event.detail?.state || {}
-        console.log('[DarkGlassDashboard] Received initial state:', state)
-        
-        // Extract field values from the state
-        // BUG-02 FIX: Backend sends field_values (snake_case), not fieldValues (camelCase)
-        const fv = state.field_values || state.fieldValues
-        if (fv) {
-          // Update field values from backend state
-          Object.entries(fv).forEach(([sectionId, values]) => {
-            if (values && typeof values === 'object') {
-              Object.entries(values).forEach(([fieldId, value]) => {
-                // Use updateField if available, otherwise use context
-                if (propUpdateField) {
-                  propUpdateField(sectionId, fieldId, value)
-                }
-              })
-            }
-          })
-        }
-      }
-      
-      window.addEventListener('iris:initial_state', handleInitialState as EventListener)
-      
-      return () => {
-        window.removeEventListener('iris:initial_state', handleInitialState as EventListener)
-      }
-    }
-  }, [sendMessage, propUpdateField])
-
-  // Log theme changes in development mode for debugging
-  useEffect(() => {
-    if (process.env.NODE_ENV === 'development' && activeTheme?.glow) {
-      console.log('[DarkGlassDashboard] Theme synchronized from backend:', activeTheme.glow);
-    }
-  }, [activeTheme]);
-
-  // Auto-dismiss error after 3 seconds
-  useEffect(() => {
-    if (voiceState === 'error') {
-      setShowError(true);
-      const timer = setTimeout(() => {
-        setShowError(false);
-      }, 3000);
-      return () => clearTimeout(timer);
-    } else {
-      setShowError(false);
-    }
-  }, [voiceState]);
-
-  // Fetch available models when model_selection section is opened
-  useEffect(() => {
-    if (activeSection === 'model_selection' && sendMessage) {
-      sendMessage('get_available_models', {});
-    }
-  }, [activeSection, sendMessage]);
-
-  // Fetch audio devices when input or output section is opened
-  useEffect(() => {
-    if ((activeSection === 'input' || activeSection === 'output') && sendMessage) {
-      sendMessage('get_audio_devices', {});
-    }
-  }, [activeSection, sendMessage]);
-
-  // Fetch wake words when wake section is opened
-  useEffect(() => {
-    if (activeSection === 'wake' && sendMessage) {
-      sendMessage('get_wake_words', {});
-    }
-  }, [activeSection, sendMessage]);
-
-  // Use context values if available, otherwise fall back to props
-  const fieldValues = contextFieldValues || propFieldValues || {};
+  const fieldValues = propFieldValues || contextFieldValues;
   const updateField = propUpdateField || contextUpdateCardValue;
 
-  const mainNodes = useMemo(() => MAIN_NODES_DATA, []);
-  const sections = useSectionsData();
+  const [availableModels] = useState<string[]>(['LFM-2-8B', 'gpt-4o', 'claude-3-5-sonnet']);
+  const [audioInputDevices] = useState<string[]>(['Default Input', 'Internal Microphone']);
+  const [audioOutputDevices] = useState<string[]>(['Default Output', 'Internal Speakers']);
 
-  const sectionsForTab = useMemo(() => sections[activeTab] || [], [sections, activeTab]);
-  const selectedSection = useMemo(() => activeSection ? sectionsForTab.find(s => s.id === activeSection) : null, [activeSection, sectionsForTab]);
-
-  const handleTabClick = useCallback((id: string) => {
-    setActiveTab(id);
-    setActiveSection(null);
-    // Sync shared navigation state so WheelView mirrors this selection
-    if (selectCategory) {
-      selectCategory(id);
+  useEffect(() => {
+    if (currentCategory && currentCategory !== 'voice' && currentCategory !== 'dashboard') {
+      setActiveTab(currentCategory);
     }
+  }, [currentCategory]);
+
+  const sectionsData = useSectionsData();
+  const activeSections = sectionsData[activeTab] || [];
+
+  const handleSubAppChange = useCallback((appId: string) => {
+    setActiveSubApp(appId);
+    if (appId === 'browser' || appId === 'marketplace') {
+      setIsSidebarHidden(true);
+    } else {
+      setIsSidebarHidden(false);
+    }
+    selectCategory(appId as any);
   }, [selectCategory]);
 
-  const handleSectionClick = useCallback((id: string) => {
-    setActiveSection(id);
-    // Sync shared navigation state so WheelView mirrors this selection
-    if (selectSectionWs) {
-      selectSectionWs(id);
+  const toggleSection = (sectionId: string) => {
+    setExpandedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(sectionId)) next.delete(sectionId);
+      else next.add(sectionId);
+      return next;
+    });
+  };
+
+  const handleApplySettings = useCallback(async () => {
+    setIsApplying(true);
+    try {
+      if (sendMessage && activeSections.length > 0) {
+        // Send confirm_card for all sections in the current view to the backend
+        for (const section of activeSections) {
+          const sectionId = section.id;
+          const sectionValues = fieldValues[sectionId] || {};
+          sendMessage('confirm_card', { 
+            section_id: sectionId, 
+            values: sectionValues 
+          });
+          
+          // Also update local confirmed state
+          if (confirmCard) {
+            confirmCard(sectionId, sectionValues);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[DarkGlassDashboard] Apply failed:", error);
+    } finally {
+      setIsApplying(false);
     }
+  }, [sendMessage, confirmCard, activeSections, fieldValues]);
+
+  const handleBrowserNavigate = (url: string) => {
+    const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    setBrowserUrl(normalized);
+    setBrowserInput(normalized);
+  };
+
+  const handleBrowserInputSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleBrowserNavigate(browserInput);
+    }
+  };
+
+  const glowColor = localTheme.glow?.color || ACCENT_COLOR;
+
+  const handleTabChange = useCallback((tabId: string) => {
+    setActiveTab(tabId);
+    setActiveSubApp(null);
+    selectSectionWs(tabId);
   }, [selectSectionWs]);
 
-  const handleConfirmSection = useCallback(() => {
-    if (!selectedSection || !confirmCard) return;
-
-    // Gather all field values for this section
-    const values: Record<string, any> = {};
-    selectedSection.fields.forEach(field => {
-      const value = fieldValues[selectedSection.id]?.[field.id] ?? field.defaultValue;
-      if (value !== undefined) {
-        values[field.id] = value;
-      }
-    });
-
-    // Send confirmation to backend via NavigationContext
-    confirmCard(selectedSection.id, values);
-  }, [selectedSection, fieldValues, confirmCard]);
-
-  return (
-    <div
-      className="w-full h-full min-h-0 overflow-hidden flex flex-col bg-transparent relative"
+  const renderNavigationRail = () => (
+    <motion.nav 
+      initial={false}
+      animate={{ 
+        width: isSidebarHidden ? 0 : (isRailExpanded ? 150 : 56),
+        opacity: isSidebarHidden ? 0 : 1,
+        x: isSidebarHidden ? -20 : 0
+      }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      className="flex flex-col h-full border-r relative z-20 overflow-hidden shrink-0"
+      style={{ 
+        borderColor: 'rgba(255,255,255,0.05)',
+        backgroundColor: 'rgba(0,0,0,0.3)'
+      }}
     >
-      {/* HUD Effects Overlay */}
-      <div 
-        className="absolute inset-0 pointer-events-none z-0"
-        style={{
-          background: `
-            linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.01) 50%, transparent 100%),
-            repeating-linear-gradient(
-              0deg,
-              transparent,
-              transparent 2px,
-              rgba(0,0,0,0.02) 2px,
-              rgba(0,0,0,0.02) 4px
-            )
-          `,
-          backgroundSize: '100% 100%, 100% 4px',
-        }}
-      />
-      
-      {/* Edge Fresnel Effect */}
-      <div 
-        className="absolute inset-0 pointer-events-none z-0"
-        style={{
-          background: `
-            linear-gradient(90deg, ${glowColor}05 0%, transparent 10%, transparent 90%, ${glowColor}05 100%),
-            linear-gradient(0deg, ${glowColor}03 0%, transparent 15%, transparent 85%, ${glowColor}03 100%)
-          `,
-        }}
-      />
-      {/* HUD Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b relative z-10" style={{ borderColor: `${glowColor}15` }}>
-        <div className="flex items-center gap-2">
-          <motion.div 
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ backgroundColor: glowColor }}
-            animate={{ 
-              scale: voiceState === 'listening' ? [1, 1.4, 1] : 1,
-              opacity: voiceState === 'listening' ? [1, 0.6, 1] : 1
-            }}
-            transition={{ duration: 1.2, repeat: Infinity }}
-          />
-          <span className="text-[11px] font-semibold tracking-widest uppercase text-white/90">Settings</span>
-        </div>
-        
-        {/* Voice State Indicators */}
-        <div className="flex items-center gap-2">
-          {/* Listening State - Pulsing Animation */}
-          {voiceState === 'listening' && (
-            <motion.div
-              className="flex items-center gap-1.5"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-            >
-              <motion.div
-                className="w-2 h-2 rounded-full"
-                style={{ backgroundColor: glowColor }}
-                animate={{
-                  scale: [1, 1.3, 1],
-                  opacity: [1, 0.6, 1],
-                }}
-                transition={{
-                  duration: 1.5,
-                  repeat: Infinity,
-                  ease: "easeInOut",
-                }}
-              />
-              <span className="text-[8px] text-white/70">Listening</span>
-            </motion.div>
-          )}
-          
-          {/* Audio Level Visualization */}
-          {voiceState === 'listening' && audioLevel > 0 && (
-            <div className="flex items-center gap-0.5">
-              {[0, 1, 2, 3].map((i) => {
-                const barHeight = Math.max(0, Math.min(1, (audioLevel * 4) - i));
-                return (
-                  <motion.div
-                    key={i}
-                    className="w-0.5 rounded-full"
-                    style={{
-                      backgroundColor: glowColor,
-                      height: `${4 + barHeight * 8}px`,
-                    }}
-                    animate={{
-                      height: `${4 + barHeight * 8}px`,
-                    }}
-                    transition={{
-                      duration: 0.1,
-                    }}
-                  />
-                );
-              })}
-            </div>
-          )}
-          
-          {/* Processing State - Spinner */}
-          {(voiceState === 'processing_conversation' || voiceState === 'processing_tool') && (
-            <motion.div
-              className="flex items-center gap-1.5"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-            >
-              <motion.div
-                className="w-3 h-3 border-2 rounded-full"
-                style={{
-                  borderColor: `${glowColor}40`,
-                  borderTopColor: glowColor,
-                }}
-                animate={{ rotate: 360 }}
-                transition={{
-                  duration: 1,
-                  repeat: Infinity,
-                  ease: "linear",
-                }}
-              />
-              <span className="text-[8px] text-white/70">
-                {voiceState === 'processing_conversation' ? 'Processing' : 'Tool'}
-              </span>
-            </motion.div>
-          )}
-          
-          {/* Speaking State */}
-          {voiceState === 'speaking' && (
-            <motion.div
-              className="flex items-center gap-1.5"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-            >
-              <motion.div
-                className="w-2 h-2 rounded-full"
-                style={{ backgroundColor: glowColor }}
-                animate={{
-                  scale: [1, 1.2, 1],
-                }}
-                transition={{
-                  duration: 0.8,
-                  repeat: Infinity,
-                  ease: "easeInOut",
-                }}
-              />
-              <span className="text-[8px] text-white/70">Speaking</span>
-            </motion.div>
-          )}
-          
-          {/* Error State - Red Pulsing with Auto-dismiss */}
-          {voiceState === 'error' && showError && (
-            <motion.div
-              className="flex items-center gap-1.5"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-            >
-              <motion.div
-                className="w-2 h-2 rounded-full bg-red-500"
-                animate={{
-                  scale: [1, 1.3, 1],
-                  opacity: [1, 0.5, 1],
-                }}
-                transition={{
-                  duration: 1,
-                  repeat: Infinity,
-                  ease: "easeInOut",
-                }}
-              />
-              <span className="text-[8px] text-red-400">Error</span>
-            </motion.div>
-          )}
-        </div>
+      <div className="flex h-16 items-center px-4 mb-2 gap-3 border-b border-white/[0.03]">
+        {isRailExpanded ? (
+          <motion.div className="flex items-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <span className="text-[14px] font-black tracking-[0.1em] text-white uppercase">
+              IRIS <span style={{ color: glowColor }}>VOICE</span>
+            </span>
+          </motion.div>
+        ) : (
+          <div className="w-full flex justify-center">
+            <div className="w-6 h-6 rounded-full" style={{ backgroundColor: ACCENT_COLOR }} />
+          </div>
+        )}
       </div>
 
-      {/* HUD Tab bar - 6 main nodes */}
-      <div className="flex border-b relative z-10" style={{ borderColor: `${glowColor}10` }}>
-        {mainNodes.map(node => {
-          const Icon = node.icon;
-          const isActive = activeTab === node.id;
-          return (
+      {isRailExpanded && (
+        <div className="px-3 mb-6 pt-4 flex gap-2">
+          {[
+            { id: 'browser', label: 'BROWSER' },
+            { id: 'marketplace', label: 'MARKET' }
+          ].map(node => (
             <button
               key={node.id}
-              onClick={() => handleTabClick(node.id)}
-              className="flex-1 flex flex-col items-center gap-0.5 py-1.5 transition-all relative"
-              style={{
-                color: isActive ? glowColor : 'rgba(255,255,255,0.4)',
-                background: isActive ? `${glowColor}10` : 'transparent',
-              }}
+              onClick={() => handleSubAppChange(node.id)}
+              className="flex-1 group flex items-center justify-center h-7 rounded transition-all relative overflow-hidden border border-white/[0.05]"
+              style={{ backgroundColor: activeSubApp === node.id ? `${glowColor}15` : 'rgba(255,255,255,0.02)' }}
             >
-              <Icon className="w-3.5 h-3.5" />
-              <span className="text-[7px] font-medium tracking-wider">{node.label}</span>
-              {isActive && (
-                <motion.div
-                  layoutId="tab-indicator"
-                  className="absolute bottom-0 left-1/4 right-1/4 h-[2px] rounded-full"
-                  style={{ background: glowColor }}
-                />
-              )}
+              <span className="text-[9px] font-black uppercase tracking-[0.1em] opacity-60 group-hover:opacity-100 transition-opacity">
+                {node.label}
+              </span>
+              <div className="absolute bottom-0 left-0 right-0 h-[1px] opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: glowColor }} />
             </button>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      )}
+      {!isRailExpanded && (
+        <div className="px-2 mb-6 pt-4 flex flex-col gap-3 items-center">
+           <button onClick={() => handleSubAppChange('browser')} className="text-white/30 hover:text-white"><Globe size={14} /></button>
+           <button onClick={() => handleSubAppChange('marketplace')} className="text-white/30 hover:text-white"><ShoppingBag size={14} /></button>
+        </div>
+      )}
 
-      {/* Content area */}
-      <div className="flex-1 flex overflow-hidden relative z-10">
-        {/* Section list */}
-        <div className="w-[105px] border-r flex-shrink-0 overflow-y-auto" style={{ borderColor: `${glowColor}10` }}>
-          {sectionsForTab.map(section => {
-            const Icon = section.icon;
-            const isActive = activeSection === section.id;
+      <div className="h-[1px] bg-white/[0.05] mx-4 mb-4" />
+
+      <div className="flex-1 py-1 overflow-y-auto scrollbar-hide">
+        <div className="flex flex-col gap-5">
+          {MAIN_NODES_DATA.map((node) => {
+            const Icon = node.icon;
+            const isActive = activeTab === node.id && !activeSubApp;
             return (
               <button
-                key={section.id}
-                onClick={() => handleSectionClick(section.id)}
-                className="w-full flex items-center gap-1.5 px-3 py-2 text-left transition-all"
-                style={{
-                  background: isActive ? `${glowColor}15` : 'transparent',
-                  color: isActive ? glowColor : 'rgba(255,255,255,0.5)',
-                  borderLeft: isActive ? `2px solid ${glowColor}` : '2px solid transparent',
-                }}
+                key={node.id}
+                onClick={() => handleTabChange(node.id)}
+                className="group w-full flex items-center px-4 py-3 transition-colors relative"
               >
-                <Icon className="w-3 h-3 flex-shrink-0" style={{ color: isActive ? glowColor : 'inherit' }} />
-                <span className="text-[9px] font-medium tracking-wide truncate">{section.label}</span>
-                <ChevronRight className="w-2.5 h-2.5 ml-auto flex-shrink-0 opacity-40" />
+                <div className="absolute inset-y-1 inset-x-2 rounded-lg transition-colors" style={{ backgroundColor: isActive ? `${glowColor}10` : 'transparent' }} />
+                <div className="relative flex items-center w-full">
+                  <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
+                  {isRailExpanded && (
+                    <span className="ml-3 text-[11px] font-black uppercase tracking-[0.2em]" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.4)' }}>
+                      {node.label}
+                    </span>
+                  )}
+                  {isActive && <div className="absolute -left-4 top-1 bottom-1 w-[2px]" style={{ backgroundColor: glowColor }} />}
+                </div>
               </button>
             );
           })}
         </div>
+      </div>
 
-        {/* Fields panel */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col">
-          <AnimatePresence mode="wait">
-            {selectedSection ? (
-              <motion.div
-                key={selectedSection.id}
-                initial={{ opacity: 0, x: 10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -10 }}
-                transition={{ duration: 0.15 }}
-                className="space-y-4 flex-1 flex flex-col"
-              >
-                <div className="flex items-center gap-1.5 mb-2 pb-1.5 border-b" style={{ borderColor: `${glowColor}15` }}>
-                  {(() => { const Icon = selectedSection.icon; return <Icon className="w-3.5 h-3.5" style={{ color: glowColor }} />; })()}
-                  <span className="text-[10px] font-semibold tracking-wider" style={{ color: glowColor }}>{selectedSection.label}</span>
-                </div>
-                <div className="flex-1 overflow-y-auto space-y-4">
-                  {selectedSection.fields.map(field => (
-                    <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={selectedSection.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} />
-                  ))}
-                </div>
-                {/* Confirm button */}
-                <div className="mt-2 pt-2 border-t" style={{ borderColor: `${glowColor}15` }}>
-                  <button
-                    onClick={handleConfirmSection}
-                    className="w-full py-1.5 rounded text-[9px] font-medium tracking-wider transition-all"
-                    style={{
-                      background: `${glowColor}20`,
-                      color: glowColor,
-                      border: `1px solid ${glowColor}40`,
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = `${glowColor}30`;
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = `${glowColor}20`;
-                    }}
-                  >
-                    CONFIRM
-                  </button>
-                </div>
-              </motion.div>
-            ) : (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="h-full flex items-center justify-center"
-              >
-                <span className="text-[10px] text-white/30 tracking-wider">Select a category</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
+      <div className="p-4 border-t" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center flex-shrink-0">
+            <User className="w-4 h-4 text-white/50" />
+          </div>
+          {isRailExpanded && (
+            <div className="flex flex-col min-w-0">
+              <span className="text-[11px] font-semibold text-white truncate">Online</span>
+              <span className="text-[9px] text-white/40 truncate">Model: LFM-2-8B</span>
+            </div>
+          )}
         </div>
       </div>
+    </motion.nav>
+  );
+
+  const renderHeader = () => (
+    <div className="flex h-12 items-center justify-between pl-12 pr-24 border-b shrink-0 z-30" style={{ borderColor: 'rgba(255,255,255,0.05)', backgroundColor: 'transparent' }}>
+      <div className="flex items-center gap-3">
+        {(activeSubApp === 'browser' || activeSubApp === 'marketplace') && isSidebarHidden && (
+          <button 
+            onClick={() => setIsSidebarHidden(false)}
+            className="p-2 -ml-2 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-colors"
+            title="Show Sidebar"
+          >
+            <Menu size={16} />
+          </button>
+        )}
+        <span className="text-[12px] font-black tracking-[0.2em] text-white/90 uppercase whitespace-nowrap">
+          {activeSubApp ? CATEGORY_LABELS[activeSubApp] : `${CATEGORY_LABELS[activeTab] || 'SYSTEM'} HUD`}
+        </span>
+      </div>
+      
+      <div className="flex items-center gap-6">
+        <div className="flex items-center gap-0.5">
+          {(spotlightState === 'dashboardSpotlight' || uiState === 'dashboard_open') && onOpenChat && (
+            <button onClick={onOpenChat} className="p-2 rounded-lg transition-all group/icon" style={{ color: 'rgba(255,255,255,0.3)' }} title="Open Chat">
+              <MessageSquare size={16} className="group-hover/icon:text-white transition-colors" />
+            </button>
+          )}
+          <button onClick={onNotificationsClick} className="p-2 rounded-lg transition-all relative group/icon" style={{ color: unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.3)' }}>
+            <Bell size={16} className="group-hover/icon:text-white transition-colors" />
+            {unreadCount > 0 && <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full" style={{ backgroundColor: glowColor }} />}
+          </button>
+          <button onClick={onClose} className="p-2 rounded-lg transition-all group/icon" style={{ color: 'rgba(255,255,255,0.3)' }}>
+            <X size={16} className="group-hover/icon:text-white transition-colors" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderActionBar = () => (
+    <div className="flex items-center justify-between pl-12 pr-0 h-16 border-t bg-black/60 shrink-0 z-40" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+      <div className="flex items-center gap-6">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+          <Wifi className="w-3 h-3" style={{ color: glowColor }} />
+          <span className="text-[9px] font-medium tracking-wide text-white/80">12MS</span>
+        </div>
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+          <Brain className="w-3 h-3" style={{ color: glowColor }} />
+          <span className="text-[9px] font-medium tracking-wide text-white/80">LFM-2-8B READY</span>
+        </div>
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+          <Activity className="w-3 h-3" style={{ color: glowColor }} />
+          <span className="text-[9px] font-medium tracking-wide text-white/80">{voiceState === 'listening' ? 'CONNECTED' : 'SYSTEM IDLE'}</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-4 ml-auto" style={{ marginRight: '52px' }}>
+        <button 
+          onClick={handleApplySettings} 
+          disabled={isApplying} 
+          className="px-8 py-2.5 rounded-lg text-[11px] font-bold tracking-wider transition-all disabled:opacity-50 text-white hover:text-black border border-white/10 hover:border-transparent" 
+          style={{ 
+            backgroundColor: 'transparent',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = glowColor;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = 'transparent';
+          }}
+        >
+          {isApplying ? 'COMMITTING...' : 'APPLY'}
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderContentZone = () => (
+    <div className="flex-1 overflow-y-auto p-0">
+       {!activeSubApp ? (
+         <div className="w-full h-full pl-12 pr-24 py-10 space-y-3">
+           {activeSections.map((section: any) => {
+             const isExpanded = expandedSections.has(section.id);
+             const sectionFields = section.fields || [];
+             return (
+               <div key={section.id} className="group/section overflow-hidden rounded-lg border transition-all mx-8" style={{ borderColor: isExpanded ? `${glowColor}30` : 'rgba(255,255,255,0.04)', backgroundColor: isExpanded ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.01)' }}>
+                 <button onClick={() => toggleSection(section.id)} className="w-full h-11 px-5 flex items-center justify-between transition-all hover:bg-white/[0.04] relative group/btn">
+                   <div className="flex items-center gap-3">
+                     <section.icon size={14} style={{ color: isExpanded ? glowColor : 'white' }} />
+                     <span className="text-[10px] font-black tracking-[0.2em] text-white/60 group-hover/btn:text-white uppercase">{section.label}</span>
+                   </div>
+                   <ChevronDown size={14} style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }} className="text-white/30" />
+                   <div className="absolute bottom-0 left-0 right-0 h-[2px] opacity-0 group-hover/section:opacity-100 transition-all" style={{ background: `linear-gradient(90deg, transparent, ${glowColor}, transparent)` }} />
+                 </button>
+                 {isExpanded && (
+                   <div className="px-8 pb-8 pt-2">
+                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-12 gap-y-2">
+                       {sectionFields.map((field: any) => (
+                         <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} />
+                       ))}
+                     </div>
+                   </div>
+                 )}
+               </div>
+             );
+           })}
+         </div>
+       ) : activeSubApp === 'browser' ? (
+         <div className="w-full h-full p-4 md:px-10">
+           <div className="w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
+            <div className="flex items-center gap-2 px-3 h-10 border-b border-white/5 bg-black/20">
+              <button 
+                onClick={() => {
+                  try {
+                    // This can fail if iframe content is cross-origin
+                    if (iframeRef.current?.contentWindow) {
+                      window.history.back(); // Fallback/default behavior for widget or non-iframe context
+                    }
+                  } catch (e) {
+                    console.warn("Cross-origin navigation blocked", e);
+                  }
+                }} 
+                className="p-1.5 hover:bg-white/5 rounded text-white/50 hover:text-white"
+              >
+                <ArrowLeft size={14} />
+              </button>
+              <input value={browserInput} onChange={(e) => setBrowserInput(e.target.value)} onKeyDown={handleBrowserInputSubmit} className="flex-1 text-[11px] rounded px-3 h-7 bg-white/5 border border-white/5 outline-none font-mono text-white" />
+              <button onClick={() => window.open(browserUrl, '_blank')} className="p-1.5"><ExternalLink size={14} className="text-white/50" /></button>
+            </div>
+             <iframe ref={iframeRef} src={browserUrl} className="flex-1 w-full border-none bg-white" />
+           </div>
+         </div>
+       ) : activeSubApp === 'activity' ? (
+         <ActivityPanel key="activity" glowColor={glowColor} fontColor="white" />
+       ) : activeSubApp === 'logs' ? (
+         <LogsPanel key="logs" glowColor={glowColor} fontColor="white" />
+       ) : activeSubApp === 'marketplace' ? (
+         <MarketplaceScreen key="marketplace" glowColor={glowColor} fontColor="white" />
+       ) : null}
+    </div>
+  );
+
+  return (
+    <div className="w-full h-full min-h-0 overflow-hidden flex flex-col text-white relative" style={{ background: 'transparent' }}>
+      <div className="absolute inset-0 pointer-events-none opacity-20 bg-[url('/noise.png')] mix-blend-overlay z-0" />
+      <div className="absolute inset-0 pointer-events-none z-10" style={{ boxShadow: `inset 0 0 60px ${glowColor}05` }} />
+      <div className="flex-1 flex overflow-hidden relative z-20">
+        {renderNavigationRail()}
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          {renderHeader()}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {renderContentZone()}
+          </div>
+        </div>
+      </div>
+      {renderActionBar()}
     </div>
   );
 }

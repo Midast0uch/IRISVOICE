@@ -1924,9 +1924,9 @@ ${message.text}`;
 
             {/* Input Area - Command Line Style with Drag & Drop */}
             <div 
-              className="px-3 pb-3 pt-2 flex-shrink-0 relative z-30"
+              className="px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"
               style={{
-                background: 'linear-gradient(0deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.5) 50%, transparent 100%)'
+                borderColor: 'rgba(255,255,255,0.05)'
               }}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
@@ -1955,17 +1955,29 @@ ${message.text}`;
                 )}
               </AnimatePresence>
 
-              <div className="relative flex items-end gap-2">
+              <div className="relative flex items-end gap-6" style={{ marginRight: '12px' }}>
                 <div className="flex-1 relative">
-                  <input
-                    ref={inputRef}
-                    type="text"
+                  <textarea
+                    ref={inputRef as any}
                     value={inputText}
-                    onChange={(e) => setInputText(e.target.value)}
-                    onKeyPress={handleKeyPress}
+                    onChange={(e) => {
+                      setInputText(e.target.value);
+                      // Auto-expand height
+                      e.target.style.height = 'auto';
+                      e.target.style.height = `${e.target.scrollHeight}px`;
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage();
+                        // Reset height
+                        if (inputRef.current) inputRef.current.style.height = 'auto';
+                      }
+                    }}
                     placeholder={voiceState === 'listening' ? 'Listening...' : 'Type command or drop file...'}
                     disabled={voiceState === 'listening'}
-                    className="w-full bg-transparent border-0 border-b py-2.5 pr-10 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50"
+                    className="w-full bg-transparent border-0 border-b py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
+                    rows={1}
                     style={{
                       borderColor: isDraggingFile ? glowColor : inputText ? glowColor : `${glowColor}30`,
                       color: fontColor,
@@ -1984,49 +1996,56 @@ ${message.text}`;
                     />
                   )}
                 </div>
-                
-                {/* Hidden file input */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  onChange={handleFileInputChange}
-                  className="hidden"
-                  accept="*/*"
-                />
 
-                {/* Send button - inside */}
-                <motion.button
-                  onClick={handleSendMessage}
-                  disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
-                  className="p-2.5 rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                  style={{
-                    backgroundColor: inputText.trim() ? `${glowColor}20` : 'transparent',
-                    color: inputText.trim() ? glowColor : `${fontColor}40`,
-                    border: `1px solid ${inputText.trim() ? `${glowColor}40` : 'transparent'}`,
-                  }}
-                  whileHover={inputText.trim() ? { scale: 1.05 } : {}}
-                  whileTap={inputText.trim() ? { scale: 0.95 } : {}}
-                  title="Send message"
-                >
-                  <Send size={16} />
-                </motion.button>
+                {/* Compact Action Group */}
+                <div className="flex items-center gap-2 mb-2">
+                  {/* Send button */}
+                  <motion.button
+                    onClick={handleSendMessage}
+                    disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
+                    className="p-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                    style={{
+                      color: inputText.trim() ? glowColor : `${fontColor}40`,
+                    }}
+                    whileHover={inputText.trim() ? { scale: 1.1 } : {}}
+                    whileTap={inputText.trim() ? { scale: 0.9 } : {}}
+                    title="Send message"
+                  >
+                    <Send size={18} />
+                  </motion.button>
 
-                {/* Plus button for file upload - outside/right */}
-                <motion.button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={voiceState === 'listening'}
-                  className="p-2 rounded-full transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                  style={{
-                    backgroundColor: 'transparent',
-                    color: `${fontColor}60`,
-                    border: `1px solid ${glowColor}30`,
-                  }}
-                  whileHover={{ scale: 1.05, backgroundColor: `${glowColor}15` }}
-                  whileTap={{ scale: 0.95 }}
-                  title="Upload file"
-                >
-                  <Plus size={14} />
-                </motion.button>
+                  {/* Liquid Metal Divider - between buttons */}
+                  <div 
+                    className="w-px h-8 opacity-30"
+                    style={{
+                      background: `linear-gradient(to bottom, transparent, ${glowColor}, transparent)`,
+                    }}
+                  />
+                  
+                  {/* Hidden file input */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    onChange={handleFileInputChange}
+                    className="hidden"
+                    accept="*/*"
+                  />
+
+                  {/* Plus button for file upload */}
+                  <motion.button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={voiceState === 'listening'}
+                    className="p-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                    style={{
+                      color: `${fontColor}60`,
+                    }}
+                    whileHover={{ scale: 1.1, color: fontColor }}
+                    whileTap={{ scale: 0.9 }}
+                    title="Upload file"
+                  >
+                    <Plus size={18} />
+                  </motion.button>
+                </div>
               </div>
             </div>
           </motion.div>

@@ -746,39 +746,39 @@ class IRISGateway:
             elif msg_type == "voice_command_end":
                 self._logger.info(f"[Session: {session_id}] Voice command end")
 
-                is_auto_stop = getattr(self._voice_handler, "_auto_stop_mode", False)
                 has_audio = (
                     self._voice_handler is not None
                     and len(getattr(self._voice_handler, "audio_buffer", [])) > 30
                 )
 
-                if is_auto_stop:
-                    # Wake-word path: user clicked to CANCEL the recording.
-                    # The VAD was running automatically; clicking means "never
-                    # mind — go back to idle" (nothing said, or wants to redo).
-                    # Skip Whisper entirely so the orb doesn't stay frozen while
-                    # Whisper processes background noise.
+                # Always call stop_recording() regardless of how the recording
+                # was started (wake-word auto_stop or manual double-click).
+                #
+                # For the wake-word path (auto_stop=True), VAD has already
+                # stopped the recording and queued Whisper before this message
+                # arrives, so stop_recording() is a no-op (is_recording=False).
+                # The Whisper transcription fires normally via _on_voice_result.
+                #
+                # For the manual double-click path (auto_stop=False), this
+                # signals the background thread to exit its _stop_event.wait()
+                # and proceed to Whisper transcription.
+                #
+                # Previously this branched on is_auto_stop and called
+                # cancel_recording() for the wake-word path, which set
+                # _cancelled=True and skipped Whisper entirely — silently
+                # breaking the entire voice pipeline.
+                if has_audio:
+                    await self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "listening_state",
+                        "payload": {"state": "processing_conversation"}
+                    })
+                else:
                     await self._ws_manager.broadcast_to_session(session_id, {
                         "type": "listening_state",
                         "payload": {"state": "idle"}
                     })
-                    if self._voice_handler:
-                        self._voice_handler.cancel_recording()
-                else:
-                    # Manual double-click path: user explicitly stopped the
-                    # recording and wants the audio processed.
-                    if has_audio:
-                        await self._ws_manager.broadcast_to_session(session_id, {
-                            "type": "listening_state",
-                            "payload": {"state": "processing_conversation"}
-                        })
-                    else:
-                        await self._ws_manager.broadcast_to_session(session_id, {
-                            "type": "listening_state",
-                            "payload": {"state": "idle"}
-                        })
-                    if self._voice_handler:
-                        self._voice_handler.stop_recording()
+                if self._voice_handler:
+                    self._voice_handler.stop_recording()
 
         except Exception as e:
             self._logger.error(f"[Voice] Error in _handle_voice: {e}", exc_info=True)

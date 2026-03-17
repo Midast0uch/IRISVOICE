@@ -160,7 +160,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
         className={`iris-select w-full flex items-center justify-between gap-2 text-left text-white rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed select-none ${className}`}
         style={style}
       >
-        <span className="truncate min-w-0 flex-1">{displayLabel}</span>
+        <span className="min-w-0 flex-1">{displayLabel}</span>
         {/* Chevron */}
         <svg
           width="10" height="6" viewBox="0 0 10 6" fill="none"
@@ -179,7 +179,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
           role="listbox"
           tabIndex={-1}
           onKeyDown={handleListKeyDown}
-          className="absolute z-50 w-full max-h-52 overflow-y-auto rounded-xl py-1"
+          className="absolute z-50 w-full min-w-max max-h-52 overflow-y-auto rounded-xl py-1"
           style={{
             ...(openUp ? { bottom: "calc(100% + 4px)" } : { top: "calc(100% + 4px)" }),
             background: "rgba(10, 10, 14, 0.96)",
@@ -219,7 +219,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
                       opacity: isSelected ? 1 : 0,
                     }}
                   />
-                  <span className="truncate">{opt.label}</span>
+                  <span>{opt.label}</span>
                 </div>
               )
             })
