@@ -747,9 +747,12 @@ class ExecutionPlan:
         hza = self.plan_id[:8]
         lines = [
             f"[system://plan/{hza}]",
+            f"EXECUTION PLAN [{hza}]",
             f"Task: {self.original_task}",
             f"Strategy: {self.strategy}",
-            f"Steps: {len(self.steps)}",
+            f"Reasoning: {self.reasoning}",
+            "",
+            "Steps:",
         ]
         for step in self.steps:
             if step.status == StepStatus.COMPLETED:

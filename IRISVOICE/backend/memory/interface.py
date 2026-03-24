@@ -500,7 +500,7 @@ class MemoryInterface:
         if self._mycelium is None:
             return
         try:
-            self._mycelium.ingest_statement(statement)
+            self._mycelium.ingest_statement(text=statement, session_id=session_id)
         except Exception:
             pass
 

@@ -24,6 +24,25 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+# ── DER Loop constants (spec: agent_loop_requirements.md Gap 11) ───────────
+# Canonical values live in der_constants.py — re-exported here for spec
+# compliance so module-level code that imports from agent_kernel finds them.
+try:
+    from backend.agent.der_constants import (
+        DER_MAX_CYCLES,
+        DER_MAX_VETO_PER_ITEM,
+        DER_EMERGENCY_STOP,
+        DER_TOKEN_BUDGETS,
+    )
+except Exception:
+    DER_MAX_CYCLES = 40
+    DER_MAX_VETO_PER_ITEM = 2
+    DER_EMERGENCY_STOP = 200
+    DER_TOKEN_BUDGETS: Dict[str, int] = {
+        "implement": 40000, "debug": 30000, "research": 20000,
+        "full": 50000, "quick_edit": 8000,
+    }
+
 
 @dataclass
 class TaskContext:
@@ -231,6 +250,28 @@ class AgentKernel:
         # Memory Foundation integration
         self._memory_interface: Optional[Any] = None
 
+        # ── DER Loop components ────────────────────────────────────────────
+        # DER_MAX_CYCLES / DER_MAX_VETO_PER_ITEM re-exported at module level
+        # for spec compliance (Gap 11). Canonical values live in der_constants.
+        self._task_classifier = None
+        self._reviewer = None
+        self._der_tokens_used: int = 0
+
+        try:
+            from backend.memory.mycelium.kyudo import TaskClassifier as _TC
+            self._task_classifier = _TC()
+            logger.info("[AgentKernel] TaskClassifier initialized (DER)")
+        except Exception as _tc_err:
+            logger.warning(f"[AgentKernel] TaskClassifier unavailable: {_tc_err}")
+
+        try:
+            from backend.agent.der_loop import Reviewer as _Reviewer
+            # memory_interface wired later via set_memory_interface()
+            self._reviewer = _Reviewer(adapter=self, memory_interface=None)
+            logger.info("[AgentKernel] Reviewer initialized (DER)")
+        except Exception as _rv_err:
+            logger.warning(f"[AgentKernel] Reviewer unavailable: {_rv_err}")
+
         logger.info("[AgentKernel] Initialization complete")
 
     def set_memory_interface(self, memory_interface: Any) -> None:
@@ -244,7 +285,58 @@ class AgentKernel:
             memory_interface: MemoryInterface instance from backend.memory
         """
         self._memory_interface = memory_interface
+        # Wire Reviewer's memory reference now that it's available
+        if self._reviewer is not None:
+            self._reviewer.memory = memory_interface
         logger.info("[AgentKernel] Memory interface connected")
+
+    def infer(
+        self,
+        prompt: str,
+        role: str = "EXECUTION",
+        max_tokens: int = 200,
+        temperature: float = 0.0,
+    ):
+        """
+        Thin inference adapter used by Reviewer (and other DER components).
+        Returns an object with a `.raw_text` attribute.
+        Never raises — returns empty-text object on any backend failure.
+        Routes through the same backend as the agentic loop.
+        """
+        class _InferResult:
+            def __init__(self, raw_text: str):
+                self.raw_text = raw_text
+
+        try:
+            if self._model_provider == "lmstudio":
+                _lms = self._get_lmstudio_client()
+                _resp = _lms.chat.completions.create(
+                    model=self._selected_reasoning_model or "local-model",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+                return _InferResult(_resp.choices[0].message.content or "")
+
+            if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
+                import requests as _req
+                _r = _req.post(
+                    "http://localhost:11434/api/chat",
+                    json={
+                        "model": self._selected_reasoning_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                    },
+                    timeout=15,
+                )
+                if _r.status_code == 200:
+                    return _InferResult(_r.json().get("message", {}).get("content", ""))
+
+        except Exception as _inf_err:
+            logger.warning(f"[AgentKernel.infer] inference failed: {_inf_err}")
+
+        return _InferResult("")
 
     def _get_memory_context(self, task: str) -> str:
         """
@@ -1282,6 +1374,155 @@ class AgentKernel:
 
         return "\n\n".join(sections)
 
+    def _get_failure_warnings(self, task: str) -> str:
+        """
+        Fetch high-signal failure warnings from Mycelium via ResolutionEncoder.
+        Returns "None" on any error — never raises, never blocks.
+        """
+        try:
+            from backend.memory.mycelium.interpreter import ResolutionEncoder
+            if (
+                self._memory_interface is not None
+                and hasattr(self._memory_interface, '_mycelium')
+                and self._memory_interface._mycelium is not None
+            ):
+                conn = self._memory_interface._mycelium.conn
+                encoded = ResolutionEncoder.encode_with_resolution(task, conn)
+                return encoded or "None"
+        except Exception:
+            pass
+        return "None"
+
+    def _plan_task(
+        self,
+        text: str,
+        context: Optional[List[Dict[str, Any]]] = None,
+        is_mature: bool = False,
+        task_class: str = "full",
+        context_package=None,
+    ):
+        """
+        DER-aware planning wrapper. Returns ExecutionPlan, never raises.
+        Maturity-aware temperature: 0.1 for high-confidence Mycelium data,
+        0.25 for exploration / immature graph.
+        Falls back to a single-step plan on any model or parse failure.
+        """
+        from backend.core_models import ExecutionPlan, PlanStep
+        import uuid as _uuid
+        import re as _re
+
+        temperature = 0.1 if is_mature else 0.25
+
+        # Extract context package fields for the planning prompt
+        tier1 = ""
+        preds = ""
+        strategy_hint = ""
+        if context_package is not None:
+            tier1 = getattr(context_package, 'tier1_directives', "") or ""
+            try:
+                preds = context_package.get_tier2_predictions() or ""
+            except Exception:
+                pass
+            try:
+                strategy_hint = str(context_package.topology_primitive) or ""
+            except Exception:
+                pass
+
+        failures = self._get_failure_warnings(text)
+
+        planning_prompt = self._build_planning_prompt(
+            task=text,
+            tier1_directives=tier1,
+            behavior_preds=preds,
+            failure_warnings=failures,
+            task_class=task_class,
+            strategy_hint=strategy_hint,
+        )
+
+        system_prompt = ""
+        if self._personality:
+            try:
+                system_prompt = self._personality.get_system_prompt()
+            except Exception:
+                pass
+
+        full_prompt = (
+            f"{system_prompt}\n\n{planning_prompt}\n\n"
+            "Respond with JSON only — no prose, no markdown fences:\n"
+            '{"strategy":"do_it_myself|spawn_children|delegate_external",'
+            '"reasoning":"one sentence explaining the approach",'
+            '"steps":[{"step_id":"s1","step_number":1,"description":"...","tool":null,"params":{},"critical":true}]}'
+        )
+
+        plan_raw: Optional[str] = None
+        try:
+            if self._model_provider == "lmstudio":
+                _lms = self._get_lmstudio_client()
+                _r = _lms.chat.completions.create(
+                    model=self._selected_reasoning_model or "local-model",
+                    messages=[{"role": "user", "content": full_prompt}],
+                    max_tokens=-1,
+                    temperature=temperature,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+                plan_raw = _r.choices[0].message.content
+            elif self._selected_reasoning_model and ":" in self._selected_reasoning_model:
+                import requests as _req
+                _r2 = _req.post(
+                    "http://localhost:11434/api/chat",
+                    json={
+                        "model": self._selected_reasoning_model,
+                        "messages": [{"role": "user", "content": full_prompt}],
+                        "stream": False,
+                    },
+                    timeout=60,
+                )
+                if _r2.status_code == 200:
+                    plan_raw = _r2.json().get("message", {}).get("content", "")
+        except Exception as _pe:
+            logger.warning(f"[AgentKernel._plan_task] inference failed: {_pe}")
+
+        # Parse JSON → ExecutionPlan
+        try:
+            if plan_raw:
+                m = _re.search(r'\{[\s\S]+\}', plan_raw)
+                if m:
+                    data = json.loads(m.group())
+                    steps: List[Any] = []
+                    for raw_step in data.get("steps", []):
+                        steps.append(PlanStep(
+                            step_id=str(raw_step.get("step_id", str(_uuid.uuid4()))),
+                            step_number=int(raw_step.get("step_number", len(steps) + 1)),
+                            description=str(raw_step.get("description", "")),
+                            tool=raw_step.get("tool"),
+                            params=raw_step.get("params", {}),
+                            critical=bool(raw_step.get("critical", True)),
+                        ))
+                    return ExecutionPlan(
+                        plan_id=str(_uuid.uuid4()),
+                        original_task=text,
+                        strategy=data.get("strategy", "do_it_myself"),
+                        reasoning=data.get("reasoning", ""),
+                        steps=steps,
+                    )
+        except Exception as _parse_err:
+            logger.warning(f"[AgentKernel._plan_task] parse failed: {_parse_err}")
+
+        # Fallback: minimal single-step plan so DER cycle can still proceed
+        return ExecutionPlan(
+            plan_id=str(_uuid.uuid4()),
+            original_task=text,
+            strategy="do_it_myself",
+            reasoning="_plan_task fallback — model returned non-JSON",
+            steps=[PlanStep(
+                step_id="s1",
+                step_number=1,
+                description=text,
+                tool=None,
+                critical=True,
+            )],
+        )
+
     def process_text_message(self, text: str, session_id: Optional[str] = None, chunk_callback: Optional[Callable[[str], None]] = None) -> str:
         """
         Main entry point for text messages.
@@ -1359,6 +1600,90 @@ class AgentKernel:
                 response = "I wasn't able to generate a response. Please check the model connection."
             logger.info(f"[AgentKernel] Direct response: {response[:50]}...")
             return response
+
+        # ── DER path: sanitize → classify → Mycelium → plan → execute ──────
+        # Runs BEFORE the ReAct loop. Falls through to ReAct on any failure.
+        _der_response: Optional[str] = None
+        try:
+            _task_clean = self._sanitize_task(text)
+            _task_class = "full"
+            if self._task_classifier is not None:
+                try:
+                    _task_class, _ = self._task_classifier.classify(_task_clean)
+                except Exception:
+                    pass
+
+            _context_package = None
+            _is_mature = False
+            if self._memory_interface is not None:
+                try:
+                    _ctx_result = self._memory_interface.get_task_context_package(
+                        task=_task_clean,
+                        task_class=_task_class,
+                        session_id=session_id or self.session_id,
+                    )
+                    if isinstance(_ctx_result, tuple) and len(_ctx_result) == 2:
+                        _context_package, _is_mature = _ctx_result
+                    elif _ctx_result is not None:
+                        _context_package = _ctx_result
+                except Exception:
+                    pass
+
+            _plan = self._plan_task(
+                text=_task_clean,
+                context=context,
+                is_mature=_is_mature,
+                task_class=_task_class,
+                context_package=_context_package,
+            )
+
+            # GAP 5 — strategy signal to Mycelium after planning
+            try:
+                if self._memory_interface:
+                    self._memory_interface.mycelium_ingest_statement(
+                        statement=f"task required {_plan.strategy}: {_plan.reasoning}",
+                        session_id=session_id or self.session_id,
+                    )
+            except Exception:
+                pass
+
+            # GAP 6 — register plan address when Mycelium is mature
+            try:
+                if _is_mature and _context_package and hasattr(_context_package, 'register_address'):
+                    _plan_ctx_str = _plan.to_context_string()
+                    _context_package.register_address(
+                        url=f"system://plan/{_plan.plan_id[:8]}",
+                        token_count=len(_plan_ctx_str.split()),
+                        summary=f"{_plan.strategy}: {_plan.original_task[:60]}",
+                    )
+            except Exception:
+                pass
+
+            # GAP 4 — route by strategy (do_it_myself → DER; others → ReAct)
+            if _plan.strategy == "do_it_myself":
+                _der_response = self._execute_plan_der(
+                    plan=_plan,
+                    context_package=_context_package,
+                    is_mature=_is_mature,
+                    task_class=_task_class,
+                    session_id=session_id or self.session_id,
+                )
+
+        except Exception as _der_err:
+            logger.warning(
+                f"[AgentKernel] DER path error (falling back to ReAct): {_der_err}"
+            )
+            _der_response = None
+
+        if _der_response is not None:
+            try:
+                self._conversation_memory.add_message("assistant", _der_response)
+            except Exception:
+                pass
+            logger.info(
+                f"[AgentKernel] DER response: {_der_response[:50]}..."
+            )
+            return _der_response
 
         # ── Agentic loop path: for tool-trigger messages ─────────────────────
         # Build the initial message list (system + conversation history + user turn).
@@ -1829,6 +2154,221 @@ Respond with a JSON object:
             error_msg = f"Error during task planning: {e}"
             logger.error(f"[AgentKernel] {error_msg}", exc_info=True)
             return {"error": error_msg}
+
+    def _execute_plan_der(
+        self,
+        plan,
+        context_package=None,
+        is_mature: bool = False,
+        task_class: str = "full",
+        session_id: Optional[str] = None,
+    ) -> str:
+        """
+        DER execution cycle: Director → Reviewer → Explorer → repeat until complete.
+
+        The Director re-reads Mycelium each cycle via ContextPackage.
+        The Reviewer gates each step (PASS / REFINE / VETO).
+        The Explorer executes via _tool_bridge or direct model call.
+        Mycelium signal hooks fire after every step and at outcome.
+
+        Never raises — wraps failures as step error text so the response
+        always reaches the user.
+        """
+        from backend.agent.der_loop import (
+            DirectorQueue, QueueItem, ReviewVerdict,
+        )
+        import uuid as _uuid
+
+        _session = session_id or self.session_id
+        completed_items: List[Any] = []
+        step_outputs: List[str] = []
+
+        # Build Director queue from ExecutionPlan steps
+        items = [
+            QueueItem(
+                step_id=step.step_id,
+                step_number=step.step_number,
+                description=step.description,
+                tool=step.tool,
+                params=step.params if step.params else {},
+                critical=step.critical,
+                objective_anchor=plan.original_task,
+                coordinate_signal=(
+                    getattr(context_package, 'topology_position', "") or ""
+                    if context_package else ""
+                ),
+            )
+            for step in plan.steps
+        ]
+        queue = DirectorQueue(objective=plan.original_task, items=items)
+
+        # Reviewer — falls back to PASS on any failure (membrane, not gate)
+        reviewer = self._reviewer
+
+        while not queue.is_complete() and not queue.hit_cycle_limit():
+            queue.cycle_count += 1
+            item = queue.next_ready()
+            if item is None:
+                break  # dependency deadlock guard
+
+            # ── REVIEWER PHASE ─────────────────────────────────────────────
+            if reviewer is not None:
+                try:
+                    verdict, feedback = reviewer.review(
+                        item=item,
+                        completed_steps=completed_items,
+                        context_package=context_package,
+                        is_mature=is_mature,
+                    )
+                except Exception:
+                    verdict, feedback = ReviewVerdict.PASS, None
+
+                if verdict == ReviewVerdict.VETO:
+                    item.veto_count += 1
+                    logger.info(
+                        f"[DER] Step {item.step_number} VETOED "
+                        f"(count={item.veto_count}, reason={feedback})"
+                    )
+                    # Emit veto signal to Mycelium
+                    try:
+                        if self._memory_interface:
+                            self._memory_interface.mycelium_ingest_tool_call(
+                                tool_name=item.tool or "unknown",
+                                params=item.params,
+                                result={"vetoed": True, "reason": feedback},
+                                success=False,
+                                session_id=_session,
+                            )
+                    except Exception:
+                        pass
+
+                    if item.veto_count <= queue.max_veto_per_item:
+                        # Keep in queue for Director to reroute next cycle
+                        continue
+                    else:
+                        queue.mark_vetoed(item.step_id)
+                        continue
+
+                if verdict == ReviewVerdict.REFINE and feedback:
+                    item.refined_description = feedback
+                    item.description = feedback
+                    logger.info(f"[DER] Step {item.step_number} REFINED")
+
+            # ── EXPLORER PHASE ─────────────────────────────────────────────
+            step_result: str = ""
+            step_success: bool = True
+            try:
+                if item.tool and self._tool_bridge is not None:
+                    raw = self._tool_bridge.execute_tool(
+                        tool_name=item.tool,
+                        params=item.params,
+                        session_id=_session,
+                    )
+                    step_result = str(raw) if raw is not None else ""
+                else:
+                    step_result = self._run_step_direct(item, context_package, _session)
+            except Exception as _ex_err:
+                step_success = False
+                step_result = f"[STEP ERROR: {_ex_err}]"
+                logger.warning(
+                    f"[DER] Step {item.step_number} explorer error: {_ex_err}"
+                )
+
+            step_outputs.append(step_result)
+
+            # ── MYCELIUM SIGNAL: tool call ─────────────────────────────────
+            try:
+                if self._memory_interface:
+                    self._memory_interface.mycelium_ingest_tool_call(
+                        tool_name=item.tool or "none",
+                        params=item.params,
+                        result=step_result,
+                        success=step_success,
+                        session_id=_session,
+                    )
+            except Exception:
+                pass
+
+            queue.mark_complete(item.step_id)
+            completed_items.append(item)
+
+        # ── OUTCOME RECORDING (ordered per spec: record → crystallize → clear → stats)
+        had_failures = any("[STEP ERROR" in o for o in step_outputs)
+        outcome = "failure" if had_failures else "success"
+
+        try:
+            if self._memory_interface:
+                self._memory_interface.mycelium_record_outcome(
+                    task=plan.original_task,
+                    outcome=outcome,
+                    session_id=_session,
+                )
+        except Exception:
+            pass
+
+        try:
+            if self._memory_interface:
+                self._memory_interface.mycelium_crystallize_landmark(
+                    session_id=_session,
+                )
+        except Exception:
+            pass
+
+        try:
+            if self._memory_interface:
+                self._memory_interface.mycelium_clear_session(
+                    session_id=_session,
+                )
+        except Exception:
+            pass
+
+        try:
+            if self._memory_interface:
+                self._memory_interface.mycelium_record_plan_stats(
+                    plan_id=plan.plan_id,
+                    task=plan.original_task,
+                    strategy=plan.strategy,
+                    task_class=task_class,
+                    steps_total=len(plan.steps),
+                    steps_completed=len(completed_items),
+                    steps_vetoed=len(queue.vetoed_ids),
+                    cycles_used=queue.cycle_count,
+                    outcome=outcome,
+                    session_id=_session,
+                    is_mature=is_mature,
+                )
+        except Exception:
+            pass
+
+        if step_outputs:
+            return "\n".join(o for o in step_outputs if o)
+        return (
+            f"[DER] {plan.strategy} — "
+            f"{len(completed_items)}/{len(plan.steps)} steps completed."
+        )
+
+    def _run_step_direct(self, item, context_package, session_id: str) -> str:
+        """
+        Execute a tool-less DER step via direct model inference.
+        Returns the model's response text, or an error placeholder.
+        """
+        try:
+            cp_str = ""
+            if context_package and hasattr(context_package, 'get_system_zone_content'):
+                try:
+                    cp_str = context_package.get_system_zone_content() or ""
+                except Exception:
+                    pass
+            prompt = (
+                f"{cp_str}\n\n"
+                f"OBJECTIVE: {item.objective_anchor}\n"
+                f"STEP {item.step_number}: {item.description}\n\n"
+                "Complete this step. Respond with the result only."
+            ).strip()
+            result = self.infer(prompt, role="EXECUTION", max_tokens=512, temperature=0.3)
+            return result.raw_text or f"[step {item.step_number} completed]"
+        except Exception as _e:
+            return f"[step {item.step_number} error: {_e}]"
 
     async def execute_plan(self, plan: Dict[str, Any]) -> List[Any]:
         """
