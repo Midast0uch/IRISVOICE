@@ -23,7 +23,7 @@ const LazyChatWing = lazy(() => import("@/components/chat-view") as any)
 const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-control-center") as any)
 
 export default function Home() {
-  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand } = useNavigation()
+  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   
   // Initialize UI layout state machine
@@ -80,11 +80,9 @@ export default function Home() {
   const glowColor = theme.glow.color
 
   const handleSingleClick = useCallback(() => {
-    // Phase 121: Single-click to stop voice engine if active
-    // Use endVoiceCommand (optimistic reset) instead of raw sendMessage
-    // so voiceState snaps to idle immediately without waiting for backend
+    // Single-click always cancels voice immediately
     if (voiceState !== "idle") {
-      endVoiceCommand()
+      cancelVoiceCommand()
       return
     }
 
@@ -100,7 +98,7 @@ export default function Home() {
     } else {
       handleExpandToMain()
     }
-  }, [voiceState, uiLayoutState, state.level, endVoiceCommand, closeAll, handleGoBack, handleExpandToMain])
+  }, [voiceState, uiLayoutState, state.level, cancelVoiceCommand, closeAll, handleGoBack, handleExpandToMain])
 
   const handleDoubleClick = useCallback(() => {
     // Phase 121: Double-click to start voice engine if idle
@@ -125,7 +123,7 @@ export default function Home() {
   }
 
   return (
-    <main className="bg-transparent w-full min-h-screen flex flex-col items-center justify-center relative" style={{ perspective: '1200px' }}>
+    <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ perspective: '1200px' }}>
       {/* Backdrop Blur - renders when wings are open */}
       <BackdropBlur uiState={uiLayoutState} />
       
@@ -225,9 +223,6 @@ export default function Home() {
         uiState={uiLayoutState}
         onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}
         isChatOpen={isChatOpen || isBothOpen}
-        activeTab={activeDashboardTab}
-        onTabChange={setActiveDashboardTab}
-        initialBrowserUrl={browserUrl}
       />
     </main>
   )

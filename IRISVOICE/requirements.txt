@@ -29,33 +29,18 @@ psutil>=5.9.0
 RealtimeSTT>=0.3.0       # real-time STT: faster-whisper/tiny + silero-VAD (offline)
 faster-whisper>=1.0.0    # pinned as RealtimeSTT dependency (CPU int8, ~40 MB model)
 
-# TTS Pipeline — LuxTTS voice cloning (Python 3.13 compatible) + pyttsx3 fallback
-# LuxTTS core deps (install via: pip install git+https://github.com/ysharma3501/LinaCodec.git && pip install git+https://github.com/ysharma3501/LuxTTS.git --no-deps)
-torch>=2.0.0             # already listed above; LuxTTS also uses torch
+# TTS Pipeline — CosyVoice2-0.5B zero-shot voice cloning + streaming
+# Model lives at: backend/voice/CosyVoice/ (cloned repo)
+# Pretrained model: backend/voice/pretrained_models/CosyVoice2-0.5B
+# Install CosyVoice deps:
+#   pip install conformer hydra-core hyperpyyaml "x-transformers>=2.0" "diffusers==0.29.0"
+torch>=2.0.0             # already listed above
 torchaudio>=2.0.0        # already listed above
-huggingface_hub>=0.20.0  # model download from YatharthS/LuxTTS
-safetensors>=0.4.0
-vocos>=0.1.0
-lhotse>=1.30.0
-librosa>=0.10.0
-onnxruntime>=1.17.0
-pydub>=0.25.0
-piper-phonemize-fix>=1.2.2  # Python 3.13 wheels; drop-in for piper-phonemize
-"transformers<=4.57.6"   # pinned: LuxTTS requires <=4.57.6
-cn2an>=0.5.0
-inflect>=7.0.0
-jieba>=0.42.0
-pypinyin>=0.50.0
-pyttsx3>=2.90            # SAPI5 built-in fallback TTS (zero download)
+conformer>=0.3.2
+hydra-core>=1.3.2
+hyperpyyaml>=1.2.3
+x-transformers>=2.0.0
+diffusers==0.29.0
 
-# Vision & Automation (Phase 2)
-mss>=9.0.0
-Pillow>=10.0.0
-pyautogui>=0.9.54
-anthropic>=0.18.0
-openai>=1.0.0
-
-# IRIS Memory Foundation (Episodic & Semantic Memory)
-sqlcipher3>=0.5.0        # AES-256 encrypted SQLite (requires libsqlcipher-dev)
-sqlite-vec>=0.1.0        # Vector similarity search in SQLite
-sentence-transformers>=2.7.0  # all-MiniLM-L6-v2 embedding model
+# Fallback TTS — pyttsx3 built-in fallback (zero download, instant)
+pyttsx3>=2.90            # SAPI5 built-in fallback TTS (Windows only)

@@ -20,6 +20,7 @@ fn main() {
             window.set_shadow(false).ok();
             window.set_always_on_top(true).ok();
             window.set_skip_taskbar(true).ok();
+
             // Must be resizable=true so the JS API can expand/contract the window
             // when chat/dashboard wings open.  The user cannot drag-resize because
             // there are no window decorations, so this doesn't expose a resize handle.

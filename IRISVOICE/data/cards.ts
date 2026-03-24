@@ -153,7 +153,7 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'tts_voice',
           type: 'dropdown',
           label: 'Voice',
-          // LuxTTS voice cloning (requires data/voice_clone_ref.wav) + pyttsx3 fallback
+          // CosyVoice2 zero-shot voice cloning (uses data/TOMV2.wav) + pyttsx3 fallback
           options: [
             'Cloned Voice',
             'Built-in',

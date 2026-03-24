@@ -2,11 +2,11 @@
 
 import { useState, useCallback, useEffect, useRef } from "react"
 import { useNavigation } from "@/contexts/NavigationContext"
-import type { DashboardTab } from "@/components/dashboard-wing"
 import { useWindowResize } from "@/hooks/useWindowResize"
 
-// Re-export DashboardTab for convenience
-export type { DashboardTab }
+// Dashboard tab type — defined here so useUILayoutState owns the source of truth.
+// DashboardWing reads the active tab via this type (passed in as a prop or via context).
+export type DashboardTab = 'dashboard' | 'activity' | 'logs' | 'marketplace' | 'browser'
 
 /**
  * UI Layout State enum

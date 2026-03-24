@@ -8,6 +8,7 @@ import asyncio
 from typing import Dict, List, Set, Optional
 from fastapi import WebSocket
 from datetime import datetime
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,17 @@ class WebSocketManager:
     # while still catching genuinely dead connections (which never pong at all).
     
     def __init__(self, session_manager: Optional[SessionManager] = None, state_manager: Optional[StateManager] = None):
+        import time
+        start_time = time.time()
+        logger.info(f"[WebSocketManager] Initializing (start: {start_time:.3f}s)")
+        
         self.active_connections: Dict[str, WebSocket] = {}
         self._session_manager = session_manager or get_session_manager()
         self._state_manager = state_manager or get_state_manager()
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
         self._last_pong: Dict[str, datetime] = {}
+        
+        logger.info(f"[WebSocketManager] Initialization complete (elapsed: {time.time() - start_time:.3f}s)")
     
     async def connect(self, websocket: WebSocket, client_id: str, session_id: Optional[str] = None) -> Optional[str]:
         """
@@ -47,6 +54,10 @@ class WebSocketManager:
         - Session creation failures: Logged and None returned
         - State initialization failures: Logged but connection continues
         """
+        import time
+        connect_start = time.time()
+        logger.info(f"[WebSocketManager] Connecting client {client_id} (start: {connect_start:.3f}s)")
+        
         try:
             if client_id in self.active_connections:
                 # A new WebSocket arrived for an already-registered client_id.
@@ -84,7 +95,7 @@ class WebSocketManager:
                 # owns_connection guard in the finally block of
                 # websocket_endpoint then prevents the stale coroutine from
                 # evicting the newly-registered socket.
-
+ 
             # Accept WebSocket connection with error handling
             try:
                 await websocket.accept()
@@ -105,6 +116,8 @@ class WebSocketManager:
                     session_id = f"session_{client_id}"
 
                 existing_session = self._session_manager.get_session(session_id)
+                connect_start_session = time.time()
+                
                 if existing_session is not None:
                     # Quick reconnect — session still alive in memory.
                     # Cancel any pending garbage-collection that was scheduled
@@ -126,6 +139,9 @@ class WebSocketManager:
                         f"Client {client_id} started session {session_id} "
                         f"(loaded from disk if prior state existed)"
                     )
+                
+                connect_end_session = time.time()
+                logger.debug(f"[WebSocketManager] Session operations for client {client_id} took {connect_end_session - connect_start_session:.3f}s")
             except Exception as e:
                 logger.error(f"Failed to create/restore session for client {client_id}: {e}", exc_info=True)
                 # Clean up connection
@@ -138,7 +154,10 @@ class WebSocketManager:
             
             # Start heartbeat for this client
             self._last_pong[client_id] = datetime.now()
+            connect_start_heartbeat = time.time()
             self._heartbeat_tasks[client_id] = asyncio.create_task(self._heartbeat_loop(client_id))
+            connect_end_heartbeat = time.time()
+            logger.debug(f"[WebSocketManager] Heartbeat task created for client {client_id} in {connect_end_heartbeat - connect_start_heartbeat:.3f}s")
             
             logger.info(f"Client {client_id} connected to session {session_id}. Total clients: {len(self.active_connections)}")
             return session_id

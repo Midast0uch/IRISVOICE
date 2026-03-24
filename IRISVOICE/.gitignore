@@ -37,6 +37,7 @@ venv/
 # local models
 models/
 backend/audio/models/
+backend/voice/pretrained_models/
 offload/
 
 # tauri

@@ -164,7 +164,7 @@ export function IrisOrb({
   onCallbacksReady,
 }: IrisOrbProps) {
   // Get voice state and actions from NavigationContext
-  const { voiceState, audioLevel, startVoiceCommand, endVoiceCommand, sendMessage } = useNavigation()
+  const { voiceState, audioLevel, startVoiceCommand, endVoiceCommand, cancelVoiceCommand, sendMessage } = useNavigation()
   
   const [feedbackMessage, setFeedbackMessage] = useState("")
   const [doubleClickFlash, setDoubleClickFlash] = useState(false)
@@ -207,9 +207,9 @@ export function IrisOrb({
   const audioLevelScale = isListening ? 1 + (audioLevel * 0.15) : 1 // Scale glow by up to 15% based on audio level
 
   const handleInterceptedClick = useCallback(() => {
-    // Stop voice command if any voice state is active (listening, processing, speaking)
+    // Single-click always cancels any active voice state immediately
     if (isVoiceActive) {
-      endVoiceCommand()
+      cancelVoiceCommand()
       return // Intercept: don't propagate to the prop's navigation logic
     }
 
@@ -222,7 +222,7 @@ export function IrisOrb({
 
     // Not active and at idle state, proceed with normal prop logic (navigation)
     if (onClick) onClick()
-  }, [isVoiceActive, endVoiceCommand, uiState, onClick])
+  }, [isVoiceActive, cancelVoiceCommand, uiState, onClick])
 
   // Double-click toggles voice: starts if idle, stops if active
   const handleDoubleClick = useCallback(() => {
@@ -253,6 +253,8 @@ export function IrisOrb({
   // Stable callback that doesn't recreate on isListening changes
   const handleWakeDetected = useCallback(() => {
     if (isListeningRef.current) return
+    setDoubleClickFlash(true)
+    setTimeout(() => setDoubleClickFlash(false), 500)
     startVoiceCommand()
   }, [startVoiceCommand])  // Only depends on stable startVoiceCommand
 
@@ -277,12 +279,14 @@ export function IrisOrb({
   // Phase 132: Structural Stability & Absolute Color Fidelity
   // Remove all whitening mixes to ensure 100% theme accuracy
   const activeColor = isError
-    ? "#ff0000" // Red for error state
-    : (isListening || isSpeaking)
-      ? glowColor
-      : isProcessing
-        ? "#7000ff"
-        : glowColor
+    ? "#ff0000"
+    : isSpeaking
+      ? `color-mix(in srgb, ${glowColor}, #ffffff 25%)` // slightly brighter — IRIS speaking
+      : isListening
+        ? glowColor                                       // brand color — user listening
+        : isProcessing
+          ? "#7000ff"
+          : glowColor
   const effectiveGlowColor = isVoiceActive ? activeColor : glowColor
 
   // Orb retreat effects when wings are open
@@ -297,11 +301,10 @@ export function IrisOrb({
   const baseScale = isExpanded ? 1.1 : 1
   const effectiveScale = isPressed
     ? 0.92
-    : isListening ? 1.15 // Reduced from 1.3
-      : isSpeaking ? 1.1 // Reduced from 1.2
-        : isProcessing ? 1.08 // Reduced from 1.15
-          : isError ? 1.0 // No scale change for error, just shake animation
-            : baseScale
+    : (isListening || isSpeaking) ? 1.15 // same scale for both — same animation feel
+      : isProcessing ? 1.08
+        : isError ? 1.0
+          : baseScale
   
   // Apply orb retreat scale on top of other scales
   const finalScale = effectiveScale * orbRetreatScale
@@ -485,12 +488,9 @@ export function IrisOrb({
         }}
         animate={{
           rotate: 360,
-          // Phase 132: Dramatic Audio Jitter (Mechanical reaction to speech)
-          scale: isSpeaking ? [1, 1.05, 0.98, 1.03, 1] : 1
         }}
         transition={{
           rotate: { duration: isVoiceActive ? 1.5 : 6, repeat: Infinity, ease: "linear" },
-          scale: { duration: 0.2, repeat: Infinity, ease: "easeInOut" }
         }}
       />
 
@@ -557,7 +557,7 @@ export function IrisOrb({
             className="relative z-10 flex flex-col items-center justify-center p-4 text-center"
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{
-              scale: isSpeaking ? [1, 1.03, 0.98, 1.01, 1] : 1,
+              scale: 1,
               opacity: 1,
               filter: (isSpeaking || isListening || isProcessing)
                 ? `drop-shadow(0 0 15px ${effectiveGlowColor})`
@@ -565,7 +565,7 @@ export function IrisOrb({
             }}
             exit={{ scale: 0.9, opacity: 0 }}
             transition={{
-              scale: isSpeaking ? { duration: 0.4, repeat: Infinity, ease: "linear" } : { type: "spring", stiffness: 300, damping: 25 },
+              scale: { type: "spring", stiffness: 300, damping: 25 },
               opacity: { type: "spring", stiffness: 300, damping: 25 }
             }}
           >
@@ -603,7 +603,7 @@ export function IrisOrb({
         {(wakeFlash || doubleClickFlash) && (
           <motion.div
             className="absolute rounded-full pointer-events-none"
-            style={{ inset: 0, backgroundColor: `${effectiveGlowColor}99`, zIndex: 60 }}
+            style={{ inset: 0, backgroundColor: "#ffffff99", zIndex: 60 }}
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1.5 }}
             exit={{ opacity: 0, scale: 2 }}

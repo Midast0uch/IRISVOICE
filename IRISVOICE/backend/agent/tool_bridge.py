@@ -29,16 +29,16 @@ class AgentToolBridge:
     """
     Bridges all IRIS capabilities to the agent system.
     This is the central hub that connects models to existing functionality.
-    
+
     Integrates:
     - MCP Servers (Browser, AppLauncher, System, FileManager, GUIAutomation)
     - VisionSystem for screen monitoring and analysis
     - SecurityFilter for tool execution validation
     - AuditLogger for security audit trails
-    
+
     Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6
     """
-    
+
     def __init__(self, security_filter=None, audit_logger=None, vision_system=None):
         self._vision_client = None
         self._gui_operator = None
@@ -46,32 +46,32 @@ class AgentToolBridge:
         self._screen_monitor = None
         self._mcp_servers = {}
         self._initialized = False
-        
+
         # Security and audit integration (from task 9)
         self._security_filter = security_filter
         self._audit_logger = audit_logger
-        
+
         # Vision system integration (from task 10.1)
         self._vision_system = vision_system
-    
+
     async def initialize(self):
         """
         Initialize all available services.
-        
+
         Starts all MCP servers:
         - BrowserServer: Web browsing capabilities
         - AppLauncherServer: Application control
         - SystemServer: System operations
         - FileManagerServer: File operations
         - GUIAutomationServer: UI automation
-        
+
         Requirements: 8.1, 8.2, 16.1-16.6
         """
         if self._initialized:
             return
-        
+
         logger.info("[AgentToolBridge] Initializing...")
-        
+
         # Initialize SecurityFilter if not provided
         if self._security_filter is None:
             try:
@@ -79,8 +79,9 @@ class AgentToolBridge:
                 self._security_filter = SecurityFilter()
                 logger.info("[AgentToolBridge] SecurityFilter initialized")
             except Exception as e:
-                logger.error(f"[AgentToolBridge] SecurityFilter init failed: {e}")
-        
+                logger.error(
+                    f"[AgentToolBridge] SecurityFilter init failed: {e}")
+
         # Initialize AuditLogger if not provided
         if self._audit_logger is None:
             try:
@@ -89,7 +90,7 @@ class AgentToolBridge:
                 logger.info("[AgentToolBridge] AuditLogger initialized")
             except Exception as e:
                 logger.error(f"[AgentToolBridge] AuditLogger init failed: {e}")
-        
+
         # Initialize VisionSystem if not provided
         if self._vision_system is None:
             try:
@@ -97,8 +98,9 @@ class AgentToolBridge:
                 self._vision_system = get_vision_system()
                 logger.info("[AgentToolBridge] VisionSystem initialized")
             except Exception as e:
-                logger.error(f"[AgentToolBridge] VisionSystem init failed: {e}")
-        
+                logger.error(
+                    f"[AgentToolBridge] VisionSystem init failed: {e}")
+
         # Initialize Vision (MiniCPM via Ollama)
         try:
             from backend.automation import VisionModelClient
@@ -107,7 +109,7 @@ class AgentToolBridge:
             logger.info(f"[AgentToolBridge] Vision: {result}")
         except Exception as e:
             logger.error(f"[AgentToolBridge] Vision init failed: {e}")
-        
+
         # Initialize GUI Operator (Native automation)
         try:
             from backend.automation import NativeGUIOperator
@@ -115,7 +117,7 @@ class AgentToolBridge:
             logger.info("[AgentToolBridge] GUI Operator: Ready")
         except Exception as e:
             logger.error(f"[AgentToolBridge] GUI Operator init failed: {e}")
-        
+
         # Initialize Screen Capture
         try:
             from backend.vision import ScreenCapture
@@ -123,32 +125,35 @@ class AgentToolBridge:
             logger.info("[AgentToolBridge] Screen Capture: Ready")
         except Exception as e:
             logger.error(f"[AgentToolBridge] Screen Capture init failed: {e}")
-        
+
         # Initialize MCP Servers (all 5 servers)
         try:
             from backend.mcp.builtin_servers import (
-                BrowserServer, AppLauncherServer, SystemServer, FileManagerServer
+                BrowserServer, AppLauncherServer, SystemServer, FileManagerServer,
+                InternalCapabilityServer
             )
             from backend.mcp.gui_automation_server import GUIAutomationServer
-            
+
             self._mcp_servers = {
                 "browser": BrowserServer(),
                 "app_launcher": AppLauncherServer(),
                 "system": SystemServer(),
                 "file_manager": FileManagerServer(),
-                "gui_automation": GUIAutomationServer()
+                "gui_automation": GUIAutomationServer(),
+                "internal": InternalCapabilityServer()
             }
-            logger.info(f"[AgentToolBridge] MCP Servers: {list(self._mcp_servers.keys())}")
+            logger.info(
+                f"[AgentToolBridge] MCP Servers: {list(self._mcp_servers.keys())}")
         except Exception as e:
             logger.error(f"[AgentToolBridge] MCP Servers init failed: {e}")
-        
+
         self._initialized = True
         logger.info("[AgentToolBridge] Initialization complete.")
-    
+
     def get_available_tools(self) -> List[Dict[str, Any]]:
         """
         Return all tools available to the agent.
-        
+
         Tools are categorized into:
         - vision: Screen analysis and element detection
         - web: Browser automation and web search
@@ -156,11 +161,11 @@ class AgentToolBridge:
         - system: System control and information
         - app: Application launching and control
         - gui: GUI automation and control
-        
+
         Requirements: 8.1, 8.2
         """
         tools = []
-        
+
         # Vision Tools
         tools.extend([
             {
@@ -193,7 +198,7 @@ class AgentToolBridge:
                 "category": "vision"
             }
         ])
-        
+
         # Screen Tools
         tools.extend([
             {
@@ -211,7 +216,7 @@ class AgentToolBridge:
                 "category": "vision"
             }
         ])
-        
+
         # WEB / GUI Control Tools
         tools.extend([
             {
@@ -242,45 +247,72 @@ class AgentToolBridge:
                 "category": "web"
             }
         ])
-        
+
         # MCP Tools (from builtin servers)
         tools.extend([
+            # Internal Capabilities
+            {"name": "create_skill", "description": "Create a new learned skill", "parameters": {"name": {
+                "type": "string"}, "content": {"type": "string"}}, "category": "system", "server": "internal"},
+
             # Browser
-            {"name": "open_url", "description": "Open URL in browser", "parameters": {"url": {"type": "string"}}, "category": "web", "server": "browser"},
-            {"name": "search", "description": "Search the web", "parameters": {"query": {"type": "string"}}, "category": "web", "server": "browser"},
-            
+            {"name": "open_url", "description": "Open URL in browser", "parameters": {
+                "url": {"type": "string"}}, "category": "web", "server": "browser"},
+            {"name": "search", "description": "Search the web", "parameters": {
+                "query": {"type": "string"}}, "category": "web", "server": "browser"},
+
             # File Management
-            {"name": "read_file", "description": "Read file contents", "parameters": {"path": {"type": "string"}}, "category": "file", "server": "file_manager"},
-            {"name": "write_file", "description": "Write to file", "parameters": {"path": {"type": "string"}, "content": {"type": "string"}}, "category": "file", "server": "file_manager"},
-            {"name": "list_directory", "description": "List directory", "parameters": {"path": {"type": "string"}}, "category": "file", "server": "file_manager"},
-            {"name": "create_directory", "description": "Create directory", "parameters": {"path": {"type": "string"}}, "category": "file", "server": "file_manager"},
-            {"name": "delete_file", "description": "Delete file/directory", "parameters": {"path": {"type": "string"}}, "category": "file", "server": "file_manager"},
-            
+            {"name": "read_file", "description": "Read file contents", "parameters": {
+                "path": {"type": "string"}}, "category": "file", "server": "file_manager"},
+            {"name": "write_file", "description": "Write to file", "parameters": {"path": {
+                "type": "string"}, "content": {"type": "string"}}, "category": "file", "server": "file_manager"},
+            {"name": "list_directory", "description": "List directory", "parameters": {
+                "path": {"type": "string"}}, "category": "file", "server": "file_manager"},
+            {"name": "create_directory", "description": "Create directory", "parameters": {
+                "path": {"type": "string"}}, "category": "file", "server": "file_manager"},
+            {"name": "delete_file", "description": "Delete file/directory", "parameters": {
+                "path": {"type": "string"}}, "category": "file", "server": "file_manager"},
+
             # System
-            {"name": "get_system_info", "description": "Get system information", "parameters": {}, "category": "system", "server": "system"},
-            {"name": "lock_screen", "description": "Lock the screen", "parameters": {}, "category": "system", "server": "system"},
-            {"name": "shutdown", "description": "Shutdown system", "parameters": {"delay": {"type": "integer", "optional": True}}, "category": "system", "server": "system"},
-            {"name": "restart", "description": "Restart system", "parameters": {"delay": {"type": "integer", "optional": True}}, "category": "system", "server": "system"},
-            
+            {"name": "get_system_info", "description": "Get system information",
+                "parameters": {}, "category": "system", "server": "system"},
+            {"name": "lock_screen", "description": "Lock the screen",
+                "parameters": {}, "category": "system", "server": "system"},
+            {"name": "shutdown", "description": "Shutdown system", "parameters": {"delay": {
+                "type": "integer", "optional": True}}, "category": "system", "server": "system"},
+            {"name": "restart", "description": "Restart system", "parameters": {"delay": {
+                "type": "integer", "optional": True}}, "category": "system", "server": "system"},
+
             # App Launcher
-            {"name": "launch_app", "description": "Launch an application", "parameters": {"app_name": {"type": "string"}}, "category": "app", "server": "app_launcher"},
-            {"name": "open_file", "description": "Open file with default app", "parameters": {"file_path": {"type": "string"}}, "category": "app", "server": "app_launcher"},
-            
+            {"name": "launch_app", "description": "Launch an application", "parameters": {
+                "app_name": {"type": "string"}}, "category": "app", "server": "app_launcher"},
+            {"name": "open_file", "description": "Open file with default app", "parameters": {
+                "file_path": {"type": "string"}}, "category": "app", "server": "app_launcher"},
+
             # GUI Automation
-            {"name": "gui_automate_click", "description": "Automated GUI click", "parameters": {"x": {"type": "integer"}, "y": {"type": "integer"}}, "category": "gui", "server": "gui_automation"},
-            {"name": "gui_automate_type", "description": "Automated GUI typing", "parameters": {"text": {"type": "string"}}, "category": "gui", "server": "gui_automation"},
+            {"name": "gui_automate_click", "description": "Automated GUI click", "parameters": {"x": {
+                "type": "integer"}, "y": {"type": "integer"}}, "category": "gui", "server": "gui_automation"},
+            {"name": "gui_automate_type", "description": "Automated GUI typing", "parameters": {
+                "text": {"type": "string"}}, "category": "gui", "server": "gui_automation"},
 
             # Git — developer mode source control
-            {"name": "git_status", "description": "Show working tree status (staged, unstaged, untracked files)", "parameters": {"repo_path": {"type": "string", "description": "Absolute path to the git repo (optional, defaults to IRISVOICE root)"}}, "category": "git"},
-            {"name": "git_diff", "description": "Show diff of staged or unstaged changes", "parameters": {"repo_path": {"type": "string"}, "staged": {"type": "boolean", "description": "If true, show staged diff; otherwise unstaged"}}, "category": "git"},
-            {"name": "git_log", "description": "Show recent commit history", "parameters": {"repo_path": {"type": "string"}, "n": {"type": "integer", "description": "Number of commits to show (default 10)"}}, "category": "git"},
-            {"name": "git_commit", "description": "Stage all changed files and create a commit", "parameters": {"message": {"type": "string", "description": "Commit message"}, "repo_path": {"type": "string"}}, "category": "git"},
-            {"name": "git_create_branch", "description": "Create and switch to a new branch", "parameters": {"branch": {"type": "string", "description": "New branch name"}, "repo_path": {"type": "string"}}, "category": "git"},
-            {"name": "git_checkout", "description": "Switch to an existing branch", "parameters": {"branch": {"type": "string"}, "repo_path": {"type": "string"}}, "category": "git"},
-            {"name": "git_push", "description": "Push current branch to origin", "parameters": {"repo_path": {"type": "string"}, "force": {"type": "boolean", "description": "Force push (default false)"}}, "category": "git"},
+            {"name": "git_status", "description": "Show working tree status (staged, unstaged, untracked files)", "parameters": {"repo_path": {
+                "type": "string", "description": "Absolute path to the git repo (optional, defaults to IRISVOICE root)"}}, "category": "git"},
+            {"name": "git_diff", "description": "Show diff of staged or unstaged changes", "parameters": {"repo_path": {"type": "string"},
+                                                                                                          "staged": {"type": "boolean", "description": "If true, show staged diff; otherwise unstaged"}}, "category": "git"},
+            {"name": "git_log", "description": "Show recent commit history", "parameters": {"repo_path": {"type": "string"}, "n": {
+                "type": "integer", "description": "Number of commits to show (default 10)"}}, "category": "git"},
+            {"name": "git_commit", "description": "Stage all changed files and create a commit", "parameters": {"message": {
+                "type": "string", "description": "Commit message"}, "repo_path": {"type": "string"}}, "category": "git"},
+            {"name": "git_create_branch", "description": "Create and switch to a new branch", "parameters": {"branch": {
+                "type": "string", "description": "New branch name"}, "repo_path": {"type": "string"}}, "category": "git"},
+            {"name": "git_checkout", "description": "Switch to an existing branch", "parameters": {
+                "branch": {"type": "string"}, "repo_path": {"type": "string"}}, "category": "git"},
+            {"name": "git_push", "description": "Push current branch to origin", "parameters": {"repo_path": {
+                "type": "string"}, "force": {"type": "boolean", "description": "Force push (default false)"}}, "category": "git"},
 
             # Shell — developer mode command runner (sandboxed to repo directory)
-            {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)", "parameters": {"command": {"type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
+            {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)", "parameters": {"command": {
+                "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
 
             # AutoResearch — general-purpose improvement loop
             {
@@ -303,26 +335,27 @@ class AgentToolBridge:
                 "category": "research",
             },
         ])
-        
+
         return tools
-    
+
     # Tool Execution Methods
-    
+
     async def execute_vision_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
         """
         Execute a vision-related tool.
-        
+
         Requirements: 8.3, 8.4
         """
         if not self._vision_client and not self._vision_system:
             return {"error": "Vision client not initialized"}
-        
+
         try:
             # Check rate limit
             if self._security_filter and self._security_filter.check_tool_execution_rate_limit(session_id, tool_name):
-                logger.warning(f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
+                logger.warning(
+                    f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
                 return {"error": "Rate limit exceeded for tool execution"}
-            
+
             # Log tool execution
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -340,9 +373,9 @@ class AgentToolBridge:
                     result="pending",
                     risk_score=0.2
                 )
-            
+
             result = None
-            
+
             if tool_name == "vision_get_context":
                 # Use VisionSystem to get current context
                 if self._vision_system:
@@ -362,7 +395,7 @@ class AgentToolBridge:
                         result = {"error": "No screen context available"}
                 else:
                     result = {"error": "VisionSystem not initialized"}
-            
+
             elif tool_name == "vision_detect_element":
                 import base64
                 screenshot = self._screen_capture.capture() if self._screen_capture else None
@@ -375,7 +408,7 @@ class AgentToolBridge:
                     result = {"success": True, "result": result_data}
                 else:
                     result = {"error": "No screenshot available"}
-            
+
             elif tool_name == "vision_analyze_screen":
                 screenshot = self._screen_capture.capture() if self._screen_capture else None
                 if screenshot:
@@ -387,7 +420,7 @@ class AgentToolBridge:
                     result = {"success": True, "result": result_data}
                 else:
                     result = {"error": "No screenshot available"}
-            
+
             elif tool_name == "vision_validate_action":
                 screenshot = self._screen_capture.capture() if self._screen_capture else None
                 if screenshot:
@@ -403,10 +436,10 @@ class AgentToolBridge:
                     result = {"success": True, "result": result_data}
                 else:
                     result = {"error": "No screenshot available"}
-            
+
             else:
                 result = {"error": f"Unknown vision tool: {tool_name}"}
-            
+
             # Log result
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -424,12 +457,12 @@ class AgentToolBridge:
                     result=result,
                     risk_score=0.2
                 )
-            
+
             return result
-                
+
         except Exception as e:
             error_result = {"error": str(e)}
-            
+
             # Log error
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -447,24 +480,25 @@ class AgentToolBridge:
                     result=error_result,
                     risk_score=0.5
                 )
-            
+
             return error_result
-    
+
     async def execute_gui_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
         """
         Execute a WEB/GUI control tool.
-        
+
         Requirements: 8.3, 8.4
         """
         if not self._gui_operator:
             return {"error": "GUI Operator not initialized"}
-        
+
         try:
             # Check rate limit
             if self._security_filter and self._security_filter.check_tool_execution_rate_limit(session_id, tool_name):
-                logger.warning(f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
+                logger.warning(
+                    f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
                 return {"error": "Rate limit exceeded for tool execution"}
-            
+
             # Log tool execution
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -482,27 +516,27 @@ class AgentToolBridge:
                     result="pending",
                     risk_score=0.3
                 )
-            
+
             result = None
-            
+
             if tool_name == "gui_click":
                 result_data = await self._gui_operator.click(params.get("x", 0), params.get("y", 0))
                 result = {"success": True, "result": result_data}
-            
+
             elif tool_name == "gui_type":
                 result_data = await self._gui_operator.type_text(
                     params.get("text", ""),
                     params.get("x"), params.get("y")
                 )
                 result = {"success": True, "result": result_data}
-            
+
             elif tool_name == "gui_press_key":
                 result_data = await self._gui_operator.press_key(params.get("key", ""))
                 result = {"success": True, "result": result_data}
-            
+
             else:
                 result = {"error": f"Unknown WEB/GUI tool: {tool_name}"}
-            
+
             # Log result
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -520,12 +554,12 @@ class AgentToolBridge:
                     result=result,
                     risk_score=0.3
                 )
-            
+
             return result
-                
+
         except Exception as e:
             error_result = {"error": str(e)}
-            
+
             # Log error
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -543,25 +577,26 @@ class AgentToolBridge:
                     result=error_result,
                     risk_score=0.5
                 )
-            
+
             return error_result
-    
+
     async def execute_mcp_tool(self, server_name: str, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
         """
         Execute a tool via MCP server.
-        
+
         Requirements: 8.3, 8.4
         """
         server = self._mcp_servers.get(server_name)
         if not server:
             return {"error": f"MCP server '{server_name}' not found"}
-        
+
         try:
             # Check rate limit
             if self._security_filter and self._security_filter.check_tool_execution_rate_limit(session_id, tool_name):
-                logger.warning(f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
+                logger.warning(
+                    f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
                 return {"error": "Rate limit exceeded for tool execution"}
-            
+
             # Log tool execution
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -579,18 +614,19 @@ class AgentToolBridge:
                     result="pending",
                     risk_score=0.4
                 )
-            
+
             from backend.mcp.protocol import MCPRequest, MCPMessageType
-            
+
             request = MCPRequest(
                 id=f"agent_{datetime.now().timestamp()}",
                 method=MCPMessageType.TOOLS_CALL,
                 params={"name": tool_name, "arguments": params}
             )
-            
+
             response = await server.handle_request(request)
-            result = response.result if response.result else {"error": response.error}
-            
+            result = response.result if response.result else {
+                "error": response.error}
+
             # Log result
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -608,12 +644,12 @@ class AgentToolBridge:
                     result=result,
                     risk_score=0.4
                 )
-            
+
             return result
-            
+
         except Exception as e:
             error_result = {"error": str(e)}
-            
+
             # Log error
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -631,28 +667,30 @@ class AgentToolBridge:
                     result=error_result,
                     risk_score=0.6
                 )
-            
+
             return error_result
-    
+
     async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
         """
         Execute any tool by name with routing to appropriate server.
-        
+
         Integrates with AgentKernel context for tool results.
-        
+
         Requirements: 8.3, 8.4, 8.5, 8.6
         """
         # Map tool names to their execution methods
-        vision_tools = ["vision_detect_element", "vision_analyze_screen", "vision_validate_action", "vision_get_context"]
-        gui_tools = ["gui_click", "gui_type", "gui_press_key", "take_screenshot"]
-        
+        vision_tools = ["vision_detect_element", "vision_analyze_screen",
+                        "vision_validate_action", "vision_get_context"]
+        gui_tools = ["gui_click", "gui_type",
+                     "gui_press_key", "take_screenshot"]
+
         try:
             if tool_name in vision_tools:
                 return await self.execute_vision_tool(tool_name, params, session_id)
-            
+
             if tool_name in gui_tools:
                 return await self.execute_gui_tool(tool_name, params, session_id)
-            
+
             # MCP Tools
             mcp_tools = {
                 # Browser
@@ -674,12 +712,36 @@ class AgentToolBridge:
                 "open_file": ("app_launcher", "open_file"),
                 # GUI Automation
                 "gui_automate_click": ("gui_automation", "click"),
-                "gui_automate_type": ("gui_automation", "type")
+                "gui_automate_type": ("gui_automation", "type"),
+                # Internal (handled below with post-broadcast)
             }
-            
+
             if tool_name in mcp_tools:
                 server_name, mcp_tool_name = mcp_tools[tool_name]
-                return await self.execute_mcp_tool(server_name, mcp_tool_name, params, session_id)
+                result = await self.execute_mcp_tool(server_name, mcp_tool_name, params, session_id)
+
+                # After agent creates a skill, broadcast to the frontend so UI updates immediately.
+                # MUST use run_coroutine_threadsafe — this runs in a background thread, not the event loop.
+                # ensure_future() would raise RuntimeError here and be swallowed silently.
+                if tool_name == "create_skill" and result.get("success"):
+                    try:
+                        from backend.iris_gateway import get_iris_gateway
+                        import asyncio as _asyncio
+                        gw = get_iris_gateway()
+                        loop = gw._main_loop
+                        if gw._ws_manager and loop and loop.is_running():
+                            _asyncio.run_coroutine_threadsafe(
+                                gw._ws_manager.broadcast_to_session(session_id, {
+                                    "type": "skills_reloaded",
+                                    "payload": {"source": "agent_create_skill"}
+                                }),
+                                loop
+                            )
+                            logger.info(f"[ToolBridge] Broadcast skills_reloaded for session {session_id}")
+                    except Exception as _e:
+                        logger.warning(f"[ToolBridge] skills_reloaded broadcast failed: {_e}")
+
+                return result
 
             # Git + Shell tools — executed inline via subprocess
             git_tools = {
@@ -694,7 +756,7 @@ class AgentToolBridge:
                 return await self._execute_research_tool(params, session_id)
 
             error_result = {"error": f"Unknown tool: {tool_name}"}
-            
+
             # Log unknown tool error
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -712,12 +774,12 @@ class AgentToolBridge:
                     result=error_result,
                     risk_score=0.1
                 )
-            
+
             return error_result
-            
+
         except Exception as e:
             error_result = {"error": f"Tool execution failed: {str(e)}"}
-            
+
             # Log execution error
             if self._audit_logger:
                 from backend.security.security_types import SecurityContext
@@ -735,9 +797,9 @@ class AgentToolBridge:
                     result=error_result,
                     risk_score=0.7
                 )
-            
+
             return error_result
-    
+
     # ------------------------------------------------------------------
     # Developer tools — git and shell, executed via subprocess
     # ------------------------------------------------------------------
@@ -755,7 +817,8 @@ class AgentToolBridge:
         but paths outside the project tree are rejected to prevent accidents.
         """
         # Resolve working directory
-        cwd_param = params.get("repo_path") or params.get("cwd") or self._DEFAULT_REPO
+        cwd_param = params.get("repo_path") or params.get(
+            "cwd") or self._DEFAULT_REPO
         cwd = os.path.normpath(cwd_param)
         repo_root = os.path.normpath(self._DEFAULT_REPO)
 
@@ -839,7 +902,8 @@ class AgentToolBridge:
             if not raw:
                 return {"success": False, "error": "command is required"}
             # Block obviously destructive commands
-            _BLOCKED = ("rm -rf /", "rmdir /s /q C:\\", "format ", "del /f /s /q C:\\")
+            _BLOCKED = ("rm -rf /", "rmdir /s /q C:\\",
+                        "format ", "del /f /s /q C:\\")
             if any(raw.startswith(b) for b in _BLOCKED):
                 return {"success": False, "error": "Blocked: destructive system command"}
             # Shell=True so pipes, &&, etc. work — still sandboxed to cwd
@@ -912,7 +976,8 @@ class AgentToolBridge:
                 }
 
             try:
-                asyncio.create_task(runner._run_cycle(override_candidate=override_candidate))
+                asyncio.create_task(runner._run_cycle(
+                    override_candidate=override_candidate))
                 parts = ["Research cycle triggered"]
                 if topic:
                     parts.append(f"topic='{topic}'")
@@ -929,7 +994,7 @@ class AgentToolBridge:
     def get_status(self) -> Dict:
         """
         Get status of all connected services.
-        
+
         Returns status including:
         - Initialization state
         - Available services (vision, GUI, screen capture, MCP servers)

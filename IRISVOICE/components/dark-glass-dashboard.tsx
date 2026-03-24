@@ -11,6 +11,7 @@ import { CARDS_BY_SECTION, getCardsForSection, CARDS_DATA } from '@/data/cards';
 import { SECTION_TO_LABEL, SECTION_TO_ICON, CARD_TO_SECTION_ID } from '@/data/navigation-constants';
 import { ActivityPanel } from './dashboard/ActivityPanel';
 import { LogsPanel } from './dashboard/LogsPanel';
+import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
@@ -210,6 +211,13 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
   }
 
   if (field.type === 'custom') {
+    if (field.id === 'skills_list') {
+      return (
+        <div className="col-span-full mt-2 mb-4">
+          <LearnedSkillsPanel glowColor={glowColor} />
+        </div>
+      );
+    }
     return (
       <div className="py-2 col-span-full">
         <button
@@ -258,6 +266,7 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_model')) options = availableModels || [];
     if (sectionId === 'input' && field.id === 'input_device') options = audioInputDevices || [];
     if (sectionId === 'output' && field.id === 'output_device') options = audioOutputDevices || [];
+    if (sectionId === 'wake' && field.id === 'wake_word') options = wakeWords && wakeWords.length > 0 ? wakeWords : (field.options || []);
     
     return (
       <div className="flex items-center justify-between py-2 gap-6 group/field px-1">
@@ -337,12 +346,104 @@ export function DarkGlassDashboard({
     sendMessage,
   } = useNavigation();
 
-  const fieldValues = propFieldValues || contextFieldValues;
-  const updateField = propUpdateField || contextUpdateCardValue;
+  // Local field-value store — single source of truth for reads AND writes within this component.
+  // Initialized from the WS-supplied contextFieldValues and kept in sync via iris:initial_state.
+  // Writing through localUpdateField ensures the UI reflects user changes immediately, without
+  // waiting for a backend round-trip (which only updates contextFieldValues via WS).
+  const [localFieldValues, setLocalFieldValues] = useState<Record<string, Record<string, any>>>(
+    () => (propFieldValues || contextFieldValues || {}) as Record<string, Record<string, any>>
+  );
 
-  const [availableModels] = useState<string[]>(['LFM-2-8B', 'gpt-4o', 'claude-3-5-sonnet']);
-  const [audioInputDevices] = useState<string[]>(['Default Input', 'Internal Microphone']);
-  const [audioOutputDevices] = useState<string[]>(['Default Output', 'Internal Speakers']);
+  // Seed localFieldValues once contextFieldValues arrives from the WS hook on first load.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (!seededRef.current && contextFieldValues && Object.keys(contextFieldValues).length > 0) {
+      setLocalFieldValues(contextFieldValues as Record<string, Record<string, any>>);
+      seededRef.current = true;
+    }
+  }, [contextFieldValues]);
+
+  // Local write handler — updates our local store so FieldRow reflects changes instantly.
+  const localUpdateField = useCallback((sectionId: string, fieldId: string, value: any) => {
+    setLocalFieldValues(prev => ({
+      ...prev,
+      [sectionId]: { ...(prev[sectionId] || {}), [fieldId]: value },
+    }));
+    // Also propagate to external store if provided via props
+    if (propUpdateField) propUpdateField(sectionId, fieldId, value);
+  }, [propUpdateField]);
+
+  const fieldValues = localFieldValues;
+  const updateField = localUpdateField;
+
+  const [availableModels, setAvailableModels] = useState<string[]>(['LFM-2-8B', 'gpt-4o', 'claude-3-5-sonnet']);
+  const [audioInputDevices, setAudioInputDevices] = useState<string[]>(['Default Input', 'Internal Microphone']);
+  const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>(['Default Output', 'Internal Speakers']);
+  const [wakeWords, setWakeWords] = useState<string[]>([]);
+
+  // Request backend state on mount and sync dynamic data (models, devices, wake words)
+  // Uses the same custom-event pattern as SidePanel so both views stay in sync.
+  useEffect(() => {
+    if (sendMessage) sendMessage('request_state', {});
+
+    const handleInitialState = (event: CustomEvent) => {
+      const state = event.detail?.state || {};
+      const fv = state.field_values || state.fieldValues;
+      if (fv && typeof fv === 'object') {
+        // Merge backend values into our local store so FieldRow displays them immediately.
+        setLocalFieldValues(prev => {
+          const next = { ...prev };
+          Object.entries(fv as Record<string, any>).forEach(([sectionId, sectionValues]) => {
+            if (sectionValues && typeof sectionValues === 'object') {
+              next[sectionId] = { ...(next[sectionId] || {}), ...(sectionValues as Record<string, any>) };
+            }
+          });
+          return next;
+        });
+        seededRef.current = true;
+      }
+    };
+
+    const handleAvailableModels = (event: CustomEvent) => {
+      const models = event.detail?.models || [];
+      const names = models.map((m: any) => m.name || m.id || m).filter(Boolean);
+      if (names.length > 0) setAvailableModels(names);
+    };
+
+    const handleAudioDevices = (event: CustomEvent) => {
+      const inputs  = (event.detail?.input_devices  || []).map((d: any) => d.name || d.index || d).filter(Boolean);
+      const outputs = (event.detail?.output_devices || []).map((d: any) => d.name || d.index || d).filter(Boolean);
+      if (inputs.length  > 0) setAudioInputDevices(inputs);
+      if (outputs.length > 0) setAudioOutputDevices(outputs);
+    };
+
+    const handleWakeWords = (event: CustomEvent) => {
+      const words = (event.detail?.wake_words || []).map((w: any) => w.display_name || w.filename || w).filter(Boolean);
+      if (words.length > 0) setWakeWords(words);
+    };
+
+    window.addEventListener('iris:initial_state',   handleInitialState   as EventListener);
+    window.addEventListener('iris:available_models', handleAvailableModels as EventListener);
+    window.addEventListener('iris:audio_devices',    handleAudioDevices    as EventListener);
+    window.addEventListener('iris:wake_words_list',  handleWakeWords       as EventListener);
+
+    return () => {
+      window.removeEventListener('iris:initial_state',   handleInitialState   as EventListener);
+      window.removeEventListener('iris:available_models', handleAvailableModels as EventListener);
+      window.removeEventListener('iris:audio_devices',    handleAudioDevices    as EventListener);
+      window.removeEventListener('iris:wake_words_list',  handleWakeWords       as EventListener);
+    };
+  }, [sendMessage]);
+
+  // Fetch device lists and models whenever the relevant tab is active
+  useEffect(() => {
+    if (!sendMessage) return;
+    if (activeTab === 'agent') sendMessage('get_available_models', {});
+    if (activeTab === 'voice') {
+      sendMessage('get_audio_devices', {});
+      sendMessage('get_wake_words', {});
+    }
+  }, [activeTab, sendMessage]);
 
   useEffect(() => {
     if (currentCategory && currentCategory !== 'voice' && currentCategory !== 'dashboard') {
@@ -375,20 +476,15 @@ export function DarkGlassDashboard({
   const handleApplySettings = useCallback(async () => {
     setIsApplying(true);
     try {
+      // Mirror WheelView's confirm flow: send 'confirm_card' via WebSocket for
+      // each visible section so the backend applies the changes immediately.
       if (sendMessage && activeSections.length > 0) {
-        // Send confirm_card for all sections in the current view to the backend
         for (const section of activeSections) {
-          const sectionId = section.id;
-          const sectionValues = fieldValues[sectionId] || {};
-          sendMessage('confirm_card', { 
-            section_id: sectionId, 
-            values: sectionValues 
+          const sectionValues = localFieldValues[section.id] || {};
+          sendMessage('confirm_card', {
+            section_id: section.id,
+            values: sectionValues,
           });
-          
-          // Also update local confirmed state
-          if (confirmCard) {
-            confirmCard(sectionId, sectionValues);
-          }
         }
       }
     } catch (error) {
@@ -396,7 +492,7 @@ export function DarkGlassDashboard({
     } finally {
       setIsApplying(false);
     }
-  }, [sendMessage, confirmCard, activeSections, fieldValues]);
+  }, [sendMessage, activeSections, localFieldValues]);
 
   const handleBrowserNavigate = (url: string) => {
     const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
@@ -511,7 +607,9 @@ export function DarkGlassDashboard({
           {isRailExpanded && (
             <div className="flex flex-col min-w-0">
               <span className="text-[11px] font-semibold text-white truncate">Online</span>
-              <span className="text-[9px] text-white/40 truncate">Model: LFM-2-8B</span>
+              <span className="text-[9px] text-white/40 truncate">
+            Model: {(localFieldValues?.model_selection?.reasoning_model as string) || 'LFM-2-8B'}
+          </span>
             </div>
           )}
         </div>
@@ -564,7 +662,9 @@ export function DarkGlassDashboard({
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
           <Brain className="w-3 h-3" style={{ color: glowColor }} />
-          <span className="text-[9px] font-medium tracking-wide text-white/80">LFM-2-8B READY</span>
+          <span className="text-[9px] font-medium tracking-wide text-white/80">
+            {((localFieldValues?.model_selection?.reasoning_model as string) || 'LFM-2-8B').toUpperCase()} READY
+          </span>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
           <Activity className="w-3 h-3" style={{ color: glowColor }} />
@@ -613,7 +713,7 @@ export function DarkGlassDashboard({
                    <div className="px-8 pb-8 pt-2">
                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-12 gap-y-2">
                        {sectionFields.map((field: any) => (
-                         <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} />
+                         <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} />
                        ))}
                      </div>
                    </div>

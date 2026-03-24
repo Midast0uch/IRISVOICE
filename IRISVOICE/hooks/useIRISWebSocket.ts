@@ -82,6 +82,7 @@ interface UseIRISWebSocketReturn {
   // Voice actions
   startVoiceCommand: () => void
   endVoiceCommand: () => void
+  cancelVoiceCommand: () => void
   sendMessage: (type: string, payload?: Record<string, unknown>) => boolean
   // Device actions
   getWakeWords: () => void
@@ -541,6 +542,31 @@ export function useIRISWebSocket(
         break
       }
 
+      case "chat_message": {
+        // Final assistant response from text_message flow (streamed then complete)
+        const content = typeof payload.content === 'string' ? payload.content : null
+        if (content) {
+          setLastTextResponse({
+            text: content,
+            sender: "assistant",
+            ...(payload.thinking && typeof payload.thinking === 'string'
+              ? { thinking: payload.thinking }
+              : {}),
+          })
+        }
+        break
+      }
+
+      case "chat_chunk": {
+        // Streaming chunk — dispatch for progressive rendering
+        if (typeof window !== 'undefined' && typeof payload.chunk === 'string') {
+          window.dispatchEvent(new CustomEvent('iris:chat_chunk', {
+            detail: { chunk: payload.chunk }
+          }))
+        }
+        break
+      }
+
       case "audio_level": {
         // Audio level update during listening
         if (typeof payload.level === 'number') {
@@ -725,12 +751,42 @@ export function useIRISWebSocket(
         break
       }
 
+      case "skills_list": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skills_list', { detail: { payload } }))
+        }
+        break
+      }
+
+      case "skill_toggled": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skill_toggled', { detail: { payload } }))
+        }
+        break
+      }
+
+      case "skill_deleted": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skill_deleted', { detail: { payload } }))
+        }
+        break
+      }
+
+      case "skill_created": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skill_created', { detail: { payload } }))
+        }
+        break
+      }
+
       case "skills_reloaded": {
-        // Skills reloaded successfully
+        // Skills reloaded by agent kernel — re-fetch the skills list
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Skills reloaded:", payload)
         }
-        // Skills are reloaded by the agent kernel
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skills_reloaded', { detail: { payload } }))
+        }
         break
       }
 
@@ -920,14 +976,26 @@ export function useIRISWebSocket(
   }, [sendMessage])
 
   const endVoiceCommand = useCallback(() => {
-    // Optimistic update: reset to idle immediately
+    // Optimistic update: show processing immediately (backend will transcribe + respond)
+    // Avoids flicker: listening → idle (wrong) → processing_conversation (backend)
+    setVoiceState("processing_conversation")
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
+        detail: { state: "processing_conversation" }
+      }))
+    }
+    sendMessage("voice_command_end", {})
+  }, [sendMessage])
+
+  const cancelVoiceCommand = useCallback(() => {
+    // Immediate cancel — resets to idle without waiting for transcription/agent
     setVoiceState("idle")
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
         detail: { state: "idle" }
       }))
     }
-    sendMessage("voice_command_end", {})
+    sendMessage("voice_command_cancel", {})
   }, [sendMessage])
 
   // Clear field error
@@ -1005,6 +1073,7 @@ export function useIRISWebSocket(
     // Voice actions
     startVoiceCommand,
     endVoiceCommand,
+    cancelVoiceCommand,
     sendMessage,
     // Device actions
     getWakeWords,

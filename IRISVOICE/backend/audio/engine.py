@@ -232,7 +232,7 @@ class AudioEngine:
 
         While active, Porcupine wake-word processing is suppressed:
         - Prevents speaker output from bleeding into the mic and triggering false detections.
-        - Reduces CPU load so the LuxTTS synthesis thread is not starved of frames.
+        - Reduces CPU load so the CosyVoice synthesis thread is not starved of frames.
         Call set_tts_active(True) before the first sentence plays and
         set_tts_active(False) once playback finishes.
         """
@@ -263,23 +263,26 @@ class AudioEngine:
         try:
             logger.info("[AudioEngine] Initializing...")
 
-            if self.config.get("input_device") is None or self.config.get("output_device") is None:
+            # Auto-select input device if not explicitly configured.
+            # Output device intentionally stays None (system default) unless the
+            # user has explicitly chosen one — this ensures TTS goes to whatever
+            # Windows has set as the default playback device (speakers/headphones).
+            if self.config.get("input_device") is None:
                 try:
                     devices = AudioPipeline.list_devices()
-                    if self.config.get("input_device") is None:
-                        first_input = next((d for d in devices if d.get("input")), None)
-                        if first_input:
-                            self.config["input_device"] = first_input.get("index")
-                    if self.config.get("output_device") is None:
-                        first_output = next((d for d in devices if d.get("output")), None)
-                        if first_output:
-                            self.config["output_device"] = first_output.get("index")
+                    first_input = next((d for d in devices if d.get("input")), None)
+                    if first_input:
+                        self.config["input_device"] = first_input.get("index")
+                        logger.info(f"[AudioEngine] Auto-selected input: {first_input['name']} (index {first_input['index']})")
                 except Exception as device_err:
-                    logger.error(f"[AudioEngine] Failed to auto-select devices: {device_err}")
+                    logger.error(f"[AudioEngine] Failed to auto-select input device: {device_err}")
+
+            output_device = self.config.get("output_device")
+            logger.info(f"[AudioEngine] Output device: {'system default' if output_device is None else output_device}")
 
             self.pipeline = AudioPipeline(
                 input_device=self.config["input_device"],
-                output_device=self.config["output_device"],
+                output_device=output_device,
                 sample_rate=self.config["sample_rate"],
                 frame_length=self.config["frame_length"]
             )

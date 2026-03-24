@@ -458,7 +458,8 @@ interface NavigationContextValue {
   // Voice actions
   startVoiceCommand: () => void
   endVoiceCommand: () => void
-  
+  cancelVoiceCommand: () => void
+
   // Chat actions
   clearChat: () => void
   
@@ -493,6 +494,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     sections, // This is the sections from WebSocket
     startVoiceCommand,
     endVoiceCommand,
+    cancelVoiceCommand,
     clearChat: wsClearChat,
     getAgentStatus,
     getAgentTools,
@@ -818,7 +820,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     // Voice actions
     startVoiceCommand,
     endVoiceCommand,
-    
+    cancelVoiceCommand,
+
     // Chat actions
     clearChat: wsClearChat,
     
@@ -877,7 +880,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     // Voice actions
     startVoiceCommand,
     endVoiceCommand,
-    
+    cancelVoiceCommand,
+
     // Chat actions
     wsClearChat,
     

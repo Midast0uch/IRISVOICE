@@ -3,6 +3,7 @@ IRIS Backend Core Data Models
 Core Pydantic models for type validation and serialization
 These models have no dependencies on other backend modules to avoid circular imports
 """
+from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field, field_validator
@@ -684,3 +685,85 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
         ),
     ],
 }
+
+
+# ---------------------------------------------------------------------------
+# DER Loop execution models (Gate 1 Step 1.7)
+# ---------------------------------------------------------------------------
+
+class StepStatus(str, Enum):
+    """Status of a single plan step in the DER execution loop."""
+    PENDING   = "pending"
+    RUNNING   = "running"
+    COMPLETED = "completed"
+    FAILED    = "failed"
+    SKIPPED   = "skipped"
+    BLOCKED   = "blocked"
+
+
+@dataclass
+class PlanStep:
+    """
+    One step in the Director's ExecutionPlan.
+    Richer than QueueItem — carries execution state and results.
+    """
+    step_id: str
+    step_number: int
+    description: str
+    status: StepStatus              = StepStatus.PENDING
+    tool: Optional[str]             = None
+    params: Dict[str, Any]          = dc_field(default_factory=dict)
+    depends_on: List[str]           = dc_field(default_factory=list)
+    critical: bool                  = True
+    required_permission: Optional[str] = None
+    result: Any                     = None
+    failure_reason: Optional[str]   = None
+    duration_ms: int                = 0
+    expected_output: Optional[str]  = None
+
+
+@dataclass
+class ExecutionPlan:
+    """
+    The Director's complete execution plan.
+    Initialized from _plan_task(), consumed by _execute_plan_der().
+    """
+    plan_id: str
+    original_task: str
+    strategy: str
+    reasoning: str
+    steps: List[PlanStep]           = dc_field(default_factory=list)
+    outcome: str                    = "success"
+
+    def has_failed(self) -> bool:
+        return self.outcome == "failure"
+
+    def to_context_string(self) -> str:
+        """
+        Serialize plan as HZA-formatted string for model context injection.
+        Uses ASCII markers only — never Unicode (encoding errors on Windows).
+        [+] = completed, [x] = failed, [~] = running, [ ] = pending/other
+        """
+        hza = self.plan_id[:8]
+        lines = [
+            f"[system://plan/{hza}]",
+            f"Task: {self.original_task}",
+            f"Strategy: {self.strategy}",
+            f"Steps: {len(self.steps)}",
+        ]
+        for step in self.steps:
+            if step.status == StepStatus.COMPLETED:
+                marker = "[+]"
+            elif step.status == StepStatus.FAILED:
+                marker = "[x]"
+            elif step.status == StepStatus.RUNNING:
+                marker = "[~]"
+            else:
+                marker = "[ ]"
+            lines.append(f"[system://plan/{hza}/step/{step.step_id}]")
+            lines.append(f"  {marker} Step {step.step_number}: {step.description}")
+            if step.result:
+                lines.append(f"      Result: {str(step.result)[:100]}")
+            if step.failure_reason:
+                lines.append(f"      Failed: {step.failure_reason}")
+        return "\n".join(lines)

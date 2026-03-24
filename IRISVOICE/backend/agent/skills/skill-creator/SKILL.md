@@ -78,34 +78,36 @@ For each example, identify what reusable resources would help:
 - Is there domain knowledge IRIS should reference? → `references/`
 - Are there template files needed in output? → `assets/`
 
-### Step 3: Create the Skill Directory
+### Step 3: Create the Skill Using the Built-in Tool
 
-Create the skill directory inside `IRISVOICE/backend/agent/skills/` (project root relative):
+**ALWAYS use the `create_skill` tool** — never use `write_file` or describe the content without creating it.
 
-```
-IRISVOICE/backend/agent/skills/<skill-name>/
-└── SKILL.md
-```
+Call `create_skill` with:
+- `name`: kebab-case skill name (e.g. `the-motivator`)
+- `content`: the full SKILL.md text including YAML frontmatter
 
-### Step 4: Write SKILL.md
+The tool creates the directory and SKILL.md file atomically and notifies the UI immediately.
+
+### Step 4: Write Good SKILL.md Content
 
 Write using **imperative/infinitive form** (verb-first instructions):
 - ✅ "To accomplish X, do Y"
 - ❌ "You should do X"
 
-Include:
-1. What the skill does (2–3 sentences)
-2. When to use it
-3. How to use it step-by-step, referencing bundled resources
+Include in the `content` string passed to `create_skill`:
+1. YAML frontmatter with `name` and `description`
+2. What the skill does (2–3 sentences)
+3. When to use it
+4. How to use it step-by-step
 
-Keep SKILL.md lean. Move detailed reference material to `references/` files.
+Keep SKILL.md lean. Do not include code blocks with file system paths — the tool handles placement.
 
-### Step 5: Activate the Skill
+### Step 5: Confirm to the User
 
-After creating the skill:
-1. Tell the user: "Skill created at `IRISVOICE/backend/agent/skills/<skill-name>/SKILL.md`"
-2. The skill will be loaded next time the backend starts or the personality cache refreshes
-3. Optionally update `IRISVOICE/backend/agent/skills/config.yaml` to document the new skill
+After calling `create_skill` successfully:
+1. Tell the user: "Skill created! You can see it in the Skills panel of the Dashboard."
+2. The skill is immediately active and will appear in the learned skills UI.
+3. It will be loaded into the system prompt on the next backend restart.
 
 ### Step 6: Iterate
 
@@ -122,8 +124,9 @@ Update SKILL.md and test again.
 
 **User says:** "Create a skill so you can help me manage my notes"
 
-1. Ask: "Where do you store notes? What format? What operations do you want — create, search, summarise?"
-2. Plan: references/ for note format spec, scripts/ for search script if needed
-3. Create `IRISVOICE/backend/agent/skills/notes-manager/SKILL.md`
-4. Write SKILL.md with the note-taking workflow
-5. Tell user the skill is created and what triggers it
+1. Ask: "Where do you store notes? What format? What operations — create, search, summarise?"
+2. Plan the SKILL.md content based on the answers
+3. Call `create_skill(name="notes-manager", content="---\nname: notes-manager\n...")` — the tool does everything
+4. Tell user: "Done! The Notes Manager skill is live in your Skills panel."
+
+**Never** describe the SKILL.md content as text and stop there. Always call the `create_skill` tool to actually create it.

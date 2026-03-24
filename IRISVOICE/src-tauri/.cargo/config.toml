@@ -1,13 +1,5 @@
 [build]
 incremental = true
-target-dir = "C:\\temp\\tauri-target"
+# Changed from AppData/Local/Temp (permission issues) to temp folder
+target-dir = "C:\\temp\\tauri-build"
 jobs = 8
-
-[profile.dev]
-incremental = true
-opt-level = 0
-debug = false
-
-[profile.dev.package."*"]
-opt-level = 0
-debug = false

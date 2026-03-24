@@ -1,0 +1,33 @@
+{
+  "pythonVersion": "3.13",
+  "pythonPlatform": "Windows",
+  "pythonPath": "C:/Python313/python.exe",
+  "venvPath": "C:/Python313",
+  "include": [
+    "backend"
+  ],
+  "extraPaths": [
+    ".",
+    "backend"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    ".git"
+  ],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalSubscript": "none",
+  "reportOptionalCall": "none",
+  "reportOptionalIterable": "none",
+  "reportOperatorIssue": "none",
+  "reportIndexIssue": "none",
+  "reportAttributeAccessIssue": "none",
+  "reportReturnType": "warning",
+  "reportArgumentType": "none",
+  "reportAssignmentIssue": "none",
+  "useLibraryCodeForTypes": true,
+  "autoImportCompletions": true
+}

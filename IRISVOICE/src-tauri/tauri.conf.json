@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.iris.widget",
   "build": {
-    "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "npm run dev -- --port 3001",
+    "devUrl": "http://localhost:3001",
     "frontendDist": "../dist"
   },
   "app": {

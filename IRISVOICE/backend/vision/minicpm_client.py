@@ -72,14 +72,14 @@ class MiniCPMClient:
         """
         warnings.warn(
             "MiniCPMClient.check_availability() is deprecated. "
-            "Use VisionService.get_status() instead.",
+            "Use VisionService.get_status_dict() instead.",
             DeprecationWarning,
             stacklevel=2
         )
         
         try:
             service = self._get_service()
-            status = service.get_status()
+            status = service.get_status_dict()
             return status["status"] == "enabled" and status["is_available"]
         except Exception as e:
             logger.error(f"[MiniCPMClient] Availability check failed: {e}")
@@ -107,7 +107,7 @@ class MiniCPMClient:
             service = self._get_service()
             
             # Ensure service is enabled
-            if service.get_status()["status"] != "enabled":
+            if service.get_status_dict()["status"] != "enabled":
                 # Try to enable
                 loop = asyncio.get_event_loop()
                 enabled = loop.run_until_complete(service.enable())
@@ -152,7 +152,7 @@ class MiniCPMClient:
             service = self._get_service()
             
             # Ensure service is enabled
-            if service.get_status()["status"] != "enabled":
+            if service.get_status_dict()["status"] != "enabled":
                 loop = asyncio.get_event_loop()
                 enabled = loop.run_until_complete(service.enable())
                 if not enabled:
@@ -254,14 +254,14 @@ class MiniCPMClient:
         """
         warnings.warn(
             "MiniCPMClient.get_status() is deprecated. "
-            "Use VisionService.get_status() instead.",
+            "Use VisionService.get_status_dict() instead.",
             DeprecationWarning,
             stacklevel=2
         )
         
         try:
             service = self._get_service()
-            status = service.get_status()
+            status = service.get_status_dict()
             return {
                 "available": status["is_available"],
                 "enabled": status["status"] == "enabled",

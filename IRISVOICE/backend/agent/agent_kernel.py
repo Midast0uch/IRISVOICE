@@ -9,7 +9,13 @@ Orchestrates the dual-LLM system with:
 - Model failure fallback to single-model mode
 """
 
-from typing import Any, Dict, Optional, List
+from .model_conversation import ModelConversation
+from .inter_model_communication import InterModelCommunicator
+from .vps_gateway import VPSGateway, VPSConfig
+from .personality import PersonalityManager
+from .memory import ConversationMemory, TaskRecord
+from .model_router import ModelRouter
+from typing import Any, Dict, Optional, List, Callable
 import json
 import asyncio
 import logging
@@ -18,19 +24,12 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-from .model_router import ModelRouter
-from .memory import ConversationMemory, TaskRecord
-from .personality import PersonalityManager
-from .vps_gateway import VPSGateway, VPSConfig
-from .inter_model_communication import InterModelCommunicator
-from .model_conversation import ModelConversation
-
 
 @dataclass
 class TaskContext:
     """
     Carries full context through the entire task pipeline.
-    
+
     This is the single object that carries context from the user's message
     through planning, execution, and response synthesis. It prevents context
     loss at handoff points between the brain and executor models.
@@ -40,32 +39,37 @@ class TaskContext:
     session_id: str
     conversation_history: List[Dict]      # snapshot of memory at task start
     plan: Optional[Dict] = None           # brain's plan (set after planning)
-    step_results: List[Dict] = field(default_factory=list)  # accumulates as steps execute
+    # accumulates as steps execute
+    step_results: List[Dict] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
-    
+
     def get_results_summary(self) -> str:
         """Get a formatted summary of all step results for the brain."""
         if not self.step_results:
             return "No tool results."
-        
+
         summary_parts = []
         for i, result in enumerate(self.step_results, 1):
             if isinstance(result, dict):
                 if "error" in result:
-                    summary_parts.append(f"Step {i}: ERROR - {result.get('error')}")
+                    summary_parts.append(
+                        f"Step {i}: ERROR - {result.get('error')}")
                 elif result.get("success"):
                     tool_name = result.get("tool", "unknown")
                     action = result.get("action", "")
-                    result_text = result.get("result", result.get("response", ""))
-                    summary_parts.append(f"Step {i}: {tool_name} ({action}): {result_text[:200]}")
-        
+                    result_text = result.get(
+                        "result", result.get("response", ""))
+                    summary_parts.append(
+                        f"Step {i}: {tool_name} ({action}): {result_text[:200]}")
+
         return "\n".join(summary_parts) if summary_parts else "No tool results."
+
 
 class AgentKernel:
     """
     Central orchestrator for the dual-LLM agent system.
-    
+
     Coordinates:
     - lfm2-8b (reasoning model) for planning and analysis
     - lfm2.5-1.2b-instruct (execution model) for tool execution
@@ -74,33 +78,34 @@ class AgentKernel:
     """
 
     def __init__(
-        self, 
+        self,
         config_path: str = "./backend/agent/agent_config.yaml",
         session_id: str = "default"
     ):
         """
         Initialize AgentKernel with dual-LLM coordination.
-        
+
         Args:
             config_path: Path to agent configuration YAML
             session_id: Session identifier for conversation memory
         """
         self.config_path = config_path
         self.session_id = session_id
-        
+
         # Core components
         self._model_router: Optional[ModelRouter] = None
         self._vps_gateway: Optional[VPSGateway] = None
         self._conversation_memory: Optional[ConversationMemory] = None
         self._personality: Optional[PersonalityManager] = None
         self._tool_bridge = None  # Will be initialized lazily
-        self._inter_model_communicator: Optional[InterModelCommunicator] = None  # For brain↔executor logging
-        
+        # For brain↔executor logging
+        self._inter_model_communicator: Optional[InterModelCommunicator] = None
+
         # State management
         self._single_model_mode = False
         self._available_model_id: Optional[str] = None
         self._initialization_error: Optional[str] = None
-        
+
         # Model selection (user-configurable dual-LLM)
         self._selected_reasoning_model: Optional[str] = None
         self._selected_tool_execution_model: Optional[str] = None
@@ -117,10 +122,10 @@ class AgentKernel:
         # Thinking extracted from the most recent _respond_direct call.
         # Set before returning so iris_gateway can include it in the text_response payload.
         self._pending_thinking: str = ""
-        
+
         # VPS configuration (loaded from settings)
         self._vps_config: Optional[VPSConfig] = None
-        
+
         # Internet access control (default: False to match UI default)
         self._internet_access_enabled: bool = False
 
@@ -128,7 +133,8 @@ class AgentKernel:
         # Developer mode injects PROJECT.md into every system prompt so the
         # local agent has full codebase context and can modify source files.
         self._launcher_mode: str = "personal"
-        self._developer_context: Optional[str] = None  # cached PROJECT.md content
+        # cached PROJECT.md content
+        self._developer_context: Optional[str] = None
 
         # Cached OpenAI client for LM Studio — created once, reused on every call.
         # Rebuilding _OpenAI() per-call recreates the full httpx connection pool,
@@ -143,102 +149,116 @@ class AgentKernel:
         """Initialize all core components with error handling."""
         try:
             # Initialize Model Router with UNINITIALIZED mode (lazy loading)
-            logger.info("[AgentKernel] Initializing Model Router in UNINITIALIZED mode (lazy loading)...")
+            logger.info(
+                "[AgentKernel] Initializing Model Router in UNINITIALIZED mode (lazy loading)...")
             from .model_router import InferenceMode
-            self._model_router = ModelRouter(self.config_path, inference_mode=InferenceMode.UNINITIALIZED)
-            logger.info("[AgentKernel] Model Router initialized - models will NOT be loaded automatically")
-            logger.info("[AgentKernel] Models will be loaded only when user selects Local Model inference mode")
-            
+            self._model_router = ModelRouter(
+                self.config_path, inference_mode=InferenceMode.UNINITIALIZED)
+            logger.info(
+                "[AgentKernel] Model Router initialized - models will NOT be loaded automatically")
+            logger.info(
+                "[AgentKernel] Models will be loaded only when user selects Local Model inference mode")
+
             # In UNINITIALIZED mode, we don't have models yet
-            logger.info("[AgentKernel] Waiting for user to configure inference mode (Local/VPS/OpenAI)")
+            logger.info(
+                "[AgentKernel] Waiting for user to configure inference mode (Local/VPS/OpenAI)")
             self._single_model_mode = False
-                
+
         except Exception as e:
-            logger.error(f"[AgentKernel] Failed to initialize Model Router: {e}")
+            logger.error(
+                f"[AgentKernel] Failed to initialize Model Router: {e}")
             self._initialization_error = f"Model Router initialization failed: {e}"
             self._model_router = None
-        
+
         # VPS Gateway is lazy: only created when the user explicitly enables VPS mode
         # via configure_vps(). Creating it per-session at startup is wasteful and triggers
         # health-check loops for every WebSocket reconnect even when VPS is disabled.
         self._vps_config = VPSConfig(enabled=False)
         self._vps_gateway = None
-        logger.info("[AgentKernel] VPS Gateway deferred (lazy init — awaiting user VPS configuration)")
-        
+        logger.info(
+            "[AgentKernel] VPS Gateway deferred (lazy init — awaiting user VPS configuration)")
+
         try:
             # Initialize Conversation Memory
-            logger.info(f"[AgentKernel] Initializing Conversation Memory for session {self.session_id}...")
+            logger.info(
+                f"[AgentKernel] Initializing Conversation Memory for session {self.session_id}...")
             self._conversation_memory = ConversationMemory(
                 session_id=self.session_id,
                 max_messages=10  # Default from requirements
             )
             logger.info("[AgentKernel] Conversation Memory initialized")
-            
+
         except Exception as e:
-            logger.error(f"[AgentKernel] Failed to initialize Conversation Memory: {e}")
+            logger.error(
+                f"[AgentKernel] Failed to initialize Conversation Memory: {e}")
             self._initialization_error = f"Conversation Memory initialization failed: {e}"
             self._conversation_memory = None
-        
+
         try:
             # Initialize Personality Manager
             logger.info("[AgentKernel] Initializing Personality Manager...")
             self._personality = PersonalityManager()
             logger.info("[AgentKernel] Personality Manager initialized")
-            
+
         except Exception as e:
-            logger.error(f"[AgentKernel] Failed to initialize Personality Manager: {e}")
+            logger.error(
+                f"[AgentKernel] Failed to initialize Personality Manager: {e}")
             self._initialization_error = f"Personality Manager initialization failed: {e}"
             self._personality = None
-        
+
         try:
             # Initialize Inter-Model Communicator for brain↔executor logging (Bug 5 fix)
-            logger.info("[AgentKernel] Initializing Inter-Model Communicator...")
+            logger.info(
+                "[AgentKernel] Initializing Inter-Model Communicator...")
             if self._model_router:
                 model_conversation = ModelConversation()
                 self._inter_model_communicator = InterModelCommunicator(
                     model_router=self._model_router,
                     conversation=model_conversation
                 )
-                logger.info("[AgentKernel] Inter-Model Communicator initialized")
+                logger.info(
+                    "[AgentKernel] Inter-Model Communicator initialized")
             else:
-                logger.warning("[AgentKernel] Inter-Model Communicator not initialized: Model Router unavailable")
+                logger.warning(
+                    "[AgentKernel] Inter-Model Communicator not initialized: Model Router unavailable")
         except Exception as e:
-            logger.error(f"[AgentKernel] Failed to initialize Inter-Model Communicator: {e}")
+            logger.error(
+                f"[AgentKernel] Failed to initialize Inter-Model Communicator: {e}")
             self._inter_model_communicator = None
-        
+
         # Tool Bridge will be initialized lazily when needed
-        
+
         # Memory Foundation integration
         self._memory_interface: Optional[Any] = None
-        
+
         logger.info("[AgentKernel] Initialization complete")
-    
+
     def set_memory_interface(self, memory_interface: Any) -> None:
         """
         Set the memory interface for the agent kernel.
-        
+
         This is called after AgentKernel initialization to wire in
         the Memory Foundation system.
-        
+
         Args:
             memory_interface: MemoryInterface instance from backend.memory
         """
         self._memory_interface = memory_interface
         logger.info("[AgentKernel] Memory interface connected")
-    
+
     def _get_memory_context(self, task: str) -> str:
         """
         Get memory-augmented context for a task.
-        
+
         Args:
             task: Task description
-        
+
         Returns:
             Context string with memory augmentation
         """
         if self._memory_interface is None:
             return ""
-        
+
         try:
             context = self._memory_interface.get_task_context(
                 task=task,
@@ -248,7 +268,7 @@ class AgentKernel:
         except Exception as e:
             logger.warning(f"[AgentKernel] Failed to get memory context: {e}")
             return ""
-    
+
     def _store_task_episode(
         self,
         task_summary: str,
@@ -258,7 +278,7 @@ class AgentKernel:
     ) -> None:
         """
         Store a task episode in memory.
-        
+
         Args:
             task_summary: Brief task description
             full_content: Full conversation/task content
@@ -267,10 +287,10 @@ class AgentKernel:
         """
         if self._memory_interface is None:
             return
-        
+
         try:
             from backend.memory import Episode
-            
+
             episode = Episode(
                 session_id=self.session_id,
                 task_summary=task_summary,
@@ -281,32 +301,36 @@ class AgentKernel:
                 node_id="local",
                 origin="local"
             )
-            
+
             self._memory_interface.store_episode(episode)
-            logger.debug(f"[AgentKernel] Stored episode for task: {task_summary[:50]}...")
-            
+            logger.debug(
+                f"[AgentKernel] Stored episode for task: {task_summary[:50]}...")
+
         except Exception as e:
             logger.warning(f"[AgentKernel] Failed to store episode: {e}")
-    
+
     async def initialize_vps_gateway(self) -> None:
         """
         Initialize VPS Gateway asynchronously.
-        
+
         This should be called after AgentKernel initialization to set up
         the VPS Gateway with async operations (health checks, etc.).
         """
         if self._vps_gateway and self._vps_config and self._vps_config.enabled:
             try:
-                logger.info("[AgentKernel] Initializing VPS Gateway async operations...")
+                logger.info(
+                    "[AgentKernel] Initializing VPS Gateway async operations...")
                 await self._vps_gateway.initialize()
-                logger.info("[AgentKernel] VPS Gateway async initialization complete")
+                logger.info(
+                    "[AgentKernel] VPS Gateway async initialization complete")
             except Exception as e:
-                logger.error(f"[AgentKernel] Failed to initialize VPS Gateway async: {e}")
-    
+                logger.error(
+                    f"[AgentKernel] Failed to initialize VPS Gateway async: {e}")
+
     async def shutdown_vps_gateway(self) -> None:
         """
         Shutdown VPS Gateway gracefully.
-        
+
         This should be called when AgentKernel is being shut down to clean up
         VPS Gateway resources (HTTP clients, health check tasks, etc.).
         """
@@ -316,12 +340,13 @@ class AgentKernel:
                 await self._vps_gateway.shutdown()
                 logger.info("[AgentKernel] VPS Gateway shutdown complete")
             except Exception as e:
-                logger.error(f"[AgentKernel] Error during VPS Gateway shutdown: {e}")
-    
+                logger.error(
+                    f"[AgentKernel] Error during VPS Gateway shutdown: {e}")
+
     def configure_vps(self, vps_config: Dict[str, Any]) -> None:
         """
         Configure VPS Gateway from settings.
-        
+
         Args:
             vps_config: Dictionary containing VPS configuration fields from agent.vps section
                 - enabled: bool - Enable VPS routing
@@ -337,32 +362,38 @@ class AgentKernel:
         """
         try:
             logger.info(f"[AgentKernel] Configuring VPS Gateway: {vps_config}")
-            
+
             # Create VPSConfig from settings
             self._vps_config = VPSConfig(
                 enabled=vps_config.get("enabled", False),
                 endpoints=vps_config.get("endpoints", []),
                 auth_token=vps_config.get("auth_token"),
                 timeout=vps_config.get("timeout", 30),
-                health_check_interval=vps_config.get("health_check_interval", 60),
+                health_check_interval=vps_config.get(
+                    "health_check_interval", 60),
                 fallback_to_local=vps_config.get("fallback_to_local", True),
                 load_balancing=vps_config.get("load_balancing", False),
-                load_balancing_strategy=vps_config.get("load_balancing_strategy", "round_robin"),
+                load_balancing_strategy=vps_config.get(
+                    "load_balancing_strategy", "round_robin"),
                 protocol=vps_config.get("protocol", "rest"),
                 offload_tools=vps_config.get("offload_tools", False)
             )
-            
+
             # Only create VPSGateway when user has explicitly enabled it.
             # This prevents health-check loops on every reconnect when VPS is disabled.
             if self._vps_config.enabled and self._model_router:
-                self._vps_gateway = VPSGateway(self._vps_config, self._model_router)
-                logger.info(f"[AgentKernel] VPS Gateway created: enabled={self._vps_config.enabled}, endpoints={len(self._vps_config.endpoints)}")
+                self._vps_gateway = VPSGateway(
+                    self._vps_config, self._model_router)
+                logger.info(
+                    f"[AgentKernel] VPS Gateway created: enabled={self._vps_config.enabled}, endpoints={len(self._vps_config.endpoints)}")
             elif not self._vps_config.enabled:
                 # VPS disabled — clear any existing gateway to stop health checks
                 self._vps_gateway = None
-                logger.info("[AgentKernel] VPS Gateway disabled by user config")
+                logger.info(
+                    "[AgentKernel] VPS Gateway disabled by user config")
             else:
-                logger.warning("[AgentKernel] Cannot configure VPS Gateway: Model Router unavailable")
+                logger.warning(
+                    "[AgentKernel] Cannot configure VPS Gateway: Model Router unavailable")
 
         except Exception as e:
             logger.error(f"[AgentKernel] Failed to configure VPS Gateway: {e}")
@@ -373,7 +404,8 @@ class AgentKernel:
         """Store the LM Studio base URL for inference routing."""
         self._lmstudio_endpoint = endpoint.rstrip("/")
         self._lmstudio_client = None  # invalidate cached client — endpoint changed
-        logger.info(f"[AgentKernel] LM Studio endpoint configured: {self._lmstudio_endpoint}")
+        logger.info(
+            f"[AgentKernel] LM Studio endpoint configured: {self._lmstudio_endpoint}")
 
     def _get_lmstudio_client(self) -> Any:
         """Return a cached OpenAI-compatible client pointed at LM Studio.
@@ -424,7 +456,8 @@ class AgentKernel:
                     messages=[{"role": "user", "content": "hi"}],
                     max_tokens=1,
                     temperature=0.0,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    extra_body={"chat_template_kwargs": {
+                        "enable_thinking": False}},
                 )
                 elapsed = time.perf_counter() - t0
                 logger.info(
@@ -440,7 +473,8 @@ class AgentKernel:
                     f"(non-fatal): {e}"
                 )
 
-        threading.Thread(target=_do_prewarm, daemon=True, name="lmstudio-prewarm").start()
+        threading.Thread(target=_do_prewarm, daemon=True,
+                         name="lmstudio-prewarm").start()
 
     def set_launcher_mode(self, mode: str) -> None:
         """Set the launcher mode ('personal' or 'developer').
@@ -469,10 +503,12 @@ class AgentKernel:
             candidate = here / "PROJECT.md"
             if candidate.exists():
                 self._developer_context = candidate.read_text(encoding="utf-8")
-                logger.info(f"[AgentKernel] Loaded developer context from {candidate}")
+                logger.info(
+                    f"[AgentKernel] Loaded developer context from {candidate}")
                 return self._developer_context
             here = here.parent
-        logger.warning("[AgentKernel] PROJECT.md not found — developer context unavailable")
+        logger.warning(
+            "[AgentKernel] PROJECT.md not found — developer context unavailable")
         self._developer_context = ""
         return ""
 
@@ -525,7 +561,18 @@ class AgentKernel:
         t = text.lower().strip()
 
         # Very short messages are almost always conversational
-        if len(t.split()) < 6:
+        if len(t.split()) < 7:
+            return False
+
+        # Common greetings and social "how are you" patterns
+        GREETINGS = ["hello", "hi", "hey", "morning",
+                     "afternoon", "evening", "greetings"]
+        if any(t.startswith(g) for g in GREETINGS) and len(t.split()) < 10:
+            return False
+
+        SOCIAL = ["how are you", "how's it going",
+                  "how are things", "what's up", "how have you been"]
+        if any(s in t for s in SOCIAL) and len(t.split()) < 12:
             return False
 
         THINKING_TRIGGERS = [
@@ -598,6 +645,12 @@ class AgentKernel:
         _, clean = AgentKernel._parse_thinking(text)
         return clean
 
+    def get_pending_thinking(self) -> str:
+        """Return the extracted thinking/reasoning blocks from the last LLM response."""
+        thinking = self._pending_thinking
+        self._pending_thinking = ""  # clear after reading
+        return thinking
+
     @staticmethod
     def _needs_planning(text: str) -> bool:
         """
@@ -614,7 +667,7 @@ class AgentKernel:
         ]
         return any(trigger in t for trigger in TOOL_TRIGGERS)
 
-    def _respond_direct(self, text: str, context: List[Dict]) -> str:
+    def _respond_direct(self, text: str, context: List[Dict], chunk_callback: Optional[Callable[[str], None]] = None) -> str:
         """
         Respond directly to the user without planning or tool execution.
         This is the default path for all conversational and non-tool messages.
@@ -647,17 +700,53 @@ class AgentKernel:
                 # Only enable thinking for complex queries — skips 300-1000 extra tokens
                 # for simple conversational messages, cutting latency from ~30s → ~5s.
                 use_thinking = self._needs_thinking(text)
-                resp = client.chat.completions.create(
-                    model=sel,
-                    messages=messages,
-                    max_tokens=-1,    # -1 = unlimited for LM Studio (local model, no billing cap)
-                    temperature=0.6,  # Qwen3 recommended; slightly more decisive
-                    extra_body={"chat_template_kwargs": {"enable_thinking": use_thinking}},
-                )
-                reply = resp.choices[0].message.content or ""
-                thinking, clean = self._parse_thinking(reply)
-                self._pending_thinking = thinking
-                return clean
+
+                if chunk_callback:
+                    # Streaming implementation
+                    resp = client.chat.completions.create(
+                        model=sel,
+                        messages=messages,
+                        max_tokens=-1,
+                        temperature=0.6,
+                        stream=True,
+                        extra_body={"chat_template_kwargs": {
+                            "enable_thinking": use_thinking}},
+                    )
+                    full_reply = ""
+                    in_think = False
+                    for chunk in resp:
+                        if chunk.choices[0].delta.content:
+                            delta = chunk.choices[0].delta.content
+                            full_reply += delta
+
+                            # Stream-safe thinking tag stripping (simplified)
+                            if "<think>" in delta:
+                                in_think = True
+                            if "</think>" in delta:
+                                in_think = False
+                                continue
+
+                            if not in_think:
+                                chunk_callback(delta)
+
+                    thinking, clean = self._parse_thinking(full_reply)
+                    self._pending_thinking = thinking
+                    return clean
+                else:
+                    # Sync implementation
+                    resp = client.chat.completions.create(
+                        model=sel,
+                        messages=messages,
+                        # -1 = unlimited for LM Studio (local model, no billing cap)
+                        max_tokens=-1,
+                        temperature=0.6,  # Qwen3 recommended; slightly more decisive
+                        extra_body={"chat_template_kwargs": {
+                            "enable_thinking": use_thinking}},
+                    )
+                    reply = resp.choices[0].message.content or ""
+                    thinking, clean = self._parse_thinking(reply)
+                    self._pending_thinking = thinking
+                    return clean
 
             # Ollama (model IDs contain ":")
             if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
@@ -680,7 +769,8 @@ class AgentKernel:
             # Local loaded model
             reasoning_model = None
             if self._model_router and self._selected_reasoning_model:
-                reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
+                reasoning_model = self._model_router.models.get(
+                    self._selected_reasoning_model)
             if not reasoning_model and self._model_router:
                 reasoning_model = self._model_router.get_reasoning_model()
             if reasoning_model:
@@ -704,50 +794,93 @@ class AgentKernel:
             )
 
         except Exception as e:
-            logger.error(f"[AgentKernel] Direct response error: {e}", exc_info=True)
+            if "Model reloaded" in str(e):
+                logger.warning(f"[AgentKernel] LM Studio model reloaded during request: {e}. Generating fallback response.")
+                return "My language model was just reloaded. Could you please repeat that?"
+            logger.error(
+                f"[AgentKernel] Direct response error: {e}", exc_info=True)
             raise
 
-    # Word count above which we extract a shorter spoken variant for TTS.
+    # Word count above which we consider a reply "long" for TTS purposes.
+    # Only applied to DOCUMENT-like content; conversational replies are always spoken in full.
     _SPOKEN_WORD_LIMIT: int = 40
-    # Maximum spoken word count (first-N-sentences extraction hard cap).
-    _SPOKEN_MAX_WORDS: int = 60
+    # Maximum spoken word count for document summaries (hard cap).
+    _SPOKEN_MAX_WORDS: int = 80
+
+    @staticmethod
+    def _is_document_content(text: str) -> bool:
+        """Heuristic: True if *text* looks like a document/code excerpt rather than
+        a conversational reply.  Document content gets summarised for TTS;
+        conversational replies are spoken verbatim.
+        """
+        import re
+        lines = text.splitlines()
+        # Markdown headings (# / ## / etc.)
+        if any(re.match(r'^#{1,6}\s', ln) for ln in lines):
+            return True
+        # Fenced code blocks (at least one opening fence)
+        if text.count('```') >= 2:
+            return True
+        # Three or more bullet / numbered list items
+        list_items = sum(
+            1 for ln in lines
+            if re.match(r'^\s*[-*•]\s|^\s*\d+\.\s', ln)
+        )
+        if list_items >= 3:
+            return True
+        # Long, dense multi-paragraph text (>10 non-empty lines, avg >8 words/line)
+        non_empty = [ln for ln in lines if ln.strip()]
+        if len(non_empty) > 10:
+            avg_words = sum(len(ln.split())
+                            for ln in non_empty) / len(non_empty)
+            if avg_words > 8:
+                return True
+        return False
 
     def get_spoken_version(self, text: str) -> str:
         """Return a TTS-friendly spoken variant of *text*.
 
-        For short responses (≤ _SPOKEN_WORD_LIMIT words) the original text is
-        returned unchanged — it is already suitable for speech.
+        Behaviour depends on content type:
+        - Short replies (≤ _SPOKEN_WORD_LIMIT words): always spoken verbatim.
+        - Document / code / list content: summarised to the first 1–2 sentences
+          so IRIS does not read out entire documents aloud.
+        - Conversational replies that are long: spoken verbatim — the user asked
+          a question and deserves a full spoken answer.
 
-        For longer responses the first 1-2 sentences are extracted and returned.
-        A second LLM call was previously used here, but Qwen3 models generate
-        3 000–4 000 thinking tokens even with enable_thinking=False, which
-        exhausts the KV cache and adds 30+ seconds of latency per utterance.
-        The sentence-extraction approach produces comparable quality with zero
-        additional latency and no risk of KV-cache overflow.
+        A second LLM call is intentionally avoided; sentence-extraction is fast,
+        zero-latency, and produces acceptable quality for document summarisation.
         """
         import re
 
-        if len(text.split()) <= self._SPOKEN_WORD_LIMIT:
+        words = text.split()
+        if len(words) <= self._SPOKEN_WORD_LIMIT:
+            return text  # short enough — speak as-is
+
+        # Conversational replies are always spoken in full.
+        if not self._is_document_content(text):
+            logger.debug(
+                f"[AgentKernel] Conversational reply ({len(words)} words) — speaking in full"
+            )
             return text
 
-        # Split on sentence-ending punctuation followed by whitespace.
-        # Keep the delimiter attached to the sentence it ends.
+        # Document content: extract first 1-2 sentences up to _SPOKEN_MAX_WORDS.
         sentences = re.split(r'(?<=[.!?…])\s+', text.strip())
         sentences = [s.strip() for s in sentences if s.strip()]
 
         spoken_words: list[str] = []
         for sentence in sentences:
-            words = sentence.split()
-            if spoken_words and len(spoken_words) + len(words) > self._SPOKEN_MAX_WORDS:
+            s_words = sentence.split()
+            if spoken_words and len(spoken_words) + len(s_words) > self._SPOKEN_MAX_WORDS:
                 break
-            spoken_words.extend(words)
-            # Stop after the first sentence if we already have enough words.
+            spoken_words.extend(s_words)
             if len(spoken_words) >= self._SPOKEN_WORD_LIMIT:
                 break
 
         spoken = " ".join(spoken_words).strip()
         if spoken:
-            logger.debug(f"[AgentKernel] Spoken version ({len(spoken_words)} words): {spoken!r}")
+            logger.debug(
+                f"[AgentKernel] Document summary ({len(spoken_words)} words): {spoken!r}"
+            )
             return spoken
 
         return text  # fallback: speak full response
@@ -789,8 +922,9 @@ class AgentKernel:
 
     # ── ReAct agentic loop ───────────────────────────────────────────────────
 
-    def _run_agentic_loop(self, messages: List[Dict], session_id: str) -> str:
-        """ReAct agentic loop — the core of multi-step task execution.
+    def _run_agentic_loop(self, messages: List[Dict], session_id: Optional[str] = None, chunk_callback: Optional[Callable[[str], None]] = None) -> str:
+        """
+        Multi-step reasoning and tool execution loop (ReAct).
 
         Calls the LLM with tool definitions.  If the model returns
         ``finish_reason="tool_calls"`` the tools are executed and their results
@@ -809,6 +943,7 @@ class AgentKernel:
         Args:
             messages: Initial message list (system + conversation history + user turn).
             session_id: Passed through to tool_bridge for session isolation.
+            chunk_callback: Optional callback for streaming response chunks.
 
         Returns:
             The model's final clean response string.
@@ -835,28 +970,102 @@ class AgentKernel:
                         # Thinking OFF during tool-call iterations — models need
                         # clean JSON for tool_calls; thinking can be re-enabled
                         # on the final free-response turn if desired.
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                        extra_body={"chat_template_kwargs": {
+                            "enable_thinking": False}},
                     )
                     if tools:
                         call_kwargs["tools"] = tools
                         call_kwargs["tool_choice"] = "auto"
 
+                    # Enable streaming if a chunk_callback is provided
+                    if chunk_callback:
+                        call_kwargs["stream"] = True
+
                     resp = client.chat.completions.create(**call_kwargs)
-                    choice = resp.choices[0]
+
+                    if chunk_callback and call_kwargs.get("stream"):
+                        full_reply = ""
+                        all_tool_calls = []
+                        in_think = False
+                        finish_reason = "stop"
+
+                        for chunk in resp:
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta
+
+                            if getattr(delta, "content", None):
+                                content_piece = delta.content
+                                full_reply += content_piece
+
+                                if "<think>" in content_piece:
+                                    in_think = True
+                                if "</think>" in content_piece:
+                                    in_think = False
+                                    continue
+
+                                if not in_think:
+                                    chunk_callback(content_piece)
+
+                            # Accumulate tool calls safely (handle both delta chunks and whole blocks)
+                            if getattr(delta, "tool_calls", None):
+                                for tc in delta.tool_calls:
+                                    idx = tc.index if hasattr(tc, "index") else 0
+                                    while len(all_tool_calls) <= idx:
+                                        all_tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                                    
+                                    if getattr(tc, "id", None):
+                                        all_tool_calls[idx]["id"] = tc.id
+                                    if getattr(tc, "function", None):
+                                        if getattr(tc.function, "name", None):
+                                            all_tool_calls[idx]["function"]["name"] = tc.function.name
+                                        if getattr(tc.function, "arguments", None):
+                                            all_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+
+                            if getattr(chunk.choices[0], "finish_reason", None):
+                                finish_reason = chunk.choices[0].finish_reason
+
+                        # Convert accumulated tool calls dicts to simulated objects for compatibility
+                        class DummyFunction:
+                            def __init__(self, name, arguments):
+                                self.name = name
+                                self.arguments = arguments
+                        class DummyToolCall:
+                            def __init__(self, id, function):
+                                self.id = id
+                                self.function = function
+                        
+                        typed_tool_calls = [
+                            DummyToolCall(tc["id"], DummyFunction(tc["function"]["name"], tc["function"]["arguments"]))
+                            for tc in all_tool_calls
+                        ]
+
+                        class StreamedChoice:
+                            def __init__(self, content, tool_calls, finish_reason):
+                                self.message = type('Message', (object,), {'content': content, 'tool_calls': tool_calls})()
+                                self.finish_reason = finish_reason
+                                
+                        choice = StreamedChoice(full_reply, typed_tool_calls, finish_reason)
+                    else:
+                        # Non-streaming path (original logic)
+                        choice = resp.choices[0]
+                        full_reply = choice.message.content or ""
+                        all_tool_calls = choice.message.tool_calls or []
 
                     # Model finished without requesting any tool — return response
-                    if choice.finish_reason == "stop" or not choice.message.tool_calls:
-                        content = choice.message.content or ""
+                    if choice.finish_reason == "stop" or not all_tool_calls:
+                        content = full_reply  # Already collected from stream or direct response
                         thinking, clean = self._parse_thinking(content)
                         self._pending_thinking = thinking
                         return clean
 
                     # Model wants to use one or more tools
-                    if choice.message.tool_calls:
+                    if all_tool_calls:
                         # Serialize the assistant turn so the model keeps its own
                         # tool_call references in subsequent context passes
                         messages.append({
                             "role": "assistant",
+                            # Use content from choice, which might be empty for tool calls
                             "content": choice.message.content or "",
                             "tool_calls": [
                                 {
@@ -867,11 +1076,11 @@ class AgentKernel:
                                         "arguments": tc.function.arguments,
                                     },
                                 }
-                                for tc in choice.message.tool_calls
+                                for tc in all_tool_calls
                             ],
                         })
 
-                        for tc in choice.message.tool_calls:
+                        for tc in all_tool_calls:
                             t_name = tc.function.name
                             try:
                                 t_args = json.loads(tc.function.arguments)
@@ -893,7 +1102,8 @@ class AgentKernel:
                                         )
                                     )
                                 else:
-                                    t_result = {"error": "Tool bridge not available"}
+                                    t_result = {
+                                        "error": "Tool bridge not available"}
                             except RuntimeError as run_err:
                                 # asyncio.run() can fail if called from inside an
                                 # already-running loop (shouldn't happen here, but just
@@ -915,7 +1125,8 @@ class AgentKernel:
                                 logger.error(
                                     f"[AgentLoop] Tool {t_name} raised: {exec_err}"
                                 )
-                                t_result = {"error": str(exec_err), "tool": t_name}
+                                t_result = {"error": str(
+                                    exec_err), "tool": t_name}
 
                             messages.append({
                                 "role": "tool",
@@ -932,11 +1143,13 @@ class AgentKernel:
                 # Ollama and local models don't support tool calling yet;
                 # fall back to a direct conversational response.
                 last_user = next(
-                    (m["content"] for m in reversed(messages) if m["role"] == "user"),
+                    (m["content"]
+                     for m in reversed(messages) if m["role"] == "user"),
                     "",
                 )
-                ctx = [m for m in messages if m["role"] in ("user", "assistant")][-8:]
-                return self._respond_direct(last_user, ctx)
+                ctx = [m for m in messages if m["role"]
+                       in ("user", "assistant")][-8:]
+                return self._respond_direct(last_user, ctx, chunk_callback=chunk_callback)
 
             except Exception as loop_err:
                 logger.error(
@@ -948,7 +1161,8 @@ class AgentKernel:
                 break
 
         # Max iterations reached — ask model to summarise what it found
-        logger.warning(f"[AgentLoop] Max iterations ({MAX_ITERATIONS}) reached")
+        logger.warning(
+            f"[AgentLoop] Max iterations ({MAX_ITERATIONS}) reached")
         last_user = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user"),
             "your request",
@@ -957,26 +1171,124 @@ class AgentKernel:
             m for m in messages if m["role"] in ("user", "assistant")
         ][-6:]
         return self._respond_direct(
-            f"Summarise what you found so far for: {last_user}", summary_ctx
+            f"Summarise what you found so far for: {last_user}", summary_ctx, chunk_callback=chunk_callback
         )
 
-    def process_text_message(self, text: str, session_id: Optional[str] = None) -> str:
+    def prepare_spoken_text(self, full_response: str, user_message: str = "") -> str:
         """
-        Process a text message with dual-LLM coordination.
+        Returns ONLY the text that should be sent to CosyVoice2 streaming TTS.
+        Full response is ALWAYS sent separately via text_response.
 
-        Workflow:
-        1. Add user message to conversation memory
-        2. Plan task using reasoning model
-        3. Execute plan using execution model
-        4. Generate response and add to conversation memory
-
-        Args:
-            text: User's text message
-            session_id: Optional session ID (uses instance session_id if not provided)
-            
-        Returns:
-            Agent's response text
+        No second LLM call — uses direct text processing to extract speakable prose.
+        This keeps first-audio latency to synthesis time only (~1-2s warm, ~40s cold).
         """
+        import re as _re
+        from backend.voice.tts_normalizer import normalize_text
+
+        # Strip code fences and their content entirely — code is unreadable aloud
+        cleaned = _re.sub(r"```[\s\S]*?```", "", full_response)
+        # Strip inline code
+        cleaned = _re.sub(r"`[^`]+`", "", cleaned)
+        # Strip markdown headers (#, ##, etc.)
+        cleaned = _re.sub(r"^#{1,6}\s+", "", cleaned, flags=_re.MULTILINE)
+        # Strip bold/italic markers
+        cleaned = _re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
+        # Strip bullet dashes/asterisks at line start
+        cleaned = _re.sub(r"^\s*[-*•]\s+", "", cleaned, flags=_re.MULTILINE)
+        # Collapse whitespace
+        cleaned = " ".join(cleaned.split())
+
+        had_code = "```" in full_response
+        word_count = len(cleaned.split())
+
+        # If the prose after stripping code is short enough, speak all of it
+        if word_count <= 200:
+            spoken = normalize_text(cleaned)
+            if had_code:
+                spoken += " The full code is in the chat window."
+            return spoken
+
+        # Long response — keep first ~120 words of prose, add chat hint
+        words = cleaned.split()
+        truncated = " ".join(words[:120])
+        # Find last sentence boundary to avoid cutting mid-sentence
+        last_sentence = max(
+            truncated.rfind(". "),
+            truncated.rfind("! "),
+            truncated.rfind("? "),
+        )
+        if last_sentence > 60:
+            truncated = truncated[:last_sentence + 1]
+
+        spoken = normalize_text(truncated)
+        spoken += " The full response is in the chat window."
+        return spoken
+
+    def _sanitize_task(self, task: str) -> str:
+        """
+        Filter prompt-injection attempts before the task reaches the DER Director.
+        Replaces coordinate-layer protocol markers with [filtered].
+        Applied ONLY here — not in WebSocket validators.
+        """
+        import re as _re
+        _PACMAN_PATTERNS = (
+            r'system://', r'trusted://', r'tool://', r'reference://',
+            r'MYCELIUM:', r'TOPOLOGY:', r'CONTRACT:',
+            r'GRADIENT WARNING', r'AMBIENT:', r'CAUSAL:',
+        )
+        result = task
+        for pattern in _PACMAN_PATTERNS:
+            result = _re.sub(pattern, '[filtered]', result)
+        return result
+
+    def _build_planning_prompt(
+        self,
+        task: str,
+        tier1_directives: str = "",
+        behavior_preds: str = "",
+        failure_warnings: str = "None",
+        skills_context: str = "",
+        permissions_list: str = "",
+        strategy_hint: str = "",
+        task_class: str = "full",
+    ) -> str:
+        """
+        Build the structured planning prompt for _plan_task().
+        Returns sections joined with double newlines.
+        FAILURE WARNINGS appears exactly once.
+        """
+        sections = []
+
+        if tier1_directives:
+            sections.append(f"DIRECTIVES:\n{tier1_directives}")
+
+        if behavior_preds:
+            sections.append(f"BEHAVIOR PREDICTIONS:\n{behavior_preds}")
+
+        sections.append(f"FAILURE WARNINGS:\n{failure_warnings or 'None'}")
+
+        sections.append(f"TASK CLASS: {task_class}")
+
+        if strategy_hint:
+            sections.append(f"STRATEGY HINT:\n{strategy_hint}")
+
+        if skills_context:
+            sections.append(f"AVAILABLE SKILLS:\n{skills_context}")
+
+        if permissions_list:
+            sections.append(f"PERMISSIONS:\n{permissions_list}")
+
+        sections.append(f"TASK:\n{task}")
+
+        return "\n\n".join(sections)
+
+    def process_text_message(self, text: str, session_id: Optional[str] = None, chunk_callback: Optional[Callable[[str], None]] = None) -> str:
+        """
+        Main entry point for text messages.
+        Decides between direct response and agentic (tool-calling) loop.
+        """
+        _t_start = time.perf_counter()
+
         # Use provided session_id or fall back to instance session_id
         if session_id is None:
             session_id = self.session_id
@@ -989,12 +1301,12 @@ class AgentKernel:
             error_msg = f"Agent kernel is not available: {self._initialization_error}"
             logger.error(f"[AgentKernel] {error_msg}")
             return error_msg
-        
+
         if not self._model_router or not self._conversation_memory:
             error_msg = "Agent kernel is not available"
             logger.error(f"[AgentKernel] {error_msg}")
             return error_msg
-        
+
         # Create TaskContext to carry full context through pipeline (fixes Bug 3, 4, 5, 6)
         import uuid
         task_id = str(uuid.uuid4())
@@ -1003,7 +1315,8 @@ class AgentKernel:
         try:
             # Add user message to conversation memory
             self._conversation_memory.add_message("user", text)
-            logger.info(f"[AgentKernel] Processing text message: {text[:50]}...")
+            logger.info(
+                f"[AgentKernel] Processing text message: {text[:50]}...")
 
             # Get conversation context
             context = self._conversation_memory.get_context()
@@ -1023,7 +1336,8 @@ class AgentKernel:
         # questions, conversation — goes straight to _respond_direct() which
         # calls the model with no JSON schema overhead.
         if not self._needs_planning(text):
-            logger.info("[AgentKernel] Direct response path (no planning needed)")
+            logger.info(
+                "[AgentKernel] Direct response path (no planning needed)")
             try:
                 _t_llm_start = time.perf_counter()
                 response = self._respond_direct(text, context)
@@ -1040,7 +1354,8 @@ class AgentKernel:
             except Exception:
                 pass
             if response is None:
-                logger.error("[AgentKernel] _respond_direct returned None — returning fallback")
+                logger.error(
+                    "[AgentKernel] _respond_direct returned None — returning fallback")
                 response = "I wasn't able to generate a response. Please check the model connection."
             logger.info(f"[AgentKernel] Direct response: {response[:50]}...")
             return response
@@ -1051,7 +1366,8 @@ class AgentKernel:
         # model emits finish_reason="stop", at which point we have the final answer.
         system_prompt = self._build_system_prompt()
 
-        loop_messages: List[Dict] = [{"role": "system", "content": system_prompt}]
+        loop_messages: List[Dict] = [
+            {"role": "system", "content": system_prompt}]
         context_window = list(context[-6:])
         while context_window and context_window[0]["role"] != "user":
             context_window.pop(0)
@@ -1061,11 +1377,14 @@ class AgentKernel:
             loop_messages.append({"role": "user", "content": text})
 
         try:
-            response = self._run_agentic_loop(loop_messages, session_id or self.session_id)
+            response = self._run_agentic_loop(
+                loop_messages, session_id or self.session_id, chunk_callback=chunk_callback)
         except Exception as e:
-            logger.error(f"[AgentKernel] Agentic loop failed: {e}", exc_info=True)
+            logger.error(
+                f"[AgentKernel] Agentic loop failed: {e}", exc_info=True)
             try:
-                response = self._respond_direct(text, context)
+                response = self._respond_direct(
+                    text, context, chunk_callback=chunk_callback)
             except Exception:
                 response = "[IRIS error: could not process request]"
 
@@ -1073,7 +1392,8 @@ class AgentKernel:
         try:
             self._conversation_memory.add_message("assistant", response)
         except Exception as e:
-            logger.warning(f"[AgentKernel] Failed to save response to conversation memory: {e}")
+            logger.warning(
+                f"[AgentKernel] Failed to save response to conversation memory: {e}")
 
         # Record task for session-level memory continuity
         try:
@@ -1082,7 +1402,8 @@ class AgentKernel:
                 task_id=task_id,
                 user_message=text,
                 summary=response,
-                step_count=len([m for m in loop_messages if m.get("role") == "tool"]),
+                step_count=len(
+                    [m for m in loop_messages if m.get("role") == "tool"]),
                 had_failures=False,
                 tool_names_used=[
                     m.get("content", "")[:30]
@@ -1103,14 +1424,14 @@ class AgentKernel:
     def plan_task(self, task_description: str, context: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Use lfm2-8b (reasoning model) for task planning with timeout and error handling.
-        
+
         Args:
             task_description: User's task/query
             context: Optional conversation context
-            
+
         Returns:
             Plan dictionary with steps, or error dictionary
-            
+
         Raises:
             TimeoutError: If inference exceeds timeout
         """
@@ -1120,16 +1441,18 @@ class AgentKernel:
 
         try:
             logger.info("[AgentKernel] Planning task with reasoning model...")
-            
+
             # Get reasoning model
             reasoning_model = None
             if self._model_router:
                 try:
                     # Use user-selected reasoning model if available
                     if self._selected_reasoning_model:
-                        reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
+                        reasoning_model = self._model_router.models.get(
+                            self._selected_reasoning_model)
                         if reasoning_model:
-                            logger.info(f"[AgentKernel] Using user-selected reasoning model: {self._selected_reasoning_model}")
+                            logger.info(
+                                f"[AgentKernel] Using user-selected reasoning model: {self._selected_reasoning_model}")
                         else:
                             # Only fall back to the default local stub when neither Ollama
                             # nor VPS will handle this request.  If ":" is in the model ID
@@ -1147,10 +1470,13 @@ class AgentKernel:
                                 )
                                 reasoning_model = self._model_router.get_reasoning_model()
                                 if reasoning_model:
-                                    default_model_id = getattr(reasoning_model, 'model_id', 'unknown')
-                                    logger.info(f"[AgentKernel] Fallback: using default reasoning model {default_model_id}")
+                                    default_model_id = getattr(
+                                        reasoning_model, 'model_id', 'unknown')
+                                    logger.info(
+                                        f"[AgentKernel] Fallback: using default reasoning model {default_model_id}")
                             else:
-                                _dest = "LM Studio" if _lmstudio_will_handle else ("Ollama" if _ollama_will_handle else "VPS")
+                                _dest = "LM Studio" if _lmstudio_will_handle else (
+                                    "Ollama" if _ollama_will_handle else "VPS")
                                 logger.info(
                                     f"[AgentKernel] Selected model '{_sel_check}' not in local cache — "
                                     f"will route to {_dest}"
@@ -1160,21 +1486,27 @@ class AgentKernel:
                         # No model selected — use default reasoning model
                         reasoning_model = self._model_router.get_reasoning_model()
                         if reasoning_model:
-                            default_model_id = getattr(reasoning_model, 'model_id', 'unknown')
-                            logger.info(f"[AgentKernel] No model selected, using default reasoning model: {default_model_id}")
+                            default_model_id = getattr(
+                                reasoning_model, 'model_id', 'unknown')
+                            logger.info(
+                                f"[AgentKernel] No model selected, using default reasoning model: {default_model_id}")
                 except Exception as e:
-                    logger.error(f"[AgentKernel] Error getting reasoning model: {e}")
+                    logger.error(
+                        f"[AgentKernel] Error getting reasoning model: {e}")
                     return {"error": f"Failed to access reasoning model: {e}"}
 
             # Handle model unavailability
             if not reasoning_model:
                 if self._single_model_mode and self._available_model_id:
                     # Fall back to the single available local model
-                    logger.warning("[AgentKernel] Reasoning model unavailable, using fallback model")
+                    logger.warning(
+                        "[AgentKernel] Reasoning model unavailable, using fallback model")
                     try:
-                        reasoning_model = self._model_router.models.get(self._available_model_id)
+                        reasoning_model = self._model_router.models.get(
+                            self._available_model_id)
                     except Exception as e:
-                        logger.error(f"[AgentKernel] Error accessing fallback model: {e}")
+                        logger.error(
+                            f"[AgentKernel] Error accessing fallback model: {e}")
                         return {"error": f"Failed to access fallback model: {e}"}
                 elif self._model_provider == "lmstudio":
                     # LM Studio is configured — reasoning_model stays None; the LM Studio
@@ -1212,7 +1544,8 @@ class AgentKernel:
                         )
                         try:
                             self._model_router.load_models()
-                            reasoning_model = self._model_router.models.get(_sel)
+                            reasoning_model = self._model_router.models.get(
+                                _sel)
                             if reasoning_model is None:
                                 _all = list(self._model_router.models.values())
                                 if _all:
@@ -1222,7 +1555,8 @@ class AgentKernel:
                                         f"using first available: {list(self._model_router.models.keys())[0]}"
                                     )
                         except Exception as _lazy_err:
-                            logger.warning(f"[AgentKernel] Lazy load failed: {_lazy_err}")
+                            logger.warning(
+                                f"[AgentKernel] Lazy load failed: {_lazy_err}")
                         if not reasoning_model:
                             return {
                                 "error": (
@@ -1238,19 +1572,21 @@ class AgentKernel:
                             "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
                         )
                     }
-            
+
             # Build planning prompt with personality and context
             system_prompt = ""
             if self._personality:
                 try:
                     system_prompt = self._personality.get_system_prompt()
                 except Exception as e:
-                    logger.warning(f"[AgentKernel] Error getting system prompt: {e}")
-            
+                    logger.warning(
+                        f"[AgentKernel] Error getting system prompt: {e}")
+
             context_str = ""
             if context:
-                context_str = "\n\nConversation Context:\n" + json.dumps(context[-5:], indent=2)
-            
+                context_str = "\n\nConversation Context:\n" + \
+                    json.dumps(context[-5:], indent=2)
+
             planning_prompt = f"""{system_prompt}
 
 You are analyzing a user request and creating an execution plan.
@@ -1275,36 +1611,42 @@ Respond with a JSON object:
         }}
     ]
 }}"""
-            
+
             # Use VPS Gateway for inference if available, otherwise use local model
             plan_response = None
             if self._vps_gateway:
                 try:
-                    logger.info("[AgentKernel] Using VPS Gateway for planning inference...")
+                    logger.info(
+                        "[AgentKernel] Using VPS Gateway for planning inference...")
                     try:
                         plan_response = asyncio.run(
                             self._vps_gateway.infer(
                                 model=self._model_router.get_reasoning_model_id() or "lfm2-8b",
                                 prompt=planning_prompt,
-                                context={"conversation_history": context} if context else {},
+                                context={
+                                    "conversation_history": context} if context else {},
                                 params={"max_tokens": 512, "temperature": 0.2},
                                 session_id=self.session_id
                             )
                         )
-                        logger.info("[AgentKernel] VPS Gateway inference complete")
+                        logger.info(
+                            "[AgentKernel] VPS Gateway inference complete")
                     except RuntimeError as e:
                         if "already running" in str(e):
-                            logger.warning("[AgentKernel] Event loop conflict — falling back to local model")
+                            logger.warning(
+                                "[AgentKernel] Event loop conflict — falling back to local model")
                             plan_response = None
                         else:
                             raise
                 except TimeoutError:
-                    logger.error("[AgentKernel] VPS Gateway inference timed out")
+                    logger.error(
+                        "[AgentKernel] VPS Gateway inference timed out")
                     raise
                 except Exception as e:
-                    logger.warning(f"[AgentKernel] VPS Gateway inference failed, falling back to direct model: {e}")
+                    logger.warning(
+                        f"[AgentKernel] VPS Gateway inference failed, falling back to direct model: {e}")
                     plan_response = None
-            
+
             # LM Studio inference (OpenAI-compatible local API at localhost:1234).
             # Triggered when provider == "lmstudio" and no prior backend produced a response.
             # Uses the openai Python client pointed at the LM Studio local server.
@@ -1313,10 +1655,12 @@ Respond with a JSON object:
                     _lms = self._get_lmstudio_client()
                     _lms_resp = _lms.chat.completions.create(
                         model=self._selected_reasoning_model or "local-model",
-                        messages=[{"role": "user", "content": planning_prompt}],
+                        messages=[
+                            {"role": "user", "content": planning_prompt}],
                         max_tokens=-1,
                         temperature=0.2,  # low temp = faster, more deterministic JSON
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                        extra_body={"chat_template_kwargs": {
+                            "enable_thinking": False}},
                     )
                     plan_response = _lms_resp.choices[0].message.content
                     logger.info(
@@ -1324,7 +1668,8 @@ Respond with a JSON object:
                         f"(model: {self._selected_reasoning_model}, endpoint: {self._lmstudio_endpoint})"
                     )
                 except Exception as _lms_err:
-                    logger.warning(f"[AgentKernel] LM Studio planning inference failed: {_lms_err}")
+                    logger.warning(
+                        f"[AgentKernel] LM Studio planning inference failed: {_lms_err}")
 
             # Ollama local inference — runs when the model ID contains ":" which is
             # the Ollama format (e.g. "llama3.2:3b", "mistral:7b", "kimi-k2.5:cloud").
@@ -1396,7 +1741,8 @@ Respond with a JSON object:
                 # Check timeout before loading model
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    raise TimeoutError(f"Planning timed out after {elapsed:.1f}s")
+                    raise TimeoutError(
+                        f"Planning timed out after {elapsed:.1f}s")
 
                 # Load model if needed with error handling
                 try:
@@ -1404,14 +1750,16 @@ Respond with a JSON object:
                         logger.info("[AgentKernel] Loading reasoning model...")
                         reasoning_model.load()
                 except Exception as e:
-                    logger.error(f"[AgentKernel] Failed to load reasoning model: {e}")
+                    logger.error(
+                        f"[AgentKernel] Failed to load reasoning model: {e}")
                     return {"error": f"Model loading failed: {e}"}
-                
+
                 # Check timeout before inference
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    raise TimeoutError(f"Planning timed out after {elapsed:.1f}s")
-                
+                    raise TimeoutError(
+                        f"Planning timed out after {elapsed:.1f}s")
+
                 # Generate plan with error handling
                 try:
                     plan_response = reasoning_model.generate(
@@ -1423,7 +1771,8 @@ Respond with a JSON object:
                     logger.error(f"[AgentKernel] Model inference failed: {e}")
                     # Attempt to restart model
                     try:
-                        logger.info("[AgentKernel] Attempting to restart reasoning model...")
+                        logger.info(
+                            "[AgentKernel] Attempting to restart reasoning model...")
                         reasoning_model.unload()
                         reasoning_model.load()
                         plan_response = reasoning_model.generate(
@@ -1431,28 +1780,33 @@ Respond with a JSON object:
                             max_tokens=-1,
                             temperature=0.2
                         )
-                        logger.info("[AgentKernel] Model restarted successfully")
+                        logger.info(
+                            "[AgentKernel] Model restarted successfully")
                     except Exception as restart_error:
-                        logger.error(f"[AgentKernel] Model restart failed: {restart_error}")
+                        logger.error(
+                            f"[AgentKernel] Model restart failed: {restart_error}")
                         return {"error": f"Model crashed and restart failed: {restart_error}"}
-            
+
             # Check timeout after inference
             elapsed = time.time() - start_time
             if elapsed > timeout_seconds:
                 raise TimeoutError(f"Planning timed out after {elapsed:.1f}s")
-            
+
             # Parse JSON response
             try:
                 plan = json.loads(plan_response)
-                logger.info(f"[AgentKernel] Plan generated with {len(plan.get('steps', []))} steps in {elapsed:.2f}s")
+                logger.info(
+                    f"[AgentKernel] Plan generated with {len(plan.get('steps', []))} steps in {elapsed:.2f}s")
                 return plan
             except json.JSONDecodeError:
                 # Model returned free-form text rather than JSON.
                 # Treat the entire response as the user-facing reply — do NOT use
                 # "respond_to_user" as the action string because execute_step would
                 # return that keyword verbatim to the frontend.
-                logger.warning("[AgentKernel] Failed to parse plan as JSON, using raw text as response")
-                _raw_text = self._strip_thinking(plan_response) if plan_response else "I'm not sure how to respond to that."
+                logger.warning(
+                    "[AgentKernel] Failed to parse plan as JSON, using raw text as response")
+                _raw_text = self._strip_thinking(
+                    plan_response) if plan_response else "I'm not sure how to respond to that."
                 return {
                     "analysis": _raw_text[:200],
                     "requires_tools": False,
@@ -1466,9 +1820,10 @@ Respond with a JSON object:
                         }
                     ]
                 }
-                
+
         except TimeoutError:
-            logger.error(f"[AgentKernel] Planning timed out after {timeout_seconds}s")
+            logger.error(
+                f"[AgentKernel] Planning timed out after {timeout_seconds}s")
             raise
         except Exception as e:
             error_msg = f"Error during task planning: {e}"
@@ -1494,9 +1849,11 @@ Respond with a JSON object:
             try:
                 result = await self.execute_step(step)
                 results.append(result)
-                logger.debug(f"[AgentKernel] Step {step.get('step')} completed")
+                logger.debug(
+                    f"[AgentKernel] Step {step.get('step')} completed")
             except Exception as e:
-                error_result = {"error": f"Step {step.get('step')} failed: {e}"}
+                error_result = {
+                    "error": f"Step {step.get('step')} failed: {e}"}
                 results.append(error_result)
                 logger.error(f"[AgentKernel] {error_result['error']}")
 
@@ -1505,13 +1862,13 @@ Respond with a JSON object:
     async def execute_step(self, step: Dict[str, Any]) -> Any:
         """
         Execute a single plan step using execution model with timeout and error handling.
-        
+
         Args:
             step: Step dictionary with action, tool, and parameters
-            
+
         Returns:
             Execution result
-            
+
         Raises:
             TimeoutError: If execution exceeds timeout
         """
@@ -1522,20 +1879,22 @@ Respond with a JSON object:
         tool_name = step.get("tool")
         parameters = step.get("parameters", {})
         action = step.get("action", "")
-        
+
         # If no tool specified, return the action as response
         if not tool_name:
             return {"response": action, "success": True}
-        
+
         # Get execution model
         execution_model = None
         if self._model_router:
             try:
                 # Use user-selected tool execution model if available
                 if self._selected_tool_execution_model:
-                    execution_model = self._model_router.models.get(self._selected_tool_execution_model)
+                    execution_model = self._model_router.models.get(
+                        self._selected_tool_execution_model)
                     if execution_model:
-                        logger.info(f"[AgentKernel] Using user-selected tool execution model: {self._selected_tool_execution_model}")
+                        logger.info(
+                            f"[AgentKernel] Using user-selected tool execution model: {self._selected_tool_execution_model}")
                     else:
                         # Only fall back to default stub when Ollama/VPS won't handle it.
                         _sel_exec_check = self._selected_tool_execution_model
@@ -1549,10 +1908,13 @@ Respond with a JSON object:
                             )
                             execution_model = self._model_router.get_execution_model()
                             if execution_model:
-                                default_model_id = getattr(execution_model, 'model_id', 'unknown')
-                                logger.info(f"[AgentKernel] Fallback: using default execution model {default_model_id}")
+                                default_model_id = getattr(
+                                    execution_model, 'model_id', 'unknown')
+                                logger.info(
+                                    f"[AgentKernel] Fallback: using default execution model {default_model_id}")
                         else:
-                            _exec_dest = "LM Studio" if _lmstudio_exec_will_handle else ("Ollama" if _ollama_exec_will_handle else "VPS")
+                            _exec_dest = "LM Studio" if _lmstudio_exec_will_handle else (
+                                "Ollama" if _ollama_exec_will_handle else "VPS")
                             logger.info(
                                 f"[AgentKernel] Exec model '{_sel_exec_check}' not in local cache — "
                                 f"will route to {_exec_dest}"
@@ -1561,21 +1923,27 @@ Respond with a JSON object:
                     # No model selected — use default execution model
                     execution_model = self._model_router.get_execution_model()
                     if execution_model:
-                        default_model_id = getattr(execution_model, 'model_id', 'unknown')
-                        logger.info(f"[AgentKernel] No model selected, using default tool execution model: {default_model_id}")
+                        default_model_id = getattr(
+                            execution_model, 'model_id', 'unknown')
+                        logger.info(
+                            f"[AgentKernel] No model selected, using default tool execution model: {default_model_id}")
             except Exception as e:
-                logger.error(f"[AgentKernel] Error getting execution model: {e}")
+                logger.error(
+                    f"[AgentKernel] Error getting execution model: {e}")
                 return {"error": f"Failed to access execution model: {e}", "success": False}
 
         # Handle model unavailability
         if not execution_model:
             if self._single_model_mode and self._available_model_id:
                 # Fall back to the single available local model
-                logger.warning("[AgentKernel] Execution model unavailable, using fallback model")
+                logger.warning(
+                    "[AgentKernel] Execution model unavailable, using fallback model")
                 try:
-                    execution_model = self._model_router.models.get(self._available_model_id)
+                    execution_model = self._model_router.models.get(
+                        self._available_model_id)
                 except Exception as e:
-                    logger.error(f"[AgentKernel] Error accessing fallback model: {e}")
+                    logger.error(
+                        f"[AgentKernel] Error accessing fallback model: {e}")
                     return {"error": f"Failed to access fallback model: {e}", "success": False}
             elif self._model_provider == "lmstudio":
                 # LM Studio configured — execution_model stays None; LM Studio block handles it.
@@ -1602,17 +1970,19 @@ Respond with a JSON object:
                         try:
                             self._model_router.load_models()
                         except Exception as _le:
-                            logger.warning(f"[AgentKernel] Lazy load (exec) failed: {_le}")
+                            logger.warning(
+                                f"[AgentKernel] Lazy load (exec) failed: {_le}")
                     execution_model = self._model_router.models.get(_sel_exec)
                     if execution_model is None:
                         _all_exec = list(self._model_router.models.values())
                         if _all_exec:
-                            execution_model = _all_exec[-1]  # prefer last (smallest/fastest)
+                            # prefer last (smallest/fastest)
+                            execution_model = _all_exec[-1]
                     if not execution_model:
                         return {"error": "Execution model not available", "success": False}
             else:
                 return {"error": "Execution model not available", "success": False}
-        
+
         try:
             # Create execution prompt
             execution_prompt = f"""Execute the following action:
@@ -1622,12 +1992,13 @@ Tool: {tool_name}
 Parameters: {json.dumps(parameters, indent=2)}
 
 Provide the execution result."""
-            
+
             # Use VPS Gateway for inference if available, otherwise use local model
             result_text = None
             if self._vps_gateway:
                 try:
-                    logger.info("[AgentKernel] Using VPS Gateway for execution inference...")
+                    logger.info(
+                        "[AgentKernel] Using VPS Gateway for execution inference...")
                     try:
                         result_text = asyncio.run(
                             self._vps_gateway.infer(
@@ -1638,35 +2009,43 @@ Provide the execution result."""
                                 session_id=self.session_id
                             )
                         )
-                        logger.info("[AgentKernel] VPS Gateway execution inference complete")
+                        logger.info(
+                            "[AgentKernel] VPS Gateway execution inference complete")
                     except RuntimeError as e:
                         if "already running" in str(e):
-                            logger.warning("[AgentKernel] Event loop conflict — falling back to local model")
+                            logger.warning(
+                                "[AgentKernel] Event loop conflict — falling back to local model")
                             result_text = None
                         else:
                             raise
                 except TimeoutError:
-                    logger.error("[AgentKernel] VPS Gateway execution timed out")
+                    logger.error(
+                        "[AgentKernel] VPS Gateway execution timed out")
                     raise
                 except Exception as e:
-                    logger.warning(f"[AgentKernel] VPS Gateway execution inference failed, falling back to direct model: {e}")
+                    logger.warning(
+                        f"[AgentKernel] VPS Gateway execution inference failed, falling back to direct model: {e}")
                     result_text = None
-            
+
             # LM Studio execution inference
             if result_text is None and self._model_provider == "lmstudio":
                 try:
                     _lms_exec = self._get_lmstudio_client()
                     _lms_exec_resp = _lms_exec.chat.completions.create(
                         model=self._selected_tool_execution_model or "local-model",
-                        messages=[{"role": "user", "content": execution_prompt}],
+                        messages=[
+                            {"role": "user", "content": execution_prompt}],
                         max_tokens=-1,
                         temperature=0.3,
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                        extra_body={"chat_template_kwargs": {
+                            "enable_thinking": False}},
                     )
                     result_text = _lms_exec_resp.choices[0].message.content
-                    logger.info("[AgentKernel] LM Studio execution inference successful")
+                    logger.info(
+                        "[AgentKernel] LM Studio execution inference successful")
                 except Exception as _lms_exec_err:
-                    logger.warning(f"[AgentKernel] LM Studio execution inference failed: {_lms_exec_err}")
+                    logger.warning(
+                        f"[AgentKernel] LM Studio execution inference failed: {_lms_exec_err}")
 
             # Ollama local execution inference — only for colon-format model IDs.
             # provider="local" means LFM local file; it does NOT route to Ollama.
@@ -1719,7 +2098,8 @@ Provide the execution result."""
                 # Check timeout before loading model
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
+                    raise TimeoutError(
+                        f"Execution timed out after {elapsed:.1f}s")
 
                 # Load model if needed with error handling
                 try:
@@ -1727,19 +2107,21 @@ Provide the execution result."""
                         logger.info("[AgentKernel] Loading execution model...")
                         execution_model.load()
                 except Exception as e:
-                    logger.error(f"[AgentKernel] Failed to load execution model: {e}")
+                    logger.error(
+                        f"[AgentKernel] Failed to load execution model: {e}")
                     return {
                         "tool": tool_name,
                         "action": action,
                         "error": f"Model loading failed: {e}",
                         "success": False
                     }
-                
+
                 # Check timeout before inference
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
-                
+                    raise TimeoutError(
+                        f"Execution timed out after {elapsed:.1f}s")
+
                 # Generate execution response with error handling
                 try:
                     result_text = execution_model.generate(
@@ -1751,7 +2133,8 @@ Provide the execution result."""
                     logger.error(f"[AgentKernel] Model inference failed: {e}")
                     # Attempt to restart model
                     try:
-                        logger.info("[AgentKernel] Attempting to restart execution model...")
+                        logger.info(
+                            "[AgentKernel] Attempting to restart execution model...")
                         execution_model.unload()
                         execution_model.load()
                         result_text = execution_model.generate(
@@ -1759,28 +2142,31 @@ Provide the execution result."""
                             max_tokens=-1,
                             temperature=0.3
                         )
-                        logger.info("[AgentKernel] Model restarted successfully")
+                        logger.info(
+                            "[AgentKernel] Model restarted successfully")
                     except Exception as restart_error:
-                        logger.error(f"[AgentKernel] Model restart failed: {restart_error}")
+                        logger.error(
+                            f"[AgentKernel] Model restart failed: {restart_error}")
                         return {
                             "tool": tool_name,
                             "action": action,
                             "error": f"Model crashed and restart failed: {restart_error}",
                             "success": False
                         }
-            
+
             # Check timeout after inference
             elapsed = time.time() - start_time
             if elapsed > timeout_seconds:
                 raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
-            
+
             # Handle tool execution errors
             if self._tool_bridge:
                 try:
                     # Execute tool through tool bridge
                     tool_result = await self._tool_bridge.execute_tool(tool_name, parameters)
                     if "error" in tool_result:
-                        logger.warning(f"[AgentKernel] Tool execution error: {tool_result['error']}")
+                        logger.warning(
+                            f"[AgentKernel] Tool execution error: {tool_result['error']}")
                         return {
                             "tool": tool_name,
                             "action": action,
@@ -1795,17 +2181,19 @@ Provide the execution result."""
                         "error": f"Tool execution failed: {e}",
                         "success": False
                     }
-            
-            logger.info(f"[AgentKernel] Step executed successfully in {elapsed:.2f}s")
+
+            logger.info(
+                f"[AgentKernel] Step executed successfully in {elapsed:.2f}s")
             return {
                 "tool": tool_name,
                 "action": action,
                 "result": result_text,
                 "success": True
             }
-            
+
         except TimeoutError:
-            logger.error(f"[AgentKernel] Execution timed out after {timeout_seconds}s")
+            logger.error(
+                f"[AgentKernel] Execution timed out after {timeout_seconds}s")
             raise
         except Exception as e:
             error_msg = f"Error executing step: {e}"
@@ -1816,32 +2204,33 @@ Provide the execution result."""
                 "error": error_msg,
                 "success": False
             }
-    
+
     def _generate_response(
-        self, 
-        user_message: str, 
-        plan: Dict[str, Any], 
+        self,
+        user_message: str,
+        plan: Dict[str, Any],
         execution_results: List[Any],
         context: List[Dict[str, Any]]
     ) -> str:
         """
         Generate final response based on plan and execution results.
-        
+
         Args:
             user_message: Original user message
             plan: Generated plan
             execution_results: Results from execute_plan()
             context: Conversation context
-            
+
         Returns:
             Final response text
         """
         # Check if any steps failed
         has_errors = any(
-            isinstance(r, dict) and ("error" in r or not r.get("success", True))
+            isinstance(r, dict) and (
+                "error" in r or not r.get("success", True))
             for r in execution_results
         )
-        
+
         # Build response based on results
         if has_errors:
             error_messages = [
@@ -1850,16 +2239,16 @@ Provide the execution result."""
                 if isinstance(r, dict) and "error" in r
             ]
             return f"I encountered some issues: {'; '.join(error_messages)}"
-        
+
         # Extract successful results
         success_results = [
             r for r in execution_results
             if isinstance(r, dict) and r.get("success", False)
         ]
-        
+
         if not success_results:
             return "I've processed your request."
-        
+
         # Format response based on results
         if len(success_results) == 1:
             result = success_results[0]
@@ -1867,20 +2256,21 @@ Provide the execution result."""
                 return result["response"]
             elif "result" in result:
                 return result["result"]
-        
+
         # Multiple results - summarize
         summary_parts = []
         for r in success_results:
             if "result" in r:
-                summary_parts.append(f"- {r.get('action', 'Action')}: {r['result'][:100]}")
+                summary_parts.append(
+                    f"- {r.get('action', 'Action')}: {r['result'][:100]}")
             elif "response" in r:
                 summary_parts.append(f"- {r['response'][:100]}")
-        
+
         if summary_parts:
             return "I've completed your request:\n\n" + "\n".join(summary_parts)
-        
+
         return "I've processed your request."
-    
+
     def _synthesize_response(
         self,
         task: TaskContext,
@@ -1888,21 +2278,22 @@ Provide the execution result."""
     ) -> str:
         """
         Synthesize response using the brain model with tool results.
-        
+
         This addresses Bug 2: The brain now sees the actual tool output
         before generating the final response.
-        
+
         Args:
             task: TaskContext containing user message and plan
             execution_results: Results from execute_plan()
-            
+
         Returns:
             Synthesized response from the brain model
         """
         # Short-circuit: if the plan already contains a raw free-form response
         # (model didn't output JSON), return it directly without a second model call.
         if task.plan and task.plan.get("_raw_response"):
-            logger.info("[AgentKernel] Using raw plan response (no synthesis needed)")
+            logger.info(
+                "[AgentKernel] Using raw plan response (no synthesis needed)")
             return task.plan["_raw_response"]
 
         # Get results summary for the brain
@@ -1917,7 +2308,7 @@ Tool execution results:
 Based on the tool results above, provide a natural response to the user's request.
 If any tools failed, address those issues in your response.
 """
-        
+
         try:
             # Get reasoning model for synthesis — only use local model if it's
             # actually loaded.  Do NOT call get_reasoning_model() as a fallback here:
@@ -1925,12 +2316,15 @@ If any tools failed, address those issues in your response.
             # "respond_to_user" back to the user verbatim.
             reasoning_model = None
             if self._model_router and self._selected_reasoning_model:
-                reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
+                reasoning_model = self._model_router.models.get(
+                    self._selected_reasoning_model)
 
             if reasoning_model:
                 # Call the loaded local/LFM model for synthesis
-                response = self._strip_thinking(reasoning_model.generate(synthesis_prompt))
-                logger.info("[AgentKernel] Brain synthesized response with tool results context")
+                response = self._strip_thinking(
+                    reasoning_model.generate(synthesis_prompt))
+                logger.info(
+                    "[AgentKernel] Brain synthesized response with tool results context")
                 return response
 
             # Try LM Studio synthesis
@@ -1940,17 +2334,21 @@ If any tools failed, address those issues in your response.
                     _lms_synth = self._get_lmstudio_client()
                     _lms_synth_resp = _lms_synth.chat.completions.create(
                         model=_sel_synth or "local-model",
-                        messages=[{"role": "user", "content": synthesis_prompt}],
+                        messages=[
+                            {"role": "user", "content": synthesis_prompt}],
                         max_tokens=-1,
                         temperature=0.7,
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                        extra_body={"chat_template_kwargs": {
+                            "enable_thinking": False}},
                     )
                     _synth_text = _lms_synth_resp.choices[0].message.content
                     if _synth_text:
-                        logger.info("[AgentKernel] LM Studio synthesized response")
+                        logger.info(
+                            "[AgentKernel] LM Studio synthesized response")
                         return self._strip_thinking(_synth_text)
                 except Exception as _lms_synth_err:
-                    logger.warning(f"[AgentKernel] LM Studio synthesis failed: {_lms_synth_err}")
+                    logger.warning(
+                        f"[AgentKernel] LM Studio synthesis failed: {_lms_synth_err}")
 
             # Try Ollama if the selected model is an Ollama model (colon-format ID)
             if not reasoning_model and ":" in _sel_synth:
@@ -1968,23 +2366,26 @@ If any tools failed, address those issues in your response.
                     if _r.status_code == 200:
                         _synth_text = _r.json().get("message", {}).get("content", "")
                         if _synth_text:
-                            logger.info("[AgentKernel] Ollama synthesized response")
+                            logger.info(
+                                "[AgentKernel] Ollama synthesized response")
                             return self._strip_thinking(_synth_text)
                 except Exception as _ollama_synth_err:
-                    logger.warning(f"[AgentKernel] Ollama synthesis failed: {_ollama_synth_err}")
+                    logger.warning(
+                        f"[AgentKernel] Ollama synthesis failed: {_ollama_synth_err}")
 
             # Template-based fallback (no model available)
-            logger.warning("[AgentKernel] No model for synthesis — using template response")
+            logger.warning(
+                "[AgentKernel] No model for synthesis — using template response")
             return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
 
         except Exception as e:
             logger.error(f"[AgentKernel] Error in brain synthesis: {e}")
             return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
-    
+
     def get_status(self) -> Dict[str, Any]:
         """
         Get agent status information.
-        
+
         Returns:
             Status dictionary with:
             - ready: bool - if agent is ready to process requests
@@ -2005,27 +2406,30 @@ If any tools failed, address those issues in your response.
             "single_model_mode": self._single_model_mode,
             "error": self._initialization_error
         }
-        
+
         # Check model router status
         if self._model_router:
             all_status = self._model_router.get_all_models_status()
             status["model_status"] = all_status
             status["total_models"] = len(all_status)
-            status["models_loaded"] = len(self._model_router.get_loaded_models())
-            
+            status["models_loaded"] = len(
+                self._model_router.get_loaded_models())
+
             # Agent is ready if at least one model is available
             reasoning_model = self._model_router.get_reasoning_model()
             execution_model = self._model_router.get_execution_model()
             status["ready"] = reasoning_model is not None or execution_model is not None
-        
+
         # Check tool bridge status
         if self._tool_bridge:
             try:
                 bridge_status = self._tool_bridge.get_status()
-                status["tool_bridge_available"] = bridge_status.get("available", False)
+                status["tool_bridge_available"] = bridge_status.get(
+                    "available", False)
             except Exception as e:
-                logger.warning(f"[AgentKernel] Failed to get tool bridge status: {e}")
-        
+                logger.warning(
+                    f"[AgentKernel] Failed to get tool bridge status: {e}")
+
         # Add VPS Gateway status
         if self._vps_gateway:
             try:
@@ -2033,7 +2437,8 @@ If any tools failed, address those issues in your response.
                 status["vps_gateway"] = vps_status
                 logger.debug(f"[AgentKernel] VPS Gateway status: {vps_status}")
             except Exception as e:
-                logger.warning(f"[AgentKernel] Failed to get VPS Gateway status: {e}")
+                logger.warning(
+                    f"[AgentKernel] Failed to get VPS Gateway status: {e}")
                 status["vps_gateway"] = {
                     "enabled": False,
                     "error": str(e)
@@ -2043,40 +2448,41 @@ If any tools failed, address those issues in your response.
                 "enabled": False,
                 "available_endpoints": 0
             }
-        
+
         return status
-    
+
     def clear_conversation(self) -> None:
         """Clear conversation history for the current session."""
         if self._conversation_memory:
             self._conversation_memory.clear()
-            logger.info(f"[AgentKernel] Conversation cleared for session {self.session_id}")
-    
+            logger.info(
+                f"[AgentKernel] Conversation cleared for session {self.session_id}")
+
     def get_conversation_context(self, max_messages: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Get conversation context.
-        
+
         Args:
             max_messages: Optional limit on number of messages
-            
+
         Returns:
             List of message dictionaries
         """
         if self._conversation_memory:
             return self._conversation_memory.get_context(max_messages=max_messages)
         return []
-    
+
     def update_personality(self, config: Dict[str, Any]) -> None:
         """
         Update personality configuration.
-        
+
         Args:
             config: Dictionary containing identity fields
         """
         if self._personality:
             self._personality.load_from_config(config)
             logger.info("[AgentKernel] Personality configuration updated")
-    
+
     # Maps legacy/local model names to their canonical VPS/API identifiers.
     # This allows saved settings that used local model path names to resolve
     # correctly against VPS available-model IDs without requiring a migration.
@@ -2094,7 +2500,8 @@ If any tools failed, address those issues in your response.
             return None
         normalized = self._MODEL_ALIASES.get(model_id, model_id)
         if normalized != model_id:
-            logger.debug(f"[AgentKernel] Model ID alias resolved: '{model_id}' -> '{normalized}'")
+            logger.debug(
+                f"[AgentKernel] Model ID alias resolved: '{model_id}' -> '{normalized}'")
         return normalized
 
     def set_model_selection(
@@ -2152,11 +2559,11 @@ If any tools failed, address those issues in your response.
         except Exception as e:
             logger.error(f"[AgentKernel] Failed to set model selection: {e}")
             return False
-    
+
     def get_model_selection(self) -> Dict[str, Optional[str]]:
         """
         Get current model selection.
-        
+
         Returns:
             Dictionary with reasoning_model and tool_execution_model keys
         """
@@ -2164,25 +2571,27 @@ If any tools failed, address those issues in your response.
             "reasoning_model": self._selected_reasoning_model,
             "tool_execution_model": self._selected_tool_execution_model
         }
-    
+
     def set_internet_access(self, enabled: bool) -> None:
         """
         Enable or disable agent internet access.
-        
+
         This controls whether the agent can use web search and internet-based tools.
         It does NOT affect application connectivity to VPS or OpenAI services.
-        
+
         Args:
             enabled: True to enable internet access, False to disable
         """
         self._internet_access_enabled = enabled
-        logger.info(f"[AgentKernel] Agent internet access {'enabled' if enabled else 'disabled'}")
-        logger.info("[AgentKernel] Note: This controls agent web search tools, not application connectivity")
-    
+        logger.info(
+            f"[AgentKernel] Agent internet access {'enabled' if enabled else 'disabled'}")
+        logger.info(
+            "[AgentKernel] Note: This controls agent web search tools, not application connectivity")
+
     def get_internet_access(self) -> bool:
         """
         Get current internet access setting.
-        
+
         Returns:
             True if internet access is enabled, False otherwise
         """
@@ -2215,9 +2624,11 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
             memory = get_memory_interface()
             if memory is not None:
                 kernel.set_memory_interface(memory)
-                logger.info(f"[AgentKernel] Memory interface wired for session {session_id}")
+                logger.info(
+                    f"[AgentKernel] Memory interface wired for session {session_id}")
         except Exception as e:
-            logger.warning(f"[AgentKernel] Memory interface not available for session {session_id}: {e}")
+            logger.warning(
+                f"[AgentKernel] Memory interface not available for session {session_id}: {e}")
 
         # Inherit model configuration from any already-configured kernel.
         #
@@ -2280,5 +2691,7 @@ def cleanup_agent_kernel(session_id: str) -> None:
                 except Exception:
                     pass
         except Exception as e:
-            logger.warning(f"[AgentKernel] Error during cleanup for session {session_id}: {e}")
-        logger.info(f"[AgentKernel] Kernel cleaned up for session {session_id}")
+            logger.warning(
+                f"[AgentKernel] Error during cleanup for session {session_id}: {e}")
+        logger.info(
+            f"[AgentKernel] Kernel cleaned up for session {session_id}")

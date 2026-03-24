@@ -1313,9 +1313,10 @@ ${message.text}`;
                     const contentType = getContentType(message);
                     const isExpanded = isMessageExpanded(message.id);
                     const shouldTruncate = charCount > MESSAGE_THRESHOLDS.TRUNCATE_AT;
-                    // Only structured content (markdown, email, etc.) becomes an artifact card.
-                    // Plain text always flows as chat — never collapses to a document card.
-                    const isDocumentMode = contentType !== 'text' && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
+                    // Only media, emails, or explicit file attachments become artifact cards.
+                    // Markdown and plain text always flow as chat - never collapse to a document card.
+                    const isExplicitFile = message.text.startsWith('[File:') || message.text.startsWith('[IMAGE:') || message.text.startsWith('[VIDEO:');
+                    const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video') && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
                     
                     // Content type icon mapping
                     const ContentTypeIcon = ({ size = 12 }: { size?: number }) => {

@@ -404,71 +404,78 @@ class IsolatedStateManager:
         except Exception as e:
             print(f"Error saving state for session {self.session_id}: {e}")
             raise
-
     async def _load_state(self) -> None:
-        """Load state from persistence directory with corruption recovery"""
+        """Load state from persistence directory with corruption recovery."""
         if not self._persistence_dir:
             return
-        
+
         state_file = self._persistence_dir / "session_state.json"
         backup_file = state_file.with_suffix('.json.bak')
-        
-        # Try loading from main file first
-        try:
-            if state_file.exists():
-                async with aiofiles.open(state_file, 'r', encoding='utf-8') as f:
+
+        for path, label in [(state_file, "main"), (backup_file, "backup")]:
+            if not path.exists():
+                continue
+            try:
+                async with aiofiles.open(path, 'r', encoding='utf-8') as f:
                     data = await f.read()
-                    self._state = IRISState.model_validate_json(data)
-                    return
-            # No state file on first run — start with defaults (not an error)
-        except json.JSONDecodeError as e:
-            print(f"Corrupted state file for session {self.session_id}: {e}")
-            # Try loading from backup
-            if backup_file.exists():
-                try:
-                    print(f"Attempting to load from backup: {backup_file}")
-                    async with aiofiles.open(backup_file, 'r', encoding='utf-8') as f:
-                        data = await f.read()
-                        self._state = IRISState.model_validate_json(data)
-                        print(f"Successfully restored from backup")
-                        # Save the restored state as the main file
-                        await self._save_state()
-                        return
-                except Exception as backup_error:
-                    print(f"Failed to load from backup: {backup_error}")
-            
-            # If both fail, use default state and log warning
-            print(f"Warning: Using default state for session {self.session_id} due to corruption")
-            self._state = IRISState()
-        except Exception as e:
-            print(f"Error loading state for session {self.session_id}: {e}")
-            # Use default state on any other error
-            self._state = IRISState()
+                raw = json.loads(data)
+                # Sanitize: remove None keys that would fail Pydantic validation
+                if isinstance(raw.get("field_values"), dict):
+                    raw["field_values"] = {
+                        k: {fk: fv for fk, fv in v.items() if fk is not None}
+                        for k, v in raw["field_values"].items()
+                        if k is not None and isinstance(v, dict)
+                    }
+                self._state = IRISState.model_validate(raw)
+                if label == "backup":
+                    print(f"[{self.session_id}] Restored state from backup")
+                    await self._save_state()
+                return
+            except Exception as e:
+                print(f"[{self.session_id}] Failed to load {label} state: {e}")
+
+        # Both files missing or corrupt — fresh defaults
+        self._state = IRISState()
+
+    def _is_state_valid(self) -> bool:
+        """Validate that field_values is a dict of string-keyed dicts."""
+        try:
+            fv = self._state.field_values
+            if not isinstance(fv, dict):
+                return False
+            for section_id, values in fv.items():
+                if not isinstance(section_id, str):
+                    return False
+                if not isinstance(values, dict):
+                    return False
+            return True
+        except Exception:
+            return False
 
     async def get_memory_usage(self) -> int:
         """Get the current memory usage of the state in bytes."""
         return len(json.dumps(self._state.model_dump()))
-    
+
     async def _save_category(self, category: str) -> bool:
         """Save a category's state to JSON"""
         if not self._persistence_dir:
             return False
-        
+
         try:
             # Collect field values for all sections in this category
             category_fields = {}
             for section_id in self._state.field_values:
                 if self._get_category_for_section(section_id) == category:
                     category_fields[section_id] = self._state.field_values[section_id]
-            
+
             data = {
                 'fields': category_fields,
                 'last_updated': datetime.now().isoformat()
             }
-            
+
             await self._save_json(f"{category}.json", data)
             return True
-            
+
         except Exception as e:
             print(f"Error saving category {category} for session {self.session_id}: {e}")
             return False

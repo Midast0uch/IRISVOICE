@@ -42,6 +42,8 @@ def main():
         ("websockets", "websockets", "WebSocket support"),
         ("pydantic", "pydantic", "Data validation"),
         ("numpy", "numpy", "Numerical computing"),
+        ("omegaconf", "omegaconf", "YAML configuration (CosyVoice dependency)"),
+        ("HyperPyYAML", "hyperpyyaml", "Hyperparameter configuration (CosyVoice dependency)"),
     ]
     
     core_ok = all(check_dependency(*dep) for dep in core_deps)
@@ -87,11 +89,11 @@ def main():
     print("-" * 70)
     try:
         from backend.audio.voice_command import VoiceCommandHandler, VoiceState
-        print(f"✅ VoiceCommandHandler      - Class imported successfully")
-        print(f"✅ VoiceState               - Enum imported successfully")
+        print(f"[OK] VoiceCommandHandler      - Class imported successfully")
+        print(f"[OK] VoiceState               - Enum imported successfully")
         voice_ok = True
     except Exception as e:
-        print(f"❌ VoiceCommandHandler      - FAILED to import")
+        print(f"[FAIL] VoiceCommandHandler      - FAILED to import")
         print(f"   Error: {e}")
         voice_ok = False
     print()
@@ -101,11 +103,11 @@ def main():
     print("-" * 70)
     try:
         from backend.main import voice_handler
-        print(f"✅ voice_handler            - Module-level variable accessible")
-        print(f"   Current value: {voice_handler}")
+        print(f"[OK] voice_handler            - Module-level variable accessible")
+        print(f"     Current value: {voice_handler}")
         main_ok = True
     except Exception as e:
-        print(f"❌ voice_handler            - FAILED to import")
+        print(f"[FAIL] voice_handler            - FAILED to import")
         print(f"   Error: {e}")
         main_ok = False
     print()

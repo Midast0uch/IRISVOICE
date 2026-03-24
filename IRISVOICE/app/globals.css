@@ -112,27 +112,51 @@
     outline-color: var(--ring);
   }
   html, body {
-    background-color: transparent;
+    /* Background is set by the .in-browser / transparent rules below @layer */
     color: var(--foreground);
-    background: transparent !important;
-    /* CRITICAL: Allow content to overflow so nodes aren't clipped */
-    overflow: visible !important;
+    /* Prevent document-level scroll — all scrollable content is inside wing panels */
+    overflow: hidden !important;
+    overscroll-behavior: none !important;  /* prevent Tauri webview bounce/rubber-band */
     width: 100%;
     height: 100%;
+    max-height: 100vh;
     margin: 0;
     padding: 0;
+    position: fixed;  /* nuclear option: fixed body cannot scroll in any browser/webview */
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
   }
 }
 
-/* Tauri transparent window support - CRITICAL for frameless widgets */
-html {
+/* === BACKGROUND CONTEXT ===
+   Tauri desktop: transparent so the OS desktop shows through the glass UI.
+   Browser: dark #0a0a0f so the page isn't blank white — glass elements
+   sit on a proper dark canvas.
+   Detection: layout.tsx adds class 'in-browser' via inline script when
+   window.__TAURI_INTERNALS__ is absent (i.e. running in a real browser). */
+
+/* Tauri — fully transparent, desktop shows through */
+html:not(.in-browser) {
   background: transparent;
-  overflow: visible;
+  overflow: hidden;
+}
+html:not(.in-browser) body {
+  background: transparent !important;
+  overflow: hidden !important;
+  width: 100vw;
+  height: 100vh;
 }
 
-body {
-  background: transparent !important;
-  overflow: visible !important;
+/* Browser — dark canvas so glass elements have a background */
+html.in-browser {
+  background: #0a0a0f;
+  overflow: hidden;
+}
+html.in-browser body {
+  background: #0a0a0f !important;
+  overflow: hidden !important;
   width: 100vw;
   height: 100vh;
 }
@@ -142,6 +166,13 @@ body {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+}
+
+/* Prevent transform animations from triggering scroll-into-view in Tauri webview.
+   Applied to any element that uses Framer Motion scale/transform. */
+[data-framer-component-type],
+[style*="transform"] {
+  will-change: transform;
 }
 
 /* Custom animations for the control center */
@@ -360,8 +391,9 @@ body {
 #__next, #root {
   width: 100%;
   height: 100%;
-  background: transparent;
-  overflow: visible;
+  /* Inherits background from html/body (transparent in Tauri, #0a0a0f in browser) */
+  background: inherit;
+  overflow: hidden;
 }
 
 /* === TAURI SCROLLBAR REMOVAL === */
@@ -381,7 +413,7 @@ body::-webkit-scrollbar,
 
 /* Ensure no overflow scrollbars appear */
 body {
-  overflow: visible !important;
+  overflow: hidden !important;
 }
 
 /* Level 4 concentric ring animations - CSS @keyframes for 60fps */

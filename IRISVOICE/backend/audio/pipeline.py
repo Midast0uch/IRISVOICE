@@ -3,7 +3,6 @@ AudioPipeline - Manages audio input/output streams using sounddevice
 """
 import threading
 import queue
-import sys
 import logging
 from typing import Optional, Callable, List
 
@@ -83,11 +82,17 @@ class AudioPipeline:
         # self._print_input_devices()
         
     def start(self, on_audio_frame: Callable[[np.ndarray], None]) -> bool:
-        """Start audio pipeline"""
+        """Start audio pipeline.
+
+        Input and output streams are started independently so a bad microphone
+        device doesn't prevent TTS/beep playback from working.
+        """
+        self._on_audio_frame = on_audio_frame
+        input_ok = False
+        output_ok = False
+
+        # --- Input stream (microphone / Porcupine) ---
         try:
-            self._on_audio_frame = on_audio_frame
-            
-            # Start input stream
             self._input_stream = sd.InputStream(
                 device=self.input_device,
                 channels=self.channels,
@@ -95,38 +100,30 @@ class AudioPipeline:
                 callback=self._input_callback,
                 blocksize=self.frame_length
             )
-            
-            # Start output stream.
-            # blocksize is intentionally omitted (defaults to 0 = automatic).
-            # The input stream uses blocksize=frame_length so Porcupine receives
-            # exactly 512-frame chunks per callback.  The OUTPUT stream must NOT
-            # share that constraint — sd.OutputStream.write() raises
-            # SoundDeviceError if the audio array length is not an exact
-            # multiple of blocksize.  LuxTTS resamples 48 kHz → 16 kHz which
-            # produces lengths that are rarely multiples of 512, so nearly
-            # every write would fail and be silently swallowed, causing the
-            # choppy / missing-audio behaviour.
-            self._output_stream = sd.OutputStream(
-                device=self.output_device,
-                channels=self.channels,
-                samplerate=self.sample_rate,
-            )
-            
-            # Start streams
             self._input_stream.start()
-            self._output_stream.start()
-            
-            self._is_running = True
-            
-            logger.info(f"[AudioPipeline] Started successfully with callback: {self._on_audio_frame.__name__ if self._on_audio_frame else 'None'}")
-            return True
-            
+            input_ok = True
         except Exception as e:
-            logger.error(f"[AudioPipeline] FATAL: An error occurred during audio stream startup: {e}")
-            import traceback
-            traceback.print_exc()
-            self.cleanup()
-            return False
+            logger.error(f"[AudioPipeline] Input stream failed: {e}")
+            self._input_stream = None
+
+        # --- Output stream (TTS / beep playback) ---
+        # Output: use sd.play() per-chunk instead of a persistent OutputStream.
+        # sd.play() handles device format (mono→stereo), sample rate conversion,
+        # and internal buffering automatically — no persistent stream needed.
+        # Mark output_ok=True unconditionally; actual device errors surface at play time.
+        output_ok = True
+        self._output_stream = None  # not used — kept for compatibility checks
+
+        if input_ok or output_ok:
+            self._is_running = True
+            logger.info(
+                f"[AudioPipeline] Started — input={'ok' if input_ok else 'FAILED'}, "
+                f"output={'ok' if output_ok else 'FAILED'}"
+            )
+            return True
+
+        logger.error("[AudioPipeline] Both input and output streams failed — pipeline not running")
+        return False
     
     def stop(self):
         """Stop audio pipeline"""
@@ -137,7 +134,7 @@ class AudioPipeline:
     def _input_callback(self, indata, frames, time, status):
         """This is called (from a separate thread) for each audio block."""
         if status:
-            logger.info(status, file=sys.stderr)
+            logger.debug(f"[AudioPipeline] Input status: {status}")
         if self._is_running:
             # The input data is a numpy array, take the first channel
             audio_frame = indata[:, 0].astype(np.float32)
@@ -158,19 +155,34 @@ class AudioPipeline:
                 except Exception as exc:
                     logger.error(f"[AudioPipeline] Frame listener error: {exc}")
     
-    def play_audio(self, audio_data: np.ndarray):
-        """Play audio through output stream"""
-        logger.debug(f"[AudioPipeline] play_audio: {len(audio_data)} frames, dtype={audio_data.dtype}")
+    def play_audio(self, audio_data: np.ndarray, sample_rate: int = None):
+        """Play audio through the system default output device using sd.play().
 
-        if not self._output_stream:
-            logger.warning(f"[AudioPipeline] Cannot play: output stream not initialised (device: {self.output_device})")
-            return
+        Uses sd.play() instead of a persistent OutputStream.write() because:
+        - sd.play() handles mono→stereo upmix, device sample-rate conversion in one step
+        - No persistent stream state to manage or get out of sync
+        - Blocking=True keeps the threading model simple and gap-free
+
+        Args:
+            audio_data:  float32 mono PCM array
+            sample_rate: actual rate of audio_data (defaults to self.sample_rate)
+        """
+        sr = sample_rate if sample_rate is not None else self.sample_rate
+        duration_ms = int(len(audio_data) / sr * 1000)
+        logger.info(f"[AudioPipeline] play_audio: {len(audio_data)} frames @ {sr}Hz ({duration_ms}ms) → device={self.output_device}")
 
         try:
-            # sounddevice OutputStream defaults to float32.
-            # Ensure the data is float32 and clamped to [-1.0, 1.0].
-            audio_float = np.clip(audio_data.astype(np.float32), -1.0, 1.0)
-            self._output_stream.write(audio_float)
+            audio_float = audio_data.astype(np.float32)
+
+            # Normalise amplitude — CosyVoice cloned voice can be very quiet (~0.05 peak).
+            # Target 0.85 peak: loud and clear, safely below hard clip at 1.0.
+            peak = np.max(np.abs(audio_float))
+            if peak > 1e-6:
+                audio_float = audio_float * (0.85 / peak)
+            audio_float = np.clip(audio_float, -1.0, 1.0)
+
+            sd.play(audio_float, samplerate=sr, device=self.output_device, blocking=True)
+            logger.info(f"[AudioPipeline] play_audio: complete ({duration_ms}ms)")
         except Exception as e:
             logger.error(f"[AudioPipeline] Output error: {e}")
     
@@ -185,11 +197,7 @@ class AudioPipeline:
             self._input_stream.stop()
             self._input_stream.close()
             self._input_stream = None
-        
-        if self._output_stream:
-            self._output_stream.stop()
-            self._output_stream.close()
-            self._output_stream = None
+        # _output_stream is always None — playback uses sd.play() per chunk
     
     @staticmethod
     def list_devices() -> List[dict]:

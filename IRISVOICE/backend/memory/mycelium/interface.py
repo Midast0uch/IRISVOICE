@@ -15,7 +15,9 @@ Orchestrates:
 
 import json
 import logging
+import re
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .encoder import PathEncoder
@@ -29,6 +31,57 @@ from .store import CoordinateStore, MemoryPath
 from .spaces import RENDER_ORDER, SPACES
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# ContextPackage — DER Director context (Req 14.1)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ContextPackage:
+    """
+    Assembled Mycelium context delivered to the Director before every cycle.
+    All fields are strings — None-safe (empty string on missing data).
+    """
+    mycelium_path: str
+    topology_path: str
+    manifest: Dict[str, Any]
+    tier1_directives: str
+    tier2_predictions: str
+    tier3_failures: str
+    active_contracts: str
+    gradient_warnings: str
+    causal_context: str
+    ambient_signals: str
+    topology_position: str
+    task_class: str
+    _registered_addresses: List[str] = field(default_factory=list)
+
+    def get_system_zone_content(self) -> str:
+        parts = [
+            self.active_contracts, self.gradient_warnings,
+            self.causal_context, self.tier1_directives,
+            self.mycelium_path, self.topology_path, self.ambient_signals,
+        ]
+        return "\n".join(p for p in parts if p)
+
+    def get_tier2_predictions(self) -> str:
+        return self.tier2_predictions or ""
+
+    def get_tier3_failures(self) -> str:
+        return self.tier3_failures or ""
+
+    def register_address(self, url: str, token_count: int, summary: str) -> None:
+        self.manifest[url] = {"token_count": token_count, "summary": summary}
+        self._registered_addresses.append(url)
+
+    @property
+    def topology_primitive(self) -> str:
+        if not self.topology_path:
+            return "unknown"
+        m = re.search(r'primitives:\[([a-z_]+)\]', self.topology_path)
+        return m.group(1) if m else "unknown"
+
 
 # ---------------------------------------------------------------------------
 # Module-level constants (Req 12.1)
@@ -129,6 +182,72 @@ class MyceliumInterface:
 
         # Register all 7 spaces in the DB
         self._ensure_spaces_registered()
+
+        # Plan stats table (DER Gate 1 Step 1.8)
+        self._ensure_tables()
+
+    # ------------------------------------------------------------------
+    # Plan stats table (Gate 1 Step 1.8)
+    # ------------------------------------------------------------------
+
+    def _ensure_tables(self) -> None:
+        """
+        Create mycelium_plan_stats table if it doesn't exist.
+        Safe to call on every startup (IF NOT EXISTS).
+        Never raises.
+        """
+        try:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS mycelium_plan_stats (
+                    stat_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    task_class TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    total_steps INTEGER NOT NULL,
+                    steps_completed INTEGER NOT NULL,
+                    tokens_used INTEGER DEFAULT 0,
+                    avg_step_duration_ms REAL DEFAULT 0.0,
+                    outcome TEXT NOT NULL,
+                    graph_mature INTEGER DEFAULT 0,
+                    created_at REAL NOT NULL
+                )
+            """)
+            self._conn.commit()
+        except Exception:
+            pass
+
+    def record_plan_stats(
+        self,
+        session_id: str,
+        task_class: str,
+        strategy: str,
+        total_steps: int,
+        steps_completed: int,
+        tokens_used: int,
+        avg_step_duration_ms: float,
+        outcome: str,
+        graph_mature: bool,
+    ) -> None:
+        """
+        Insert a plan execution record into mycelium_plan_stats.
+        Never raises.
+        """
+        try:
+            import uuid
+            import time as _time
+            self._conn.execute(
+                "INSERT INTO mycelium_plan_stats VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4())[:12], session_id, task_class, strategy,
+                    total_steps, steps_completed, tokens_used,
+                    avg_step_duration_ms, outcome,
+                    1 if graph_mature else 0,
+                    _time.time()
+                )
+            )
+            self._conn.commit()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Space registration

@@ -72,7 +72,7 @@ class ScreenMonitor:
 
     def _is_vision_available(self) -> bool:
         """Check if vision is enabled and available."""
-        status = self._vision_service.get_status()
+        status = self._vision_service.get_status_dict()
         return status.get("status") == "enabled" and status.get("is_available", False)
 
     def _get_screen_capture(self):

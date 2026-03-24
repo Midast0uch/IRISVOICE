@@ -3,6 +3,16 @@ IRIS Gateway - WebSocket Message Router
 Routes incoming WebSocket messages to appropriate handlers based on message type.
 """
 
+from .integrations import get_integration_handler
+from .vision.vision_service import VisionService, get_vision_service
+from .tools.cleanup_analyzer import CleanupAnalyzer
+from .voice.wake_word_discovery import WakeWordDiscovery
+from .audio.pipeline import AudioPipeline
+from .agent.tts import get_tts_manager
+from .agent import get_agent_kernel
+from .core_models import Category, get_sections_for_category
+from .state_manager import StateManager, get_state_manager
+from .ws_manager import WebSocketManager, get_websocket_manager
 import asyncio
 import json
 import logging
@@ -12,7 +22,7 @@ import threading
 import time
 import httpx
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union, Iterator, Callable
 
 # ---------------------------------------------------------------------------
 # Pre-compiled regex patterns — used by _clean_for_speech and _speak_response.
@@ -30,29 +40,19 @@ _RE_EMOJI = re.compile(
     "]+",
     flags=re.UNICODE,
 )
-_RE_MD_HEADING  = re.compile(r"^#{1,6}\s+", re.MULTILINE)
-_RE_MD_BULLET   = re.compile(r"^\s*[-*•]\s+", re.MULTILINE)
-_RE_MD_BOLD     = re.compile(r"\*\*(.*?)\*\*")
-_RE_MD_ITALIC   = re.compile(r"\*(.*?)\*")
-_RE_MD_CODE     = re.compile(r"`(.*?)`")
-_RE_EXCLAIM     = re.compile(r"!+")
+_RE_MD_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_RE_MD_BULLET = re.compile(r"^\s*[-*•]\s+", re.MULTILINE)
+_RE_MD_BOLD = re.compile(r"\*\*(.*?)\*\*")
+_RE_MD_ITALIC = re.compile(r"\*(.*?)\*")
+_RE_MD_CODE = re.compile(r"`(.*?)`")
+_RE_EXCLAIM = re.compile(r"!+")
 _RE_QUESTION_DOT = re.compile(r"\?\.")
-_RE_MULTI_DOT   = re.compile(r"\.{2,}")
+_RE_MULTI_DOT = re.compile(r"\.{2,}")
 _RE_MULTI_SPACE = re.compile(r" +")
-_RE_MULTI_NL    = re.compile(r"\n{2,}")
+_RE_MULTI_NL = re.compile(r"\n{2,}")
 # Sentence boundary: punctuation followed by whitespace (used in split + get_spoken_version)
 _RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
 
-from .ws_manager import WebSocketManager, get_websocket_manager
-from .state_manager import StateManager, get_state_manager
-from .core_models import Category, get_sections_for_category
-from .agent import get_agent_kernel
-from .agent.tts import get_tts_manager
-from .audio.pipeline import AudioPipeline
-from .voice.wake_word_discovery import WakeWordDiscovery
-from .tools.cleanup_analyzer import CleanupAnalyzer
-from .vision.vision_service import VisionService, get_vision_service
-from .integrations import get_integration_handler
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class IRISGateway:
     Central gateway for routing WebSocket messages to appropriate handlers.
     Handles navigation, settings, voice, chat, and status messages.
     """
-    
+
     def __init__(
         self,
         ws_manager: Optional[WebSocketManager] = None,
@@ -70,7 +70,7 @@ class IRISGateway:
     ):
         """
         Initialize the IRIS Gateway.
-        
+
         Args:
             ws_manager: WebSocket manager instance (uses global if None)
             state_manager: State manager instance (uses global if None)
@@ -78,7 +78,7 @@ class IRISGateway:
         self._ws_manager = ws_manager or get_websocket_manager()
         self._state_manager = state_manager or get_state_manager()
         self._logger = logging.getLogger(__name__)
-        
+
         # Initialize wake word discovery
         self._wake_word_discovery = WakeWordDiscovery()
         self._wake_word_discovery.scan_directory()
@@ -86,32 +86,47 @@ class IRISGateway:
             f"[IRISGateway] Wake word discovery initialized, "
             f"found {len(self._wake_word_discovery.get_discovered_files())} wake word file(s)"
         )
-        
+
         # Initialize cleanup analyzer
         self._cleanup_analyzer = CleanupAnalyzer()
         self._logger.info("[IRISGateway] Cleanup analyzer initialized")
-        
+
         # Initialize vision service (lazy loading - model not loaded until enabled)
         self._vision_service = get_vision_service()
-        self._logger.info("[IRISGateway] Vision service initialized (lazy loading)")
-        
+        self._logger.info(
+            "[IRISGateway] Vision service initialized (lazy loading)")
+
         # Initialize model cache for lazy loading (5 minute TTL)
         self._model_cache: Dict[str, tuple[List[str], datetime]] = {}
         self._model_cache_ttl = timedelta(minutes=5)
         self._logger.info("[IRISGateway] Model cache initialized (5 min TTL)")
+        self._tts_prewarmed = False
+        self._main_loop = None
+        self._speech_interrupted = False
 
         self._voice_handler = None          # set via set_voice_handler() after construction
-        self._active_voice_client: dict = {}  # session_id -> client_id for wake word routing
+        # session_id -> client_id for wake word routing
+        self._active_voice_client: dict = {}
+        # Sessions currently in conversation mode (auto-relisten after TTS)
+        self._conversation_sessions: set = set()
+        # How long to wait for speech onset during relisten before returning to idle
+        self._relisten_pre_speech_timeout: float = 8.0
         # Captured once the first async message is handled; used by sync callbacks
         # (e.g. _on_voice_result) that need to dispatch back to the event loop from
         # a background thread without calling asyncio.get_event_loop() in that thread.
-        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
-
-        # Pre-warm the default TTS model in a background thread so first speech
-        # does not block on a cold Coqui model load.
         import threading
-        threading.Thread(target=self._prewarm_tts, daemon=True, name="tts-prewarm").start()
-    
+        threading.Thread(target=self._prewarm_tts,
+                         daemon=True, name="tts-prewarm").start()
+
+    def set_main_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Capture the running event loop for background task dispatch.
+
+        Mandatory call from main.py's lifespan startup to ensure wake-word callbacks
+        can reach the event loop before the first UI WebSocket connects.
+        """
+        self._main_loop = loop
+        self._logger.info("[IRISGateway] Main event loop captured.")
+
     async def handle_message(self, client_id: str, message: dict, session_id: Optional[str] = None) -> None:
         """
         Main message dispatcher. Routes incoming WebSocket messages to appropriate handlers.
@@ -142,7 +157,8 @@ class IRISGateway:
             if not isinstance(message, dict):
                 self._logger.error(
                     f"Invalid message format from client {client_id}: not a dict",
-                    extra={"client_id": client_id, "message_type": type(message).__name__}
+                    extra={"client_id": client_id,
+                           "message_type": type(message).__name__}
                 )
                 await self._send_error(client_id, "Invalid message format: expected dict")
                 return
@@ -151,7 +167,8 @@ class IRISGateway:
             if not msg_type:
                 self._logger.error(
                     f"Missing message type from client {client_id}",
-                    extra={"client_id": client_id, "raw_message": str(message)[:200]}
+                    extra={"client_id": client_id, "raw_message": str(message)[
+                        :200]}
                 )
                 await self._send_error(client_id, "Invalid message format: missing 'type' field")
                 return
@@ -159,7 +176,8 @@ class IRISGateway:
             # Resolve session ID — use caller-supplied value when available to avoid
             # the race where heartbeat disconnect removes the mapping before we look it up.
             if session_id is None:
-                session_id = self._ws_manager.get_session_id_for_client(client_id)
+                session_id = self._ws_manager.get_session_id_for_client(
+                    client_id)
             if not session_id:
                 self._logger.error(
                     f"No session found for client {client_id}",
@@ -167,68 +185,81 @@ class IRISGateway:
                 )
                 await self._send_error(client_id, "No active session")
                 return
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Processing message type: {msg_type}",
-                extra={"session_id": session_id, "client_id": client_id, "message_type": msg_type}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "message_type": msg_type}
             )
-            
+
             # Route to appropriate handler based on message type
             if msg_type in ["select_category", "select_section", "go_back"]:
                 await self._handle_navigation(session_id, client_id, message)
-            
+
             elif msg_type in ["update_field", "update_theme", "confirm_card"]:
                 await self._handle_settings(session_id, client_id, message)
-            
+
             elif msg_type == "set_model_selection":
                 await self._handle_set_model_selection(session_id, client_id, message)
-            
+
             elif msg_type in ["voice_command_start", "voice_command_end", "voice_command"]:
                 await self._handle_voice(session_id, client_id, message)
-            
+
             elif msg_type in ["get_wake_words", "select_wake_word"]:
                 if msg_type == "get_wake_words":
                     await self._handle_get_wake_words(session_id, client_id)
                 else:
                     await self._handle_select_wake_word(session_id, client_id, message)
-            
+
             elif msg_type in ["get_cleanup_report", "execute_cleanup"]:
                 if msg_type == "get_cleanup_report":
                     await self._handle_get_cleanup_report(session_id, client_id, message)
                 else:
                     await self._handle_execute_cleanup(session_id, client_id, message)
-            
+
             elif msg_type in ["text_message", "clear_chat"]:
                 await self._handle_chat(session_id, client_id, message)
-            
+
             elif msg_type in ["get_agent_status", "get_agent_tools", "agent_status", "agent_tools"]:
                 await self._handle_status(session_id, client_id, message)
-            
+
             elif msg_type == "get_available_models":
                 await self._handle_get_available_models(session_id, client_id, message)
-            
+
             elif msg_type == "request_models":
                 await self._handle_request_models(session_id, client_id, message)
-            
+
             elif msg_type == "get_audio_devices":
                 await self._handle_get_audio_devices(session_id, client_id)
-            
+
             elif msg_type == "test_connection":
                 await self._handle_test_connection(session_id, client_id, message)
-            
+
             # GAP-01 FIX: Additional message types from main.py
             elif msg_type == "collapse_to_idle":
                 await self._handle_collapse_to_idle(session_id, client_id, message)
-            
+
             elif msg_type == "expand_to_main":
                 await self._handle_expand_to_main(session_id, client_id, message)
-            
+
             elif msg_type == "reload_skills":
                 await self._handle_reload_skills(session_id, client_id, message)
-            
+
+            elif msg_type == "get_skills":
+                await self._handle_get_skills(session_id, client_id)
+
+            elif msg_type == "toggle_skill":
+                await self._handle_toggle_skill(session_id, client_id, message)
+
+            elif msg_type == "delete_skill":
+                await self._handle_delete_skill(session_id, client_id, message)
+
+            elif msg_type == "create_skill":
+                await self._handle_create_skill(session_id, client_id, message)
+
             elif msg_type == "execute_tool":
                 await self._handle_execute_tool(session_id, client_id, message)
-            
+
             elif msg_type == "tts_play":
                 # Frontend play-icon clicked — speak the supplied text via TTS
                 await self._handle_tts_play(session_id, client_id, message)
@@ -238,19 +269,19 @@ class IRISGateway:
 
             elif msg_type == "pong":
                 await self._ws_manager.handle_pong(client_id)
-            
+
             elif msg_type == "request_state":
                 await self._handle_request_state(session_id, client_id)
-            
+
             elif msg_type == "enable_vision":
                 await self._handle_enable_vision(session_id, client_id)
-            
+
             elif msg_type == "disable_vision":
                 await self._handle_disable_vision(session_id, client_id)
-            
+
             elif msg_type == "get_vision_status":
                 await self._handle_get_vision_status(session_id, client_id)
-            
+
             elif msg_type == "message_exported":
                 await self._handle_message_exported(session_id, client_id, message)
 
@@ -269,10 +300,11 @@ class IRISGateway:
             else:
                 self._logger.warning(
                     f"Unknown message type: {msg_type}",
-                    extra={"session_id": session_id, "client_id": client_id, "message_type": msg_type}
+                    extra={"session_id": session_id,
+                           "client_id": client_id, "message_type": msg_type}
                 )
                 await self._send_error(client_id, f"Unknown message type: {msg_type}")
-        
+
         except json.JSONDecodeError as e:
             # Handle JSON parse errors
             self._logger.error(
@@ -281,48 +313,52 @@ class IRISGateway:
                 extra={"client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, "Invalid JSON format")
-        
+
         except Exception as e:
             # Handle all other exceptions
-            msg_type = message.get("type", "unknown") if isinstance(message, dict) else "unknown"
+            msg_type = message.get("type", "unknown") if isinstance(
+                message, dict) else "unknown"
             self._logger.error(
                 f"Error handling message type {msg_type} from client {client_id}: {e}",
                 exc_info=True,
-                extra={"client_id": client_id, "message_type": msg_type, "error": str(e)}
+                extra={"client_id": client_id,
+                       "message_type": msg_type, "error": str(e)}
             )
             await self._send_error(client_id, f"Error processing message: {str(e)}")
-    
+
     async def _handle_navigation(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle navigation messages: select_category, select_section, go_back.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
             message: Message dictionary
         """
         msg_type = message.get("type")
-        
+
         if msg_type == "select_category":
-            category = message.get("category") or message.get("payload", {}).get("category")
-            
+            category = message.get("category") or message.get(
+                "payload", {}).get("category")
+
             if not category:
                 await self._send_validation_error(client_id, "category", "Category is required")
                 return
-            
+
             # Validate category
             try:
-                category_enum = Category(category) if isinstance(category, str) else category
+                category_enum = Category(category) if isinstance(
+                    category, str) else category
             except ValueError:
                 await self._send_validation_error(client_id, "category", f"Invalid category: {category}")
                 return
-            
+
             # Update state
             await self._state_manager.set_category(session_id, category_enum)
-            
+
             # Get sections for this category
             sections = get_sections_for_category(category_enum)
-            
+
             # Send confirmation with sections
             await self._ws_manager.send_to_client(client_id, {
                 "type": "category_changed",
@@ -331,20 +367,21 @@ class IRISGateway:
                     "sections": [s.model_dump() for s in sections]
                 }
             })
-            
+
             # Broadcast state update to other clients in session
             await self._broadcast_state_update(session_id, exclude_client=client_id)
-        
+
         elif msg_type == "select_section":
-            section_id = message.get("section_id") or message.get("payload", {}).get("section_id")
-            
+            section_id = message.get("section_id") or message.get(
+                "payload", {}).get("section_id")
+
             if not section_id:
                 await self._send_validation_error(client_id, "section_id", "Section ID is required")
                 return
-            
+
             # Update state
             await self._state_manager.set_section(session_id, section_id)
-            
+
             # Send confirmation
             await self._ws_manager.send_to_client(client_id, {
                 "type": "section_changed",
@@ -352,21 +389,21 @@ class IRISGateway:
                     "section_id": section_id
                 }
             })
-            
+
             # Broadcast state update to other clients in session
             await self._broadcast_state_update(session_id, exclude_client=client_id)
-        
+
         elif msg_type == "go_back":
             # Navigate back
             await self._state_manager.go_back(session_id)
-            
+
             # Broadcast state update to all clients in session
             await self._broadcast_state_update(session_id, exclude_client=client_id)
-    
+
     async def _handle_settings(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle settings messages: update_field, update_theme, confirm_card.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -374,14 +411,16 @@ class IRISGateway:
         """
         msg_type = message.get("type")
         payload = message.get("payload", {})
-        
+
         if msg_type == "update_field":
             # Use only section_id (cleanup complete)
             section_id = message.get("section_id") or payload.get("section_id")
             field_id = message.get("field_id") or payload.get("field_id")
-            value = message.get("value") if "value" in message else payload.get("value")
-            timestamp = payload.get("timestamp")  # Optional timestamp from client
-            
+            value = message.get(
+                "value") if "value" in message else payload.get("value")
+            # Optional timestamp from client
+            timestamp = payload.get("timestamp")
+
             if not section_id or not field_id:
                 await self._send_validation_error(
                     client_id,
@@ -389,12 +428,12 @@ class IRISGateway:
                     "Both section_id and field_id are required"
                 )
                 return
-            
+
             # Update field value with timestamp handling
             success, update_timestamp = await self._state_manager.update_field(
                 session_id, section_id, field_id, value, timestamp
             )
-            
+
             if success:
                 # NOTE: Service reinitialization (TTS, model selection, audio devices) is
                 # intentionally deferred to confirm_card. update_field only persists the value
@@ -405,7 +444,7 @@ class IRISGateway:
                 if field_id == "openai_api_key" and value:
                     from .utils.encryption import mask_api_key
                     response_value = mask_api_key(value)
-                
+
                 # Send confirmation with timestamp - include both new and legacy field names
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "field_updated",
@@ -417,7 +456,7 @@ class IRISGateway:
                         "timestamp": update_timestamp
                     }
                 })
-                
+
                 # Broadcast to other clients in session with timestamp (also masked)
                 await self._ws_manager.broadcast_to_session(
                     session_id,
@@ -440,12 +479,12 @@ class IRISGateway:
                     field_id,
                     "Field validation failed"
                 )
-        
+
         elif msg_type == "update_theme":
             glow_color = payload.get("glow_color")
             font_color = payload.get("font_color")
             state_colors = payload.get("state_colors")
-            
+
             # Update theme
             await self._state_manager.update_theme(
                 session_id,
@@ -453,7 +492,7 @@ class IRISGateway:
                 font_color=font_color,
                 state_colors=state_colors
             )
-            
+
             # Get updated theme
             state = await self._state_manager.get_state(session_id)
             if state:
@@ -473,7 +512,7 @@ class IRISGateway:
                         "error_color": theme_data.get("error_color"),
                     }
                 )
-        
+
         elif msg_type == "confirm_card":
             # Use only section_id (cleanup complete)
             section_id = payload.get("section_id")
@@ -507,22 +546,26 @@ class IRISGateway:
                     sensitivity = values.get("wake_word_sensitivity")
                     if sensitivity is not None:
                         # UI slider is 1-10; Porcupine needs 0.0-1.0
-                        config_updates["detection_sensitivity"] = float(sensitivity) / 10.0
+                        config_updates["detection_sensitivity"] = float(
+                            sensitivity) / 10.0
 
                     wake_enabled = values.get("wake_word_enabled")
                     if wake_enabled is not None:
-                        config_updates["wake_word_enabled"] = bool(wake_enabled)
+                        config_updates["wake_word_enabled"] = bool(
+                            wake_enabled)
 
                     if config_updates:
                         wake_config.update_config(**config_updates)
                         self._logger.info(
                             f"[Session: {session_id}] Wake config applied on confirm: {config_updates}",
-                            extra={"session_id": session_id, "client_id": client_id}
+                            extra={"session_id": session_id,
+                                   "client_id": client_id}
                         )
                 except Exception as wc_e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying wake config on confirm: {wc_e}",
-                        extra={"session_id": session_id, "client_id": client_id}
+                        extra={"session_id": session_id,
+                               "client_id": client_id}
                     )
 
             # Apply TTS configuration when speech section is confirmed
@@ -535,17 +578,20 @@ class IRISGateway:
                     if "tts_voice" in values:
                         kwargs["tts_voice"] = values["tts_voice"]
                     if "speaking_rate" in values:
-                        kwargs["speaking_rate"] = float(values["speaking_rate"])
+                        kwargs["speaking_rate"] = float(
+                            values["speaking_rate"])
                     if kwargs:
                         tts.update_config(**kwargs)
                         self._logger.info(
                             f"[Session: {session_id}] TTS config applied: {kwargs}",
-                            extra={"session_id": session_id, "client_id": client_id}
+                            extra={"session_id": session_id,
+                                   "client_id": client_id}
                         )
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying TTS config: {e}",
-                        extra={"session_id": session_id, "client_id": client_id}
+                        extra={"session_id": session_id,
+                               "client_id": client_id}
                     )
 
             # Apply model selection when models section is confirmed
@@ -556,8 +602,10 @@ class IRISGateway:
                     kernel = get_agent_kernel(session_id)
                     reasoning = values.get("reasoning_model")
                     # cards.ts field is 'tool_model' (not 'tool_execution_model')
-                    tool_exec = values.get("tool_model") or values.get("tool_execution_model")
-                    provider = values.get("model_provider")  # "local" | "vps" | "api"
+                    tool_exec = values.get("tool_model") or values.get(
+                        "tool_execution_model")
+                    # "local" | "vps" | "api"
+                    provider = values.get("model_provider")
 
                     # Always pass the provider so the kernel knows which inference
                     # backend to route to (Ollama / VPS / OpenAI).
@@ -569,14 +617,16 @@ class IRISGateway:
                     self._logger.info(
                         f"[Session: {session_id}] Model selection applied on confirm: "
                         f"reasoning={reasoning}, tool={tool_exec}, provider={provider}",
-                        extra={"session_id": session_id, "client_id": client_id}
+                        extra={"session_id": session_id,
+                               "client_id": client_id}
                     )
 
                     # Wire up the correct inference backend based on provider.
                     if provider == "lmstudio":
                         # LM Studio uses an OpenAI-compatible local API — no gateway object needed.
                         # Just store the endpoint so the kernel inference blocks can use it.
-                        lms_endpoint = values.get("lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
+                        lms_endpoint = values.get(
+                            "lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
                         kernel.configure_lmstudio(lms_endpoint)
                         kernel.configure_vps({"enabled": False})
                         self._logger.info(
@@ -612,7 +662,8 @@ class IRISGateway:
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying model selection on confirm: {e}",
-                        extra={"session_id": session_id, "client_id": client_id}
+                        extra={"session_id": session_id,
+                               "client_id": client_id}
                     )
 
             # Apply audio device selection when input section is confirmed
@@ -625,16 +676,19 @@ class IRISGateway:
                     if device is not None and device != "":
                         # UI sends device names (strings); resolve to integer index so
                         # sounddevice doesn't encounter multiple host-API matches.
-                        device = self._resolve_device_index(device, want_input=True)
+                        device = self._resolve_device_index(
+                            device, want_input=True)
                         engine.update_config(input_device=device)
                         self._logger.info(
                             f"[Session: {session_id}] Input device applied on confirm: {device}",
-                            extra={"session_id": session_id, "client_id": client_id}
+                            extra={"session_id": session_id,
+                                   "client_id": client_id}
                         )
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying input device on confirm: {e}",
-                        extra={"session_id": session_id, "client_id": client_id}
+                        extra={"session_id": session_id,
+                               "client_id": client_id}
                     )
 
             # Apply audio device selection when output section is confirmed
@@ -646,16 +700,19 @@ class IRISGateway:
                     device = values.get("output_device")
                     if device is not None and device != "":
                         # UI sends device names (strings); resolve to integer index.
-                        device = self._resolve_device_index(device, want_input=False)
+                        device = self._resolve_device_index(
+                            device, want_input=False)
                         engine.update_config(output_device=device)
                         self._logger.info(
                             f"[Session: {session_id}] Output device applied on confirm: {device}",
-                            extra={"session_id": session_id, "client_id": client_id}
+                            extra={"session_id": session_id,
+                                   "client_id": client_id}
                         )
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying output device on confirm: {e}",
-                        extra={"session_id": session_id, "client_id": client_id}
+                        extra={"session_id": session_id,
+                               "client_id": client_id}
                     )
 
             # Get current category
@@ -687,7 +744,7 @@ class IRISGateway:
                 await self._broadcast_state_update(session_id, exclude_client=client_id)
             else:
                 await self._send_error(client_id, "Failed to confirm card")
-    
+
     def set_voice_handler(self, voice_handler) -> None:
         """Wire the VoiceCommandHandler so voice triggers can delegate to it."""
         self._voice_handler = voice_handler
@@ -705,7 +762,10 @@ class IRISGateway:
 
         try:
             if msg_type == "voice_command_start":
-                self._logger.info(f"[Session: {session_id}] Voice command start")
+                self._logger.info(
+                    f"[Session: {session_id}] Voice command start")
+                # Enable conversation mode — will auto-relisten after each TTS response
+                self._conversation_sessions.add(session_id)
 
                 # Interrupt TTS only if it is currently playing.
                 # Calling interrupt_speech() unconditionally sets
@@ -725,6 +785,14 @@ class IRISGateway:
                 # Track which client triggered this so wake-word callback knows where to respond
                 self._active_voice_client[session_id] = client_id
 
+                # Safety-net: if the startup TTS prewarm hasn't finished yet, kick it
+                # again now so it completes before the user finishes speaking.
+                if not self._tts_prewarmed:
+                    import threading
+                    threading.Thread(
+                        target=self._prewarm_tts, daemon=True, name="tts-prewarm-ondemand"
+                    ).start()
+
                 # Broadcast LISTENING immediately so IrisOrb animates
                 await self._ws_manager.broadcast_to_session(session_id, {
                     "type": "listening_state",
@@ -734,13 +802,24 @@ class IRISGateway:
                 # Delegate recording to the shared VoiceCommandHandler
                 if self._voice_handler:
                     self._voice_handler.set_active_session(session_id)
-                    success = self._voice_handler.start_recording(auto_stop=auto_stop)
+                    success = self._voice_handler.start_recording(
+                        auto_stop=auto_stop)
                     if not success:
-                        self._logger.warning(f"[Session: {session_id}] VoiceCommandHandler start_recording() failed")
+                        self._logger.warning(
+                            f"[Session: {session_id}] VoiceCommandHandler start_recording() failed — resetting orb to idle")
+                        await self._ws_manager.broadcast_to_session(session_id, {
+                            "type": "listening_state", "payload": {"state": "idle"}
+                        })
                 else:
-                    self._logger.error("[Voice] VoiceCommandHandler not wired — call set_voice_handler()")
+                    self._logger.error(
+                        "[Voice] VoiceCommandHandler not wired — call set_voice_handler()")
                     await self._ws_manager.broadcast_to_session(session_id, {
                         "type": "listening_state", "payload": {"state": "error"}
+                    })
+                    # Auto-recover from error state after 2 s
+                    await asyncio.sleep(2.0)
+                    await self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "listening_state", "payload": {"state": "idle"}
                     })
 
             elif msg_type == "voice_command_end":
@@ -780,8 +859,28 @@ class IRISGateway:
                 if self._voice_handler:
                     self._voice_handler.stop_recording()
 
+            elif msg_type == "voice_command_cancel":
+                self._logger.info(f"[Session: {session_id}] Voice command cancelled by user")
+                # Exit conversation mode — user explicitly stopped
+                self._conversation_sessions.discard(session_id)
+                if self._voice_handler:
+                    self._voice_handler.cancel_recording()
+                # Interrupt TTS if currently playing
+                try:
+                    from .audio.engine import get_audio_engine
+                    engine = get_audio_engine()
+                    if engine._tts_active:
+                        engine.interrupt_speech()
+                except Exception:
+                    pass
+                await self._ws_manager.broadcast_to_session(session_id, {
+                    "type": "listening_state",
+                    "payload": {"state": "idle"}
+                })
+
         except Exception as e:
-            self._logger.error(f"[Voice] Error in _handle_voice: {e}", exc_info=True)
+            self._logger.error(
+                f"[Voice] Error in _handle_voice: {e}", exc_info=True)
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "listening_state", "payload": {"state": "error"}
             })
@@ -803,11 +902,16 @@ class IRISGateway:
             # thread and that call raises "no current event loop" on Python 3.10+.
             loop = self._main_loop
             if loop is None or not loop.is_running():
-                self._logger.error("[Voice] _on_voice_result: main event loop not available")
+                self._logger.error(
+                    "[Voice] _on_voice_result: main event loop not available")
                 return
 
             if not transcript or not client_id:
-                self._logger.warning(f"[Voice] Empty transcript or unknown client for session {session_id}")
+                self._logger.warning(
+                    f"[Voice] Empty transcript or unknown client for session {session_id}")
+                # Empty transcript during conversation mode relisten = user finished talking
+                # Clear conversation mode so we return to true idle
+                self._conversation_sessions.discard(session_id)
                 asyncio.run_coroutine_threadsafe(
                     self._ws_manager.broadcast_to_session(session_id, {
                         "type": "listening_state", "payload": {"state": "idle"}
@@ -817,34 +921,40 @@ class IRISGateway:
                 return
 
             asyncio.run_coroutine_threadsafe(
-                self._process_voice_transcription(session_id, client_id, transcript, audio_context),
+                self._process_voice_transcription(
+                    session_id, client_id, transcript, audio_context),
                 loop
             )
         except Exception as e:
-            self._logger.error(f"[Voice] _on_voice_result error: {e}", exc_info=True)
+            self._logger.error(
+                f"[Voice] _on_voice_result error: {e}", exc_info=True)
 
     async def _process_voice_transcription(
         self, session_id: str, client_id: str, transcript: str, audio_context: str
     ) -> None:
         """
-        Full 4-pillar pipeline after LFM2-Audio transcription:
-          Pillar 1 — ChatView: show user bubble (transcript) + assistant bubble (response)
-          Pillar 2 — Agent: lfm2-8b reasons, lfm2.5 executes (model-agnostic)
-          Pillar 3 — Tools: tool_bridge wired in process_text_message
-          Pillar 4 — Memory: injected via _get_memory_context in plan_task
+        Full 4-pillar pipeline after STT transcription.
+
+        State machine:
+          listening → processing_conversation (LLM thinking)
+                    → speaking               (TTS playing)
+                    → idle                   (TTS done / no spoken text)
+
+        The text response appears in ChatView as soon as the LLM returns,
+        independent of TTS.  TTS plays after the full response is ready so
+        the orb transitions correctly and never gets stuck in speaking state.
         """
         import asyncio
+        import threading
         loop = asyncio.get_running_loop()
-        _pipeline_ok = False
+        _tts_started = False
         try:
-            # Pillar 1A: Send transcript as user bubble in ChatView
+            # ── Pillar 1A: user bubble ──────────────────────────────────────
             await self._ws_manager.send_to_client(client_id, {
                 "type": "text_response",
                 "payload": {"text": transcript, "sender": "user"}
             })
 
-            # Pillar 2+3+4: Route through AgentKernel
-            # Build enriched message: transcript + what LFM2-Audio understood about the audio
             enriched = transcript
             if audio_context:
                 enriched = f"{transcript}\n\n[Audio context: {audio_context}]"
@@ -852,24 +962,38 @@ class IRISGateway:
             from .agent.agent_kernel import get_agent_kernel
             agent_kernel = get_agent_kernel(session_id)
 
-            # Ensure tool bridge is wired (Pillar 3)
             if agent_kernel._tool_bridge is None:
                 from .agent.tool_bridge import get_agent_tool_bridge
                 agent_kernel._tool_bridge = get_agent_tool_bridge()
 
-            # Run agent in executor (sync method)
-            response = await loop.run_in_executor(
-                None,
-                agent_kernel.process_text_message,
-                enriched,
-                session_id
-            )
-
-            # Pillar 1B: Speaking state + send FULL response to ChatView
+            # ── Orb: thinking while LLM runs ────────────────────────────────
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "listening_state",
-                "payload": {"state": "speaking"}
+                "payload": {"state": "processing_conversation"}
             })
+
+            def _execute_agent():
+                def chunk_callback(chunk: str):
+                    asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.send_to_client(client_id, {
+                            "type": "chat_chunk",
+                            "payload": {"chunk": chunk}
+                        }),
+                        self._main_loop
+                    )
+
+                resp = agent_kernel.process_text_message(
+                    enriched,
+                    session_id=session_id,
+                    chunk_callback=chunk_callback
+                )
+                spoken = agent_kernel.prepare_spoken_text(resp, enriched)
+                return resp, spoken
+
+            # Run agent synchronously in thread pool
+            response, spoken = await loop.run_in_executor(None, _execute_agent)
+
+            # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
             await self._ws_manager.send_to_client(client_id, {
                 "type": "text_response",
@@ -880,53 +1004,82 @@ class IRISGateway:
                 }
             })
 
-            # Pillar 1C: TTS — get a conversational spoken version for long responses.
-            # Short replies (<=40 words) are spoken verbatim.  Long ones get a
-            # second fast LLM call that distils them to 1-2 spoken sentences.
-            # ChatView always receives the full text above.
-            spoken = await loop.run_in_executor(None, agent_kernel.get_spoken_version, response)
-            await loop.run_in_executor(None, self._speak_response, spoken)
-
-            _pipeline_ok = True
+            # ── TTS: speak the response ─────────────────────────────────────
+            if spoken.strip():
+                await self._ws_manager.broadcast_to_session(session_id, {
+                    "type": "listening_state",
+                    "payload": {"state": "speaking"}
+                })
+                _tts_started = True
+                threading.Thread(
+                    target=self._speak_response,
+                    args=(spoken, session_id),
+                    daemon=True,
+                    name="voice-tts"
+                ).start()
+                # _speak_response sends idle when TTS finishes
+            else:
+                await self._ws_manager.broadcast_to_session(session_id, {
+                    "type": "listening_state",
+                    "payload": {"state": "idle"}
+                })
 
         except Exception as e:
-            self._logger.error(f"[Voice] Pipeline error for session {session_id}: {e}", exc_info=True)
+            self._logger.error(
+                f"[Voice] Pipeline error for session {session_id}: {e}", exc_info=True)
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "listening_state", "payload": {"state": "error"}
             })
-            # Brief error flash so the user can see something went wrong
             await asyncio.sleep(2.0)
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "listening_state", "payload": {"state": "idle"}
+            })
 
         finally:
-            # Always reset orb to idle — this fires whether the pipeline succeeded,
-            # raised an exception, or the client reconnected mid-response.
-            # Without this finally the orb can get stuck in "speaking" or
-            # "processing_conversation" if any broadcast above is lost.
-            await self._ws_manager.broadcast_to_session(session_id, {
-                "type": "listening_state",
-                "payload": {"state": "idle"}
-            })
-            if _pipeline_ok:
-                self._logger.debug(f"[Voice] Pipeline complete for session {session_id}")
+            if not _tts_started:
+                # Safety net: if TTS never started, ensure we always reach idle.
+                # (TTS path sends idle itself via _speak_response finally block.)
+                pass
+            self._logger.debug(f"[Voice] Pipeline complete for session {session_id}")
 
     def _prewarm_tts(self) -> None:
-        """Pre-load LuxTTS and encode voice reference in a background thread at startup."""
+        """Pre-load CosyVoice2-0.5B and register voice reference in a background thread.
+
+        Idempotent — early-exits if already called successfully so re-triggering
+        on the first voice command (as a safety net) does not double-load.
+
+        A 6-second startup delay is intentional: it lets the backend finish
+        initialising other components (FastAPI, audio pipeline, WebSocket manager,
+        Porcupine) before the ~1-2 GB CosyVoice model begins loading into RAM.
+        This smooths the startup memory curve without delaying the first voice
+        response (the model is ready long before the user speaks).
+        """
+        if self._tts_prewarmed:
+            return
         try:
+            import time as _time
+            _time.sleep(6)  # let backend fully start before CosyVoice RAM load
             from .agent.tts import get_tts_manager
             tts = get_tts_manager()
             if tts.config.get("tts_voice") == "Built-in":
+                self._tts_prewarmed = True  # built-in engine needs no warm-up
                 return
-            lux = tts._get_lux()
-            tts._get_encode_dict(lux)
-            self._logger.info("[IRISGateway] LuxTTS pre-warmed successfully")
+            tts._warm_tts_pipeline()
+            self._tts_prewarmed = True
+            self._logger.info("[IRISGateway] CosyVoice2 pipeline warmed up")
         except Exception as e:
-            self._logger.warning(f"[IRISGateway] TTS pre-warm failed (non-fatal): {e}")
+            self._logger.warning(
+                f"[IRISGateway] TTS pre-warm failed (non-fatal): {e}")
+        finally:
+            # Mark as pre-warmed / attempted regardless of success to prevent 
+            # infinite retry loops in _handle_voice (which would spam logs).
+            self._tts_prewarmed = True
 
     @staticmethod
     def _clean_for_speech(text: str) -> str:
         """Sanitise *text* before sending to the TTS engine.
 
-        Removes emoji (which LuxTTS spells out letter-by-letter or skips
+        Removes emoji (which TTS models spell out letter-by-letter or skip
         unpredictably), strips markdown formatting, and replaces exclamation
         marks with periods so the cloned voice delivers a calm, measured tone
         instead of the overly energetic delivery that occurs when the model
@@ -946,127 +1099,177 @@ class IRISGateway:
         text = _RE_MULTI_NL.sub("\n", text)
         return text.strip()
 
-    def _speak_response(self, text: str) -> None:
-        """TTS + audio playback via TTSManager. Sync — call via run_in_executor.
-
-        Producer-consumer pipeline for minimal first-word latency:
-          • Synthesiser thread: pops sentences one-by-one, synthesises each,
-            pushes float32 arrays onto an audio_queue.
-          • This thread (consumer): pops from audio_queue and plays immediately,
-            so playback of sentence N overlaps with synthesis of sentence N+1.
-
-        Total time drops from  Σ(synth_i + play_i)
-                           to  synth_0 + Σ max(play_i, synth_{i+1}) + play_last
+    def _speak_response(self, input_source: Union[str, queue.Queue], session_id: str = None) -> None:
         """
-        try:
-            from .agent.tts import get_tts_manager
-            from .audio.engine import get_audio_engine
-            tts    = get_tts_manager()
-            engine = get_audio_engine()
-            if not engine.pipeline:
-                return
+        Synthesise and play text through the configured TTS engine.
+        Using a producer-consumer pattern to stream audio chunks as soon as they
+        are ready, minimizing latency for the first spoken word.
 
-            # 1. Sanitise text and split into sentences upfront (cheap, CPU-only)
-            text      = self._clean_for_speech(text)
-            sentences = [s.strip() for s in _RE_SENTENCE_SPLIT.split(text.strip()) if s.strip()]
-            if not sentences:
-                return
+        Args:
+            input_source: Either the full text to speak (str) or a queue.Queue 
+                       that will receive sentences in real-time.
+            session_id: Optional session ID to broadcast idle state to when finished.
+        """
+        from .agent import get_tts_manager
+        from .agent.tts import OUTPUT_SAMPLE_RATE as _TTS_SAMPLE_RATE
+        from .audio.engine import get_audio_engine
 
-            # Group sentences into word-count chunks (~20 words each).
-            # At ~3 words/sec speaking rate, 20 words ≈ 6–7 s of audio.
-            # Synthesis of one chunk takes ~0.5–2 s, so the producer always
-            # finishes the NEXT chunk well before the consumer exhausts the
-            # CURRENT one — eliminating inter-sentence silence gaps entirely.
-            _TARGET_WORDS = 20
-            chunks: list = []
-            _pending: list = []
-            _pending_words = 0
-            for _sent in sentences:
-                _pending.append(_sent)
-                _pending_words += len(_sent.split())
-                if _pending_words >= _TARGET_WORDS:
-                    chunks.append(" ".join(_pending))
-                    _pending = []
-                    _pending_words = 0
-            if _pending:
-                chunks.append(" ".join(_pending))
+        engine = get_audio_engine()
+        tts = get_tts_manager()
 
-            # 2. Shared state between producer and consumer
-            _SENTINEL = object()          # signals "producer finished"
-            audio_queue: queue.Queue = queue.Queue(maxsize=2)  # bounded: at most 2 chunks ahead
-            interrupted = threading.Event()
+        if not engine.pipeline:
+            return
 
-            # 3. Synthesiser thread (producer)
-            def _producer():
-                try:
-                    for chunk in chunks:
+        # 1. Internal state
+        audio_queue: queue.Queue = queue.Queue(
+            maxsize=4)  # Buffer a few chunks
+        interrupted = threading.Event()
+
+        # Dynamic chunking: synthesise first sentence immediately for instant
+        # voice onset, then use larger chunks for stable continuous playback.
+        FIRST_CHUNK_THRESHOLD = 1
+        NORMAL_CHUNK_THRESHOLD = 8
+
+        # 2. Synthesiser thread (producer)
+        def _producer():
+            try:
+                if isinstance(input_source, str):
+                    # Single-call path: pass the FULL text to CosyVoice in one go.
+                    # This preserves natural prosody across the entire response —
+                    # sentence-by-sentence synthesis creates prosody breaks and
+                    # robotic-sounding stitching at boundaries.
+                    text = self._clean_for_speech(input_source)
+                    if not text.strip():
+                        return
+                    self._logger.info(f"[Voice] TTS synthesizing {len(text.split())} words in single pass")
+                    for audio_chunk in tts.synthesize_stream(text):
                         if interrupted.is_set():
                             break
-                        audio_np = tts.synthesize(chunk)
-                        if audio_np is not None and len(audio_np) > 0:
-                            audio_queue.put(audio_np)      # blocks if consumer is slow (back-pressure)
-                        else:
-                            self._logger.debug(f"[Voice] TTS skipped empty/short chunk: {chunk[:40]!r}")
-                except Exception as exc:
-                    self._logger.error(f"[Voice] Producer error: {exc}")
-                finally:
-                    audio_queue.put(_SENTINEL)             # always signal done
+                        if audio_chunk is not None and len(audio_chunk) > 0:
+                            audio_queue.put(audio_chunk)
 
-            # 4. Suppress Porcupine while IRIS is speaking
-            engine.set_tts_active(True)
-            try:
-                producer_thread = threading.Thread(target=_producer, daemon=True, name="tts-producer")
-                producer_thread.start()
-
-                # Consumer: play each chunk as soon as it arrives.
-                # Greedy accumulation: after receiving a chunk, immediately
-                # drain any additional chunks the producer has already queued.
-                # Concatenating them into one array before calling play_audio()
-                # eliminates the silent gap that appears between sentences when
-                # Python overhead (queue.get + function call) occurs while the
-                # output stream is idle between consecutive write() calls.
-                while True:
-                    chunk = audio_queue.get()        # wait for first chunk
-                    if chunk is _SENTINEL:
-                        break
-                    if engine.is_speech_interrupted():
-                        interrupted.set()
-                        self._logger.info("[Voice] TTS interrupted — draining queue")
-                        while not audio_queue.empty():
-                            try:
-                                audio_queue.get_nowait()
-                            except queue.Empty:
-                                break
-                        break
-
-                    # Greedily collect any already-synthesised audio arrays so
-                    # they are played in a single write() with no gaps between them.
-                    audio_arrays = [chunk]
-                    sentinel_seen = False
+                elif isinstance(input_source, queue.Queue):
+                    # Streaming path: read from sentence queue
+                    _pending = []
+                    _pending_words = 0
                     while True:
+                        item = input_source.get()
+                        if item is None:
+                            # Final flush
+                            if _pending and not interrupted.is_set():
+                                chunk = " ".join(_pending)
+                                for audio_chunk in tts.synthesize_stream(chunk):
+                                    if audio_chunk is not None and len(audio_chunk) > 0:
+                                        audio_queue.put(audio_chunk)
+                            break
+
+                        _pending.append(item)
+                        _pending_words += len(item.split())
+
+                        # Trigger synthesis if we hit the word count OR if it's the
+                        # very first sentence (regardless of length) for instant response.
+                        if _pending_words >= _target or (is_first_chunk and len(_pending) >= 1):
+                            if interrupted.is_set():
+                                break
+                            chunk = " ".join(_pending)
+                            for audio_chunk in tts.synthesize_stream(chunk):
+                                if audio_chunk is not None and len(audio_chunk) > 0:
+                                    audio_queue.put(audio_chunk)
+                            _pending = []
+                            _pending_words = 0
+                            if is_first_chunk:
+                                is_first_chunk = False
+                                _target = NORMAL_CHUNK_THRESHOLD
+            except Exception as exc:
+                self._logger.error(f"[Voice] TTS Producer error: {exc}")
+            finally:
+                audio_queue.put(None)
+
+        # 3. Suppress Porcupine while IRIS is speaking
+        engine.set_tts_active(True)
+        engine.is_speech_interrupted()
+
+        try:
+            producer_thread = threading.Thread(
+                target=_producer, daemon=True, name="tts-producer")
+            producer_thread.start()
+
+            # 4. Consumer: play each chunk as soon as it arrives.
+            # First-chunk timeout is generous (90 s) to cover CosyVoice model
+            # load time on first call after startup.  Subsequent chunks use
+            # a tighter timeout (15 s) — once the model is warm each chunk
+            # arrives within ~1-2 s even on CPU.
+            import numpy as _np
+            _first_chunk = True
+            while True:
+                _timeout = 90 if _first_chunk else 15
+                try:
+                    chunk = audio_queue.get(timeout=_timeout)
+                except queue.Empty:
+                    self._logger.error(
+                        f"[Voice] TTS audio queue timed out after {_timeout}s — forcing idle"
+                    )
+                    interrupted.set()
+                    break
+                _first_chunk = False
+                if chunk is None:
+                    break
+
+                if engine.is_speech_interrupted():
+                    interrupted.set()
+                    while not audio_queue.empty():
                         try:
-                            extra = audio_queue.get_nowait()
+                            audio_queue.get_nowait()
                         except queue.Empty:
                             break
-                        if extra is _SENTINEL:
-                            sentinel_seen = True
-                            break
-                        audio_arrays.append(extra)
+                    break
 
-                    import numpy as _np
-                    combined = _np.concatenate(audio_arrays) if len(audio_arrays) > 1 else audio_arrays[0]
-                    engine.pipeline.play_audio(combined)
+                # Play each chunk immediately as it arrives.
+                # Do NOT greedily concatenate multiple chunks — that creates large
+                # blocking write() calls which starve the audio card buffer and cause
+                # gaps between bursts. Small individual writes let PortAudio maintain
+                # a continuous stream in its internal ring buffer.
+                # Pass the TTS native sample rate so sd.play() does one conversion
+                # step (24 kHz → device rate) instead of the previous two-step path
+                # (24 kHz → 16 kHz in _resample → device rate in sounddevice).
+                engine.pipeline.play_audio(chunk, sample_rate=_TTS_SAMPLE_RATE)
 
-                    if sentinel_seen:
-                        break
-
-                producer_thread.join(timeout=5)
-            finally:
-                # Always re-enable wake word detection, even if an error occurred
-                engine.set_tts_active(False)
-
+            producer_thread.join(timeout=5)
         except Exception as e:
-            self._logger.error(f"[Voice] TTS error: {e}")
+            self._logger.error(f"[Voice] TTS Consumer error: {e}")
+        finally:
+            engine.set_tts_active(False)
+            if session_id and self._main_loop and self._main_loop.is_running():
+                import asyncio as _asyncio
+                # Conversation mode: auto-relisten unless interrupted or cancelled
+                in_conversation = session_id in self._conversation_sessions
+                was_interrupted = interrupted.is_set()
+                if in_conversation and not was_interrupted and self._voice_handler:
+                    self._logger.info(
+                        f"[Voice] Conversation mode: auto-resuming listen for session {session_id}")
+                    _asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.broadcast_to_session(session_id, {
+                            "type": "listening_state",
+                            "payload": {"state": "listening"}
+                        }),
+                        self._main_loop
+                    )
+                    # Give audio pipeline a moment to flush before recording
+                    import time as _time
+                    _time.sleep(0.15)
+                    self._voice_handler.set_active_session(session_id)
+                    self._voice_handler.start_recording(
+                        auto_stop=True,
+                        pre_speech_timeout_sec=self._relisten_pre_speech_timeout,
+                    )
+                else:
+                    _asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.broadcast_to_session(session_id, {
+                            "type": "listening_state",
+                            "payload": {"state": "idle"}
+                        }),
+                        self._main_loop
+                    )
 
     async def _handle_tts_play(self, session_id: str, client_id: str, message: dict) -> None:
         """
@@ -1083,7 +1286,7 @@ class IRISGateway:
                 "type": "listening_state",
                 "payload": {"state": "speaking"},
             })
-            await loop.run_in_executor(None, self._speak_response, text)
+            await loop.run_in_executor(None, self._speak_response, text, session_id)
         except Exception as e:
             self._logger.error(f"[Voice] tts_play error: {e}")
         finally:
@@ -1095,7 +1298,7 @@ class IRISGateway:
     async def _handle_chat(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle chat messages: text_message, clear_chat.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -1103,7 +1306,7 @@ class IRISGateway:
         """
         msg_type = message.get("type")
         payload = message.get("payload", {})
-        
+
         if msg_type == "text_message":
             text = payload.get("text")
 
@@ -1140,34 +1343,46 @@ class IRISGateway:
                     "payload": {"active": True}
                 })
 
-                # Process message synchronously (AgentKernel.process_text_message is sync)
-                # Run in executor to avoid blocking the event loop
-                import asyncio
+                # Process message in executor to avoid blocking event loop
                 loop = asyncio.get_running_loop()
                 _t_exec_start = _time.perf_counter()
-                response = await loop.run_in_executor(
-                    None,
-                    agent_kernel.process_text_message,
-                    text,
-                    session_id
-                )
+
+                def _execute_agent():
+                    try:
+                        response = agent_kernel.process_text_message(
+                            text,
+                            session_id=session_id,
+                            chunk_callback=lambda chunk: asyncio.run_coroutine_threadsafe(
+                                self._ws_manager.send_to_client(client_id, {
+                                    "type": "chat_chunk",
+                                    "payload": {"chunk": chunk}
+                                }),
+                                self._main_loop
+                            )
+                        )
+                    except Exception as e:
+                        self._logger.error(f"[Chat] Agent processing error: {e}")
+                        raise
+
+                    return response
+
+                response = await loop.run_in_executor(None, _execute_agent)
+
                 _t_exec_end = _time.perf_counter()
                 self._logger.info(
-                    f"[Timing] process_text_message (executor): {(_t_exec_end - _t_exec_start) * 1000:.0f} ms  |  "
-                    f"gateway overhead: {(_t_exec_start - _t_gate) * 1000:.1f} ms",
+                    f"[Timing] process_text_message (streamed): {(_t_exec_end - _t_exec_start) * 1000:.0f} ms",
                     extra={"session_id": session_id}
                 )
 
-                # Send response to client (text only — no TTS for chat messages)
-                # Include any thinking the model produced so ChatView can show it
-                # in a collapsible block without cluttering the main response.
+                # Send final complete message (updates the UI with the full text + metadata)
                 thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
                 await self._ws_manager.send_to_client(client_id, {
-                    "type": "text_response",
+                    "type": "chat_message",
                     "payload": {
-                        "text": response,
-                        "sender": "assistant",
-                        **({"thinking": thinking} if thinking else {}),
+                        "role": "assistant",
+                        "content": response,
+                        "thinking": thinking,
+                        "timestamp": datetime.now().isoformat()
                     }
                 })
 
@@ -1178,57 +1393,60 @@ class IRISGateway:
                 })
 
             except Exception as e:
-                self._logger.error(f"Error processing text message: {e}", exc_info=True)
+                self._logger.error(
+                    f"Error processing text message: {e}", exc_info=True)
                 # Clear typing indicator on error
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "chat_typing",
                     "payload": {"active": False}
                 })
                 await self._send_error(client_id, f"Agent kernel error: {str(e)}")
-        
+
         elif msg_type == "clear_chat":
             # Get AgentKernel for this session and clear conversation
             try:
                 agent_kernel = get_agent_kernel(session_id)
                 agent_kernel.clear_conversation()
-                
-                self._logger.info(f"Conversation cleared for session {session_id}")
-                
+
+                self._logger.info(
+                    f"Conversation cleared for session {session_id}")
+
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "chat_cleared",
                     "payload": {}
                 })
-                
+
             except Exception as e:
                 self._logger.error(f"Error clearing chat: {e}", exc_info=True)
                 await self._send_error(client_id, f"Error clearing chat: {str(e)}")
-    
+
     async def _handle_status(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle status messages: get_agent_status, get_agent_tools.
         GAP-02 FIX: Also supports agent_status and agent_tools (legacy from main.py).
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
             message: Message dictionary
         """
         msg_type = message.get("type")
-        
+
         # GAP-02: Support both get_agent_status (new) and agent_status (legacy)
         if msg_type in ["get_agent_status", "agent_status"]:
             # Get AgentKernel status for this session
             try:
                 agent_kernel = get_agent_kernel(session_id)
                 status = agent_kernel.get_status()
-                
+
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "agent_status",
                     "payload": status
                 })
-                
+
             except Exception as e:
-                self._logger.error(f"Error getting agent status: {e}", exc_info=True)
+                self._logger.error(
+                    f"Error getting agent status: {e}", exc_info=True)
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "agent_status",
                     "payload": {
@@ -1239,18 +1457,27 @@ class IRISGateway:
                         "error": f"Failed to get agent status: {str(e)}"
                     }
                 })
-        
+
         # GAP-02: Support both get_agent_tools (new) and agent_tools (legacy)
         elif msg_type in ["get_agent_tools", "agent_tools"]:
-            # Tool bridge not yet integrated, send empty tools list
-            # TODO: Integrate with AgentToolBridge when available
-            await self._ws_manager.send_to_client(client_id, {
-                "type": "agent_tools",
-                "payload": {
-                    "tools": []
-                }
-            })
-    
+            try:
+                from backend.agent.tool_bridge import get_agent_tool_bridge
+                bridge = get_agent_tool_bridge()
+                tools = bridge.get_available_tools()
+
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "agent_tools",
+                    "payload": {
+                        "tools": tools
+                    }
+                })
+            except Exception as e:
+                self._logger.error(f"Error getting agent tools: {e}")
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "agent_tools",
+                    "payload": {"tools": [], "error": str(e)}
+                })
+
     async def _handle_get_available_models(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle get_available_models message - dynamically query models from the active inference source.
@@ -1269,7 +1496,8 @@ class IRISGateway:
             # Get session-specific field values
             session_state = await self._state_manager._get_session_state_manager(session_id)
 
-            inference_mode = "lmstudio"  # sensible default — LM Studio is the recommended local provider
+            # sensible default — LM Studio is the recommended local provider
+            inference_mode = "lmstudio"
             vps_url = ""
             openai_api_key = ""
             ollama_endpoint = "http://localhost:11434"
@@ -1301,9 +1529,11 @@ class IRISGateway:
                 Handles namespaced IDs like 'openbmb/minicpm-o4.5:latest' by
                 checking both the full name and the part after the last '/'.
                 """
-                name_lower = model_id.lower().split(":")[0]  # strip tag like ":latest"
+                name_lower = model_id.lower().split(
+                    ":")[0]  # strip tag like ":latest"
                 # Also check the base name after namespace (e.g. "openbmb/minicpm-o4.5" → "minicpm-o4.5")
-                base_name = name_lower.rsplit("/", 1)[-1] if "/" in name_lower else name_lower
+                base_name = name_lower.rsplit(
+                    "/", 1)[-1] if "/" in name_lower else name_lower
                 return (
                     any(name_lower.startswith(p) for p in _VISION_ONLY_PREFIXES) or
                     any(base_name.startswith(p) for p in _VISION_ONLY_PREFIXES)
@@ -1318,7 +1548,8 @@ class IRISGateway:
                             tags = r.json().get("models", [])
                             # Exclude vision-only models from reasoning/tool list
                             available_models = [
-                                {"id": m["name"], "name": m["name"], "source": "local"}
+                                {"id": m["name"], "name": m["name"],
+                                    "source": "local"}
                                 for m in tags
                                 if not _is_vision_only(m["name"])
                             ]
@@ -1366,7 +1597,8 @@ class IRISGateway:
                             )
                             if result.returncode == 0 and common.returncode == 0:
                                 wt_root = Path(result.stdout.strip()).resolve()
-                                main_root = Path(common.stdout.strip()).resolve().parent
+                                main_root = Path(
+                                    common.stdout.strip()).resolve().parent
                                 if wt_root != main_root:
                                     try:
                                         rel = project_dir.relative_to(wt_root)
@@ -1406,7 +1638,8 @@ class IRISGateway:
                                 "name": model_name,
                                 "source": "local_hf",
                             })
-                    hf_count = sum(1 for m in available_models if m.get("source") == "local_hf")
+                    hf_count = sum(1 for m in available_models if m.get(
+                        "source") == "local_hf")
                     if hf_count:
                         self._logger.info(
                             f"[Session: {session_id}] Found {hf_count} local HuggingFace model(s)"
@@ -1420,13 +1653,19 @@ class IRISGateway:
                 # and no local HuggingFace models were found either
                 if not available_models:
                     available_models = [
-                        {"id": "llama3.2", "name": "Llama 3.2 (3B)", "source": "local"},
-                        {"id": "llama3.2:1b", "name": "Llama 3.2 (1B)", "source": "local"},
-                        {"id": "llama3.1", "name": "Llama 3.1 (8B)", "source": "local"},
+                        {"id": "llama3.2",
+                            "name": "Llama 3.2 (3B)", "source": "local"},
+                        {"id": "llama3.2:1b",
+                            "name": "Llama 3.2 (1B)", "source": "local"},
+                        {"id": "llama3.1",
+                            "name": "Llama 3.1 (8B)", "source": "local"},
                         {"id": "mistral", "name": "Mistral 7B", "source": "local"},
-                        {"id": "qwen2.5:3b", "name": "Qwen 2.5 (3B)", "source": "local"},
-                        {"id": "phi4", "name": "Phi-4 (14B)", "source": "local"},
-                        {"id": "deepseek-r1:7b", "name": "DeepSeek R1 (7B)", "source": "local"},
+                        {"id": "qwen2.5:3b",
+                            "name": "Qwen 2.5 (3B)", "source": "local"},
+                        {"id": "phi4",
+                            "name": "Phi-4 (14B)", "source": "local"},
+                        {"id": "deepseek-r1:7b",
+                            "name": "DeepSeek R1 (7B)", "source": "local"},
                         {"id": "codellama", "name": "Code Llama", "source": "local"},
                     ]
                     self._logger.info(
@@ -1468,12 +1707,18 @@ class IRISGateway:
                 # Fallback: common models users load in LM Studio
                 if not available_models:
                     available_models = [
-                        {"id": "local-model", "name": "Currently Loaded Model", "source": "lmstudio"},
-                        {"id": "llama-3.2-3b-instruct", "name": "Llama 3.2 3B Instruct", "source": "lmstudio"},
-                        {"id": "llama-3.1-8b-instruct", "name": "Llama 3.1 8B Instruct", "source": "lmstudio"},
-                        {"id": "mistral-7b-instruct-v0.3", "name": "Mistral 7B Instruct", "source": "lmstudio"},
-                        {"id": "qwen2.5-7b-instruct", "name": "Qwen 2.5 7B Instruct", "source": "lmstudio"},
-                        {"id": "deepseek-r1-distill-qwen-7b", "name": "DeepSeek R1 7B", "source": "lmstudio"},
+                        {"id": "local-model", "name": "Currently Loaded Model",
+                            "source": "lmstudio"},
+                        {"id": "llama-3.2-3b-instruct",
+                            "name": "Llama 3.2 3B Instruct", "source": "lmstudio"},
+                        {"id": "llama-3.1-8b-instruct",
+                            "name": "Llama 3.1 8B Instruct", "source": "lmstudio"},
+                        {"id": "mistral-7b-instruct-v0.3",
+                            "name": "Mistral 7B Instruct", "source": "lmstudio"},
+                        {"id": "qwen2.5-7b-instruct",
+                            "name": "Qwen 2.5 7B Instruct", "source": "lmstudio"},
+                        {"id": "deepseek-r1-distill-qwen-7b",
+                            "name": "DeepSeek R1 7B", "source": "lmstudio"},
                     ]
                     self._logger.info(
                         f"[Session: {session_id}] LM Studio unreachable — showing fallback model list"
@@ -1486,17 +1731,20 @@ class IRISGateway:
                         async with httpx.AsyncClient(timeout=5.0) as http_client:
                             r = await http_client.get(
                                 "https://api.openai.com/v1/models",
-                                headers={"Authorization": f"Bearer {openai_api_key}"}
+                                headers={
+                                    "Authorization": f"Bearer {openai_api_key}"}
                             )
                             if r.status_code == 200:
                                 models_data = r.json().get("data", [])
                                 # Filter to GPT models only, sorted by ID
                                 gpt_models = sorted(
-                                    [m for m in models_data if "gpt" in m.get("id", "")],
+                                    [m for m in models_data if "gpt" in m.get(
+                                        "id", "")],
                                     key=lambda m: m["id"]
                                 )
                                 available_models = [
-                                    {"id": m["id"], "name": m["id"], "source": "openai"}
+                                    {"id": m["id"], "name": m["id"],
+                                        "source": "openai"}
                                     for m in gpt_models
                                 ]
                                 self._logger.info(
@@ -1511,9 +1759,11 @@ class IRISGateway:
                 if not available_models:
                     available_models = [
                         {"id": "gpt-4o", "name": "GPT-4o", "source": "openai"},
-                        {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "source": "openai"},
+                        {"id": "gpt-4-turbo", "name": "GPT-4 Turbo",
+                            "source": "openai"},
                         {"id": "gpt-4", "name": "GPT-4", "source": "openai"},
-                        {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "source": "openai"},
+                        {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo",
+                            "source": "openai"},
                     ]
 
             elif inference_mode == "vps":
@@ -1525,7 +1775,8 @@ class IRISGateway:
                             if r.status_code == 200:
                                 models_data = r.json().get("data", [])
                                 available_models = [
-                                    {"id": m["id"], "name": m["id"], "source": "vps"}
+                                    {"id": m["id"], "name": m["id"],
+                                        "source": "vps"}
                                     for m in models_data
                                 ]
                                 self._logger.info(
@@ -1540,7 +1791,8 @@ class IRISGateway:
                 if not available_models:
                     available_models = [
                         {"id": "lfm2-8b", "name": "LFM2 8B", "source": "vps"},
-                        {"id": "lfm2.5-1.2b-instruct", "name": "LFM2.5 1.2B Instruct", "source": "vps"},
+                        {"id": "lfm2.5-1.2b-instruct",
+                            "name": "LFM2.5 1.2B Instruct", "source": "vps"},
                     ]
 
             await self._ws_manager.send_to_client(client_id, {
@@ -1553,7 +1805,8 @@ class IRISGateway:
             })
 
         except Exception as e:
-            self._logger.error(f"Error getting available models: {e}", exc_info=True)
+            self._logger.error(
+                f"Error getting available models: {e}", exc_info=True)
             await self._ws_manager.send_to_client(client_id, {
                 "type": "available_models",
                 "payload": {
@@ -1561,12 +1814,12 @@ class IRISGateway:
                     "error": f"Failed to get available models: {str(e)}"
                 }
             })
-    
+
     async def _handle_request_models(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle request_models message - lazy load models from Ollama with caching.
         Task 7.4: Implements lazy loading for model dropdowns with 5-minute cache.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -1574,11 +1827,13 @@ class IRISGateway:
         """
         payload = message.get("payload", {})
         endpoint = payload.get("endpoint", "http://localhost:11434")
-        
+
         # Check cache first
-        cached_models, cache_time = self._model_cache.get(endpoint, (None, None))
+        cached_models, cache_time = self._model_cache.get(
+            endpoint, (None, None))
         if cached_models and cache_time and (datetime.now() - cache_time) < self._model_cache_ttl:
-            self._logger.info(f"[IRISGateway] Returning cached models for {endpoint}")
+            self._logger.info(
+                f"[IRISGateway] Returning cached models for {endpoint}")
             await self._ws_manager.send_to_client(client_id, {
                 "type": "models_loaded",
                 "payload": {
@@ -1588,21 +1843,23 @@ class IRISGateway:
                 }
             })
             return
-        
+
         # Fetch models from Ollama
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{endpoint}/api/tags")
-                
+
                 if response.status_code == 200:
                     data = response.json()
-                    models = [model["name"] for model in data.get("models", [])]
-                    
+                    models = [model["name"]
+                              for model in data.get("models", [])]
+
                     # Cache the results
                     self._model_cache[endpoint] = (models, datetime.now())
-                    
-                    self._logger.info(f"[IRISGateway] Loaded {len(models)} models from Ollama at {endpoint}")
-                    
+
+                    self._logger.info(
+                        f"[IRISGateway] Loaded {len(models)} models from Ollama at {endpoint}")
+
                     await self._ws_manager.send_to_client(client_id, {
                         "type": "models_loaded",
                         "payload": {
@@ -1622,7 +1879,7 @@ class IRISGateway:
                             "error": error_msg
                         }
                     })
-                    
+
         except httpx.ConnectError as e:
             error_msg = f"Cannot connect to Ollama at {endpoint}. Is Ollama running?"
             self._logger.error(f"[IRISGateway] {error_msg}: {e}")
@@ -1656,11 +1913,11 @@ class IRISGateway:
                     "error": error_msg
                 }
             })
-    
+
     async def _handle_set_model_selection(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle set_model_selection message - set user-selected models for reasoning and tool execution.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -1669,14 +1926,15 @@ class IRISGateway:
         payload = message.get("payload", {})
         reasoning_model = payload.get("reasoning_model")
         tool_execution_model = payload.get("tool_execution_model")
-        
+
         try:
             # Get AgentKernel for this session
             agent_kernel = get_agent_kernel(session_id)
-            
+
             # Set model selection
-            success = agent_kernel.set_model_selection(reasoning_model, tool_execution_model)
-            
+            success = agent_kernel.set_model_selection(
+                reasoning_model, tool_execution_model)
+
             if success:
                 # Update state manager with model selection
                 state = await self._state_manager.get_state(session_id)
@@ -1684,7 +1942,7 @@ class IRISGateway:
                     state.selected_reasoning_model = reasoning_model
                     state.selected_tool_execution_model = tool_execution_model
                     # State manager will auto-save
-                
+
                 # Send confirmation to client
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "model_selection_updated",
@@ -1694,7 +1952,7 @@ class IRISGateway:
                         "success": True
                     }
                 })
-                
+
                 # Broadcast to other clients in session
                 await self._ws_manager.broadcast_to_session(
                     session_id,
@@ -1711,15 +1969,16 @@ class IRISGateway:
             else:
                 # Send error
                 await self._send_error(client_id, "Failed to set model selection - models may not be available")
-                
+
         except Exception as e:
-            self._logger.error(f"Error setting model selection: {e}", exc_info=True)
+            self._logger.error(
+                f"Error setting model selection: {e}", exc_info=True)
             await self._send_error(client_id, f"Failed to set model selection: {str(e)}")
-    
+
     async def _handle_test_connection(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle test_connection message - test OpenAI API connection with provided credentials.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -1727,28 +1986,28 @@ class IRISGateway:
         """
         payload = message.get("payload", {})
         connection_type = payload.get("connection_type", "openai")
-        
+
         try:
             if connection_type == "openai":
                 # Get API key and URL from state or payload
                 api_key = payload.get("api_key")
                 api_url = payload.get("api_url")
-                
+
                 # If not in payload, try to get from state
                 if not api_key:
                     state_manager = await self._state_manager._get_session_state_manager(session_id)
                     if state_manager:
                         api_key = await state_manager.get_decrypted_field_value("model", "openai_api_key")
-                
+
                 if not api_url:
                     state_manager = await self._state_manager._get_session_state_manager(session_id)
                     if state_manager:
                         api_url = await state_manager.get_field_value("model", "openai_api_url")
-                
+
                 # Use default URL if not provided
                 if not api_url:
                     api_url = "https://api.openai.com/v1"
-                
+
                 if not api_key:
                     await self._ws_manager.send_to_client(client_id, {
                         "type": "connection_test_result",
@@ -1760,11 +2019,11 @@ class IRISGateway:
                         }
                     })
                     return
-                
+
                 # Test the connection
                 from .utils.openai_connection_test import test_openai_connection
                 success, message = await test_openai_connection(api_key, api_url)
-                
+
                 # Send result to client
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "connection_test_result",
@@ -1777,7 +2036,7 @@ class IRISGateway:
                 })
             else:
                 await self._send_error(client_id, f"Unknown connection type: {connection_type}")
-                
+
         except Exception as e:
             self._logger.error(f"Error testing connection: {e}", exc_info=True)
             await self._ws_manager.send_to_client(client_id, {
@@ -1788,24 +2047,24 @@ class IRISGateway:
                     "message": f"Error testing connection: {str(e)}"
                 }
             })
-    
+
     async def _handle_request_state(self, session_id: str, client_id: str) -> None:
         """
         Handle request_state message - send full state to client.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
         """
         state = await self._state_manager.get_state(session_id)
-        
+
         await self._ws_manager.send_to_client(client_id, {
             "type": "initial_state",
             "payload": {
                 "state": state.model_dump() if state else {}
             }
         })
-    
+
     async def _handle_get_wake_words(self, session_id: str, client_id: str) -> None:
         """
         Handle get_wake_words message - return built-in pvporcupine keywords + discovered .ppn files.
@@ -1853,7 +2112,8 @@ class IRISGateway:
             self._logger.info(
                 f"[Session: {session_id}] Returning {len(wake_words_list)} wake word(s) "
                 f"({len(builtin_list)} built-in, {len(custom_list)} custom)",
-                extra={"session_id": session_id, "client_id": client_id, "count": len(wake_words_list)}
+                extra={"session_id": session_id, "client_id": client_id,
+                       "count": len(wake_words_list)}
             )
 
             # Send response to client — type "wake_words" matches the frontend hook's case "wake_words"
@@ -1869,14 +2129,15 @@ class IRISGateway:
             self._logger.error(
                 f"[Session: {session_id}] Error handling get_wake_words: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, f"Error retrieving wake words: {str(e)}")
 
     async def _handle_get_audio_devices(self, session_id: str, client_id: str) -> None:
         """
         Handle get_audio_devices message - return available audio devices.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -1886,10 +2147,10 @@ class IRISGateway:
                 f"[Session: {session_id}] Processing get_audio_devices request",
                 extra={"session_id": session_id, "client_id": client_id}
             )
-            
+
             # Get available audio devices
             devices = AudioPipeline.list_devices()
-            
+
             # Separate input and output devices
             input_devices = [
                 {
@@ -1907,12 +2168,13 @@ class IRISGateway:
                 }
                 for d in devices if d["output"]
             ]
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Returning {len(input_devices)} input device(s) and {len(output_devices)} output device(s)",
-                extra={"session_id": session_id, "client_id": client_id, "input_count": len(input_devices), "output_count": len(output_devices)}
+                extra={"session_id": session_id, "client_id": client_id, "input_count": len(
+                    input_devices), "output_count": len(output_devices)}
             )
-            
+
             # Send response to client
             await self._ws_manager.send_to_client(client_id, {
                 "type": "audio_devices",
@@ -1923,19 +2185,20 @@ class IRISGateway:
                     "output_count": len(output_devices)
                 }
             })
-            
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error handling get_audio_devices: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, f"Error retrieving audio devices: {str(e)}")
-    
+
     async def _handle_select_wake_word(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle select_wake_word message - load wake word file into PorcupineDetector.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -1944,7 +2207,7 @@ class IRISGateway:
         try:
             # Extract filename from message
             filename = message.get("payload", {}).get("filename")
-            
+
             if not filename:
                 self._logger.warning(
                     f"[Session: {session_id}] select_wake_word missing filename",
@@ -1952,28 +2215,32 @@ class IRISGateway:
                 )
                 await self._send_error(client_id, "No filename provided")
                 return
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Processing select_wake_word: {filename}",
-                extra={"session_id": session_id, "client_id": client_id, "wake_word_filename": filename}
+                extra={"session_id": session_id, "client_id": client_id,
+                       "wake_word_filename": filename}
             )
-            
+
             # Look up wake word file — try cached results first, rescan if not found
-            wake_word_file = self._wake_word_discovery.get_file_by_filename(filename)
+            wake_word_file = self._wake_word_discovery.get_file_by_filename(
+                filename)
             if not wake_word_file:
                 # Cache may be stale (e.g., select_wake_word called before get_wake_words).
                 # Rescan once to pick up newly visible .ppn files.
                 self._wake_word_discovery.scan_directory()
-                wake_word_file = self._wake_word_discovery.get_file_by_filename(filename)
+                wake_word_file = self._wake_word_discovery.get_file_by_filename(
+                    filename)
 
             if not wake_word_file:
                 self._logger.warning(
                     f"[Session: {session_id}] Wake word file not found: {filename}",
-                    extra={"session_id": session_id, "client_id": client_id, "wake_word_filename": filename}
+                    extra={"session_id": session_id, "client_id": client_id,
+                           "wake_word_filename": filename}
                 )
                 await self._send_error(client_id, f"Wake word file not found: {filename}")
                 return
-            
+
             # Update WakeConfig — the registered callback triggers reinitialize_porcupine().
             # Custom .ppn files store the absolute path; built-ins use the keyword name.
             try:
@@ -2006,7 +2273,7 @@ class IRISGateway:
                     f"[Session: {session_id}] Failed to update WakeConfig for wake word: {cfg_e}",
                     extra={"session_id": session_id, "client_id": client_id}
                 )
-            
+
             # Broadcast selection to all clients in session
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "wake_word_selected",
@@ -2017,19 +2284,20 @@ class IRISGateway:
                     "version": wake_word_file.version
                 }
             })
-            
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error handling select_wake_word: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, f"Error selecting wake word: {str(e)}")
-    
+
     async def _handle_get_cleanup_report(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle get_cleanup_report message - generates cleanup report and sends to client.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -2038,15 +2306,16 @@ class IRISGateway:
         try:
             payload = message.get("payload", {})
             dry_run = payload.get("dry_run", True)
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Generating cleanup report (dry_run={dry_run})",
-                extra={"session_id": session_id, "client_id": client_id, "dry_run": dry_run}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "dry_run": dry_run}
             )
-            
+
             # Generate cleanup report
             report = self._cleanup_analyzer.generate_report(dry_run=dry_run)
-            
+
             # Convert report to dict for JSON serialization
             report_dict = {
                 "unused_models": [
@@ -2090,7 +2359,7 @@ class IRISGateway:
                 "warnings": report.warnings,
                 "timestamp": report.timestamp.isoformat()
             }
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Cleanup report generated: "
                 f"{report.total_count} items, {report.total_size_bytes / (1024*1024):.2f} MB",
@@ -2100,25 +2369,26 @@ class IRISGateway:
                     "total_size_mb": report.total_size_bytes / (1024*1024)
                 }
             )
-            
+
             # Send report to client
             await self._ws_manager.send_to_client(client_id, {
                 "type": "cleanup_report",
                 "payload": report_dict
             })
-            
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error generating cleanup report: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, f"Error generating cleanup report: {str(e)}")
-    
+
     async def _handle_execute_cleanup(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle execute_cleanup message - executes cleanup with specified items and sends result.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -2127,19 +2397,20 @@ class IRISGateway:
         try:
             payload = message.get("payload", {})
             items = payload.get("items", [])
-            
+
             if not items:
                 await self._send_error(client_id, "No items specified for cleanup")
                 return
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Executing cleanup for {len(items)} item(s)",
-                extra={"session_id": session_id, "client_id": client_id, "item_count": len(items)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "item_count": len(items)}
             )
-            
+
             # Execute cleanup
             result = self._cleanup_analyzer.execute_cleanup(items)
-            
+
             # Convert result to dict for JSON serialization
             result_dict = {
                 "success": result.success,
@@ -2149,7 +2420,7 @@ class IRISGateway:
                 "errors": result.errors,
                 "backup_path": result.backup_path
             }
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Cleanup executed: "
                 f"success={result.success}, freed {result.freed_bytes / (1024*1024):.2f} MB",
@@ -2162,29 +2433,30 @@ class IRISGateway:
                     "errors": len(result.errors)
                 }
             )
-            
+
             # Send result to client
             await self._ws_manager.send_to_client(client_id, {
                 "type": "cleanup_result",
                 "payload": result_dict
             })
-            
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error executing cleanup: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, f"Error executing cleanup: {str(e)}")
-    
+
     # ============================================================================
     # GAP-01 FIX: Additional handlers from main.py
     # ============================================================================
-    
+
     async def _handle_collapse_to_idle(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle collapse_to_idle message - collapse navigation to idle state.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -2195,23 +2467,24 @@ class IRISGateway:
                 f"[Session: {session_id}] Collapsing to idle",
                 extra={"session_id": session_id, "client_id": client_id}
             )
-            
+
             await self._state_manager.collapse_to_idle(session_id)
             await self._broadcast_state_update(session_id, exclude_client=client_id)
-            
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error collapsing to idle: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, f"Error collapsing to idle: {str(e)}")
-    
+
     async def _handle_expand_to_main(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle expand_to_main message - expand to main category view.
         GAP-02 FIX: Handler for expand_to_main message type.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -2222,25 +2495,26 @@ class IRISGateway:
                 f"[Session: {session_id}] Expanding to main view",
                 extra={"session_id": session_id, "client_id": client_id}
             )
-            
+
             # Send confirmation to client
             await self._ws_manager.send_to_client(client_id, {
                 "type": "category_expanded",
                 "payload": {}
             })
-            
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error expanding to main: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, f"Error expanding to main: {str(e)}")
-    
+
     async def _handle_reload_skills(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle reload_skills message - reload skills configuration.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -2251,31 +2525,32 @@ class IRISGateway:
                 f"[Session: {session_id}] Reloading skills",
                 extra={"session_id": session_id, "client_id": client_id}
             )
-            
+
             from backend.agent.skills import get_skills_loader
             loader = get_skills_loader()
             loader.reload()
-            
+
             await self._ws_manager.send_to_client(client_id, {
                 "type": "skills_reloaded",
                 "payload": {"skills": loader.list_skills()}
             })
-            
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error reloading skills: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._ws_manager.send_to_client(client_id, {
                 "type": "skills_error",
                 "payload": {"error": str(e)}
             })
-    
+
     # ============================================================================
     # GAP-06 & GAP-11: Session Cleanup
     # ============================================================================
-    
+
     async def cleanup_session(self, session_id: str) -> None:
         """
         Clean up session resources including voice callbacks.
@@ -2285,7 +2560,8 @@ class IRISGateway:
             session_id: Session ID to clean up
         """
         try:
-            self._logger.info(f"[Session: {session_id}] Cleaning up session resources")
+            self._logger.info(
+                f"[Session: {session_id}] Cleaning up session resources")
 
             # Remove active voice client tracking
             self._active_voice_client.pop(session_id, None)
@@ -2299,18 +2575,19 @@ class IRISGateway:
             except Exception:
                 pass
 
-            self._logger.info(f"[Session: {session_id}] Session cleanup completed")
+            self._logger.info(
+                f"[Session: {session_id}] Session cleanup completed")
 
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error during cleanup: {e}",
                 exc_info=True,
             )
-    
+
     async def _handle_execute_tool(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle execute_tool message - execute a specific tool directly.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -2320,16 +2597,17 @@ class IRISGateway:
             payload = message.get("payload", {})
             tool_name = payload.get("tool_name")
             parameters = payload.get("parameters", {})
-            
+
             if not tool_name:
                 await self._send_validation_error(client_id, "tool_name", "Tool name is required")
                 return
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Executing tool: {tool_name}",
-                extra={"session_id": session_id, "client_id": client_id, "tool": tool_name}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "tool": tool_name}
             )
-            
+
             # Get agent kernel from app state via global
             from backend.agent import get_agent_kernel
             from backend.agent.tool_bridge import get_agent_tool_bridge
@@ -2356,26 +2634,28 @@ class IRISGateway:
                     "type": "tool_result",
                     "payload": {"tool": tool_name, "error": "Tool bridge not available"}
                 })
-                
+
         except Exception as e:
             self._logger.error(
                 f"[Session: {session_id}] Error executing tool: {e}",
                 exc_info=True,
-                extra={"session_id": session_id, "client_id": client_id, "error": str(e)}
+                extra={"session_id": session_id,
+                       "client_id": client_id, "error": str(e)}
             )
             await self._send_error(client_id, f"Error executing tool: {str(e)}")
-    
+
     async def _handle_enable_vision(self, session_id: str, client_id: str) -> None:
         """
         Handle enable_vision message - loads the vision model with 4-bit quantization.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
         """
         try:
-            self._logger.info(f"[Session: {session_id}] Enabling vision service")
-            
+            self._logger.info(
+                f"[Session: {session_id}] Enabling vision service")
+
             # Send loading status
             await self._ws_manager.send_to_client(client_id, {
                 "type": "vision_status",
@@ -2389,10 +2669,10 @@ class IRISGateway:
                     "is_available": True
                 }
             })
-            
+
             # Enable vision service (lazy loading with quantization)
             success = await self._vision_service.enable()
-            
+
             if success:
                 status = self._vision_service.get_status()
                 await self._ws_manager.send_to_client(client_id, {
@@ -2416,9 +2696,10 @@ class IRISGateway:
                         "error": "Failed to enable vision service"
                     }
                 })
-                
+
         except Exception as e:
-            self._logger.error(f"[Session: {session_id}] Error enabling vision: {e}", exc_info=True)
+            self._logger.error(
+                f"[Session: {session_id}] Error enabling vision: {e}", exc_info=True)
             await self._ws_manager.send_to_client(client_id, {
                 "type": "enable_vision",
                 "payload": {
@@ -2426,35 +2707,37 @@ class IRISGateway:
                     "error": str(e)
                 }
             })
-    
+
     async def _handle_disable_vision(self, session_id: str, client_id: str) -> None:
         """
         Handle disable_vision message - unloads the vision model and frees VRAM.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
         """
         try:
-            self._logger.info(f"[Session: {session_id}] Disabling vision service")
-            
+            self._logger.info(
+                f"[Session: {session_id}] Disabling vision service")
+
             # Disable vision service
             await self._vision_service.disable()
-            
+
             await self._ws_manager.send_to_client(client_id, {
                 "type": "disable_vision",
                 "payload": {"success": True}
             })
-            
+
             # Broadcast updated status to all clients
             status = self._vision_service.get_status()
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "vision_status",
                 "payload": status
             })
-            
+
         except Exception as e:
-            self._logger.error(f"[Session: {session_id}] Error disabling vision: {e}", exc_info=True)
+            self._logger.error(
+                f"[Session: {session_id}] Error disabling vision: {e}", exc_info=True)
             await self._ws_manager.send_to_client(client_id, {
                 "type": "disable_vision",
                 "payload": {
@@ -2462,11 +2745,11 @@ class IRISGateway:
                     "error": str(e)
                 }
             })
-    
+
     async def _handle_get_vision_status(self, session_id: str, client_id: str) -> None:
         """
         Handle get_vision_status message - returns current vision service status.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -2478,13 +2761,14 @@ class IRISGateway:
                 "payload": status
             })
         except Exception as e:
-            self._logger.error(f"[Session: {session_id}] Error getting vision status: {e}", exc_info=True)
+            self._logger.error(
+                f"[Session: {session_id}] Error getting vision status: {e}", exc_info=True)
             await self._send_error(client_id, f"Error getting vision status: {str(e)}")
-    
+
     async def _handle_message_exported(self, session_id: str, client_id: str, message: dict) -> None:
         """
         Handle message_exported event for analytics/logging.
-        
+
         Args:
             session_id: Session ID
             client_id: Client ID
@@ -2494,7 +2778,7 @@ class IRISGateway:
             payload = message.get("payload", {})
             message_id = payload.get("message_id")
             content_type = payload.get("content_type")
-            
+
             self._logger.info(
                 f"[Session: {session_id}] Message exported",
                 extra={
@@ -2505,13 +2789,14 @@ class IRISGateway:
                 }
             )
         except Exception as e:
-            self._logger.error(f"[Session: {session_id}] Error handling message export: {e}", exc_info=True)
-    
+            self._logger.error(
+                f"[Session: {session_id}] Error handling message export: {e}", exc_info=True)
+
     async def _broadcast_state_update(self, session_id: str, exclude_client: Optional[str] = None) -> None:
         """
         Broadcast state update to all clients in a session.
         GAP-05 FIX: Uses 'state_sync' instead of 'state_update' for consistency.
-        
+
         Args:
             session_id: Session ID
             exclude_client: Optional client ID to exclude from broadcast
@@ -2529,11 +2814,11 @@ class IRISGateway:
                 },
                 exclude_clients=exclude_set
             )
-    
+
     async def _send_error(self, client_id: str, error_message: str) -> None:
         """
         Send error message to client.
-        
+
         Args:
             client_id: Client ID
             error_message: Error message
@@ -2544,7 +2829,7 @@ class IRISGateway:
                 "message": error_message
             }
         })
-    
+
     async def _send_validation_error(self, client_id: str, field_id: str, error_message: str) -> None:
         """
         Send validation error message to client.
@@ -2560,6 +2845,252 @@ class IRISGateway:
             "field_id": field_id,
             "error": error_message
         })
+
+    # --------------------------------------------------------------------------
+    # Skills management handlers
+    # --------------------------------------------------------------------------
+
+    _SKILLS_ROOT = None  # resolved lazily
+
+    def _get_skills_root(self):
+        """Return the absolute path to the skills directory."""
+        if IRISGateway._SKILLS_ROOT is None:
+            from pathlib import Path
+            IRISGateway._SKILLS_ROOT = Path(
+                __file__).resolve().parent / "agent" / "skills"
+        return IRISGateway._SKILLS_ROOT
+
+    def _read_skill_config(self):
+        """Read config.yaml and return the set of disabled skill keys."""
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = self._get_skills_root() / "config.yaml"
+            if cfg_path.exists():
+                data = yaml.safe_load(
+                    cfg_path.read_text(encoding="utf-8")) or {}
+                return set(data.get("disabled_skills", []))
+        except Exception as e:
+            self._logger.warning(
+                f"[IRISGateway] Could not read skill config: {e}")
+        return set()
+
+    def _write_skill_config(self, disabled: set):
+        """Persist the disabled skills list to config.yaml."""
+        try:
+            import yaml
+            cfg_path = self._get_skills_root() / "config.yaml"
+            existing = {}
+            if cfg_path.exists():
+                existing = yaml.safe_load(
+                    cfg_path.read_text(encoding="utf-8")) or {}
+            existing["disabled_skills"] = sorted(disabled)
+            cfg_path.write_text(
+                yaml.dump(existing, default_flow_style=False,
+                          allow_unicode=True),
+                encoding="utf-8"
+            )
+        except Exception as e:
+            self._logger.error(
+                f"[IRISGateway] Could not write skill config: {e}")
+
+    def _extract_skill_description(self, skill_md_text: str) -> str:
+        """Pull the description from YAML frontmatter, or return first content line."""
+        in_fm = False
+        seen_fm = False
+        fm_closed = False
+        for line in skill_md_text.splitlines():
+            stripped = line.strip()
+            if stripped == "---":
+                if not seen_fm:
+                    in_fm = True
+                    seen_fm = True
+                elif in_fm:
+                    in_fm = False
+                    fm_closed = True
+                continue
+            if in_fm and stripped.lower().startswith("description:"):
+                return stripped.split(":", 1)[1].strip().strip('"').strip("'")
+        # Fallback: first non-empty, non-header content line
+        in_fm = False
+        seen_fm = False
+        for line in skill_md_text.splitlines():
+            stripped = line.strip()
+            if stripped == "---":
+                if not seen_fm:
+                    in_fm = True
+                    seen_fm = True
+                elif in_fm:
+                    in_fm = False
+                continue
+            if in_fm:
+                continue
+            if stripped and not stripped.startswith("#"):
+                return stripped[:120]
+        return ""
+
+    async def _handle_get_skills(self, session_id: str, client_id: str) -> None:
+        """List all user/agent-created skills (excludes skill-creator and built-ins)."""
+        from pathlib import Path
+        # Built-in system skills never shown in the learned list
+        SYSTEM_SKILLS = {"skill-creator"}
+
+        skills_root = self._get_skills_root()
+        disabled = self._read_skill_config()
+        skills = []
+
+        if skills_root.is_dir():
+            for child in sorted(skills_root.iterdir()):
+                if not child.is_dir() or child.name in SYSTEM_SKILLS:
+                    continue
+                skill_md = child / "SKILL.md"
+                if not skill_md.exists():
+                    continue
+                try:
+                    content = skill_md.read_text(encoding="utf-8")
+                    description = self._extract_skill_description(content)
+                    # Extract name from frontmatter or use directory name
+                    name = child.name
+                    in_fm = False
+                    seen_fm = False
+                    for line in content.splitlines():
+                        stripped = line.strip()
+                        if stripped == "---":
+                            if not seen_fm:
+                                in_fm = True
+                                seen_fm = True
+                            elif in_fm:
+                                in_fm = False
+                            continue
+                        if in_fm and stripped.lower().startswith("name:"):
+                            name = stripped.split(
+                                ":", 1)[1].strip().strip('"').strip("'")
+                            break
+                    skills.append({
+                        "key": child.name,
+                        "name": name,
+                        "description": description,
+                        "enabled": child.name not in disabled,
+                    })
+                except Exception as e:
+                    self._logger.warning(
+                        f"[IRISGateway] Could not read skill {child.name}: {e}")
+
+        await self._ws_manager.send_to_client(client_id, {
+            "type": "skills_list",
+            "payload": {"skills": skills}
+        })
+
+    async def _handle_toggle_skill(self, session_id: str, client_id: str, message: dict) -> None:
+        """Enable or disable a skill by updating config.yaml."""
+        payload = message.get("payload", {})
+        key = payload.get("key") or message.get("key", "")
+        enabled = payload.get("enabled", True)
+
+        if not key:
+            await self._send_error(client_id, "toggle_skill: 'key' is required")
+            return
+
+        disabled = self._read_skill_config()
+        if enabled:
+            disabled.discard(key)
+        else:
+            disabled.add(key)
+        self._write_skill_config(disabled)
+
+        self._logger.info(
+            f"[IRISGateway] Skill '{key}' {'enabled' if enabled else 'disabled'}")
+        await self._ws_manager.send_to_client(client_id, {
+            "type": "skill_toggled",
+            "payload": {"key": key, "enabled": enabled}
+        })
+
+    async def _handle_delete_skill(self, session_id: str, client_id: str, message: dict) -> None:
+        """Permanently delete a user-created skill directory."""
+        import shutil
+        from pathlib import Path
+
+        SYSTEM_SKILLS = {"skill-creator"}
+        payload = message.get("payload", {})
+        key = payload.get("key") or message.get("key", "")
+
+        if not key:
+            await self._send_error(client_id, "delete_skill: 'key' is required")
+            return
+        if key in SYSTEM_SKILLS:
+            await self._send_error(client_id, f"delete_skill: cannot delete built-in skill '{key}'")
+            return
+
+        skill_dir = self._get_skills_root() / key
+        if not skill_dir.exists():
+            await self._send_error(client_id, f"delete_skill: skill '{key}' not found")
+            return
+
+        try:
+            shutil.rmtree(skill_dir)
+            # Also remove from disabled list if present
+            disabled = self._read_skill_config()
+            disabled.discard(key)
+            self._write_skill_config(disabled)
+            self._logger.info(f"[IRISGateway] Deleted skill '{key}'")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "skill_deleted",
+                "payload": {"key": key}
+            })
+        except Exception as e:
+            self._logger.error(
+                f"[IRISGateway] Failed to delete skill '{key}': {e}")
+            await self._send_error(client_id, f"Failed to delete skill: {e}")
+
+    async def _handle_create_skill(self, session_id: str, client_id: str, message: dict) -> None:
+        """Create a new skill directory with a SKILL.md file."""
+        from pathlib import Path
+        import re
+
+        payload = message.get("payload", {})
+        name = (payload.get("name") or message.get("name", "")).strip()
+        description = (payload.get("description")
+                       or message.get("description", "")).strip()
+        content = payload.get("content") or message.get("content", "")
+
+        if not name:
+            await self._send_error(client_id, "create_skill: 'name' is required")
+            return
+
+        # Create a safe directory key from the name
+        key = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")
+        key = re.sub(r"-+", "-", key)
+        if not key:
+            key = "custom-skill"
+
+        skill_dir = self._get_skills_root() / key
+        skill_md = skill_dir / "SKILL.md"
+
+        # Build the SKILL.md content if not provided
+        if not content:
+            content = (
+                f"---\nname: {name}\ndescription: {description or 'Custom skill created by IRIS.'}\n---\n\n"
+                f"# {name}\n\n{description or 'No description provided.'}\n"
+            )
+
+        try:
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_md.write_text(content, encoding="utf-8")
+            self._logger.info(
+                f"[IRISGateway] Created skill '{key}' at {skill_md}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "skill_created",
+                "payload": {
+                    "key": key,
+                    "name": name,
+                    "description": description,
+                    "enabled": True,
+                }
+            })
+        except Exception as e:
+            self._logger.error(
+                f"[IRISGateway] Failed to create skill '{key}': {e}")
+            await self._send_error(client_id, f"Failed to create skill: {e}")
 
     def _resolve_device_index(self, device: Any, want_input: bool) -> Any:
         """Resolve a device name string to an integer sounddevice index.
@@ -2596,12 +3127,28 @@ class IRISGateway:
                     continue
                 if d["name"][:31].lower().rstrip() == key:
                     return d["index"]
+            # Substring match (handles API-level name differences)
+            device_lower = device.lower()
+            for d in devices:
+                if want_input and not d.get("input"):
+                    continue
+                if not want_input and not d.get("output"):
+                    continue
+                name_lower = d["name"].lower()
+                if device_lower in name_lower or name_lower in device_lower:
+                    self._logger.debug(
+                        f"[IRISGateway] Resolved '{device}' via substring match → "
+                        f"'{d['name']}' (index {d['index']})"
+                    )
+                    return d["index"]
+            available = [d["name"] for d in devices if d.get("input" if want_input else "output")]
             self._logger.warning(
                 f"[IRISGateway] Could not resolve device name '{device}' to an index — "
-                f"using name as-is (may cause multiple-device error)"
+                f"using name as-is. Available: {available}"
             )
         except Exception as e:
-            self._logger.error(f"[IRISGateway] Error resolving device index for '{device}': {e}")
+            self._logger.error(
+                f"[IRISGateway] Error resolving device index for '{device}': {e}")
         return device
 
 
@@ -2615,4 +3162,3 @@ def get_iris_gateway() -> IRISGateway:
     if _iris_gateway is None:
         _iris_gateway = IRISGateway()
     return _iris_gateway
-

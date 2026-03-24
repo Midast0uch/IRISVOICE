@@ -4,7 +4,7 @@ import React, { useMemo, useCallback, useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 
 import { ENERGY_CYCLE } from '@/lib/timing-config'
-import { Check, Palette } from "lucide-react"
+import { Check, Palette, ChevronRight } from "lucide-react"
 import { ConnectionLine } from "./ConnectionLine"
 // Explicitly import from wheel-view fields barrel export to avoid conflict with general fields
 import { ToggleField, SliderField, DropdownField, TextField, ColorField } from "./fields"
@@ -14,6 +14,7 @@ import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
 import { IntegrationListPanel } from "@/components/integrations/IntegrationListPanel"
 import { CollapsibleSection } from "./CollapsibleSection"
 import { ColorSliderGroup } from "./ColorSliderGroup"
+import { LearnedSkillsPanel } from "./LearnedSkillsPanel"
 import { useBrandColor, ThemeType, PRISM_THEMES } from "@/contexts/BrandColorContext"
 
 interface SidePanelProps {
@@ -338,14 +339,21 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           )
 
         case "custom":
+          if (field.id === 'skills_list') {
+            return (
+              <div key={field.id} className="w-full">
+                <LearnedSkillsPanel glowColor={glowColor} />
+              </div>
+            );
+          }
           return (
             <button
               key={field.id}
               onClick={() => onValueChange(field.id, "trigger")}
-              className="w-full py-2 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all"
+              className="w-full py-2.5 px-4 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all mb-4"
               style={{
                 background: `${glowColor}15`,
-                border: `1px solid ${glowColor}44`,
+                border: `1px solid ${glowColor}40`,
                 color: glowColor
               }}
               onMouseEnter={(e) => {
@@ -354,10 +362,13 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = `${glowColor}15`
-                e.currentTarget.style.borderColor = `${glowColor}44`
+                e.currentTarget.style.borderColor = `${glowColor}40`
               }}
             >
-              {field.label}
+              <div className="flex items-center justify-between">
+                <span>{field.label}</span>
+                <ChevronRight className="w-3 h-3 opacity-50" />
+              </div>
             </button>
           )
 
