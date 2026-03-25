@@ -213,9 +213,23 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
         {
           id: 'lmstudio_endpoint',
           type: 'text',
-          label: 'LM Studio Endpoint',
+          label: 'LM Studio / OpenAI-Compatible Endpoint',
           placeholder: 'http://localhost:1234',
           defaultValue: 'http://localhost:1234'
+        },
+        {
+          id: 'ollama_endpoint',
+          type: 'text',
+          label: 'Ollama Endpoint',
+          placeholder: 'http://localhost:11434',
+          defaultValue: 'http://localhost:11434'
+        },
+        {
+          id: 'api_base_url',
+          type: 'text',
+          label: 'API Base URL',
+          placeholder: 'https://api.openai.com/v1',
+          defaultValue: 'https://api.openai.com/v1'
         },
         {
           id: 'api_key',
@@ -382,8 +396,8 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'vision_model',
           type: 'dropdown',
           label: 'Vision Model',
-          options: ['minicpm-o4.5', 'llava', 'bakllava'],
-          defaultValue: 'minicpm-o4.5'
+          options: ['lfm2.5-vl', 'llava', 'bakllava'],
+          defaultValue: 'lfm2.5-vl'
         }
       ]
     }
@@ -415,8 +429,8 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'vision_model_provider',
           type: 'dropdown',
           label: 'Vision Model',
-          options: ['minicpm_ollama', 'anthropic', 'volcengine', 'local'],
-          defaultValue: 'minicpm_ollama'
+          options: ['llama_server', 'anthropic', 'volcengine', 'local'],
+          defaultValue: 'llama_server'
         },
         {
           id: 'api_key',

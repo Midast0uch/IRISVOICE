@@ -1,14 +1,12 @@
 """
-IRIS Vision Module — MiniCPM-o Integration
-Provides visual understanding, screen-aware conversation, and proactive monitoring.
+IRIS Vision Module
+Provides screen capture and monitoring utilities.
+Vision analysis is handled by LFM2.5-VL via backend/tools/vision_mcp_server.py
 """
-from .minicpm_client import MiniCPMClient, get_minicpm_client
 from .screen_capture import ScreenCapture, get_screen_capture
 from .screen_monitor import ScreenMonitor, get_screen_monitor
 
 __all__ = [
-    "MiniCPMClient",
-    "get_minicpm_client",
     "ScreenCapture",
     "get_screen_capture",
     "ScreenMonitor",

@@ -22,6 +22,7 @@ import os
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
+_TELEGRAM_PHOTO_BASE = "https://api.telegram.org/bot{token}/sendPhoto"
 
 
 class TelegramNotifier:
@@ -73,6 +74,43 @@ class TelegramNotifier:
         """
         formatted = f"[IRIS UPDATE] {title}\n\n{body}"
         return self.send_message(formatted)
+
+    def send_photo(self, image_bytes: bytes, caption: str = "") -> dict:
+        """
+        Send a photo (raw PNG/JPEG bytes) to the configured Telegram chat.
+
+        Args:
+            image_bytes: Raw image bytes (PNG or JPEG).
+            caption:     Optional caption text (max 1024 chars).
+
+        Returns:
+            {"success": True} on success.
+            {"success": False, "error": reason} on failure.
+        """
+        if not self.is_configured():
+            return {
+                "success": False,
+                "error": "Telegram not configured — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID",
+            }
+        try:
+            import requests as _requests
+            url = _TELEGRAM_PHOTO_BASE.format(token=self._token)
+            files = {"photo": ("screenshot.png", image_bytes, "image/png")}
+            data = {"chat_id": self._chat_id}
+            if caption:
+                data["caption"] = caption[:1024]
+            response = _requests.post(url, data=data, files=files, timeout=30)
+            result = response.json()
+            if response.status_code == 200 and result.get("ok"):
+                logger.info("[TelegramNotifier] Photo sent successfully")
+                return {"success": True, "message_id": result.get("result", {}).get("message_id")}
+            else:
+                error = result.get("description", f"HTTP {response.status_code}")
+                logger.warning(f"[TelegramNotifier] Photo API error: {error}")
+                return {"success": False, "error": error}
+        except Exception as exc:
+            logger.warning(f"[TelegramNotifier] Failed to send photo: {exc}")
+            return {"success": False, "error": str(exc)}
 
     def request_credentials(self, service: str, what_is_needed: str) -> dict:
         """

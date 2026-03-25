@@ -40,7 +40,6 @@ class AgentToolBridge:
     """
 
     def __init__(self, security_filter=None, audit_logger=None, vision_system=None):
-        self._vision_client = None
         self._gui_operator = None
         self._screen_capture = None
         self._screen_monitor = None
@@ -50,9 +49,6 @@ class AgentToolBridge:
         # Security and audit integration (from task 9)
         self._security_filter = security_filter
         self._audit_logger = audit_logger
-
-        # Vision system integration (from task 10.1)
-        self._vision_system = vision_system
 
     async def initialize(self):
         """
@@ -91,25 +87,6 @@ class AgentToolBridge:
             except Exception as e:
                 logger.error(f"[AgentToolBridge] AuditLogger init failed: {e}")
 
-        # Initialize VisionSystem if not provided
-        if self._vision_system is None:
-            try:
-                from backend.tools.vision_system import get_vision_system
-                self._vision_system = get_vision_system()
-                logger.info("[AgentToolBridge] VisionSystem initialized")
-            except Exception as e:
-                logger.error(
-                    f"[AgentToolBridge] VisionSystem init failed: {e}")
-
-        # Initialize Vision (MiniCPM via Ollama)
-        try:
-            from backend.automation import VisionModelClient
-            self._vision_client = VisionModelClient()
-            result = await self._vision_client.initialize()
-            logger.info(f"[AgentToolBridge] Vision: {result}")
-        except Exception as e:
-            logger.error(f"[AgentToolBridge] Vision init failed: {e}")
-
         # Initialize GUI Operator (Native automation)
         try:
             from backend.automation import NativeGUIOperator
@@ -134,16 +111,35 @@ class AgentToolBridge:
             )
             from backend.mcp.gui_automation_server import GUIAutomationServer
 
+            from backend.tools.vision_mcp_server import VisionMCPServer
             self._mcp_servers = {
                 "browser": BrowserServer(),
                 "app_launcher": AppLauncherServer(),
                 "system": SystemServer(),
                 "file_manager": FileManagerServer(),
                 "gui_automation": GUIAutomationServer(),
-                "internal": InternalCapabilityServer()
+                "internal": InternalCapabilityServer(),
+                "vision": VisionMCPServer(),
             }
             logger.info(
                 f"[AgentToolBridge] MCP Servers: {list(self._mcp_servers.keys())}")
+
+            # Option B: wire VisionGuidedOperator after both servers are ready
+            # Kernel gates tasks; VisionGuidedOperator executes them fast
+            try:
+                from backend.agent.vision_guided_operator import VisionGuidedOperator
+                self._vision_guided_operator = VisionGuidedOperator(
+                    vision_server=self._mcp_servers.get("vision"),
+                )
+                # Wire native operator lazily — initialized on first use
+                gui_server = self._mcp_servers.get("gui_automation")
+                if gui_server and hasattr(gui_server, "set_vision_guided_operator"):
+                    gui_server.set_vision_guided_operator(self._vision_guided_operator)
+                logger.info("[AgentToolBridge] VisionGuidedOperator wired (Option B)")
+            except Exception as ve:
+                logger.warning(f"[AgentToolBridge] VisionGuidedOperator init skipped: {ve}")
+                self._vision_guided_operator = None
+
         except Exception as e:
             logger.error(f"[AgentToolBridge] MCP Servers init failed: {e}")
 
@@ -346,8 +342,8 @@ class AgentToolBridge:
 
         Requirements: 8.3, 8.4
         """
-        if not self._vision_client and not self._vision_system:
-            return {"error": "Vision client not initialized"}
+        if "vision" not in self._mcp_servers:
+            return {"error": "Vision MCP server not initialized"}
 
         try:
             # Check rate limit
@@ -377,65 +373,53 @@ class AgentToolBridge:
             result = None
 
             if tool_name == "vision_get_context":
-                # Use VisionSystem to get current context
-                if self._vision_system:
-                    context = self._vision_system.get_current_context()
-                    if context:
-                        result = {
-                            "success": True,
-                            "result": {
-                                "description": context.description,
-                                "active_app": context.active_app,
-                                "notable_items": context.notable_items,
-                                "needs_help": context.needs_help,
-                                "suggestion": context.suggestion
-                            }
-                        }
-                    else:
-                        result = {"error": "No screen context available"}
+                # Route through VisionMCPServer (LFM2.5-VL)
+                vision_server = self._mcp_servers.get("vision")
+                if vision_server:
+                    mcp_result = await vision_server.execute_tool(
+                        "vision.describe_live_frame", {}
+                    )
+                    text = mcp_result.get("content", [{}])[0].get("text", "Vision unavailable")
+                    result = {"success": True, "result": {"description": text}}
                 else:
-                    result = {"error": "VisionSystem not initialized"}
+                    result = {"error": "Vision MCP server not available"}
 
             elif tool_name == "vision_detect_element":
-                import base64
-                screenshot = self._screen_capture.capture() if self._screen_capture else None
-                if screenshot:
-                    import cv2
-                    import numpy as np
-                    _, buffer = cv2.imencode('.png', screenshot)
-                    b64 = base64.b64encode(buffer).decode()
-                    result_data = await self._vision_client.detect_element(b64, params.get("description", ""))
-                    result = {"success": True, "result": result_data}
+                vision_server = self._mcp_servers.get("vision")
+                if vision_server:
+                    mcp_result = await vision_server.execute_tool(
+                        "vision.find_ui_element",
+                        {"element_description": params.get("description", "")}
+                    )
+                    text = mcp_result.get("content", [{}])[0].get("text", "Vision unavailable")
+                    result = {"success": True, "result": text}
                 else:
-                    result = {"error": "No screenshot available"}
+                    result = {"error": "Vision MCP server not available"}
 
             elif tool_name == "vision_analyze_screen":
-                screenshot = self._screen_capture.capture() if self._screen_capture else None
-                if screenshot:
-                    import cv2
-                    import numpy as np
-                    _, buffer = cv2.imencode('.png', screenshot)
-                    b64 = base64.b64encode(buffer).decode()
-                    result_data = await self._vision_client.analyze_screen(b64)
-                    result = {"success": True, "result": result_data}
+                vision_server = self._mcp_servers.get("vision")
+                if vision_server:
+                    mcp_result = await vision_server.execute_tool(
+                        "vision.analyze_screen",
+                        {"question": params.get("question", "")}
+                    )
+                    text = mcp_result.get("content", [{}])[0].get("text", "Vision unavailable")
+                    result = {"success": True, "result": text}
                 else:
-                    result = {"error": "No screenshot available"}
+                    result = {"error": "Vision MCP server not available"}
 
             elif tool_name == "vision_validate_action":
-                screenshot = self._screen_capture.capture() if self._screen_capture else None
-                if screenshot:
-                    import cv2
-                    import numpy as np
-                    _, buffer = cv2.imencode('.png', screenshot)
-                    b64 = base64.b64encode(buffer).decode()
-                    result_data = await self._vision_client.validate_action(
-                        params.get("action", ""),
-                        params.get("target", ""),
-                        b64
+                # Suggest action via vision tool (replaces deprecated validate_action)
+                vision_server = self._mcp_servers.get("vision")
+                if vision_server:
+                    goal = f"{params.get('action', '')} {params.get('target', '')}".strip()
+                    mcp_result = await vision_server.execute_tool(
+                        "vision.suggest_next_action", {"goal": goal}
                     )
-                    result = {"success": True, "result": result_data}
+                    text = mcp_result.get("content", [{}])[0].get("text", "Vision unavailable")
+                    result = {"success": True, "result": text}
                 else:
-                    result = {"error": "No screenshot available"}
+                    result = {"error": "Vision MCP server not available"}
 
             else:
                 result = {"error": f"Unknown vision tool: {tool_name}"}
@@ -1003,8 +987,7 @@ class AgentToolBridge:
         """
         return {
             "initialized": self._initialized,
-            "vision_available": self._vision_client is not None,
-            "vision_system_available": self._vision_system is not None,
+            "vision_available": "vision" in self._mcp_servers,
             "gui_operator_available": self._gui_operator is not None,
             "screen_capture_available": self._screen_capture is not None,
             "mcp_servers": list(self._mcp_servers.keys()),

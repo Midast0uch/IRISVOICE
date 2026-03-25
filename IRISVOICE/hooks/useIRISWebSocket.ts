@@ -160,7 +160,7 @@ export function useIRISWebSocket(
     load_progress_percent: null,
     error_message: null,
     last_used: null,
-    model_name: "minicpm-o4.5",
+    model_name: "lfm2.5-vl",
     quantization_enabled: true,
     is_available: false
   })

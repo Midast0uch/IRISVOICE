@@ -129,14 +129,26 @@ class AgentKernel:
         self._selected_reasoning_model: Optional[str] = None
         self._selected_tool_execution_model: Optional[str] = None
         # Provider the user selected in the UI.
-        # "lmstudio" → LM Studio OpenAI-compatible API (localhost:1234)  ← recommended
-        # "local"    → Ollama (http://localhost:11434)
-        # "vps"      → VPS Gateway (self._vps_gateway)
-        # "api"      → OpenAI API (cloud)
+        # "lmstudio"          → LM Studio OpenAI-compatible local API
+        # "openai_compatible" → any OpenAI-compatible server (llamafile, vllm, ollama OpenAI mode, etc.)
+        # "local"             → Ollama native API (http://localhost:11434)
+        # "vps"               → VPS Gateway (self._vps_gateway)
+        # "api"               → OpenAI / cloud API key
+        # "uninitialized"     → not yet configured — wait for user to confirm settings
         self._model_provider: str = "uninitialized"
 
-        # LM Studio base URL — set via configure_lmstudio() when confirm_card fires
+        # OpenAI-compatible endpoint — covers lmstudio, llamafile, vllm, or any custom server.
+        # Set via configure_lmstudio() (legacy name kept) or configure_openai_compat().
+        # Defaults to LM Studio's default port; overridden when the user saves settings.
         self._lmstudio_endpoint: str = "http://localhost:1234"
+
+        # Ollama native API endpoint (used when provider == "local").
+        self._ollama_endpoint: str = "http://localhost:11434"
+
+        # Cloud/remote API credentials (used when provider == "api").
+        # Supports any OpenAI-compatible remote API: OpenAI, Groq, Together, OpenRouter, etc.
+        self._api_key: str = ""
+        self._api_base_url: str = "https://api.openai.com/v1"
 
         # Thinking extracted from the most recent _respond_direct call.
         # Set before returning so iris_gateway can include it in the text_response payload.
@@ -308,7 +320,7 @@ class AgentKernel:
                 self.raw_text = raw_text
 
         try:
-            if self._model_provider == "lmstudio":
+            if self._is_openai_compat():
                 _lms = self._get_lmstudio_client()
                 _resp = _lms.chat.completions.create(
                     model=self._selected_reasoning_model or "local-model",
@@ -493,14 +505,72 @@ class AgentKernel:
             self._vps_gateway = None
 
     def configure_lmstudio(self, endpoint: str) -> None:
-        """Store the LM Studio base URL for inference routing."""
+        """Store the OpenAI-compatible endpoint for inference routing.
+
+        Named configure_lmstudio for backward compatibility but accepts any
+        OpenAI-compatible server URL (LM Studio, llamafile, vllm, llama-server, etc.).
+        """
         self._lmstudio_endpoint = endpoint.rstrip("/")
         self._lmstudio_client = None  # invalidate cached client — endpoint changed
         logger.info(
-            f"[AgentKernel] LM Studio endpoint configured: {self._lmstudio_endpoint}")
+            f"[AgentKernel] OpenAI-compatible endpoint configured: {self._lmstudio_endpoint}")
+
+    def configure_openai_compat(self, endpoint: str, provider_name: str = "openai_compatible") -> None:
+        """Configure any OpenAI-compatible inference server.
+
+        Use this when the user picks a custom server that isn't specifically
+        LM Studio — e.g. llamafile, vllm, llama-server HTTP mode, koboldcpp, etc.
+        Sets both the endpoint and the provider name so inference routing works.
+        """
+        self._lmstudio_endpoint = endpoint.rstrip("/")
+        self._lmstudio_client = None
+        self._model_provider = provider_name
+        logger.info(
+            f"[AgentKernel] {provider_name} endpoint configured: {self._lmstudio_endpoint}")
+
+    def configure_ollama(self, endpoint: str) -> None:
+        """Configure the Ollama native API endpoint (provider == 'local')."""
+        self._ollama_endpoint = endpoint.rstrip("/")
+        logger.info(f"[AgentKernel] Ollama endpoint configured: {self._ollama_endpoint}")
+
+    def configure_api(self, api_key: str, base_url: str = "https://api.openai.com/v1") -> None:
+        """Configure remote API credentials (provider == 'api').
+
+        Works with any OpenAI-compatible remote API:
+        OpenAI, Groq, Together AI, OpenRouter, Mistral, Fireworks, etc.
+        The base_url controls which service is called.
+        """
+        self._api_key = api_key
+        self._api_base_url = base_url.rstrip("/")
+        self._lmstudio_client = None  # invalidate cached client
+        logger.info(f"[AgentKernel] Remote API configured: base_url={self._api_base_url}")
+
+    def _get_api_client(self) -> Any:
+        """Return an OpenAI-compatible client for the remote API provider."""
+        from openai import OpenAI as _OpenAI
+        return _OpenAI(
+            api_key=self._api_key or "placeholder",
+            base_url=self._api_base_url,
+        )
+
+    # Providers that speak the OpenAI-compatible chat completions API.
+    # When the user picks any of these, inference routes through _get_lmstudio_client()
+    # using whatever endpoint they configured (LM Studio, llamafile, vllm, etc.).
+    _OPENAI_COMPAT_PROVIDERS = frozenset({
+        "lmstudio", "openai_compatible", "llamafile", "vllm", "llamacpp_server",
+        "koboldcpp", "textgen_webui", "ollama_openai",
+    })
+
+    def _is_openai_compat(self) -> bool:
+        """Return True if the user-selected provider speaks the OpenAI chat API (local)."""
+        return self._model_provider in self._OPENAI_COMPAT_PROVIDERS
+
+    def _is_api_provider(self) -> bool:
+        """Return True if the user selected a remote API provider."""
+        return self._model_provider == "api"
 
     def _get_lmstudio_client(self) -> Any:
-        """Return a cached OpenAI-compatible client pointed at LM Studio.
+        """Return a cached OpenAI-compatible client pointed at the configured endpoint.
 
         The client is created once and reused for the lifetime of this
         AgentKernel instance (or until the endpoint changes).  Reusing the
@@ -786,7 +856,7 @@ class AgentKernel:
 
         try:
             # LM Studio (OpenAI-compatible)
-            if self._model_provider == "lmstudio":
+            if self._is_openai_compat():
                 client = self._get_lmstudio_client()
                 sel = self._selected_reasoning_model or "local-model"
                 # Only enable thinking for complex queries — skips 300-1000 extra tokens
@@ -1050,7 +1120,7 @@ class AgentKernel:
             )
             try:
                 # ── LM Studio (OpenAI-compatible API) ────────────────────────
-                if self._model_provider == "lmstudio":
+                if self._is_openai_compat():
                     client = self._get_lmstudio_client()
                     sel = self._selected_reasoning_model or "local-model"
 
@@ -1456,7 +1526,7 @@ class AgentKernel:
 
         plan_raw: Optional[str] = None
         try:
-            if self._model_provider == "lmstudio":
+            if self._is_openai_compat():
                 _lms = self._get_lmstudio_client()
                 _r = _lms.chat.completions.create(
                     model=self._selected_reasoning_model or "local-model",
@@ -1787,7 +1857,7 @@ class AgentKernel:
                             _sel_check = self._selected_reasoning_model
                             _ollama_will_handle = ":" in _sel_check
                             _vps_will_handle = bool(self._vps_gateway)
-                            _lmstudio_will_handle = self._model_provider == "lmstudio"
+                            _lmstudio_will_handle = self._is_openai_compat()
                             if not _ollama_will_handle and not _vps_will_handle and not _lmstudio_will_handle:
                                 logger.warning(
                                     f"[AgentKernel] Selected model {_sel_check} unavailable, "
@@ -1833,7 +1903,7 @@ class AgentKernel:
                         logger.error(
                             f"[AgentKernel] Error accessing fallback model: {e}")
                         return {"error": f"Failed to access fallback model: {e}"}
-                elif self._model_provider == "lmstudio":
+                elif self._is_openai_compat():
                     # LM Studio is configured — reasoning_model stays None; the LM Studio
                     # inference block below handles it via localhost:1234.
                     logger.info(
@@ -1975,7 +2045,7 @@ Respond with a JSON object:
             # LM Studio inference (OpenAI-compatible local API at localhost:1234).
             # Triggered when provider == "lmstudio" and no prior backend produced a response.
             # Uses the openai Python client pointed at the LM Studio local server.
-            if plan_response is None and self._model_provider == "lmstudio":
+            if plan_response is None and self._is_openai_compat():
                 try:
                     _lms = self._get_lmstudio_client()
                     _lms_resp = _lms.chat.completions.create(
@@ -2440,7 +2510,7 @@ Respond with a JSON object:
                         _sel_exec_check = self._selected_tool_execution_model
                         _ollama_exec_will_handle = ":" in _sel_exec_check
                         _vps_exec_will_handle = bool(self._vps_gateway)
-                        _lmstudio_exec_will_handle = self._model_provider == "lmstudio"
+                        _lmstudio_exec_will_handle = self._is_openai_compat()
                         if not _ollama_exec_will_handle and not _vps_exec_will_handle and not _lmstudio_exec_will_handle:
                             logger.warning(
                                 f"[AgentKernel] Selected model {_sel_exec_check} unavailable, "
@@ -2485,7 +2555,7 @@ Respond with a JSON object:
                     logger.error(
                         f"[AgentKernel] Error accessing fallback model: {e}")
                     return {"error": f"Failed to access fallback model: {e}", "success": False}
-            elif self._model_provider == "lmstudio":
+            elif self._is_openai_compat():
                 # LM Studio configured — execution_model stays None; LM Studio block handles it.
                 logger.info(
                     "[AgentKernel] No local execution model; delegating execution to LM Studio"
@@ -2568,7 +2638,7 @@ Provide the execution result."""
                     result_text = None
 
             # LM Studio execution inference
-            if result_text is None and self._model_provider == "lmstudio":
+            if result_text is None and self._is_openai_compat():
                 try:
                     _lms_exec = self._get_lmstudio_client()
                     _lms_exec_resp = _lms_exec.chat.completions.create(
@@ -2869,7 +2939,7 @@ If any tools failed, address those issues in your response.
 
             # Try LM Studio synthesis
             _sel_synth = self._selected_reasoning_model or ""
-            if not reasoning_model and self._model_provider == "lmstudio":
+            if not reasoning_model and self._is_openai_compat():
                 try:
                     _lms_synth = self._get_lmstudio_client()
                     _lms_synth_resp = _lms_synth.chat.completions.create(

@@ -4,7 +4,7 @@ Routes incoming WebSocket messages to appropriate handlers based on message type
 """
 
 from .integrations import get_integration_handler
-from .vision.vision_service import VisionService, get_vision_service
+from .tools.lfm_vl_provider import LFMVLProvider
 from .tools.cleanup_analyzer import CleanupAnalyzer
 from .voice.wake_word_discovery import WakeWordDiscovery
 from .audio.pipeline import AudioPipeline
@@ -91,10 +91,10 @@ class IRISGateway:
         self._cleanup_analyzer = CleanupAnalyzer()
         self._logger.info("[IRISGateway] Cleanup analyzer initialized")
 
-        # Initialize vision service (lazy loading - model not loaded until enabled)
-        self._vision_service = get_vision_service()
+        # Initialize LFM2.5-VL vision provider (connects to llama-server port 8081)
+        self._vision_provider = LFMVLProvider()
         self._logger.info(
-            "[IRISGateway] Vision service initialized (lazy loading)")
+            "[IRISGateway] Vision provider initialized (LFM2.5-VL @ http://localhost:8081/v1)")
 
         # Initialize model cache for lazy loading (5 minute TTL)
         self._model_cache: Dict[str, tuple[List[str], datetime]] = {}
@@ -623,8 +623,7 @@ class IRISGateway:
 
                     # Wire up the correct inference backend based on provider.
                     if provider == "lmstudio":
-                        # LM Studio uses an OpenAI-compatible local API — no gateway object needed.
-                        # Just store the endpoint so the kernel inference blocks can use it.
+                        # LM Studio / any OpenAI-compatible local server.
                         lms_endpoint = values.get(
                             "lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
                         kernel.configure_lmstudio(lms_endpoint)
@@ -634,10 +633,32 @@ class IRISGateway:
                             extra={"session_id": session_id}
                         )
                         # Pre-warm: fire a 1-token request so LM Studio loads the model
-                        # into VRAM right now.  Without this the cold-start delay (20-30 s
-                        # for a 9 B model) falls on the user's first chat message.
-                        # Runs in a daemon thread — does not block the confirm_card response.
+                        # into VRAM now so cold-start delay doesn't hit the first message.
                         kernel.prewarm_lmstudio()
+
+                    elif provider == "local":
+                        # Ollama native API.
+                        ollama_endpoint = values.get(
+                            "ollama_endpoint", "http://localhost:11434") or "http://localhost:11434"
+                        kernel.configure_ollama(ollama_endpoint)
+                        kernel.configure_vps({"enabled": False})
+                        self._logger.info(
+                            f"[Session: {session_id}] Ollama configured: {ollama_endpoint}",
+                            extra={"session_id": session_id}
+                        )
+
+                    elif provider == "api":
+                        # Remote OpenAI-compatible API (OpenAI, Groq, Together, OpenRouter, etc.)
+                        api_key = values.get("api_key", "") or ""
+                        api_base_url = values.get(
+                            "api_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"
+                        kernel.configure_api(api_key, api_base_url)
+                        kernel.configure_vps({"enabled": False})
+                        self._logger.info(
+                            f"[Session: {session_id}] Remote API configured: {api_base_url}",
+                            extra={"session_id": session_id}
+                        )
+
                     elif provider == "vps":
                         vps_endpoint = values.get("vps_endpoint", "")
                         vps_token = values.get("vps_token", "")
@@ -651,9 +672,6 @@ class IRISGateway:
                                 f"[Session: {session_id}] VPS gateway configured: {vps_endpoint}",
                                 extra={"session_id": session_id}
                             )
-                    elif provider in ("local", "api"):
-                        # Disable VPS gateway if user switched away from VPS mode
-                        kernel.configure_vps({"enabled": False})
 
                     # Refresh model dropdown so UI reflects available models for the
                     # new provider immediately.
@@ -1496,10 +1514,11 @@ class IRISGateway:
             # Get session-specific field values
             session_state = await self._state_manager._get_session_state_manager(session_id)
 
-            # sensible default — LM Studio is the recommended local provider
+            # Defaults — overridden by whatever the user saved in their settings card.
             inference_mode = "lmstudio"
             vps_url = ""
             openai_api_key = ""
+            api_base_url = "https://api.openai.com/v1"
             ollama_endpoint = "http://localhost:11434"
             lmstudio_endpoint = "http://localhost:1234"
 
@@ -1508,7 +1527,9 @@ class IRISGateway:
                 inference_mode = await session_state.get_field_value("model_selection", "model_provider", "lmstudio") or "lmstudio"
                 vps_url = await session_state.get_field_value("model_selection", "vps_endpoint", "") or ""
                 openai_api_key = await session_state.get_field_value("model_selection", "api_key", "") or ""
+                api_base_url = await session_state.get_field_value("model_selection", "api_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"
                 lmstudio_endpoint = await session_state.get_field_value("model_selection", "lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
+                ollama_endpoint = await session_state.get_field_value("model_selection", "ollama_endpoint", "http://localhost:11434") or "http://localhost:11434"
 
             self._logger.info(
                 f"[Session: {session_id}] Getting available models for provider: {inference_mode}"
@@ -1519,7 +1540,7 @@ class IRISGateway:
             # Vision-only models should NOT appear in reasoning/tool dropdowns.
             # They belong exclusively in the vision_model dropdown.
             _VISION_ONLY_PREFIXES = (
-                "minicpm", "llava", "bakllava", "llava-llama3", "llava-phi3",
+                "lfm2.5-vl", "llava", "bakllava", "llava-llama3", "llava-phi3",
                 "moondream", "cogvlm", "internvl",
             )
 
@@ -1725,35 +1746,32 @@ class IRISGateway:
                     )
 
             elif inference_mode == "api":
-                # Try to query OpenAI models list if we have a valid key
-                if openai_api_key and openai_api_key.startswith("sk-"):
-                    try:
-                        async with httpx.AsyncClient(timeout=5.0) as http_client:
-                            r = await http_client.get(
-                                "https://api.openai.com/v1/models",
-                                headers={
-                                    "Authorization": f"Bearer {openai_api_key}"}
+                # Query the user-configured API base URL for available models.
+                # Works with OpenAI, Groq, Together, OpenRouter, Mistral, or any
+                # OpenAI-compatible remote API.
+                models_url = f"{api_base_url.rstrip('/')}/models"
+                headers = {}
+                if openai_api_key:
+                    headers["Authorization"] = f"Bearer {openai_api_key}"
+                try:
+                    async with httpx.AsyncClient(timeout=5.0) as http_client:
+                        r = await http_client.get(models_url, headers=headers)
+                        if r.status_code == 200:
+                            models_data = r.json().get("data", [])
+                            available_models = [
+                                {"id": m["id"], "name": m.get("id", m["id"]),
+                                    "source": "api"}
+                                for m in models_data
+                                if not _is_vision_only(m.get("id", ""))
+                            ]
+                            self._logger.info(
+                                f"[Session: {session_id}] Found {len(available_models)} model(s) "
+                                f"from {api_base_url}"
                             )
-                            if r.status_code == 200:
-                                models_data = r.json().get("data", [])
-                                # Filter to GPT models only, sorted by ID
-                                gpt_models = sorted(
-                                    [m for m in models_data if "gpt" in m.get(
-                                        "id", "")],
-                                    key=lambda m: m["id"]
-                                )
-                                available_models = [
-                                    {"id": m["id"], "name": m["id"],
-                                        "source": "openai"}
-                                    for m in gpt_models
-                                ]
-                                self._logger.info(
-                                    f"[Session: {session_id}] Found {len(available_models)} OpenAI model(s)"
-                                )
-                    except Exception as openai_err:
-                        self._logger.warning(
-                            f"[Session: {session_id}] OpenAI API query failed: {openai_err}"
-                        )
+                except Exception as api_err:
+                    self._logger.warning(
+                        f"[Session: {session_id}] API models query failed ({api_base_url}): {api_err}"
+                    )
 
                 # Fallback list if no key or query failed
                 if not available_models:
@@ -2646,123 +2664,110 @@ class IRISGateway:
 
     async def _handle_enable_vision(self, session_id: str, client_id: str) -> None:
         """
-        Handle enable_vision message - loads the vision model with 4-bit quantization.
-
-        Args:
-            session_id: Session ID
-            client_id: Client ID
+        Handle enable_vision message — checks if LFM2.5-VL llama-server is reachable.
+        Vision is a separate process (llama-server port 8081); enabling = health check.
         """
         try:
-            self._logger.info(
-                f"[Session: {session_id}] Enabling vision service")
+            self._logger.info(f"[Session: {session_id}] Checking vision server availability")
 
-            # Send loading status
+            # Send loading status while we check
             await self._ws_manager.send_to_client(client_id, {
                 "type": "vision_status",
                 "payload": {
                     "status": "loading",
                     "vram_usage_mb": None,
-                    "load_progress_percent": 0,
+                    "load_progress_percent": None,
                     "error_message": None,
-                    "model_name": self._vision_service.model_name,
-                    "quantization_enabled": self._vision_service.use_quantization,
-                    "is_available": True
+                    "model_name": "lfm2.5-vl",
+                    "quantization_enabled": False,
+                    "is_available": False
                 }
             })
 
-            # Enable vision service (lazy loading with quantization)
-            success = await self._vision_service.enable()
+            import asyncio
+            available = await asyncio.get_event_loop().run_in_executor(
+                None, self._vision_provider.health_check
+            )
 
-            if success:
-                status = self._vision_service.get_status()
-                await self._ws_manager.send_to_client(client_id, {
-                    "type": "enable_vision",
-                    "payload": {
-                        "success": True,
-                        "vram_usage_mb": status.get("vram_usage_mb"),
-                        "quantization_enabled": status.get("quantization_enabled")
-                    }
-                })
-                # Broadcast updated status to all clients
-                await self._ws_manager.broadcast_to_session(session_id, {
-                    "type": "vision_status",
-                    "payload": status
-                })
-            else:
-                await self._ws_manager.send_to_client(client_id, {
-                    "type": "enable_vision",
-                    "payload": {
-                        "success": False,
-                        "error": "Failed to enable vision service"
-                    }
-                })
+            status_payload = {
+                "status": "enabled" if available else "error",
+                "vram_usage_mb": None,
+                "load_progress_percent": None,
+                "error_message": None if available else "Vision server not running on port 8081. Start start_vl.bat first.",
+                "model_name": "lfm2.5-vl",
+                "quantization_enabled": False,
+                "is_available": available
+            }
 
-        except Exception as e:
-            self._logger.error(
-                f"[Session: {session_id}] Error enabling vision: {e}", exc_info=True)
             await self._ws_manager.send_to_client(client_id, {
                 "type": "enable_vision",
-                "payload": {
-                    "success": False,
-                    "error": str(e)
-                }
+                "payload": {"success": available, "error": status_payload.get("error_message")}
+            })
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "vision_status",
+                "payload": status_payload
+            })
+
+        except Exception as e:
+            self._logger.error(f"[Session: {session_id}] Error enabling vision: {e}", exc_info=True)
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "enable_vision",
+                "payload": {"success": False, "error": str(e)}
             })
 
     async def _handle_disable_vision(self, session_id: str, client_id: str) -> None:
         """
-        Handle disable_vision message - unloads the vision model and frees VRAM.
-
-        Args:
-            session_id: Session ID
-            client_id: Client ID
+        Handle disable_vision message.
+        LFM2.5-VL is a separate process — disabling means the agent stops calling vision tools.
         """
         try:
-            self._logger.info(
-                f"[Session: {session_id}] Disabling vision service")
-
-            # Disable vision service
-            await self._vision_service.disable()
-
+            self._logger.info(f"[Session: {session_id}] Vision disabled by user")
             await self._ws_manager.send_to_client(client_id, {
                 "type": "disable_vision",
                 "payload": {"success": True}
             })
-
-            # Broadcast updated status to all clients
-            status = self._vision_service.get_status()
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "vision_status",
-                "payload": status
+                "payload": {
+                    "status": "disabled",
+                    "vram_usage_mb": None,
+                    "load_progress_percent": None,
+                    "error_message": None,
+                    "model_name": "lfm2.5-vl",
+                    "quantization_enabled": False,
+                    "is_available": False
+                }
             })
-
         except Exception as e:
-            self._logger.error(
-                f"[Session: {session_id}] Error disabling vision: {e}", exc_info=True)
+            self._logger.error(f"[Session: {session_id}] Error disabling vision: {e}", exc_info=True)
             await self._ws_manager.send_to_client(client_id, {
                 "type": "disable_vision",
-                "payload": {
-                    "success": False,
-                    "error": str(e)
-                }
+                "payload": {"success": False, "error": str(e)}
             })
 
     async def _handle_get_vision_status(self, session_id: str, client_id: str) -> None:
         """
-        Handle get_vision_status message - returns current vision service status.
-
-        Args:
-            session_id: Session ID
-            client_id: Client ID
+        Handle get_vision_status message — pings LFM2.5-VL server.
         """
         try:
-            status = self._vision_service.get_status()
+            import asyncio
+            available = await asyncio.get_event_loop().run_in_executor(
+                None, self._vision_provider.health_check
+            )
             await self._ws_manager.send_to_client(client_id, {
                 "type": "vision_status",
-                "payload": status
+                "payload": {
+                    "status": "enabled" if available else "error",
+                    "vram_usage_mb": None,
+                    "load_progress_percent": None,
+                    "error_message": None if available else "Vision server not running on port 8081",
+                    "model_name": "lfm2.5-vl",
+                    "quantization_enabled": False,
+                    "is_available": available
+                }
             })
         except Exception as e:
-            self._logger.error(
-                f"[Session: {session_id}] Error getting vision status: {e}", exc_info=True)
+            self._logger.error(f"[Session: {session_id}] Error getting vision status: {e}", exc_info=True)
             await self._send_error(client_id, f"Error getting vision status: {str(e)}")
 
     async def _handle_message_exported(self, session_id: str, client_id: str, message: dict) -> None:

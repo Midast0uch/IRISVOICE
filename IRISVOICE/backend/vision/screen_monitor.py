@@ -11,7 +11,6 @@ import time
 import threading
 from typing import Any, Callable, Dict, List, Optional
 
-from backend.vision.vision_service import get_vision_service, VisionService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -62,18 +61,31 @@ class ScreenMonitor:
         # Callbacks for proactive notifications
         self._notification_callbacks: List[Callable[[Dict], None]] = []
 
-        # Use shared VisionService (user must enable it)
-        self._vision_service: VisionService = get_vision_service()
-        
-        # Lazy-loaded screen capture
+        # Lazy-loaded provider + screen capture
+        self._vision_provider = None
         self._screen_capture = None
 
         ScreenMonitor._initialized = True
 
+    def _get_vision_provider(self):
+        """Lazy-load LFMVLProvider."""
+        if self._vision_provider is None:
+            try:
+                from backend.tools.lfm_vl_provider import LFMVLProvider
+                self._vision_provider = LFMVLProvider()
+            except Exception as e:
+                logger.error(f"[ScreenMonitor] Cannot load LFMVLProvider: {e}")
+        return self._vision_provider
+
     def _is_vision_available(self) -> bool:
-        """Check if vision is enabled and available."""
-        status = self._vision_service.get_status_dict()
-        return status.get("status") == "enabled" and status.get("is_available", False)
+        """Check if LFM2.5-VL vision server is reachable."""
+        provider = self._get_vision_provider()
+        if provider is None:
+            return False
+        try:
+            return provider.health_check()
+        except Exception:
+            return False
 
     def _get_screen_capture(self):
         if self._screen_capture is None:
@@ -146,20 +158,20 @@ class ScreenMonitor:
         if not is_new and self.config.get("analyze_on_change_only", True):
             return
 
-        # Analyze screen context using VisionService
+        # Analyze screen context using LFMVLProvider
         try:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            analysis = loop.run_until_complete(
-                self._vision_service.analyze(
-                    image_b64=screenshot_b64,
-                    prompt="Analyze this screen. What app is active? Are there any errors or notable items? Is the user potentially stuck or needing help?"
-                )
+            provider = self._get_vision_provider()
+            if provider is None:
+                logger.error("[ScreenMonitor] Vision provider unavailable")
+                return
+
+            import base64
+            img_bytes = base64.b64decode(screenshot_b64)
+            analysis = provider.analyze_screen(
+                img_bytes,
+                "Analyze this screen. What app is active? Are there any errors or notable items? Is the user potentially stuck or needing help?"
             )
-            loop.close()
-            
+
             # Parse analysis into context structure
             context = self._parse_analysis_to_context(analysis)
             context["timestamp"] = time.time()

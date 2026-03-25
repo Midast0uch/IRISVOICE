@@ -467,7 +467,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             icon="Eye",
             fields=[
                 InputField(id="vision_enabled", type=FieldType.TOGGLE, label="Vision Enabled", value=False),
-                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm-o4.5", "llava", "bakllava"], value="minicpm-o4.5"),
+                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["lfm2.5-vl", "llava", "bakllava"], value="lfm2.5-vl"),
             ]
         ),
         Section(
@@ -477,7 +477,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             fields=[
                 InputField(id="desktop_control_enabled", type=FieldType.TOGGLE, label="Desktop Control Enabled", value=False),
                 InputField(id="ui_tars_provider", type=FieldType.DROPDOWN, label="UI-TARS Provider", options=["cli_npx", "native_python", "api_cloud"], value="native_python"),
-                InputField(id="vision_model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm_ollama", "anthropic", "volcengine", "local"], value="minicpm_ollama"),
+                InputField(id="vision_model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["llama_server", "anthropic", "volcengine", "local"], value="llama_server"),
                 InputField(id="api_key", type=FieldType.TEXT, label="API Key", placeholder="sk-...", value=""),
                 InputField(id="max_steps", type=FieldType.SLIDER, label="Max Automation Steps", min=5, max=50, value=25),
                 InputField(id="require_confirmation", type=FieldType.TOGGLE, label="Require Confirmation", value=True),

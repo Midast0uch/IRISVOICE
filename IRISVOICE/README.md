@@ -14,6 +14,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 
 ### 🤖 AI Agent System
 - **Dual-LLM Architecture**: lfm2-8b (reasoning) + lfm2.5-1.2b-instruct (execution)
+- **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer
 - **Model-Agnostic Design**: Works with Local, VPS, or OpenAI inference backends
 - **Flexible Inference Modes**: Choose between Local Models, VPS Gateway, or OpenAI API
 - **User-Configurable Models**: Select which models handle reasoning and tool execution
@@ -23,6 +24,21 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Personality System**: Configurable assistant personality and behavior
 - **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
 - **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
+
+### 👁 Vision Layer (LFM2.5-VL)
+- **LFM2.5-VL-1.6B**: Liquid AI's vision-language model running via `llama-server` on port 8081
+- **VisionMCPServer**: 5 MCP tools — `vision.analyze_screen`, `vision.find_ui_element`, `vision.read_text`, `vision.suggest_next_action`, `vision.describe_live_frame`
+- **UniversalGUIOperator**: Controls any Windows application — UIA accessibility first, VL coordinate prediction second, PIL diff verification third
+- **Perception-Action-Verify Loop**: Every GUI action is preceded by VL perception and followed by result verification
+- **smart_click()**: VL finds element by natural language description → UIA by name → known coordinates — no hardcoded pixel hunting
+- **PIL Fallback**: Pixel diff verification when VL is offline; all pipelines degrade gracefully
+- **MiniCPM Removed**: Fully replaced by LFM2.5-VL + llama-server (no Ollama dependency)
+
+### 🖥 Desktop Automation
+- **Any Windows App**: UniversalGUIOperator works with Paint, Notepad, Chrome, Office — no app-specific code
+- **Drawing Pipeline**: Programmatic star + sine wave via mouse drag
+- **Text Pipeline**: PIL generates Segoe Script 36pt text → clipboard DIB → Ctrl+V paste → drag to position
+- **Telegram Integration**: Sends canvas screenshots with caption via bot API
 
 ### 🎨 User Interface
 - **Hexagonal Hub Interface**: 6 main categories (Voice, Agent, Automate, System, Customize, Monitor)
@@ -69,7 +85,30 @@ git clone <repository-url>
 cd IRISVOICE
 ```
 
-### 2. Backend Setup
+### 2. Vision Model Setup (LFM2.5-VL)
+
+```python
+# Download LFM2.5-VL GGUF files (one-time, ~1GB total)
+from huggingface_hub import hf_hub_download
+import os
+base = os.path.expanduser("~/models/LFM2.5-VL-1.6B/")
+os.makedirs(base, exist_ok=True)
+hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "LFM2.5-VL-1.6B-Q4_0.gguf", local_dir=base)
+hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "mmproj-LFM2.5-VL-1.6B-Q4_0.gguf", local_dir=base)
+```
+
+```bash
+# Start vision server (Windows)
+start_vl.bat
+
+# Start vision server (macOS/Linux)
+bash start_vl.sh
+
+# Install vision dependencies
+pip install mss httpx pywinauto pyautogui pillow win32clipboard
+```
+
+### 3. Backend Setup
 
 ```bash
 # Create and activate virtual environment
@@ -91,6 +130,8 @@ python download_lfm_audio.py
 # Set up environment variables
 # Create .env file with:
 # PICOVOICE_ACCESS_KEY=your_access_key_here
+# TELEGRAM_BOT_TOKEN=your_bot_token
+# TELEGRAM_CHAT_ID=your_chat_id
 ```
 
 ### 3. Frontend Setup

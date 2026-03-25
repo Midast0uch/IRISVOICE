@@ -49,8 +49,13 @@ class GUIAutomationServer(BuiltinServer):
         self._operator_initialized = False
         self._vision_client = None
         self._vision_initialized = False
+        self._vision_guided_operator = None  # Set by AgentToolBridge (Option B)
         super().__init__("gui_automation")
     
+    def set_vision_guided_operator(self, operator):
+        """Called by AgentToolBridge after Option B wiring is complete."""
+        self._vision_guided_operator = operator
+
     async def _ensure_operator(self):
         """Initialize native operator if needed"""
         if not self.use_native or self._operator_initialized:

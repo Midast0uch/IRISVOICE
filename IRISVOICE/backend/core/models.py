@@ -84,7 +84,7 @@ class VisionStatus(BaseModel):
     load_progress_percent: Optional[float] = None
     error_message: Optional[str] = None
     last_used: Optional[datetime] = None
-    model_name: str = "minicpm-o4.5"
+    model_name: str = "lfm2.5-vl"
     quantization_enabled: bool = True
     is_available: bool = False
 

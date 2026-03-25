@@ -31,6 +31,16 @@ if %errorlevel% equ 0 (
     echo [INFO] py launcher not found, using default Python
 )
 
+REM --- Start LFM2.5-VL vision server (optional — skip if model not downloaded) ---
+if exist "%~dp0start_vl.bat" (
+    echo [1/3] Starting LFM2.5-VL Vision Server (port 8081)...
+    start "LFM-VL Vision" cmd /k "cd /d %~dp0 && start_vl.bat"
+    timeout /t 5 /nobreak >nul
+    echo [INFO] Vision server launched. If model not downloaded, it will exit cleanly.
+) else (
+    echo [INFO] start_vl.bat not found — skipping vision server
+)
+
 REM --- Start the backend server in a new window ---
 echo [2/3] Starting IRIS Backend (FastAPI + Uvicorn)...
 start "IRIS Backend" cmd /k "cd /d %~dp0 && %PYTHON_EXE% start-backend.py"
