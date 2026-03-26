@@ -13,7 +13,7 @@ export function TabBar({ activeTab, onTabClick }: TabBarProps) {
     <div className="flex items-center justify-center">
       {['voice', 'agent', 'automate', 'system', 'customize', 'monitor'].map(tab => (
         <button key={tab} onClick={() => onTabClick(tab)} className={`text-[12px] font-medium tracking-wider text-white/70 ${active === tab ? 'bg-primary-500' : ''}`}>
-          {['VOICE', 'AGENT', 'AUTO', 'SYS', 'CUSTOM', 'MON'][tab]}
+          {({'voice':'VOICE','agent':'AGENT','automate':'AUTO','system':'SYS','customize':'CUSTOM','monitor':'MON'} as Record<string,string>)[tab]}
         </button>
       ))}
     </div>

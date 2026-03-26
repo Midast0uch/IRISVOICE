@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "iris-frontend",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": ["C:\\Users\\midas\\Desktop\\dev\\.claude\\worktrees\\flamboyant-cartwright\\IRISVOICE\\node_modules\\next\\dist\\bin\\next", "dev"],
+      "cwd": "IRISVOICE",
+      "port": 3000,
+      "autoPort": true
+    },
+    {
+      "name": "iris-backend",
+      "runtimeExecutable": "C:\\Python313\\python.exe",
+      "runtimeArgs": ["IRISVOICE/start-backend.py"],
+      "port": 8000
+    }
+  ]
+}

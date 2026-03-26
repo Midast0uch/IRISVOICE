@@ -130,6 +130,9 @@ export function ChatWing({
   const [justSent, setJustSent] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const lastProcessedResponseRef = useRef<typeof lastTextResponse>(null)
+  const activeConversationIdRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { lastTextResponse, voiceState, isChatTyping, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
@@ -191,67 +194,84 @@ export function ChatWing({
     }
   }, [isOpen])
 
-  // Scroll to bottom when messages change
+  // Keep ref in sync with activeConversationId state
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages, isTyping])
+    activeConversationIdRef.current = activeConversationId
+  }, [activeConversationId])
 
-  // Handle incoming WebSocket messages from the navigation context
+  // Scroll to bottom when messages change — use container scroll to avoid
+  // scrollIntoView propagating up the DOM tree and shifting the Tauri frame
   useEffect(() => {
-    if (lastTextResponse) {
-      const isUserVoice = lastTextResponse.sender === "user"
+    const el = messagesContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
 
-      // User voice transcriptions show as user bubbles (no TTS — server handles audio)
-      // Assistant responses show as assistant bubbles (client-side TTS highlighting)
-      const newMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: lastTextResponse.text,
-        sender: lastTextResponse.sender,
-        timestamp: new Date(),
-        words: isUserVoice ? undefined : lastTextResponse.text.split(' '),
-        currentWordIndex: isUserVoice ? undefined : -1,
-        feedback: isUserVoice ? undefined : null,
-        thinking: lastTextResponse.thinking || undefined,
-      }
+  // Handle incoming WebSocket messages from the navigation context.
+  // Uses refs instead of state deps to prevent double-processing when
+  // activeConversationId updates cause the effect to re-run.
+  useEffect(() => {
+    if (!lastTextResponse) return
+    // Deduplicate: skip if this exact response object was already processed
+    if (lastTextResponse === lastProcessedResponseRef.current) return
+    lastProcessedResponseRef.current = lastTextResponse
 
-      // Add to active conversation or create new one
-      setConversations(prev => {
-        if (activeConversationId) {
-          // Add to existing conversation
-          return prev.map(conv =>
-            conv.id === activeConversationId
-              ? {
-                  ...conv,
-                  messages: [...conv.messages, newMessage],
-                  lastMessagePreview: newMessage.text.substring(0, 60),
-                  timestamp: new Date()
-                }
-              : conv
-          )
-        } else {
-          // Create new conversation
-          const newConv: Conversation = {
-            id: Date.now().toString(),
-            title: `Conversation ${prev.length + 1}`,
-            preview: newMessage.text.substring(0, 60),
-            messages: [newMessage],
-            timestamp: new Date(),
-            isPinned: false,
-            lastMessagePreview: newMessage.text.substring(0, 60)
-          }
-          setActiveConversationId(newConv.id)
-          return [...prev, newConv]
-        }
-      })
+    const isUserVoice = lastTextResponse.sender === "user"
 
-      // Only trigger client-side TTS word-highlight for assistant messages.
-      // Voice responses: TTS audio is played server-side via TTSManager.
-      if (!isUserVoice) {
-        setCurrentTtsMessageId(newMessage.id)
-        setIsSpeaking(true)
-      }
+    // User voice transcriptions show as user bubbles (no TTS — server handles audio)
+    // Assistant responses show as assistant bubbles (client-side TTS highlighting)
+    const newMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      text: lastTextResponse.text,
+      sender: lastTextResponse.sender,
+      timestamp: new Date(),
+      words: isUserVoice ? undefined : lastTextResponse.text.split(' '),
+      currentWordIndex: isUserVoice ? undefined : -1,
+      feedback: isUserVoice ? undefined : null,
+      thinking: lastTextResponse.thinking || undefined,
     }
-  }, [lastTextResponse, activeConversationId])
+
+    // Read active ID from ref (not closure) to avoid stale-closure double-trigger
+    const currentActiveId = activeConversationIdRef.current
+
+    if (currentActiveId) {
+      // Add to existing conversation
+      setConversations(prev => prev.map(conv =>
+        conv.id === currentActiveId
+          ? {
+              ...conv,
+              messages: [...conv.messages, newMessage],
+              lastMessagePreview: newMessage.text.substring(0, 60),
+              timestamp: new Date()
+            }
+          : conv
+      ))
+    } else {
+      // Create new conversation — set active ID BEFORE setConversations to
+      // ensure the ref is current when the state update lands
+      const newId = Date.now().toString()
+      activeConversationIdRef.current = newId
+      setActiveConversationId(newId)
+      setConversations(prev => {
+        const newConv: Conversation = {
+          id: newId,
+          title: `Conversation ${prev.length + 1}`,
+          preview: newMessage.text.substring(0, 60),
+          messages: [newMessage],
+          timestamp: new Date(),
+          isPinned: false,
+          lastMessagePreview: newMessage.text.substring(0, 60)
+        }
+        return [...prev, newConv]
+      })
+    }
+
+    // Only trigger client-side TTS word-highlight for assistant messages.
+    // Voice responses: TTS audio is played server-side via TTSManager.
+    if (!isUserVoice) {
+      setCurrentTtsMessageId(newMessage.id)
+      setIsSpeaking(true)
+    }
+  }, [lastTextResponse, isOpen])
   
   // Handle voice command errors
   useEffect(() => {
@@ -1283,7 +1303,7 @@ ${message.text}`;
             </AnimatePresence>
 
             {/* Messages Area - Thread-Based with Separators */}
-            <div className="flex-1 overflow-y-auto px-3 py-3 relative z-10">
+            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-3 py-3 relative z-10">
               {messages.length === 0 && !isTyping ? (
                 <div 
                   className="flex-1 flex items-center justify-center h-full"

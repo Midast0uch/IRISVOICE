@@ -18,6 +18,11 @@ class Category(str, Enum):
     SYSTEM = "system"
     CUSTOMIZE = "customize"
     MONITOR = "monitor"
+    # Virtual sub-app categories — frontend-only navigation; no backend sections
+    MARKETPLACE = "marketplace"
+    MODELS = "models"
+    BROWSER = "browser"
+    INFERENCE_CONSOLE = "inference_console"
 
 
 class AppState(str, Enum):

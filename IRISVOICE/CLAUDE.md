@@ -6,7 +6,8 @@ IRIS is a local AI assistant: Python FastAPI backend, Next.js frontend, Tauri de
 The agent brain is a two-brain DER Loop (Director · Explorer · Reviewer) with a
 trailing crystallizer. Memory is the Mycelium coordinate graph.
 
-Single objective: Build IRIS until it can run a Tauri build without external tools.
+Build objective: Ship IRIS to production quality across all functional domains.
+Full roadmap: bootstrap/GOALS.md
 
 STEP 0 — RUN THIS BEFORE ANYTHING ELSE
 bash
@@ -64,20 +65,22 @@ USE:   New-Item file.py -ItemType File          # create empty file
 USE:   Get-ChildItem -Recurse -Filter "*.py"    # find files
 USE:   Get-Content file.py | Select-Object -First 50
 NEVER: touch / ls -la / grep -r / cat | head
-THE FOUR GATES — NEVER SKIP
+PRODUCTION ROADMAP — CHECK CURRENT PRIORITIES
 bash
-# Always check current gate first:
+# Always check current priorities first:
 python bootstrap/session_start.py
-Gate 1: DER Loop + Director Mode     ← start here if not cleared
-Gate 2: Skill Creator + UI Sync      ← locked until Gate 1 clears
-Gate 3: MCP Integrations + Telegram  ← locked until Gate 2 clears
-Gate 4: Free Range                   ← earned by clearing Gate 3
-Details: bootstrap/GOALS.md Specs: agent_loop_tasks.md, director_mode_system.md, IRIS_Swarm_PRD_v9.md
+The full production roadmap lives in bootstrap/GOALS.md — 9 domains:
+  Domain 1: DER Loop Gaps           Domain 6: Frontend Production Quality
+  Domain 2: Voice Pipeline          Domain 7: Backend Reliability
+  Domain 3: Vision System           Domain 8: Distribution & Installation
+  Domain 4: Skills Library          Domain 9: Advanced Features
+  Domain 5: Mycelium Memory
 
 HOW TO BUILD ANYTHING
-READ spec → READ existing file → BUILD → RUN spec test → PASS → RECORD landmark
-                                                        → FAIL → fix code → retry
-The spec for every Gate 1 item is in agent_loop_tasks.md or director_mode_system.md. Read the relevant section before touching any file. The spec defines exactly what to build, what the acceptance criteria are, and what the test command is.
+READ domain spec → READ existing file → BUILD → RUN spec test → PASS → RECORD landmark
+                                                               → FAIL → fix code → retry
+Read the relevant GOALS.md domain section before touching any file. Each domain lists
+what to build, the acceptance criteria, and what the test command is.
 
 THE TEST RULE — ABSOLUTE, NON-NEGOTIABLE
 Run the spec's requirements test against your implementation. Never write new tests to match your code. Never modify existing tests to make them pass.
@@ -152,7 +155,7 @@ python bootstrap/agent_context.py --complete ITEM_ID claude_sub_001 success \
 
 # Heartbeat for long tasks (every 60s prevents claim expiry):
 python bootstrap/agent_context.py --heartbeat claude_sub_001
-Gate constraint: No agent can claim Gate 2 items while Gate 1 has incomplete items. The database enforces this automatically. Agents self-organize through the work queue.
+Domain constraint: The database enforces domain ordering where applicable. Agents self-organize through the work queue.
 
 CRITICAL IMPLEMENTATION RULES
 These come from the spec. Violating them breaks the architecture.
@@ -212,17 +215,13 @@ python bootstrap/update_coordinates.py --auto \
   --tasks "comma,separated,tasks" \
   [--landmark "name:desc:file:test"] \
   [--warning "space:failure:approach:correction"]
-SPEC FILE QUICK REFERENCE
-DER loop classes/design:   agent_loop_design.md
-DER loop requirements:     agent_loop_requirements.md → Req 23-27
-DER loop build tasks:      agent_loop_tasks.md → Phases 1-6
-Mode system (all):         director_mode_system.md → Parts 1-3
-Mycelium ContextPackage:   agent_loop_design.md → Data Models
-Proxy methods:             agent_loop_design.md → API Changes §1
-Trailing crystallizer:     IRIS_Swarm_PRD_v9.md → Section 8
-Write lock / WAL:          IRIS_Swarm_PRD_v9.md → Section 6.4
-Token budget constants:    director_mode_system.md → Req 35
-Gate sequence:             bootstrap/GOALS.md
+SPEC / DOMAIN QUICK REFERENCE
+Production roadmap (all domains):  bootstrap/GOALS.md
+DER loop documentation:            docs/DER_LOOP_MYCELIUM.md
+DER loop classes/design:           specs/agent_loop_design.md (if present)
+DER loop build tasks:              specs/agent_loop_tasks.md (if present)
+Mode system:                       specs/director_mode_system.md (if present)
+Architecture contracts:            specs/IRIS_Swarm_PRD_v9.md (if present)
 SAFETY RAILS
 Never delete/overwrite files without reading them first
 Never git push, git reset --hard without explicit confirmation

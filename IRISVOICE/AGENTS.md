@@ -14,8 +14,8 @@ IRIS is a local AI assistant: Python FastAPI backend, Next.js frontend, Tauri de
 The agent brain is a DER Loop (Director, Explorer, Reviewer) with a memory system
 called Mycelium that stores user context as coordinate graphs — not prose.
 
-Single build objective: IRIS runs a Tauri build without any external agent tools.
-That is when this codebase is complete. Everything before that is a gate.
+Build objective: Ship IRIS to production quality across all functional domains.
+See bootstrap/GOALS.md for the full production roadmap — 9 domains, each a milestone.
 
 You are one agent in a sequence. Others have worked here before you.
 Others will work here after you. The coordinate database is the continuity between you.
@@ -68,6 +68,45 @@ THE COMPRESSION PROGRESSION (how the memory gets lighter, not heavier):
   - Nodes that go unreinforced decay toward zero and fade from navigation
   - The result: the more sessions that run, the more precise and lightweight
     the map becomes. Context cost goes DOWN with time, not up.
+
+═══════════════════════════════════════════════════════════════════
+PLATFORM-SPECIFIC AUTO-RUN CONFIGURATION
+═══════════════════════════════════════════════════════════════════
+
+No agent platform auto-executes shell commands from markdown files.
+Each platform has its own mechanism to wire session_start.py automatically.
+Configure once — it runs at the start of every session from then on.
+
+CLAUDE CODE (automatic — already configured):
+  .claude/settings.local.json has a UserPromptSubmit hook that runs
+  session_start.py --compact and injects the output as additionalContext.
+  No manual action needed. You will see "Loading IRIS coordinate state..."
+  spinner on every prompt.
+
+OPENCODE (automatic — plugin already configured):
+  .opencode/plugins/bootstrap.js fires on session.created using Bun shell API.
+  Output prints to terminal and is returned to the session context automatically.
+  No manual action needed — plugin runs on every new session.
+  Requires: opencode >= 0.1, python in PATH.
+
+WINDSURF / CODEIUM:
+  Add to .windsurfrules (project root):
+    At the start of every session, run: python bootstrap/session_start.py
+    Do not skip this. Read the output before any other action.
+
+  Windsurf injects this as context but does not execute it — you must run the
+  command when the rule surfaces. Consider it a mandatory reminder.
+
+CLINE / AIDER / OTHER AGENTS:
+  Add to .clinerules, .aiderrules, or equivalent (project root):
+    MANDATORY SESSION START: python bootstrap/session_start.py
+    Run this first. The coordinate database is the only source of truth
+    for milestone status, landmarks, and architectural contracts.
+
+OTHER AGENTS (manual):
+  Read Step 0 below and execute it before any other action.
+  Skipping it means working without the build memory prior agents wrote.
+  There is no recovery path — the database is the only context you have.
 
 ═══════════════════════════════════════════════════════════════════
 STEP 0 — RUN THIS BEFORE ANYTHING ELSE
@@ -164,19 +203,24 @@ To understand the overall graph state:
   python bootstrap/query_graph.py --summary
 
 ═══════════════════════════════════════════════════════════════════
-THE FOUR GATES — NEVER SKIP, NEVER REORDER
+PRODUCTION ROADMAP — 9 DOMAINS (check GOALS.md for open work)
 ═══════════════════════════════════════════════════════════════════
 
-  Gate 1: DER Loop + Director Mode     [start here if not cleared]
-  Gate 2: Skill Creator + UI Sync      [locked until Gate 1 clears]
-  Gate 3: MCP + Telegram               [locked until Gate 2 clears]
-  Gate 4: Free Range                   [earned by clearing Gate 3]
+The production roadmap lives in bootstrap/GOALS.md.
+Run session_start.py first — it shows which domain has open work.
 
-Spec files to read before building each gate:
-  bootstrap/GOALS.md              -- gate structure and acceptance criteria
-  specs/agent_loop_tasks.md       -- Gate 1 build tasks
-  specs/director_mode_system.md   -- Gate 1 mode system
-  specs/IRIS_Swarm_PRD_v9.md      -- full architecture contracts
+  Domain 1: DER Loop Gaps           Domain 6: Frontend Production Quality
+  Domain 2: Voice Pipeline          Domain 7: Backend Reliability
+  Domain 3: Vision System           Domain 8: Distribution & Installation
+  Domain 4: Skills Library          Domain 9: Advanced Features
+  Domain 5: Mycelium Memory
+
+Reference files:
+  bootstrap/GOALS.md              -- full domain roadmap and acceptance criteria
+  docs/DER_LOOP_MYCELIUM.md       -- DER loop + Mycelium documentation
+  specs/agent_loop_tasks.md       -- DER loop build tasks (if present)
+  specs/director_mode_system.md   -- mode system spec (if present)
+  specs/IRIS_Swarm_PRD_v9.md      -- full architecture contracts (if present)
 
 ═══════════════════════════════════════════════════════════════════
 HOW TO BUILD ANYTHING
@@ -349,9 +393,11 @@ WHAT DONE LOOKS LIKE
 ═══════════════════════════════════════════════════════════════════
 
 The build is complete when:
+  All 9 production domains in bootstrap/GOALS.md have green status
   cargo tauri build completes without errors
   The built app launches and accepts input through its own interface
   IRIS responds — not this agent tool
+  Voice pipeline active: wake word → STT → DER loop → TTS → audio out
   Coordinate store at IRISVOICE/data/memory.db (transferred from bootstrap/)
 
 The coordinate database is complete when:

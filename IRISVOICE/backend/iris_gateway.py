@@ -229,6 +229,34 @@ class IRISGateway:
             elif msg_type == "request_models":
                 await self._handle_request_models(session_id, client_id, message)
 
+            # Local GGUF model management (llama-cpp-python on port 8082)
+            elif msg_type == "get_local_models":
+                await self._handle_get_local_models(session_id, client_id, message)
+
+            elif msg_type == "load_local_model":
+                await self._handle_load_local_model(session_id, client_id, message)
+
+            elif msg_type == "unload_local_model":
+                await self._handle_unload_local_model(session_id, client_id, message)
+
+            elif msg_type == "get_local_model_status":
+                await self._handle_get_local_model_status(session_id, client_id, message)
+
+            elif msg_type == "get_hardware_info":
+                await self._handle_get_hardware_info(session_id, client_id, message)
+
+            elif msg_type == "download_gguf_model":
+                await self._handle_download_gguf_model(session_id, client_id, message)
+
+            elif msg_type == "search_hf_models":
+                await self._handle_search_hf_models(session_id, client_id, message)
+
+            elif msg_type == "set_vision_enabled":
+                await self._handle_set_vision_enabled(session_id, client_id, message)
+
+            elif msg_type == "toggle_model_pin":
+                await self._handle_toggle_model_pin(session_id, client_id, message)
+
             elif msg_type == "get_audio_devices":
                 await self._handle_get_audio_devices(session_id, client_id)
 
@@ -672,6 +700,23 @@ class IRISGateway:
                                 f"[Session: {session_id}] VPS gateway configured: {vps_endpoint}",
                                 extra={"session_id": session_id}
                             )
+
+                    elif provider == "iris_local":
+                        # llama-cpp-python server on port 8082 (OpenAI-compatible).
+                        # Reuses the LM Studio code path since both expose /v1.
+                        from .agent.local_model_manager import get_local_model_manager
+                        mgr = get_local_model_manager()
+                        kernel.configure_lmstudio(mgr.ENDPOINT)
+                        kernel.configure_vps({"enabled": False})
+                        self._logger.info(
+                            f"[Session: {session_id}] iris_local provider configured: {mgr.ENDPOINT}",
+                            extra={"session_id": session_id}
+                        )
+
+                    # Handle vision_enabled toggle
+                    if "vision_enabled" in values:
+                        vision_on = bool(values.get("vision_enabled", False))
+                        await self._handle_set_vision_enabled(session_id, client_id, {"payload": {"enabled": vision_on}})
 
                     # Refresh model dropdown so UI reflects available models for the
                     # new provider immediately.
@@ -1387,10 +1432,34 @@ class IRISGateway:
                 response = await loop.run_in_executor(None, _execute_agent)
 
                 _t_exec_end = _time.perf_counter()
+                _elapsed_ms = round((_t_exec_end - _t_exec_start) * 1000)
                 self._logger.info(
-                    f"[Timing] process_text_message (streamed): {(_t_exec_end - _t_exec_start) * 1000:.0f} ms",
+                    f"[Timing] process_text_message (streamed): {_elapsed_ms:.0f} ms",
                     extra={"session_id": session_id}
                 )
+
+                # Emit inference_event for InferenceConsolePanel
+                try:
+                    _prompt_tok = max(1, len(text) // 4)
+                    _comp_tok = max(1, len(response or "") // 4)
+                    _elapsed_s = _elapsed_ms / 1000 or 0.001
+                    _model_name = getattr(agent_kernel, "_selected_reasoning_model", None) or "local-model"
+                    _lms_ep = getattr(agent_kernel, "_lmstudio_endpoint", None) or ""
+                    if _lms_ep:
+                        await self._ws_manager.broadcast_to_session(session_id, {
+                            "type": "inference_event",
+                            "payload": {
+                                "model": _model_name,
+                                "prompt_tokens": _prompt_tok,
+                                "completion_tokens": _comp_tok,
+                                "total_tokens": _prompt_tok + _comp_tok,
+                                "time_ms": _elapsed_ms,
+                                "tps": round(_comp_tok / _elapsed_s, 1),
+                                "timestamp": _time.time(),
+                            },
+                        })
+                except Exception:
+                    pass  # never block the response
 
                 # Send final complete message (updates the UI with the full text + metadata)
                 thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
@@ -1812,6 +1881,25 @@ class IRISGateway:
                         {"id": "lfm2.5-1.2b-instruct",
                             "name": "LFM2.5 1.2B Instruct", "source": "vps"},
                     ]
+
+            elif inference_mode == "iris_local":
+                # llama-cpp-python server on port 8082.
+                # Only shows a model when one is actively loaded.
+                try:
+                    from .agent.local_model_manager import get_local_model_manager
+                    mgr = get_local_model_manager()
+                    if mgr.is_loaded():
+                        status = mgr.get_status()
+                        from pathlib import Path as _Path
+                        model_name = _Path(status["model_path"]).stem if status.get("model_path") else "gguf-model"
+                        available_models = [{"id": model_name, "name": model_name, "source": "iris_local"}]
+                    else:
+                        available_models = []
+                    self._logger.info(
+                        f"[Session: {session_id}] iris_local models: {len(available_models)} loaded"
+                    )
+                except Exception as il_err:
+                    self._logger.warning(f"[Session: {session_id}] iris_local query failed: {il_err}")
 
             await self._ws_manager.send_to_client(client_id, {
                 "type": "available_models",
@@ -3155,6 +3243,237 @@ class IRISGateway:
             self._logger.error(
                 f"[IRISGateway] Error resolving device index for '{device}': {e}")
         return device
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Local GGUF model handlers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _handle_get_local_models(self, session_id: str, client_id: str, message: dict) -> None:
+        """Return scanned GGUF models and hardware info."""
+        from .agent.local_model_manager import get_local_model_manager
+        try:
+            mgr = get_local_model_manager()
+            loop = __import__("asyncio").get_event_loop()
+            models = await loop.run_in_executor(None, mgr.scan_models)
+            hardware = await loop.run_in_executor(None, mgr.get_hardware_info)
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "local_models_list",
+                "payload": {"models": models, "hardware": hardware},
+            })
+        except Exception as e:
+            self._logger.error(f"[LocalModel] get_local_models error: {e}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "local_models_list",
+                "payload": {"models": [], "hardware": {}, "error": str(e)},
+            })
+
+    async def _handle_load_local_model(self, session_id: str, client_id: str, message: dict) -> None:
+        """Spawn llama-cpp-python server subprocess for the selected GGUF."""
+        from .agent.local_model_manager import get_local_model_manager
+        payload = message.get("payload", message)
+        model_path = payload.get("model_path", "")
+        profile = payload.get("profile", "balanced")
+        custom_params = payload.get("custom_params", {})
+
+        if not model_path:
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "local_model_loading",
+                "payload": {"status": "error", "error": "model_path is required"},
+            })
+            return
+
+        await self._ws_manager.send_to_client(client_id, {
+            "type": "local_model_loading",
+            "payload": {"status": "starting", "model_path": model_path, "profile": profile},
+        })
+
+        try:
+            mgr = get_local_model_manager()
+            ok = await mgr.load_model(model_path, profile, custom_params)
+            status = "ready" if ok else "error"
+            payload_out = {"status": status, "model_path": model_path, "profile": profile}
+            if not ok:
+                payload_out["error"] = "Server did not start within timeout"
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "local_model_loading",
+                "payload": payload_out,
+            })
+            # Refresh model dropdown if load succeeded
+            if ok:
+                await self._handle_get_available_models(session_id, client_id, {})
+                import time as _time
+                await self._ws_manager.broadcast_to_session(session_id, {
+                    "type": "model_load_event",
+                    "payload": {
+                        "action": "loaded",
+                        "model": model_path,
+                        "profile": profile,
+                        "timestamp": _time.time(),
+                    },
+                })
+        except Exception as e:
+            self._logger.error(f"[LocalModel] load_local_model error: {e}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "local_model_loading",
+                "payload": {"status": "error", "error": str(e), "model_path": model_path},
+            })
+
+    async def _handle_unload_local_model(self, session_id: str, client_id: str, message: dict) -> None:
+        """Stop the llama-cpp-python server subprocess."""
+        from .agent.local_model_manager import get_local_model_manager
+        try:
+            mgr = get_local_model_manager()
+            status_before = mgr.get_status()
+            model_path_before = status_before.get("model_path") if isinstance(status_before, dict) else None
+            await mgr.unload_model()
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "local_model_status",
+                "payload": {"loaded": False, "model_path": None, "profile": None},
+            })
+            import time as _time
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "model_load_event",
+                "payload": {
+                    "action": "unloaded",
+                    "model": model_path_before or "",
+                    "profile": "",
+                    "timestamp": _time.time(),
+                },
+            })
+        except Exception as e:
+            self._logger.error(f"[LocalModel] unload error: {e}")
+
+    async def _handle_get_local_model_status(self, session_id: str, client_id: str, message: dict) -> None:
+        """Return current load status of the GGUF server."""
+        from .agent.local_model_manager import get_local_model_manager
+        try:
+            mgr = get_local_model_manager()
+            status = mgr.get_status()
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "local_model_status",
+                "payload": status,
+            })
+        except Exception as e:
+            self._logger.error(f"[LocalModel] get_status error: {e}")
+
+    async def _handle_get_hardware_info(self, session_id: str, client_id: str, message: dict) -> None:
+        """Return GPU/VRAM/RAM hardware info."""
+        from .agent.local_model_manager import get_local_model_manager
+        try:
+            mgr = get_local_model_manager()
+            loop = __import__("asyncio").get_event_loop()
+            hw = await loop.run_in_executor(None, mgr.get_hardware_info)
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "hardware_info",
+                "payload": hw,
+            })
+        except Exception as e:
+            self._logger.error(f"[LocalModel] get_hardware_info error: {e}")
+
+    async def _handle_download_gguf_model(self, session_id: str, client_id: str, message: dict) -> None:
+        """Stream HuggingFace GGUF download progress to client."""
+        from .agent.local_model_manager import get_local_model_manager
+        payload = message.get("payload", message)
+        repo_id = payload.get("repo_id", "")
+        filename = payload.get("filename", "")
+
+        if not repo_id or not filename:
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "gguf_download_progress",
+                "payload": {"status": "error", "error": "repo_id and filename required"},
+            })
+            return
+
+        mgr = get_local_model_manager()
+        try:
+            async for progress in mgr.download_model(repo_id, filename):
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "gguf_download_progress",
+                    "payload": {**progress, "repo_id": repo_id, "filename": filename},
+                })
+                if progress.get("status") == "complete":
+                    # Refresh installed models list
+                    await self._handle_get_local_models(session_id, client_id, {})
+        except Exception as e:
+            self._logger.error(f"[LocalModel] download error: {e}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "gguf_download_progress",
+                "payload": {"status": "error", "error": str(e), "repo_id": repo_id, "filename": filename},
+            })
+
+    async def _handle_search_hf_models(self, session_id: str, client_id: str, message: dict) -> None:
+        """Search HuggingFace Hub for GGUF models. No API key required for public models."""
+        import httpx as _httpx
+        payload = message.get("payload", {})
+        query = payload.get("query", "").strip()
+        limit = min(int(payload.get("limit", 20)), 50)
+        try:
+            params: dict = {
+                "filter": "gguf",
+                "sort": "downloads",
+                "direction": -1,
+                "limit": limit,
+                "full": "false",
+            }
+            if query:
+                params["search"] = query
+            async with _httpx.AsyncClient(timeout=10.0) as hf_client:
+                r = await hf_client.get("https://huggingface.co/api/models", params=params)
+                models = r.json() if r.status_code == 200 else []
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "hf_models_list",
+                "payload": {"models": models, "query": query},
+            })
+        except Exception as e:
+            self._logger.warning(f"[HFSearch] search failed: {e}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "hf_models_list",
+                "payload": {"models": [], "query": query, "error": str(e)},
+            })
+
+    async def _handle_set_vision_enabled(self, session_id: str, client_id: str, message: dict) -> None:
+        """Start or stop the LFM2.5-VL llama-server subprocess on port 8081."""
+        payload = message.get("payload", message)
+        enabled = bool(payload.get("enabled", False))
+        try:
+            from .tools.lfm_vl_provider import get_lfm_vl_provider
+            vl = get_lfm_vl_provider()
+            if enabled:
+                # Start vision server if not already running
+                running = await vl.health_check() if hasattr(vl, "health_check") else False
+                status = "running" if running else "not_started"
+            else:
+                # Signal the provider that vision is disabled
+                if hasattr(vl, "disable"):
+                    vl.disable()
+                status = "stopped"
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "vision_status",
+                "payload": {"enabled": enabled, "running": enabled, "port": 8081, "status": status},
+            })
+        except Exception as e:
+            self._logger.warning(f"[Vision] set_vision_enabled error: {e}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "vision_status",
+                "payload": {"enabled": enabled, "running": False, "port": 8081, "error": str(e)},
+            })
+
+    async def _handle_toggle_model_pin(self, session_id: str, client_id: str, message: dict) -> None:
+        """Toggle pin/favorite state for a local GGUF model."""
+        from .agent.local_model_manager import get_local_model_manager
+        payload = message.get("payload", message)
+        filename = payload.get("filename", "")
+        if not filename:
+            return
+        try:
+            mgr = get_local_model_manager()
+            new_pin = mgr.toggle_pin(filename)
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "model_pin_updated",
+                "payload": {"filename": filename, "pinned": new_pin},
+            })
+        except Exception as e:
+            self._logger.error(f"[LocalModel] toggle_pin error: {e}")
 
 
 # Global instance

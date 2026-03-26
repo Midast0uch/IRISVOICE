@@ -106,7 +106,14 @@ const DEFAULT_THEME: ColorTheme = {
 }
 
 // WebSocket resilience constants (module-level — stable references across renders)
-const NON_QUEUEABLE_TYPES = new Set(['ping', 'pong'])
+// Transient navigation messages must NOT replay on reconnect —
+// the backend rejects them if they refer to stale state (e.g. an old
+// "marketplace" category that is no longer valid after a reconnect).
+const NON_QUEUEABLE_TYPES = new Set([
+  'ping', 'pong',
+  'select_category', 'select_section', 'go_back',
+  'expand_to_main', 'collapse_to_idle',
+])
 const RECONNECT_MAX_DELAY = 30_000   // 30 s ceiling
 const STABILITY_THRESHOLD = 10_000  // reset backoff counter after 10 s of uptime
 

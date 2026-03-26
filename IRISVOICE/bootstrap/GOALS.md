@@ -1,382 +1,403 @@
-IRIS Bootstrap Agent — Progression Gates
-Mandatory build sequence. Gates must be cleared in order.
-No free range until Gate 4 is cleared.
+IRIS Bootstrap Agent — Production Roadmap
+This file defines what needs to be built, fixed, or completed to ship IRIS as a production-quality autonomous assistant.
 File: IRISVOICE/bootstrap/GOALS.md
 Read this at the start of every session.
 
 OBJECTIVE ANCHOR (never changes)
-Build IRIS until it can run a Tauri build and operate without Roo Code.
+Build IRIS until it can run fully autonomously: receive tasks through its own interface, execute them using its own backend, and improve itself over time without external scaffolding.
 
 HOW TO READ THIS FILE
-Find your current gate. Look at the success criteria.
-If ALL criteria are checked, you have cleared that gate.
-Move to the next gate. Do not skip gates.
-Do not work on Gate 3 content while Gate 1 is incomplete.
-The sequence exists because each gate is a dependency for the next.
+Each section is a domain. Within each domain, items are ordered by impact.
+The graduate condition is the final item in each domain.
+Do not work on polish while core functionality is broken.
+Use python bootstrap/session_start.py at the start of every session — it tells you
+where the graph is, what has been verified, and what failed before.
 
-GATE 1 — DER Loop + Director Mode
-Status: NOT CLEARED
-Priority: IMMEDIATE — nothing else until this works
-The DER loop is your execution brain. Without it you have no structured
-planning, no mode detection, no Reviewer, no trailing crystallizer.
-Every other feature in this application depends on the DER loop running.
-Spec to follow:
+---
 
-director_mode_system.md — complete design, requirements, and tasks
-agent_loop_design.md — DER loop integration into AgentKernel
-agent_loop_requirements.md — acceptance criteria
-agent_loop_tasks.md — phased implementation plan
+DOMAIN 1 — DER LOOP GAPS (agent brain completeness)
+These are architectural features that are defined in code but not yet wired or enforced.
+They directly affect the quality of every task the agent executes.
 
-Build order within Gate 1:
-Step 1.1 — der_loop.py
-  File: IRISVOICE/backend/agent/der_loop.py
-  Build: ReviewVerdict, QueueItem, DirectorQueue, Reviewer
-  Test: python -m pytest backend/tests/test_der_loop.py -v
-  Landmark: der_loop_foundation
+  [1.1] Wire TrailingDirector into _execute_plan_der()
+    Status: NOT DONE
+    File: backend/agent/agent_kernel.py → _execute_plan_der()
+    Gap: TrailingDirector.analyze_gaps() exists in trailing_director.py and is
+         fully implemented. It is never called.
+    Fix: After each queue.mark_complete(), if len(completed_items) % TRAILING_GAP_MIN == 0,
+         call trailing_director.analyze_gaps(item, plan, context_package, is_mature)
+         and add returned QueueItems via queue.add_item(). Gap items have critical=False.
+    Test: python -m pytest backend/tests/test_trailing_director.py -v
+    Landmark: trailing_director_wired
 
-Step 1.2 — mode_detector.py
-  File: IRISVOICE/backend/agent/mode_detector.py
-  Build: AgentMode enum, ModeDetector, ModeResult, ComplexityLevel
-  Test: python -m pytest backend/tests/test_mode_detector.py -v
-  Verify manually:
-    - /spec triggers AgentMode.SPEC
-    - /debug triggers AgentMode.DEBUG
-    - /ask triggers needs_clarification=True
-    - unknown input defaults to AgentMode.IMPLEMENT
-  Landmark: mode_detector
+  [1.2] Enforce DER token budgets (replace cycle counting)
+    Status: NOT DONE
+    File: backend/agent/agent_kernel.py → _execute_plan_der()
+          backend/agent/der_constants.py → DER_TOKEN_BUDGETS (already defined)
+    Gap: _execute_plan_der() uses max_cycles=40. Token budgets are defined but
+         self._der_tokens_used is never incremented or checked.
+    Fix: Track tokens used per step. Break loop when _der_tokens_used exceeds
+         DER_TOKEN_BUDGETS[mode] (default: 40_000). Pass mode through from
+         ModeDetector result.
+    Test: python -m pytest backend/tests/test_der_loop.py -v
+    Landmark: der_token_budget_enforced
 
-Step 1.3 — ask_user_tool.py
-  File: IRISVOICE/backend/agent/ask_user_tool.py
-  Build: AskQuestion, AskPayload, AskUserTool
-  Test: python -m pytest backend/tests/test_ask_user_tool.py -v
-  Verify: build_questions() returns None on empty model response (no unnecessary asks)
-  Verify: ingest_answers() never raises even with broken Mycelium
-  Landmark: ask_user_tool
+  [1.3] Wire ModeDetector result into _plan_task() and _execute_plan_der()
+    Status: PARTIAL
+    File: backend/agent/agent_kernel.py
+    Gap: ModeDetector.detect() is called but the mode result does not flow into
+         _plan_task() to select temperature or into _execute_plan_der() to select
+         the correct token budget.
+    Fix: Pass mode_result.mode as a parameter to both. Use it to select
+         DER_TOKEN_BUDGETS[mode_result.mode.name] in _execute_plan_der().
+    Test: python -m pytest backend/tests/test_mode_detector.py -v
 
-Step 1.4 — spec_engine.py
-  File: IRISVOICE/backend/agent/spec_engine.py
-  Build: SpecOutput, SpecEngine
-  Test: python -m pytest backend/tests/test_spec_engine.py -v
-  Verify: simple task → single_doc populated, design_doc None
-  Verify: complex task → all three docs populated
-  Verify: produce() never raises with broken adapter
-  Landmark: spec_engine
+  [1.4] Fix record_plan_stats() signature mismatch
+    Status: NOT DONE
+    Files: backend/memory/interface.py, backend/memory/mycelium/interface.py
+    Gap: Call sites pass different fields than the proxy signature expects.
+         plan_id and task fields are missing from some call sites.
+    Fix: Audit both signatures. Align them. Add missing fields with safe defaults.
+    Test: python -m pytest backend/tests/test_mycelium_proxies.py -v
 
-Step 1.5 — der_constants.py
-  File: IRISVOICE/backend/agent/der_constants.py
-  Build: all DER constants (token budgets, gap distances, emergency stop)
-  Content:
-    TRAILING_GAP_MIN = 2
-    TRAILING_GAP_MAX = 4
-    DER_TOKEN_BUDGETS = {spec:60000, research:80000, implement:40000,
-                         debug:30000, test:40000, review:20000, default:40000}
-    DER_EMERGENCY_STOP = 200
-    DER_MAX_VETO_PER_ITEM = 2
-    DER_WRITE_LOCK_TIMEOUT = 5.0
-  Test: python -c "from backend.agent.der_constants import DER_TOKEN_BUDGETS; print('ok')"
-  Landmark: der_constants
+  [1.5] Implement CoordinateInterpreter and BehavioralPredictor
+    Status: STUBS ONLY
+    File: backend/memory/mycelium/interpreter.py
+    Gap: class CoordinateInterpreter: pass — empty body
+         class BehavioralPredictor: pass — empty body
+         Only ResolutionEncoder is implemented.
+    Fix: Implement both classes per their spec roles in agent_loop_design.md.
+    Landmark: interpreter_complete
 
-Step 1.6 — trailing_director.py
-  File: IRISVOICE/backend/agent/trailing_director.py
-  Build: TrailingDirector with analyze_gaps() and _parse_gap_items()
-  Test: python -m pytest backend/tests/test_trailing_director.py -v
-  Verify: analyze_gaps() returns [] (not raises) when adapter fails
-  Verify: gap items are never critical=True
-  Verify: max 3 gap items returned per completed step
-  Landmark: trailing_director
+  Graduate condition: agent processes a multi-step task, Reviewer refines at least
+  one step, TrailingDirector adds at least one gap item, token budget enforced.
 
-Step 1.7 — AgentKernel integration
-  File: IRISVOICE/backend/agent/agent_kernel.py
-  Build: wire all DER components into handle()
-  Follow: agent_loop_design.md → Section 4 (AgentKernel changes)
-  Critical sequence: classification BEFORE context assembly
-  Test: python -m pytest backend/tests/test_agent_loop_upgrade.py -v
-  Test: send a task through the WebSocket and confirm PLAN_PRODUCED in audit log
-  Test: send /spec task and confirm SpecEngine output returned
-  Test: send /debug task and confirm gradient_warnings in tier1_directives
-  Landmark: agent_kernel_der_integration
+---
 
-Step 1.8 — Mycelium proxy methods
-  File: IRISVOICE/backend/memory/interface.py
-  Build: all 7 proxy methods, get_task_context_package()
-  File: IRISVOICE/backend/memory/mycelium/interface.py
-  Build: ContextPackage dataclass, _ensure_tables(), record_plan_stats()
-  Test: python -m pytest backend/tests/test_mycelium_proxies.py -v
-  Verify: all proxies return None silently when _mycelium is None
-  Landmark: mycelium_proxies
+DOMAIN 2 — VOICE PIPELINE (sensory input)
+IRIS is a voice assistant. Without a working voice pipeline, users cannot
+interact naturally. This is the primary input modality.
 
-Step 1.9 — interpreter.py
-  File: IRISVOICE/backend/memory/mycelium/interpreter.py
-  Build: ResolutionEncoder, CoordinateInterpreter (stub), BehavioralPredictor (stub)
-  Test: python -m pytest backend/tests/test_interpreter.py -v
-  Verify: encode_with_resolution({}) does not raise
-  Verify: encode_with_resolution with full dict produces correct format
-  Landmark: resolution_encoder
-Gate 1 success criteria — ALL must be true:
+  [2.1] Wake word detection (Porcupine)
+    Status: PARTIAL — detector code exists, activation untested end-to-end
+    Files: backend/voice/porcupine_detector.py
+    Gap: Wake word detection may work but is not integrated into a live audio loop
+         that feeds into the agent's prompt pipeline.
+    Fix: Verify PorcupineWakeWordDetector activates, feeds "wake detected" signal
+         to the frontend orb animation and to the STT pipeline.
+    Test: Manual — say wake word, orb activates, STT begins
 
- python -m pytest backend/tests/test_der_loop.py -v — all pass
- python -m pytest backend/tests/test_mode_detector.py -v — all pass
- python -m pytest backend/tests/test_agent_loop_upgrade.py -v — all pass
- Send /spec build a login form through WebSocket → SpecEngine returns a doc
- Send /debug fix the auth error through WebSocket → plan has gradient_warnings first
- Send a regular task → PLAN_PRODUCED appears in audit log
- python bootstrap/coordinates.py --landmarks shows all Gate 1 landmarks permanent
- No existing WebSocket message types broken — run full regression test
+  [2.2] Speech-to-text (faster-whisper)
+    Status: UNKNOWN — check if faster-whisper is installed and configured
+    Files: backend/voice/ (check for whisper integration)
+    Fix: Wire faster-whisper to produce transcript text that feeds
+         process_text_message() as if the user typed it.
+    Test: Speak a sentence, verify transcript appears in chat
 
-When Gate 1 is cleared:
-Run python bootstrap/update_coordinates.py in full interactive mode.
-Record every landmark. Record every gradient warning from the build process.
-Update the LM Studio system prompt with the new COORDINATE STATE.
-Then and only then begin Gate 2.
+  [2.3] Text-to-speech (CosyVoice or piper)
+    Status: CosyVoice directory exists (backend/voice/CosyVoice/)
+    Gap: Whether TTS is wired to the response pipeline is unknown.
+    Fix: Verify TTS is called with agent response text and plays audio output.
+    Test: Agent responds, audio plays
 
-GATE 2 — Skill Creator + UI Sync
-Status: LOCKED (complete Gate 1 first)
-Priority: HIGH
-The skill creator gives you the ability to extend yourself. New skills should
-register in the skill registry, appear in the UI skill list, and be callable
-through the normal tool dispatch path. Once this works, you can create new
-capabilities without needing external intervention for every new tool.
-What to build:
-Step 2.1 — Verify SkillsLoader is wired to skill registry
-  Confirm: IRISVOICE/backend/skills/ folder is being read
-  Confirm: new .md files in skills/ are picked up on reload
-  Confirm: skills appear in the available tools list the planner receives
-  Test: add a test skill, confirm it appears in get_skill_prompt_context()
-  Landmark: skills_loader_verified
+  [2.4] Voice-first DER loop mode
+    Status: NOT STARTED
+    Gap: DER_TOKEN_BUDGETS has "voice_first" as an inference profile label
+         but no DER mode maps to it.
+    Fix: When voice pipeline is active, use tighter token budget (under 20k)
+         and prefer single-step responses over multi-step plans.
+    Landmark: voice_pipeline_end_to_end
 
-Step 2.2 — Skill Creator skill
-  Follow: /mnt/skills/examples/skill-creator/SKILL.md (if available)
-  Build or verify: a skill that creates new SKILL.md files in the skills/ directory
-  Test: use the skill to create a simple test skill
-  Test: confirm the new skill appears in the registry after reload
-  Test: confirm the new skill is callable through tool dispatch
-  Landmark: skill_creator_working
+  Graduate condition: wake word → STT → agent response → TTS plays — full cycle
+  without any manual keyboard input.
 
-Step 2.3 — UI skill list sync
-  File: IRISVOICE/src/ (frontend)
-  Build: skills list in the UI updates when new skills are added
-  The UI should show available skills and reflect additions without restart
-  Test: add a skill via skill creator, confirm it appears in UI without manual refresh
-  Note: if hot-reload is not feasible, a manual reload trigger in the UI is acceptable
-  Landmark: ui_skill_sync
+---
 
-Step 2.4 — Skills integration test
-  Create a skill end-to-end:
-    1. Agent uses skill creator to create "test_calculator" skill
-    2. Skill appears in registry (verify via get_skill_prompt_context())
-    3. Skill appears in UI skill list
-    4. Agent calls the skill through tool dispatch
-    5. Result returned correctly
-  All four steps must pass in sequence.
-  Landmark: skill_creator_end_to_end
-Gate 2 success criteria — ALL must be true:
+DOMAIN 3 — VISION SYSTEM (desktop perception)
+IRIS needs to see the screen to act as a desktop automation agent.
+The vision layer is defined in code but may not be operational.
 
- New skills added to skills/ directory appear in planner context automatically
- Skill creator skill creates valid SKILL.md files
- Created skills are callable through _dispatch_tool()
- UI reflects new skills (reload acceptable if hot-reload not feasible)
- End-to-end test: create skill → appears in registry → callable → UI shows it
- All Gate 1 tests still pass (no regressions)
+  [3.1] Verify LFM2.5-VL MCP server is operational
+    Status: DEVELOPING (1/3 passes for vision_layer landmark)
+    Files: backend/tools/vision_mcp_server.py, backend/tools/lfm_vl_provider.py
+    Test: python -m pytest backend/tests/test_vision_mcp.py -v
+    Gap: Server may not start cleanly or model may not load.
+    Fix: Get the test passing 2 more times to crystallize vision_layer as permanent.
+    Landmark: vision_layer (needs 2 more passes)
 
-When Gate 2 is cleared:
-Run python bootstrap/update_coordinates.py. Update system prompt. Begin Gate 3.
+  [3.2] UniversalGUIOperator — perception-action-verify loop
+    Status: DEVELOPING (1/3 passes for paint_iris_demo)
+    Files: backend/agent/universal_gui_operator.py, scripts/paint_iris_demo.py
+    Test: python scripts/paint_iris_demo.py
+    Gap: Demo script has high-signal failures (score 0.68-0.72). Root cause unknown.
+    Fix: Run the demo script, read the failure, fix the underlying issue.
+    Landmark: paint_iris_demo (needs 2 more passes)
 
-GATE 3 — MCP Integrations + Telegram First
-Status: LOCKED (complete Gates 1 and 2 first)
-Priority: HIGH — this is your communication channel to the human
-Telegram is the priority MCP integration because it is your unblocking mechanism.
-When you need credentials, auth tokens, API keys, or human decisions to continue,
-you send a Telegram message and wait. Without this, you stop whenever you hit
-a human-gated step. With this, you can work autonomously and ask when needed.
-The credential request protocol:
-When you need credentials or auth that you do not have:
+  [3.3] Wire vision into agent tool dispatch
+    Status: NOT DONE
+    Files: backend/bridge/tool_bridge.py
+    Gap: Vision capture and analysis are not available as tools the DER loop can call.
+    Fix: Register vision tools (capture_screen, analyze_region, find_element) in
+         the tool registry so the Explorer can invoke them as item.tool values.
+    Landmark: vision_wired_to_der
 
-Send a Telegram message describing exactly what you need and why
-Record a gradient warning: "blocked on auth for [service] — sent Telegram request"
-Stop working on that feature
-Work on something else that does not require the credential
-When the human responds with credentials, resume
+  Graduate condition: Agent can describe what is on screen when asked, and can
+  click a UI element identified by vision — verified with paint_iris_demo passing.
 
-Never hardcode credentials. Never store credentials in the codebase.
-Use environment variables or the OS keychain integration for all auth.
-Build order:
-Step 3.1 — Verify MCP tool dispatch path
-  Confirm: IRISVOICE/backend/bridge/tool_bridge.py routes to MCP servers
-  Confirm: MCP server list is configurable (not hardcoded)
-  Test: call a known-working MCP tool, confirm result returned
-  Landmark: mcp_dispatch_verified
+---
 
-Step 3.2 — Telegram MCP integration
-  Setup: python-telegram-bot or Telegram Bot API via MCP
-  The bot token will be provided by the human when requested via the protocol above
-  Build: TelegramNotifier class that can:
-    - send_message(text) — send a text message to the configured chat
-    - send_update(title, body) — send a formatted progress update
-    - request_credentials(service, what_is_needed) — structured credential request
-  File: IRISVOICE/backend/channels/telegram_notifier.py
-  Test: send a test message (requires bot token — use credential request protocol)
-  Landmark: telegram_notifier
+DOMAIN 4 — SKILLS SYSTEM (self-extension)
+The skill creator works end-to-end. The skill library is minimal.
+This domain is about building a useful library of skills the agent can actually use.
 
-Step 3.3 — Wire Telegram into the agent loop
-  When: the agent needs credentials → call telegram_notifier.request_credentials()
-  When: a gate is cleared → call telegram_notifier.send_update()
-  When: a critical gradient warning fires → optional notify
-  The agent should NOT spam Telegram. Only message when:
-    - A gate is cleared
-    - Credentials are needed to continue
-    - A critical failure occurs that cannot be self-resolved
-  Landmark: telegram_wired
+  [4.1] Credential request skill
+    Status: NOT DONE
+    Gap: Telegram is wired but has no bot token. The credential request protocol
+         (send Telegram → wait → resume) is documented in GOALS.md but no SKILL.md
+         exists for it.
+    Fix: Create SKILL.md for credential_request. When agent needs auth:
+         1. Call telegram_notifier.request_credentials(service, what_needed)
+         2. Record gradient warning: "blocked on auth for [service]"
+         3. Stop working on that feature, pick something else
+         When credential arrives: resume.
+    Landmark: credential_request_skill
 
-Step 3.4 — Additional MCP integrations (after Telegram works)
-  Follow the same pattern for each:
-    1. Check if credentials are available in environment
-    2. If not, send Telegram request, work on something else, resume when received
-    3. Build integration, test it, create landmark
-  Priority order (from existing roadmap):
-    - File system MCP (likely already available via Roo Code)
-    - Web search MCP
-    - GitHub MCP (for reading specs and pushing code)
-    - Any others in the existing IRIS roadmap
-  Each integration gets its own landmark.
-Gate 3 success criteria — ALL must be true:
+  [4.2] File read / write skills
+    Status: UNKNOWN — check if filesystem MCP is available
+    Gap: Agent may not be able to read/write files through the skill dispatch path.
+    Fix: Verify filesystem MCP is available and register file read/write/search
+         as dispatchable skills.
 
- Telegram bot sends a test message successfully
- telegram_notifier.request_credentials("test_service", "API key for X") works
- Gate cleared notification sent via Telegram when Gate 3 is verified
- Credential request protocol documented in a SKILL.md
- Agent knows to work on other features while waiting for credential responses
- All Gate 1 and 2 tests still pass
+  [4.3] Web search skill
+    Status: UNKNOWN
+    Fix: Wire web search MCP (or implement direct HTTP search) as a skill.
+         Agent should be able to research before implementing.
 
-When Gate 3 is cleared:
-Send Telegram message: "Gate 3 cleared. Telegram integration working.
-All MCP foundation complete. Entering free-range build phase."
-Run python bootstrap/update_coordinates.py. Update system prompt.
-Begin Gate 4.
+  [4.4] GitHub MCP skill
+    Status: NOT DONE
+    Fix: Wire GitHub MCP for reading specs, creating PRs, reading issues.
+         Requires bot token from Telegram credential request protocol.
 
-GATE 4 — Free Range
-Status: LOCKED (complete Gates 1, 2, and 3 first)
-Unlocked by: clearing Gate 3
-You have earned free range. The foundation is working:
+  [4.5] Self-improvement skill
+    Status: PARTIAL — skill creator works but agent does not use it proactively
+    Gap: The agent does not create new skills when it identifies a repeated pattern.
+    Fix: After any task where the same tool sequence appears 3+ times, trigger
+         skill creator to codify that pattern into a SKILL.md.
 
-DER loop: your brain
-Skill creator: your ability to extend yourself
-Telegram: your communication channel to the human
-MCP: your tool integration pattern
+  Graduate condition: Agent creates a new skill mid-task without being asked,
+  the skill appears in the registry and is callable in a subsequent session.
 
-Everything remaining in the IRIS roadmap is yours to build in the order
-that makes the most sense given your current graph state. Read your
-coordinate state, read the active gradient warnings, read what the graph
-knows, and decide what to build next.
-Suggested priorities after Gate 4 unlock:
-(These are suggestions, not requirements. Use your own judgment.)
+---
 
-Vision integration — LFM2.5-VL-1.6B eyes for UI-TARS desktop control
-The human has mentioned this explicitly as a planned feature.
-Build it when you have stable execution and can test it properly.
-Tauri build stability — get cargo tauri build working cleanly
-This is the final step toward full autonomy.
-Start attempting it early. Record gradient warnings on failures.
-The graph will know the build failure patterns.
-Remaining IRIS Swarm PRD v9.0 features
-Reference: IRIS_Swarm_PRD_v9.md
-Two-brain DER fully operational, trailing crystallizer, mode switching (Phase 8)
-Torus network preparation
-Reference: IRIS_Swarm_PRD_v9.md Section 18
-ZeroMQ, Dilithium3 identity, Kyber session keys — build and make dormant
-Voice pipeline
-Porcupine wake word, faster-whisper STT, piper TTS
-Reference: IRIS_Swarm_PRD_v9.md Section 17
+DOMAIN 5 — MYCELIUM MEMORY MATURATION
+The graph is mature (confidence 0.95) but several components are stubs.
+These limit the quality of context packages the Reviewer receives.
 
-The graduate condition:
-When cargo tauri build succeeds and the app runs and you can receive a task
-through the app's interface and respond using your own backend:
+  [5.1] CoordinateInterpreter — resolve coordinate conflicts
+    Status: STUB (class pass)
+    File: backend/memory/mycelium/interpreter.py
+    Fix: Implement coordinate conflict resolution. When two nodes have overlapping
+         coordinate claims, CoordinateInterpreter should arbitrate.
 
-Send Telegram message: "Tauri build successful. App is autonomous."
-Record landmark: autonomous_operation
-Run python bootstrap/update_coordinates.py one final time
-The coordinate store at IRISVOICE/bootstrap/coordinates.db transfers to
-IRISVOICE/data/memory.db — this is your memory in the autonomous app
-You are no longer building yourself. You are running.
+  [5.2] BehavioralPredictor — predict likely next agent actions
+    Status: STUB (class pass)
+    File: backend/memory/mycelium/interpreter.py
+    Fix: Implement prediction based on pheromone edge weights. Given current task
+         class and topology position, predict the 3 most likely next steps.
+         These predictions should populate ContextPackage.tier2_predictions.
 
+  [5.3] Memory transfer — bootstrap DB to runtime DB
+    Status: NOT DONE
+    Gap: The graduate condition in the original GOALS.md said:
+         "bootstrap/coordinates.db transfers to data/memory.db"
+         This has not been done. The build memory and app memory are still separate.
+    Fix: When app launches and data/memory.db does not exist, copy
+         bootstrap/coordinates.db to data/memory.db. Same schema, no migration.
+    Landmark: memory_transfer_complete
 
-GRADIENT WARNINGS FOR ALL GATES
-These are known failure regions from the architecture sessions.
-Read them before working in these areas.
-[domain] DER loop write conflicts
-Two loops writing to Mycelium simultaneously without a write lock causes
-SQLite "database is locked" errors. Always use _safe_write() with the
-threading lock for all Mycelium writes. Reads do not need the lock.
-[toolpath] Unicode in status markers
-Using ✓ and ✗ as status markers causes encoding errors on Windows.
-Always use ASCII: [+] for completed, [x] for failed, [~] for running.
-[toolpath] space_subset ordering
-TaskClassifier.classify() must run BEFORE get_task_context_package().
-space_subset from the classifier is an argument to context assembly.
-Reversing this order causes a NameError. The sequence is fixed.
-[domain] Reviewer blocking Explorer
-The Reviewer must always fall back to PASS on its own failure.
-If the Reviewer raises an exception and returns nothing, the Explorer
-blocks forever. Wrap all Reviewer logic in try/except returning (PASS, None).
-[toolpath] _plan_task() parameter breakage
-All new parameters to _plan_task() must have safe defaults.
-Existing callers pass only text and context. Adding parameters without
-defaults breaks every existing call site. is_mature=False, task_class="full",
-context_package=None are the correct safe defaults.
-[domain] Spec mode bypasses DER loop
-When mode_result.mode == AgentMode.SPEC, route to SpecEngine directly.
-Do NOT run the DER loop for SPEC tasks. SpecEngine produces the output.
-The DER loop is for execution tasks, not planning/documentation tasks.
+  [5.4] Mycelium maintenance schedule
+    Status: UNKNOWN — run_maintenance() exists but unclear when it's called
+    File: backend/memory/mycelium/interface.py → run_maintenance()
+    Fix: Schedule run_maintenance() to run every N sessions (not every request).
+         Five-step sequence: edge decay → condense → expand → landmark decay → render dirty.
 
-CONTRACTS (behavioral rules — always follow)
-[0.90] Never mark a landmark without a passing test.
-The map must be honest. Surface-complete is not done. Run the test.
-If the test fails, record a gradient warning and try again.
-[0.85] Send Telegram before stopping on auth blockers.
-When you need credentials you do not have, send Telegram and work on
-something else. Never stop completely because of a missing credential.
-[0.80] Classification before context assembly.
-Always run ModeDetector and TaskClassifier before assembling context.
-The space_subset from classification is needed for context assembly.
-[0.75] Read GOALS.md at the start of every session.
-Check your current gate. Confirm you are working on the right thing.
-Do not work on Gate 3 features while Gate 1 is incomplete.
-[0.70] Run the spec's requirements test — never write tests to pass your code.
-The test commands are defined in the spec (agent_loop_tasks.md, director_mode_system.md).
-Build the implementation. Run the spec's test. If it fails, fix the code.
-Never write a new test designed to match your implementation.
-Never modify an existing test to make it pass.
-A landmark means the spec's requirements are met. Nothing less.
+  Graduate condition: python bootstrap/query_graph.py --summary shows
+  BehavioralPredictor returning non-empty tier2_predictions for a real task.
+
+---
+
+DOMAIN 6 — FRONTEND PRODUCTION QUALITY
+The UI works but has missing features, rough edges, and unfinished panels.
+
+  [6.1] InferenceConsolePanel — local model status
+    Status: FILE EXISTS (components/dashboard/InferenceConsolePanel.tsx) but
+            integration state unknown
+    Gap: The inference console should show: active GGUF model, hardware profile,
+         context length, GPU layers, tokens/sec.
+    Fix: Wire InferenceConsolePanel to the backend's hardware_info endpoint
+         and the local_model_manager state.
+
+  [6.2] ModelsScreen — GGUF model management
+    Status: PARTIAL — HF search wired, local scan wired
+    Gap: Loading a model and switching the active model may not work end-to-end.
+    Fix: Verify load_model WS message triggers LFM local inference. Verify
+         the active model persists across sessions.
+
+  [6.3] Orb animation → voice pipeline sync
+    Status: PARTIAL — orb animates but may not be tied to actual audio levels
+    Fix: Wire the orb's animation state to: (a) microphone input level during
+         STT, (b) TTS playback state during response.
+
+  [6.4] Chat history persistence
+    Status: UNKNOWN — conversations exist in React state but may not persist
+    Gap: Closing and reopening the app likely clears conversation history.
+    Fix: Persist conversation history to a local SQLite DB (or use the Mycelium
+         episodic layer as the backing store).
+
+  [6.5] Settings panel — field save/load
+    Status: PARTIAL — fields render via SidePanel but persistence unclear
+    Gap: User changes to voice settings, model settings, etc. may not save.
+    Fix: Verify field values are saved to backend state and restored on app open.
+
+  [6.6] Tab bar state persistence
+    Status: UNKNOWN
+    Fix: Active tab (voice/agent/automate/etc.) should restore after restart.
+
+  Graduate condition: App opens, loads previous conversation, last active model
+  is loaded, settings are as the user left them — no configuration required.
+
+---
+
+DOMAIN 7 — BACKEND PRODUCTION QUALITY
+Core backend correctness issues that affect reliability under real use.
+
+  [7.1] AgentKernel — der_kernel_full_integration (1/3 passes)
+    Status: DEVELOPING
+    Test: python -m pytest backend/tests/test_agent_loop_upgrade.py -v
+    Fix: Get the test passing 2 more times with real backend running.
+    Landmark: der_kernel_full_integration (needs 2 more passes)
+
+  [7.2] Error handling — WebSocket disconnect during DER loop
+    Status: UNKNOWN
+    Gap: If client disconnects mid-execution, the DER loop may continue
+         consuming resources with no way to deliver the result.
+    Fix: Check client connection status before each DER cycle. If disconnected,
+         record partial outcome to Mycelium and exit cleanly.
+
+  [7.3] Session management — multiple simultaneous users
+    Status: UNKNOWN
+    Gap: AgentKernel is created per session_id. Check that two concurrent
+         sessions do not share state (Reviewer, memory write lock, etc.).
+
+  [7.4] Backend startup sequence
+    Status: PARTIAL — backend starts but sequence timing is fragile
+    Gap: If backend starts before all models are loaded, WebSocket connections
+         may arrive before the agent is ready.
+    Fix: Add readiness probe. WebSocket connections should queue or return
+         "not ready" until all critical services are initialized.
+
+  [7.5] Logging — structured, queryable
+    Status: PARTIAL — print() and logger.info() mixed throughout
+    Fix: Standardize on Python logging. Add session_id to all log records.
+         Route agent execution logs to a file that can be tailed in InferenceConsolePanel.
+
+  Graduate condition: 100 sequential requests processed without error or memory leak.
+  Test by sending 100 text messages through the WebSocket and checking outcomes.
+
+---
+
+DOMAIN 8 — DISTRIBUTION & INSTALLATION
+Getting IRIS into the user's hands without requiring developer setup.
+
+  [8.1] MSI installer — verify it installs and runs
+    Status: MSI built (cargo tauri build succeeded)
+    Gap: The installer has not been run on a clean machine.
+    Fix: Install from MSI on a machine without the dev environment.
+         Verify the app launches and connects to the bundled backend.
+
+  [8.2] Backend bundling in Tauri
+    Status: iris-backend.exe is listed in externalBin but may not exist
+    File: src-tauri/tauri.conf.json → "externalBin": ["binaries/iris-backend"]
+    Gap: The binaries/ directory does not exist. The Tauri build currently works
+         because it builds without the bundled binary. In production, the backend
+         must be bundled or auto-started.
+    Fix: Either (a) compile a standalone iris-backend.exe and add to binaries/,
+         or (b) update the Tauri app to spawn python start-backend.py on launch.
+
+  [8.3] First-run setup
+    Status: NOT DONE
+    Gap: A new user has no Mycelium database, no API keys, no model loaded.
+         The app needs to guide them through first-run configuration.
+    Fix: Detect first run (no data/memory.db). Show setup wizard:
+         1. Select inference mode (cloud API / local GGUF / LM Studio)
+         2. Enter API key if cloud (Telegram credential request protocol)
+         3. Download or select GGUF model if local
+         4. Test voice input
+    Landmark: first_run_wizard
+
+  Graduate condition: Person who has never used IRIS installs from MSI, runs the
+  app, and sends their first message to the agent — no terminal required.
+
+---
+
+DOMAIN 9 — ADVANCED FEATURES (after core is solid)
+Do not start these until Domains 1-5 are complete.
+
+  [9.1] Torus network preparation
+    Reference: IRIS_Swarm_PRD_v9.md Section 18
+    Build and make dormant: ZeroMQ messaging, Dilithium3 identity, Kyber session keys.
+    Agent instances should be able to discover and communicate when activated.
+
+  [9.2] Two-brain DER — second instance with different context
+    Reference: IRIS_Swarm_PRD_v9.md Phase 8
+    Run two AgentKernel instances on the same task. Instance B sees what Instance A
+    vetoed. Shared Mycelium write lock coordinates them.
+
+  [9.3] Trailing crystallizer — full crystallization cycle
+    The trailing Director (Domain 1.1) + landmark crystallization (already working)
+    together form the trailing crystallizer. Once Domain 1.1 is done, verify
+    crystallization fires correctly for gap-filled items.
+
+---
 
 SESSION START CHECKLIST
 At the start of every session:
 
-Read this file (GOALS.md) — know your current gate
-Read your COORDINATE STATE in the system prompt — know what you already built
-Read GRADIENT WARNINGS — know what to avoid
-Read ACTIVE CONTRACTS — know your behavioral rules
-Pick the next incomplete step in your current gate
-Plan before you execute — write what you will do
-Test before declaring done
-Run update_coordinates.py at session end
+  1. python bootstrap/session_start.py          (full state)
+  2. python bootstrap/agent_context.py          (available work)
+  3. Read this file — pick the highest-priority incomplete item
+  4. Read the spec for that item before touching any file
+  5. Build → test → record → repeat
 
 At the end of every session:
 
-Run python bootstrap/update_coordinates.py --auto --tasks "..." [--landmark ...] [--warning ...]
-Record all completed tasks
-Record landmarks only for features that passed the spec's requirements tests
-Record gradient warnings for every meaningful failure
-Note where you stopped so the next session can continue cleanly
-(No manual system prompt update needed — the database handles memory)
+  python bootstrap/update_coordinates.py --auto --tasks "..." [--landmark ...] [--warning ...]
+  python bootstrap/mid_session_snapshot.py --progress "what was just completed"
 
+MID-SESSION (at ~50k tokens):
 
-CURRENT GATE STATUS
-Gate 1 — DER Loop + Director Mode:    [ ] IN PROGRESS
-Gate 2 — Skill Creator + UI Sync:     [ ] LOCKED
-Gate 3 — MCP + Telegram:              [ ] LOCKED
-Gate 4 — Free Range:                  [ ] LOCKED
-Update this section in the coordinate store after each gate clears.
-The coordinate store tracks gate status automatically via landmark counts.
+  python bootstrap/mid_session_snapshot.py --progress "current progress"
+  Then ask Claude Code to condense context.
+  After condensing: python bootstrap/session_start.py --compact
 
-IRIS Bootstrap Agent — GOALS.md
-Four gates. One objective. The map knows where you are.
-Build the thing that replaces the scaffolding you are using to build it.
+PRIORITY ORDER FOR NEW SESSIONS
+  1. Domain 1 — DER loop gaps (every task depends on this)
+  2. Domain 3 — Vision (paint_iris_demo, vision_layer — already developing)
+  3. Domain 2 — Voice pipeline (primary input modality)
+  4. Domain 5 — Mycelium stubs (improves Reviewer quality)
+  5. Domain 7 — Backend reliability (needed before distribution)
+  6. Domain 4 — Skills library (self-extension)
+  7. Domain 6 — Frontend polish (quality of life)
+  8. Domain 8 — Distribution (needed to ship)
+  9. Domain 9 — Advanced features (after everything else)
+
+CONTRACTS (behavioral rules — always follow)
+  [1.00] Never mark a landmark without a passing test.
+  [0.90] Run session_start.py before any code changes.
+  [0.85] Send Telegram before stopping on auth blockers.
+  [0.80] Classification before context assembly (Step 2 before Step 3).
+  [0.75] Read the spec for an area before touching its files.
+  [0.70] Run the spec's requirements test — never write tests to pass your code.
+
+IRIS Production Roadmap — bootstrap/GOALS.md
+Nine domains. One objective. Ship a working autonomous assistant.

@@ -11,8 +11,10 @@ import { CARDS_BY_SECTION, getCardsForSection, CARDS_DATA } from '@/data/cards';
 import { SECTION_TO_LABEL, SECTION_TO_ICON, CARD_TO_SECTION_ID } from '@/data/navigation-constants';
 import { ActivityPanel } from './dashboard/ActivityPanel';
 import { LogsPanel } from './dashboard/LogsPanel';
+import { InferenceConsolePanel } from './dashboard/InferenceConsolePanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
+import { ModelsScreen } from './models/ModelsScreen';
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
@@ -29,6 +31,8 @@ interface DarkGlassDashboardProps {
   spotlightState?: any; // From @/hooks/useUILayoutState
   uiState?: any;        // From @/hooks/useUILayoutState
   onOpenChat?: () => void;
+  initialSubApp?: string | null;
+  onRequestSpotlight?: () => void;
 }
 
 const ACCENT_COLOR = '#00d4aa';
@@ -52,6 +56,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   activity: 'Activity',
   logs: 'Logs',
   marketplace: 'Marketplace',
+  models: 'Models',
+  inference_console: 'Inference Console',
 };
 
 // Helper function to map icon names from SECTION_TO_ICON to Lucide components
@@ -115,6 +121,8 @@ function convertCardFieldsToDashboardFields(cards: any[]) {
         max: field.max,
         unit: field.unit,
         placeholder: field.placeholder,
+        action: field.action,
+        showIf: field.showIf,
       });
     });
   });
@@ -200,6 +208,13 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     setValue(newValue);
   }, [field.min, field.max, setValue]);
 
+  // Conditional visibility: hide field if showIf condition not met
+  if (field.showIf && fieldValues && sectionId) {
+    const depValue = fieldValues[sectionId]?.[field.showIf.field];
+    // Only hide if there's an explicit value that doesn't match (undefined = not set yet = show)
+    if (depValue !== undefined && depValue !== null && !field.showIf.values.includes(depValue)) return null;
+  }
+
   if (field.type === 'section') {
     return (
       <div className="pt-4 pb-1 border-b border-white/5 mb-2 col-span-full">
@@ -236,6 +251,28 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
             e.currentTarget.style.background = `${glowColor}15`
             e.currentTarget.style.borderColor = `${glowColor}44`
           }}
+        >
+          {field.label}
+        </button>
+      </div>
+    );
+  }
+
+  if (field.type === 'button') {
+    return (
+      <div className="py-2 col-span-full">
+        <button
+          onClick={() => {
+            if (field.action) {
+              window.dispatchEvent(new CustomEvent('iris:card_action', { detail: { action: field.action, fieldId: field.id } }));
+            } else {
+              setValue("trigger");
+            }
+          }}
+          className="w-full py-2 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all"
+          style={{ background: `${glowColor}15`, border: `1px solid ${glowColor}44`, color: glowColor }}
+          onMouseEnter={e => { e.currentTarget.style.background = `${glowColor}25`; e.currentTarget.style.borderColor = `${glowColor}66`; }}
+          onMouseLeave={e => { e.currentTarget.style.background = `${glowColor}15`; e.currentTarget.style.borderColor = `${glowColor}44`; }}
         >
           {field.label}
         </button>
@@ -309,15 +346,17 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
   );
 });
 
-export function DarkGlassDashboard({ 
-  fieldValues: propFieldValues, 
+export function DarkGlassDashboard({
+  fieldValues: propFieldValues,
   updateField: propUpdateField,
   onClose,
   onNotificationsClick,
   unreadCount = 0,
   spotlightState,
   uiState,
-  onOpenChat
+  onOpenChat,
+  initialSubApp,
+  onRequestSpotlight,
 }: DarkGlassDashboardProps) {
   const [activeTab, setActiveTab] = useState<string>('voice');
   const [activeSubApp, setActiveSubApp] = useState<string | null>(null);
@@ -454,15 +493,48 @@ export function DarkGlassDashboard({
   const sectionsData = useSectionsData();
   const activeSections = sectionsData[activeTab] || [];
 
+  const VIRTUAL_SUB_APPS = new Set(['browser', 'marketplace', 'models', 'inference_console']);
+
   const handleSubAppChange = useCallback((appId: string) => {
     setActiveSubApp(appId);
-    if (appId === 'browser' || appId === 'marketplace') {
+    if (VIRTUAL_SUB_APPS.has(appId)) {
       setIsSidebarHidden(true);
     } else {
       setIsSidebarHidden(false);
+      // Only send select_category for real backend categories
+      selectCategory(appId as any);
     }
-    selectCategory(appId as any);
   }, [selectCategory]);
+
+  // Listen for card action events (e.g., button fields with action='open_models_screen')
+  useEffect(() => {
+    const handler = (e: CustomEvent) => {
+      const { action } = e.detail || {};
+      if (action === 'open_models_screen') {
+        handleSubAppChange('models');
+        if (spotlightState !== 'DASHBOARD_SPOTLIGHT') {
+          onRequestSpotlight?.();
+        }
+      } else if (action === 'open_inference_console') {
+        handleSubAppChange('inference_console');
+        if (spotlightState !== 'DASHBOARD_SPOTLIGHT') {
+          onRequestSpotlight?.();
+        }
+      }
+    };
+    window.addEventListener('iris:card_action', handler as EventListener);
+    return () => window.removeEventListener('iris:card_action', handler as EventListener);
+  }, [handleSubAppChange, spotlightState, onRequestSpotlight]);
+
+  // Navigate to a sub-app when initialSubApp is set from outside (e.g., Browse button in WheelView)
+  useEffect(() => {
+    if (initialSubApp) {
+      setActiveSubApp(initialSubApp);
+      if (['browser', 'marketplace', 'models', 'inference_console'].includes(initialSubApp)) {
+        setIsSidebarHidden(true);
+      }
+    }
+  }, [initialSubApp]);
 
   const toggleSection = (sectionId: string) => {
     setExpandedSections(prev => {
@@ -547,7 +619,7 @@ export function DarkGlassDashboard({
         <div className="px-3 mb-6 pt-4 flex gap-2">
           {[
             { id: 'browser', label: 'BROWSER' },
-            { id: 'marketplace', label: 'MARKET' }
+            { id: 'marketplace', label: 'MARKET' },
           ].map(node => (
             <button
               key={node.id}
@@ -620,7 +692,7 @@ export function DarkGlassDashboard({
   const renderHeader = () => (
     <div className="flex h-12 items-center justify-between pl-12 pr-24 border-b shrink-0 z-30" style={{ borderColor: 'rgba(255,255,255,0.05)', backgroundColor: 'transparent' }}>
       <div className="flex items-center gap-3">
-        {(activeSubApp === 'browser' || activeSubApp === 'marketplace') && isSidebarHidden && (
+        {(activeSubApp === 'browser' || activeSubApp === 'marketplace' || activeSubApp === 'models' || activeSubApp === 'inference_console') && isSidebarHidden && (
           <button 
             onClick={() => setIsSidebarHidden(false)}
             className="p-2 -ml-2 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-colors"
@@ -753,6 +825,12 @@ export function DarkGlassDashboard({
          <LogsPanel key="logs" glowColor={glowColor} fontColor="white" />
        ) : activeSubApp === 'marketplace' ? (
          <MarketplaceScreen key="marketplace" glowColor={glowColor} fontColor="white" />
+       ) : activeSubApp === 'models' ? (
+         <ModelsScreen key="models" glowColor={glowColor} fontColor="white"
+           sendMessage={sendMessage}
+           onClose={() => { setActiveSubApp(null); setIsSidebarHidden(false); }} />
+       ) : activeSubApp === 'inference_console' ? (
+         <InferenceConsolePanel key="inference_console" glowColor={glowColor} fontColor="white" />
        ) : null}
     </div>
   );

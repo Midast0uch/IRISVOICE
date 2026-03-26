@@ -44,3 +44,7 @@ diffusers==0.29.0
 
 # Fallback TTS — pyttsx3 built-in fallback (zero download, instant)
 pyttsx3>=2.90            # SAPI5 built-in fallback TTS (Windows only)
+
+# Local GGUF inference — llama-cpp-python server mode on port 8082
+llama-cpp-python>=0.2.0  # GGUF model server (optional — install when using iris_local provider)
+huggingface-hub>=0.20.0  # Model download from HuggingFace Hub

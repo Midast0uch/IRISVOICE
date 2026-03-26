@@ -1,6 +1,6 @@
 "use client"
 
-import { lazy, Suspense, useCallback } from "react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { motion } from "framer-motion"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
@@ -23,7 +23,7 @@ const LazyChatWing = lazy(() => import("@/components/chat-view") as any)
 const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-control-center") as any)
 
 export default function Home() {
-  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand } = useNavigation()
+  const { state, handleExpandToMain, handleGoBack, handleCollapseToIdle, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   
   // Initialize UI layout state machine
@@ -53,8 +53,46 @@ export default function Home() {
     browserUrl,
   } = useUILayoutState()
 
+  // Track which sub-app to open when the dashboard is triggered from WheelView
+  const [pendingSubApp, setPendingSubApp] = useState<string | null>(null);
+  const pendingSubAppRef = useRef<string | null>(null);
+
+  // Listen for card action events fired from WheelView (dashboard not yet mounted)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent;
+      const action = ce.detail?.action;
+      const subApp =
+        action === 'open_models_screen' ? 'models' :
+        action === 'open_inference_console' ? 'inference_console' :
+        null;
+      if (subApp) {
+        pendingSubAppRef.current = subApp;
+        setPendingSubApp(subApp);
+        if (state.level !== 1) {
+          // Exit WheelView first — openDashboardSolo fires in the level-watch effect below
+          handleCollapseToIdle();
+        } else {
+          // Already at level 1: open immediately and consume the ref
+          pendingSubAppRef.current = null;
+          openDashboardSolo();
+        }
+      }
+    };
+    window.addEventListener('iris:card_action', handler);
+    return () => window.removeEventListener('iris:card_action', handler);
+  }, [state.level, handleCollapseToIdle, openDashboardSolo]);
+
+  // When nav collapses back to level 1 with a pending subapp, open the dashboard
+  useEffect(() => {
+    if (state.level === 1 && pendingSubAppRef.current) {
+      pendingSubAppRef.current = null; // consume so subsequent level-1 navigations don't re-trigger
+      openDashboardSolo();
+    }
+  }, [state.level, openDashboardSolo]);
+
   // Enable keyboard navigation (Escape key to close wings, or restore balanced in spotlight)
-  useKeyboardNavigation({ 
+  useKeyboardNavigation({
     closeAll, 
     uiState: uiLayoutState,
     spotlightState,
@@ -215,7 +253,10 @@ export default function Home() {
       {/* DashboardWing - sibling to ChatWing */}
       <DashboardWing
         isOpen={isDashboardOpen || isBothOpen}
-        onClose={isBothOpen ? closeDashboard : closeAll}
+        onClose={() => {
+          setPendingSubApp(null);
+          if (isBothOpen) closeDashboard(); else closeAll();
+        }}
         sendMessage={sendMessage}
         spotlightState={spotlightState}
         onSpotlightToggle={toggleDashboardSpotlight}
@@ -223,6 +264,7 @@ export default function Home() {
         uiState={uiLayoutState}
         onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}
         isChatOpen={isChatOpen || isBothOpen}
+        initialSubApp={pendingSubApp}
       />
     </main>
   )

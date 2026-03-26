@@ -218,14 +218,8 @@ export const SidePanel: React.FC<SidePanelProps> = ({
 
       // Conditional field rendering for models-card section
       if (card.id === 'models-card') {
-        const modelProvider = values['model_provider'] ?? 'local'
         const useSameModel = values['use_same_model'] ?? true
-
-        // Hide API key field unless provider is 'api'
-        if (field.id === 'api_key' && modelProvider !== 'api') return null
-        // Hide VPS endpoint field unless provider is 'vps'
-        if (field.id === 'vps_endpoint' && modelProvider !== 'vps') return null
-        // Hide tool_model dropdown when use_same_model is true
+        // Hide tool_model dropdown when use_same_model is true (showIf handles provider-based visibility)
         if (field.id === 'tool_model' && useSameModel === true) return null
       }
 
@@ -259,6 +253,14 @@ export const SidePanel: React.FC<SidePanelProps> = ({
       if (card.id === 'wake-word-card' && field.id === 'wake_phrase') {
         fieldOptions = wakeWords.length > 0 ? wakeWords : ['No wake words found']
         fieldLoadOptions = undefined
+      }
+
+      // Conditional visibility: hide field if showIf condition not met
+      const showIf = field.showIf
+      if (showIf) {
+        const depField = card.fields.find((f: any) => f.id === showIf.field)
+        const depValue = values[showIf.field] ?? depField?.defaultValue ?? ''
+        if (!showIf.values.includes(String(depValue))) return null
       }
 
       switch (field.type) {
@@ -350,6 +352,39 @@ export const SidePanel: React.FC<SidePanelProps> = ({
             <button
               key={field.id}
               onClick={() => onValueChange(field.id, "trigger")}
+              className="w-full py-2.5 px-4 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all mb-4"
+              style={{
+                background: `${glowColor}15`,
+                border: `1px solid ${glowColor}40`,
+                color: glowColor
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = `${glowColor}25`
+                e.currentTarget.style.borderColor = `${glowColor}66`
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = `${glowColor}15`
+                e.currentTarget.style.borderColor = `${glowColor}40`
+              }}
+            >
+              <div className="flex items-center justify-between">
+                <span>{field.label}</span>
+                <ChevronRight className="w-3 h-3 opacity-50" />
+              </div>
+            </button>
+          )
+
+        case "button":
+          return (
+            <button
+              key={field.id}
+              onClick={() => {
+                if (field.action) {
+                  window.dispatchEvent(new CustomEvent('iris:card_action', { detail: { action: field.action, fieldId: field.id } }));
+                } else {
+                  onValueChange(field.id, "trigger");
+                }
+              }}
               className="w-full py-2.5 px-4 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all mb-4"
               style={{
                 background: `${glowColor}15`,
