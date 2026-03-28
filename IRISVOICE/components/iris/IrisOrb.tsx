@@ -170,6 +170,18 @@ export function IrisOrb({
   const [doubleClickFlash, setDoubleClickFlash] = useState(false)
   const [isPressed, setIsPressed] = useState(false)
 
+  // Map voiceState → human-readable center label so the user always knows what IRIS is doing
+  const voiceStateLabel = (() => {
+    switch (voiceState) {
+      case "listening":               return "LISTENING"
+      case "processing_conversation": return "THINKING"
+      case "processing_tool":         return "WORKING"
+      case "speaking":                return "SPEAKING"
+      case "error":                   return ""  // error span renders separately
+      default:                        return ""
+    }
+  })()
+
   const orbRef = useRef<HTMLDivElement>(null)
   const prefersReducedMotion = useReducedMotion()
 
@@ -249,12 +261,23 @@ export function IrisOrb({
   const isListeningRef = useRef(isListening)
   isListeningRef.current = isListening
 
+  // Flash the orb whenever voiceState transitions INTO "listening" — covers both
+  // the hardware wake word path (backend-driven) and the double-click path.
+  // This is self-contained: no onCallbacksReady wiring needed in page.tsx.
+  const prevVoiceStateRef = useRef(voiceState)
+  useEffect(() => {
+    const prev = prevVoiceStateRef.current
+    prevVoiceStateRef.current = voiceState
+    if (prev !== "listening" && voiceState === "listening") {
+      setDoubleClickFlash(true)
+      setTimeout(() => setDoubleClickFlash(false), 600)
+    }
+  }, [voiceState])
+
   // --- Callbacks for Parent Component ---
   // Stable callback that doesn't recreate on isListening changes
   const handleWakeDetected = useCallback(() => {
     if (isListeningRef.current) return
-    setDoubleClickFlash(true)
-    setTimeout(() => setDoubleClickFlash(false), 500)
     startVoiceCommand()
   }, [startVoiceCommand])  // Only depends on stable startVoiceCommand
 
@@ -301,7 +324,8 @@ export function IrisOrb({
   const baseScale = isExpanded ? 1.1 : 1
   const effectiveScale = isPressed
     ? 0.92
-    : (isListening || isSpeaking) ? 1.15 // same scale for both — same animation feel
+    : isSpeaking ? 1.2      // speaking: larger — IRIS is projecting
+      : isListening ? 1.15  // listening: expanded — capturing user voice
       : isProcessing ? 1.08
         : isError ? 1.0
           : baseScale
@@ -356,13 +380,19 @@ export function IrisOrb({
       <motion.div
         className="absolute rounded-full pointer-events-none"
         animate={{
-          opacity: isVoiceActive ? [0.4, 0.7, 0.4] : [0.3, 0.6, 0.3],
-          scale: isVoiceActive 
-            ? [audioLevelScale * 1.0, audioLevelScale * 1.15, audioLevelScale * 1.0] 
-            : [0.95, 1.05, 0.95], // Tightened scaling
+          opacity: isSpeaking
+            ? [0.5, 0.9, 0.5]                                                   // bright pulsing — IRIS outputting
+            : isListening
+              ? [0.4, 0.7, 0.4]                                                  // medium steady — user inputting
+              : isVoiceActive
+                ? [0.4, 0.65, 0.4]
+                : [0.3, 0.6, 0.3],
+          scale: isVoiceActive
+            ? [audioLevelScale * 1.0, audioLevelScale * 1.15, audioLevelScale * 1.0]
+            : [0.95, 1.05, 0.95],
         }}
         transition={{
-          duration: isVoiceActive ? 0.8 : 4, // Even faster heartbeat in active mode
+          duration: isSpeaking ? 0.5 : isListening ? 0.8 : isVoiceActive ? 0.8 : 4,
           repeat: Infinity,
           ease: "easeInOut"
         }}
@@ -488,9 +518,14 @@ export function IrisOrb({
         }}
         animate={{
           rotate: 360,
+          // Mechanical jitter during speech — orb reacts to its own voice output
+          scale: isSpeaking ? [1, 1.06, 0.97, 1.04, 1] : 1
         }}
         transition={{
           rotate: { duration: isVoiceActive ? 1.5 : 6, repeat: Infinity, ease: "linear" },
+          scale: isSpeaking
+            ? { duration: 0.25, repeat: Infinity, ease: "easeInOut" }
+            : { duration: 0.3 }
         }}
       />
 
@@ -553,21 +588,20 @@ export function IrisOrb({
         {/* 5. CONTENT AREA (Center) - Phase 107 */}
         <AnimatePresence mode="wait">
           <motion.div
-            key={feedbackMessage || centerLabel}
+            key={voiceStateLabel || feedbackMessage || centerLabel}
             className="relative z-10 flex flex-col items-center justify-center p-4 text-center"
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{
-              scale: 1,
+              scale: isSpeaking ? [1, 1.04, 0.97, 1.02, 1] : 1,
               opacity: 1,
               filter: (isSpeaking || isListening || isProcessing)
                 ? `drop-shadow(0 0 15px ${effectiveGlowColor})`
                 : "none"
             }}
-            exit={{ scale: 0.9, opacity: 0 }}
-            transition={{
-              scale: { type: "spring", stiffness: 300, damping: 25 },
-              opacity: { type: "spring", stiffness: 300, damping: 25 }
-            }}
+            transition={isSpeaking
+              ? { scale: { duration: 0.35, repeat: Infinity, ease: "easeInOut" }, opacity: { duration: 0.2 } }
+              : { scale: { type: "spring", stiffness: 300, damping: 25 }, opacity: { duration: 0.2 } }
+            }
           >
             {isError ? (
               <span
@@ -579,6 +613,19 @@ export function IrisOrb({
                 }}
               >
                 ERROR
+              </span>
+            ) : voiceStateLabel ? (
+              /* Voice state takes priority: LISTENING / THINKING / WORKING / SPEAKING */
+              <span
+                className="font-black uppercase tracking-[0.2em] select-none pointer-events-none"
+                style={{
+                  fontSize: voiceStateLabel.length > 8 ? '0.65rem' : '0.75rem',
+                  color: effectiveGlowColor,
+                  textShadow: `0 0 12px ${effectiveGlowColor}, 0 2px 4px rgba(0,0,0,0.6)`,
+                  lineHeight: 1.2
+                }}
+              >
+                {voiceStateLabel}
               </span>
             ) : feedbackMessage || centerLabel ? (
               <span

@@ -191,13 +191,19 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     if (errorMessage && sectionId && field.id && clearFieldError) {
       clearFieldError(sectionId, field.id);
     }
-    
+
     if (fieldValues && sectionId && updateField) {
       updateField(sectionId, field.id, newValue);
     } else {
       setLocalValue(newValue);
     }
-  }, [fieldValues, sectionId, updateField, field.id, errorMessage, clearFieldError]);
+
+    // Refresh available models whenever the provider/inference mode changes so
+    // the reasoning_model and tool_execution_model dropdowns stay in sync.
+    if (sendMessage && sectionId === 'inference_mode' && field.id === 'inference_mode') {
+      sendMessage('get_available_models', {});
+    }
+  }, [fieldValues, sectionId, updateField, field.id, errorMessage, clearFieldError, sendMessage]);
 
   const handleSliderClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -300,7 +306,7 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
 
   if (field.type === 'dropdown') {
     let options = field.options || [];
-    if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_model')) options = availableModels || [];
+    if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_model' || field.id === 'tool_execution_model')) options = availableModels || [];
     if (sectionId === 'input' && field.id === 'input_device') options = audioInputDevices || [];
     if (sectionId === 'output' && field.id === 'output_device') options = audioOutputDevices || [];
     if (sectionId === 'wake' && field.id === 'wake_word') options = wakeWords && wakeWords.length > 0 ? wakeWords : (field.options || []);

@@ -398,6 +398,18 @@ logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
 
 
 # ============================================================================
+# Health Check Endpoint
+# ============================================================================
+
+@app.get("/")
+@app.get("/health")
+async def health_check():
+    """Health check endpoint — used by the frontend WS hook before opening the socket.
+    Returns 200 so the hook proceeds to connect immediately instead of retrying."""
+    return {"status": "ok", "service": "IRIS Backend"}
+
+
+# ============================================================================
 # Wake Word Handler
 # ============================================================================
 

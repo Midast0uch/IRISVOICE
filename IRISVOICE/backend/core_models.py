@@ -346,7 +346,8 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             label="INFERENCE MODE",
             icon="Server",
             fields=[
-                InputField(id="inference_mode", type=FieldType.DROPDOWN, label="Inference Mode", options=["Local Models", "VPS Gateway", "OpenAI API"], value="Local Models"),
+                InputField(id="inference_mode", type=FieldType.DROPDOWN, label="Inference Mode", options=["LM Studio", "Local Models", "VPS Gateway", "OpenAI API"], value="LM Studio"),
+                InputField(id="lmstudio_endpoint", type=FieldType.TEXT, label="LM Studio URL", placeholder="http://localhost:1234", value="http://localhost:1234"),
                 InputField(id="vps_url", type=FieldType.TEXT, label="VPS URL", placeholder="https://vps.example.com", value=""),
                 InputField(id="vps_api_key", type=FieldType.TEXT, label="VPS API Key", placeholder="Enter API key", value=""),
                 InputField(id="openai_api_key", type=FieldType.TEXT, label="OpenAI API Key", placeholder="sk-...", value=""),

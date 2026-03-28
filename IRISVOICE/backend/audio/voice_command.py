@@ -75,14 +75,18 @@ class VoiceCommandHandler:
 
         # Stop signal (set by stop_recording / cancel_recording / VAD)
         self._stop_event = threading.Event()
-        # Cancel flag: when True, _run_transcription skips Whisper entirely
-        # and returns IDLE immediately.  Used when the user explicitly clicks
-        # to cancel a wake-word recording before speaking.
-        self._cancelled: bool = False
+        # Cancel event: set() by cancel_recording() so _run_transcription skips
+        # Whisper entirely and returns IDLE immediately.  Using threading.Event
+        # instead of a plain bool guarantees visibility across threads without
+        # a lock (Event.set/is_set use an internal condition + lock internally).
+        self._cancel_event = threading.Event()
 
         # Callbacks
         self._on_state_change: Optional[Callable[[VoiceState, str], None]] = None
         self._on_command_result: Optional[Callable[[Dict[str, Any]], None]] = None
+        # Called with smoothed RMS level (0.0–1.0) every ~100 ms during recording.
+        # Used by the gateway to broadcast audio_level WS events for orb animation.
+        self._on_audio_level: Optional[Callable[[float], None]] = None
 
         # Internal
         self._frame_listener_registered = False
@@ -103,6 +107,10 @@ class VoiceCommandHandler:
     def set_command_result_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """Register callback fired with the transcription result dict."""
         self._on_command_result = callback
+
+    def set_audio_level_callback(self, callback: Callable[[float], None]) -> None:
+        """Register callback fired with smoothed RMS (0.0–1.0) every ~100 ms during recording."""
+        self._on_audio_level = callback
 
     def set_active_session(self, session_id: str) -> None:
         """Set the session_id that owns the current recording."""
@@ -173,7 +181,7 @@ class VoiceCommandHandler:
             self.is_recording = True
             self.audio_buffer = []
             self._raw_frames = []
-            self._cancelled = False   # clear any stale cancel from the previous take
+            self._cancel_event.clear()  # clear any stale cancel from the previous take
             self._stop_event.clear()
 
             # Register AudioEngine frame listener once (kept for lifetime of handler)
@@ -226,7 +234,7 @@ class VoiceCommandHandler:
         if not self.is_recording:
             return
         logger.info("[VoiceCommand] Recording cancelled by user — skipping transcription")
-        self._cancelled = True
+        self._cancel_event.set()
         self._stop_event.set()
 
     # -------------------------------------------------------------------------
@@ -296,12 +304,10 @@ class VoiceCommandHandler:
             self.is_recording = False
 
             # Check for explicit user cancellation BEFORE running Whisper.
-            # cancel_recording() sets this flag when the user clicks the orb
+            # cancel_recording() sets _cancel_event when the user clicks the orb
             # to abort a wake-word recording (nothing said, or wants to redo).
-            # Clearing it here is safe because _cancelled is only written by
-            # cancel_recording() and only read/cleared in this thread.
-            if self._cancelled:
-                self._cancelled = False
+            if self._cancel_event.is_set():
+                self._cancel_event.clear()
                 logger.info("[VoiceCommand] Recording cancelled — skipping transcription")
                 self._on_transcription_complete("")
                 return
@@ -367,11 +373,17 @@ class VoiceCommandHandler:
         last_processed = 0
         total_frames = 0
         pre_speech_frames = 0  # frames elapsed before first speech onset
+        # Audio level: emit smoothed RMS every ~3 frames (~100 ms at 32 ms/frame)
+        _level_accum = 0.0
+        _level_frame_count = 0
+        _LEVEL_EMIT_EVERY = 3
 
         while total_frames < max_frames and not self._stop_event.is_set():
             current_len = len(self._raw_frames)
             if current_len == last_processed:
-                time.sleep(self.VAD_POLL_INTERVAL_SEC)
+                # Block until the stop event fires OR the poll interval expires.
+                # More CPU-efficient than time.sleep() — wakes immediately on cancel.
+                self._stop_event.wait(timeout=self.VAD_POLL_INTERVAL_SEC)
                 continue
 
             new_frames = self._raw_frames[last_processed:current_len]
@@ -380,6 +392,19 @@ class VoiceCommandHandler:
             for frame in new_frames:
                 total_frames += 1
                 rms = float(np.sqrt(np.mean(np.square(frame))))
+
+                # Accumulate for audio_level broadcast (~100 ms cadence)
+                _level_accum += rms
+                _level_frame_count += 1
+                if _level_frame_count >= _LEVEL_EMIT_EVERY and self._on_audio_level:
+                    # Normalise: divide by 2× threshold so speech ≈ 0.5, loud ≈ 1.0
+                    level = min(1.0, _level_accum / _level_frame_count / (self.VAD_ENERGY_THRESHOLD * 2))
+                    try:
+                        self._on_audio_level(level)
+                    except Exception:
+                        pass
+                    _level_accum = 0.0
+                    _level_frame_count = 0
 
                 if rms >= self.VAD_ENERGY_THRESHOLD:
                     speech_count += 1

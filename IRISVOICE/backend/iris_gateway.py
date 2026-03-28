@@ -622,6 +622,46 @@ class IRISGateway:
                                "client_id": client_id}
                     )
 
+            # Apply inference_mode when that card is confirmed
+            # Maps UI display labels → internal provider keys then wires the kernel.
+            elif section_id == "inference_mode" and values:
+                try:
+                    from .agent.agent_kernel import get_agent_kernel
+                    kernel = get_agent_kernel(session_id)
+                    _mode_map = {
+                        "lm studio": "lmstudio", "lmstudio": "lmstudio",
+                        "local models": "local",  "local": "local",
+                        "vps gateway": "vps",     "vps": "vps",
+                        "openai api": "api",      "api": "api",
+                    }
+                    provider = _mode_map.get(str(values.get("inference_mode", "lmstudio")).lower().strip(), "lmstudio")
+                    if provider == "lmstudio":
+                        lms_ep = values.get("lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
+                        kernel.configure_lmstudio(lms_ep)
+                        kernel.configure_vps({"enabled": False})
+                        kernel.prewarm_lmstudio()
+                        self._logger.info(f"[Session: {session_id}] inference_mode confirmed → LM Studio {lms_ep}")
+                    elif provider == "local":
+                        kernel.configure_ollama(values.get("ollama_endpoint", "http://localhost:11434") or "http://localhost:11434")
+                        kernel.configure_vps({"enabled": False})
+                        self._logger.info(f"[Session: {session_id}] inference_mode confirmed → Ollama")
+                    elif provider == "api":
+                        kernel.configure_api(
+                            values.get("openai_api_key", "") or "",
+                            values.get("api_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"
+                        )
+                        kernel.configure_vps({"enabled": False})
+                        self._logger.info(f"[Session: {session_id}] inference_mode confirmed → Remote API")
+                    elif provider == "vps":
+                        vps_ep = values.get("vps_url", "")
+                        if vps_ep:
+                            kernel.configure_vps({"enabled": True, "endpoints": [vps_ep], "auth_token": values.get("vps_api_key") or None})
+                            self._logger.info(f"[Session: {session_id}] inference_mode confirmed → VPS {vps_ep}")
+                    # Also refresh model list for the UI
+                    await self._handle_get_available_models(session_id, client_id, {})
+                except Exception as e:
+                    self._logger.error(f"[Session: {session_id}] Error applying inference_mode: {e}", exc_info=True)
+
             # Apply model selection when models section is confirmed
             # CARD_TO_SECTION_ID maps 'models-card' -> 'model_selection'
             elif section_id == "model_selection" and values:
@@ -812,6 +852,27 @@ class IRISGateway:
         """Wire the VoiceCommandHandler so voice triggers can delegate to it."""
         self._voice_handler = voice_handler
         voice_handler.set_command_result_callback(self._on_voice_result)
+
+        # Broadcast real-time audio levels during recording so the IrisOrb
+        # can animate its pulse in sync with the user's voice.
+        # The callback is called from the VAD background thread every ~100 ms.
+        def _on_audio_level(level: float) -> None:
+            session_id = getattr(voice_handler, "_active_session_id", None)
+            if not session_id:
+                return
+            loop = self._main_loop
+            if loop and loop.is_running():
+                import asyncio as _asyncio
+                _asyncio.run_coroutine_threadsafe(
+                    self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "audio_level",
+                        "payload": {"level": level},
+                    }),
+                    loop,
+                )
+
+        if hasattr(voice_handler, "set_audio_level_callback"):
+            voice_handler.set_audio_level_callback(_on_audio_level)
 
     async def _handle_voice(self, session_id: str, client_id: str, message: dict, auto_stop: bool = False) -> None:
         """
@@ -1592,10 +1653,26 @@ class IRISGateway:
             lmstudio_endpoint = "http://localhost:1234"
 
             if session_state:
-                # model_provider: 'lmstudio' | 'local' | 'api' | 'vps'
-                inference_mode = await session_state.get_field_value("model_selection", "model_provider", "lmstudio") or "lmstudio"
-                vps_url = await session_state.get_field_value("model_selection", "vps_endpoint", "") or ""
-                openai_api_key = await session_state.get_field_value("model_selection", "api_key", "") or ""
+                # inference_mode field lives in the 'inference_mode' section.
+                # The UI shows display values; normalise them to internal keys:
+                #   "LM Studio" / "lmstudio" → "lmstudio"
+                #   "Local Models" / "local"  → "local"   (Ollama)
+                #   "VPS Gateway"  / "vps"    → "vps"
+                #   "OpenAI API"   / "api"    → "api"
+                _raw_mode = (
+                    await session_state.get_field_value("inference_mode", "inference_mode", "lmstudio")
+                    or await session_state.get_field_value("model_selection", "model_provider", "lmstudio")
+                    or "lmstudio"
+                )
+                _mode_map = {
+                    "lm studio": "lmstudio", "lmstudio": "lmstudio",
+                    "local models": "local",  "local": "local",
+                    "vps gateway": "vps",     "vps": "vps",
+                    "openai api": "api",      "api": "api",
+                }
+                inference_mode = _mode_map.get(str(_raw_mode).lower().strip(), "lmstudio")
+                vps_url = await session_state.get_field_value("model_selection", "vps_url", "") or await session_state.get_field_value("inference_mode", "vps_url", "") or ""
+                openai_api_key = await session_state.get_field_value("model_selection", "api_key", "") or await session_state.get_field_value("inference_mode", "openai_api_key", "") or ""
                 api_base_url = await session_state.get_field_value("model_selection", "api_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"
                 lmstudio_endpoint = await session_state.get_field_value("model_selection", "lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
                 ollama_endpoint = await session_state.get_field_value("model_selection", "ollama_endpoint", "http://localhost:11434") or "http://localhost:11434"
