@@ -20,6 +20,37 @@ throughout every reasoning step. The distinction from "prompting" is that contex
 engineering is structural: it defines the shape of the information pipeline, not the
 wording of individual instructions.
 
+### Research Foundation
+
+This design is directly informed by Google's 2026 memory architecture research:
+
+**Titans + MIRAS** (`research.google/blog/titans-miras-helping-ai-have-long-term-memory`)
+- Titans introduces a neural long-term memory module (MLP) that works *alongside*
+  attention — not separate from it. Memory updates happen during inference, not after.
+- MIRAS (Memory-In-Context Reasoning) enables real-time parameter adaptation: the model
+  updates its core memory while processing, not in a post-hoc write step.
+- Key principle: *"memory should update dynamically during reasoning, not remain frozen."*
+
+**TurboQuant** (`research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression`)
+- Reframes the KV cache (the model's working memory during inference) as an active
+  computational constraint, not just storage.
+- 6x memory compression with no accuracy loss — demonstrates that working memory
+  management is a first-class engineering problem.
+
+**How IRIS maps to this research:**
+
+| Google Research | IRIS Implementation |
+|----------------|---------------------|
+| Titans long-term memory module (MLP) | Mycelium coordinate graph — persistent neural-adjacent memory updated after every task |
+| MIRAS real-time parameter adaptation | Option B: `append_to_session()` after each DER step — context updates AS the loop executes |
+| TurboQuant KV cache compression | ContextManager working_history compression at 80% threshold |
+| Titans: memory alongside attention | ContextPackage injected into every Director + Explorer prompt, not just at session start |
+| MIRAS: continuous memory update | Option A: `_store_task_episode()` — each completed task refines what future tasks see |
+
+The critical insight shared between MIRAS and IRIS: **memory must update while the
+system is thinking, not only before or after.** A+B implements this at the DER loop
+level. Option C (LiveContextPackage) extends it to the coordinate graph layer.
+
 ---
 
 ## 1. The Cognitive Model
