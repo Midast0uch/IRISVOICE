@@ -133,9 +133,10 @@ class Reviewer:
         Never raises. Falls back to (PASS, None) on any error.
         """
         try:
-            # Fast path: no Mycelium data → skip review
+            # Fast path: graph immature or no coordinate data →
+            # fall back to heuristic checks instead of always-PASS.
             if not is_mature or not hasattr(context_package, 'gradient_warnings'):
-                return ReviewVerdict.PASS, None
+                return self._heuristic_review(item, completed_steps)
 
             prompt = self._build_review_prompt(
                 item=item,
@@ -152,6 +153,49 @@ class Reviewer:
             )
 
             return self._parse_verdict(response.raw_text)
+
+        except Exception:
+            return ReviewVerdict.PASS, None
+
+    def _heuristic_review(
+        self,
+        item: QueueItem,
+        completed_steps: List[QueueItem],
+    ) -> tuple:
+        """
+        Safety checks used when the Mycelium graph is immature (no gradient data).
+
+        Rules (in priority order):
+        1. Destructive-operation keywords → VETO immediately
+        2. Exact duplicate of a recently completed step → REFINE
+        3. Unknown territory → PASS (same behaviour as before, but explicit)
+
+        Never raises. Falls back to PASS on any internal error.
+        """
+        try:
+            desc_lower = (item.description or "").lower()
+
+            # Rule 1: destructive operations — these should never auto-execute
+            _DESTRUCTIVE = [
+                "delete all", "drop table", "drop database",
+                "rm -rf", "format disk", "truncate table",
+                "destroy all", "wipe all", "overwrite all",
+                "factory reset", "nuke", "purge all",
+            ]
+            for kw in _DESTRUCTIVE:
+                if kw in desc_lower:
+                    return ReviewVerdict.VETO, f"Destructive keyword detected: '{kw}'"
+
+            # Rule 2: duplicate of a recent step (last 5) → suggest skipping
+            for prev in completed_steps[-5:]:
+                if (prev.description or "").lower().strip() == desc_lower.strip():
+                    return (
+                        ReviewVerdict.REFINE,
+                        f"Duplicate of step {prev.step_number} (already completed) — skip or rephrase",
+                    )
+
+            # Rule 3: unknown territory — pass through
+            return ReviewVerdict.PASS, None
 
         except Exception:
             return ReviewVerdict.PASS, None

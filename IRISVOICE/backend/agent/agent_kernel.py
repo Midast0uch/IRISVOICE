@@ -378,7 +378,9 @@ class AgentKernel:
         task_summary: str,
         full_content: str,
         outcome_type: str = "success",
-        tool_sequence: Optional[List[Dict[str, Any]]] = None
+        tool_sequence: Optional[List[Dict[str, Any]]] = None,
+        session_id: Optional[str] = None,
+        duration_ms: int = 0,
     ) -> None:
         """
         Store a task episode in memory.
@@ -388,6 +390,8 @@ class AgentKernel:
             full_content: Full conversation/task content
             outcome_type: Task outcome (success, failure, etc.)
             tool_sequence: List of tool calls made
+            session_id: Session to attribute the episode to (falls back to self.session_id)
+            duration_ms: Wall-clock time the task took in milliseconds
         """
         if self._memory_interface is None:
             return
@@ -396,11 +400,12 @@ class AgentKernel:
             from backend.memory import Episode
 
             episode = Episode(
-                session_id=self.session_id,
+                session_id=session_id or self.session_id,
                 task_summary=task_summary,
                 full_content=full_content,
                 tool_sequence=tool_sequence or [],
                 outcome_type=outcome_type,
+                duration_ms=duration_ms,
                 source_channel="websocket",
                 node_id="local",
                 origin="local"
@@ -2252,6 +2257,7 @@ Respond with a JSON object:
         _session = session_id or self.session_id
         completed_items: List[Any] = []
         step_outputs: List[str] = []
+        _der_start_time = time.perf_counter()
 
         # Build Director queue from ExecutionPlan steps
         items = [
@@ -2359,6 +2365,22 @@ Respond with a JSON object:
             except Exception:
                 pass
 
+            # ── WORKING MEMORY: accumulate findings for later steps ────────
+            # Appends step result to working_history zone so _run_step_direct()
+            # calls on later steps can see what earlier steps discovered.
+            # Skips error outputs to avoid poisoning context with noise.
+            try:
+                if self._memory_interface and step_result and step_success:
+                    _wm_note = (
+                        f"[Step {item.step_number}: {item.description[:80]}]"
+                        f" → {step_result[:400]}"
+                    )
+                    self._memory_interface.append_to_session(
+                        _session, _wm_note, zone="working_history"
+                    )
+            except Exception:
+                pass
+
             queue.mark_complete(item.step_id)
             completed_items.append(item)
 
@@ -2410,6 +2432,36 @@ Respond with a JSON object:
         except Exception:
             pass
 
+        # ── EPISODIC STORAGE: write completed task to episodic memory ──────────
+        # Closes the read/write loop. get_task_context() already calls
+        # assemble_episodic_context() which reads from this store — but only
+        # if episodes exist. This call creates them.
+        try:
+            if self._memory_interface:
+                _der_duration_ms = int((time.perf_counter() - _der_start_time) * 1000)
+                _tool_seq = [
+                    {
+                        "tool": ci.tool or "none",
+                        "params": ci.params,
+                        "step": ci.step_number,
+                        "description": ci.description,
+                    }
+                    for ci in completed_items
+                ]
+                _full_content = "\n".join(
+                    f"[Step {i + 1}] {o}" for i, o in enumerate(step_outputs) if o
+                )
+                self._store_task_episode(
+                    task_summary=plan.original_task,
+                    full_content=_full_content,
+                    outcome_type=outcome,
+                    tool_sequence=_tool_seq,
+                    session_id=_session,
+                    duration_ms=_der_duration_ms,
+                )
+        except Exception:
+            pass
+
         if step_outputs:
             return "\n".join(o for o in step_outputs if o)
         return (
@@ -2421,6 +2473,7 @@ Respond with a JSON object:
         """
         Execute a tool-less DER step via direct model inference.
         Returns the model's response text, or an error placeholder.
+        Injects accumulated working memory (prior step findings) into the prompt.
         """
         try:
             cp_str = ""
@@ -2429,9 +2482,20 @@ Respond with a JSON object:
                     cp_str = context_package.get_system_zone_content() or ""
                 except Exception:
                     pass
+
+            # Working memory: include what earlier steps found this session.
+            # Uses ContextManager.render() which applies compression at 80% threshold.
+            wm_str = ""
+            try:
+                if self._memory_interface:
+                    wm_str = self._memory_interface.get_assembled_context(session_id) or ""
+            except Exception:
+                pass
+
             prompt = (
                 f"{cp_str}\n\n"
-                f"OBJECTIVE: {item.objective_anchor}\n"
+                + (f"SESSION FINDINGS SO FAR:\n{wm_str}\n\n" if wm_str else "")
+                + f"OBJECTIVE: {item.objective_anchor}\n"
                 f"STEP {item.step_number}: {item.description}\n\n"
                 "Complete this step. Respond with the result only."
             ).strip()
