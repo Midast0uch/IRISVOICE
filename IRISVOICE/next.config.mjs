@@ -1,7 +1,10 @@
+const isProd = process.env.NODE_ENV === 'production';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  distDir: 'dist',
-  output: 'export',
+  // distDir/output only apply to production builds (next build).
+  // Dev mode (Turbopack) must not use static export — it needs a live server.
+  ...(isProd ? { distDir: 'dist', output: 'export' } : {}),
   compress: true,
   productionBrowserSourceMaps: false,
   typescript: {

@@ -77,7 +77,25 @@ async def initialise_memory(
     # Determine database path
     if db_path is None:
         db_path = config.db_path
-    
+
+    # Memory transfer: if runtime DB doesn't exist yet, seed it from the
+    # bootstrap coordinate DB so the app starts with a populated graph.
+    # GOALS.md [5.3]: "bootstrap/coordinates.db transfers to data/memory.db"
+    try:
+        import shutil
+        from pathlib import Path as _Path
+        _runtime = _Path(db_path)
+        _bootstrap = _Path("bootstrap/coordinates.db")
+        if not _runtime.exists() and _bootstrap.exists():
+            _runtime.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(_bootstrap), str(_runtime))
+            logger.info(
+                "[Memory] Seeded runtime DB from bootstrap coordinates: "
+                f"{_bootstrap} -> {_runtime}"
+            )
+    except Exception as _seed_err:
+        logger.warning(f"[Memory] Bootstrap seed skipped: {_seed_err}")
+
     # Derive encryption key
     try:
         from backend.core.biometric import initialize_memory_encryption

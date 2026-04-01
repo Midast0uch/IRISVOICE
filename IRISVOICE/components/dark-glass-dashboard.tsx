@@ -364,7 +364,11 @@ export function DarkGlassDashboard({
   initialSubApp,
   onRequestSpotlight,
 }: DarkGlassDashboardProps) {
-  const [activeTab, setActiveTab] = useState<string>('voice');
+  // Persist active tab so the app restores to the last used panel on reopen
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    if (typeof window === "undefined") return 'voice'
+    return localStorage.getItem('iris_active_tab_v1') || 'voice'
+  });
   const [activeSubApp, setActiveSubApp] = useState<string | null>(null);
   const [isRailExpanded, setIsRailExpanded] = useState(true);
   const [isSidebarHidden, setIsSidebarHidden] = useState(false);
@@ -590,6 +594,10 @@ export function DarkGlassDashboard({
     setActiveTab(tabId);
     setActiveSubApp(null);
     selectSectionWs(tabId);
+    // Persist so the app reopens on the same tab
+    if (typeof window !== "undefined") {
+      localStorage.setItem('iris_active_tab_v1', tabId)
+    }
   }, [selectSectionWs]);
 
   const renderNavigationRail = () => (

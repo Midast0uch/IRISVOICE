@@ -112,16 +112,16 @@ def _prompt_passphrase() -> str:
         passphrase = getpass.getpass("Enter passphrase: ")
         
         if len(passphrase) < 8:
-            print("❌ Passphrase must be at least 8 characters long.")
+            print("[x] Passphrase must be at least 8 characters long.")
             continue
         
         confirm = getpass.getpass("Confirm passphrase: ")
         
         if passphrase != confirm:
-            print("❌ Passphrases do not match. Please try again.")
+            print("[x] Passphrases do not match. Please try again.")
             continue
         
-        print("✓ Passphrase accepted.\n")
+        print("[+] Passphrase accepted.\n")
         return passphrase
 
 

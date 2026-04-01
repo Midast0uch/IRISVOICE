@@ -123,9 +123,59 @@ export function ChatWing({
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
-  // Thread-based conversation state
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Thread-based conversation state — persisted to localStorage so history
+  // survives page reloads and Tauri window closes.
+  // Max 50 conversations kept; messages within each conversation capped at 200.
+  const STORAGE_KEY = "iris_conversations_v1"
+  const ACTIVE_ID_KEY = "iris_active_conversation_id_v1"
+  const MAX_CONVERSATIONS = 50
+  const MAX_MESSAGES_PER_CONV = 200
+
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
+    if (typeof window === "undefined") return []
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return []
+      const parsed: Conversation[] = JSON.parse(raw)
+      // Deserialise timestamp strings back to Date objects
+      return parsed.map(c => ({
+        ...c,
+        timestamp: new Date(c.timestamp),
+        messages: c.messages.map(m => ({ ...m, timestamp: new Date(m.timestamp) })),
+      }))
+    } catch {
+      return []
+    }
+  })
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null
+    return localStorage.getItem(ACTIVE_ID_KEY) || null
+  })
+
+  // Persist conversations whenever they change (debounced via useEffect dep array)
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      // Cap stored conversations to prevent unbounded localStorage growth
+      const toStore = conversations.slice(-MAX_CONVERSATIONS).map(c => ({
+        ...c,
+        messages: c.messages.slice(-MAX_MESSAGES_PER_CONV),
+      }))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore))
+    } catch {
+      // localStorage full or unavailable — silently skip
+    }
+  }, [conversations])
+
+  // Persist active conversation ID
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (activeConversationId) {
+      localStorage.setItem(ACTIVE_ID_KEY, activeConversationId)
+    } else {
+      localStorage.removeItem(ACTIVE_ID_KEY)
+    }
+  }, [activeConversationId])
   const [inputText, setInputText] = useState("")
   const [justSent, setJustSent] = useState(false)
   const [showHistory, setShowHistory] = useState(false)

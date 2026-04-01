@@ -742,14 +742,19 @@ class IRISGateway:
                             )
 
                     elif provider == "iris_local":
-                        # llama-cpp-python server on port 8082 (OpenAI-compatible).
-                        # Reuses the LM Studio code path since both expose /v1.
+                        # IRIS-native local server on port 8082 (llama-cpp-python /
+                        # ik_llama.cpp, OpenAI-compatible). IRIS owns this server —
+                        # NOT LM Studio. Use configure_openai_compat so _model_provider
+                        # is set to "iris_local" and routing works correctly.
                         from .agent.local_model_manager import get_local_model_manager
                         mgr = get_local_model_manager()
-                        kernel.configure_lmstudio(mgr.ENDPOINT)
+                        # mgr.ENDPOINT already ends with /v1 — strip it so
+                        # _get_lmstudio_client() doesn't double up to /v1/v1/...
+                        _iris_base = mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
+                        kernel.configure_openai_compat(_iris_base, provider_name="iris_local")
                         kernel.configure_vps({"enabled": False})
                         self._logger.info(
-                            f"[Session: {session_id}] iris_local provider configured: {mgr.ENDPOINT}",
+                            f"[iris_local] Provider selected: {mgr.ENDPOINT} (session {session_id})",
                             extra={"session_id": session_id}
                         )
 
@@ -1499,26 +1504,24 @@ class IRISGateway:
                     extra={"session_id": session_id}
                 )
 
-                # Emit inference_event for InferenceConsolePanel
+                # Emit inference_event for InferenceConsolePanel — fires for all backends
                 try:
                     _prompt_tok = max(1, len(text) // 4)
                     _comp_tok = max(1, len(response or "") // 4)
                     _elapsed_s = _elapsed_ms / 1000 or 0.001
                     _model_name = getattr(agent_kernel, "_selected_reasoning_model", None) or "local-model"
-                    _lms_ep = getattr(agent_kernel, "_lmstudio_endpoint", None) or ""
-                    if _lms_ep:
-                        await self._ws_manager.broadcast_to_session(session_id, {
-                            "type": "inference_event",
-                            "payload": {
-                                "model": _model_name,
-                                "prompt_tokens": _prompt_tok,
-                                "completion_tokens": _comp_tok,
-                                "total_tokens": _prompt_tok + _comp_tok,
-                                "time_ms": _elapsed_ms,
-                                "tps": round(_comp_tok / _elapsed_s, 1),
-                                "timestamp": _time.time(),
-                            },
-                        })
+                    await self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "inference_event",
+                        "payload": {
+                            "model": _model_name,
+                            "prompt_tokens": _prompt_tok,
+                            "completion_tokens": _comp_tok,
+                            "total_tokens": _prompt_tok + _comp_tok,
+                            "time_ms": _elapsed_ms,
+                            "tps": round(_comp_tok / _elapsed_s, 1),
+                            "timestamp": _time.time(),
+                        },
+                    })
                 except Exception:
                     pass  # never block the response
 
@@ -2149,6 +2152,21 @@ class IRISGateway:
                     },
                     exclude_clients={client_id}
                 )
+
+                # Emit model_load_event for InferenceConsolePanel
+                try:
+                    import time as _time_ml
+                    await self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "model_load_event",
+                        "payload": {
+                            "action": "loaded",
+                            "model": reasoning_model or "unknown",
+                            "profile": "reasoning",
+                            "timestamp": _time_ml.time(),
+                        },
+                    })
+                except Exception:
+                    pass
             else:
                 # Send error
                 await self._send_error(client_id, "Failed to set model selection - models may not be available")
@@ -3361,12 +3379,31 @@ class IRISGateway:
 
         await self._ws_manager.send_to_client(client_id, {
             "type": "local_model_loading",
-            "payload": {"status": "starting", "model_path": model_path, "profile": profile},
+            "payload": {"status": "starting", "model_path": model_path, "profile": profile, "pct": 0},
         })
 
         try:
             mgr = get_local_model_manager()
-            ok = await mgr.load_model(model_path, profile, custom_params)
+
+            # Progress callback — sends incremental layer-loading updates to the client.
+            # Called as each significant progress milestone is parsed from llama.cpp stdout.
+            async def _progress_cb(event: dict) -> None:
+                try:
+                    await self._ws_manager.send_to_client(client_id, {
+                        "type": "local_model_loading",
+                        "payload": {
+                            "status": "loading",
+                            "phase": event.get("phase", "loading"),
+                            "pct": event.get("pct", 0),
+                            "msg": event.get("msg", ""),
+                            "model_path": model_path,
+                            "profile": profile,
+                        },
+                    })
+                except Exception:
+                    pass
+
+            ok = await mgr.load_model(model_path, profile, custom_params, progress_cb=_progress_cb)
             status = "ready" if ok else "error"
             payload_out = {"status": status, "model_path": model_path, "profile": profile}
             if not ok:
@@ -3375,8 +3412,22 @@ class IRISGateway:
                 "type": "local_model_loading",
                 "payload": payload_out,
             })
-            # Refresh model dropdown if load succeeded
+            # Wire kernel to iris_local provider (port 8082, OpenAI-compatible).
+            # This is distinct from lmstudio — IRIS owns this server, not the user.
             if ok:
+                try:
+                    from .agent import get_agent_kernel
+                    kernel = get_agent_kernel(session_id)
+                    # mgr.ENDPOINT = "http://127.0.0.1:8082/v1"
+                    # _get_lmstudio_client() appends /v1 itself — strip to avoid /v1/v1
+                    _base = mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
+                    kernel.configure_openai_compat(_base, provider_name="iris_local")
+                    self._logger.info(
+                        f"[iris_local] Kernel wired: {_base} (session {session_id})"
+                    )
+                except Exception as kw_err:
+                    self._logger.warning(f"[iris_local] Kernel wire failed: {kw_err}")
+
                 await self._handle_get_available_models(session_id, client_id, {})
                 import time as _time
                 await self._ws_manager.broadcast_to_session(session_id, {
@@ -3396,7 +3447,13 @@ class IRISGateway:
             })
 
     async def _handle_unload_local_model(self, session_id: str, client_id: str, message: dict) -> None:
-        """Stop the llama-cpp-python server subprocess."""
+        """Stop the iris_local model server subprocess.
+
+        Does NOT reset the kernel endpoint — that is the responsibility of the user
+        explicitly switching to a different provider (lmstudio, api, etc.) in settings.
+        Resetting here would silently route queries to LM Studio, which is wrong for
+        users who chose iris_local and have no LM Studio running.
+        """
         from .agent.local_model_manager import get_local_model_manager
         try:
             mgr = get_local_model_manager()

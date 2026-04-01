@@ -10,6 +10,7 @@ httpx>=0.27.0
 requests>=2.31.0
 cryptography>=41.0.0
 keyring>=25.0.0          # Secure credential storage in OS keychain
+aiohttp>=3.9.0           # async HTTP client — used by auth_handlers, integrations
 
 # Audio/Voice Processing
 pyaudio>=0.2.11
@@ -24,14 +25,19 @@ sounddevice>=0.5.0
 torch>=2.0.0
 torchaudio>=2.0.0
 psutil>=5.9.0
-# STT Pipeline — RealtimeSTT bundles faster-whisper + silero-VAD + webrtcvad.
-# Replaces the previous LFM audio model + manual VAD + fallback chain.
-RealtimeSTT>=0.3.0       # real-time STT: faster-whisper/tiny + silero-VAD (offline)
-faster-whisper>=1.0.0    # pinned as RealtimeSTT dependency (CPU int8, ~40 MB model)
+# STT Pipeline — faster-whisper direct integration (tiny/int8, ~40 MB, CPU)
+faster-whisper>=1.0.0    # direct STT: CPU int8, ~40 MB model, ~80ms per 3s clip
 
-# TTS Pipeline — CosyVoice2-0.5B zero-shot voice cloning + streaming
-# Model lives at: backend/voice/CosyVoice/ (cloned repo)
-# Pretrained model: backend/voice/pretrained_models/CosyVoice2-0.5B
+# TTS Pipeline — auto-selects engine based on hardware:
+#   GPU present  -> CosyVoice3-0.5B  (voice cloning, RTF ~1-3x)
+#   CPU only     -> Piper             (fast, RTF ~0.04x)
+#   Last resort  -> pyttsx3           (Windows SAPI5, always available)
+#
+# CosyVoice3 setup: run scripts/download_models.py
+#   Model: backend/voice/CosyVoice/ + backend/voice/pretrained_models/CosyVoice3-0.5B
+# Piper setup: model auto-downloaded to backend/voice/piper_models/ on first run
+piper-tts>=1.4.0         # fast CPU TTS (en_US-ryan-high, RTF ~0.04x, ~115 MB model)
+# CosyVoice3 deps (GPU path only):
 # Install CosyVoice deps:
 #   pip install conformer hydra-core hyperpyyaml "x-transformers>=2.0" "diffusers==0.29.0"
 torch>=2.0.0             # already listed above
@@ -46,5 +52,12 @@ diffusers==0.29.0
 pyttsx3>=2.90            # SAPI5 built-in fallback TTS (Windows only)
 
 # Local GGUF inference — llama-cpp-python server mode on port 8082
-llama-cpp-python>=0.2.0  # GGUF model server (optional — install when using iris_local provider)
+# For CUDA GPU acceleration (recommended — RTX 3070 / CUDA 12.4):
+#   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 --upgrade
+# For CPU-only fallback:
+#   pip install llama-cpp-python>=0.2.0
+llama-cpp-python>=0.3.0  # GGUF model server — install CUDA variant above for GPU
+sse-starlette>=1.6.0     # required by llama_cpp.server
+pydantic-settings>=2.0.0 # required by llama_cpp.server
+starlette-context>=0.3.6 # required by llama_cpp.server
 huggingface-hub>=0.20.0  # Model download from HuggingFace Hub

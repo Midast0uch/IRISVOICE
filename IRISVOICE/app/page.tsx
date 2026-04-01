@@ -13,6 +13,7 @@ import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation"
 import { BackdropBlur } from "@/components/backdrop-blur"
 import { DashboardWing } from "@/components/dashboard-wing"
 import { isTauri } from "@/hooks/useDeepLink"
+import { SetupWizard, useFirstRunCheck } from "@/components/setup/SetupWizard"
 
 // Lazy load heavy components for faster initial page load
 // Note: Using 'any' here due to TypeScript/React.lazy() compatibility issues with Next.js 16/React 19
@@ -25,6 +26,9 @@ const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-con
 export default function Home() {
   const { state, handleExpandToMain, handleGoBack, handleCollapseToIdle, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand } = useNavigation()
   const { getThemeConfig } = useBrandColor()
+
+  // First-run wizard — shows once when no model is configured
+  const { showWizard, dismissWizard } = useFirstRunCheck()
   
   // Initialize UI layout state machine
   const {
@@ -162,6 +166,9 @@ export default function Home() {
 
   return (
     <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ perspective: '1200px' }}>
+      {/* First-run setup wizard — shown once when no model is configured */}
+      {showWizard && <SetupWizard onComplete={dismissWizard} />}
+
       {/* Backdrop Blur - renders when wings are open */}
       <BackdropBlur uiState={uiLayoutState} />
       

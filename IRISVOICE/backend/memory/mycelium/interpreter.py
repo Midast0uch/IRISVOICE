@@ -11,7 +11,7 @@ Gate 1 Step 1.9
 """
 
 import json
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 class ResolutionEncoder:
@@ -80,10 +80,197 @@ class ResolutionEncoder:
 
 
 class CoordinateInterpreter:
-    """Stub — coordinate interpretation pipeline, implemented in later phase."""
-    pass
+    """
+    Resolves conflicts when two coordinate nodes make opposing claims
+    about the same axis. Stores resolution basis in mycelium_conflicts table.
+
+    Resolution strategy (priority order):
+    1. Prefer the node with higher confidence
+    2. If equal confidence, prefer the more recently accessed node
+    3. If same recency, prefer the node on the pheromone-strongest edge
+       (highest hit_count on any edge touching that node)
+
+    Never raises — falls back to 0.5 (neutral) on any error.
+    """
+
+    def resolve(
+        self,
+        space_id: str,
+        axis: str,
+        node_a: str,
+        node_b: str,
+        conn=None,
+    ) -> float:
+        """
+        Returns the resolved coordinate value for the given axis conflict.
+
+        Args:
+            space_id:  Mycelium space identifier
+            axis:      The axis (dimension name) in conflict
+            node_a:    First node_id
+            node_b:    Second node_id
+            conn:      SQLite connection (optional — returns 0.5 if None)
+
+        Returns:
+            float — resolved coordinate value
+        """
+        try:
+            if conn is None:
+                return 0.5
+
+            cursor = conn.execute(
+                "SELECT node_id, confidence, last_accessed, coordinates "
+                "FROM mycelium_nodes WHERE node_id IN (?, ?)",
+                (node_a, node_b),
+            )
+            rows = {row[0]: row for row in cursor.fetchall()}
+
+            if not rows:
+                return 0.5
+
+            def _node_coord(node_id: str) -> float:
+                try:
+                    row = rows.get(node_id)
+                    if row is None:
+                        return 0.5
+                    coords = row[3]
+                    if isinstance(coords, (bytes, bytearray)):
+                        coords = json.loads(coords.decode("utf-8"))
+                    elif isinstance(coords, str):
+                        coords = json.loads(coords)
+                    if isinstance(coords, dict):
+                        return float(coords.get(axis, 0.5))
+                    if isinstance(coords, list) and coords:
+                        return float(coords[0])
+                    return 0.5
+                except Exception:
+                    return 0.5
+
+            val_a = _node_coord(node_a)
+            val_b = _node_coord(node_b)
+
+            conf_a = float((rows.get(node_a) or (None, 0.5))[1] or 0.5)
+            conf_b = float((rows.get(node_b) or (None, 0.5))[1] or 0.5)
+            resolution_basis = "confidence"
+
+            if abs(conf_a - conf_b) > 0.05:
+                resolved = val_a if conf_a >= conf_b else val_b
+            else:
+                acc_a = float((rows.get(node_a) or (None, 0.5, 0.0))[2] or 0.0)
+                acc_b = float((rows.get(node_b) or (None, 0.5, 0.0))[2] or 0.0)
+                resolution_basis = "recency"
+
+                if abs(acc_a - acc_b) > 1.0:
+                    resolved = val_a if acc_a >= acc_b else val_b
+                else:
+                    cursor2 = conn.execute(
+                        "SELECT from_node_id, SUM(hit_count) as total_hits "
+                        "FROM mycelium_edges WHERE from_node_id IN (?, ?) "
+                        "GROUP BY from_node_id ORDER BY total_hits DESC LIMIT 1",
+                        (node_a, node_b),
+                    )
+                    best = cursor2.fetchone()
+                    resolution_basis = "pheromone"
+                    if best and best[0] == node_a:
+                        resolved = val_a
+                    elif best and best[0] == node_b:
+                        resolved = val_b
+                    else:
+                        resolved = (val_a + val_b) / 2.0
+                        resolution_basis = "average"
+
+            try:
+                import uuid as _uuid
+                import time as _time
+                conn.execute(
+                    "INSERT OR IGNORE INTO mycelium_conflicts "
+                    "(conflict_id, space_id, axis, value_a, source_a, "
+                    " value_b, source_b, resolved_value, resolution_basis, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(_uuid.uuid4()), space_id, axis,
+                        val_a, node_a, val_b, node_b,
+                        resolved, resolution_basis, _time.time(),
+                    ),
+                )
+            except Exception:
+                pass
+
+            return resolved
+
+        except Exception:
+            return 0.5
 
 
 class BehavioralPredictor:
-    """Stub — behavioral prediction layer, implemented in later phase."""
-    pass
+    """
+    Given current coordinate position + task class, predicts the 3 most
+    likely next tool/action names based on pheromone edge weights.
+
+    Feeds into ContextPackage.tier2_predictions.
+
+    Prediction is based on pheromone graph edges: outgoing edges from current
+    nodes ranked by (hit_count / traversal_count) * target_node_confidence.
+    Tools already used in the current session are excluded.
+
+    Never raises — returns [] on any error.
+    """
+
+    def predict(
+        self,
+        session_id: str,
+        current_node_ids: List[str],
+        task_class: str,
+        completed_tools: List[str],
+        conn=None,
+    ) -> List[str]:
+        """
+        Returns top-3 predicted next tool/action names.
+
+        Args:
+            session_id:       Current session (unused in query, reserved)
+            current_node_ids: Active node IDs in this session
+            task_class:       Task class label (reserved for future weighting)
+            completed_tools:  Tools already used this session (excluded)
+            conn:             SQLite connection (returns [] if None)
+
+        Returns:
+            List of up to 3 predicted tool names (empty if no data)
+        """
+        try:
+            if conn is None or not current_node_ids:
+                return []
+
+            placeholders = ",".join("?" for _ in current_node_ids)
+            cursor = conn.execute(
+                f"SELECT e.to_node_id, e.hit_count, e.traversal_count, "
+                f"       n.label, n.confidence "
+                f"FROM mycelium_edges e "
+                f"JOIN mycelium_nodes n ON n.node_id = e.to_node_id "
+                f"WHERE e.from_node_id IN ({placeholders}) "
+                f"  AND e.hit_count > 0 "
+                f"ORDER BY (CAST(e.hit_count AS REAL) / MAX(e.traversal_count, 1)) "
+                f"         * n.confidence DESC "
+                f"LIMIT 10",
+                current_node_ids,
+            )
+
+            completed_set = set(completed_tools or [])
+            candidates: List[str] = []
+            seen: set = set()
+
+            for row in cursor.fetchall():
+                label = row[3] or ""
+                if not label:
+                    continue
+                name = label.split(":")[-1].strip()
+                if name and name not in completed_set and name not in seen:
+                    candidates.append(name)
+                    seen.add(name)
+                if len(candidates) >= 3:
+                    break
+
+            return candidates[:3]
+
+        except Exception:
+            return []

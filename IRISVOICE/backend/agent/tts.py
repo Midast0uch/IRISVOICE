@@ -1,13 +1,18 @@
 """
-TTS Manager — CosyVoice 2.0 (zero-shot voice cloning) for IRIS.
+TTS Manager — CosyVoice 3.0 (zero-shot voice cloning) for IRIS.
 
-Primary engine : CosyVoice2-0.5B
+Primary engine : CosyVoice3-0.5B
+  - Same 0.5B parameter count as CosyVoice2; better content consistency,
+    speaker similarity, and prosody naturalness
   - Zero-shot voice cloning from TOMV2.wav reference (pre-registered as 'tommv2')
   - Streaming: yields audio chunks as soon as they are ready (~150 ms first-chunk)
   - 24 kHz native output — passed directly to sd.play() (no intermediate resampling)
-  - CUDA if available, CPU otherwise
+  - CPU inference supported — no CUDA required
 
 Fallback        : pyttsx3 (Windows SAPI5 — zero download, instant)
+
+Setup           : run scripts/download_models.py to download CosyVoice3-0.5B
+                  and get instructions for placing TOMV2.wav
 
 Lock discipline
   self._lock guards model initialisation only.  It is released before
@@ -37,8 +42,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-COSYVOICE_NATIVE_RATE: int = 24_000  # CosyVoice2-0.5B native rate
-OUTPUT_SAMPLE_RATE:   int = COSYVOICE_NATIVE_RATE  # pass native rate to sd.play() directly
+COSYVOICE_NATIVE_RATE: int = 24_000  # CosyVoice3-0.5B native rate
+PIPER_NATIVE_RATE:    int = 22_050   # Piper ryan-high native rate
+OUTPUT_SAMPLE_RATE:   int = COSYVOICE_NATIVE_RATE  # pipeline rate (both engines resample to this)
 PYTTSX_NATIVE_RATE:   int = 22_050   # pyttsx3 / SAPI5 typical rate
 SAMPLE_RATE:          int = OUTPUT_SAMPLE_RATE  # legacy alias
 
@@ -48,9 +54,31 @@ _BACKEND_DIR = _THIS_DIR.parent               # backend/
 _PROJECT_DIR = _BACKEND_DIR.parent            # IRISVOICE/
 
 COSYVOICE_DIR   = _BACKEND_DIR / "voice" / "CosyVoice"
-MODEL_DIR       = _BACKEND_DIR / "voice" / "pretrained_models" / "CosyVoice2-0.5B"
+MODEL_DIR       = _BACKEND_DIR / "voice" / "pretrained_models" / "CosyVoice3-0.5B"
 REFERENCE_AUDIO = _PROJECT_DIR / "data" / "TOMV2.wav"
 SPK_ID          = "tommv2"
+
+# Piper TTS — fast CPU engine (RTF ~0.04x vs CosyVoice3 CPU RTF ~50x).
+# Used as primary when CUDA is not available.
+PIPER_MODEL_DIR  = _BACKEND_DIR / "voice" / "piper_models"
+PIPER_MODEL_ONNX = PIPER_MODEL_DIR / "en_US-ryan-high.onnx"
+
+# CosyVoice3 requires <|endofprompt|> in prompt_text (CosyVoice2 accepted empty string).
+# This prefix is prepended to any prompt transcript so the tokenizer sees the special token.
+COSYVOICE3_PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
+
+def _cuda_available() -> bool:
+    # NOTE: do NOT call this at module level — importing torch costs ~360 MB.
+    # Evaluated lazily on first TTS use (see TTSManager._select_engine).
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+# Engine selection deferred to first use — avoids 360 MB torch import at startup.
+# USE_COSYVOICE is now a property of TTSManager, not a module constant.
+USE_COSYVOICE: bool = False  # overridden at first TTSManager init
 
 AVAILABLE_VOICES: List[str] = ["Cloned Voice", "Built-in"]
 
@@ -89,12 +117,17 @@ class TTSManager:
     """
     Singleton TTS manager.
 
-    Primary engine  : CosyVoice2-0.5B — zero-shot voice cloning via TOMV2.wav.
-    Fallback engine : pyttsx3 SAPI5.
+    Engine selection (automatic, based on hardware):
+      GPU present  → CosyVoice3-0.5B (zero-shot voice cloning, RTF ~1-3x)
+      CPU only     → Piper en_US-ryan-high (fast, RTF ~0.04x)
+      Final fallback → pyttsx3 SAPI5 (always available on Windows)
 
-    Both engines produce float32 audio at OUTPUT_SAMPLE_RATE (24 kHz) ready
-    for AudioPipeline.play_audio(sample_rate=24000).  sd.play() handles the
-    single-step conversion to the device's native rate.
+    All engines produce float32 audio at OUTPUT_SAMPLE_RATE (24 kHz).
+
+    IMPORTANT — first-time setup:
+      Run scripts/download_models.py to download CosyVoice3-0.5B weights (GPU path).
+      Piper model (backend/voice/piper_models/) is downloaded automatically.
+      Place TOMV2.wav at IRISVOICE/data/TOMV2.wav to enable CosyVoice3 cloning.
     """
 
     _instance: Optional["TTSManager"] = None
@@ -109,18 +142,28 @@ class TTSManager:
         if TTSManager._initialized:
             return
 
+        # Resolve GPU availability here (first TTSManager use), not at module
+        # import time.  This defers the 360 MB torch import until TTS is needed.
+        global USE_COSYVOICE
+        USE_COSYVOICE = _cuda_available()
+
         self.config: Dict[str, Any] = {
             "tts_enabled":   True,
             "tts_voice":     "Cloned Voice",
             "speaking_rate": 1.0,
         }
 
-        self._cosyvoice      = None     # AutoModel instance (lazy-loaded)
+        self._cosyvoice      = None     # AutoModel instance (lazy-loaded, GPU only)
+        self._piper          = None     # PiperVoice instance (lazy-loaded, CPU path)
         self._spk_registered = False    # Whether TOMV2 speaker is registered
         self._lock           = threading.Lock()   # guards init only, NOT inference
         self._ready_event    = threading.Event()  # set when model+speaker ready
 
         TTSManager._initialized = True
+
+        # Run preflight once at init so any missing pieces are surfaced immediately
+        # in the startup logs rather than silently at first TTS call.
+        threading.Thread(target=self._log_preflight, daemon=True, name="tts-preflight").start()
 
     # ------------------------------------------------------------------
     # Public API
@@ -128,8 +171,48 @@ class TTSManager:
 
     AVAILABLE_VOICES = AVAILABLE_VOICES
 
+    def _log_preflight(self) -> None:
+        """Log TTS preflight status at startup — surfaces missing pieces clearly."""
+        if USE_COSYVOICE:
+            issues = []
+            if not COSYVOICE_DIR.exists():
+                issues.append(
+                    f"CosyVoice source not found at {COSYVOICE_DIR}. "
+                    "Run: python scripts/download_models.py"
+                )
+            if not MODEL_DIR.exists():
+                issues.append(
+                    f"CosyVoice3-0.5B weights not found at {MODEL_DIR}. "
+                    "Run: python scripts/download_models.py"
+                )
+            if not REFERENCE_AUDIO.exists():
+                issues.append(
+                    f"Voice cloning reference audio not found at {REFERENCE_AUDIO}. "
+                    "Place TOMV2.wav at IRISVOICE/data/TOMV2.wav to enable cloning."
+                )
+            if issues:
+                logger.warning(
+                    "[TTSManager] CosyVoice3 preflight issues:\n"
+                    + "\n".join(f"  - {i}" for i in issues)
+                )
+            else:
+                logger.info(
+                    f"[TTSManager] Preflight OK — CosyVoice3-0.5B GPU path, "
+                    f"reference audio at {REFERENCE_AUDIO}"
+                )
+        else:
+            if PIPER_MODEL_ONNX.exists():
+                logger.info(
+                    f"[TTSManager] CPU mode — Piper engine at {PIPER_MODEL_ONNX}"
+                )
+            else:
+                logger.warning(
+                    f"[TTSManager] Piper model not found at {PIPER_MODEL_ONNX} — "
+                    "will fall back to pyttsx3"
+                )
+
     def _warm_tts_pipeline(self) -> None:
-        """Pre-load CosyVoice model and register voice in a background thread.
+        """Pre-load CosyVoice3 model and register voice in a background thread.
 
         Called by iris_gateway._prewarm_tts() at startup.  Sets _ready_event
         when complete so synthesize_stream can block-wait efficiently instead
@@ -144,7 +227,7 @@ class TTSManager:
             with self._lock:
                 self._load_cosyvoice()
             self._ready_event.set()
-            logger.info("[TTSManager] CosyVoice2 ready event set")
+            logger.info("[TTSManager] CosyVoice3 ready event set")
 
         threading.Thread(target=_do, daemon=True, name="tts-cosyvoice-warmup").start()
 
@@ -161,13 +244,24 @@ class TTSManager:
 
     def get_voice_info(self) -> Dict[str, Any]:
         """Return available voice information."""
+        if USE_COSYVOICE:
+            engine_name = "CosyVoice3-0.5B (zero-shot voice cloning, GPU)"
+            engine_ready = self._cosyvoice is not None
+        else:
+            engine_name = "Piper en_US-ryan-high (CPU)"
+            engine_ready = self._piper is not None
+
         return {
-            "available_voices": AVAILABLE_VOICES,
-            "current_voice":    self.config.get("tts_voice", "Cloned Voice"),
-            "config":           self.get_config(),
-            "model":            "CosyVoice2-0.5B (zero-shot voice cloning)",
-            "sample_rate":      OUTPUT_SAMPLE_RATE,
-            "reference_audio":  str(REFERENCE_AUDIO),
+            "available_voices":  AVAILABLE_VOICES,
+            "current_voice":     self.config.get("tts_voice", "Cloned Voice"),
+            "config":            self.get_config(),
+            "model":             engine_name,
+            "model_ready":       engine_ready,
+            "model_path_exists": MODEL_DIR.exists() if USE_COSYVOICE else PIPER_MODEL_ONNX.exists(),
+            "reference_audio":   str(REFERENCE_AUDIO),
+            "reference_audio_exists": REFERENCE_AUDIO.exists(),
+            "sample_rate":       OUTPUT_SAMPLE_RATE,
+            "use_cosyvoice":     USE_COSYVOICE,
         }
 
     def synthesize(self, text: Optional[str]) -> Optional[np.ndarray]:
@@ -200,8 +294,8 @@ class TTSManager:
         if not text.strip():
             return
 
-        if self.config.get("tts_voice") == "Cloned Voice":
-            # --- Step 1: ensure model is loaded (under lock) ----------------
+        if USE_COSYVOICE and self.config.get("tts_voice") == "Cloned Voice":
+            # --- GPU path: CosyVoice3 zero-shot cloning ----------------------
             with self._lock:
                 loaded = self._load_cosyvoice()
                 cosyvoice      = self._cosyvoice
@@ -214,10 +308,26 @@ class TTSManager:
                     return
                 except Exception as exc:
                     logger.warning(
-                        f"[TTSManager] CosyVoice stream failed, falling back to pyttsx3: {exc}"
+                        f"[TTSManager] CosyVoice stream failed, falling back to Piper: {exc}"
                     )
 
-        # --- pyttsx3 fallback -----------------------------------------------
+        if not USE_COSYVOICE or self.config.get("tts_voice") != "Cloned Voice":
+            # --- CPU path: Piper (fast, ~50 ms) ------------------------------
+            with self._lock:
+                piper_loaded = self._load_piper()
+                piper = self._piper
+
+            if piper_loaded and piper is not None:
+                try:
+                    for chunk in self._stream_piper(piper, text):
+                        yield chunk
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        f"[TTSManager] Piper stream failed, falling back to pyttsx3: {exc}"
+                    )
+
+        # --- pyttsx3 last-resort fallback -----------------------------------
         try:
             result = self._synthesize_pyttsx(text)
             if result is not None:
@@ -226,7 +336,48 @@ class TTSManager:
             logger.error(f"[TTSManager] pyttsx3 stream error: {exc}")
 
     # ------------------------------------------------------------------
-    # CosyVoice engine
+    # Piper engine (CPU primary)
+    # ------------------------------------------------------------------
+
+    def _load_piper(self) -> bool:
+        """Load Piper voice model.  Must be called under self._lock."""
+        if self._piper is not None:
+            return True
+        if not PIPER_MODEL_ONNX.exists():
+            logger.warning(f"[TTSManager] Piper model not found at {PIPER_MODEL_ONNX}")
+            return False
+        try:
+            from piper import PiperVoice
+            logger.info(f"[TTSManager] Loading Piper from {PIPER_MODEL_ONNX}...")
+            self._piper = PiperVoice.load(str(PIPER_MODEL_ONNX))
+            logger.info("[TTSManager] Piper loaded (en_US-ryan-high)")
+            return True
+        except Exception as exc:
+            logger.error(f"[TTSManager] Failed to load Piper: {exc}", exc_info=True)
+            self._piper = None
+            return False
+
+    @staticmethod
+    def _stream_piper(
+        piper,
+        text: str,
+    ) -> Generator[np.ndarray, None, None]:
+        """Run Piper inference and yield float32 chunks at OUTPUT_SAMPLE_RATE.
+
+        piper.synthesize() yields AudioChunk objects per sentence.
+        Each chunk has audio_int16_array (numpy int16) and sample_rate.
+        RTF ~0.04x on CPU; first chunk typically in <100 ms.
+        """
+        for chunk in piper.synthesize(text):
+            arr = chunk.audio_int16_array  # numpy int16
+            piper_rate = chunk.sample_rate
+            audio = arr.astype(np.float32) / 32768.0
+            audio = _resample(audio, piper_rate)
+            if len(audio) > 0:
+                yield audio
+
+    # ------------------------------------------------------------------
+    # CosyVoice engine (GPU only)
     # ------------------------------------------------------------------
 
     def _ensure_cosyvoice_paths(self) -> None:
@@ -256,10 +407,10 @@ class TTSManager:
             self._ensure_cosyvoice_paths()
             from cosyvoice.cli.cosyvoice import AutoModel
 
-            logger.info(f"[TTSManager] Loading CosyVoice2-0.5B from {MODEL_DIR}...")
+            logger.info(f"[TTSManager] Loading CosyVoice3-0.5B from {MODEL_DIR}...")
             self._cosyvoice = AutoModel(model_dir=str(MODEL_DIR))
             logger.info(
-                f"[TTSManager] CosyVoice2-0.5B loaded "
+                f"[TTSManager] CosyVoice3-0.5B loaded "
                 f"(sample_rate={getattr(self._cosyvoice, 'sample_rate', COSYVOICE_NATIVE_RATE)})"
             )
 
@@ -288,8 +439,10 @@ class TTSManager:
 
         try:
             # add_zero_shot_spk(prompt_text, prompt_speech_path, spk_id)
-            # Empty prompt_text is acceptable for CosyVoice2.
-            result = self._cosyvoice.add_zero_shot_spk("", str(REFERENCE_AUDIO), SPK_ID)
+            # CosyVoice3 requires <|endofprompt|> in prompt_text (CosyVoice2 accepted "").
+            result = self._cosyvoice.add_zero_shot_spk(
+                COSYVOICE3_PROMPT_PREFIX, str(REFERENCE_AUDIO), SPK_ID
+            )
             if result is not False:
                 self._spk_registered = True
                 logger.info(f"[TTSManager] Registered speaker '{SPK_ID}' from {REFERENCE_AUDIO.name}")
@@ -312,12 +465,16 @@ class TTSManager:
         native_rate = getattr(cosyvoice, "sample_rate", COSYVOICE_NATIVE_RATE)
 
         if spk_registered:
+            # Registered speaker path: prompt_text/wav can be empty because the
+            # speaker embedding (including the <|endofprompt|> token) was stored
+            # by add_zero_shot_spk using COSYVOICE3_PROMPT_PREFIX.
             gen = cosyvoice.inference_zero_shot(
                 text, "", "", zero_shot_spk_id=SPK_ID, stream=True
             )
         elif REFERENCE_AUDIO.exists():
+            # Direct wav path: CosyVoice3 requires <|endofprompt|> in prompt_text.
             gen = cosyvoice.inference_zero_shot(
-                text, "", str(REFERENCE_AUDIO), stream=True
+                text, COSYVOICE3_PROMPT_PREFIX, str(REFERENCE_AUDIO), stream=True
             )
         else:
             logger.warning("[TTSManager] No speaker and no reference audio — skipping CosyVoice")

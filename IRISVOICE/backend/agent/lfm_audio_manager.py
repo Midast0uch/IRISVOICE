@@ -1,12 +1,12 @@
 """
-LFMAudioManager — Lightweight wake word configuration adapter.
+LFMAudioManager — Lightweight wake word / voice configuration adapter.
 
-Audio processing (LFM2-Audio) is handled by backend/audio/model_manager.py.
-Porcupine detection is handled by backend/audio/engine.py.
-This class now only holds wake phrase / TTS voice configuration state.
+Porcupine wake word detection  — backend/audio/engine.py
+STT (speech-to-text)           — backend/audio/voice_command.py (faster-whisper)
+TTS (text-to-speech)           — backend/agent/tts.py (CosyVoice3-0.5B)
 
-Previously loaded Whisper + SpeechT5 + LFM models (3 separate models).
-All of that is now removed — ModelManager handles LFM2-Audio lazily on first voice command.
+This class only holds wake phrase / TTS voice configuration state.
+It does not load any models.
 """
 import logging
 from typing import Any, Dict, Optional
@@ -23,9 +23,9 @@ class LFMAudioManager:
         self.config = config or {}
         self.wake_phrase = self.config.get("wake_phrase", "jarvis")
         self.detection_sensitivity = self.config.get("detection_sensitivity", 50)
-        self.tts_voice = self.config.get("tts_voice", "Nova")
+        self.tts_voice = self.config.get("tts_voice", "Cloned Voice")
         self.speaking_rate = self.config.get("speaking_rate", 1.0)
-        self.is_initialized = True   # No longer needs heavy initialization
+        self.is_initialized = True   # config-only, no model loading
         self.callbacks = {}
 
     def set_callbacks(self, **kwargs):
@@ -44,8 +44,8 @@ class LFMAudioManager:
             self.speaking_rate = speaking_rate
 
     async def initialize(self):
-        """No-op — model loading delegated to ModelManager (lazy, on first voice command)."""
-        logger.info("[LFMAudioManager] Lightweight config-only mode. LFM model loaded on first voice use.")
+        """No-op — this class is config-only. TTS/STT models load in tts.py / voice_command.py."""
+        logger.info("[LFMAudioManager] Config-only mode — no models to load here.")
 
     async def cleanup(self):
         """No-op — nothing to clean up."""

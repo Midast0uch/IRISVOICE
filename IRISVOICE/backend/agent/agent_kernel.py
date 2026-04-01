@@ -33,6 +33,7 @@ try:
         DER_MAX_VETO_PER_ITEM,
         DER_EMERGENCY_STOP,
         DER_TOKEN_BUDGETS,
+        TRAILING_GAP_MIN,
     )
 except Exception:
     DER_MAX_CYCLES = 40
@@ -42,6 +43,13 @@ except Exception:
         "implement": 40000, "debug": 30000, "research": 20000,
         "full": 50000, "quick_edit": 8000,
     }
+    TRAILING_GAP_MIN = 2
+
+try:
+    from backend.agent.trailing_director import TrailingDirector as _TrailingDirector
+    _TRAILING_DIRECTOR_AVAILABLE = True
+except Exception:
+    _TRAILING_DIRECTOR_AVAILABLE = False
 
 
 @dataclass
@@ -267,6 +275,8 @@ class AgentKernel:
         # for spec compliance (Gap 11). Canonical values live in der_constants.
         self._task_classifier = None
         self._reviewer = None
+        self._trailing_director = None
+        self._mode_detector = None
         self._der_tokens_used: int = 0
 
         try:
@@ -284,6 +294,21 @@ class AgentKernel:
         except Exception as _rv_err:
             logger.warning(f"[AgentKernel] Reviewer unavailable: {_rv_err}")
 
+        try:
+            from backend.agent.trailing_director import TrailingDirector as _TD
+            # memory_interface wired later via set_memory_interface()
+            self._trailing_director = _TD(adapter=self, memory_interface=None)
+            logger.info("[AgentKernel] TrailingDirector initialized (DER)")
+        except Exception as _td_err:
+            logger.warning(f"[AgentKernel] TrailingDirector unavailable: {_td_err}")
+
+        try:
+            from backend.agent.mode_detector import ModeDetector as _MD
+            self._mode_detector = _MD()
+            logger.info("[AgentKernel] ModeDetector initialized (DER)")
+        except Exception as _md_err:
+            logger.warning(f"[AgentKernel] ModeDetector unavailable: {_md_err}")
+
         logger.info("[AgentKernel] Initialization complete")
 
     def set_memory_interface(self, memory_interface: Any) -> None:
@@ -300,6 +325,9 @@ class AgentKernel:
         # Wire Reviewer's memory reference now that it's available
         if self._reviewer is not None:
             self._reviewer.memory = memory_interface
+        # Wire TrailingDirector's memory reference
+        if self._trailing_director is not None:
+            self._trailing_director.memory = memory_interface
         logger.info("[AgentKernel] Memory interface connected")
 
     def infer(
@@ -564,6 +592,8 @@ class AgentKernel:
     _OPENAI_COMPAT_PROVIDERS = frozenset({
         "lmstudio", "openai_compatible", "llamafile", "vllm", "llamacpp_server",
         "koboldcpp", "textgen_webui", "ollama_openai",
+        # IRIS-native local model server (llama-cpp-python / ik_llama.cpp on port 8082)
+        "iris_local",
     })
 
     def _is_openai_compat(self) -> bool:
@@ -834,30 +864,186 @@ class AgentKernel:
         ]
         return any(trigger in t for trigger in TOOL_TRIGGERS)
 
+    def _broadcast_inference_event(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        elapsed_s: float,
+    ) -> None:
+        """Fire-and-forget inference_event broadcast to this session's WS clients.
+
+        Called after every LLM completion so InferenceConsolePanel can display
+        live tokens/sec, token counts, and latency.  Never raises.
+        """
+        try:
+            import time as _t
+            import asyncio
+            from backend.ws_manager import get_websocket_manager
+            ws = get_websocket_manager()
+            if not ws:
+                return
+            tps = round(completion_tokens / max(0.001, elapsed_s), 2)
+            payload = {
+                "type": "inference_event",
+                "payload": {
+                    "model": model,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "tps": tps,
+                    "time_ms": round(elapsed_s * 1000),
+                    "timestamp": _t.time(),
+                },
+            }
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    ws.broadcast_to_session(self.session_id, payload)
+                )
+            except RuntimeError:
+                pass  # no running event loop in this thread
+        except Exception:
+            pass  # never block the response
+
+    # ── Token estimation ─────────────────────────────────────────────────────
+    # Rough but fast: 1 token ≈ 4 chars. Real tokenizer adds <5% accuracy gain
+    # but costs 10-50ms per call — not worth it for windowing decisions.
+    _CHARS_PER_TOKEN: int = 4
+
+    # Context budget for direct responses. Keeps the most recent history
+    # within the model's 32k window, leaving ~8k for system prompt + response.
+    # With episodic injection headroom this sits at ~20k chat tokens max.
+    _DIRECT_CTX_BUDGET: int = 20_000   # tokens
+
+    def _count_tokens(self, messages: List[Dict]) -> int:
+        return sum(len(m.get("content") or "") for m in messages) // self._CHARS_PER_TOKEN
+
+    def _assemble_direct_context(self, text: str, context: List[Dict]) -> List[Dict]:
+        """
+        Build the message list for _respond_direct using all three memory layers
+        from the Context Engineering spec (CONTEXT_ENGINEERING.md §1–3):
+
+          Layer 1 — Mycelium coordinate graph  → already in system_prompt via
+                                                  _build_system_prompt()
+          Layer 2 — Episodic store             → injected here as memory block
+          Layer 3 — Working memory / history   → token-aware full context, NOT
+                                                  a hard-capped roll window
+
+        The result is unlimited effective memory: the agent sees all context
+        that fits in the budget. When history exceeds the budget, the oldest
+        messages are trimmed — but episodic summaries from Mycelium still carry
+        the gist of older sessions forward (Layer 2).
+
+        Design rules (from spec):
+          • Never drop the current user turn
+          • First non-system message must be "user" (Qwen3 / most models)
+          • Episodic block is a system-adjacent user↔assistant exchange so it
+            doesn't break the alternating pattern
+        """
+        system_prompt = self._build_system_prompt()
+
+        # ── Layer 2: episodic injection ───────────────────────────────────
+        episodic_prefix: List[Dict] = []
+        try:
+            if self._memory_interface is not None and hasattr(self._memory_interface, "episodic"):
+                ep_ctx = self._memory_interface.episodic.assemble_episodic_context(text)
+                if ep_ctx and ep_ctx.strip():
+                    # Inject as a pseudo-exchange so the message pattern stays
+                    # [system, user, assistant, user, assistant, …, user]
+                    episodic_prefix = [
+                        {"role": "user",      "content": f"<memory>\n{ep_ctx.strip()}\n</memory>"},
+                        {"role": "assistant", "content": "Understood — I have that context."},
+                    ]
+        except Exception:
+            pass  # episodic failure never blocks the response
+
+        # ── Layer 3: Option B — DB-backed semantic context (Pacman retrieval) ──
+        # Instead of a blind rolling-window crop, we retrieve the most relevant
+        # conversation fragments stored by fragment_and_store().  Falls back to
+        # the plain rolling window when no chunks exist yet (first turn, fresh DB).
+        #
+        # Recency anchor: always keep the last _RECENCY_TURNS raw turns so the
+        # model can follow short-term conversational flow regardless of relevance.
+        _RECENCY_TURNS = 4
+
+        sys_tokens     = len(system_prompt) // self._CHARS_PER_TOKEN
+        ep_tokens      = self._count_tokens(episodic_prefix)
+        current_tokens = len(text) // self._CHARS_PER_TOKEN
+
+        # ── 3a: semantic chunk retrieval from DB ──────────────────────────
+        chunk_prefix: List[Dict] = []
+        try:
+            if (
+                self._memory_interface is not None
+                and hasattr(self._memory_interface, "episodic")
+                and hasattr(self._memory_interface.episodic, "retrieve_context_chunks")
+            ):
+                _chunks = self._memory_interface.episodic.retrieve_context_chunks(
+                    query=text,
+                    session_id=getattr(self, "session_id", None),
+                    limit=6,
+                    min_similarity=0.25,
+                )
+                if _chunks:
+                    chunk_text = "\n---\n".join(_chunks)
+                    # Inject as a pseudo-exchange so role alternation stays valid
+                    chunk_prefix = [
+                        {"role": "user",      "content": f"<context_memory>\n{chunk_text}\n</context_memory>"},
+                        {"role": "assistant", "content": "Understood — I have those context fragments."},
+                    ]
+        except Exception:
+            pass  # chunk retrieval failure never blocks the response
+
+        chunk_tokens = self._count_tokens(chunk_prefix)
+        budget_for_history = (
+            self._DIRECT_CTX_BUDGET - sys_tokens - ep_tokens - chunk_tokens - current_tokens
+        )
+
+        # ── 3b: recency anchor — last N raw turns ─────────────────────────
+        history = list(context)
+        # Remove current user turn from tail if already appended
+        if history and history[-1].get("role") == "user" and history[-1].get("content") == text:
+            history = history[:-1]
+
+        if chunk_prefix:
+            # DB has relevant chunks: only keep a small recency window
+            recent = history[-_RECENCY_TURNS:] if len(history) > _RECENCY_TURNS else list(history)
+            while recent and self._count_tokens(recent) > max(budget_for_history, 0):
+                recent.pop(0)
+            while recent and recent[0].get("role") != "user":
+                recent.pop(0)
+            history_block = recent
+        else:
+            # No chunks yet (first message / empty DB): full rolling window fallback
+            while history and self._count_tokens(history) > max(budget_for_history, 0):
+                history.pop(0)
+            while history and history[0].get("role") != "user":
+                history.pop(0)
+            history_block = history
+
+        # ── Assemble final message list ───────────────────────────────────
+        messages: List[Dict] = [{"role": "system", "content": system_prompt}]
+        messages.extend(episodic_prefix)   # Layer 2: episodic summaries
+        messages.extend(chunk_prefix)      # Layer 3a: semantic DB chunks
+        messages.extend(history_block)     # Layer 3b: recency anchor
+
+        # Ensure the list ends on the current user turn
+        if not messages or messages[-1].get("content") != text or messages[-1].get("role") != "user":
+            messages.append({"role": "user", "content": text})
+
+        return messages
+
     def _respond_direct(self, text: str, context: List[Dict], chunk_callback: Optional[Callable[[str], None]] = None) -> str:
         """
         Respond directly to the user without planning or tool execution.
         This is the default path for all conversational and non-tool messages.
+
+        Context uses all three memory layers (see CONTEXT_ENGINEERING.md):
+          Layer 1: Mycelium coordinates → system prompt
+          Layer 2: Episodic store       → memory block prefix
+          Layer 3: Full history         → token-aware (not a hard roll window)
         """
-        system_prompt = self._build_system_prompt()
-
-        # Build context window: last 8 messages, always starting with a user turn.
-        # Qwen3 (and most models) require the first non-system message to be "user".
-        # A mid-conversation slice can begin with an assistant turn when the rolling
-        # window cuts between a user→assistant pair — strip any leading assistant
-        # messages so the pattern is always [system, user, assistant?, user, …].
-        context_window = list(context[-8:])
-        while context_window and context_window[0]["role"] != "user":
-            context_window.pop(0)
-
-        messages: List[Dict] = [{"role": "system", "content": system_prompt}]
-        for msg in context_window:
-            messages.append(msg)
-
-        # Final guard: if context was empty (memory exception path) or somehow
-        # ends on an assistant message, append the current text explicitly.
-        if not context_window or messages[-1]["role"] != "user":
-            messages.append({"role": "user", "content": text})
+        messages = self._assemble_direct_context(text, context)
 
         try:
             # LM Studio (OpenAI-compatible)
@@ -870,6 +1056,8 @@ class AgentKernel:
 
                 if chunk_callback:
                     # Streaming implementation
+                    import time as _perf_t
+                    _t0 = _perf_t.perf_counter()
                     resp = client.chat.completions.create(
                         model=sel,
                         messages=messages,
@@ -898,9 +1086,16 @@ class AgentKernel:
 
                     thinking, clean = self._parse_thinking(full_reply)
                     self._pending_thinking = thinking
+                    # Emit inference_event — approximate token count from char length
+                    _elapsed = _perf_t.perf_counter() - _t0
+                    _ctok = max(1, len(full_reply) // 4)
+                    _ptok = sum(len(m.get("content", "")) for m in messages) // 4
+                    self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
                     return clean
                 else:
                     # Sync implementation
+                    import time as _perf_t
+                    _t0 = _perf_t.perf_counter()
                     resp = client.chat.completions.create(
                         model=sel,
                         messages=messages,
@@ -910,9 +1105,15 @@ class AgentKernel:
                         extra_body={"chat_template_kwargs": {
                             "enable_thinking": use_thinking}},
                     )
+                    _elapsed = _perf_t.perf_counter() - _t0
                     reply = resp.choices[0].message.content or ""
                     thinking, clean = self._parse_thinking(reply)
                     self._pending_thinking = thinking
+                    # Emit inference_event — use usage stats if available
+                    _usage = getattr(resp, "usage", None)
+                    _ptok = _usage.prompt_tokens if _usage else sum(len(m.get("content", "")) for m in messages) // 4
+                    _ctok = _usage.completion_tokens if _usage else max(1, len(reply) // 4)
+                    self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
                     return clean
 
             # Ollama (model IDs contain ":")
@@ -1475,18 +1676,27 @@ class AgentKernel:
         is_mature: bool = False,
         task_class: str = "full",
         context_package=None,
+        mode: str = "full",
     ):
         """
         DER-aware planning wrapper. Returns ExecutionPlan, never raises.
-        Maturity-aware temperature: 0.1 for high-confidence Mycelium data,
-        0.25 for exploration / immature graph.
+        Mode + maturity-aware temperature:
+          debug/review  → 0.0  (deterministic — finding bugs, not exploring)
+          implement      → 0.1  (low — structured code generation)
+          research       → 0.3  (higher — exploratory synthesis)
+          default        → 0.1 if mature else 0.25
         Falls back to a single-step plan on any model or parse failure.
         """
         from backend.core_models import ExecutionPlan, PlanStep
         import uuid as _uuid
         import re as _re
 
-        temperature = 0.1 if is_mature else 0.25
+        _MODE_TEMPERATURES = {
+            "debug": 0.0, "review": 0.0, "test": 0.0,
+            "implement": 0.1, "quick_edit": 0.1,
+            "research": 0.3, "spec": 0.2,
+        }
+        temperature = _MODE_TEMPERATURES.get(mode, 0.1 if is_mature else 0.25)
 
         # Extract context package fields for the planning prompt
         tier1 = ""
@@ -1669,6 +1879,25 @@ class AgentKernel:
                 self._conversation_memory.add_message("assistant", response)
             except Exception:
                 pass
+            # Option B / Pacman: fragment this turn-pair into the vector DB so future
+            # context assembly can retrieve it semantically (PACMAN.md §Digestion).
+            # Zone = 'trusted' — user's own conversation (PACMAN.md Dimension 1).
+            try:
+                if (
+                    self._memory_interface is not None
+                    and hasattr(self._memory_interface, "episodic")
+                    and hasattr(self._memory_interface.episodic, "fragment_and_store")
+                    and response
+                ):
+                    _turn = f"User: {text}\nAssistant: {response}"
+                    self._memory_interface.episodic.fragment_and_store(
+                        _turn,
+                        session_id=session_id or self.session_id,
+                        chunk_type="context_fragment",
+                        zone="trusted",
+                    )
+            except Exception:
+                pass
             if response is None:
                 logger.error(
                     "[AgentKernel] _respond_direct returned None — returning fallback")
@@ -1704,12 +1933,29 @@ class AgentKernel:
                 except Exception:
                     pass
 
+            # Mode detection — runs AFTER Mycelium fetch so mature graph data
+            # can suppress clarification mode and improve confidence.
+            # Result flows into _plan_task() (temperature) and _execute_plan_der()
+            # (token budget via DER_TOKEN_BUDGETS[mode]).
+            _mode_name = "full"   # default maps to DER_TOKEN_BUDGETS["full"]
+            if self._mode_detector is not None:
+                try:
+                    _mode_result = self._mode_detector.detect(
+                        task=_task_clean,
+                        context_package=_context_package,
+                        is_mature=_is_mature,
+                    )
+                    _mode_name = _mode_result.mode.name.lower()
+                except Exception:
+                    pass
+
             _plan = self._plan_task(
                 text=_task_clean,
                 context=context,
                 is_mature=_is_mature,
                 task_class=_task_class,
                 context_package=_context_package,
+                mode=_mode_name,
             )
 
             # GAP 5 — strategy signal to Mycelium after planning
@@ -1736,11 +1982,18 @@ class AgentKernel:
 
             # GAP 4 — route by strategy (do_it_myself → DER; others → ReAct)
             if _plan.strategy == "do_it_myself":
+                # Use mode name as task_class so DER_TOKEN_BUDGETS[mode] applies.
+                # Falls back to _task_class if mode not in budget table.
+                _der_task_class = (
+                    _mode_name
+                    if _mode_name in DER_TOKEN_BUDGETS
+                    else _task_class
+                )
                 _der_response = self._execute_plan_der(
                     plan=_plan,
                     context_package=_context_package,
                     is_mature=_is_mature,
-                    task_class=_task_class,
+                    task_class=_der_task_class,
                     session_id=session_id or self.session_id,
                 )
 
@@ -2259,6 +2512,12 @@ Respond with a JSON object:
         step_outputs: List[str] = []
         _der_start_time = time.perf_counter()
 
+        # Token budget — spec [1.2]: enforce DER_TOKEN_BUDGETS[task_class]
+        # Tokens are estimated from step result length (4 chars ≈ 1 token).
+        # Budget is a ceiling; the loop exits early if exceeded.
+        _token_budget: int = DER_TOKEN_BUDGETS.get(task_class, DER_TOKEN_BUDGETS.get("full", 50000))
+        _tokens_used: int = 0
+
         # Build Director queue from ExecutionPlan steps
         items = [
             QueueItem(
@@ -2278,14 +2537,84 @@ Respond with a JSON object:
         ]
         queue = DirectorQueue(objective=plan.original_task, items=items)
 
+        # C.1 LiveContextPackage — refreshes ContextPackage mid-loop so the
+        # Director always reads current gradient_warnings + tier2_predictions.
+        try:
+            from backend.memory.live_context import LiveContextPackage
+            _live_ctx = LiveContextPackage(
+                initial_package=context_package,
+                memory_interface=self._memory_interface,
+                session_id=_session,
+            )
+        except Exception:
+            _live_ctx = None  # graceful no-op if import fails
+
         # Reviewer — falls back to PASS on any failure (membrane, not gate)
         reviewer = self._reviewer
 
-        while not queue.is_complete() and not queue.hit_cycle_limit():
+        # WS disconnect helper — checks if the originating session still has
+        # at least one live client. Never raises; defaults to "connected".
+        def _session_has_client() -> bool:
+            try:
+                from backend.ws_manager import get_websocket_manager
+                ws = get_websocket_manager()
+                if ws is None:
+                    return True  # no WS manager → non-WS path, keep running
+                return len(ws.get_clients_for_session(_session)) > 0
+            except Exception:
+                return True
+
+        while (
+            not queue.is_complete()
+            and not queue.hit_cycle_limit()
+            and _tokens_used < _token_budget
+        ):
+            # ── DISCONNECT CHECK: stop early if client is gone ──────────────
+            if not _session_has_client():
+                logger.info(
+                    f"[DER] Session {_session} has no connected clients — "
+                    "recording partial outcome and stopping"
+                )
+                break
+
             queue.cycle_count += 1
             item = queue.next_ready()
             if item is None:
                 break  # dependency deadlock guard
+
+            # ── C.1 LIVE CONTEXT REFRESH ────────────────────────────────────
+            # Re-read Mycelium coordinate signals for the current sub-step.
+            # Updates gradient_warnings + tier2_predictions on context_package.
+            # < 50ms SLA; silently no-ops on any error.
+            if _live_ctx is not None:
+                _live_ctx.refresh(item, completed_items)
+                context_package = _live_ctx.package  # always valid
+
+            # ── C.4 MID-LOOP EPISODIC RETRIEVAL ────────────────────────────
+            # Query the episodic store for the *current sub-task*, not the
+            # parent task.  Injects a hint into item.coordinate_signal so the
+            # Reviewer and Explorer both see "I solved this sub-problem before
+            # this way".  <50ms: uses cached embeddings after first query.
+            try:
+                if self._memory_interface and item.description:
+                    _sub_eps = self._memory_interface.episodic.retrieve_similar(
+                        task=item.description,
+                        limit=2,
+                        min_score=0.55,
+                    )
+                    if _sub_eps:
+                        _hints = "; ".join(
+                            ep.get("task_summary", "")[:80]
+                            for ep in _sub_eps
+                            if ep.get("task_summary")
+                        )
+                        if _hints:
+                            _prior = getattr(item, "coordinate_signal", "") or ""
+                            item.coordinate_signal = (
+                                _prior + f"\nSUB-TASK HINT: {_hints}"
+                            ).strip()
+            except Exception:
+                pass  # never blocks Explorer
 
             # ── REVIEWER PHASE ─────────────────────────────────────────────
             if reviewer is not None:
@@ -2310,9 +2639,9 @@ Respond with a JSON object:
                         if self._memory_interface:
                             self._memory_interface.mycelium_ingest_tool_call(
                                 tool_name=item.tool or "unknown",
-                                params=item.params,
-                                result={"vetoed": True, "reason": feedback},
                                 success=False,
+                                sequence_position=item.step_number,
+                                total_steps=len(queue.items),
                                 session_id=_session,
                             )
                     except Exception:
@@ -2352,14 +2681,46 @@ Respond with a JSON object:
 
             step_outputs.append(step_result)
 
+            # Option B / Pacman: fragment DER step output into vector DB so it can be
+            # retrieved as context in later steps or future sessions.
+            # Zone = 'tool' — verified DER/tool execution output (PACMAN.md Dimension 1).
+            try:
+                if (
+                    self._memory_interface is not None
+                    and hasattr(self._memory_interface, "episodic")
+                    and hasattr(self._memory_interface.episodic, "fragment_and_store")
+                    and step_result and step_success
+                ):
+                    _der_text = (
+                        f"[Step {item.step_number}: {item.description[:120]}]"
+                        f"\n{step_result}"
+                    )
+                    self._memory_interface.episodic.fragment_and_store(
+                        _der_text,
+                        session_id=_session,
+                        chunk_type="der_output",
+                        zone="tool",
+                    )
+            except Exception:
+                pass
+
+            # ── TOKEN BUDGET: accumulate estimated tokens from step result ──
+            # 4 chars ≈ 1 token; also count prompt overhead per step (~200 tok)
+            _tokens_used += max(200, len(step_result) // 4)
+            if _tokens_used >= _token_budget:
+                logger.info(
+                    f"[DER] Token budget exhausted ({_tokens_used}/{_token_budget}) "
+                    f"after step {item.step_number} — stopping early"
+                )
+
             # ── MYCELIUM SIGNAL: tool call ─────────────────────────────────
             try:
                 if self._memory_interface:
                     self._memory_interface.mycelium_ingest_tool_call(
                         tool_name=item.tool or "none",
-                        params=item.params,
-                        result=step_result,
                         success=step_success,
+                        sequence_position=item.step_number,
+                        total_steps=len(queue.items),
                         session_id=_session,
                     )
             except Exception:
@@ -2384,6 +2745,20 @@ Respond with a JSON object:
             queue.mark_complete(item.step_id)
             completed_items.append(item)
 
+            # ── TRAILING DIRECTOR: analyze gaps every TRAILING_GAP_MIN steps ─
+            try:
+                if (
+                    self._trailing_director is not None
+                    and len(completed_items) % TRAILING_GAP_MIN == 0
+                ):
+                    gap_items = self._trailing_director.analyze_gaps(
+                        item, plan, context_package, is_mature
+                    )
+                    for gap_item in gap_items:
+                        queue.add_item(gap_item)
+            except Exception:
+                pass
+
         # ── OUTCOME RECORDING (ordered per spec: record → crystallize → clear → stats)
         had_failures = any("[STEP ERROR" in o for o in step_outputs)
         outcome = "failure" if had_failures else "success"
@@ -2402,6 +2777,9 @@ Respond with a JSON object:
             if self._memory_interface:
                 self._memory_interface.mycelium_crystallize_landmark(
                     session_id=_session,
+                    score=0.8 if not had_failures else 0.4,
+                    outcome=outcome,
+                    task_entry_label=plan.original_task,
                 )
         except Exception:
             pass
@@ -2416,18 +2794,21 @@ Respond with a JSON object:
 
         try:
             if self._memory_interface:
+                _der_duration_total = int((time.perf_counter() - _der_start_time) * 1000)
+                _avg_step_ms = (
+                    _der_duration_total / len(completed_items)
+                    if completed_items else 0.0
+                )
                 self._memory_interface.mycelium_record_plan_stats(
-                    plan_id=plan.plan_id,
-                    task=plan.original_task,
-                    strategy=plan.strategy,
-                    task_class=task_class,
-                    steps_total=len(plan.steps),
-                    steps_completed=len(completed_items),
-                    steps_vetoed=len(queue.vetoed_ids),
-                    cycles_used=queue.cycle_count,
-                    outcome=outcome,
                     session_id=_session,
-                    is_mature=is_mature,
+                    task_class=task_class,
+                    strategy=plan.strategy,
+                    total_steps=len(plan.steps),
+                    steps_completed=len(completed_items),
+                    tokens_used=_tokens_used,
+                    avg_step_duration_ms=_avg_step_ms,
+                    outcome=outcome,
+                    graph_mature=is_mature,
                 )
         except Exception:
             pass

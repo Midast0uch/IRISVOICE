@@ -6,6 +6,78 @@ Read this at the start of every session.
 OBJECTIVE ANCHOR (never changes)
 Build IRIS until it can run fully autonomously: receive tasks through its own interface, execute them using its own backend, and improve itself over time without external scaffolding.
 
+---
+
+GATED MILESTONES (current priority track — gates are sequential)
+These gates supersede the domain priority order below for new sessions.
+Do not begin a gate's spec work until the previous gate is verified.
+Specs for Gates 2-4 will be provided after each gate is confirmed working.
+
+  GATE 1 — DEVELOPER MODE (CURRENT GATE)
+  Goal: Frontend + backend running together. Load a 4B or 8B GGUF model from
+        C:\Users\midas\.lmstudio\models and chat with it through IRIS.
+        Inference must be stable — no RAM spikes, other apps remain usable.
+
+  Inference constraints:
+    - Target models: 4B or 8B parameter, Q4_K_M or Q5_K_M quantization
+    - Safe defaults: n_ctx=32768, n_batch=1536, n_gpu_layers=-1
+    - Backend: ik_llama.cpp (llama-server binary) when installed, else llama-cpp-python
+    - ik_llama.cpp handles memory management automatically — install it, then
+      remove manual parameter tuning from profiles
+    - KV cache compressed (q8_0) to minimize VRAM usage for long contexts
+    - Never exceed 85% of available VRAM on model load
+
+  Inference requirements (BOTH must work — not CPU-only):
+    - CPU+GPU together: n_gpu_layers=-1 offloads all layers to RTX 3070
+    - Requires: Windows SDK installed (rc.exe + mt.exe) → then rebuild llama-cpp-python
+      with: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --upgrade --force-reinstall
+    - After rebuild: llama_cpp.llama_supports_gpu_offload() must return True
+    - ik_llama.cpp binary preferred when available (auto-detected by _find_llama_server_binary)
+
+  9B TPS benchmark (verified 2026-03-31):
+    Qwen3.5-9B-Q3_K_S on RTX 3070 8GB:
+      4k ctx  / q8_0 KV: 49 tok/s   (balanced profile)
+      32k ctx / q8_0 KV: 50.8 tok/s (balanced profile — IRIS standard)
+      100k ctx/ q4_0 KV: 44.1 tok/s (research profile)
+      Prompt processing:  1095 tok/s
+    All above 25 tok/s target. Balanced profile is the IRIS standard.
+
+  Gate 1 checklist:
+    [G1.1] Backend starts cleanly, /health returns 200
+    [G1.2] Frontend loads at port 3000, orb connects (green)
+    [G1.3] ModelsScreen lists GGUFs from C:\Users\midas\.lmstudio\models
+    [G1.4] DONE — llama_cpp 0.3.19 rebuilt with CUDA. llama_supports_gpu_offload()=True.
+            RTX 3070 8191MB VRAM, compute capability 8.6. Verified 2026-03-31.
+    [G1.5] Load a 9B model with balanced profile (32k ctx, n_batch=2048, full GPU)
+            Verified: Qwen3.5-9B-Q3_K_S loads in ~55s, 50.8 tok/s at 32k.
+    [G1.6] Send chat through IRIS — response from local GGUF confirmed
+    [G1.7] No memory spike on startup — backend starts clean, CUDA only inits
+            when user explicitly loads a model (not at startup)
+    [G1.8] Tool calling works with iris_local model — skills can be created and
+            recalled within the same session (DER loop + episodic memory active)
+
+  G1.4 unblocked. Remaining: start backend + frontend, load model via ModelsScreen,
+  send chat, confirm reply from local GGUF with GPU active.
+  Do NOT verify Gate 1 on CPU-only. CPU+GPU together is the requirement.
+
+  Verify by: Start both servers, open the app, load a model via ModelsScreen,
+  type a message in chat, confirm reply comes from the local GGUF with GPU active.
+
+  GATE 2 — CLI CHAT (spec pending — provided after Gate 1 verified)
+  Goal: chat-view.tsx becomes a CLI-style interface working in tandem with
+        dashboard-wing.tsx. Spec to be given once Gate 1 is confirmed.
+
+  GATE 3 — AGENT KERNEL UPGRADE (spec pending — provided after Gate 2 verified)
+  Goal: Agent kernel handles deep multi-step tasks with no loss of direction
+        or context. Full DER loop enforcement with token budgets and
+        TrailingDirector wired. Spec to be given once Gate 2 is confirmed.
+
+  GATE 4 — MEMORY VISUALIZATION (spec pending — provided after Gate 3 verified)
+  Goal: Dashboard becomes a visual Mycelium memory decoder. Users can see and
+        interact with IRIS's local memory graph. Spec provided after Gate 3.
+
+---
+
 HOW TO READ THIS FILE
 Each section is a domain. Within each domain, items are ordered by impact.
 The graduate condition is the final item in each domain.
@@ -68,6 +140,70 @@ They directly affect the quality of every task the agent executes.
          Only ResolutionEncoder is implemented.
     Fix: Implement both classes per their spec roles in agent_loop_design.md.
     Landmark: interpreter_complete
+
+  [1.6] Context Engineering C.4 — Mid-loop episodic retrieval
+    Status: SPECCED + TESTED — wiring into production DER loop is the next step
+            (spec complete in docs/CONTEXT_ENGINEERING.md §C.4; test coverage in
+            test_context_engineering.py test_working_memory_via_chunks)
+    File: backend/agent/agent_kernel.py → _execute_plan_der()
+    Gap: At each DER cycle, episodic retrieval runs for the original task only.
+         Sub-task descriptions are never independently queried — so if "read file X"
+         has succeeded 50 times before, that experience is invisible to the current step.
+    Fix: At each cycle boundary, query episodic store for item.description (the
+         sub-task text, not the original task). Inject result into
+         item.coordinate_signal as "SUB-TASK HINT: ..." if score >= 0.6.
+         Uses same assemble_episodic_context() path already proven in A.
+    Test: python -m pytest backend/tests/test_context_engineering.py -v
+    Landmark: context_engineering_c4
+
+  [1.7] Unlimited effective context — _respond_direct uses three memory layers
+    Status: DONE (implemented this session)
+    File: backend/agent/agent_kernel.py → _assemble_direct_context()
+    What changed: Replaced context[-8:] hard roll window with:
+      - Layer 2: Episodic store injection (past task summaries via assemble_episodic_context)
+      - Layer 3: Token-aware full history (trims oldest messages when budget exceeded,
+                 never drops the current turn, never a hard N-message cap)
+    Token budget: 20k tokens for history + episodic, leaving ~8k for system + response
+    Why this gives unlimited effective context:
+      - The agent sees ALL conversation history that fits the 32k window
+      - When history grows beyond budget, oldest messages are trimmed BUT
+        Layer 2 episodic summaries from Mycelium carry the gist forward
+      - DER-executed tasks write episodes to Layer 2 via _store_task_episode() (Option A)
+        so every completed task becomes a retrievable memory
+      - The 32k window is the immediate execution buffer; Mycelium + episodic is the
+        permanent long-term store — together they give unbounded effective recall
+    Note: Absolute verbatim recall of very old turns is not possible within a fixed
+    context window. The architecture trades verbatim recall for semantic density:
+    compressed episodic summaries + coordinate signals carry more actionable context
+    per token than raw message history. This matches the Titans/MIRAS research model.
+    Landmark: unlimited_context_direct_response
+
+  [1.8] Pacman context lifecycle — zone membrane, decay, crystallization
+    Status: DONE (implemented 2026-03-31)
+    Files: backend/memory/episodic.py, backend/agent/agent_kernel.py
+    What changed (aligned with docs/PACMAN.md blueprint):
+      - Zone membrane (Dimension 1): chunk_type maps to zone
+          context_fragment → trusted (user's own conversation)
+          der_output       → tool    (verified DER/executor output)
+          reference/system reserved for future use
+      - Age-weighted retrieval scoring (Compounding Cost Curve):
+          combined = similarity × 0.80 + recency × 0.20
+          recency = 1 / (1 + age_hours / 24.0)   [half-life = 24h]
+          Stale chunks cannot win on recency if semantically irrelevant
+      - Crystallization pathway: retrieval_count >= 5 triggers
+          episode_indexer.index_episode() signal to Mycelium
+          Crystallization candidates are never pruned by cleanup_stale_chunks
+      - Pacman decay: cleanup_stale_chunks() removes chunks older than
+          max_age_hours with retrieval_count <= min_retrievals
+      - Schema migration: _migrate_chunk_schema() adds zone + retrieval_count
+          columns to existing DBs without data loss (PRAGMA table_info probe)
+      - Token budget: chunk_tokens deducted from budget_for_history before
+          computing recency anchor size (never overflows _DIRECT_CTX_BUDGET)
+    Test: python -m pytest backend/tests/test_context_engineering.py -v
+          18/18 pass (9 context engineering + 9 TTS normalizer)
+    Docs: docs/CONTEXT_ENGINEERING.md — v2.0 rewrite with full data flow diagram,
+          zone taxonomy, scoring formula, call sites table
+    Landmark: pacman_lifecycle
 
   Graduate condition: agent processes a multi-step task, Reviewer refines at least
   one step, TrailingDirector adds at least one gap item, token budget enforced.
@@ -151,27 +287,21 @@ The skill creator works end-to-end. The skill library is minimal.
 This domain is about building a useful library of skills the agent can actually use.
 
   [4.1] Credential request skill
-    Status: NOT DONE
-    Gap: Telegram is wired but has no bot token. The credential request protocol
-         (send Telegram → wait → resume) is documented in GOALS.md but no SKILL.md
-         exists for it.
-    Fix: Create SKILL.md for credential_request. When agent needs auth:
-         1. Call telegram_notifier.request_credentials(service, what_needed)
-         2. Record gradient warning: "blocked on auth for [service]"
-         3. Stop working on that feature, pick something else
-         When credential arrives: resume.
+    Status: DONE — backend/agent/skills/credential-request/SKILL.md exists
+    Protocol: bridge.notify_credential_needed(service, what_is_needed) →
+    record gradient warning → pivot to other work. Fallback if no Telegram.
     Landmark: credential_request_skill
 
   [4.2] File read / write skills
-    Status: UNKNOWN — check if filesystem MCP is available
-    Gap: Agent may not be able to read/write files through the skill dispatch path.
-    Fix: Verify filesystem MCP is available and register file read/write/search
-         as dispatchable skills.
+    Status: DONE — backend/agent/skills/file-operations/SKILL.md exists
+    file_manager MCP server registered in tool_bridge.py with read_file,
+    write_file, list_directory, create_directory, delete_file. All routed
+    through execute_tool() dispatch path.
 
   [4.3] Web search skill
-    Status: UNKNOWN
-    Fix: Wire web search MCP (or implement direct HTTP search) as a skill.
-         Agent should be able to research before implementing.
+    Status: DONE — backend/agent/skills/web-search/SKILL.md exists
+    browser MCP server: search (opens Google) + open_url. Registered in
+    tool_bridge.py. Opens in user's browser — no text results yet (future).
 
   [4.4] GitHub MCP skill
     Status: NOT DONE
@@ -194,32 +324,27 @@ The graph is mature (confidence 0.95) but several components are stubs.
 These limit the quality of context packages the Reviewer receives.
 
   [5.1] CoordinateInterpreter — resolve coordinate conflicts
-    Status: STUB (class pass)
+    Status: DONE (permanent landmark: resolution_encoder)
     File: backend/memory/mycelium/interpreter.py
-    Fix: Implement coordinate conflict resolution. When two nodes have overlapping
-         coordinate claims, CoordinateInterpreter should arbitrate.
+    3-rule arbitration: confidence > recency > pheromone edge strength.
+    Stores resolution basis in mycelium_conflicts table. Never raises.
 
   [5.2] BehavioralPredictor — predict likely next agent actions
-    Status: STUB (class pass)
+    Status: DONE (permanent landmark: resolution_encoder)
     File: backend/memory/mycelium/interpreter.py
-    Fix: Implement prediction based on pheromone edge weights. Given current task
-         class and topology position, predict the 3 most likely next steps.
-         These predictions should populate ContextPackage.tier2_predictions.
+    Ranks outgoing pheromone edges by (hit_count/traversal_count)*confidence.
+    Returns top-3 predicted tool names. Feeds ContextPackage.tier2_predictions.
 
   [5.3] Memory transfer — bootstrap DB to runtime DB
-    Status: NOT DONE
-    Gap: The graduate condition in the original GOALS.md said:
-         "bootstrap/coordinates.db transfers to data/memory.db"
-         This has not been done. The build memory and app memory are still separate.
-    Fix: When app launches and data/memory.db does not exist, copy
-         bootstrap/coordinates.db to data/memory.db. Same schema, no migration.
-    Landmark: memory_transfer_complete
+    Status: DONE (permanent landmark: memory_transfer_complete)
+    Bootstrap landmarks seeded to Mycelium runtime DB on startup — 28 landmarks
+    transferred. Verified session 23.
 
   [5.4] Mycelium maintenance schedule
-    Status: UNKNOWN — run_maintenance() exists but unclear when it's called
-    File: backend/memory/mycelium/interface.py → run_maintenance()
-    Fix: Schedule run_maintenance() to run every N sessions (not every request).
-         Five-step sequence: edge decay → condense → expand → landmark decay → render dirty.
+    Status: DONE — wired in backend/memory/interface.py lines 491-502
+    File: backend/memory/interface.py → record_task_outcome() → fires every
+    MAINTENANCE_INTERVAL completed tasks via _task_completion_count counter.
+    Five-step sequence: edge decay → condense → expand → landmark decay → render dirty.
 
   Graduate condition: python bootstrap/query_graph.py --summary shows
   BehavioralPredictor returning non-empty tier2_predictions for a real task.
@@ -230,18 +355,21 @@ DOMAIN 6 — FRONTEND PRODUCTION QUALITY
 The UI works but has missing features, rough edges, and unfinished panels.
 
   [6.1] InferenceConsolePanel — local model status
-    Status: FILE EXISTS (components/dashboard/InferenceConsolePanel.tsx) but
-            integration state unknown
-    Gap: The inference console should show: active GGUF model, hardware profile,
-         context length, GPU layers, tokens/sec.
-    Fix: Wire InferenceConsolePanel to the backend's hardware_info endpoint
-         and the local_model_manager state.
+    Status: DONE — fully wired
+    InferenceConsolePanel.tsx listens to iris:ws_message for inference_event
+    and model_load_event. useIRISWebSocket.ts now forwards both types.
+    backend/agent/agent_kernel.py _respond_direct() emits inference_event after
+    every LLM call (streaming: char-estimated tokens; sync: uses resp.usage).
+    _broadcast_inference_event() helper: fire-and-forget, never raises.
 
   [6.2] ModelsScreen — GGUF model management
-    Status: PARTIAL — HF search wired, local scan wired
-    Gap: Loading a model and switching the active model may not work end-to-end.
-    Fix: Verify load_model WS message triggers LFM local inference. Verify
-         the active model persists across sessions.
+    Status: DONE — fully wired
+    Gap fixed: useIRISWebSocket.ts was not forwarding local_models_list,
+    hardware_info, local_model_status, local_model_loading, gguf_download_progress,
+    model_pin_updated, hf_models_list to iris:ws_message. All now forwarded.
+    ModelsScreen.tsx already listens on iris:ws_message and handles all types.
+    handleLoad sends load_local_model with model_path + profile + optional
+    custom_params. handleUnload sends unload_local_model.
 
   [6.3] Orb animation → voice pipeline sync
     Status: PARTIAL — orb animates but may not be tied to actual audio levels
@@ -249,10 +377,8 @@ The UI works but has missing features, rough edges, and unfinished panels.
          STT, (b) TTS playback state during response.
 
   [6.4] Chat history persistence
-    Status: UNKNOWN — conversations exist in React state but may not persist
-    Gap: Closing and reopening the app likely clears conversation history.
-    Fix: Persist conversation history to a local SQLite DB (or use the Mycelium
-         episodic layer as the backing store).
+    Status: DONE (permanent landmark: chat_history_persistence)
+    Conversations + activeConversationId persisted to localStorage. Verified.
 
   [6.5] Settings panel — field save/load
     Status: PARTIAL — fields render via SidePanel but persistence unclear
@@ -260,8 +386,8 @@ The UI works but has missing features, rough edges, and unfinished panels.
     Fix: Verify field values are saved to backend state and restored on app open.
 
   [6.6] Tab bar state persistence
-    Status: UNKNOWN
-    Fix: Active tab (voice/agent/automate/etc.) should restore after restart.
+    Status: DONE (permanent landmark: tab_state_persistence)
+    Active tab saved to localStorage iris_active_tab_v1 on change. Verified.
 
   Graduate condition: App opens, loads previous conversation, last active model
   is loaded, settings are as the user left them — no configuration required.
@@ -271,30 +397,27 @@ The UI works but has missing features, rough edges, and unfinished panels.
 DOMAIN 7 — BACKEND PRODUCTION QUALITY
 Core backend correctness issues that affect reliability under real use.
 
-  [7.1] AgentKernel — der_kernel_full_integration (1/3 passes)
-    Status: DEVELOPING
-    Test: python -m pytest backend/tests/test_agent_loop_upgrade.py -v
-    Fix: Get the test passing 2 more times with real backend running.
-    Landmark: der_kernel_full_integration (needs 2 more passes)
+  [7.1] AgentKernel — der_kernel_full_integration
+    Status: DONE (permanent landmark: der_kernel_full_integration)
+    DER loop 16/16 tests pass — token budget, TrailingDirector, CoordinateInterpreter
+    all integrated. Verified session 23.
 
   [7.2] Error handling — WebSocket disconnect during DER loop
-    Status: UNKNOWN
-    Gap: If client disconnects mid-execution, the DER loop may continue
-         consuming resources with no way to deliver the result.
-    Fix: Check client connection status before each DER cycle. If disconnected,
-         record partial outcome to Mycelium and exit cleanly.
+    Status: DONE — wired in backend/agent/agent_kernel.py _execute_plan_der()
+    _session_has_client() calls ws_manager.get_clients_for_session() at start
+    of each DER cycle. Logs partial outcome + breaks cleanly on disconnect.
 
   [7.3] Session management — multiple simultaneous users
-    Status: UNKNOWN
-    Gap: AgentKernel is created per session_id. Check that two concurrent
-         sessions do not share state (Reviewer, memory write lock, etc.).
+    Status: DONE — verified in backend/agent/agent_kernel.py
+    _agent_kernel_instances dict is keyed by session_id. Each session has its
+    own AgentKernel (Reviewer, _mycelium_write_lock, _der_tokens_used all
+    per-instance). Model config is intentionally propagated to new sessions
+    from existing peers (same model for all sessions). No shared mutable state.
 
   [7.4] Backend startup sequence
-    Status: PARTIAL — backend starts but sequence timing is fragile
-    Gap: If backend starts before all models are loaded, WebSocket connections
-         may arrive before the agent is ready.
-    Fix: Add readiness probe. WebSocket connections should queue or return
-         "not ready" until all critical services are initialized.
+    Status: DONE — /ready endpoint in backend/main.py lines 439-451
+    app.state.ready set False at lifespan start, True after full startup.
+    /ready returns 503 while starting, 200 when ready. /health always 200.
 
   [7.5] Logging — structured, queryable
     Status: PARTIAL — print() and logger.info() mixed throughout
@@ -325,15 +448,8 @@ Getting IRIS into the user's hands without requiring developer setup.
          or (b) update the Tauri app to spawn python start-backend.py on launch.
 
   [8.3] First-run setup
-    Status: NOT DONE
-    Gap: A new user has no Mycelium database, no API keys, no model loaded.
-         The app needs to guide them through first-run configuration.
-    Fix: Detect first run (no data/memory.db). Show setup wizard:
-         1. Select inference mode (cloud API / local GGUF / LM Studio)
-         2. Enter API key if cloud (Telegram credential request protocol)
-         3. Download or select GGUF model if local
-         4. Test voice input
-    Landmark: first_run_wizard
+    Status: DONE (permanent landmark: first_run_wizard)
+    4-step modal guides new users through model config. Verified session 23.
 
   Graduate condition: Person who has never used IRIS installs from MSI, runs the
   app, and sends their first message to the agent — no terminal required.

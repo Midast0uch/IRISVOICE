@@ -39,7 +39,8 @@ logger.info("  - Importing FastAPI and middleware...")
 # In production: Restrict to specific origins
 ALLOWED_ORIGINS = os.environ.get(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:3001,tauri://localhost,https://tauri.localhost"
+    # port 3000/3001 = Next.js dev; 8080 = iris-launcher dev; tauri = packaged app
+    "http://localhost:3000,http://localhost:3001,http://localhost:8080,tauri://localhost,https://tauri.localhost"
 ).split(",")
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
@@ -122,6 +123,9 @@ logger.info("Finished backend.main imports.")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown events."""
+    import time as _time
+    app.state.ready = False   # set True only after full startup
+    app.state._started_at = _time.time()
     logger.info("IRIS Backend starting up...")
     
     try:
@@ -150,9 +154,9 @@ async def lifespan(app: FastAPI):
         try:
             from backend.audio.engine import AudioEngine
             audio_engine = AudioEngine()
-            logger.info(f"    ✓ [AUDIO ENGINE] Instance created successfully")
+            logger.info(f"    [+] [AUDIO ENGINE] Instance created successfully")
         except Exception as e:
-            logger.error(f"    ✗ [AUDIO ENGINE] Failed to create instance: {e}")
+            logger.error(f"    [x] [AUDIO ENGINE] Failed to create instance: {e}")
             raise
         
         # Step 3: Log initialization progress with timestamps
@@ -163,9 +167,9 @@ async def lifespan(app: FastAPI):
         try:
             from backend.audio.engine import AudioEngine as AE
             ae = AE()
-            logger.info("    ✓ [AUDIO ENGINE] Internal components initialized")
+            logger.info("    [+] [AUDIO ENGINE] Internal components initialized")
         except Exception as e:
-            logger.error(f"    ✗ [AUDIO ENGINE] Failed to initialize components: {e}")
+            logger.error(f"    [x] [AUDIO ENGINE] Failed to initialize components: {e}")
             raise
         
         # ==========================================================================
@@ -177,17 +181,17 @@ async def lifespan(app: FastAPI):
             from backend.audio.voice_command import VoiceCommandHandler, VoiceState
             voice_handler = VoiceCommandHandler(audio_engine)
             app.state.voice_handler = voice_handler
-            logger.info(f"    ✓ [VOICE HANDLER] Created successfully")
+            logger.info(f"    [+] [VOICE HANDLER] Created successfully")
         except Exception as e:
-            logger.error(f"    ✗ [VOICE HANDLER] Failed to create: {e}")
+            logger.error(f"    [x] [VOICE HANDLER] Failed to create: {e}")
             raise
         
         # Step 5: Warm up faster-whisper in background with progress logging
         try:
             voice_handler.warm_up()
-            logger.info("    ✓ [VOICE HANDLER] faster-whisper warm-up started in background")
+            logger.info("    [+] [VOICE HANDLER] faster-whisper warm-up started in background")
         except Exception as e:
-            logger.error(f"    ✗ [VOICE HANDLER] Warm-up failed: {e}")
+            logger.error(f"    [x] [VOICE HANDLER] Warm-up failed: {e}")
             raise
         
         # ==========================================================================
@@ -199,26 +203,26 @@ async def lifespan(app: FastAPI):
             from backend.iris_gateway import get_iris_gateway, IRISGateway
             iris_gateway = get_iris_gateway()
             app.state.iris_gateway = iris_gateway
-            logger.info(f"    ✓ [IRIS GATEWAY] Instance created successfully")
+            logger.info(f"    [+] [IRIS GATEWAY] Instance created successfully")
         except Exception as e:
-            logger.error(f"    ✗ [IRIS GATEWAY] Failed to create: {e}")
+            logger.error(f"    [x] [IRIS GATEWAY] Failed to create: {e}")
             raise
         
         # Step 6: Capture the running event loop for background task dispatch
         try:
             import asyncio
             iris_gateway.set_main_loop(asyncio.get_running_loop())
-            logger.info("    ✓ [IRIS GATEWAY] Event loop captured")
+            logger.info("    [+] [IRIS GATEWAY] Event loop captured")
         except Exception as e:
-            logger.error(f"    ✗ [IRIS GATEWAY] Failed to capture event loop: {e}")
+            logger.error(f"    [x] [IRIS GATEWAY] Failed to capture event loop: {e}")
             raise
         
         # Step 7: Wire VoiceCommandHandler → iris_gateway for 4-pillar voice processing
         try:
             iris_gateway.set_voice_handler(voice_handler)
-            logger.info("    ✓ [IRIS GATEWAY] Voice handler wired")
+            logger.info("    [+] [IRIS GATEWAY] Voice handler wired")
         except Exception as e:
-            logger.error(f"    ✗ [IRIS GATEWAY] Failed to wire voice handler: {e}")
+            logger.error(f"    [x] [IRIS GATEWAY] Failed to wire voice handler: {e}")
             raise
         
         # ==========================================================================
@@ -233,9 +237,9 @@ async def lifespan(app: FastAPI):
                     _main_loop
                 )
             )
-            logger.info("    ✓ [WAKE WORD] Callback registered")
+            logger.info("    [+] [WAKE WORD] Callback registered")
         except Exception as e:
-            logger.error(f"    ✗ [WAKE WORD] Failed to register callback: {e}")
+            logger.error(f"    [x] [WAKE WORD] Failed to register callback: {e}")
             raise
         
         # ==========================================================================
@@ -252,13 +256,13 @@ async def lifespan(app: FastAPI):
                     _best = _discovered[0]
                     _wake_cfg.config["custom_model_path"] = _best.path
                     _wake_cfg.config["wake_phrase"] = _best.display_name.lower()
-                    logger.info(f"    ✓ [WAKE WORD] Auto-configured: '{_best.display_name}' -> {_best.path}")
+                    logger.info(f"    [+] [WAKE WORD] Auto-configured: '{_best.display_name}' -> {_best.path}")
                 else:
-                    logger.warning("    ⚠ [WAKE WORD] No wake word models found")
+                    logger.warning("    [~] [WAKE WORD] No wake word models found")
             else:
                 logger.debug(f"    - [WAKE WORD] Using custom config: {_wake_cfg.get_custom_model_path()}")
         except Exception as e:
-            logger.error(f"    ✗ [WAKE WORD] Discovery failed: {e}")
+            logger.error(f"    [x] [WAKE WORD] Discovery failed: {e}")
             raise
         
         # ==========================================================================
@@ -267,28 +271,28 @@ async def lifespan(app: FastAPI):
         logger.info("  - Initializing Porcupine...")
         try:
             audio_engine.initialize_porcupine()   # reads phrase + sensitivity from WakeConfig
-            logger.info("    ✓ [PORCUPINE] Initialized with wake word config")
+            logger.info("    [+] [PORCUPINE] Initialized with wake word config")
         except Exception as e:
-            logger.error(f"    ✗ [PORCUPINE] Failed to initialize: {e}")
+            logger.error(f"    [x] [PORCUPINE] Failed to initialize: {e}")
             raise
         
         # Step 8: Register live-update callback for dynamic wake word changes
         try:
             from backend.agent.wake_config import get_wake_config
             get_wake_config().register_change_callback(audio_engine.reinitialize_porcupine)
-            logger.info("    ✓ [PORCUPINE] Live wake-word updates registered")
+            logger.info("    [+] [PORCUPINE] Live wake-word updates registered")
         except Exception as e:
-            logger.error(f"    ✗ [PORCUPINE] Failed to register update callback: {e}")
+            logger.error(f"    [x] [PORCUPINE] Failed to register update callback: {e}")
             raise
         
         # Step 9: Start the AudioEngine so Porcupine frame detection runs
         start_time = datetime.now()
         if not audio_engine.start():
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(f"    ✗ [AUDIO ENGINE] Failed to start in {elapsed:.3f}s (mic may be unavailable)")
+            logger.warning(f"    [x] [AUDIO ENGINE] Failed to start in {elapsed:.3f}s (mic may be unavailable)")
         else:
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.info(f"    ✓ [AUDIO ENGINE] Started successfully in {elapsed:.3f}s — Porcupine wake word detection active")
+            logger.info(f"    [+] [AUDIO ENGINE] Started successfully in {elapsed:.3f}s — Porcupine wake word detection active")
         
         # Step 10: Log overall audio subsystem initialization status
         total_elapsed = (datetime.now() - start_time).total_seconds()
@@ -308,7 +312,7 @@ async def lifespan(app: FastAPI):
             agent_kernel._tool_bridge = get_agent_tool_bridge()
             
             app.state.agent_kernel = agent_kernel
-            logger.info("    ✓ [AGENT KERNEL] Initialized successfully")
+            logger.info("    [+] [AGENT KERNEL] Initialized successfully")
             logger.info("  - LAZY LOADING ACTIVE: Models will NOT be loaded automatically")
             logger.info("  - Models will load only when user selects Local Model inference mode")
         except Exception as e:
@@ -335,7 +339,7 @@ async def lifespan(app: FastAPI):
                 if hasattr(app.state, 'agent_kernel') and app.state.agent_kernel:
                     app.state.agent_kernel.set_memory_interface(memory)
                 
-                logger.info("    ✓ [MEMORY SYSTEM] Initialized successfully")
+                logger.info("    [+] [MEMORY SYSTEM] Initialized successfully")
             else:
                 logger.warning("  - Memory system: no model adapter available, skipping.")
                 app.state.memory = None
@@ -343,9 +347,54 @@ async def lifespan(app: FastAPI):
             logger.warning(f"  - Warning: Memory system init failed (non-critical): {e}")
             app.state.memory = None
         
+        # Apply persisted launch mode (set by iris-launcher before first run)
+        try:
+            cfg = _load_iris_config()
+            persisted_mode = cfg.get("mode", "personal")
+            if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
+                app.state.agent_kernel.set_launcher_mode(persisted_mode)
+                logger.info(f"    [Mode] Launch mode loaded from config: {persisted_mode}")
+        except Exception as exc:
+            logger.warning(f"  - Could not apply persisted launch mode: {exc}")
+
+        # ==========================================================================
+        # MEMORY SEEDING [5.3] — transfer bootstrap landmarks to runtime Mycelium
+        # ==========================================================================
+        try:
+            from backend.memory.bootstrap_seed import seed_mycelium_from_bootstrap
+            n = seed_mycelium_from_bootstrap()
+            if n > 0:
+                logger.info(f"    [BootstrapSeed] Seeded {n} permanent landmarks into Mycelium")
+        except Exception as _seed_err:
+            logger.debug(f"  - Bootstrap seed skipped: {_seed_err}")
+
+        app.state.ready = True
         logger.info("IRIS Backend startup completed successfully!")
-        
+
+        # Pre-warm the GGUF file metadata cache in the background (filesystem
+        # scan only — no model weights loaded, no CUDA initialization).
+        # This means the first ModelsScreen open returns instantly instead of
+        # re-parsing GGUF binary headers on demand.
+        #
+        # INTENTIONALLY does NOT call get_hardware_info() here — that function
+        # can trigger CUDA driver init (via torch or llama_cpp) which causes a
+        # visible memory spike on startup before the user has done anything.
+        # Hardware info is fetched lazily when the user first opens ModelsScreen.
+        async def _prewarm_model_cache() -> None:
+            try:
+                from backend.agent.local_model_manager import get_local_model_manager
+                import asyncio as _asyncio
+                mgr = get_local_model_manager()
+                loop = _asyncio.get_event_loop()
+                await loop.run_in_executor(None, mgr.scan_models)
+                logger.info("  [LocalModel] GGUF metadata cache pre-warmed (filesystem scan only)")
+            except Exception as _pw_err:
+                logger.debug(f"  [LocalModel] Pre-warm skipped: {_pw_err}")
+
+        asyncio.ensure_future(_prewarm_model_cache())
+
     except Exception as e:
+        app.state.ready = False
         logger.error(f"[ERROR] Failed to initialize backend: {e}")
         import traceback
         traceback.print_exc()
@@ -407,6 +456,194 @@ async def health_check():
     """Health check endpoint — used by the frontend WS hook before opening the socket.
     Returns 200 so the hook proceeds to connect immediately instead of retrying."""
     return {"status": "ok", "service": "IRIS Backend"}
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Readiness probe — returns 200 only after full startup (agent + memory initialized).
+    Frontend or health monitors can poll this before sending the first WS message."""
+    is_ready = getattr(app.state, "ready", False)
+    if is_ready:
+        return {"status": "ready", "service": "IRIS Backend"}
+    from fastapi import Response
+    return Response(
+        content='{"status":"starting","service":"IRIS Backend"}',
+        status_code=503,
+        media_type="application/json",
+    )
+
+
+@app.get("/first_run")
+async def first_run_check():
+    """Returns whether this is a first-run install (no model configured yet).
+    The frontend shows the setup wizard when first_run=true."""
+    try:
+        if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
+            provider = getattr(app.state.agent_kernel, "_model_provider", "uninitialized")
+            is_first_run = provider in (None, "uninitialized")
+        else:
+            is_first_run = True
+        return {"first_run": is_first_run}
+    except Exception:
+        return {"first_run": True}
+
+
+# ============================================================================
+# Launcher Mode API — integration with iris-launcher
+# ============================================================================
+
+_IRIS_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "iris_config.json"
+)
+
+
+def _load_iris_config() -> dict:
+    """Load persisted IRIS config from data/iris_config.json."""
+    try:
+        if os.path.exists(_IRIS_CONFIG_PATH):
+            with open(_IRIS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_iris_config(data: dict) -> None:
+    """Persist IRIS config to data/iris_config.json."""
+    try:
+        os.makedirs(os.path.dirname(_IRIS_CONFIG_PATH), exist_ok=True)
+        with open(_IRIS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as exc:
+        logger.warning(f"[Config] Failed to save iris_config.json: {exc}")
+
+
+@app.post("/api/mode")
+async def set_launcher_mode(request: dict):
+    """
+    Called by iris-launcher after mode selection.
+
+    Body: { "mode": "personal" | "developer" }
+
+    personal  — standard agent, curated skills, no source code access
+    developer — full source access, git integration, diff review, rebuild pipeline
+    """
+    from fastapi import Response as FastAPIResponse
+    mode = (request.get("mode") or "").strip().lower()
+    if mode not in ("personal", "developer"):
+        return FastAPIResponse(
+            content=json.dumps({"error": f"Invalid mode: {mode!r}. Must be 'personal' or 'developer'."}),
+            status_code=422,
+            media_type="application/json",
+        )
+
+    # Persist to disk so the mode survives restarts
+    cfg = _load_iris_config()
+    cfg["mode"] = mode
+    _save_iris_config(cfg)
+
+    # Apply to live agent kernel if running
+    try:
+        if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
+            app.state.agent_kernel.set_launcher_mode(mode)
+    except Exception as exc:
+        logger.warning(f"[Mode] Could not apply mode to agent kernel: {exc}")
+
+    logger.info(f"[Mode] Launch mode set to: {mode}")
+    return {"mode": mode, "status": "ok"}
+
+
+@app.get("/api/mode")
+async def get_launcher_mode():
+    """Returns the currently configured launch mode."""
+    cfg = _load_iris_config()
+    mode = cfg.get("mode", None)
+    return {"mode": mode}
+
+
+@app.get("/api/launcher/status")
+async def get_launcher_status():
+    """
+    Returns live agent status for iris-launcher's dashboard.
+
+    iris-launcher displays: activeMode, agentActive, uptime, version.
+    Maps to the LauncherStatus type in mock-data.ts.
+    """
+    import time as _time
+
+    cfg = _load_iris_config()
+    mode = cfg.get("mode", "personal")
+    agent_active = getattr(app.state, "ready", False)
+
+    # Uptime since backend started
+    started_at = getattr(app.state, "_started_at", None)
+    if started_at is None:
+        uptime_str = "unknown"
+    else:
+        elapsed = int(_time.time() - started_at)
+        h, m = divmod(elapsed // 60, 60)
+        uptime_str = f"{h}h {m:02d}m" if h else f"{m}m"
+
+    return {
+        "mode": mode,
+        "sourceValid": True,
+        "driveConnected": True,
+        "agentActive": agent_active,
+        "pendingWrites": 0,
+        "uptime": uptime_str,
+        "version": "0.3.0-alpha",
+    }
+
+
+@app.get("/api/projects")
+async def get_projects():
+    """
+    Returns the list of IRIS projects known to this backend.
+
+    iris-launcher's ProjectsPage reads this to populate the project cards.
+    Projects are stored in data/iris_config.json under the "projects" key.
+    If no projects are configured, returns a default entry for the current install.
+    """
+    cfg = _load_iris_config()
+    projects = cfg.get("projects", None)
+
+    if not projects:
+        # Default: the current IRIS installation
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        mode = cfg.get("mode", "personal")
+        projects = [
+            {
+                "id": "iris-main",
+                "name": "IRIS",
+                "path": project_root,
+                "mode": "developer" if mode == "developer" else "standard",
+                "driveType": "local",
+            }
+        ]
+
+    return {"projects": projects}
+
+
+@app.post("/api/projects")
+async def save_projects(request: dict):
+    """
+    Save the project list from iris-launcher.
+
+    Body: { "projects": [ { id, name, path, mode, driveType }, ... ] }
+    """
+    projects = request.get("projects", [])
+    if not isinstance(projects, list):
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": "projects must be a list"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    cfg = _load_iris_config()
+    cfg["projects"] = projects
+    _save_iris_config(cfg)
+    return {"projects": projects, "status": "ok"}
 
 
 # ============================================================================

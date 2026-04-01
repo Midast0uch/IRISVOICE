@@ -12,7 +12,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-from .model_manager import ModelManager
 from .pipeline import AudioPipeline
 from backend.ws_manager import get_websocket_manager
 from backend.voice.porcupine_detector import PorcupineWakeWordDetector
@@ -29,12 +28,11 @@ class VoiceState(str, Enum):
 
 class AudioEngine:
     """
-    Singleton audio engine managing the native audio pipeline:
+    Singleton audio engine managing the audio pipeline:
     1. Wake word detection (Porcupine)
-    2. Voice activity detection (Silero VAD)
-    3. Audio buffering
-    4. LFM2-Audio native processing (16kHz -> 24kHz)
-    5. Native audio output
+    2. Audio frame distribution to registered listeners
+    3. TTS suppression (Porcupine paused while IRIS is speaking)
+    4. Speech interrupt signalling for in-progress TTS cancellation
     """
 
     _instance: Optional['AudioEngine'] = None
@@ -50,7 +48,6 @@ class AudioEngine:
             return
 
         # Core components
-        self.model_manager = ModelManager()
         self.pipeline: Optional[AudioPipeline] = None
 
         # Porcupine wake word detector (initialized lazily via initialize_porcupine())
@@ -403,10 +400,9 @@ class AudioEngine:
     def get_status(self) -> Dict[str, Any]:
         """Get current engine status"""
         return {
-            "state": self._state.value,
-            "is_running": self._is_running,
-            "config": self.config,
-            "model_loaded": self.model_manager.is_loaded if self.model_manager else False,
+            "state":                 self._state.value,
+            "is_running":            self._is_running,
+            "config":                self.config,
             "porcupine_initialized": self._porcupine_initialized,
         }
 
