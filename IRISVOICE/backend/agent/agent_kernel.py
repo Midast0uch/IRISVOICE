@@ -597,7 +597,13 @@ class AgentKernel:
     })
 
     def _is_openai_compat(self) -> bool:
-        """Return True if the user-selected provider speaks the OpenAI chat API (local)."""
+        """Return True if the user-selected provider speaks the OpenAI chat API (local).
+
+        Handles the common case where self._model_provider == "lmstudio" directly,
+        as well as other OpenAI-compatible servers listed in _OPENAI_COMPAT_PROVIDERS.
+        """
+        # Direct LM Studio check: self._model_provider == "lmstudio" is the most
+        # common OpenAI-compat provider — always handled by the openai client path.
         return self._model_provider in self._OPENAI_COMPAT_PROVIDERS
 
     def _is_api_provider(self) -> bool:

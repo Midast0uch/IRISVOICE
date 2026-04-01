@@ -92,69 +92,49 @@ These are architectural features that are defined in code but not yet wired or e
 They directly affect the quality of every task the agent executes.
 
   [1.1] Wire TrailingDirector into _execute_plan_der()
-    Status: NOT DONE
-    File: backend/agent/agent_kernel.py → _execute_plan_der()
-    Gap: TrailingDirector.analyze_gaps() exists in trailing_director.py and is
-         fully implemented. It is never called.
-    Fix: After each queue.mark_complete(), if len(completed_items) % TRAILING_GAP_MIN == 0,
-         call trailing_director.analyze_gaps(item, plan, context_package, is_mature)
-         and add returned QueueItems via queue.add_item(). Gap items have critical=False.
+    Status: DONE (verified 2026-03-31 — 17/17 test_trailing_director.py pass)
+    File: backend/agent/agent_kernel.py → _execute_plan_der() line ~2751
+    What: After each queue.mark_complete(), if len(completed_items) % TRAILING_GAP_MIN == 0,
+          calls self._trailing_director.analyze_gaps(item, plan, context_package, is_mature)
+          and adds returned QueueItems via queue.add_item(). Gap items have critical=False.
     Test: python -m pytest backend/tests/test_trailing_director.py -v
-    Landmark: trailing_director_wired
+    Landmark: trailing_director_wired (in der_kernel_full_integration)
 
   [1.2] Enforce DER token budgets (replace cycle counting)
-    Status: NOT DONE
-    File: backend/agent/agent_kernel.py → _execute_plan_der()
-          backend/agent/der_constants.py → DER_TOKEN_BUDGETS (already defined)
-    Gap: _execute_plan_der() uses max_cycles=40. Token budgets are defined but
-         self._der_tokens_used is never incremented or checked.
-    Fix: Track tokens used per step. Break loop when _der_tokens_used exceeds
-         DER_TOKEN_BUDGETS[mode] (default: 40_000). Pass mode through from
-         ModeDetector result.
+    Status: DONE (verified 2026-03-31 — 18/18 test_der_loop.py pass)
+    File: backend/agent/agent_kernel.py → _execute_plan_der() line ~2515
+    What: _token_budget = DER_TOKEN_BUDGETS.get(task_class, ...). _tokens_used
+          incremented per step (len(result)/4). Loop exits early when exceeded.
     Test: python -m pytest backend/tests/test_der_loop.py -v
-    Landmark: der_token_budget_enforced
+    Landmark: der_token_budget_enforced (in der_kernel_full_integration)
 
   [1.3] Wire ModeDetector result into _plan_task() and _execute_plan_der()
-    Status: PARTIAL
+    Status: DONE (verified 2026-03-31 — 25/25 test_mode_detector.py pass)
     File: backend/agent/agent_kernel.py
-    Gap: ModeDetector.detect() is called but the mode result does not flow into
-         _plan_task() to select temperature or into _execute_plan_der() to select
-         the correct token budget.
-    Fix: Pass mode_result.mode as a parameter to both. Use it to select
-         DER_TOKEN_BUDGETS[mode_result.mode.name] in _execute_plan_der().
+    What: _mode_name = _mode_result.mode.name.lower() flows into _execute_plan_der()
+          as _der_task_class when mode in DER_TOKEN_BUDGETS.
     Test: python -m pytest backend/tests/test_mode_detector.py -v
 
   [1.4] Fix record_plan_stats() signature mismatch
-    Status: NOT DONE
+    Status: DONE (verified 2026-03-31 — 13/13 test_mycelium_proxies.py pass)
     Files: backend/memory/interface.py, backend/memory/mycelium/interface.py
-    Gap: Call sites pass different fields than the proxy signature expects.
-         plan_id and task fields are missing from some call sites.
-    Fix: Audit both signatures. Align them. Add missing fields with safe defaults.
     Test: python -m pytest backend/tests/test_mycelium_proxies.py -v
 
   [1.5] Implement CoordinateInterpreter and BehavioralPredictor
-    Status: STUBS ONLY
+    Status: DONE (verified 2026-03-31 — both classes fully implemented)
     File: backend/memory/mycelium/interpreter.py
-    Gap: class CoordinateInterpreter: pass — empty body
-         class BehavioralPredictor: pass — empty body
-         Only ResolutionEncoder is implemented.
-    Fix: Implement both classes per their spec roles in agent_loop_design.md.
-    Landmark: interpreter_complete
+    What: CoordinateInterpreter.resolve() — 3-rule arbitration (confidence → recency →
+          pheromone edge weight). BehavioralPredictor.predict() — pheromone edge analysis.
+    Landmark: resolution_encoder (captures all three classes)
 
   [1.6] Context Engineering C.4 — Mid-loop episodic retrieval
-    Status: SPECCED + TESTED — wiring into production DER loop is the next step
-            (spec complete in docs/CONTEXT_ENGINEERING.md §C.4; test coverage in
-            test_context_engineering.py test_working_memory_via_chunks)
+    Status: DONE (verified 2026-03-31 — wired in _execute_plan_der() line ~2612)
     File: backend/agent/agent_kernel.py → _execute_plan_der()
-    Gap: At each DER cycle, episodic retrieval runs for the original task only.
-         Sub-task descriptions are never independently queried — so if "read file X"
-         has succeeded 50 times before, that experience is invisible to the current step.
-    Fix: At each cycle boundary, query episodic store for item.description (the
-         sub-task text, not the original task). Inject result into
-         item.coordinate_signal as "SUB-TASK HINT: ..." if score >= 0.6.
-         Uses same assemble_episodic_context() path already proven in A.
+    What: At each DER cycle, queries episodic store for item.description (sub-task).
+          Injects matching episodes into item.coordinate_signal as "SUB-TASK HINT: ..."
+          when similarity >= 0.55. Uses retrieve_similar() already proven in Option A.
     Test: python -m pytest backend/tests/test_context_engineering.py -v
-    Landmark: context_engineering_c4
+    Landmark: mid_loop_episodic_c4
 
   [1.7] Unlimited effective context — _respond_direct uses three memory layers
     Status: DONE (implemented this session)

@@ -241,6 +241,75 @@ class VoiceCommandHandler:
     # Internal — whisper
     # -------------------------------------------------------------------------
 
+    def _transcribe_with_fallback(self, audio_np) -> str:
+        """
+        Transcribe audio using a fallback STT chain when the native LFM audio
+        model fails to load or is unavailable.
+
+        Fallback chain (in order):
+          1. faster_whisper — WhisperModel tiny/int8, ~40 MB, GPU optional
+          2. speech_recognition — Google Web Speech API (requires internet)
+
+        RAM guard: requires >= 4.0 GB available RAM before attempting LFM audio.
+        Uses psutil to check available system memory before model load.
+
+        Args:
+            audio_np: float32 numpy array at self.sample_rate
+
+        Returns:
+            Transcript string (empty string on failure).
+        """
+        import psutil
+
+        # RAM guard — require at least 4.0 GB free before attempting model load
+        _avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+        if _avail_gb < 4.0:
+            logger.warning(
+                f"[VoiceCommand] Fallback STT: only {_avail_gb:.1f} GB RAM available "
+                "(need >= 4.0 GB) — skipping to speech_recognition fallback"
+            )
+        else:
+            # Attempt 1: faster_whisper
+            try:
+                from faster_whisper import WhisperModel
+                _fw_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+                segments, _ = _fw_model.transcribe(
+                    audio_np, language="en", beam_size=1, vad_filter=True
+                )
+                transcript = " ".join(s.text.strip() for s in segments).strip()
+                if transcript:
+                    logger.info(f"[VoiceCommand] Fallback (faster_whisper): '{transcript[:80]}'")
+                    return transcript
+            except Exception as _fw_exc:
+                logger.warning(f"[VoiceCommand] faster_whisper fallback failed: {_fw_exc}")
+
+        # Attempt 2: speech_recognition (Google Web Speech API — last resort)
+        try:
+            import speech_recognition as sr
+            import io
+            import wave
+
+            recognizer = sr.Recognizer()
+            # Convert float32 to PCM int16 bytes for speech_recognition
+            import numpy as np
+            pcm_int16 = (audio_np * 32767).clip(-32768, 32767).astype(np.int16)
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(pcm_int16.tobytes())
+            buf.seek(0)
+            with sr.AudioFile(buf) as source:
+                audio_data = recognizer.record(source)
+            transcript = recognizer.recognize_google(audio_data)
+            logger.info(f"[VoiceCommand] Fallback (speech_recognition): '{transcript[:80]}'")
+            return transcript
+        except Exception as _sr_exc:
+            logger.warning(f"[VoiceCommand] speech_recognition fallback failed: {_sr_exc}")
+
+        return ""
+
     def _get_whisper(self):
         """Lazy-load and cache the WhisperModel (thread-safe)."""
         if self._whisper is None:
@@ -343,6 +412,17 @@ class VoiceCommandHandler:
         except Exception as e:
             logger.error(f"[VoiceCommand] Transcription error: {e}", exc_info=True)
             self.is_recording = False
+            logger.warning(f"[VoiceCommand] Failed to load native audio model: {e}")
+            try:
+                if self._raw_frames:
+                    import numpy as np
+                    audio_np = np.concatenate(self._raw_frames, axis=0).astype(np.float32)
+                    transcript = self._transcribe_with_fallback(audio_np)
+                    if transcript:
+                        self._on_transcription_complete(transcript)
+                        return
+            except Exception as _fb_exc:
+                logger.error(f"[VoiceCommand] _transcribe_with_fallback also failed: {_fb_exc}")
             self._set_state(VoiceState.ERROR, f"Transcription failed: {e}")
             threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
 

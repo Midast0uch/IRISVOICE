@@ -175,13 +175,13 @@ class TextMessage(BaseModel):
 
 class ThemeSettings(BaseModel):
     """UI theme settings."""
-    primary: str = Field(default="#00ff88", regex=r"^#[0-9a-fA-F]{6}$")
-    glow: str = Field(default="#00ff88", regex=r"^#[0-9a-fA-F]{6}$")
-    font: str = Field(default="#ffffff", regex=r"^#[0-9a-fA-F]{6}$")
-    idle_color: Optional[str] = Field(None, regex=r"^#[0-9a-fA-F]{6}$")
-    listening_color: Optional[str] = Field(None, regex=r"^#[0-9a-fA-F]{6}$")
-    processing_color: Optional[str] = Field(None, regex=r"^#[0-9a-fA-F]{6}$")
-    error_color: Optional[str] = Field(None, regex=r"^#[0-9a-fA-F]{6}$")
+    primary: str = Field(default="#00ff88", pattern=r"^#[0-9a-fA-F]{6}$")
+    glow: str = Field(default="#00ff88", pattern=r"^#[0-9a-fA-F]{6}$")
+    font: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
+    idle_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    listening_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    processing_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    error_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 class SessionState(BaseModel):
