@@ -5,21 +5,40 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 ## 🌟 Key Features
 
 ### 🎤 Voice & Audio
-- **Wake Word Detection**: Custom "hey iris" wake word using Picovoice Porcupine
+- **Wake Word Detection**: Custom wake words using Picovoice Porcupine with automatic file discovery
+- **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
 - **End-to-End Audio Processing**: LFM 2.5 audio model handles complete audio pipeline
 - **Voice Commands**: Natural language voice interaction with double-click activation
-- **Text-to-Speech**: LuxTTS voice cloning (offline, CUDA/CPU) with pyttsx3 SAPI5 fallback
+- **Text-to-Speech**: High-quality speech synthesis with configurable voices
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
 
 ### 🤖 AI Agent System
 - **Dual-LLM Architecture**: lfm2-8b (reasoning) + lfm2.5-1.2b-instruct (execution)
+- **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer
+- **Model-Agnostic Design**: Works with Local, VPS, or OpenAI inference backends
+- **Flexible Inference Modes**: Choose between Local Models, VPS Gateway, or OpenAI API
+- **User-Configurable Models**: Select which models handle reasoning and tool execution
+- **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
 - **Personality System**: Configurable assistant personality and behavior
-- **Conversation Memory**: Context-aware conversations with memory management
-- **Mycelium Memory Layer**: Coordinate-graph memory system — 40–60% fewer context tokens, higher retrieval precision (⚠️ integration tests pending)
-- **Kyudo Security Layer**: Typed transport channels prevent adversarial memory injection
-- **VPS Gateway**: Optional remote model inference with automatic fallback
+- **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
+- **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
+
+### 👁 Vision Layer (LFM2.5-VL)
+- **LFM2.5-VL-1.6B**: Liquid AI's vision-language model running via `llama-server` on port 8081
+- **VisionMCPServer**: 5 MCP tools — `vision.analyze_screen`, `vision.find_ui_element`, `vision.read_text`, `vision.suggest_next_action`, `vision.describe_live_frame`
+- **UniversalGUIOperator**: Controls any Windows application — UIA accessibility first, VL coordinate prediction second, PIL diff verification third
+- **Perception-Action-Verify Loop**: Every GUI action is preceded by VL perception and followed by result verification
+- **smart_click()**: VL finds element by natural language description → UIA by name → known coordinates — no hardcoded pixel hunting
+- **PIL Fallback**: Pixel diff verification when VL is offline; all pipelines degrade gracefully
+- **MiniCPM Removed**: Fully replaced by LFM2.5-VL + llama-server (no Ollama dependency)
+
+### 🖥 Desktop Automation
+- **Any Windows App**: UniversalGUIOperator works with Paint, Notepad, Chrome, Office — no app-specific code
+- **Drawing Pipeline**: Programmatic star + sine wave via mouse drag
+- **Text Pipeline**: PIL generates Segoe Script 36pt text → clipboard DIB → Ctrl+V paste → drag to position
+- **Telegram Integration**: Sends canvas screenshots with caption via bot API
 
 ### 🎨 User Interface
 - **Hexagonal Hub Interface**: 6 main categories (Voice, Agent, Automate, System, Customize, Monitor)
@@ -36,6 +55,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Structured Logging**: JSON-formatted logs with context injection
 - **Performance Optimization**: Sub-50ms WebSocket latency, <5s agent responses
 - **Security**: Tool execution security with allowlists and audit logging
+- **Cleanup System**: Analyze and remove unused files and dependencies to free disk space
 
 ## 📋 Table of Contents
 
@@ -65,7 +85,30 @@ git clone <repository-url>
 cd IRISVOICE
 ```
 
-### 2. Backend Setup
+### 2. Vision Model Setup (LFM2.5-VL)
+
+```python
+# Download LFM2.5-VL GGUF files (one-time, ~1GB total)
+from huggingface_hub import hf_hub_download
+import os
+base = os.path.expanduser("~/models/LFM2.5-VL-1.6B/")
+os.makedirs(base, exist_ok=True)
+hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "LFM2.5-VL-1.6B-Q4_0.gguf", local_dir=base)
+hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "mmproj-LFM2.5-VL-1.6B-Q4_0.gguf", local_dir=base)
+```
+
+```bash
+# Start vision server (Windows)
+start_vl.bat
+
+# Start vision server (macOS/Linux)
+bash start_vl.sh
+
+# Install vision dependencies
+pip install mss httpx pywinauto pyautogui pillow win32clipboard
+```
+
+### 3. Backend Setup
 
 ```bash
 # Create and activate virtual environment
@@ -87,6 +130,8 @@ python download_lfm_audio.py
 # Set up environment variables
 # Create .env file with:
 # PICOVOICE_ACCESS_KEY=your_access_key_here
+# TELEGRAM_BOT_TOKEN=your_bot_token
+# TELEGRAM_CHAT_ID=your_chat_id
 ```
 
 ### 3. Frontend Setup
@@ -409,6 +454,18 @@ IRISVOICE/
 │   ├── core/            # Core infrastructure
 │   ├── sessions/        # Session management
 │   ├── monitoring/      # Logging and monitoring
+│   ├── memory/          # Memory subsystem
+│   │   ├── mycelium/    # Coordinate-graph memory layer
+│   │   │   ├── store.py      # CoordinateStore (node/edge CRUD, struct pack)
+│   │   │   ├── navigator.py  # CoordinateNavigator (traversal, author_edge)
+│   │   │   ├── extractor.py  # CoordinateExtractor (text→coords, toolpath)
+│   │   │   ├── scorer.py     # EdgeScorer + MapManager (decay, condense)
+│   │   │   ├── profile.py    # ProfileRenderer (prose sections)
+│   │   │   ├── landmark.py   # LandmarkCondenser + LandmarkIndex
+│   │   │   ├── resonance.py  # EpisodeIndexer + ResonanceScorer
+│   │   │   ├── kyudo.py      # HyphaGateway (channel security, MCP trust)
+│   │   │   └── spaces.py     # Canonical space definitions + constants
+│   │   └── tests/       # 139-test requirement-anchored test suite
 │   ├── main.py          # FastAPI application
 │   ├── iris_gateway.py  # Message router
 │   ├── state_manager.py # State persistence
@@ -466,15 +523,13 @@ npm run dev:backend & npm run dev:frontend
 **Backend Tests:**
 ```bash
 # All tests
-python -m pytest tests/ -v
+python -m pytest backend/memory/tests/ -v
 
-# Specific test suites
-python -m pytest tests/integration/ -v
-python -m pytest tests/property/ -v
-python -m pytest tests/performance/ -v
+# Mycelium layer tests only
+python -m pytest backend/memory/tests/test_mycelium_*.py -v
 
 # With coverage
-python -m pytest tests/ --cov=backend --cov-report=html
+python -m pytest backend/memory/tests/ --cov=backend.memory --cov-report=html
 ```
 
 **Frontend Tests:**
@@ -488,6 +543,36 @@ npm test -- tests/wheelview.test.js
 # With coverage
 npm test -- --coverage
 ```
+
+### Mycelium Layer — Test Coverage
+
+The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a comprehensive, requirement-anchored test suite with **139 tests** across 12 test modules. All tests pass against `sqlite3` in-memory databases (no SQLCipher dependency required for testing).
+
+| Module | Tests | Requirements covered |
+|--------|-------|----------------------|
+| `test_mycelium_requirements.py` | 21 | Req 1.1–1.11, 2.1–2.11, 4.12, 4.26, 7.3–7.6, 15.29–15.30 |
+| `test_mycelium_store.py` | 9 | Req 3.1–3.8 (CoordinateStore dedup, nearest-node, edge clamping) |
+| `test_mycelium_navigator.py` | 11 | Req 5.1–5.10, 6.1–6.7 (traversal, encoding formats, author_edge, record_path_outcome) |
+| `test_mycelium_scorer.py` | 10 | Req 7.1–7.10 (hit/partial/miss deltas, highway bonus, decay formula, condense, space order) |
+| `test_mycelium_extractor.py` | 12 | Req 4.1–4.24 (conduct/style/domain patterns, session confidence formula, circular mean, toolpath window) |
+| `test_mycelium_profile.py` | 8 | Req 4.17, 10.1–10.12 (ProfileRenderer, context freshness threshold) |
+| `test_mycelium_landmark.py` | 8 | Req 8.1–8.14 (LandmarkCondenser, nullify, promote-to-permanent, merge, absorbed flag) |
+| `test_mycelium_resonance.py` | 9 | Req 11.1–11.12 (ResonanceScorer, formula, landmark bonus, suppression, space exclusion) |
+| `test_mycelium_kyudo_security.py` | 11 | Req 15.1–15.30 (channel assignment, CellWall zones, trust cap, quorum sensor, MCP pin) |
+| `test_mycelium_kyudo_precision.py` | 9 | Req 13.1–13.9 (task classifier, predictive loader, delta encoder, micro-abstract) |
+| `test_mycelium_topology.py` | 7 | Req 9.1–9.8 (topology maintenance, chart positions, trajectory) |
+| `test_mycelium_integration.py` | 4 | End-to-end interface contract |
+
+**Key invariants verified by tests:**
+- Coordinate byte order (big-endian) for cross-platform consistency
+- `HyphaChannel` IntEnum values used correctly in security guards
+- Stale context (freshness < 0.10) filtered from profile renders (Req 4.17)
+- `author_edge` always uses initial score 0.4 — not configurable by agents (Req 5.8)
+- `partial` outcome delta = +0.02, `hit` = +0.05, `miss` = -0.08 (Req 7.1)
+- Highway bonus (+0.01) fires only on threshold crossing, not when already above (Req 7.4)
+- Decay formula: `score -= rate * days_idle` (Req 7.2)
+- Toolpath space excluded from RESONANCE_SPACES and profile renders (Req 11.5)
+- All 13 schema tables present with required columns (`absorbed`, `source_channel`, `delta_compressed`)
 
 ### Test Coverage
 
@@ -510,19 +595,43 @@ npm test -- --coverage
 
 ## 📚 Documentation
 
-### Available Documentation
+### User Guides
 
+- **[Inference Mode Selection Guide](./docs/USER_GUIDE_INFERENCE_MODE.md)**: Choose between Local, VPS, or OpenAI inference
+- **[Dual-LLM Model Selection Guide](./docs/USER_GUIDE_MODEL_SELECTION.md)**: Configure reasoning and tool execution models
+- **[Wake Word Configuration Guide](./docs/USER_GUIDE_WAKE_WORDS.md)**: Set up custom wake words
+- **[Cleanup System Guide](./docs/USER_GUIDE_CLEANUP.md)**: Analyze and remove unused files
+
+### Developer Guides
+
+- **[Lazy Loading Architecture](./docs/DEVELOPER_LAZY_LOADING.md)**: Model loading/unloading implementation
+- **[Model-Agnostic Architecture](./docs/DEVELOPER_MODEL_AGNOSTIC.md)**: Agent capabilities across all inference modes
+- **[Agent Architecture](./docs/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
+- **[System Overview](./docs/SYSTEM_OVERVIEW.md)**: Complete system architecture
+- **[UI Architecture](./docs/UI_ARCHITECTURE.md)**: Frontend component structure
+
+### API Documentation
+
+- **[WebSocket Messages](./docs/api/websocket-messages.md)**: Complete WebSocket protocol reference
+- **[Backend Classes](./docs/api/backend-classes.md)**: Backend component documentation
+- **[Configuration Guide](./docs/api/configuration.md)**: Configuration options
+- **[Data Models](./docs/api/data-models.md)**: Data structure definitions
 - **[API Documentation](./API_DOCUMENTATION.md)**: Complete API reference
+
+### Operations Guides
+
 - **[Deployment Guide](./DEPLOYMENT_GUIDE.md)**: Production deployment instructions
 - **[Troubleshooting Guide](./TROUBLESHOOTING_GUIDE.md)**: Common issues and solutions
 - **[Performance Optimization](./PERFORMANCE_OPTIMIZATION_SUMMARY.md)**: Performance tuning guide
-- **[Porcupine Integration](./PORCUPINE_INTEGRATION_SUMMARY.md)**: Wake word detection setup
+- **[Feature Summary](./docs/FEATURE_SUMMARY.md)**: Recent features and improvements
+
+### Component Documentation
+
 - **[Backend Core README](./backend/core/README.md)**: Core infrastructure documentation
 - **[Agent Personality](./backend/agent/README_PERSONALITY.md)**: Personality system guide
 - **[Model System](./backend/agent/README_MODEL_SYSTEM.md)**: Dual-LLM architecture
 - **[Audio Engine](./backend/voice/README_AUDIO_ENGINE.md)**: Voice pipeline documentation
 - **[Porcupine Setup](./backend/voice/README_PORCUPINE.md)**: Wake word configuration
-- **[Mycelium Architecture](./IRISVOICE/docs/mycelium-architecture.md)**: Coordinate-graph memory layer — components, Kyudo security, integration points, test plan
 
 ### API Endpoints
 
@@ -535,23 +644,37 @@ npm test -- --coverage
 - `GET /docs` - Swagger UI
 - `GET /redoc` - ReDoc documentation
 
-### WebSocket Message Types
+**WebSocket Message Types**
 
 **Client → Server:**
 - `select_category` - Navigate to category
 - `select_subnode` - Select subnode
-- `field_update` - Update field value
+- `update_field` - Update field value (including inference_mode, model selection)
 - `text_message` - Send text message to agent
 - `voice_command_start` - Start voice recording
 - `voice_command_end` - Stop voice recording
+- `get_wake_words` - Request wake word list
+- `select_wake_word` - Select wake word file
+- `get_available_models` - Request available models
+- `get_cleanup_report` - Request cleanup analysis
+- `execute_cleanup` - Execute cleanup
 
 **Server → Client:**
 - `initial_state` - Complete state on connection
 - `field_updated` - Field update confirmation
 - `text_response` - Agent text response
-- `agent_status` - Agent status update
+- `agent_status` - Agent status update (includes inference mode, model selection)
 - `audio_level` - Voice activity level
 - `validation_error` - Field validation error
+- `wake_words_list` - Available wake word files
+- `wake_word_selected` - Wake word selection confirmed
+- `available_models` - Available models from all inference sources
+- `inference_mode_changed` - Inference mode change confirmed
+- `model_selection_updated` - Model selection change confirmed
+- `cleanup_report` - Cleanup analysis result
+- `cleanup_result` - Cleanup execution result
+
+For complete message documentation, see [WebSocket Messages](./docs/api/websocket-messages.md).
 
 ## 🔧 Troubleshooting
 
@@ -572,13 +695,19 @@ lsof -i :8000  # macOS/Linux
 
 **Models not loading:**
 ```bash
-# Re-download models
+# Note: Models are NOT loaded automatically on startup (lazy loading)
+# Select inference mode in Agent settings first
+
+# For Local Models mode:
+# Re-download models if needed
 python download_text_model.py
 python download_lfm_audio.py
 
-# Check available RAM (need ~20GB)
-# Check GPU memory if using CUDA
+# Check available GPU RAM (need ~20GB for local models)
 nvidia-smi
+
+# For VPS/OpenAI modes:
+# No local models needed - configure in Agent settings
 ```
 
 **Wake word not detected:**
@@ -627,31 +756,6 @@ For issues and questions:
 
 ---
 
-**Version**: 3.0.0
-**Last Updated**: March 2026
+**Version**: 1.0.0  
+**Last Updated**: February 2026  
 **Status**: Production Ready ✅
-
----
-
-## v3.0 Changelog
-
-### Memory
-- **Mycelium Layer implemented** — coordinate-graph memory system replaces flat prose injection. Expected 40–60% reduction in context token consumption. ⚠️ Integration tests pending before production enablement.
-- **Kyudo Layer implemented** — precision and security foundation for Mycelium. HyphaChannel typed transport (SYSTEM/USER/VERIFIED/EXTERNAL/UNTRUSTED), cell-wall zone permeability, and quorum-sensing threat response. Adversarial content cannot elevate its own channel trust level.
-
-### Voice & Audio
-- **TTS migrated to LuxTTS** — replaced Coqui TTS (Python 3.12-incompatible) with LuxTTS / ZipVoice. Supports voice cloning via `data/voice_clone_ref.wav` (3–5s reference recommended). Falls back to pyttsx3 SAPI5 if reference file is absent.
-- **STT migrated to RealtimeSTT** — replaced LFM audio model + manual VAD with RealtimeSTT (faster-whisper/tiny + silero-VAD). Fully offline, ~40MB model, CPU-friendly.
-- **Porcupine upgraded to v4.x** — `pvporcupine>=4.0.0` required for v4 `.ppn` model files. Existing `_PORCUPINE_NEEDS_ACCESS_KEY` guard handles v1.x and v4.x transparently.
-
-### UI / UX
-- **Dynamic window sizing** — Tauri window expands when ChatView or DashboardWing open. Wings are 2× their previous width. Window snaps back to 680×680 on idle or WheelView navigation.
-- **Double-click voice toggle** — IrisOrb double-click now correctly toggles voice (start if idle, stop if active).
-
-### Agent
-- **Duplicate user message bug fixed** — `agent_kernel.py` no longer appends the user message twice, resolving LM Studio 400 "No user query found" errors.
-- **Model alias mapping added** — `LFM2-8B-A1B`, `brain`, `LFM2.5-1.2B-Instruct`, `executor` are all valid model IDs; normalized internally to canonical VPS names.
-
-### Infrastructure
-- **WebSocket resilience hardened** — unlimited reconnect with capped exponential backoff (30s max), ±20% jitter, stability reset after 10s connected, send queue for messages during disconnect windows, sequence numbers on all outgoing messages, readiness check before connect attempt.
-- **Session race condition fixed** — `session_id` now passed directly from `main.py` to `iris_gateway.handle_message`, eliminating "No session found" errors under heartbeat-disconnect race.
