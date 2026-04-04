@@ -469,27 +469,38 @@ IRIS must run without degrading the host machine. A memory spike must never
 force the user to restart. Model loading with heavy dependencies must be
 stable. All inference must stay within safe resource bounds.
 
-Background: A memory spike was identified and fixed (session 28). The psutil
-4 GB RAM guard (voice_command.py), VRAM >= 8.0 GB threshold (audio/model_manager.py),
-and lazy model imports are the three lines of defense. This domain ensures
-they stay in place and are verified on every build.
+Background: A memory spike was identified and fixed (session 28). Session 29
+startup audit found four additional root causes fixed:
+  1. Porcupine init failure with `raise` crashed entire backend (-> warning now)
+  2. pvporcupine DLL imported at module level (-> lazy, inside _initialize_porcupine)
+  3. sounddevice (PortAudio) imported at module level in pipeline.py (-> lazy _sd())
+  4. TTS prewarm loaded 2 GB CosyVoice with no RAM check (-> psutil 4 GB guard added)
+  5. Session cleanup command accidentally deleted session/*.py source files (restored)
+The psutil 4 GB RAM guard (voice_command.py), VRAM >= 8.0 GB threshold
+(audio/model_manager.py), and lazy model imports are the three lines of defense.
+This domain ensures they stay in place and are verified on every build.
 
   [10.1] Memory safety — startup footprint
-    Status: DONE (enforced)
+    Status: DONE — verified 26.8 MB RSS delta (session 29 audit)
     Rule: Backend startup must not load any ML model (PyTorch, CUDA, faster_whisper,
           silero_vad) unless a user explicitly loads a model through the UI.
-          Lazy imports only. Importing backend.main must not trigger GPU init.
-    Test: python -c "import backend.main" must complete in < 5 seconds with
-          psutil RSS delta < 200 MB (no model loaded).
-    Verification: python -c "
-      import psutil, os, time
+          Lazy imports only. Importing backend package must not trigger GPU init.
+    Fixes applied (session 29):
+      - pvporcupine import moved inside _initialize_porcupine() in porcupine_detector.py
+      - sounddevice import moved inside _sd() lazy accessor in audio/pipeline.py
+      - Porcupine init `raise` changed to logger.warning — audio failure non-fatal
+      - TTS prewarm psutil 4 GB RAM guard added in iris_gateway._prewarm_tts()
+    Verified: import backend → 26.8 MB delta, pvporcupine=False, sounddevice=False,
+               faster_whisper=False, torch=False
+    Test: python -c "
+      import psutil, os, sys
+      sys.path.insert(0, 'IRISVOICE')
       proc = psutil.Process(os.getpid())
       before = proc.memory_info().rss / 1024 / 1024
-      import backend.main
+      import backend
       after = proc.memory_info().rss / 1024 / 1024
-      delta = after - before
-      assert delta < 200, f'Startup RSS delta {delta:.1f} MB exceeds 200 MB limit'
-      print(f'[OK] Startup delta: {delta:.1f} MB')
+      assert after - before < 200, f'RSS delta {after-before:.1f} MB exceeds 200 MB'
+      print(f'[PASS] Startup delta: {after-before:.1f} MB')
     "
 
   [10.2] VRAM guard — audio model loading

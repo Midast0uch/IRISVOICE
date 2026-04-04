@@ -115,8 +115,17 @@ class IRISGateway:
         # (e.g. _on_voice_result) that need to dispatch back to the event loop from
         # a background thread without calling asyncio.get_event_loop() in that thread.
         import threading
-        threading.Thread(target=self._prewarm_tts,
-                         daemon=True, name="tts-prewarm").start()
+        # Only start TTS prewarm if CosyVoice3 model files exist on disk.
+        # On fresh installs or CPU-only machines this avoids importing torch
+        # (~360 MB) for nothing.  The on-demand prewarm in _handle_voice()
+        # still acts as a safety net if the model appears later.
+        from pathlib import Path as _Path
+        _cosyvoice_model_dir = _Path(__file__).parent / "voice" / "pretrained_models" / "CosyVoice3-0.5B"
+        if _cosyvoice_model_dir.exists():
+            threading.Thread(target=self._prewarm_tts,
+                             daemon=True, name="tts-prewarm").start()
+        else:
+            self._tts_prewarmed = True  # No CosyVoice model to prewarm
 
     def set_main_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Capture the running event loop for background task dispatch.
@@ -1188,6 +1197,24 @@ class IRISGateway:
         try:
             import time as _time
             _time.sleep(6)  # let backend fully start before CosyVoice RAM load
+
+            # RAM safety check: CosyVoice3-0.5B needs ~2 GB.
+            # Skip prewarm if available RAM < 4 GB to prevent a memory spike
+            # that would degrade or crash the host system.
+            try:
+                import psutil as _psutil
+                _free_gb = _psutil.virtual_memory().available / (1024 ** 3)
+                if _free_gb < 4.0:
+                    self._logger.warning(
+                        f"[IRISGateway] TTS prewarm skipped — only {_free_gb:.1f} GB RAM free "
+                        "(need >= 4 GB for CosyVoice3). Will load on first TTS request instead."
+                    )
+                    self._tts_prewarmed = True
+                    return
+                self._logger.info(f"[IRISGateway] TTS prewarm: {_free_gb:.1f} GB RAM free — proceeding")
+            except Exception:
+                pass  # psutil unavailable — proceed with prewarm
+
             from .agent.tts import get_tts_manager
             tts = get_tts_manager()
             if tts.config.get("tts_voice") == "Built-in":
@@ -1195,7 +1222,7 @@ class IRISGateway:
                 return
             tts._warm_tts_pipeline()
             self._tts_prewarmed = True
-            self._logger.info("[IRISGateway] CosyVoice2 pipeline warmed up")
+            self._logger.info("[IRISGateway] CosyVoice3 pipeline warmed up")
         except Exception as e:
             self._logger.warning(
                 f"[IRISGateway] TTS pre-warm failed (non-fatal): {e}")

@@ -265,28 +265,31 @@ async def lifespan(app: FastAPI):
             else:
                 logger.debug(f"    - [WAKE WORD] Using custom config: {_wake_cfg.get_custom_model_path()}")
         except Exception as e:
-            logger.error(f"    [x] [WAKE WORD] Discovery failed: {e}")
-            raise
+            logger.warning(f"    [~] [WAKE WORD] Discovery failed (non-fatal): {e}")
         
         # ==========================================================================
         # PORCUPINE WAKE WORD INITIALIZATION WITH DIAGNOSTIC LOGGING
+        # Wake word failure is NON-FATAL — app still works, just no wake word.
+        # A bad access key, missing model, or audio driver issue must never crash
+        # the entire backend. The agent kernel, chat, and TTS all work without it.
         # ==========================================================================
         logger.info("  - Initializing Porcupine...")
         try:
             audio_engine.initialize_porcupine()   # reads phrase + sensitivity from WakeConfig
             logger.info("    [+] [PORCUPINE] Initialized with wake word config")
         except Exception as e:
-            logger.error(f"    [x] [PORCUPINE] Failed to initialize: {e}")
-            raise
-        
+            logger.warning(
+                f"    [~] [PORCUPINE] Wake word init failed (non-fatal — voice activation disabled): {e}"
+            )
+            # Do NOT raise — the app is fully usable without wake word detection.
+
         # Step 8: Register live-update callback for dynamic wake word changes
         try:
             from backend.agent.wake_config import get_wake_config
             get_wake_config().register_change_callback(audio_engine.reinitialize_porcupine)
             logger.info("    [+] [PORCUPINE] Live wake-word updates registered")
         except Exception as e:
-            logger.error(f"    [x] [PORCUPINE] Failed to register update callback: {e}")
-            raise
+            logger.warning(f"    [~] [PORCUPINE] Wake-word update callback failed (non-fatal): {e}")
         
         # Step 9: Start the AudioEngine so Porcupine frame detection runs
         start_time = datetime.now()

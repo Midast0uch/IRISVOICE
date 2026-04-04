@@ -8,7 +8,15 @@ from typing import Optional, Callable, List
 
 logger = logging.getLogger(__name__)
 import numpy as np
-import sounddevice as sd
+
+# sounddevice (PortAudio) is imported lazily inside methods to avoid loading the
+# PortAudio DLL at backend startup. On Windows, PortAudio can take 200-2000 ms
+# to initialize when there are many audio devices, USB audio, or Bluetooth audio.
+# The import cost is only paid when the audio pipeline first starts (user action).
+def _sd():
+    """Lazy accessor for sounddevice — loads PortAudio on first audio use."""
+    import sounddevice as _sounddevice
+    return _sounddevice
 
 
 class AudioPipeline:
@@ -93,7 +101,7 @@ class AudioPipeline:
 
         # --- Input stream (microphone / Porcupine) ---
         try:
-            self._input_stream = sd.InputStream(
+            self._input_stream = _sd().InputStream(
                 device=self.input_device,
                 channels=self.channels,
                 samplerate=self.sample_rate,
@@ -107,8 +115,8 @@ class AudioPipeline:
             self._input_stream = None
 
         # --- Output stream (TTS / beep playback) ---
-        # Output: use sd.play() per-chunk instead of a persistent OutputStream.
-        # sd.play() handles device format (mono→stereo), sample rate conversion,
+        # Output: use _sd().play() per-chunk instead of a persistent OutputStream.
+        # _sd().play() handles device format (mono→stereo), sample rate conversion,
         # and internal buffering automatically — no persistent stream needed.
         # Mark output_ok=True unconditionally; actual device errors surface at play time.
         output_ok = True
@@ -156,10 +164,10 @@ class AudioPipeline:
                     logger.error(f"[AudioPipeline] Frame listener error: {exc}")
     
     def play_audio(self, audio_data: np.ndarray, sample_rate: int = None):
-        """Play audio through the system default output device using sd.play().
+        """Play audio through the system default output device using _sd().play().
 
-        Uses sd.play() instead of a persistent OutputStream.write() because:
-        - sd.play() handles mono→stereo upmix, device sample-rate conversion in one step
+        Uses _sd().play() instead of a persistent OutputStream.write() because:
+        - _sd().play() handles mono→stereo upmix, device sample-rate conversion in one step
         - No persistent stream state to manage or get out of sync
         - Blocking=True keeps the threading model simple and gap-free
 
@@ -181,7 +189,7 @@ class AudioPipeline:
                 audio_float = audio_float * (0.85 / peak)
             audio_float = np.clip(audio_float, -1.0, 1.0)
 
-            sd.play(audio_float, samplerate=sr, device=self.output_device, blocking=True)
+            _sd().play(audio_float, samplerate=sr, device=self.output_device, blocking=True)
             logger.info(f"[AudioPipeline] play_audio: complete ({duration_ms}ms)")
         except Exception as e:
             logger.error(f"[AudioPipeline] Output error: {e}")
@@ -197,7 +205,7 @@ class AudioPipeline:
             self._input_stream.stop()
             self._input_stream.close()
             self._input_stream = None
-        # _output_stream is always None — playback uses sd.play() per chunk
+        # _output_stream is always None — playback uses _sd().play() per chunk
     
     @staticmethod
     def list_devices() -> List[dict]:
@@ -223,12 +231,12 @@ class AudioPipeline:
             "Primary Sound Driver",
         )
 
-        raw_devices = sd.query_devices()
+        raw_devices = _sd().query_devices()
         # key = first-31-chars of name (lowered), value = merged device dict
         seen: dict[str, dict] = {}
 
         for i in range(len(raw_devices)):
-            info = sd.query_devices(i)
+            info = _sd().query_devices(i)
             name: str = info["name"]
             is_input = info["max_input_channels"] > 0
             is_output = info["max_output_channels"] > 0

@@ -10,7 +10,6 @@ import inspect as _inspect
 import os
 import logging
 from typing import Optional, List, Tuple
-import pvporcupine
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -18,11 +17,19 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-# pvporcupine v1.x does not accept an access_key; v2.x+ requires one.
-# Detect at import time so both versions are supported transparently.
-_PORCUPINE_NEEDS_ACCESS_KEY: bool = (
-    'access_key' in _inspect.signature(pvporcupine.create).parameters
-)
+# pvporcupine is imported lazily inside _initialize_porcupine() to avoid loading
+# the native Picovoice DLL at backend startup. This shaves ~200 ms off startup
+# and means a missing/broken pvporcupine install never crashes the backend on import.
+_PORCUPINE_NEEDS_ACCESS_KEY: Optional[bool] = None  # resolved on first use
+
+
+def _get_porcupine_needs_access_key() -> bool:
+    """Lazy check for pvporcupine v2+ access_key requirement. Imports pvporcupine once."""
+    global _PORCUPINE_NEEDS_ACCESS_KEY
+    if _PORCUPINE_NEEDS_ACCESS_KEY is None:
+        import pvporcupine as _pv
+        _PORCUPINE_NEEDS_ACCESS_KEY = 'access_key' in _inspect.signature(_pv.create).parameters
+    return _PORCUPINE_NEEDS_ACCESS_KEY
 
 
 class PorcupineWakeWordDetector:
@@ -62,7 +69,7 @@ class PorcupineWakeWordDetector:
                           Higher values reduce false positives but may increase false negatives
         """
         # access_key is only required for pvporcupine v2+; v1.x works without one.
-        if _PORCUPINE_NEEDS_ACCESS_KEY:
+        if _get_porcupine_needs_access_key():
             self.access_key = access_key or os.getenv("PICOVOICE_ACCESS_KEY")
             if not self.access_key:
                 raise ValueError(
@@ -149,8 +156,11 @@ class PorcupineWakeWordDetector:
             logger.info(f"[PorcupineDetector] Total wake words: {len(keyword_paths) + len(keywords)}")
             logger.info(f"[PorcupineDetector] Total sensitivities: {len(self.sensitivities)}")
             
+            # Lazy import — pvporcupine DLL is only loaded when Porcupine actually initializes.
+            import pvporcupine as _pv
+
             # Build base kwargs — only include access_key for pvporcupine v2+
-            _ak: dict = {"access_key": self.access_key} if _PORCUPINE_NEEDS_ACCESS_KEY else {}
+            _ak: dict = {"access_key": self.access_key} if _get_porcupine_needs_access_key() else {}
 
             # Create Porcupine with appropriate parameters
             if keyword_paths and keywords:
@@ -163,7 +173,7 @@ class PorcupineWakeWordDetector:
                 logger.info(f"[PorcupineDetector] Sensitivities for paths: {sensitivities_for_paths}")
                 logger.info(f"[PorcupineDetector] Sensitivities for keywords: {sensitivities_for_keywords}")
 
-                self.porcupine = pvporcupine.create(
+                self.porcupine = _pv.create(
                     **_ak,
                     keyword_paths=keyword_paths,
                     keywords=keywords,
@@ -171,14 +181,14 @@ class PorcupineWakeWordDetector:
                 )
             elif keyword_paths:
                 # Only custom models
-                self.porcupine = pvporcupine.create(
+                self.porcupine = _pv.create(
                     **_ak,
                     keyword_paths=keyword_paths,
                     sensitivities=self.sensitivities
                 )
             else:
                 # Only built-in keywords
-                self.porcupine = pvporcupine.create(
+                self.porcupine = _pv.create(
                     **_ak,
                     keywords=keywords,
                     sensitivities=self.sensitivities
