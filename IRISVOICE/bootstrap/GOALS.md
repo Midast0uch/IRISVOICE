@@ -539,7 +539,7 @@ This domain ensures they stay in place and adds the missing model lifecycle prot
     Landmark: session_cleanup_on_startup
 
   [10.5] Pre-load resource validation — GGUF model loading
-    Status: NOT DONE
+    Status: DONE — backend/agent/local_model_manager.py _preflight_resource_check()
     Gap: load_model() in local_model_manager.py spawns the subprocess first and
          discovers it fails (OOM, no VRAM) only after the process crashes.
          No pre-flight check exists before Popen().
@@ -555,7 +555,7 @@ This domain ensures they stay in place and adds the missing model lifecycle prot
           immediately with an error event — no subprocess ever spawned.
 
   [10.6] Concurrent load guard
-    Status: NOT DONE
+    Status: DONE — asyncio.Lock (_load_lock) in LocalModelManager.load_model()
     Gap: No lock prevents two simultaneous load_model() calls. Two rapid "Load"
          clicks spawn two subprocesses, the first unload races the second load,
          and the manager ends up in an inconsistent state.
@@ -567,7 +567,8 @@ This domain ensures they stay in place and adds the missing model lifecycle prot
           the other returns False with a clear error. No orphan subprocess.
 
   [10.7] Clean model unload — kernel de-wire and subprocess death
-    Status: PARTIAL
+    Status: DONE — watchdog task in LocalModelManager; kernel.configure_openai_compat(None)
+            called in _handle_unload_local_model and crash_cb
     Gaps found in code audit:
       a) After unload_model(), the AgentKernel is still wired to port 8082.
          The next user message hits a dead endpoint and gets a silent error.
@@ -588,7 +589,7 @@ This domain ensures they stay in place and adds the missing model lifecycle prot
           should receive a local_model_status crashed event.
 
   [10.8] Clean model switch — no gap state
-    Status: NOT DONE
+    Status: DONE — "switching" broadcast in _handle_load_local_model before unload+load
     Gap: Model switch = unload + load. During the gap between the two, the
          frontend shows nothing and any queued user message hits a dead kernel.
          No "switching" transition state is broadcast.
@@ -606,7 +607,8 @@ This domain ensures they stay in place and adds the missing model lifecycle prot
           re-enables. No exception. No orphan process.
 
   [10.9] Inference settings hot-apply
-    Status: NOT DONE
+    Status: DONE — apply_inference_settings WS message handled in iris_gateway.py;
+            would_require_reload() in LocalModelManager decides reload vs. save-only
     Gap: When user changes n_ctx, n_batch, or profile in settings and clicks
          "Apply", there is no dedicated path. The only option is manual
          unload + reload, which is undiscoverable and leaves the user guessing.
@@ -625,7 +627,8 @@ This domain ensures they stay in place and adds the missing model lifecycle prot
           Never crashes. Never leaves model in inconsistent state.
 
   [10.10] TPS monitoring with gradient warning emission
-    Status: NOT DONE
+    Status: DONE — record_tps() in LocalModelManager called from _broadcast_inference_event;
+            rolling 3-window with threshold (8 tok/s GPU / 2 tok/s CPU), emits coordinate note
     Gap: [10.6] was listed as MONITORING but no code actually measures or
          enforces TPS. AgentKernel does not log tok/s after responses.
     Rule: After each _respond_direct() or DER loop completion:

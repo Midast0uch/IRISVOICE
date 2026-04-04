@@ -33,12 +33,9 @@ try:
 except ImportError:
     PSUTIL_AVAILABLE = False
 
-TORCH_AVAILABLE = False
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    pass
+# NOTE: torch is NOT imported at module level — it costs ~360 MB.
+# Imported lazily inside get_hardware_info() on first use.
+TORCH_AVAILABLE = False  # legacy flag — kept for backward compat, never set True at import
 
 # ── HuggingFace Hub (import-guarded) ──
 HF_HUB_AVAILABLE = False
@@ -175,14 +172,28 @@ class LocalModelManager:
         self._process: Optional[subprocess.Popen] = None
         self._current_model_path: Optional[str] = None
         self._current_profile: str = "balanced"
+        self._current_params: Dict[str, Any] = {}
         self._lock = threading.Lock()
+        # [10.6] Async lock — prevents concurrent load_model() calls racing
+        self._load_lock: Optional[asyncio.Lock] = None
         # Metadata cache: key = "path::mtime" -> parsed GGUF metadata dict
         # Persists across calls — only re-parsed when file changes (mtime check)
         self._metadata_cache: Dict[str, Dict[str, Any]] = {}
         # Hardware info cache — invalidated on model load/unload (VRAM changes)
         self._hw_cache: Optional[Dict[str, Any]] = None
         self._hw_cache_time: float = 0.0
+        # [10.7] Watchdog task — detects subprocess crash after load
+        self._watchdog_task: Optional[asyncio.Task] = None
+        # [10.10] TPS rolling window — last 3 measurements for gradient warning
+        self._tps_window: list = []
+        self._tps_slow_warned: bool = False
         self._register_cleanup()
+
+    def _get_load_lock(self) -> asyncio.Lock:
+        """Lazy-create asyncio.Lock (must be created in async context)."""
+        if self._load_lock is None:
+            self._load_lock = asyncio.Lock()
+        return self._load_lock
 
     # ─────────────────────────────────────────────────────────────────────────
     # Hardware info
@@ -216,12 +227,20 @@ class LocalModelManager:
             vm = psutil.virtual_memory()
             info["ram_total_gb"] = round(vm.total / (1024 ** 3), 1)
 
-        if TORCH_AVAILABLE and torch.cuda.is_available():
+        # Lazy torch import — avoids 360 MB cost at startup.
+        try:
+            import torch as _torch
+            _has_cuda = _torch.cuda.is_available()
+        except ImportError:
+            _torch = None
+            _has_cuda = False
+
+        if _has_cuda:
             try:
-                props = torch.cuda.get_device_properties(0)
+                props = _torch.cuda.get_device_properties(0)
                 total = props.total_memory / (1024 ** 3)
-                allocated = torch.cuda.memory_allocated(0) / (1024 ** 3)
-                reserved = torch.cuda.memory_reserved(0) / (1024 ** 3)
+                allocated = _torch.cuda.memory_allocated(0) / (1024 ** 3)
+                reserved = _torch.cuda.memory_reserved(0) / (1024 ** 3)
                 used = max(allocated, reserved)
                 info.update({
                     "cuda_available": True,
@@ -510,120 +529,309 @@ class LocalModelManager:
 
         return None
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # [10.5] Pre-load resource validation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _preflight_resource_check(
+        self, model_path: str, params: Dict[str, Any]
+    ) -> Optional[str]:
+        """
+        Estimate VRAM/RAM requirements before spawning the subprocess.
+        Returns an error string if resources are insufficient, None if OK.
+        Fails open (returns None) if hardware info is unavailable —
+        we never block a load due to a failed check.
+        """
+        try:
+            path = Path(model_path)
+            if not path.exists():
+                return f"Model file not found: {model_path}"
+
+            file_gb = path.stat().st_size / (1024 ** 3)
+
+            hw = self.get_hardware_info()
+            n_gpu = params.get("n_gpu_layers", -1)
+            n_ctx = params.get("n_ctx", 8192)
+
+            # Estimate KV cache RAM: ~2 bytes * n_ctx * n_layers (rough: ctx/1000 GB)
+            kv_cache_gb = (n_ctx / 1000.0) * 0.1
+
+            if n_gpu != 0 and hw.get("cuda_available"):
+                # GPU load: model fits in VRAM + KV cache overhead
+                vram_needed = file_gb * 1.05 + kv_cache_gb
+                vram_free = hw.get("vram_free_gb", 0.0)
+                if vram_free > 0 and vram_needed > vram_free * 0.92:
+                    return (
+                        f"Insufficient VRAM: model needs ~{vram_needed:.1f} GB, "
+                        f"{vram_free:.1f} GB free. Try a smaller quantization or "
+                        f"reduce n_ctx."
+                    )
+            else:
+                # CPU load: model + KV cache must fit in RAM
+                ram_needed = file_gb + kv_cache_gb
+                if PSUTIL_AVAILABLE:
+                    ram_free = psutil.virtual_memory().available / (1024 ** 3)
+                    if ram_needed > ram_free * 0.85:
+                        return (
+                            f"Insufficient RAM: model needs ~{ram_needed:.1f} GB, "
+                            f"{ram_free:.1f} GB free. Close other applications or "
+                            f"use a smaller model."
+                        )
+        except Exception as e:
+            logger.debug(f"[LocalModelManager] Pre-flight check skipped: {e}")
+        return None  # fail open — never block load due to check error
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # [10.7] Subprocess death watchdog
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _run_watchdog(self, crash_cb=None) -> None:
+        """
+        Poll is_loaded() every 5 seconds after a successful model load.
+        If the subprocess exits unexpectedly (OOM, segfault, etc.), call crash_cb
+        so the gateway can broadcast a crashed event to the frontend.
+        """
+        try:
+            while True:
+                await asyncio.sleep(5)
+                if not self.is_loaded():
+                    # Process died — reset state
+                    with self._lock:
+                        self._current_model_path = None
+                        self._current_profile = "balanced"
+                        self._current_params = {}
+                    self._invalidate_hw_cache()
+                    logger.warning("[LocalModelManager] Model server exited unexpectedly")
+                    if crash_cb:
+                        try:
+                            await crash_cb()
+                        except Exception as e:
+                            logger.debug(f"[LocalModelManager] crash_cb failed: {e}")
+                    break
+        except asyncio.CancelledError:
+            pass  # normal — watchdog cancelled by unload_model()
+
+    def _stop_watchdog(self) -> None:
+        """Cancel the watchdog task if running."""
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # [10.9] Settings comparison — decide if reload is required
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def would_require_reload(self, new_profile: str, custom_params: Dict[str, Any]) -> bool:
+        """
+        Return True if applying new_profile + custom_params requires a subprocess
+        restart (n_ctx or n_gpu_layers differ from current loaded params).
+        Return False if only hot-applicable params changed (e.g. n_batch only).
+        """
+        new_params = self.get_profile_params(new_profile, custom_params)
+        reload_keys = {"n_ctx", "n_gpu_layers"}
+        for k in reload_keys:
+            if new_params.get(k) != self._current_params.get(k):
+                return True
+        return False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # [10.10] TPS recording + gradient warning
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def record_tps(self, tps: float, gpu_active: bool = True) -> None:
+        """
+        Record a TPS measurement. If the last 3 are all below the threshold,
+        emit a gradient warning to the coordinate graph (fire-and-forget).
+        Threshold: 8 tok/s GPU, 2 tok/s CPU.
+        """
+        threshold = 8.0 if gpu_active else 2.0
+        self._tps_window.append(tps)
+        if len(self._tps_window) > 3:
+            self._tps_window.pop(0)
+
+        if (
+            len(self._tps_window) >= 3
+            and all(t < threshold for t in self._tps_window)
+            and not self._tps_slow_warned
+        ):
+            self._tps_slow_warned = True
+            avg = sum(self._tps_window) / len(self._tps_window)
+            logger.warning(
+                f"[LocalModelManager] TPS degraded: {avg:.1f} tok/s avg "
+                f"(threshold {threshold:.0f}) for last 3 responses"
+            )
+            # Best-effort write to coordinate graph
+            try:
+                import subprocess as _sp
+                import sys as _sys
+                _sp.Popen(
+                    [_sys.executable, "bootstrap/record_event.py",
+                     "--type", "note",
+                     "--desc", f"TPS degraded: {avg:.1f} tok/s avg for 3 consecutive responses "
+                               f"(threshold {threshold:.0f} tok/s {'GPU' if gpu_active else 'CPU'})"],
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                    cwd=str(IRISVOICE_ROOT),
+                )
+            except Exception:
+                pass
+        elif tps >= threshold:
+            # Reset: fast response clears the warning window
+            self._tps_slow_warned = False
+
     async def load_model(
         self,
         model_path: str,
         profile: str = "balanced",
         custom_params: Dict[str, Any] = None,
         progress_cb=None,  # async callable(event: dict) — optional progress hook
+        crash_cb=None,     # async callable() — called if subprocess dies after load
     ) -> bool:
         """
         Stop existing subprocess (if any), spawn new llama-cpp-python server.
         Streams incremental load progress via progress_cb if provided.
         Returns True when /health responds 200.
+
+        [10.6] Held under _load_lock — concurrent calls return False immediately.
+        [10.5] Pre-flight resource check before spawning subprocess.
+        [10.7] Starts watchdog task after successful load.
         """
-        await self.unload_model()
-        self._invalidate_hw_cache()  # VRAM state will change during load
+        # [10.6] Concurrent load guard
+        lock = self._get_load_lock()
+        if lock.locked():
+            logger.warning("[LocalModelManager] Load already in progress — rejecting concurrent request")
+            if progress_cb:
+                try:
+                    await progress_cb({
+                        "phase": "error", "pct": 0,
+                        "msg": "Load already in progress — wait for current load to complete",
+                    })
+                except Exception:
+                    pass
+            return False
 
-        params = self.get_profile_params(profile, custom_params)
-        cmd = self._build_server_cmd(model_path, params)
-        logger.info(f"[LocalModelManager] Starting llama-cpp-python server: {' '.join(cmd)}")
+        async with lock:
+            self._stop_watchdog()  # cancel any existing watchdog
+            await self.unload_model()
+            self._invalidate_hw_cache()  # VRAM state will change during load
 
-        loop = asyncio.get_event_loop()
+            params = self.get_profile_params(profile, custom_params or {})
 
-        with self._lock:
-            try:
-                self._process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,  # line-buffered so we get progress lines as they arrive
-                )
-                self._current_model_path = model_path
-                self._current_profile = profile
-            except FileNotFoundError:
-                logger.error("[LocalModelManager] llama-cpp-python not installed or python not found")
+            # [10.5] Pre-flight resource check — fail fast before spawning
+            preflight_error = self._preflight_resource_check(model_path, params)
+            if preflight_error:
+                logger.error(f"[LocalModelManager] Pre-flight failed: {preflight_error}")
+                if progress_cb:
+                    try:
+                        await progress_cb({"phase": "error", "pct": 0, "msg": preflight_error})
+                    except Exception:
+                        pass
                 return False
 
-        # ── Background thread reads stdout and pushes parsed events to queue ──
-        progress_queue: asyncio.Queue = asyncio.Queue()
+            cmd = self._build_server_cmd(model_path, params)
+            logger.info(f"[LocalModelManager] Starting llama-cpp-python server: {' '.join(cmd)}")
 
-        def _read_stdout() -> None:
-            try:
-                proc = self._process
-                if proc is None or proc.stdout is None:
-                    return
-                for raw_line in proc.stdout:
-                    line = raw_line.rstrip()
-                    if not line:
-                        continue
-                    logger.debug(f"[llama-server] {line}")
-                    event = self._parse_load_progress(line)
-                    if event:
-                        loop.call_soon_threadsafe(progress_queue.put_nowait, event)
-            except Exception as exc:
-                logger.debug(f"[LocalModelManager] stdout reader exited: {exc}")
-            finally:
-                loop.call_soon_threadsafe(progress_queue.put_nowait, None)  # sentinel
+            loop = asyncio.get_event_loop()
 
-        reader = threading.Thread(target=_read_stdout, daemon=True, name="llm-stdout-reader")
-        reader.start()
+            with self._lock:
+                try:
+                    self._process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,  # line-buffered so we get progress lines as they arrive
+                    )
+                    self._current_model_path = model_path
+                    self._current_profile = profile
+                    self._current_params = params  # [10.9] track for hot-apply comparison
+                except FileNotFoundError:
+                    logger.error("[LocalModelManager] llama-cpp-python not installed or python not found")
+                    return False
 
-        # ── Async wait loop — drain progress queue + poll for server ready ──
-        deadline = loop.time() + 180.0  # 3 min max (large models on slow HW need time)
-        ready = False
-        last_pct = 0
+            # ── Background thread reads stdout and pushes parsed events to queue ──
+            progress_queue: asyncio.Queue = asyncio.Queue()
 
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            while loop.time() < deadline:
-                if not self.is_loaded():
-                    break  # process died
+            def _read_stdout() -> None:
+                try:
+                    proc = self._process
+                    if proc is None or proc.stdout is None:
+                        return
+                    for raw_line in proc.stdout:
+                        line = raw_line.rstrip()
+                        if not line:
+                            continue
+                        logger.debug(f"[llama-server] {line}")
+                        event = self._parse_load_progress(line)
+                        if event:
+                            loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+                except Exception as exc:
+                    logger.debug(f"[LocalModelManager] stdout reader exited: {exc}")
+                finally:
+                    loop.call_soon_threadsafe(progress_queue.put_nowait, None)  # sentinel
 
-                # Drain any queued progress events before polling health
-                while True:
-                    try:
-                        event = progress_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    if event is None:
-                        break  # stdout EOF
-                    if progress_cb and event.get("pct", 0) > last_pct:
-                        last_pct = event["pct"]
+            reader = threading.Thread(target=_read_stdout, daemon=True, name="llm-stdout-reader")
+            reader.start()
+
+            # ── Async wait loop — drain progress queue + poll for server ready ──
+            deadline = loop.time() + 180.0  # 3 min max (large models on slow HW need time)
+            ready = False
+            last_pct = 0
+
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                while loop.time() < deadline:
+                    if not self.is_loaded():
+                        break  # process died
+
+                    # Drain any queued progress events before polling health
+                    while True:
                         try:
-                            await progress_cb(event)
+                            event = progress_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        if event is None:
+                            break  # stdout EOF
+                        if progress_cb and event.get("pct", 0) > last_pct:
+                            last_pct = event["pct"]
+                            try:
+                                await progress_cb(event)
+                            except Exception:
+                                pass
+
+                    # Poll health endpoint
+                    for path in ("/health", "/v1/models"):
+                        try:
+                            r = await client.get(f"http://127.0.0.1:{self.PORT}{path}")
+                            if r.status_code == 200:
+                                ready = True
+                                break
                         except Exception:
                             pass
 
-                # Poll health endpoint
-                for path in ("/health", "/v1/models"):
-                    try:
-                        r = await client.get(f"http://127.0.0.1:{self.PORT}{path}")
-                        if r.status_code == 200:
-                            ready = True
-                            break
-                    except Exception:
-                        pass
+                    if ready:
+                        break
+                    await asyncio.sleep(0.5)
 
-                if ready:
-                    break
-                await asyncio.sleep(0.5)
-
-        if ready:
-            filename = Path(model_path).name
-            self.save_model_settings(filename, {
-                "last_profile": profile,
-                "last_ctx": params.get("n_ctx", 8192),
-                "last_gpu_layers": params.get("n_gpu_layers", -1),
-            })
-            self._invalidate_hw_cache()  # refresh VRAM after model occupies GPU
-            logger.info(f"[LocalModelManager] Model ready at {self.ENDPOINT}")
-        else:
-            logger.error("[LocalModelManager] Timed out waiting for server to start")
-            await self.unload_model()
-        return ready
+            if ready:
+                filename = Path(model_path).name
+                self.save_model_settings(filename, {
+                    "last_profile": profile,
+                    "last_ctx": params.get("n_ctx", 8192),
+                    "last_gpu_layers": params.get("n_gpu_layers", -1),
+                })
+                self._invalidate_hw_cache()  # refresh VRAM after model occupies GPU
+                # [10.7] Start watchdog — detects subprocess death after load
+                self._watchdog_task = asyncio.ensure_future(
+                    self._run_watchdog(crash_cb=crash_cb)
+                )
+                logger.info(f"[LocalModelManager] Model ready at {self.ENDPOINT}")
+            else:
+                logger.error("[LocalModelManager] Timed out waiting for server to start")
+                await self.unload_model()
+            return ready
 
     async def unload_model(self) -> bool:
+        # [10.7] Cancel watchdog before stopping subprocess
+        self._stop_watchdog()
         with self._lock:
             if self._process is None:
                 return True
@@ -639,6 +847,7 @@ class LocalModelManager:
             finally:
                 self._process = None
                 self._current_model_path = None
+                self._current_params = {}  # [10.9] reset param tracking
         self._invalidate_hw_cache()
         logger.info("[LocalModelManager] Model unloaded")
         return True

@@ -908,6 +908,17 @@ class AgentKernel:
                 )
             except RuntimeError:
                 pass  # no running event loop in this thread
+
+            # [10.10] Feed TPS into LocalModelManager's rolling window for gradient warnings
+            try:
+                from backend.agent.local_model_manager import get_local_model_manager
+                mgr = get_local_model_manager()
+                if mgr.is_loaded():
+                    hw = mgr.get_hardware_info()
+                    gpu_active = hw.get("cuda_available", False)
+                    mgr.record_tps(tps, gpu_active=gpu_active)
+            except Exception:
+                pass  # never block the response
         except Exception:
             pass  # never block the response
 

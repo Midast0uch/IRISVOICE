@@ -248,6 +248,9 @@ class IRISGateway:
             elif msg_type == "unload_local_model":
                 await self._handle_unload_local_model(session_id, client_id, message)
 
+            elif msg_type == "apply_inference_settings":
+                await self._handle_apply_inference_settings(session_id, client_id, message)
+
             elif msg_type == "get_local_model_status":
                 await self._handle_get_local_model_status(session_id, client_id, message)
 
@@ -3404,6 +3407,27 @@ class IRISGateway:
             })
             return
 
+        # [10.8] Broadcast "switching" state if a model is already loaded
+        mgr_pre = None
+        try:
+            from .agent.local_model_manager import get_local_model_manager as _get_mgr
+            mgr_pre = _get_mgr()
+            if mgr_pre.is_loaded():
+                import time as _t
+                await self._ws_manager.broadcast_to_session(session_id, {
+                    "type": "local_model_loading",
+                    "payload": {
+                        "status": "switching",
+                        "from_model": mgr_pre.get_status().get("model_path", ""),
+                        "to_model": model_path,
+                        "profile": profile,
+                        "pct": 0,
+                        "msg": "Switching model — finishing current requests...",
+                    },
+                })
+        except Exception:
+            pass
+
         await self._ws_manager.send_to_client(client_id, {
             "type": "local_model_loading",
             "payload": {"status": "starting", "model_path": model_path, "profile": profile, "pct": 0},
@@ -3430,7 +3454,28 @@ class IRISGateway:
                 except Exception:
                     pass
 
-            ok = await mgr.load_model(model_path, profile, custom_params, progress_cb=_progress_cb)
+            # [10.7] Crash callback — watchdog calls this if subprocess dies after load
+            async def _crash_cb() -> None:
+                try:
+                    await self._ws_manager.broadcast_to_session(session_id, {
+                        "type": "local_model_status",
+                        "payload": {
+                            "loaded": False, "model_path": None, "profile": None,
+                            "status": "crashed",
+                            "error": "Model server exited unexpectedly",
+                        },
+                    })
+                    # De-wire kernel after crash
+                    from .agent import get_agent_kernel
+                    kernel = get_agent_kernel(session_id)
+                    kernel.configure_openai_compat(None)
+                except Exception:
+                    pass
+
+            ok = await mgr.load_model(
+                model_path, profile, custom_params,
+                progress_cb=_progress_cb, crash_cb=_crash_cb,
+            )
             status = "ready" if ok else "error"
             payload_out = {"status": status, "model_path": model_path, "profile": profile}
             if not ok:
@@ -3476,22 +3521,31 @@ class IRISGateway:
     async def _handle_unload_local_model(self, session_id: str, client_id: str, message: dict) -> None:
         """Stop the iris_local model server subprocess.
 
-        Does NOT reset the kernel endpoint — that is the responsibility of the user
-        explicitly switching to a different provider (lmstudio, api, etc.) in settings.
-        Resetting here would silently route queries to LM Studio, which is wrong for
-        users who chose iris_local and have no LM Studio running.
+        [10.7] Also de-wires the kernel so it does not keep hitting the dead :8082
+        endpoint after unload. Kernel provider reset to None — the user must explicitly
+        choose a new provider before sending the next message.
         """
         from .agent.local_model_manager import get_local_model_manager
+        import time as _time
         try:
             mgr = get_local_model_manager()
             status_before = mgr.get_status()
             model_path_before = status_before.get("model_path") if isinstance(status_before, dict) else None
             await mgr.unload_model()
+
+            # [10.7] De-wire the kernel — prevent stale requests to dead :8082 endpoint
+            try:
+                from .agent import get_agent_kernel
+                kernel = get_agent_kernel(session_id)
+                kernel.configure_openai_compat(None)
+                self._logger.info(f"[iris_local] Kernel de-wired after unload (session {session_id})")
+            except Exception as kw_err:
+                self._logger.debug(f"[iris_local] Kernel de-wire skipped: {kw_err}")
+
             await self._ws_manager.send_to_client(client_id, {
                 "type": "local_model_status",
                 "payload": {"loaded": False, "model_path": None, "profile": None},
             })
-            import time as _time
             await self._ws_manager.broadcast_to_session(session_id, {
                 "type": "model_load_event",
                 "payload": {
@@ -3503,6 +3557,123 @@ class IRISGateway:
             })
         except Exception as e:
             self._logger.error(f"[LocalModel] unload error: {e}")
+
+    async def _handle_apply_inference_settings(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """
+        [10.9] Apply new inference settings to the loaded model.
+        If the new params require a subprocess restart (n_ctx, n_gpu_layers changed),
+        performs a clean unload + reload with the new settings.
+        If only hot-applicable params changed (n_batch etc.), acknowledges without reload.
+        """
+        from .agent.local_model_manager import get_local_model_manager
+        import time as _time
+        payload = message.get("payload", message)
+        new_profile = payload.get("profile", "balanced")
+        custom_params = payload.get("custom_params", {})
+
+        try:
+            mgr = get_local_model_manager()
+            status = mgr.get_status()
+
+            if not status.get("loaded"):
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "inference_settings_result",
+                    "payload": {"status": "error", "error": "No model loaded"},
+                })
+                return
+
+            current_model = status.get("model_path", "")
+            needs_reload = mgr.would_require_reload(new_profile, custom_params)
+
+            if not needs_reload:
+                # Hot-apply: n_ctx and n_gpu_layers unchanged — acknowledge only
+                # (llama-cpp-python server does not expose a live settings endpoint,
+                # so we save the new params for the next load and confirm to the user)
+                mgr.save_model_settings(
+                    __import__("pathlib").Path(current_model).name,
+                    {"last_profile": new_profile},
+                )
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "inference_settings_result",
+                    "payload": {
+                        "status": "applied",
+                        "profile": new_profile,
+                        "reload_required": False,
+                        "msg": "Settings saved. Will apply on next model load.",
+                    },
+                })
+                return
+
+            # Reload required (n_ctx or n_gpu_layers changed)
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "local_model_loading",
+                "payload": {
+                    "status": "reloading_for_settings",
+                    "profile": new_profile,
+                    "model_path": current_model,
+                    "pct": 0,
+                    "msg": "Applying new inference settings — reloading model...",
+                },
+            })
+
+            async def _progress_cb(event: dict) -> None:
+                try:
+                    await self._ws_manager.send_to_client(client_id, {
+                        "type": "local_model_loading",
+                        "payload": {
+                            "status": "loading",
+                            "phase": event.get("phase", "loading"),
+                            "pct": event.get("pct", 0),
+                            "msg": event.get("msg", ""),
+                            "model_path": current_model,
+                            "profile": new_profile,
+                        },
+                    })
+                except Exception:
+                    pass
+
+            async def _crash_cb() -> None:
+                await self._ws_manager.broadcast_to_session(session_id, {
+                    "type": "local_model_status",
+                    "payload": {
+                        "loaded": False, "model_path": None, "profile": None,
+                        "status": "crashed",
+                        "error": "Model server exited unexpectedly",
+                    },
+                })
+
+            ok = await mgr.load_model(
+                current_model, new_profile, custom_params,
+                progress_cb=_progress_cb, crash_cb=_crash_cb,
+            )
+
+            if ok:
+                try:
+                    from .agent import get_agent_kernel
+                    kernel = get_agent_kernel(session_id)
+                    _base = mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
+                    kernel.configure_openai_compat(_base, provider_name="iris_local")
+                except Exception as kw_err:
+                    self._logger.warning(f"[iris_local] Kernel re-wire failed: {kw_err}")
+
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "inference_settings_result",
+                "payload": {
+                    "status": "applied" if ok else "error",
+                    "profile": new_profile,
+                    "reload_required": True,
+                    "error": None if ok else "Model reload failed after settings change",
+                },
+            })
+
+        except Exception as e:
+            self._logger.error(f"[LocalModel] apply_inference_settings error: {e}")
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "inference_settings_result",
+                "payload": {"status": "error", "error": str(e)},
+            })
 
     async def _handle_get_local_model_status(self, session_id: str, client_id: str, message: dict) -> None:
         """Return current load status of the GGUF server."""
