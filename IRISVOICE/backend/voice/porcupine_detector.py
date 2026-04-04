@@ -68,25 +68,41 @@ class PorcupineWakeWordDetector:
             sensitivities: List of sensitivity values (0.0-1.0) for each wake word
                           Higher values reduce false positives but may increase false negatives
         """
+        # _disabled is set to True when Porcupine cannot start (missing key, no wake
+        # words, or engine init failure).  All public methods check this and no-op
+        # gracefully so the rest of the audio pipeline keeps running.
+        self._disabled = False
+        self._disabled_reason: str = ""
+
         # access_key is only required for pvporcupine v2+; v1.x works without one.
         if _get_porcupine_needs_access_key():
             self.access_key = access_key or os.getenv("PICOVOICE_ACCESS_KEY")
             if not self.access_key:
-                raise ValueError(
-                    "Picovoice access key not provided. "
-                    "Set PICOVOICE_ACCESS_KEY environment variable or pass access_key parameter. "
+                self._disabled = True
+                self._disabled_reason = (
+                    "Picovoice access key not set. "
+                    "Set PICOVOICE_ACCESS_KEY env var or pass access_key= to enable wake word detection. "
                     "Get a free key at https://console.picovoice.ai/"
                 )
+                logger.warning(f"[PorcupineDetector] Disabled — {self._disabled_reason}")
+                self.porcupine = None
+                self.access_key = None
+                self.custom_model_path = custom_model_path
+                self.builtin_keywords = builtin_keywords or []
+                self.keyword_paths = []
+                self.wake_word_names = []
+                self.sensitivities = []
+                return
         else:
             self.access_key = None  # pvporcupine v1.x does not use an access key
-        
+
         self.custom_model_path = custom_model_path
         self.builtin_keywords = builtin_keywords or []
-        
+
         # Build keyword paths and model paths
         self.keyword_paths = []
         self.wake_word_names = []
-        
+
         # Add custom model if provided
         if custom_model_path and os.path.exists(custom_model_path):
             self.keyword_paths.append(custom_model_path)
@@ -96,7 +112,7 @@ class PorcupineWakeWordDetector:
             logger.info(f"[PorcupineDetector] Added custom wake word: '{model_name}'")
         elif custom_model_path:
             logger.warning(f"[PorcupineDetector] Custom model not found: {custom_model_path}")
-        
+
         # Add built-in keywords
         for keyword in self.builtin_keywords:
             keyword_lower = keyword.lower()
@@ -108,23 +124,31 @@ class PorcupineWakeWordDetector:
                 logger.info(f"[PorcupineDetector] Added built-in keyword: '{keyword_lower}'")
             else:
                 logger.warning(f"[PorcupineDetector] Unknown built-in keyword: '{keyword}'")
-        
+
         if not self.keyword_paths:
-            raise ValueError(
-                "No wake words configured. Provide either custom_model_path or builtin_keywords."
+            self._disabled = True
+            self._disabled_reason = (
+                "No wake words configured. "
+                "Provide custom_model_path= or builtin_keywords= to enable wake word detection."
             )
-        
+            logger.warning(f"[PorcupineDetector] Disabled — {self._disabled_reason}")
+            self.porcupine = None
+            self.sensitivities = []
+            return
+
         # Set sensitivities (default to 0.5 for each wake word)
         if sensitivities:
             if len(sensitivities) != len(self.keyword_paths):
-                raise ValueError(
-                    f"Number of sensitivities ({len(sensitivities)}) must match "
-                    f"number of wake words ({len(self.keyword_paths)})"
+                logger.warning(
+                    f"[PorcupineDetector] Sensitivity count mismatch "
+                    f"({len(sensitivities)} vs {len(self.keyword_paths)}); using defaults."
                 )
-            self.sensitivities = sensitivities
+                self.sensitivities = [0.5] * len(self.keyword_paths)
+            else:
+                self.sensitivities = sensitivities
         else:
             self.sensitivities = [0.5] * len(self.keyword_paths)
-        
+
         # Initialize Porcupine
         self.porcupine = None
         self._initialize_porcupine()
@@ -202,8 +226,14 @@ class PorcupineWakeWordDetector:
             
         except Exception as e:
             logger.error(f"[PorcupineDetector] Failed to initialize Porcupine: {e}")
-            raise
+            self._disabled = True
+            self._disabled_reason = str(e)
+            self.porcupine = None
     
+    def is_enabled(self) -> bool:
+        """Return True if Porcupine initialised successfully and is ready to process frames."""
+        return not self._disabled and self.porcupine is not None
+
     @property
     def sample_rate(self) -> int:
         """Get the required sample rate for audio input."""
@@ -226,8 +256,7 @@ class PorcupineWakeWordDetector:
             - wake_word_detected: True if a wake word was detected
             - wake_word_name: Name of the detected wake word, or None if not detected
         """
-        if not self.porcupine:
-            logger.error("[PorcupineDetector] Porcupine not initialized")
+        if self._disabled or not self.porcupine:
             return False, None
         
         if len(audio_frame) != self.frame_length:

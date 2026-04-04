@@ -181,6 +181,10 @@ class AgentKernel:
         # configure_lmstudio() whenever the endpoint URL changes.
         self._lmstudio_client: Optional[Any] = None
 
+        # Main event loop — captured during startup so background threads can
+        # dispatch coroutines via run_coroutine_threadsafe.
+        self._broadcast_loop: Optional[Any] = None
+
         # Initialize components
         self._initialize_components()
 
@@ -310,6 +314,10 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] ModeDetector unavailable: {_md_err}")
 
         logger.info("[AgentKernel] Initialization complete")
+
+    def set_main_loop(self, loop: Any) -> None:
+        """Capture the running event loop so background threads can dispatch broadcasts."""
+        self._broadcast_loop = loop
 
     def set_memory_interface(self, memory_interface: Any) -> None:
         """
@@ -537,29 +545,50 @@ class AgentKernel:
             self._vps_config = VPSConfig(enabled=False)
             self._vps_gateway = None
 
+    @staticmethod
+    def _normalise_endpoint(endpoint: Optional[str]) -> str:
+        """Strip trailing slash and trailing /v1 from any endpoint URL.
+
+        Handles three common paste formats:
+          http://localhost:1234        -> http://localhost:1234
+          http://localhost:1234/       -> http://localhost:1234
+          http://localhost:1234/v1     -> http://localhost:1234
+          http://localhost:1234/v1/    -> http://localhost:1234
+        None or empty string returns "".
+        _get_lmstudio_client() always appends /v1 itself — never double-append.
+        """
+        if not endpoint:
+            return ""
+        ep = endpoint.rstrip("/")
+        if ep.endswith("/v1"):
+            ep = ep[:-3]
+        return ep
+
     def configure_lmstudio(self, endpoint: str) -> None:
         """Store the OpenAI-compatible endpoint for inference routing.
 
         Named configure_lmstudio for backward compatibility but accepts any
         OpenAI-compatible server URL (LM Studio, llamafile, vllm, llama-server, etc.).
         """
-        self._lmstudio_endpoint = endpoint.rstrip("/")
+        self._lmstudio_endpoint = self._normalise_endpoint(endpoint)
         self._lmstudio_client = None  # invalidate cached client — endpoint changed
         logger.info(
             f"[AgentKernel] OpenAI-compatible endpoint configured: {self._lmstudio_endpoint}")
 
-    def configure_openai_compat(self, endpoint: str, provider_name: str = "openai_compatible") -> None:
+    def configure_openai_compat(self, endpoint: Optional[str], provider_name: str = "openai_compatible") -> None:
         """Configure any OpenAI-compatible inference server.
 
-        Use this when the user picks a custom server that isn't specifically
-        LM Studio — e.g. llamafile, vllm, llama-server HTTP mode, koboldcpp, etc.
-        Sets both the endpoint and the provider name so inference routing works.
+        Passing endpoint=None resets the kernel to an uninitialized state (e.g. after
+        model unload). Safe to call with None — never raises AttributeError.
         """
-        self._lmstudio_endpoint = endpoint.rstrip("/")
+        self._lmstudio_endpoint = self._normalise_endpoint(endpoint)
         self._lmstudio_client = None
-        self._model_provider = provider_name
-        logger.info(
-            f"[AgentKernel] {provider_name} endpoint configured: {self._lmstudio_endpoint}")
+        self._model_provider = provider_name if endpoint else "uninitialized"
+        if endpoint:
+            logger.info(
+                f"[AgentKernel] {provider_name} endpoint configured: {self._lmstudio_endpoint}")
+        else:
+            logger.info("[AgentKernel] Endpoint cleared — kernel is uninitialized")
 
     def configure_ollama(self, endpoint: str) -> None:
         """Configure the Ollama native API endpoint (provider == 'local')."""
@@ -907,7 +936,13 @@ class AgentKernel:
                     ws.broadcast_to_session(self.session_id, payload)
                 )
             except RuntimeError:
-                pass  # no running event loop in this thread
+                # Called from a thread pool — use the captured main loop instead.
+                captured = self._broadcast_loop
+                if captured is not None and captured.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        ws.broadcast_to_session(self.session_id, payload),
+                        captured,
+                    )
 
             # [10.10] Feed TPS into LocalModelManager's rolling window for gradient warnings
             try:
@@ -2681,11 +2716,31 @@ Respond with a JSON object:
             step_success: bool = True
             try:
                 if item.tool and self._tool_bridge is not None:
-                    raw = self._tool_bridge.execute_tool(
-                        tool_name=item.tool,
-                        params=item.params,
-                        session_id=_session,
-                    )
+                    # execute_tool is async — use asyncio.run() since _execute_plan_der
+                    # runs inside run_in_executor (a thread pool thread), making
+                    # asyncio.run() safe here. Same pattern as the ReAct loop (line ~1484).
+                    try:
+                        raw = asyncio.run(
+                            self._tool_bridge.execute_tool(
+                                tool_name=item.tool,
+                                params=item.params,
+                                session_id=_session,
+                            )
+                        )
+                    except RuntimeError as _rte:
+                        # asyncio.run() fails if an event loop is already running in
+                        # this thread (shouldn't happen in executor, but guard anyway)
+                        logger.warning(f"[DER] asyncio.run failed for tool {item.tool}: {_rte} — using executor")
+                        import concurrent.futures as _cf
+                        with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                            raw = _pool.submit(
+                                asyncio.run,
+                                self._tool_bridge.execute_tool(
+                                    tool_name=item.tool,
+                                    params=item.params,
+                                    session_id=_session,
+                                )
+                            ).result(timeout=60)
                     step_result = str(raw) if raw is not None else ""
                 else:
                     step_result = self._run_step_direct(item, context_package, _session)

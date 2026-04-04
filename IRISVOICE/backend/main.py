@@ -311,14 +311,22 @@ async def lifespan(app: FastAPI):
         logger.info("  - Initializing agent kernel...")
         try:
             from backend.agent import get_agent_kernel
-            from backend.agent.tool_bridge import get_agent_tool_bridge
+            from backend.agent.tool_bridge import initialize_agent_tools
             agent_kernel = get_agent_kernel()
-            
-            # Initialize tool bridge and wire to kernel
-            agent_kernel._tool_bridge = get_agent_tool_bridge()
-            
+
+            # Initialize tool bridge (async — calls bridge.initialize() which wires
+            # all MCP servers: vision, file_manager, browser, etc.).
+            # get_agent_tool_bridge() alone only creates the instance but never calls
+            # initialize(), leaving _mcp_servers empty and all tool calls failing.
+            tool_bridge = await initialize_agent_tools()
+            agent_kernel._tool_bridge = tool_bridge
+
+            # Capture main loop so background threads can dispatch WS broadcasts.
+            agent_kernel.set_main_loop(asyncio.get_running_loop())
+
             app.state.agent_kernel = agent_kernel
             logger.info("    [+] [AGENT KERNEL] Initialized successfully")
+            logger.info("    [+] [TOOL BRIDGE] MCP servers initialized")
             logger.info("  - LAZY LOADING ACTIVE: Models will NOT be loaded automatically")
             logger.info("  - Models will load only when user selects Local Model inference mode")
         except Exception as e:

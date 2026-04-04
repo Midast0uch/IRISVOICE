@@ -1115,13 +1115,15 @@ class IRISGateway:
 
             def _execute_agent():
                 def chunk_callback(chunk: str):
-                    asyncio.run_coroutine_threadsafe(
-                        self._ws_manager.send_to_client(client_id, {
-                            "type": "chat_chunk",
-                            "payload": {"chunk": chunk}
-                        }),
-                        self._main_loop
-                    )
+                    _loop = self._main_loop
+                    if _loop and _loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.send_to_client(client_id, {
+                                "type": "chat_chunk",
+                                "payload": {"chunk": chunk}
+                            }),
+                            _loop
+                        )
 
                 resp = agent_kernel.process_text_message(
                     enriched,
@@ -1507,17 +1509,22 @@ class IRISGateway:
                 _t_exec_start = _time.perf_counter()
 
                 def _execute_agent():
-                    try:
-                        response = agent_kernel.process_text_message(
-                            text,
-                            session_id=session_id,
-                            chunk_callback=lambda chunk: asyncio.run_coroutine_threadsafe(
+                    def _chunk_cb(chunk: str):
+                        _loop = self._main_loop
+                        if _loop and _loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
                                 self._ws_manager.send_to_client(client_id, {
                                     "type": "chat_chunk",
                                     "payload": {"chunk": chunk}
                                 }),
-                                self._main_loop
+                                _loop
                             )
+
+                    try:
+                        response = agent_kernel.process_text_message(
+                            text,
+                            session_id=session_id,
+                            chunk_callback=_chunk_cb
                         )
                     except Exception as e:
                         self._logger.error(f"[Chat] Agent processing error: {e}")

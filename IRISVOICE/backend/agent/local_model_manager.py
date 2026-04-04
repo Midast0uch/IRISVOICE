@@ -730,7 +730,7 @@ class LocalModelManager:
             cmd = self._build_server_cmd(model_path, params)
             logger.info(f"[LocalModelManager] Starting llama-cpp-python server: {' '.join(cmd)}")
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             with self._lock:
                 try:
@@ -1075,7 +1075,7 @@ class LocalModelManager:
 
     async def _wait_for_ready(self, timeout: float = 90.0) -> bool:
         # Probe both /health (ik_llama.cpp) and /v1/models (llama-cpp-python)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         async with httpx.AsyncClient(timeout=2.0) as client:
             while loop.time() < deadline:
@@ -1113,7 +1113,7 @@ class LocalModelManager:
 
         yield {"status": "starting", "progress_pct": 0, "filename": filename}
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             path = await loop.run_in_executor(
                 None,
