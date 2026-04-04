@@ -1,257 +1,174 @@
-CLAUDE.md — IRIS Project
+CLAUDE.md
 Primary instructions for Claude Code.
-This file never needs manual updates — hooks fetch live state from the database.
+Hooks keep the coordinate graph current automatically — no manual DB updates needed.
+
+---
+
 WHAT THIS PROJECT IS
-IRIS is a local AI assistant: Python FastAPI backend, Next.js frontend, Tauri desktop.
-The agent brain is a two-brain DER Loop (Director · Explorer · Reviewer) with a
-trailing crystallizer. Memory is the Mycelium coordinate graph.
+Read bootstrap/GOALS.md for the full roadmap, current gate, and domain breakdown.
 
-Build objective: Ship IRIS to production quality across all functional domains.
-Full roadmap: bootstrap/GOALS.md
+---
 
-STEP 0 — RUN THIS BEFORE ANYTHING ELSE
-bash
-python bootstrap/session_start.py
-Reads the live coordinate database. Tells you current gate, permanent landmarks,
-gradient warnings, active contracts, and where the last session left off.
-Do not plan, do not write code, do not read files until you have run this.
+STEP 0 — SESSION START (automatic via hook)
+The UserPromptSubmit hook runs bootstrap/session_start.py on every prompt.
+It loads current gate, landmarks, warnings, contracts, and auto-syncs any
+git commits not yet in the coordinate graph.
+
+You do not need to run session_start.py manually. The hook handles it.
+
+If you need a fresh read mid-session:
+  python bootstrap/session_start.py --compact
+
+---
 
 STEP 1 — CHECK AVAILABLE WORK
-bash
-python bootstrap/agent_context.py
-Shows what's available to build, what other agents are currently working on,
-and relevant warnings. Use this to decide what to work on this session.
+  python bootstrap/agent_context.py
+Shows what is available to build, what is in progress, and relevant warnings.
+Use this to decide what to work on this session.
+
+---
 
 STEP 1.5 — NAVIGATE THE GRAPH BEFORE TOUCHING ANY FILE
-The graph is not a log. It is a navigation instrument with three layers:
+The graph is a navigation instrument with three layers:
 
   SEMANTIC (what IS true — compressed, always current):
     python bootstrap/query_graph.py --file path/to/file.py
     Shows: topology primitive (CORE/ACQUIRING/EXPLORING/EVOLVING/ORBIT),
-           Z-trajectory (direction of travel: ^ rising / v falling / -> stable),
-           confidence, pheromone routes (strongest test-reinforced edges),
-           and test coverage. Read this before touching the file.
+           Z-trajectory (direction of travel: rising / falling / stable),
+           confidence, pheromone routes, and test coverage.
+    Read this before touching a file.
 
-  PHEROMONE ROUTES (where to go):
+  PHEROMONE ROUTES (where to go next):
     python bootstrap/query_graph.py --routes
-    Shows the globally strongest edges — paths reinforced by repeated passing tests.
+    Globally strongest edges — reinforced by repeated passing tests.
     High weight = high confidence. Follow these first.
 
   HIGH-SIGNAL FAILURES (what not to repeat):
     python bootstrap/query_graph.py --failures
-    Failures scored >= 0.50 are informative — they revealed architectural constraints.
+    Failures scored >= 0.50 revealed architectural constraints.
     Read these before approaching an area that has failed before.
 
   EPISODIC (what happened — secondary):
-    python bootstrap/query_graph.py --recent     # last N events
-    python bootstrap/query_graph.py --summary    # full graph stats + crystallization
-    python bootstrap/query_graph.py --agent X    # specific agent trail
+    python bootstrap/query_graph.py --recent
+    python bootstrap/query_graph.py --summary
+    python bootstrap/query_graph.py --agent X
 
-To claim a work item for yourself:
-
-bash
-python bootstrap/agent_context.py --claim claude_main
-For parallel sub-agents, each gets a unique ID:
-
-bash
-python bootstrap/agent_context.py --claim claude_sub_001
-python bootstrap/agent_context.py --claim claude_sub_002
-PLATFORM — WINDOWS
-Use Windows-compatible commands. Never use bash syntax for the user to run.
-
-USE:   python script.py
-USE:   python -m pytest backend/tests/ -v
-USE:   New-Item file.py -ItemType File          # create empty file
-USE:   Get-ChildItem -Recurse -Filter "*.py"    # find files
-USE:   Get-Content file.py | Select-Object -First 50
-NEVER: touch / ls -la / grep -r / cat | head
-PRODUCTION ROADMAP — CHECK CURRENT PRIORITIES
-bash
-# Always check current priorities first:
-python bootstrap/session_start.py
-The full production roadmap lives in bootstrap/GOALS.md — 9 domains:
-  Domain 1: DER Loop Gaps           Domain 6: Frontend Production Quality
-  Domain 2: Voice Pipeline          Domain 7: Backend Reliability
-  Domain 3: Vision System           Domain 8: Distribution & Installation
-  Domain 4: Skills Library          Domain 9: Advanced Features
-  Domain 5: Mycelium Memory
+---
 
 HOW TO BUILD ANYTHING
-READ domain spec → READ existing file → BUILD → RUN spec test → PASS → RECORD landmark
-                                                               → FAIL → fix code → retry
-Read the relevant GOALS.md domain section before touching any file. Each domain lists
-what to build, the acceptance criteria, and what the test command is.
+READ domain spec in GOALS.md -> READ existing file -> BUILD -> RUN spec test
+  PASS -> record landmark
+  FAIL -> fix code, retry. The test does not change.
 
-THE TEST RULE — ABSOLUTE, NON-NEGOTIABLE
-Run the spec's requirements test against your implementation. Never write new tests to match your code. Never modify existing tests to make them pass.
+THE TEST RULE — ABSOLUTE
+Run the spec's test against your implementation.
+Never write new tests to match your code.
+Never modify existing tests to make them pass.
+The test is the requirement.
 
-The test is the requirement. If it fails, the implementation is incomplete.
-Fix the code. The test does not change.
+  # Complete a work item after passing:
+  python bootstrap/agent_context.py --complete ITEM_ID AGENT_ID success \
+    --landmark "name:description:file/path.py:test command"
 
-bash
-# Example — run spec's test for der_loop:
-python -m pytest backend/tests/test_der_loop.py -v
+  # Record a failure that revealed something:
+  python bootstrap/agent_context.py --complete ITEM_ID AGENT_ID failure \
+    --warning "space:what failed:approach tried:what worked instead"
 
-# PASS — record landmark:
-python bootstrap/agent_context.py --complete ITEM_ID AGENT_ID success \
-  --landmark "der_loop_foundation:DER loop classes built:backend/agent/der_loop.py:python -m pytest backend/tests/test_der_loop.py -v"
+---
 
-# FAIL — record warning, fix code:
-python bootstrap/agent_context.py --complete ITEM_ID AGENT_ID failure \
-  --warning "domain:ReviewVerdict import failed:circular import:moved to separate enums file"
+RECORDING CODE ACTIONS (builds the pheromone trail)
 
-STEP 2.5 — RECORD EVERY CODE ACTION (this builds the pheromone trail)
-After editing a file:
+Git commits are auto-recorded by session_start.py on every prompt.
+You only need to manually record events that are NOT part of a commit:
+
+  # After editing a file (if not yet committed):
   python bootstrap/record_event.py --type file_edit --file path/to/file.py --desc "what changed and why"
 
-After creating a file:
-  python bootstrap/record_event.py --type file_create --file path/to/new_file.py --desc "what this file does"
+  # After creating a file:
+  python bootstrap/record_event.py --type file_create --file path/to/file.py --desc "what this file does"
 
-After a test passes:
-  python bootstrap/record_event.py --type test_run --file backend/tests/test_foo.py --result pass --covers backend/foo.py
+  # After a test passes:
+  python bootstrap/record_event.py --type test_run --file tests/test_foo.py --result pass --covers src/foo.py
 
-After a test FAILS but reveals something important (circular dep, missing contract, etc.):
-  python bootstrap/record_event.py --type test_run --file backend/tests/test_foo.py --result fail \
-    --score 0.70 --desc "what the failure revealed — why the next agent needs to know this"
+  # After a test fails but reveals something important:
+  python bootstrap/record_event.py --type test_run --file tests/test_foo.py --result fail \
+    --score 0.70 --desc "what the failure revealed"
+  # --score 0.70 = high-signal failure (>= 0.50). Appears in --failures.
+  # Pheromone trail weakens on this edge but the signal is preserved.
 
-  --score 0.70 marks this as a high-signal failure (score >= 0.50).
-  It appears in --failures. The pheromone trail weakens on this edge, but the
-  signal is preserved. This is not a log entry — it is a future-success candidate.
+  # After an architectural decision:
+  python bootstrap/record_event.py --type note --desc "why you chose X over Y"
+  # Notes encode WHY. The semantic layer compresses these over time.
 
-After an architectural decision:
-  python bootstrap/record_event.py --type note --desc "why you chose X over Y — full reasoning"
-
-  Notes encode WHY. The semantic layer compresses these into coordinates over time.
-  The next agent reads this and does not re-litigate already-reasoned decisions.
+---
 
 PARALLEL SUB-AGENT PROTOCOL
-Claude Code sub-agents can work on different Gate 1 items simultaneously.
-The database is WAL-mode SQLite — safe for multiple concurrent processes.
+The database is WAL-mode SQLite — safe for concurrent processes.
 Work claiming is atomic — two agents cannot take the same item.
 
-Orchestrator (main agent) workflow:
+  # Orchestrator: see what is available and in progress
+  python bootstrap/agent_context.py
+  python bootstrap/agent_context.py --poll   # check sub-agent completions
 
-bash
-# See what's available and in progress:
-python bootstrap/agent_context.py
+  # Sub-agent workflow:
+  python bootstrap/agent_context.py --claim agent_001
+  # ... build the feature ...
+  python bootstrap/agent_context.py --complete ITEM_ID agent_001 success \
+    --landmark "name:desc:file:test_command"
+  python bootstrap/agent_context.py --heartbeat agent_001  # every 60s on long tasks
 
-# Poll for sub-agent completions:
-python bootstrap/agent_context.py --poll
+---
 
-# After polling, check if gate advanced:
-python bootstrap/session_start.py --gate
-Sub-agent workflow:
-
-bash
-# Claim work:
-python bootstrap/agent_context.py --claim claude_sub_001
-
-# Read the spec file and test command printed by claim
-# Build the feature
-# Run the test
-# Complete:
-python bootstrap/agent_context.py --complete ITEM_ID claude_sub_001 success \
-  --landmark "name:desc:file:test_command"
-
-# Heartbeat for long tasks (every 60s prevents claim expiry):
-python bootstrap/agent_context.py --heartbeat claude_sub_001
-Domain constraint: The database enforces domain ordering where applicable. Agents self-organize through the work queue.
-
-CRITICAL IMPLEMENTATION RULES
-These come from the spec. Violating them breaks the architecture.
-
-python
-# 1. Every Mycelium call wrapped in try/except
-try:
-    self.memory.mycelium_ingest_tool_call(...)
-except Exception:
-    pass  # never blocks user response
-
-# 2. Classification BEFORE context assembly (fixed order)
-task_class, space_subset = self._task_classifier.classify(raw_input)  # FIRST
-context_package, is_mature = self.memory.get_task_context_package(...) # SECOND
-
-# 3. Reviewer always falls back to PASS on failure
-except Exception:
-    return ReviewVerdict.PASS, None  # never blocks Explorer
-
-# 4. Safe defaults on all new _plan_task() parameters
-def _plan_task(self, text, context,
-               is_mature: bool = False,
-               task_class: str = "full",
-               context_package=None):
-
-# 5. ASCII markers only — no Unicode (encoding errors on Windows)
-"[+]"  "[x]"  "[~]"  "[ ]"  — never ✓ ✗
-
-# 6. SPEC mode bypasses DER loop — routes to SpecEngine directly
-
-# 7. Token budget not cycle count
-DER_TOKEN_BUDGETS = {"implement":40000,"debug":30000,...}
-DER_EMERGENCY_STOP = 200  # last resort only
-
-# 8. Write lock on all Mycelium writes (two loops share one graph)
-conn.execute("BEGIN IMMEDIATE")  # in _safe_write()
-LOOP PREVENTION
-Same error appearing twice in a row = change approach before the third attempt.
-
-bash
-# Before third attempt, record what's failing:
-python bootstrap/mid_session_snapshot.py \
-  --warn "space:what is looping:approach being repeated:what to try instead"
 CONTEXT WINDOW MANAGEMENT
+
 At ~50k tokens used:
+  python bootstrap/mid_session_snapshot.py --progress "what was just completed"
+Then condense. After condensing, the hook re-runs session_start automatically.
 
-bash
-python bootstrap/mid_session_snapshot.py --progress "what was just completed"
-Then condense. After condensing:
+Loop prevention — same error twice in a row = change approach:
+  python bootstrap/mid_session_snapshot.py \
+    --warn "space:what is looping:approach being repeated:what to try instead"
 
-bash
-python bootstrap/session_start.py --compact
-At session end:
+Session end is handled automatically by the Stop hook:
+  - Saves mid-session snapshot
+  - Runs update_coordinates.py --auto to close the session in the graph
+You do not need to run update_coordinates.py manually.
 
-bash
-python bootstrap/update_coordinates.py --auto \
-  --tasks "comma,separated,tasks" \
-  [--landmark "name:desc:file:test"] \
-  [--warning "space:failure:approach:correction"]
-SPEC / DOMAIN QUICK REFERENCE
-Production roadmap (all domains):  bootstrap/GOALS.md
-DER loop documentation:            docs/DER_LOOP_MYCELIUM.md
-DER loop classes/design:           specs/agent_loop_design.md (if present)
-DER loop build tasks:              specs/agent_loop_tasks.md (if present)
-Mode system:                       specs/director_mode_system.md (if present)
-Architecture contracts:            specs/IRIS_Swarm_PRD_v9.md (if present)
+---
+
 SAFETY RAILS
-Never delete/overwrite files without reading them first
-Never git push, git reset --hard without explicit confirmation
-Never pip install or npm install without checking first
-Never hardcode credentials — environment variables only
-Never access paths outside IRISVOICE/
+Never delete or overwrite files without reading them first.
+Never git push or git reset --hard without explicit user confirmation.
+Never pip install or npm install without checking first.
+Never hardcode credentials — environment variables only.
 Prefix risky commands with SAFE-CHECK: and wait for confirmation.
 
+---
+
 WHAT DONE LOOKS LIKE
-cargo tauri build completes without errors
-Built app launches
-Task received through app's own interface
-Response from IRIS backend — not Claude Code
-Coordinate store transferred to IRISVOICE/data/memory.db (same schema, no migration)
 
 The coordinate graph is complete when:
   python bootstrap/query_graph.py --summary shows:
     - Events recorded for every file touched
-    - Pheromone edges with weight > 1.0 on all major test connections
+    - Pheromone edges with weight > 1.0 on major test connections
     - Near-crystallization candidates on the most-used files
-  python bootstrap/session_start.py shows MYCELIUM: confidence >= 0.85
+  python bootstrap/session_start.py shows confidence >= 0.85
   python bootstrap/query_graph.py --routes shows the architecture's settled paths
 
-The three layers should all be present at completion:
-  EPISODIC: code_events for every build action taken
-  SEMANTIC: file_node confidence + Z-trajectory + edge weights across the graph
-  LANDMARK: 17+ permanent landmarks — verified features that never decay
+The three layers should all be present:
+  EPISODIC:  code_events for every build action
+  SEMANTIC:  file_node confidence + Z-trajectory + edge weights
+  LANDMARK:  permanent landmarks for every verified feature
 
-At that point, bootstrap/coordinates.db transfers to data/memory.db.
-The application's Mycelium runtime reads the same graph the build agents wrote.
-The build memory IS the app memory. Same schema. Same coordinate system. Always was.
-IRIS — CLAUDE.md Hooks keep this file current. Database keeps the memory. Read spec. Build. Run spec test. Record what passes.
+When the project reaches its completion condition (defined in GOALS.md),
+bootstrap/coordinates.db transfers to the application's runtime memory store.
+Same schema. No migration. The build memory becomes the app memory.
 
+---
+
+SPEC / DOMAIN QUICK REFERENCE
+Production roadmap:     bootstrap/GOALS.md
+Graph queries:          python bootstrap/query_graph.py --help
+Work queue:             python bootstrap/agent_context.py --help
+Event recording:        python bootstrap/record_event.py --help
+Session update:         python bootstrap/update_coordinates.py --help

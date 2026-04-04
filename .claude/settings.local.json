@@ -109,7 +109,21 @@
       "Bash(1 python:*)",
       "Bash(python bootstrap/mid_session_snapshot.py --progress \"created DER loop docs, fixed midsession script filename, rewrote GOALS.md as production roadmap\")",
       "Bash(ls /c/Users/midas/Desktop/dev/.claude/worktrees/flamboyant-cartwright/*.md)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr:*)",
+      "Bash(where gh:*)",
+      "Bash(winget list:*)",
+      "Bash(winget install:*)",
+      "Bash(export PATH=\"$PATH:/c/Program Files/GitHub CLI\")",
+      "Bash(gh --version)",
+      "Bash(gh auth:*)",
+      "Bash(python bootstrap/query_graph.py --failures)",
+      "Bash(python bootstrap/query_graph.py --file scripts/paint_iris_demo.py)",
+      "Bash(python -c \"import json; d=json.load\\(open\\(''.claude/settings.local.json''\\)\\); print\\(''[+] JSON valid''\\); print\\(''Stop hooks:'', len\\(d[''hooks''][''Stop''][0][''hooks'']\\)\\); print\\(''UserPromptSubmit hooks:'', len\\(d[''hooks''][''UserPromptSubmit''][0][''hooks'']\\)\\)\")",
+      "Bash(dir \"C:\\\\Users\\\\midas\\\\Desktop\\\\dev\\\\.claude\\\\worktrees\\\\flamboyant-cartwright\\\\IRISVOICE\\\\bootstrap\" /B)",
+      "Bash(grep -i \"iris\\\\|windows\\\\|tauri\\\\|C:\\\\\\\\Users\\\\|IRISVOICE\\\\|rtx\\\\|lmstudio\" \"C:\\\\Users\\\\midas\\\\Desktop\\\\dev\\\\.claude\\\\worktrees\\\\flamboyant-cartwright\\\\IRISVOICE\\\\CLAUDE.md\")"
     ]
   },
   "hooks": {
@@ -130,9 +144,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python -c \"import subprocess; subprocess.run(['python','bootstrap/mid_session_snapshot.py','--progress','auto-snapshot on stop'],capture_output=True,text=True,cwd='IRISVOICE',timeout=30)\"",
-            "timeout": 35,
-            "statusMessage": "Saving IRIS mid-session snapshot..."
+            "command": "python -c \"import subprocess; subprocess.run(['python','bootstrap/mid_session_snapshot.py','--progress','auto-snapshot on stop'],capture_output=True,text=True,cwd='IRISVOICE',timeout=30); subprocess.run(['python','bootstrap/update_coordinates.py','--auto','--tasks','auto-session-close'],capture_output=True,text=True,cwd='IRISVOICE',timeout=30)\"",
+            "timeout": 70,
+            "statusMessage": "Saving IRIS snapshot + updating coordinate graph..."
           }
         ]
       }

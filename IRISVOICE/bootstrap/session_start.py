@@ -19,10 +19,94 @@ Roo Code custom instruction:
 import sys
 import os
 import json
+import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bootstrap.coordinates import CoordinateStore, LANDMARK_THRESHOLD
+
+
+def auto_sync_commits(store: CoordinateStore, root_dir: str):
+    """
+    Scan the last 10 git commits and record any not yet tracked in code_events.
+    Uses the commit SHA in the detail JSON field for idempotency —
+    re-running session_start never double-records the same commit.
+
+    Fires silently on every UserPromptSubmit so the DB stays current
+    without Claude needing to remember to call record_event.py manually.
+    """
+    try:
+        # Get last 10 commits: SHA + subject
+        log = subprocess.run(
+            ["git", "log", "-10", "--pretty=format:%H|%s"],
+            capture_output=True, text=True, cwd=root_dir, timeout=8
+        )
+        if log.returncode != 0 or not log.stdout.strip():
+            return
+
+        commits = []
+        for line in log.stdout.strip().splitlines():
+            parts = line.split("|", 1)
+            if len(parts) == 2:
+                commits.append({"sha": parts[0].strip(), "msg": parts[1].strip()})
+
+        if not commits:
+            return
+
+        # Fetch already-recorded commit SHAs from detail field
+        with store._conn() as conn:
+            rows = conn.execute(
+                "SELECT detail FROM code_events "
+                "WHERE event_type = 'git_commit' AND detail IS NOT NULL"
+            ).fetchall()
+
+        recorded_shas = set()
+        for row in rows:
+            try:
+                d = json.loads(row["detail"])
+                sha = d.get("commit_sha")
+                if sha:
+                    recorded_shas.add(sha)
+            except Exception:
+                pass
+
+        # Record any commits not yet tracked
+        for commit in commits:
+            sha = commit["sha"]
+            msg = commit["msg"]
+
+            if sha in recorded_shas:
+                continue  # already tracked — skip
+
+            # Get files changed in this commit
+            files_result = subprocess.run(
+                ["git", "show", "--name-only", "--pretty=format:", sha],
+                capture_output=True, text=True, cwd=root_dir, timeout=8
+            )
+            changed_files = [
+                f.strip() for f in files_result.stdout.strip().splitlines()
+                if f.strip()
+            ]
+
+            # Record git_commit event with SHA embedded in detail
+            store.record_code_event(
+                agent_id="auto_sync",
+                event_type="git_commit",
+                description=msg,
+                detail={"commit_sha": sha},
+            )
+
+            # Record file_edit for every file in this commit
+            for fp in changed_files:
+                store.record_code_event(
+                    agent_id="auto_sync",
+                    event_type="file_edit",
+                    description=msg,
+                    file_path=fp,
+                )
+
+    except Exception:
+        pass  # never block session load
 
 
 def get_current_gate(store: CoordinateStore) -> tuple[int, str]:
@@ -354,6 +438,11 @@ if __name__ == "__main__":
         sys.exit(0)
 
     store = CoordinateStore(db_path)
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # IRISVOICE/
+
+    # Auto-sync: record any git commits not yet in code_events (idempotent, silent)
+    if "--no-sync" not in sys.argv:
+        auto_sync_commits(store, root_dir)
 
     if "--compact" in sys.argv:
         print_compact_state(store)
