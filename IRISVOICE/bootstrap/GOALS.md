@@ -489,8 +489,9 @@ Do not start these until Domains 1-5 are complete.
 
 DOMAIN 10 — PERFORMANCE & MEMORY RELIABILITY
 IRIS must run without degrading the host machine. A memory spike must never
-force the user to restart. Model loading with heavy dependencies must be
-stable. All inference must stay within safe resource bounds.
+force the user to restart. Model loading, switching, and unloading must be
+clean — no orphan processes, no stale kernel state, no silent crashes.
+All inference must stay within safe resource bounds at all times.
 
 Background: A memory spike was identified and fixed (session 28). Session 29
 startup audit found four additional root causes fixed:
@@ -499,74 +500,155 @@ startup audit found four additional root causes fixed:
   3. sounddevice (PortAudio) imported at module level in pipeline.py (-> lazy _sd())
   4. TTS prewarm loaded 2 GB CosyVoice with no RAM check (-> psutil 4 GB guard added)
   5. Session cleanup command accidentally deleted session/*.py source files (restored)
-The psutil 4 GB RAM guard (voice_command.py), VRAM >= 8.0 GB threshold
-(audio/model_manager.py), and lazy model imports are the three lines of defense.
-This domain ensures they stay in place and are verified on every build.
+Three lines of defense in place: psutil RAM guard, VRAM threshold check, lazy imports.
+This domain ensures they stay in place and adds the missing model lifecycle protections.
 
   [10.1] Memory safety — startup footprint
     Status: DONE — verified 26.8 MB RSS delta (session 29 audit)
-    Rule: Backend startup must not load any ML model (PyTorch, CUDA, faster_whisper,
-          silero_vad) unless a user explicitly loads a model through the UI.
-          Lazy imports only. Importing backend package must not trigger GPU init.
-    Fixes applied (session 29):
-      - pvporcupine import moved inside _initialize_porcupine() in porcupine_detector.py
-      - sounddevice import moved inside _sd() lazy accessor in audio/pipeline.py
-      - Porcupine init `raise` changed to logger.warning — audio failure non-fatal
-      - TTS prewarm psutil 4 GB RAM guard added in iris_gateway._prewarm_tts()
+    Rule: Backend startup must not load any ML model unless user explicitly loads
+          one through the UI. Lazy imports only. No GPU init at import time.
     Verified: import backend → 26.8 MB delta, pvporcupine=False, sounddevice=False,
                faster_whisper=False, torch=False
-    Test: python -c "
-      import psutil, os, sys
-      sys.path.insert(0, 'IRISVOICE')
-      proc = psutil.Process(os.getpid())
-      before = proc.memory_info().rss / 1024 / 1024
-      import backend
-      after = proc.memory_info().rss / 1024 / 1024
-      assert after - before < 200, f'RSS delta {after-before:.1f} MB exceeds 200 MB'
-      print(f'[PASS] Startup delta: {after-before:.1f} MB')
-    "
+    Regression test (run after any backend dependency change):
+      python -c "
+        import psutil, os, sys
+        sys.path.insert(0, 'IRISVOICE')
+        proc = psutil.Process(os.getpid())
+        before = proc.memory_info().rss / 1024 / 1024
+        import backend
+        after = proc.memory_info().rss / 1024 / 1024
+        assert after - before < 200, f'FAIL: RSS delta {after-before:.1f} MB > 200 MB'
+        print(f'[PASS] Startup delta: {after-before:.1f} MB')
+      "
 
   [10.2] VRAM guard — audio model loading
     Status: DONE — backend/audio/model_manager.py
-    Rule: Never load audio models onto GPU when free VRAM < 8.0 GB.
-          Falls back to CPU. VRAM is checked at load time, not at startup.
+    Rule: Never load audio models onto GPU when free VRAM < 8.0 GB. CPU fallback.
     Test: python -m pytest backend/tests/test_model_manager.py::TestVRAMThreshold -v
 
   [10.3] RAM guard — voice transcription
     Status: DONE — backend/audio/voice_command.py _transcribe_with_fallback()
     Rule: psutil 4 GB RAM check before loading native audio model.
-          On low RAM: falls through to speech_recognition (Google Web Speech API).
+          Low RAM falls through to Google Web Speech API.
     Test: python -m pytest backend/tests/test_voice_command.py::TestVoiceCommandFallback -v
 
   [10.4] Session cleanup — UUID session directories
-    Status: DONE (cleaned session 28)
-    Rule: backend/sessions/ must not accumulate unbounded UUID directories.
-          Only session_iris and session_iris_integration are permanent.
-          All other session dirs should be pruned at backend startup if older
-          than 7 days (or on manual cleanup).
-    Fix: Add a startup cleanup sweep in backend/main.py lifespan that removes
-         session dirs older than 7 days, skipping session_iris*.
+    Status: DONE — backend/main.py startup sweep
+    Rule: backend/sessions/ pruned at startup. Dirs older than 7 days removed.
+          session_iris* dirs are permanent and never pruned.
     Landmark: session_cleanup_on_startup
 
-  [10.5] Model loading with heavy dependencies
-    Status: MONITORING
-    Rule: Loading gguf models via llama-cpp-python or ik_llama.cpp must not
-          cause a hard memory spike. n_ctx must be validated against available
-          RAM before loading. Model load must be cancelable (cancel_load flag).
-    VRAM budget: Never exceed 85% available VRAM.
-    RAM budget: Model RAM (weights + KV cache) must not exceed 75% available RAM.
-    Test: Verify LocalModelManager.load_model() checks free_ram before allocating.
-          If free_ram < model_required_ram, reject with clear error — never OOM.
+  [10.5] Pre-load resource validation — GGUF model loading
+    Status: NOT DONE
+    Gap: load_model() in local_model_manager.py spawns the subprocess first and
+         discovers it fails (OOM, no VRAM) only after the process crashes.
+         No pre-flight check exists before Popen().
+    Rule: Before spawning the llama-cpp server, validate:
+          - Estimate model VRAM from file size (rough: file_size_bytes * 1.1)
+          - Free VRAM must be >= estimated_vram (from psutil/nvidia-smi)
+          - Free RAM must be >= model_size * 0.5 (for CPU layers + KV cache)
+          - If either check fails: send local_model_loading {status: "error",
+            error: "Insufficient VRAM/RAM — model requires ~Xgb, Ygb available"}
+          - Never spawn the subprocess if the pre-flight fails
+    File: backend/agent/local_model_manager.py → load_model() before Popen()
+    Test: Mock available VRAM below model size, verify load_model returns False
+          immediately with an error event — no subprocess ever spawned.
 
-  [10.6] TPS target — inference throughput
-    Status: MONITORING
-    Target: >= 8 tok/s for 4B Q4_K_M model on GPU (RTX class hardware).
-            >= 2 tok/s for CPU-only fallback.
-    Measurement: AgentKernel logs tok/s after each plan_task completion.
-                 If tok/s < target for 3 consecutive requests, emit gradient warning.
+  [10.6] Concurrent load guard
+    Status: NOT DONE
+    Gap: No lock prevents two simultaneous load_model() calls. Two rapid "Load"
+         clicks spawn two subprocesses, the first unload races the second load,
+         and the manager ends up in an inconsistent state.
+    Rule: load_model() must hold an asyncio.Lock for its full duration.
+          A second call while a load is in progress returns immediately with
+          {status: "error", error: "Load already in progress"}.
+    File: backend/agent/local_model_manager.py — add _load_lock: asyncio.Lock
+    Test: Await two concurrent load_model() calls. Verify exactly one succeeds,
+          the other returns False with a clear error. No orphan subprocess.
 
-  Graduate condition: App runs 30 minutes of active use (voice + chat + vision)
-  without RSS growing by more than 500 MB. Verified by psutil sampling.
+  [10.7] Clean model unload — kernel de-wire and subprocess death
+    Status: PARTIAL
+    Gaps found in code audit:
+      a) After unload_model(), the AgentKernel is still wired to port 8082.
+         The next user message hits a dead endpoint and gets a silent error.
+      b) If the llama-cpp server crashes on its own (OOM, segfault), the
+         frontend shows the model as "loaded" because no watchdog exists.
+    Rule A (kernel de-wire): _handle_unload_local_model() must call
+          kernel.configure_openai_compat(None) to reset the provider after
+          unload — or broadcast a local_model_status {status: "unloaded"}
+          event so the frontend prompts the user to choose a provider.
+    Rule B (watchdog): A background asyncio task polls is_loaded() every 5s
+          after a successful load. On crash detected, broadcast:
+          {type: "local_model_status", payload: {status: "crashed",
+           error: "Model server exited unexpectedly"}}
+          and reset _current_model_path = None.
+    File: backend/agent/local_model_manager.py (watchdog task)
+          backend/iris_gateway.py (kernel de-wire on unload)
+    Test: Kill the llama-cpp subprocess manually. Within 10s the frontend
+          should receive a local_model_status crashed event.
+
+  [10.8] Clean model switch — no gap state
+    Status: NOT DONE
+    Gap: Model switch = unload + load. During the gap between the two, the
+         frontend shows nothing and any queued user message hits a dead kernel.
+         No "switching" transition state is broadcast.
+    Rule: Switching models must follow this exact sequence:
+          1. Broadcast {status: "switching", from_model: X, to_model: Y}
+          2. Wait for any in-flight inference task to complete (or abort it cleanly)
+          3. Unload current model (kernel de-wired per 10.7)
+          4. Load new model (with pre-flight check per 10.5)
+          5. Broadcast {status: "ready", model: Y} or {status: "error"}
+    The frontend must disable chat input during "switching" state.
+    File: backend/iris_gateway.py → _handle_load_local_model() (already calls
+          unload first — needs the broadcast and inference-wait wrapping)
+    Test: Load model A, start a chat message, switch to model B mid-response.
+          Verify: message completes or is cleanly aborted, model B loads, chat
+          re-enables. No exception. No orphan process.
+
+  [10.9] Inference settings hot-apply
+    Status: NOT DONE
+    Gap: When user changes n_ctx, n_batch, or profile in settings and clicks
+         "Apply", there is no dedicated path. The only option is manual
+         unload + reload, which is undiscoverable and leaves the user guessing.
+    Rule: Implement apply_inference_settings WebSocket message:
+          - Receives {profile, custom_params} from frontend
+          - Compares to current loaded params
+          - If only n_batch changes: apply without reload (server supports it)
+          - If n_ctx or n_gpu_layers change: must reload — broadcast
+            {status: "reloading_for_settings"} then follow model-switch sequence
+          - Saves new params to load_model_settings() for persistence
+    File: backend/iris_gateway.py (new handler)
+          backend/agent/local_model_manager.py (compare_params helper)
+    Test: Apply a profile change while model is loaded. Verify either:
+          - Settings applied without reload (for compatible params), OR
+          - Clean reload with correct new params (for incompatible params)
+          Never crashes. Never leaves model in inconsistent state.
+
+  [10.10] TPS monitoring with gradient warning emission
+    Status: NOT DONE
+    Gap: [10.6] was listed as MONITORING but no code actually measures or
+         enforces TPS. AgentKernel does not log tok/s after responses.
+    Rule: After each _respond_direct() or DER loop completion:
+          - Measure elapsed_ms / tokens_generated = ms_per_token
+          - Convert to tok/s and log: [AgentKernel] TPS: X.X tok/s
+          - Maintain a rolling window of last 3 TPS measurements
+          - If all 3 are below threshold (8 tok/s GPU / 2 tok/s CPU):
+            emit gradient warning to coordinate graph:
+            record_event --type note --desc "TPS degraded: X tok/s for 3 runs"
+    File: backend/agent/agent_kernel.py → _respond_direct(), _execute_plan_der()
+    Test: Mock a slow LLM response (> 125ms/token). Verify warning is emitted
+          after 3 consecutive slow responses.
+
+  Graduate condition: All 10 items above have DONE status.
+  Final verification:
+    1. Start the app cold — startup RSS delta < 200 MB
+    2. Load a model — no crash, clean progress events to frontend
+    3. Send a message — response received, TPS logged
+    4. Change inference settings — clean reload or hot-apply
+    5. Switch to a different model — no gap state, no orphan subprocess
+    6. Unload the model — kernel de-wired, frontend notified
+    7. Kill the backend process manually mid-inference — app recovers cleanly
+    8. Run 30 minutes of active use — RSS growth < 500 MB (psutil sampled)
 
 ---
 
