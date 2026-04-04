@@ -56,9 +56,23 @@ The graph is a navigation instrument with three layers:
 ---
 
 HOW TO BUILD ANYTHING
-READ domain spec in GOALS.md -> READ existing file -> BUILD -> RUN spec test
+READ spec -> NAVIGATE graph -> READ file -> BUILD -> QUALITY CHECK -> RUN spec test
   PASS -> record landmark
-  FAIL -> fix code, retry. The test does not change.
+  FAIL -> fix code, return to QUALITY CHECK. The test does not change.
+
+THE QUALITY CHECK — REQUIRED BEFORE EVERY TEST RUN
+Verify ALL of these before running the spec test:
+  [ ] No unnecessary work in hot paths — loops, I/O, DB calls as few as needed
+  [ ] Heavy imports are lazy — no ML model or GPU init at module level
+  [ ] Error handling complete — every exception path has an explicit outcome
+  [ ] Resources cleaned up — file handles, connections, subprocesses closed
+  [ ] No shared mutable state across sessions or concurrent requests
+  [ ] Memory footprint bounded — no unbounded caches or infinite queues
+  [ ] Async/sync boundary correct — blocking calls not in async hot paths
+  [ ] Logging structured — context identifier in every log line
+  [ ] Nothing in this file can crash and block a user response
+
+A passing test on unoptimized code is not done. Quality check is not optional.
 
 THE TEST RULE — ABSOLUTE
 Run the spec's test against your implementation.

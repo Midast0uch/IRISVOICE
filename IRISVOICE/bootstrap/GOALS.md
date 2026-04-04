@@ -82,8 +82,31 @@ HOW TO READ THIS FILE
 Each section is a domain. Within each domain, items are ordered by impact.
 The graduate condition is the final item in each domain.
 Do not work on polish while core functionality is broken.
-Use python bootstrap/session_start.py at the start of every session — it tells you
+session_start.py runs automatically on every prompt (Claude Code hook) — it tells you
 where the graph is, what has been verified, and what failed before.
+
+BUILD SEQUENCE — EVERY FEATURE FOLLOWS THIS ORDER:
+
+  1. Read the domain spec here
+  2. Run query_graph.py --file on every file you plan to touch
+  3. Read the file — the full function, not just the area you plan to change
+  4. Build the feature
+  5. Run the quality check (ALL items below must pass before running the test):
+       [ ] No unnecessary work in hot paths — loops, I/O, DB calls minimized
+       [ ] Heavy imports are lazy — no ML model or GPU init at module level
+       [ ] Error handling complete — every exception path has an explicit outcome
+       [ ] Resources cleaned up — file handles, connections, subprocesses closed
+       [ ] No shared mutable state across sessions or concurrent requests
+       [ ] Memory footprint bounded — no unbounded caches or infinite queues
+       [ ] Async/sync boundary correct — blocking calls not in async hot paths
+       [ ] Logging structured — context identifier in every log line
+       [ ] Implementation matches the spec intent, not just its literal words
+       [ ] Nothing in this file can crash and block a user response
+  6. Run the spec test
+  7. PASS: record landmark via agent_context.py --complete
+  8. FAIL: fix the code, return to step 5
+
+A passing test on unoptimized code is NOT done. Quality check is not optional.
 
 ---
 
@@ -548,24 +571,35 @@ This domain ensures they stay in place and are verified on every build.
 ---
 
 SESSION START CHECKLIST
-At the start of every session:
+At the start of every session (Claude Code: fully automated via hooks):
 
-  1. python bootstrap/session_start.py          (full state)
-  2. python bootstrap/agent_context.py          (available work)
+  1. session_start.py runs automatically on every prompt (UserPromptSubmit hook)
+     — loads coordinate state, auto-syncs any unrecorded git commits
+  2. python bootstrap/agent_context.py          (check available work)
   3. Read this file — pick the highest-priority incomplete item
   4. Read the spec for that item before touching any file
-  5. Build → test → record → repeat
+  5. Navigate the graph before touching any file:
+       python bootstrap/query_graph.py --file path/to/file.py
+  6. Build → QUALITY CHECK → test → record → repeat
 
-At the end of every session:
+  Other agents (Cursor, Windsurf, etc.): run session_start.py manually in step 1.
 
-  python bootstrap/update_coordinates.py --auto --tasks "..." [--landmark ...] [--warning ...]
-  python bootstrap/mid_session_snapshot.py --progress "what was just completed"
+At the end of every session (Claude Code: automated via Stop hook):
+
+  Stop hook runs automatically:
+    - mid_session_snapshot.py saves progress notes
+    - update_coordinates.py --auto closes the session in the graph
+
+  Other agents: run manually:
+    python bootstrap/update_coordinates.py --auto --tasks "..." [--landmark ...] [--warning ...]
+    python bootstrap/mid_session_snapshot.py --progress "what was just completed"
 
 MID-SESSION (at ~50k tokens):
 
   python bootstrap/mid_session_snapshot.py --progress "current progress"
-  Then ask Claude Code to condense context.
-  After condensing: python bootstrap/session_start.py --compact
+  Then condense context.
+  After condensing: session_start.py runs automatically on next prompt (Claude Code)
+  Other agents: run python bootstrap/session_start.py --compact manually.
 
 PRIORITY ORDER FOR NEW SESSIONS
   1. Domain 1 — DER loop gaps (every task depends on this)
@@ -580,7 +614,10 @@ PRIORITY ORDER FOR NEW SESSIONS
 
 CONTRACTS (behavioral rules — always follow)
   [1.00] Never mark a landmark without a passing test.
-  [0.90] Run session_start.py before any code changes.
+  [1.00] Run the quality check before running any test. A passing test on
+         unoptimized code is a time bomb, not a landmark.
+  [0.95] Navigate the graph (query_graph.py --file) before touching any file.
+  [0.90] Session state loads automatically on every prompt — do not skip it.
   [0.85] Send Telegram before stopping on auth blockers.
   [0.80] Classification before context assembly (Step 2 before Step 3).
   [0.75] Read the spec for an area before touching its files.

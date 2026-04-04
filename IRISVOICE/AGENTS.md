@@ -1,92 +1,74 @@
-AGENTS.md — IRIS Project
-Universal instructions for any AI agent working in this codebase.
-Works with Cursor, Windsurf, Copilot, GPT-based agents, Claude, and any other tool.
-Claude Code users: CLAUDE.md has additional platform-specific detail.
+AGENTS.md — Universal Agent Guide
+Works with Claude Code, Cursor, Windsurf, Copilot, Cline, OpenCode, and any other tool.
+This file is self-contained. Read it cold, with no prior context, and you will know
+exactly where you are, what to do next, and what not to repeat.
 
-This file is designed to be read at the start of every session, by any agent, without
-prior context. It is self-contained.
+Claude Code users: CLAUDE.md has additional hook-specific detail.
 
-═══════════════════════════════════════════════════════════════════
-WHAT THIS PROJECT IS
-═══════════════════════════════════════════════════════════════════
+---
 
-IRIS is a local AI assistant: Python FastAPI backend, Next.js frontend, Tauri desktop.
-The agent brain is a DER Loop (Director, Explorer, Reviewer) with a memory system
-called Mycelium that stores user context as coordinate graphs — not prose.
+THE COORDINATE DATABASE — READ THIS FIRST
+==========================================
 
-Build objective: Ship IRIS to production quality across all functional domains.
-See bootstrap/GOALS.md for the full production roadmap — 9 domains, each a milestone.
+Location: bootstrap/coordinates.db  (SQLite, WAL mode, concurrent-safe)
 
-You are one agent in a sequence. Others have worked here before you.
-Others will work here after you. The coordinate database is the continuity between you.
+This database is NOT a log. It is the only persistent memory this project has.
+Every agent that worked here before you wrote into it. You will too.
 
-═══════════════════════════════════════════════════════════════════
-THE COORDINATE DATABASE — WHAT IT IS AND WHY IT MATTERS
-═══════════════════════════════════════════════════════════════════
-
-Location: IRISVOICE/bootstrap/coordinates.db (SQLite, WAL mode, safe for concurrency)
-
-This database is NOT a log. It is a living memory system that does three things:
+It does three things:
 
   1. TELLS YOU WHAT IS TRUE RIGHT NOW
-     - Which gate you are on and what work is open
-     - What permanent landmarks (verified features) exist — these must not break
-     - What gradient warnings (past failures) say to avoid
-     - What contracts (architectural rules) are active
+     Current gate, open work, permanent landmarks, active contracts, gradient warnings.
+     Run session_start.py and you have the full picture in under 30 seconds.
 
   2. GUIDES YOU TOWARD WHAT WORKS
-     - Pheromone trails: graph edges whose weights compound every time a test passes
-       across an edge. An edge with weight 4.2 has been reinforced 40+ times.
-       Follow those trails. They are where the architecture is solid.
-     - Topology primitives: each file is classified as CORE (stable, battle-tested),
-       ACQUIRING (actively being built up), EXPLORING (experimental), EVOLVING
-       (being refactored), or ORBIT (supporting role). This tells you what a file
-       IS right now, not just what happened to it.
-     - Z-trajectory: direction of travel. A file with z:+0.22 is gaining confidence
-       (approaching mastery). One with z:-0.15 is losing confidence (being replaced).
-       This is the third coordinate axis — it encodes momentum, not just position.
+     Pheromone trails: graph edges whose weights compound every time a test passes
+     across an edge. An edge with weight 4.2 has been reinforced 40+ times.
+     These are not random — they encode where the architecture is solid.
+
+     Topology primitives: each file is classified as:
+       CORE      — stable, battle-tested, do not break without understanding deps
+       ACQUIRING — actively being built up, confidence rising
+       EXPLORING — experimental, may be replaced
+       EVOLVING  — being refactored, confidence falling — ask why before touching
+       ORBIT     — supporting role, rarely changes
+
+     Z-trajectory: momentum of a file's confidence. +0.18 = rising. -0.11 = falling.
+     Read it before editing. A falling file is being replaced for a reason.
 
   3. PRESERVES WHAT YOU LEARN FOR THE NEXT AGENT
-     - Every file edit, test run, and architectural decision you record becomes
-       part of the permanent mycelium trail that future agents navigate.
-     - A failure you score correctly (e.g. score:0.70 on an informative failure)
-       prevents the next agent from making the same mistake. It is not discarded —
-       it is kept as a high-signal failure that the graph actively surfaces.
-     - When IRIS is complete, this database transfers directly to data/memory.db
-       and becomes the runtime memory of the application itself. The schema is
-       compatible by design. What you build here is what IRIS runs on.
+     Scored failures (score >= 0.50) are future-success candidates — they revealed
+     something real. They surface in --failures so the next agent reads them first.
+     Every edit, test, and decision you record makes the map more precise.
+     Every event you skip is context the next agent re-discovers from scratch.
 
-THE COMPRESSION PROGRESSION (how the memory gets lighter, not heavier):
+THE COMPRESSION PROGRESSION:
 
   Raw events  -->  file_node confidence + edge weights  -->  permanent landmark
   (episodic)       (semantic: compressed, always current)    (crystallized: never decays)
 
-  This is not just a metaphor. The system literally compresses over time:
-  - Nodes that are reinforced enough times (activation_count >= 12) become
-    crystallization candidates — pattern is real, not noise
-  - Landmarks that overlap in coordinate space merge — redundancy collapses
-  - Nodes that go unreinforced decay toward zero and fade from navigation
-  - The result: the more sessions that run, the more precise and lightweight
-    the map becomes. Context cost goes DOWN with time, not up.
+  Nodes reinforced enough times (activation_count >= 12) become crystallization candidates.
+  Landmarks that overlap in coordinate space merge — redundancy collapses.
+  Unreinforced nodes decay toward zero and fade from navigation.
+  The more sessions that run, the more precise and lightweight the map becomes.
+  Context cost goes DOWN with time, not up.
 
-═══════════════════════════════════════════════════════════════════
-PLATFORM-SPECIFIC AUTO-RUN CONFIGURATION
-═══════════════════════════════════════════════════════════════════
+---
 
-No agent platform auto-executes shell commands from markdown files.
-Each platform has its own mechanism to wire session_start.py automatically.
-Configure once — it runs at the start of every session from then on.
+PLATFORM AUTO-RUN CONFIGURATION
+=================================
 
-CLAUDE CODE (automatic — already configured):
-  .claude/settings.local.json has a UserPromptSubmit hook that runs
+Configure once. session_start.py then runs automatically at the start of every session.
+
+CLAUDE CODE (hooks already configured):
+  .claude/settings.local.json has a UserPromptSubmit hook that auto-runs
   session_start.py --compact and injects the output as additionalContext.
-  No manual action needed. You will see "Loading IRIS coordinate state..."
-  spinner on every prompt.
+  A Stop hook runs mid_session_snapshot.py + update_coordinates.py --auto at session end.
+  Nothing to configure — it is already wired. You will see the state on every prompt.
 
-OPENCODE (automatic — plugin already configured):
+OPENCODE:
   .opencode/plugins/bootstrap.js fires on session.created using Bun shell API.
-  Output prints to terminal and is returned to the session context automatically.
-  No manual action needed — plugin runs on every new session.
+  Runs session_start.py and returns output to the session context automatically.
   Requires: opencode >= 0.1, python in PATH.
 
 WINDSURF / CODEIUM:
@@ -94,147 +76,110 @@ WINDSURF / CODEIUM:
     At the start of every session, run: python bootstrap/session_start.py
     Do not skip this. Read the output before any other action.
 
-  Windsurf injects this as context but does not execute it — you must run the
-  command when the rule surfaces. Consider it a mandatory reminder.
-
-CLINE / AIDER / OTHER AGENTS:
-  Add to .clinerules, .aiderrules, or equivalent (project root):
+CURSOR / CLINE / OTHER AGENTS:
+  Add to .cursorrules, .clinerules, or equivalent:
     MANDATORY SESSION START: python bootstrap/session_start.py
-    Run this first. The coordinate database is the only source of truth
-    for milestone status, landmarks, and architectural contracts.
+    This is the only source of truth for milestone status, landmarks, and contracts.
 
-OTHER AGENTS (manual):
-  Read Step 0 below and execute it before any other action.
+MANUAL (any tool):
+  Run python bootstrap/session_start.py before anything else.
   Skipping it means working without the build memory prior agents wrote.
-  There is no recovery path — the database is the only context you have.
 
-═══════════════════════════════════════════════════════════════════
-STEP 0 — RUN THIS BEFORE ANYTHING ELSE
-═══════════════════════════════════════════════════════════════════
+---
+
+STEP 0 — SESSION START
+=======================
 
   python bootstrap/session_start.py
 
-Output structure:
-  MYCELIUM: ...    <- compact coordinate state (15 tokens, not 60 words of prose)
-  TOPOLOGY: ...    <- primitive distribution across tracked files
-  GRADIENT: ...    <- active warning count
-  PHEROMONE ROUTES <- strongest reinforced paths through the codebase graph
-  FILE TOPOLOGY    <- what each active file IS (CORE/ACQUIRING/EXPLORING/etc.)
-  HIGH-SIGNAL FAILURES  <- informative failures worth reading before you start
-
-  CURRENT GATE:    <- what gate you are on and what is incomplete
-  PERMANENT LANDMARKS   <- verified features. Do not break these.
-  GRADIENT WARNINGS     <- what approaches have failed. Do not repeat these.
-  ACTIVE CONTRACTS      <- architectural rules from past corrections.
+Output you will see:
+  CURRENT GATE    — what gate you are on and what work is open
+  PERMANENT LANDMARKS  — verified features. Do not break these.
+  GRADIENT WARNINGS    — what approaches have failed. Do not repeat these.
+  ACTIVE CONTRACTS     — architectural rules from past corrections.
+  PHEROMONE ROUTES     — strongest reinforced paths through the codebase graph
+  FILE TOPOLOGY        — what each active file IS right now
+  HIGH-SIGNAL FAILURES — informative failures worth reading before you start
 
 Do not plan. Do not read files. Do not write code. Read this output first.
-The MYCELIUM line is the compressed state of the entire build history in coordinates.
-Everything below it is the human-readable translation.
+The graph tells you more in 30 seconds than reading random files for 10 minutes.
 
-═══════════════════════════════════════════════════════════════════
+---
+
 STEP 1 — CHECK AVAILABLE WORK
-═══════════════════════════════════════════════════════════════════
+==============================
 
   python bootstrap/agent_context.py
 
-Shows:
-  - Work items available to claim in the current gate
-  - Items already claimed by other agents (do not duplicate)
-  - Items already completed (do not redo)
+Shows work available to claim, what other agents are building, what is done.
 
 To claim a work item:
-
   python bootstrap/agent_context.py --claim your_agent_id
 
 Use a unique ID that identifies your tool and session:
-  cursor_001  windsurf_main  copilot_sub_1  gpt4_agent  opencode_001
+  cursor_001  windsurf_main  copilot_sub_1  claude_main  opencode_001
 
 The database is atomic — two agents cannot claim the same item simultaneously.
-Gate locks are enforced automatically. You cannot claim Gate 2 work while
-Gate 1 has incomplete items. The database decides, not you.
+Gate locks are enforced. You cannot claim Gate 2 work while Gate 1 has open items.
 
-═══════════════════════════════════════════════════════════════════
+---
+
 STEP 1.5 — NAVIGATE THE GRAPH BEFORE TOUCHING ANY FILE
-═══════════════════════════════════════════════════════════════════
+========================================================
 
 This step is not optional. Agents that skip it cause regressions.
 
-Before editing any file, run:
-
+Before editing any file:
   python bootstrap/query_graph.py --file path/to/file.py
 
-This returns the SEMANTIC layer for that file — not just a log:
-  - Topology primitive: what this file IS (CORE/ACQUIRING/EXPLORING/EVOLVING/ORBIT)
-  - Z-trajectory: direction of travel (up = gaining confidence, down = losing it)
-  - Confidence: how well-established this file is in the graph (0.0 to 1.0)
-  - Pheromone routes: which files this one connects to, and how strongly
-  - Test coverage: which tests cover it — run them before and after any change
-  - Event history: who touched it, when, and why
+Returns:
+  - Topology primitive (what this file IS)
+  - Z-trajectory (direction of confidence: rising, stable, or falling)
+  - Confidence score
+  - Pheromone routes (which files it connects to, and how strongly)
+  - Test coverage (which tests cover it — run them before and after any change)
 
-Example output for a CORE file:
-  Topology:  CORE        -> z:+0.002  conf:0.82  activations:9/12
-  Routes:    [4.2x/38runs] der_loop.py --tests--> test_der_loop.py
+Examples:
+  CORE      -> [0.84] backend/agent/agent_kernel.py      (stable, high coverage)
+  ACQUIRING  ^ [0.61] backend/channels/telegram_bridge.py (actively building up)
+  EVOLVING   v [0.43] backend/mcp/server_manager.py       (losing confidence — ask why)
 
-Example output for an ACQUIRING file:
-  Topology:  ACQUIRING   ^ z:+0.18   conf:0.61  activations:5/12
-  Routes:    [1.8x/6runs] telegram_bridge.py --implements--> telegram_notifier.py
-
-Example output for an EVOLVING file:
-  Topology:  EVOLVING    v z:-0.11   conf:0.44  activations:3/12
-  (This file is losing confidence. Ask why before touching it.)
-
-To see the strongest pheromone routes across the whole codebase:
-
+Strongest paths across the whole codebase:
   python bootstrap/query_graph.py --routes
 
-Follow these first. They are the paths that have been reinforced by repeated
-successful test runs. An edge with weight 4.2 is not random — it earned that.
-
-To see informative failures before starting work in a risky area:
-
+Informative failures before entering a risky area:
   python bootstrap/query_graph.py --failures
 
-These are NOT dead weight. A failure with score 0.65 means an agent tried something,
-it failed, but the failure itself was informative — it revealed a dependency, a pattern,
-an architectural constraint. Read these before approaching the same area.
-
-To understand the overall graph state:
-
+Overall graph state:
   python bootstrap/query_graph.py --summary
 
-═══════════════════════════════════════════════════════════════════
-PRODUCTION ROADMAP — 9 DOMAINS (check GOALS.md for open work)
-═══════════════════════════════════════════════════════════════════
+---
 
-The production roadmap lives in bootstrap/GOALS.md.
-Run session_start.py first — it shows which domain has open work.
-
-  Domain 1: DER Loop Gaps           Domain 6: Frontend Production Quality
-  Domain 2: Voice Pipeline          Domain 7: Backend Reliability
-  Domain 3: Vision System           Domain 8: Distribution & Installation
-  Domain 4: Skills Library          Domain 9: Advanced Features
-  Domain 5: Mycelium Memory
-
-Reference files:
-  bootstrap/GOALS.md              -- full domain roadmap and acceptance criteria
-  docs/DER_LOOP_MYCELIUM.md       -- DER loop + Mycelium documentation
-  specs/agent_loop_tasks.md       -- DER loop build tasks (if present)
-  specs/director_mode_system.md   -- mode system spec (if present)
-  specs/IRIS_Swarm_PRD_v9.md      -- full architecture contracts (if present)
-
-═══════════════════════════════════════════════════════════════════
 HOW TO BUILD ANYTHING
-═══════════════════════════════════════════════════════════════════
+======================
 
-  READ spec  -->  NAVIGATE graph  -->  READ file  -->  BUILD  -->  TEST  -->  RECORD
+  READ spec  -->  NAVIGATE graph  -->  READ file  -->  BUILD
+    -->  QUALITY CHECK  -->  RUN TEST  -->  PASS -> RECORD
+                                        -->  FAIL -> fix, repeat
 
-On test PASS:
-  python bootstrap/agent_context.py --complete ITEM_ID YOUR_AGENT_ID success \
-    --landmark "name:description:file.py:test_command"
+THE QUALITY CHECK — REQUIRED BEFORE RUNNING THE SPEC TEST
 
-On test FAIL:
-  python bootstrap/agent_context.py --complete ITEM_ID YOUR_AGENT_ID failure \
-    --warning "space:what failed:approach tried:what to try instead"
+A feature that passes a test but is unoptimized is not done.
+Before running the test, verify all of the following:
+
+  [ ] No unnecessary work in hot paths — loops, I/O, and DB calls are as few as needed
+  [ ] Heavy imports are lazy — no ML model, GPU init, or large lib loaded at module level
+  [ ] Error handling is complete — every exception path has an explicit outcome
+  [ ] Resources are cleaned up — file handles, DB connections, subprocess handles closed
+  [ ] No shared mutable state across sessions or concurrent requests
+  [ ] Memory footprint is bounded — no unbounded caches, no infinite queues
+  [ ] Async/sync boundary is correct — blocking calls not in async hot paths
+  [ ] Logging is structured — session_id or context identifier in every log line
+  [ ] The implementation matches the spec's intent — not just its literal words
+  [ ] Nothing in this file could cause a crash that would block a user response
+
+If any item fails the check, fix it before running the test.
+A passing test on unoptimized code is a time bomb, not a landmark.
 
 THE TEST RULE — NON-NEGOTIABLE:
   Run the spec's test against your implementation.
@@ -242,210 +187,213 @@ THE TEST RULE — NON-NEGOTIABLE:
   Never modify existing tests to make them pass.
   The test is the requirement. Fix the code. The test does not change.
 
-Landmark crystallization:
-  A landmark becomes PERMANENT after 3 passing test runs (LANDMARK_THRESHOLD).
-  Call verify_landmark() or run --complete with --landmark three times.
-  Permanent landmarks never decay. They are the inherited memory of this build.
+On test PASS (after quality check passes):
+  python bootstrap/agent_context.py --complete ITEM_ID YOUR_AGENT_ID success \
+    --landmark "name:description:file.py:test_command"
 
-═══════════════════════════════════════════════════════════════════
+On test FAIL:
+  python bootstrap/agent_context.py --complete ITEM_ID YOUR_AGENT_ID failure \
+    --warning "space:what failed:approach tried:what to try instead"
+
+LANDMARK CRYSTALLIZATION:
+  A landmark becomes PERMANENT after 3 passing test runs (default threshold).
+  Permanent landmarks never decay. They are the verified foundation.
+  Do not mark anything permanent until it has passed 3 times.
+
+---
+
 STEP 2.5 — RECORD EVERY CODE ACTION
-═══════════════════════════════════════════════════════════════════
+=====================================
 
-This is how the pheromone trail grows. Every event you record makes the next
-agent's navigation more precise. Every event you skip is context the next agent
-has to re-discover from scratch.
+Git commits are auto-recorded by session_start.py on every prompt (Claude Code).
+For other agents, or for uncommitted work, record manually:
 
 After editing a file:
   python bootstrap/record_event.py --type file_edit \
-    --file backend/agent/agent_kernel.py \
-    --desc "added task_class parameter — fixes NameError on startup, resolves Gate1.4"
+    --file path/to/file.py \
+    --desc "what changed and why — enough for the next agent to understand"
 
 After creating a file:
   python bootstrap/record_event.py --type file_create \
-    --file backend/channels/telegram_notifier.py \
-    --desc "outbound Telegram channel — reads BOT_TOKEN/CHAT_ID from .env, never raises"
+    --file path/to/new_file.py \
+    --desc "what this file does and why it exists"
 
 After a test passes:
   python bootstrap/record_event.py --type test_run \
-    --file backend/tests/test_telegram_notifier.py --result pass \
-    --covers backend/channels/telegram_notifier.py
+    --file tests/test_foo.py --result pass \
+    --covers src/foo.py
 
-After a test fails — BUT the failure was informative (revealed something real):
+After a test fails — but the failure revealed something real:
   python bootstrap/record_event.py --type test_run \
-    --file backend/tests/test_der_loop.py --result fail \
+    --file tests/test_foo.py --result fail \
     --score 0.70 \
-    --desc "ImportError: circular dependency — agent_kernel imports ReviewVerdict at top level"
+    --desc "what the failure revealed — why the next agent needs to know this"
 
-  The --score 0.70 flag tells the graph: this failure carries signal.
-  A score >= 0.50 on a failure makes it a future-success candidate.
-  It appears in --failures so the next agent reads it before approaching that area.
-  Do not give high scores to crashes with no useful information. Save them for
-  failures that revealed something the next agent genuinely needs to know.
+  score >= 0.50 = high-signal failure. Appears in --failures.
+  Save high scores for failures that revealed real architectural constraints.
+  Do not give high scores to crashes with no useful information.
 
-After an architectural decision (the most important thing to record):
+After an architectural decision:
   python bootstrap/record_event.py --type note \
-    --desc "chose synchronous HTTP over async for TelegramNotifier: agent calls are
-            infrequent, async adds complexity without benefit, simpler to test"
+    --desc "chose X over Y because — full reasoning"
 
-  These notes encode WHY. The next agent reads them and does not re-litigate
-  decisions that were already reasoned through. This is the semantic memory
-  layer — it compresses over time as coordinates absorb the pattern.
+  Notes encode WHY. The next agent reads them and does not re-litigate
+  decisions that were already reasoned through.
 
-═══════════════════════════════════════════════════════════════════
+---
+
 UNDERSTANDING WHAT THE GRAPH IS TELLING YOU
-═══════════════════════════════════════════════════════════════════
+=============================================
 
-The MYCELIUM: line in session_start output:
+The MYCELIUM line in session_start output:
 
   MYCELIUM: context:[1.00,0.85,0.02]@gate4 | toolpath:[w:4.1,ev:127] | confidence:0.95
 
-  context:[1.00,0.85,0.02]  -- gate completion, landmark density, session depth
-  @gate4                    -- current gate
-  toolpath:[w:4.1,ev:127]   -- strongest edge weight, total events recorded
-  confidence:0.95           -- overall graph confidence (17 permanent landmarks)
+  context:[1.00,0.85,0.02]  — gate completion, landmark density, session depth
+  @gate4                    — current gate
+  toolpath:[w:4.1,ev:127]   — strongest edge weight, total events recorded
+  confidence:0.95           — overall graph confidence
 
-The TOPOLOGY: line:
+PHEROMONE ROUTES section:
 
-  TOPOLOGY: core:12 | acquiring:3 | orbit:8 | evolving:1
+  [4.2x / 38 runs] src/agent/core.py --tests--> tests/test_core.py
 
-  This tells you the primitive distribution. 12 files are CORE (solid, settled).
-  3 are ACQUIRING (being actively built up). 1 is EVOLVING (losing confidence —
-  investigate before touching it). Follow the CORE files when the path is unclear.
+  Weight 4.2 across 38 runs = proven path. Start here when the area is unclear.
 
-The PHEROMONE ROUTES section:
+FILE TOPOLOGY section:
 
-  [4.2x / 38 runs] backend/agent/der_loop.py --tests--> backend/tests/test_der_loop.py
+  ACQUIRING  ^ [0.61] src/channels/notifier.py    <- actively being built up
+  CORE      -> [0.84] src/agent/kernel.py         <- stable, do not break
+  EVOLVING   v [0.43] src/mcp/server_manager.py   <- losing confidence, ask why
 
-  Weight 4.2 means this edge has been scored 38 times and survived.
-  It is not arbitrary. Start here when working in the DER loop area.
+---
 
-The FILE TOPOLOGY section:
+PARALLEL AGENT PROTOCOL
+========================
 
-  ACQUIRING   ^ [0.61] backend/channels/telegram_bridge.py
-  CORE        -> [0.84] backend/agent/agent_kernel.py
-  EVOLVING    v [0.43] backend/mcp/server_manager.py
+The database is WAL-mode SQLite — safe for concurrent reads and writes.
+Work claiming is atomic — two agents cannot take the same item.
 
-  ACQUIRING with ^ = confidence rising. This file is being built right now.
-  CORE with ->    = stable. Do not break it without checking what depends on it.
-  EVOLVING with v = confidence falling. Find out why before touching it.
+  # Orchestrator — see state and poll completions:
+  python bootstrap/agent_context.py
+  python bootstrap/agent_context.py --poll
 
-═══════════════════════════════════════════════════════════════════
-MANAGING CONTEXT ACROSS A SESSION
-═══════════════════════════════════════════════════════════════════
+  # Sub-agent workflow:
+  python bootstrap/agent_context.py --claim agent_001
+  # ... build the feature, run quality check, run the test ...
+  python bootstrap/agent_context.py --complete ITEM_ID agent_001 success \
+    --landmark "name:desc:file:test_command"
 
-At session start:
-  python bootstrap/session_start.py
+  # Heartbeat for long tasks (every 60s prevents claim expiry):
+  python bootstrap/agent_context.py --heartbeat agent_001
 
-At ~50k tokens (before context window fills):
+---
+
+CONTEXT WINDOW MANAGEMENT
+===========================
+
+At ~50k tokens (before window fills):
   python bootstrap/mid_session_snapshot.py --progress "what just completed"
-  [condense/summarize context in your tool]
+  [condense context in your tool]
   python bootstrap/session_start.py --compact
 
-At session end:
+Loop prevention — same failure twice in a row:
+  python bootstrap/mid_session_snapshot.py \
+    --warn "space:what is looping:approach tried:what to try instead"
+  Then change approach. Never retry the same thing a third time.
+
+Session end (Claude Code: automated by Stop hook):
   python bootstrap/update_coordinates.py --auto \
     --tasks "comma,separated,completed,tasks" \
     [--landmark "name:desc:file:test_command"] \
     [--warning "space:failure:approach:correction"]
 
-If you hit a repeating error (same failure twice in a row), stop and record it:
-  python bootstrap/mid_session_snapshot.py \
-    --warn "space:what is looping:approach being repeated:what to try instead"
-  Then change approach. Never retry the same thing a third time.
+Other agents: run this manually at the end of every session.
 
-═══════════════════════════════════════════════════════════════════
+---
+
 CRITICAL ARCHITECTURE RULES
-═══════════════════════════════════════════════════════════════════
+==============================
 
 These come from the spec. Violating them breaks things that are already verified.
 
-1. Every Mycelium call wrapped in try/except — never blocks user response
-2. Classification BEFORE context assembly — NameError if reversed
-3. Reviewer always falls back to PASS on exception — never blocks Explorer
-4. Safe defaults on all new _plan_task() parameters
-5. ASCII markers only: [+] [x] [~] [ ] — Unicode breaks encoding on Windows
-6. SPEC mode routes to SpecEngine directly — not through the DER loop
-7. Token budget terminates the DER loop — not cycle count
-8. BEGIN IMMEDIATE on all Mycelium writes — two loops share one graph
+  1. Every memory system call wrapped in try/except — never blocks user response
+  2. Classification BEFORE context assembly — order matters
+  3. Reviewer always falls back to PASS on exception — never blocks Explorer
+  4. Safe defaults on all new parameters — never rely on implicit None
+  5. SPEC mode routes directly — not through the DER loop
+  6. Token budget terminates loops — not cycle count
+  7. Write lock on all shared graph writes — concurrent loops share one graph
 
-═══════════════════════════════════════════════════════════════════
-PLATFORM — WINDOWS
-═══════════════════════════════════════════════════════════════════
+---
 
-USE:   python script.py
-USE:   python -m pytest backend/tests/ -v
-USE:   New-Item file.py -ItemType File
-USE:   Get-ChildItem -Recurse -Filter "*.py"
-NEVER: touch / ls -la / grep -r / cat | head
-
-═══════════════════════════════════════════════════════════════════
 SAFETY RAILS
-═══════════════════════════════════════════════════════════════════
+=============
 
 Never delete or overwrite files without reading them first.
 Never git push or git reset --hard without explicit user confirmation.
-Never pip install or npm install without checking requirements.txt first.
-Never hardcode credentials — environment variables only (.env file).
-Never access paths outside IRISVOICE/.
+Never install packages without checking existing requirements/lockfiles first.
+Never hardcode credentials — environment variables only.
 Prefix risky commands with SAFE-CHECK: and wait for confirmation.
 
-═══════════════════════════════════════════════════════════════════
+---
+
 WHAT DONE LOOKS LIKE
-═══════════════════════════════════════════════════════════════════
+=====================
+
+A feature is done when ALL of the following are true:
+  [ ] The spec's test passes
+  [ ] The quality check (above) passes
+  [ ] A landmark is recorded via agent_context.py --complete
+  [ ] The landmark has passed tests 3 times (permanent)
+  [ ] No existing landmark was broken by this change
 
 The build is complete when:
-  All 9 production domains in bootstrap/GOALS.md have green status
-  cargo tauri build completes without errors
-  The built app launches and accepts input through its own interface
-  IRIS responds — not this agent tool
-  Voice pipeline active: wake word → STT → DER loop → TTS → audio out
-  Coordinate store at IRISVOICE/data/memory.db (transferred from bootstrap/)
+  All production domains in bootstrap/GOALS.md have green status
+  The application receives input through its own interface and responds
+  No external scaffolding (Claude Code, Cursor, etc.) is involved in the response
+  Coordinate store transferred to the application's runtime memory location (same schema)
 
 The coordinate database is complete when:
   python bootstrap/query_graph.py --summary shows:
     - Events recorded for every file that was touched
     - Pheromone routes with weight > 1.0 on all major test connections
     - Near-crystallization candidates on the most-used files
-  python bootstrap/session_start.py shows MYCELIUM: confidence >= 0.85
+  python bootstrap/session_start.py shows confidence >= 0.85
 
-At that point, the bootstrap/coordinates.db can transfer to data/memory.db
-and the application's own Mycelium runtime takes over — same schema, same
-coordinate graph, same pheromone trails. The build memory becomes the app memory.
-Nothing is lost. Everything was built in the right format from session one.
+---
 
-═══════════════════════════════════════════════════════════════════
-QUICK REFERENCE — ALL COMMANDS
-═══════════════════════════════════════════════════════════════════
+QUICK REFERENCE
+================
 
 SESSION:
-  python bootstrap/session_start.py               # full state at session start
+  python bootstrap/session_start.py               # full state
   python bootstrap/session_start.py --compact     # short state after condense
+  python bootstrap/session_start.py --gate        # current gate only
 
-NAVIGATION (read before touching anything):
+NAVIGATION:
   python bootstrap/query_graph.py --file path/to/file.py    # what a file IS
   python bootstrap/query_graph.py --routes                  # strongest paths
   python bootstrap/query_graph.py --failures                # informative failures
   python bootstrap/query_graph.py --summary                 # full graph stats
   python bootstrap/query_graph.py --recent                  # last N events
-  python bootstrap/query_graph.py --agent cursor_001        # agent trail
 
-WORK CLAIMING:
+WORK QUEUE:
   python bootstrap/agent_context.py                          # see available work
-  python bootstrap/agent_context.py --claim your_agent_id   # claim a work item
+  python bootstrap/agent_context.py --claim your_agent_id   # claim an item
   python bootstrap/agent_context.py --complete ID AGENT success --landmark "..."
   python bootstrap/agent_context.py --complete ID AGENT failure --warning "..."
-  python bootstrap/agent_context.py --heartbeat your_agent_id  # keep claim alive
+  python bootstrap/agent_context.py --heartbeat your_agent_id
+  python bootstrap/agent_context.py --poll                   # orchestrator poll
 
-RECORDING (write after every action):
+RECORDING:
   python bootstrap/record_event.py --type file_edit   --file path --desc "why"
   python bootstrap/record_event.py --type file_create --file path --desc "what"
-  python bootstrap/record_event.py --type test_run    --file path --result pass --covers impl.py
-  python bootstrap/record_event.py --type test_run    --file path --result fail --score 0.70 --desc "what it revealed"
-  python bootstrap/record_event.py --type note        --desc "architectural decision and why"
-  python bootstrap/record_event.py --type git_commit  --desc "feat: what was built"
+  python bootstrap/record_event.py --type test_run    --file path --result pass --covers impl
+  python bootstrap/record_event.py --type test_run    --file path --result fail --score 0.70 --desc "..."
+  python bootstrap/record_event.py --type note        --desc "decision and reasoning"
 
 SESSION BOUNDARIES:
   python bootstrap/mid_session_snapshot.py --progress "..."    # before condense
   python bootstrap/mid_session_snapshot.py --warn "space:..."  # loop prevention
   python bootstrap/update_coordinates.py --auto --tasks "..."  # end of session
-
-═══════════════════════════════════════════════════════════════════
