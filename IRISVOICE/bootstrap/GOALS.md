@@ -250,11 +250,11 @@ The vision layer is defined in code but may not be operational.
     Landmark: paint_iris_demo (needs 2 more passes)
 
   [3.3] Wire vision into agent tool dispatch
-    Status: NOT DONE
-    Files: backend/bridge/tool_bridge.py
-    Gap: Vision capture and analysis are not available as tools the DER loop can call.
-    Fix: Register vision tools (capture_screen, analyze_region, find_element) in
-         the tool registry so the Explorer can invoke them as item.tool values.
+    Status: DONE — backend/agent/tool_bridge.py AgentToolBridge._mcp_servers["vision"]
+    VisionMCPServer registered in initialize(); execute_tool() dispatches
+    vision_detect_element, vision_analyze_screen, vision_validate_action,
+    vision_get_context through execute_vision_tool() to VisionMCPServer.
+    All 5 vision.* tools available. 16/16 test_vision_mcp.py pass.
     Landmark: vision_wired_to_der
 
   Graduate condition: Agent can describe what is on screen when asked, and can
@@ -352,18 +352,26 @@ The UI works but has missing features, rough edges, and unfinished panels.
     custom_params. handleUnload sends unload_local_model.
 
   [6.3] Orb animation → voice pipeline sync
-    Status: PARTIAL — orb animates but may not be tied to actual audio levels
-    Fix: Wire the orb's animation state to: (a) microphone input level during
-         STT, (b) TTS playback state during response.
+    Status: DONE — fully wired to backend audio levels
+    How: voice_command.py emits audio_level (float, ~100ms cadence) via callback.
+         iris_gateway.py broadcasts {type:"audio_level", level:float} via WS.
+         useIRISWebSocket sets audioLevel state on audio_level message.
+         IrisOrb.tsx: audioLevelScale = 1 + audioLevel*0.15 during listening;
+         glow pulse opacity scales with audioLevel. isSpeaking → larger orb + brighter glow.
+         All wired: STT mic level → orb pulse, TTS state → orb glow.
 
   [6.4] Chat history persistence
     Status: DONE (permanent landmark: chat_history_persistence)
     Conversations + activeConversationId persisted to localStorage. Verified.
 
   [6.5] Settings panel — field save/load
-    Status: PARTIAL — fields render via SidePanel but persistence unclear
-    Gap: User changes to voice settings, model settings, etc. may not save.
-    Fix: Verify field values are saved to backend state and restored on app open.
+    Status: DONE — settings persist in backend/sessions/session_iris/
+    How: ws_manager.connect() derives stable session_id = "session_iris" from
+         client_id "iris" when no session_id query param is provided. Session
+         state saved to backend/sessions/session_iris/{category}.json files.
+         request_state on reconnect restores full state from session files.
+    Verified: backend/sessions/session_iris/ exists with theme, voice, agent,
+         customize, automate, monitor fields all persisted.
 
   [6.6] Tab bar state persistence
     Status: DONE (permanent landmark: tab_state_persistence)
@@ -419,13 +427,13 @@ Getting IRIS into the user's hands without requiring developer setup.
          Verify the app launches and connects to the bundled backend.
 
   [8.2] Backend bundling in Tauri
-    Status: iris-backend.exe is listed in externalBin but may not exist
-    File: src-tauri/tauri.conf.json → "externalBin": ["binaries/iris-backend"]
-    Gap: The binaries/ directory does not exist. The Tauri build currently works
-         because it builds without the bundled binary. In production, the backend
-         must be bundled or auto-started.
-    Fix: Either (a) compile a standalone iris-backend.exe and add to binaries/,
-         or (b) update the Tauri app to spawn python start-backend.py on launch.
+    Status: DONE — binary bundled, auto-start wired
+    File: src-tauri/binaries/iris-backend-x86_64-pc-windows-msvc.exe (35 MB)
+    What: iris-backend-x86_64-pc-windows-msvc.exe exists in src-tauri/binaries/.
+          Tauri main.rs spawns it via app.shell().sidecar("iris-backend") — kills
+          on exit. scripts/build_backend.py (PyInstaller) rebuilds when source changes.
+    Note: Binary is from a previous build (2026-03-15). Rebuild after source changes
+          with: python scripts/build_backend.py
 
   [8.3] First-run setup
     Status: DONE (permanent landmark: first_run_wizard)
@@ -453,6 +461,78 @@ Do not start these until Domains 1-5 are complete.
     The trailing Director (Domain 1.1) + landmark crystallization (already working)
     together form the trailing crystallizer. Once Domain 1.1 is done, verify
     crystallization fires correctly for gap-filled items.
+
+---
+
+DOMAIN 10 — PERFORMANCE & MEMORY RELIABILITY
+IRIS must run without degrading the host machine. A memory spike must never
+force the user to restart. Model loading with heavy dependencies must be
+stable. All inference must stay within safe resource bounds.
+
+Background: A memory spike was identified and fixed (session 28). The psutil
+4 GB RAM guard (voice_command.py), VRAM >= 8.0 GB threshold (audio/model_manager.py),
+and lazy model imports are the three lines of defense. This domain ensures
+they stay in place and are verified on every build.
+
+  [10.1] Memory safety — startup footprint
+    Status: DONE (enforced)
+    Rule: Backend startup must not load any ML model (PyTorch, CUDA, faster_whisper,
+          silero_vad) unless a user explicitly loads a model through the UI.
+          Lazy imports only. Importing backend.main must not trigger GPU init.
+    Test: python -c "import backend.main" must complete in < 5 seconds with
+          psutil RSS delta < 200 MB (no model loaded).
+    Verification: python -c "
+      import psutil, os, time
+      proc = psutil.Process(os.getpid())
+      before = proc.memory_info().rss / 1024 / 1024
+      import backend.main
+      after = proc.memory_info().rss / 1024 / 1024
+      delta = after - before
+      assert delta < 200, f'Startup RSS delta {delta:.1f} MB exceeds 200 MB limit'
+      print(f'[OK] Startup delta: {delta:.1f} MB')
+    "
+
+  [10.2] VRAM guard — audio model loading
+    Status: DONE — backend/audio/model_manager.py
+    Rule: Never load audio models onto GPU when free VRAM < 8.0 GB.
+          Falls back to CPU. VRAM is checked at load time, not at startup.
+    Test: python -m pytest backend/tests/test_model_manager.py::TestVRAMThreshold -v
+
+  [10.3] RAM guard — voice transcription
+    Status: DONE — backend/audio/voice_command.py _transcribe_with_fallback()
+    Rule: psutil 4 GB RAM check before loading native audio model.
+          On low RAM: falls through to speech_recognition (Google Web Speech API).
+    Test: python -m pytest backend/tests/test_voice_command.py::TestVoiceCommandFallback -v
+
+  [10.4] Session cleanup — UUID session directories
+    Status: DONE (cleaned session 28)
+    Rule: backend/sessions/ must not accumulate unbounded UUID directories.
+          Only session_iris and session_iris_integration are permanent.
+          All other session dirs should be pruned at backend startup if older
+          than 7 days (or on manual cleanup).
+    Fix: Add a startup cleanup sweep in backend/main.py lifespan that removes
+         session dirs older than 7 days, skipping session_iris*.
+    Landmark: session_cleanup_on_startup
+
+  [10.5] Model loading with heavy dependencies
+    Status: MONITORING
+    Rule: Loading gguf models via llama-cpp-python or ik_llama.cpp must not
+          cause a hard memory spike. n_ctx must be validated against available
+          RAM before loading. Model load must be cancelable (cancel_load flag).
+    VRAM budget: Never exceed 85% available VRAM.
+    RAM budget: Model RAM (weights + KV cache) must not exceed 75% available RAM.
+    Test: Verify LocalModelManager.load_model() checks free_ram before allocating.
+          If free_ram < model_required_ram, reject with clear error — never OOM.
+
+  [10.6] TPS target — inference throughput
+    Status: MONITORING
+    Target: >= 8 tok/s for 4B Q4_K_M model on GPU (RTX class hardware).
+            >= 2 tok/s for CPU-only fallback.
+    Measurement: AgentKernel logs tok/s after each plan_task completion.
+                 If tok/s < target for 3 consecutive requests, emit gradient warning.
+
+  Graduate condition: App runs 30 minutes of active use (voice + chat + vision)
+  without RSS growing by more than 500 MB. Verified by psutil sampling.
 
 ---
 

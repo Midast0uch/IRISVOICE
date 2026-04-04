@@ -129,10 +129,31 @@ async def lifespan(app: FastAPI):
     logger.info("IRIS Backend starting up...")
     
     try:
+        # Prune stale UUID session directories older than 7 days.
+        # Keeps session_iris* dirs — removes only auto-generated UUID dirs.
+        try:
+            import time as _cleanup_time
+            from pathlib import Path as _Path
+            _sessions_root = _Path(__file__).parent / "sessions"
+            if _sessions_root.is_dir():
+                _cutoff = _cleanup_time.time() - 7 * 86400
+                _removed = 0
+                for _entry in _sessions_root.iterdir():
+                    if _entry.name.startswith("_") or _entry.name.startswith("session_iris"):
+                        continue
+                    if _entry.is_dir() and _entry.stat().st_mtime < _cutoff:
+                        import shutil as _shutil
+                        _shutil.rmtree(_entry, ignore_errors=True)
+                        _removed += 1
+                if _removed:
+                    logger.info(f"  - [CLEANUP] Removed {_removed} stale session dirs")
+        except Exception as _ce:
+            logger.warning(f"  - [CLEANUP] Session dir cleanup failed (non-fatal): {_ce}")
+
         logger.info("  - Starting session manager...")
         session_manager = get_session_manager()
         await session_manager.start()
-        
+
         logger.info("  - Initializing state manager...")
         state_manager = get_state_manager()
         
@@ -145,32 +166,14 @@ async def lifespan(app: FastAPI):
         # Step 1: Get AudioEngine instance via factory function
         try:
             audio_engine = get_audio_engine()
-            logger.debug(f"  - [AUDIO ENGINE] Factory returned AudioEngine instance")
-        except Exception as e:
-            logger.error(f"  - [AUDIO ENGINE] Failed to get instance: {e}")
-            raise
-        
-        # Step 2: Create AudioEngine directly (for detailed diagnostics)
-        try:
-            from backend.audio.engine import AudioEngine
-            audio_engine = AudioEngine()
             logger.info(f"    [+] [AUDIO ENGINE] Instance created successfully")
         except Exception as e:
             logger.error(f"    [x] [AUDIO ENGINE] Failed to create instance: {e}")
             raise
         
-        # Step 3: Log initialization progress with timestamps
+        # Step 2: Log initialization progress with timestamps
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(f"  - [AUDIO ENGINE] Instance created in {elapsed:.3f}s")
-        
-        # Step 4: Initialize audio engine internal components
-        try:
-            from backend.audio.engine import AudioEngine as AE
-            ae = AE()
-            logger.info("    [+] [AUDIO ENGINE] Internal components initialized")
-        except Exception as e:
-            logger.error(f"    [x] [AUDIO ENGINE] Failed to initialize components: {e}")
-            raise
         
         # ==========================================================================
         # VOICE COMMAND HANDLER INITIALIZATION WITH DIAGNOSTIC LOGGING
