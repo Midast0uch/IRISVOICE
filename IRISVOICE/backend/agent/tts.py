@@ -142,10 +142,10 @@ class TTSManager:
         if TTSManager._initialized:
             return
 
-        # Resolve GPU availability here (first TTSManager use), not at module
-        # import time.  This defers the 360 MB torch import until TTS is needed.
-        global USE_COSYVOICE
-        USE_COSYVOICE = _cuda_available()
+        # Engine selection (CosyVoice GPU vs Piper CPU) is deferred to the
+        # FIRST synthesize_stream() call via _select_engine().  This avoids
+        # importing torch (~360 MB) at startup when no TTS has been requested.
+        self._engine_selected = False
 
         self.config: Dict[str, Any] = {
             "tts_enabled":   True,
@@ -218,6 +218,9 @@ class TTSManager:
         when complete so synthesize_stream can block-wait efficiently instead
         of polling.
         """
+        # Ensure engine is selected (imports torch lazily on GPU machines)
+        self._select_engine()
+
         if self._cosyvoice is not None:
             if not self._ready_event.is_set():
                 self._ready_event.set()
@@ -244,6 +247,7 @@ class TTSManager:
 
     def get_voice_info(self) -> Dict[str, Any]:
         """Return available voice information."""
+        self._select_engine()
         if USE_COSYVOICE:
             engine_name = "CosyVoice3-0.5B (zero-shot voice cloning, GPU)"
             engine_ready = self._cosyvoice is not None
@@ -279,6 +283,19 @@ class TTSManager:
             return np.concatenate(chunks)
         return None
 
+    def _select_engine(self) -> None:
+        """Select TTS engine (CosyVoice GPU vs Piper CPU) on first use.
+
+        Deferred from __init__ to avoid importing torch (~360 MB) at startup.
+        Called once; subsequent calls are no-ops.
+        """
+        if self._engine_selected:
+            return
+        global USE_COSYVOICE
+        USE_COSYVOICE = _cuda_available()
+        self._engine_selected = True
+        logger.info(f"[TTSManager] Engine selected: {'CosyVoice3 (GPU)' if USE_COSYVOICE else 'Piper/pyttsx3 (CPU)'}")
+
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """Stream synthesis — yields float32 arrays at OUTPUT_SAMPLE_RATE Hz.
 
@@ -293,6 +310,9 @@ class TTSManager:
             return
         if not text.strip():
             return
+
+        # Lazy engine selection — first call imports torch if GPU is available
+        self._select_engine()
 
         if USE_COSYVOICE and self.config.get("tts_voice") == "Cloned Voice":
             # --- GPU path: CosyVoice3 zero-shot cloning ----------------------

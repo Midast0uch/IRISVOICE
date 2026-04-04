@@ -123,7 +123,15 @@
       "Bash(python bootstrap/query_graph.py --file scripts/paint_iris_demo.py)",
       "Bash(python -c \"import json; d=json.load\\(open\\(''.claude/settings.local.json''\\)\\); print\\(''[+] JSON valid''\\); print\\(''Stop hooks:'', len\\(d[''hooks''][''Stop''][0][''hooks'']\\)\\); print\\(''UserPromptSubmit hooks:'', len\\(d[''hooks''][''UserPromptSubmit''][0][''hooks'']\\)\\)\")",
       "Bash(dir \"C:\\\\Users\\\\midas\\\\Desktop\\\\dev\\\\.claude\\\\worktrees\\\\flamboyant-cartwright\\\\IRISVOICE\\\\bootstrap\" /B)",
-      "Bash(grep -i \"iris\\\\|windows\\\\|tauri\\\\|C:\\\\\\\\Users\\\\|IRISVOICE\\\\|rtx\\\\|lmstudio\" \"C:\\\\Users\\\\midas\\\\Desktop\\\\dev\\\\.claude\\\\worktrees\\\\flamboyant-cartwright\\\\IRISVOICE\\\\CLAUDE.md\")"
+      "Bash(grep -i \"iris\\\\|windows\\\\|tauri\\\\|C:\\\\\\\\Users\\\\|IRISVOICE\\\\|rtx\\\\|lmstudio\" \"C:\\\\Users\\\\midas\\\\Desktop\\\\dev\\\\.claude\\\\worktrees\\\\flamboyant-cartwright\\\\IRISVOICE\\\\CLAUDE.md\")",
+      "Bash(find C:UsersmidasDesktopdev.claudeworktreesflamboyant-cartwright -name *.md -not -path */.git/* -not -path *node_modules* -not -path *__pycache__*)",
+      "Bash(python -m py_compile backend/agent/local_model_manager.py)",
+      "Bash(python -m py_compile backend/voice/porcupine_detector.py)",
+      "Bash(python bootstrap/record_event.py --type file_edit --file backend/agent/local_model_manager.py --desc \"Bug 4: replace asyncio.get_event_loop\\(\\) with get_running_loop\\(\\) in load_model, _wait_for_ready, download_from_hf\")",
+      "Bash(python bootstrap/record_event.py --type file_edit --file backend/agent/agent_kernel.py --desc \"Bug 5: add _broadcast_loop capture + run_coroutine_threadsafe fallback in _broadcast_inference_event; add set_main_loop\\(\\)\")",
+      "Bash(python bootstrap/record_event.py --type file_edit --file backend/main.py --desc \"Bug 5: call agent_kernel.set_main_loop\\(\\) at startup to enable thread-safe WS broadcasts\")",
+      "Bash(python bootstrap/record_event.py --type file_edit --file backend/iris_gateway.py --desc \"Bug 6: add _main_loop None+is_running guard around both chunk_callback run_coroutine_threadsafe calls\")",
+      "Bash(python bootstrap/record_event.py --type file_edit --file backend/voice/porcupine_detector.py --desc \"Bug 9: graceful degradation on missing access key or no wake words — set _disabled=True instead of raising ValueError\")"
     ]
   },
   "hooks": {
