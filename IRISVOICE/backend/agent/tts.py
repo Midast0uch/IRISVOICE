@@ -149,7 +149,11 @@ class TTSManager:
 
         self.config: Dict[str, Any] = {
             "tts_enabled":   True,
-            "tts_voice":     "Cloned Voice",
+            # Default to Built-in (Piper, ~65 MB CPU model) so the backend
+            # starts without consuming VRAM. "Cloned Voice" (CosyVoice3, ~4 GB
+            # VRAM) can be selected in Settings — but only when a local LLM is
+            # NOT loaded, as the two together exceed the RTX 3070's 8 GB VRAM.
+            "tts_voice":     "Built-in",
             "speaking_rate": 1.0,
         }
 
@@ -236,9 +240,14 @@ class TTSManager:
 
     def update_config(self, **kwargs) -> None:
         """Update TTS configuration."""
+        voice_changed = "tts_voice" in kwargs and kwargs["tts_voice"] != self.config.get("tts_voice")
         for key, value in kwargs.items():
             if key in self.config:
                 self.config[key] = value
+        if voice_changed:
+            # Force engine re-selection on next synthesize_stream so VRAM is
+            # re-checked with the new voice choice.
+            self._engine_selected = False
         logger.info(f"[TTSManager] Config updated: {kwargs}")
 
     def get_config(self) -> Dict[str, Any]:
@@ -288,11 +297,38 @@ class TTSManager:
 
         Deferred from __init__ to avoid importing torch (~360 MB) at startup.
         Called once; subsequent calls are no-ops.
+
+        CosyVoice3 requires ~4.25 GB VRAM.  On an RTX 3070 (8 GB) that leaves
+        < 4 GB for a LLM — not enough for 8B models.  We therefore only enable
+        CosyVoice when the user has explicitly set tts_voice = "Cloned Voice"
+        AND there is sufficient free VRAM (>= 4.5 GB).  Otherwise Piper is used.
         """
         if self._engine_selected:
             return
         global USE_COSYVOICE
-        USE_COSYVOICE = _cuda_available()
+
+        if self.config.get("tts_voice") != "Cloned Voice":
+            # User chose Built-in (Piper) — never load CosyVoice.
+            USE_COSYVOICE = False
+        elif _cuda_available():
+            # Check free VRAM before committing to the 4+ GB CosyVoice load.
+            vram_ok = False
+            try:
+                import torch as _torch
+                free_vram = _torch.cuda.mem_get_info()[0] / (1024 ** 3)  # GB
+                vram_ok = free_vram >= 4.5
+                if not vram_ok:
+                    logger.warning(
+                        f"[TTSManager] CosyVoice3 skipped — only {free_vram:.1f} GB VRAM free "
+                        "(need >= 4.5 GB). Using Piper instead. "
+                        "Unload your local model first if you want voice cloning."
+                    )
+            except Exception:
+                vram_ok = True  # can't check — proceed and let CUDA OOM surface naturally
+            USE_COSYVOICE = vram_ok
+        else:
+            USE_COSYVOICE = False
+
         self._engine_selected = True
         logger.info(f"[TTSManager] Engine selected: {'CosyVoice3 (GPU)' if USE_COSYVOICE else 'Piper/pyttsx3 (CPU)'}")
 

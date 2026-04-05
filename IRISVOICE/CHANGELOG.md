@@ -2,6 +2,34 @@
 
 ## [Unreleased] — IRISVOICEv.4
 
+### fix: CosyVoice3 VRAM conflict with local LLM — switch default to Piper
+
+**Why CosyVoice3-0.5B was 9.1 GB**: The "0.5B" refers only to the LLM text
+encoder component. The full system includes a Flow model (~1.3 GB), HiFi-GAN
+vocoder (80 MB), and ONNX speech tokenizer (~924 MB). On disk there were also
+redundant files: the CosyVoice2-0.5B directory (3.3 GB, superseded), the RL
+fine-tuned duplicate `llm.rl.pt` (1.9 GB, not used in inference), and the
+`.batch.onnx` tokenizer variant (925 MB, not referenced).
+
+**Runtime VRAM conflict**: CosyVoice3 loads ~3.3 GB into VRAM. An 8B Q4_K_M
+LLM needs ~5 GB. Total = 8.3 GB — exceeds the RTX 3070's 8 GB VRAM. The two
+cannot run simultaneously.
+
+**Disk freed**: ~6.1 GB removed (CosyVoice2 + llm.rl.pt + speech_tokenizer_v3.batch.onnx).
+CosyVoice3 on-disk footprint reduced from 9.1 GB to 6.3 GB.
+
+#### `backend/agent/tts.py`
+
+- **Default voice changed** from `"Cloned Voice"` (CosyVoice3, 3.3 GB VRAM) to
+  `"Built-in"` (Piper, ~65 MB, CPU-only). Backend now starts without consuming
+  any VRAM. Switch to "Cloned Voice" in Settings when you need voice cloning.
+- **VRAM guard added** to `_select_engine()`: CosyVoice3 is now blocked when
+  free VRAM < 4.5 GB. If a local LLM is loaded and using most of the VRAM,
+  TTS automatically falls back to Piper with a logged warning instead of causing
+  an OOM crash.
+- **Voice change re-check**: `update_config()` now resets `_engine_selected` when
+  `tts_voice` changes, so VRAM is re-evaluated on next synthesis with the new choice.
+
 ### fix: stop 9.1 GB CosyVoice3 model auto-loading at every backend start
 
 **Root cause of PC becoming unresponsive**: `CosyVoice3-0.5B` weights on disk are
