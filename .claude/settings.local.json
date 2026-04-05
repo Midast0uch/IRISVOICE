@@ -131,7 +131,18 @@
       "Bash(python bootstrap/record_event.py --type file_edit --file backend/agent/agent_kernel.py --desc \"Bug 5: add _broadcast_loop capture + run_coroutine_threadsafe fallback in _broadcast_inference_event; add set_main_loop\\(\\)\")",
       "Bash(python bootstrap/record_event.py --type file_edit --file backend/main.py --desc \"Bug 5: call agent_kernel.set_main_loop\\(\\) at startup to enable thread-safe WS broadcasts\")",
       "Bash(python bootstrap/record_event.py --type file_edit --file backend/iris_gateway.py --desc \"Bug 6: add _main_loop None+is_running guard around both chunk_callback run_coroutine_threadsafe calls\")",
-      "Bash(python bootstrap/record_event.py --type file_edit --file backend/voice/porcupine_detector.py --desc \"Bug 9: graceful degradation on missing access key or no wake words — set _disabled=True instead of raising ValueError\")"
+      "Bash(python bootstrap/record_event.py --type file_edit --file backend/voice/porcupine_detector.py --desc \"Bug 9: graceful degradation on missing access key or no wake words — set _disabled=True instead of raising ValueError\")",
+      "Bash(wc -l \"C:\\\\Users\\\\midas\\\\Desktop\\\\dev\\\\.claude\\\\worktrees\\\\flamboyant-cartwright\\\\IRISVOICE\\\\components\"/*.tsx)",
+      "Bash(find /c/Users/midas/Desktop/dev/.claude/worktrees/flamboyant-cartwright/IRISVOICE -path */app/* -name *.tsx)",
+      "Bash(grep -r \"while True\\\\|threading.Thread\\\\|asyncio.create_task\\\\|Schedule\" /c/Users/midas/Desktop/dev/.claude/worktrees/flamboyant-cartwright/IRISVOICE/backend --include=*.py)",
+      "Bash(grep -n \"reload=True\" /c/Users/midas/Desktop/dev/.claude/worktrees/flamboyant-cartwright/IRISVOICE/backend/*.py /c/Users/midas/Desktop/dev/.claude/worktrees/flamboyant-cartwright/IRISVOICE/start-backend.py)",
+      "Bash(grep -rn \"asyncio.sleep\\(0\\\\|asyncio.sleep\\(1\\\\|asyncio.sleep\\(2\" /c/Users/midas/Desktop/dev/.claude/worktrees/flamboyant-cartwright/IRISVOICE/backend --include=*.py)",
+      "Bash(python bootstrap/session_start.py --compact)",
+      "Bash(python bootstrap/query_graph.py --recent)",
+      "Bash(find C:/Users/midas/Desktop/dev/.claude/worktrees/flamboyant-cartwright/IRISVOICE/backend/agent -name *.yaml -o -name *.yml)",
+      "Bash(python -m pytest backend/tests/test_voice_pipeline.py -v)",
+      "Bash(python -m pytest backend/tests/test_tts_normalizer.py -v)",
+      "Bash(python -m pytest backend/tests/test_voice_pipeline.py backend/tests/test_tts_normalizer.py -v)"
     ]
   },
   "hooks": {
