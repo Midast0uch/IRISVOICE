@@ -244,7 +244,8 @@ class PorcupineWakeWordDetector:
         """Get the required frame length for audio input."""
         return self.porcupine.frame_length if self.porcupine else 512
     
-    def process_frame(self, audio_frame: List[int]) -> Tuple[bool, Optional[str]]:
+    def process_frame(self, audio_frame) -> Tuple[bool, Optional[str]]:
+        """Accepts any sequence of int16 samples (numpy array or list)."""
         """
         Process a single audio frame for wake word detection.
         

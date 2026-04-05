@@ -334,10 +334,14 @@ class AudioEngine:
         try:
             # Wake word detection (only when Porcupine is initialized and TTS is not playing)
             if self._porcupine_initialized and self._porcupine and not self._tts_active:
-                # Convert float32 [-1,1] → int16 PCM for Porcupine
-                pcm_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16).tolist()
+                # Convert float32 [-1,1] → int16 PCM for Porcupine.
+                # PERF: keep as numpy array — avoid .tolist() which allocates a Python
+                # int object per sample (512 objects × 31 frames/sec = ~16k allocs/sec).
+                # pvporcupine.process() accepts any sequence supporting the buffer protocol,
+                # including numpy int16 arrays.
+                pcm_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16)
                 frame_len = self._porcupine.frame_length
-                # Process in Porcupine-sized chunks
+                # Process in Porcupine-sized chunks (numpy slicing is O(1), zero-copy)
                 for i in range(0, len(pcm_int16) - frame_len + 1, frame_len):
                     chunk = pcm_int16[i:i + frame_len]
                     detected, word = self._porcupine.process_frame(chunk)

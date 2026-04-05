@@ -2,6 +2,50 @@
 
 ## [Unreleased] — IRISVOICEv.4
 
+### perf: eliminate PC-grinding memory spikes (frontend + backend)
+
+Root-cause audit found 3 issues causing the PC to become unresponsive when both servers ran simultaneously.
+
+#### `components/chat-view.tsx`
+
+- **TTS word highlight (CRITICAL)** — `currentWordIndex` was stored inside the `Message`
+  object, inside `conversations` state. Every 200 ms the interval called `setConversations`
+  which mapped ALL conversations × ALL messages → ~10,000 object allocations per tick →
+  50,000+ allocations/sec at peak. Each `setConversations` call also triggered the
+  `conversations` useEffect which wrote the full JSON to `localStorage` (10MB+) every 200 ms.
+  Additionally `messages` was in the `useEffect` deps so the interval was torn down and
+  recreated on every keystroke, queuing 5–10 simultaneous intervals.
+  **Fix:** `currentWordIndex` removed from `Message` type entirely. A single
+  `ttsWordIndex: number` state is updated instead — one integer, zero conversation
+  remapping, zero localStorage writes during TTS. `messages` removed from useEffect deps
+  (words snapshotted at speak-start via local variable). localStorage persist debounced
+  to 1 s so rapid state changes don't hammer disk I/O.
+
+- **localStorage debounce** — conversations persistence now defers 1 s after the last
+  change instead of writing synchronously on every mutation.
+
+#### `backend/agent/local_model_manager.py`
+
+- **Health check polling (HIGH)** — while waiting for the model server to start, the
+  health probe fired every 0.5 s (2 HTTP requests/sec) for up to 3 minutes. This produced
+  360+ HTTP calls during a single model load, thrashing the asyncio event loop and
+  preventing other startup tasks from running.
+  **Fix:** Exponential backoff starting at 1 s, doubling each missed poll, capped at 8 s.
+  Worst-case load now produces ~25 health checks instead of 360.
+
+#### `backend/audio/engine.py`
+
+- **Audio frame conversion (HIGH)** — `_process_audio_frame` called `.tolist()` on the
+  numpy int16 array before passing to Porcupine, allocating 512 Python `int` objects per
+  frame × 31 frames/sec = ~16,000 object allocations/sec continuously while mic is active.
+  **Fix:** numpy int16 array passed directly to `porcupine.process_frame()` — pvporcupine
+  accepts any buffer-protocol sequence. Zero allocation overhead per frame.
+
+#### `backend/voice/porcupine_detector.py`
+
+- `process_frame` type hint updated to accept `Any` sequence (numpy array or list) without
+  mypy complaints.
+
 ### fix: 10-bug audit — voice/text/tool pipeline hardening
 
 Complete audit of the path from model load → voice input → LLM inference → tool execution → WebSocket delivery. All 10 bugs fixed.

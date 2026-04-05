@@ -773,9 +773,12 @@ class LocalModelManager:
             reader.start()
 
             # ── Async wait loop — drain progress queue + poll for server ready ──
+            # Poll with exponential backoff: starts at 1 s, doubles each miss up to 8 s.
+            # This prevents 2 HTTP requests/sec thrashing the event loop during a 3-min load.
             deadline = loop.time() + 180.0  # 3 min max (large models on slow HW need time)
             ready = False
             last_pct = 0
+            poll_interval = 1.0  # seconds; grows with backoff
 
             async with httpx.AsyncClient(timeout=2.0) as client:
                 while loop.time() < deadline:
@@ -809,7 +812,9 @@ class LocalModelManager:
 
                     if ready:
                         break
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(poll_interval)
+                    # Exponential backoff: 1 s → 2 s → 4 s → 8 s (cap) per missed poll
+                    poll_interval = min(poll_interval * 2, 8.0)
 
             if ready:
                 filename = Path(model_path).name

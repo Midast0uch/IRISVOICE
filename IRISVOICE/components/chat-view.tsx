@@ -76,7 +76,8 @@ interface Message {
   timestamp: Date
   errorType?: "agent" | "voice" | "validation"
   words?: string[]; // For TTS word highlighting
-  currentWordIndex?: number; // Current word being spoken
+  // NOTE: currentWordIndex is NOT stored in message state — it lives in ttsWordIndex
+  // component state to avoid re-serialising all conversations on every 200 ms tick.
   feedback?: 'positive' | 'negative' | null; // User feedback on AI responses
   thinking?: string; // Chain-of-thought from the model, shown in a collapsible block
 }
@@ -152,19 +153,23 @@ export function ChatWing({
     return localStorage.getItem(ACTIVE_ID_KEY) || null
   })
 
-  // Persist conversations whenever they change (debounced via useEffect dep array)
+  // Persist conversations with a 1 s debounce — avoids hammering localStorage on every
+  // fast state change (typing, streaming, etc.).  isSpeaking is excluded from the debounce
+  // because the TTS interval no longer mutates conversations anyway.
   useEffect(() => {
     if (typeof window === "undefined") return
-    try {
-      // Cap stored conversations to prevent unbounded localStorage growth
-      const toStore = conversations.slice(-MAX_CONVERSATIONS).map(c => ({
-        ...c,
-        messages: c.messages.slice(-MAX_MESSAGES_PER_CONV),
-      }))
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore))
-    } catch {
-      // localStorage full or unavailable — silently skip
-    }
+    const id = setTimeout(() => {
+      try {
+        const toStore = conversations.slice(-MAX_CONVERSATIONS).map(c => ({
+          ...c,
+          messages: c.messages.slice(-MAX_MESSAGES_PER_CONV),
+        }))
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore))
+      } catch {
+        // localStorage full or unavailable — silently skip
+      }
+    }, 1000);
+    return () => clearTimeout(id);
   }, [conversations])
 
   // Persist active conversation ID
@@ -195,6 +200,9 @@ export function ChatWing({
   // TTS state
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [currentTtsMessageId, setCurrentTtsMessageId] = useState<string | null>(null);
+  // Word index lives here, NOT inside Message/Conversations, so the 200 ms tick
+  // updates a single number rather than remapping all conversations + localStorage.
+  const [ttsWordIndex, setTtsWordIndex] = useState(-1);
   
   // Copy feedback state
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -275,7 +283,6 @@ export function ChatWing({
       sender: lastTextResponse.sender,
       timestamp: new Date(),
       words: isUserVoice ? undefined : lastTextResponse.text.split(' '),
-      currentWordIndex: isUserVoice ? undefined : -1,
       feedback: isUserVoice ? undefined : null,
       thinking: lastTextResponse.thinking || undefined,
     }
@@ -369,37 +376,39 @@ export function ChatWing({
     }
   }, [fieldErrors, activeConversationId])
 
-  // Handle TTS word highlighting simulation (fallback when backend doesn't provide tts_word events)
+  // Handle TTS word highlighting simulation (fallback when backend doesn't provide tts_word events).
+  // PERF: word index lives in ttsWordIndex state — a single number — so each 200 ms tick does
+  // NOT remap all conversations or trigger a localStorage write.  messages is NOT in deps;
+  // we snapshot the words array into a ref when speaking starts to avoid re-creating the
+  // interval on every message change.
   useEffect(() => {
-    if (isSpeaking && currentTtsMessageId && activeConversationId) {
-      const message = messages.find((m: Message) => m.id === currentTtsMessageId);
-      if (message && message.words && message.words.length > 0) {
-        let wordIndex = 0;
-        const interval = setInterval(() => {
-          if (wordIndex >= message.words!.length) {
-            setIsSpeaking(false);
-            clearInterval(interval);
-            return;
-          }
-          setConversations((prev: Conversation[]) => prev.map((conv: Conversation) => 
-            conv.id === activeConversationId
-              ? {
-                  ...conv,
-                  messages: conv.messages.map((m: Message) => 
-                    m.id === currentTtsMessageId 
-                      ? { ...m, currentWordIndex: wordIndex }
-                      : m
-                  )
-                }
-              : conv
-          ));
-          wordIndex++;
-        }, 200); // 200ms per word - adjust based on actual TTS speed
-        
-        return () => clearInterval(interval);
-      }
+    if (!isSpeaking || !currentTtsMessageId) {
+      setTtsWordIndex(-1);
+      return;
     }
-  }, [isSpeaking, currentTtsMessageId, activeConversationId, messages]);
+    const message = messages.find((m: Message) => m.id === currentTtsMessageId);
+    if (!message?.words?.length) return;
+
+    const words = message.words; // stable snapshot — won't change while speaking
+    setTtsWordIndex(0);
+    let wordIndex = 0;
+    const interval = setInterval(() => {
+      wordIndex++;
+      if (wordIndex >= words.length) {
+        setIsSpeaking(false);
+        setTtsWordIndex(-1);
+        clearInterval(interval);
+        return;
+      }
+      setTtsWordIndex(wordIndex);
+    }, 200);
+
+    return () => {
+      clearInterval(interval);
+      setTtsWordIndex(-1);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSpeaking, currentTtsMessageId]); // intentionally omit `messages` — words are snapshotted above
 
   // Reset speaking state when voice changes to idle
   useEffect(() => {
@@ -1677,19 +1686,22 @@ ${message.text}`;
                                 <div className="relative">
                                   <div className="text-[13px] leading-relaxed text-white/85 prose prose-invert prose-sm max-w-none">
                                     {isExpanded ? (
-                                      message.words ? message.words.map((word, idx) => (
+                                      message.words ? message.words.map((word, idx) => {
+                                        const activeIdx = message.id === currentTtsMessageId ? ttsWordIndex : -1;
+                                        return (
                                         <motion.span
                                           key={idx}
-                                          initial={idx === message.currentWordIndex ? { opacity: 0.5 } : false}
-                                          animate={{ 
-                                            opacity: idx === message.currentWordIndex ? 1 : idx < (message.currentWordIndex || -1) ? 0.7 : 0.85,
-                                            color: idx === message.currentWordIndex ? glowColor : 'rgba(255,255,255,0.85)',
+                                          initial={idx === activeIdx ? { opacity: 0.5 } : false}
+                                          animate={{
+                                            opacity: idx === activeIdx ? 1 : idx < activeIdx ? 0.7 : 0.85,
+                                            color: idx === activeIdx ? glowColor : 'rgba(255,255,255,0.85)',
                                           }}
                                           transition={{ duration: prefersReducedMotion ? 0 : 0.1 }}
                                         >
                                           {word}{' '}
                                         </motion.span>
-                                      )) : message.text
+                                        );
+                                      }) : message.text
                                     ) : (
                                       message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT) + '...'
                                     )}
@@ -1737,19 +1749,22 @@ ${message.text}`;
                             ) : (
                               // Short message - display fully with TTS highlighting
                               <div className="text-[13px] leading-relaxed text-white/85 prose prose-invert prose-sm max-w-none">
-                                {message.words ? message.words.map((word, idx) => (
+                                {message.words ? message.words.map((word, idx) => {
+                                  const activeIdx = message.id === currentTtsMessageId ? ttsWordIndex : -1;
+                                  return (
                                   <motion.span
                                     key={idx}
-                                    initial={idx === message.currentWordIndex ? { opacity: 0.5 } : false}
+                                    initial={idx === activeIdx ? { opacity: 0.5 } : false}
                                     animate={{
-                                      opacity: idx === message.currentWordIndex ? 1 : idx < (message.currentWordIndex || -1) ? 0.7 : 0.85,
-                                      color: idx === message.currentWordIndex ? glowColor : 'rgba(255,255,255,0.85)',
+                                      opacity: idx === activeIdx ? 1 : idx < activeIdx ? 0.7 : 0.85,
+                                      color: idx === activeIdx ? glowColor : 'rgba(255,255,255,0.85)',
                                     }}
                                     transition={{ duration: prefersReducedMotion ? 0 : 0.1 }}
                                   >
                                     {word}{' '}
                                   </motion.span>
-                                )) : renderWithLinks(message.text)}
+                                  );
+                                }) : renderWithLinks(message.text)}
                               </div>
                             )}
                             
