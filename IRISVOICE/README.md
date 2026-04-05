@@ -9,15 +9,15 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
 - **End-to-End Audio Processing**: LFM 2.5 audio model handles complete audio pipeline
 - **Voice Commands**: Natural language voice interaction with double-click activation
-- **Text-to-Speech**: High-quality speech synthesis with configurable voices
+- **Text-to-Speech**: F5-TTS (zero-shot voice cloning from TOMV2.wav, CPU) or Piper (fast built-in)
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
 
 ### 🤖 AI Agent System
-- **Dual-LLM Architecture**: lfm2-8b (reasoning) + lfm2.5-1.2b-instruct (execution)
+- **Flexible Inference**: Any GGUF model via llama-cpp-python (port 8082) or OpenAI-compatible VPS — select in Settings
+- **Tool Execution**: LFM2.5-1.2B-Instruct handles structured tool calls; main LLM handles reasoning and conversation
 - **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer
-- **Model-Agnostic Design**: Works with Local, VPS, or OpenAI inference backends
-- **Flexible Inference Modes**: Choose between Local Models, VPS Gateway, or OpenAI API
-- **User-Configurable Models**: Select which models handle reasoning and tool execution
+- **Model-Agnostic Design**: Works with Local GGUF, VPS, or OpenAI inference backends
+- **Flexible Inference Modes**: Choose between Local Models (Models Browser), VPS Gateway, or OpenAI API
 - **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
@@ -85,10 +85,10 @@ git clone <repository-url>
 cd IRISVOICE
 ```
 
-### 2. Vision Model Setup (LFM2.5-VL)
+### 2. Vision Model Setup (LFM2.5-VL, optional)
 
 ```python
-# Download LFM2.5-VL GGUF files (one-time, ~1GB total)
+# Download LFM2.5-VL GGUF files (one-time, ~1GB total) — optional, only for vision features
 from huggingface_hub import hf_hub_download
 import os
 base = os.path.expanduser("~/models/LFM2.5-VL-1.6B/")
@@ -100,9 +100,6 @@ hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "mmproj-LFM2.5-VL-1.6B-Q4_0.gguf
 ```bash
 # Start vision server (Windows)
 start_vl.bat
-
-# Start vision server (macOS/Linux)
-bash start_vl.sh
 
 # Install vision dependencies
 pip install mss httpx pywinauto pyautogui pillow win32clipboard
@@ -117,21 +114,17 @@ python -m venv venv
 # Windows
 venv\Scripts\activate
 
-# macOS/Linux
-source venv/bin/activate
-
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Download AI models
-python download_text_model.py
-python download_lfm_audio.py
+# Install F5-TTS for voice cloning (optional — uses Piper built-in if skipped)
+pip install f5-tts
 
 # Set up environment variables
 # Create .env file with:
 # PICOVOICE_ACCESS_KEY=your_access_key_here
-# TELEGRAM_BOT_TOKEN=your_bot_token
-# TELEGRAM_CHAT_ID=your_chat_id
+# TELEGRAM_BOT_TOKEN=your_bot_token  (optional)
+# TELEGRAM_CHAT_ID=your_chat_id      (optional)
 ```
 
 ### 3. Frontend Setup
@@ -211,13 +204,12 @@ npm run dev:tauri
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
    ```
 
-3. **Download AI Models**
+3. **Install TTS** (one-time)
    ```bash
-   # Download text models (lfm2-8b and lfm2.5-1.2b-instruct)
-   python download_text_model.py
-   
-   # Download audio model (LFM 2.5 Audio)
-   python download_lfm_audio.py
+   # F5-TTS for zero-shot voice cloning (optional — falls back to Piper if skipped)
+   pip install f5-tts
+   # Place TOMV2.wav at IRISVOICE/data/TOMV2.wav for voice cloning
+   # F5-TTS model weights (~800 MB) download automatically on first "Cloned Voice" use
    ```
 
 4. **Configure Environment**
@@ -283,24 +275,25 @@ npm run dev:tauri
 │  │              Agent Kernel (Orchestrator)             │  │
 │  │  ┌────────────────┐      ┌────────────────┐         │  │
 │  │  │  Model Router  │      │  Tool Bridge   │         │  │
-│  │  │  (Dual-LLM)    │      │  (MCP Tools)   │         │  │
+│  │  │                │      │  (MCP Tools)   │         │  │
 │  │  └────────────────┘      └────────────────┘         │  │
 │  └──────────────────────────────────────────────────────┘  │
 │         │                           │                       │
 │  ┌──────▼──────┐           ┌────────▼────────┐            │
-│  │  LFM 2-8B   │           │  MCP Servers    │            │
-│  │  (Brain)    │           │  - Browser      │            │
-│  │             │           │  - File Mgr     │            │
-│  │  LFM 2.5    │           │  - System       │            │
-│  │  (Executor) │           │  - App Launch   │            │
-│  └─────────────┘           │  - Vision       │            │
-│                            └─────────────────┘            │
+│  │  GGUF LLM   │           │  MCP Servers    │            │
+│  │  (user's    │           │  - Browser      │            │
+│  │   model,    │           │  - File Mgr     │            │
+│  │   port 8082)│           │  - System       │            │
+│  │             │           │  - App Launch   │            │
+│  │  LFM 2.5    │           │  - Vision       │            │
+│  │  (tool calls│           └─────────────────┘            │
+│  └─────────────┘                                           │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │           Voice Pipeline (LFM 2.5 Audio)             │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐          │  │
-│  │  │ Porcupine│  │   STT    │  │   TTS    │          │  │
-│  │  │ Wake Word│  │ (Whisper)│  │(SpeechT5)│          │  │
-│  │  └──────────┘  └──────────┘  └──────────┘          │  │
+│  │                   Voice Pipeline                     │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
+│  │  │ Porcupine│  │   STT    │  │   TTS            │  │  │
+│  │  │ Wake Word│  │ (Whisper)│  │(F5-TTS / Piper)  │  │  │
+│  │  └──────────┘  └──────────┘  └──────────────────┘  │  │
 │  └──────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -320,24 +313,23 @@ npm run dev:tauri
 - **State Manager**: Settings persistence and synchronization
 - **Session Manager**: Multi-client session handling
 - **Agent Kernel**: AI agent orchestration
-- **Model Router**: Dual-LLM coordination
+- **Model Router**: Routes requests between GGUF LLM and LFM instruct (tool calls)
 - **Tool Bridge**: MCP tool execution
 - **Voice Pipeline**: End-to-end audio processing
 
-### Dual-LLM Architecture
+### Model Architecture
 
-| Model | Role | Size | Capabilities |
-|-------|------|------|--------------|
-| **lfm2-8b** | Brain (Reasoning) | ~8GB | Planning, reasoning, conversation |
-| **lfm2.5-1.2b-instruct** | Executor | ~1.2GB | Tool execution, instruction following |
+| Model | Role | Size | Notes |
+|-------|------|------|-------|
+| **Any GGUF model** | Reasoning & conversation | User's choice | Served via llama-cpp-python on port 8082; selected in Models Browser |
+| **lfm2.5-1.2b-instruct** | Tool execution | ~1.2 GB | Structured tool calls only; optional |
+| **LFM2.5-VL-1.6B** | Vision / GUI | ~1 GB | Optional; served via llama-server on port 8081 |
 
 **Communication Flow:**
-1. User input → Brain analyzes and creates plan
-2. Brain → Executor: Tool execution requests
-3. Executor → Tools: Execute operations
-4. Tools → Executor: Return results
-5. Executor → Brain: Report outcomes
-6. Brain → User: Generate response
+1. User input → GGUF LLM (your chosen model) analyzes and responds
+2. When tools needed → LFM2.5-1.2B-Instruct generates structured tool calls
+3. Tool Bridge → MCP Servers: Execute operations
+4. Results returned → LLM incorporates and responds
 
 ## ⚙️ Configuration
 
@@ -371,21 +363,33 @@ LOG_DIR=backend/logs
 
 ```yaml
 models:
-  - id: "brain"
-    path: "./models/LFM2-8B-A1B"
-    capabilities: ["reasoning", "planning"]
-    constraints:
-      device: "cuda"
-      dtype: "bfloat16"
-    optional: false
-
+  # Tool execution — LFM2.5-1.2B-Instruct handles structured tool calls
   - id: "executor"
     path: "./models/LFM2.5-1.2B-Instruct"
     capabilities: ["tool_execution", "instruction_following"]
     constraints:
-      device: "cuda"
-      dtype: "bfloat16"
-    optional: false
+      device: "cpu"
+      dtype: "float32"
+    optional: true
+
+  # GGUF local inference — user picks model in Settings → Models Browser
+  # Served via llama-cpp-python on port 8082 (never auto-loaded)
+  - id: "gguf_local"
+    path: null
+    capabilities: ["conversation", "tool_execution", "reasoning"]
+    constraints:
+      inference_server_url: "http://127.0.0.1:8082/v1"
+      auto_load: false
+    optional: true
+
+  # Vision (optional) — LFM2.5-VL via llama-server on port 8081
+  - id: "vision"
+    path: null
+    capabilities: ["vision", "gui_interaction"]
+    constraints:
+      vision_server_url: "http://localhost:8081/v1"
+      auto_load: false
+    optional: true
 
 communication:
   timeout: 30.0
@@ -471,8 +475,8 @@ IRISVOICE/
 │   ├── state_manager.py # State persistence
 │   └── ws_manager.py    # WebSocket manager
 ├── models/              # AI model files
-│   ├── LFM2-8B-A1B/
-│   ├── LFM2.5-1.2B-Instruct/
+│   ├── LFM2.5-1.2B-Instruct/   # tool execution (optional)
+│   ├── LFM2.5-VL-1.6B/         # vision (optional)
 │   └── wake_words/
 ├── tests/               # Test suites
 │   ├── integration/     # Integration tests
@@ -695,19 +699,16 @@ lsof -i :8000  # macOS/Linux
 
 **Models not loading:**
 ```bash
-# Note: Models are NOT loaded automatically on startup (lazy loading)
+# Models are NOT loaded automatically on startup (lazy loading by design)
 # Select inference mode in Agent settings first
 
 # For Local Models mode:
-# Re-download models if needed
-python download_text_model.py
-python download_lfm_audio.py
-
-# Check available GPU RAM (need ~20GB for local models)
+# Open Settings → Models Browser → pick a GGUF model → click Load
+# GPU RAM needed depends on your chosen model (e.g. 8B Q4_K_M ≈ 5 GB VRAM)
 nvidia-smi
 
 # For VPS/OpenAI modes:
-# No local models needed - configure in Agent settings
+# No local models needed — configure endpoint in Agent settings
 ```
 
 **Wake word not detected:**
