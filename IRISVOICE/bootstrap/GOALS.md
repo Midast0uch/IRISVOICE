@@ -730,13 +730,234 @@ PRIORITY ORDER FOR NEW SESSIONS
   2. Domain 3 — Vision (paint_iris_demo, vision_layer — already developing)
   3. Domain 2 — Voice pipeline (primary input modality)
   4. Domain 5 — Mycelium stubs (improves Reviewer quality)
-  5. Domain 7 — Backend reliability (needed before distribution)
-  6. Domain 4 — Skills library (self-extension)
-  7. Domain 6 — Frontend polish (quality of life)
-  8. Domain 8 — Distribution (needed to ship)
-  9. Domain 9 — Advanced features (after everything else)
+  5. Domain 11 — PiN + landmark bridge verification (foundation must work)
+  6. Domain 12 — PiN + MCP storage integrations
+  7. Domain 7 — Backend reliability (needed before distribution)
+  8. Domain 4 — Skills library (self-extension)
+  9. Domain 6 — Frontend polish (quality of life)
+  10. Domain 8 — Distribution (needed to ship)
+  11. Domain 9 — Advanced features (after everything else)
 
-CONTRACTS (behavioral rules — always follow)
+---
+
+DOMAIN 11 — PiN + CROSS-PROJECT LANDMARK BRIDGE VERIFICATION
+PiNs and landmark bridges are built. They need end-to-end testing before
+they can be trusted as production memory infrastructure. These tests verify
+that the foundation works before adding external integrations on top of it.
+
+  [11.1] PiN round-trip — bootstrap layer
+    Status: NOT STARTED
+    What to test:
+      a) Add a PiN via pin.py --add and confirm it appears in --list
+      b) Add a PiN via record_event.py --type pin and confirm it appears
+      c) Mark a PiN --permanent, run a decay pass, verify it survives
+      d) Add a non-permanent PiN, simulate decay (manually lower updated_at),
+         confirm it fades (lower weight) after decay pass
+      e) Search: pin.py --search "keyword" returns correct results including
+         matches on file_refs and content
+    Test command:
+      python -c "
+        from bootstrap.coordinates import CoordinateStore
+        s = CoordinateStore()
+        pid = s.add_pin('Test PiN', pin_type='decision', content='test', is_permanent=True)
+        pins = s.get_pins()
+        assert any(p['pin_id'] == pid for p in pins), 'PiN not found'
+        results = s.search_pins('Test')
+        assert any(p['pin_id'] == pid for p in results), 'search failed'
+        print('[PASS] PiN round-trip OK')
+      "
+    Landmark: pin_bootstrap_verified
+
+  [11.2] PiN link traversal
+    Status: NOT STARTED
+    What to test:
+      a) Create a PiN and a landmark, add a pin_link between them
+      b) Verify the link appears in the graph edge table
+      c) Verify the link weight compounds on repeated reference
+         (manually call add_pin_link twice and check weight doubles)
+    Test command:
+      python -c "
+        from bootstrap.coordinates import CoordinateStore
+        s = CoordinateStore()
+        pid = s.add_pin('Link test', pin_type='doc')
+        landmarks = s.get_landmarks()
+        if not landmarks:
+            print('[SKIP] no landmarks to link to')
+        else:
+            link_id = s.add_pin_link('pin', pid, 'landmark',
+                                     landmarks[0]['landmark_id'], 'documents')
+            assert link_id > 0, 'link not created'
+            print('[PASS] PiN link OK')
+      "
+    Landmark: pin_links_verified
+
+  [11.3] Landmark bridge — same-instance round-trip
+    Status: NOT STARTED
+    What to test:
+      a) Register a bridge between two local landmarks
+      b) find_bridge() returns it by remote_landmark_name
+      c) Bridge survives restart (persisted to DB)
+    Test command:
+      python -c "
+        from bootstrap.coordinates import CoordinateStore
+        s = CoordinateStore()
+        landmarks = s.get_landmarks()
+        if len(landmarks) < 2:
+            print('[SKIP] need >= 2 landmarks')
+        else:
+            bid = s.add_landmark_bridge(
+                local_landmark_id=landmarks[0]['landmark_id'],
+                remote_landmark_name='test_remote_landmark',
+                confidence=0.90, bridge_type='equivalent',
+                notes='test bridge'
+            )
+            result = s.find_bridge('test_remote_landmark')
+            assert result is not None, 'bridge not found'
+            assert result['confidence'] == 0.90, 'confidence mismatch'
+            print(f'[PASS] bridge round-trip OK: {bid}')
+      "
+    Landmark: landmark_bridge_verified
+
+  [11.4] Landmark bridge — cross-project pattern recognition simulation
+    Status: NOT STARTED
+    What to test:
+      Simulate entering a new project: create a fresh CoordinateStore at
+      a temp path, add a landmark with the same name as the remote bridge,
+      call find_bridge() and verify it returns a match with >= 0.80 confidence.
+      This simulates what happens when IRIS enters a project that has a
+      landmark matching a known bridge — the pattern should activate
+      without re-crystallising from the 12-activation threshold.
+    Test command:
+      python -c "
+        import tempfile, os
+        from bootstrap.coordinates import CoordinateStore
+        # Primary instance
+        s = CoordinateStore()
+        landmarks = s.get_landmarks()
+        if not landmarks:
+            print('[SKIP] no landmarks')
+        else:
+            lm = landmarks[0]
+            bid = s.add_landmark_bridge(
+                local_landmark_id=lm['landmark_id'],
+                remote_landmark_name='g1_api_healthy',
+                confidence=0.95
+            )
+            # Check bridge activates for known remote name
+            bridge = s.find_bridge('g1_api_healthy')
+            assert bridge['confidence'] >= 0.80, 'activation threshold not met'
+            print(f'[PASS] bridge activation sim OK: conf={bridge[\"confidence\"]}')
+      "
+    Landmark: bridge_activation_simulated
+
+  [11.5] IRIS app-layer PiN + bridge schema presence
+    Status: NOT STARTED
+    What to test:
+      After calling initialise_mycelium_schema(), verify that
+      mycelium_pins, mycelium_pin_links, and mycelium_landmark_bridges
+      tables all exist in the runtime DB (data/memory.db dev mode).
+    Test command:
+      python -m pytest backend/tests/test_mycelium_store.py -k "pin or bridge" -v
+      (add new test cases for the three tables if they don't exist yet)
+    Landmark: mycelium_pin_schema_verified
+
+  Graduate condition: All 5 tests pass. PiN write → persist → read → decay →
+  bridge register → bridge lookup all verified. Foundation is solid.
+
+---
+
+DOMAIN 12 — PiN + MCP STORAGE INTEGRATIONS
+PiNs become the bridge between IRIS memory and external storage systems.
+Every external artifact IRIS reads or writes becomes a PiN — a named,
+typed, traversable node in the memory graph. This domain wires the MCP
+integrations that already exist (see backend/integrations/) to the PiN layer.
+
+Architecture principle:
+  External artifact → read via MCP → anchor as PiN → link to relevant landmark
+  The PiN carries: url_refs (the external link), file_refs (any local copy),
+  tags (for search), content (markdown snapshot), pin_type (the artifact kind).
+  Permanent PiNs survive across sessions and federation merges.
+
+  [12.1] Google Drive PiN integration
+    Status: NOT STARTED
+    What: When IRIS reads or references a Google Drive file, anchor a PiN:
+          pin_type='doc', url_refs=[drive_url], content=first_500_chars
+          Link to the landmark active during the task.
+    MCP: Requires Google OAuth2 (already modeled in backend/integrations/models.py
+         OAuthConfig provider="google"). Wire via integrations/mcp_bridge.py.
+    Implementation:
+      a) MCP tool: gdrive_read_file(file_id) → text content + metadata
+      b) After read: auto-anchor PiN if content is relevant (>100 chars)
+      c) PiN title = Drive file name, url_refs = share link
+      d) Set is_permanent=True for files explicitly saved to graph by user
+    Test: Read a Drive file through IRIS, verify PiN appears in pin.py --list
+    Landmark: gdrive_pin_wired
+
+  [12.2] Discord channel PiN integration
+    Status: NOT STARTED
+    What: When IRIS reads a Discord thread or message, anchor a PiN:
+          pin_type='note', url_refs=[message_url], content=message_body,
+          tags=['discord', channel_name]
+    MCP: Discord OAuth2 or bot token (OAuthConfig provider="discord" exists).
+         Wire via integrations/mcp_bridge.py.
+    Implementation:
+      a) MCP tool: discord_read_channel(channel_id, limit=20) → messages
+      b) Anchor PiN per thread (not per message) — group by conversation
+      c) If thread references a file or issue, auto-link PiN to that file node
+    Test: Read a Discord thread through IRIS, verify PiN appears in --search
+    Landmark: discord_pin_wired
+
+  [12.3] Notion page PiN integration
+    Status: NOT STARTED
+    What: When IRIS reads a Notion page, anchor a PiN:
+          pin_type='doc', url_refs=[notion_url], content=markdown_export,
+          tags=['notion']
+    MCP: Notion API token (credentials type). Wire via integrations/.
+    Implementation:
+      a) MCP tool: notion_read_page(page_id) → markdown content
+      b) Anchor PiN with full markdown snapshot (first 2000 chars)
+      c) If the Notion page has subpages, create child PiNs linked via
+         'contains' relationship
+    Test: Read a Notion page through IRIS, verify PiN + content saved
+    Landmark: notion_pin_wired
+
+  [12.4] GitHub issue/PR PiN integration
+    Status: NOT STARTED (Domain 4.4 partially addressed the skill level)
+    What: When IRIS reads a GitHub issue or PR, anchor a PiN:
+          pin_type='fragment', url_refs=[github_url],
+          file_refs=[affected_files], tags=['github', repo_name]
+    Link: PiN → relevant file_nodes for files mentioned in the PR diff
+    Implementation:
+      a) MCP tool: github_read_issue(owner, repo, number) → body + comments
+      b) Parse diff to extract file_refs automatically
+      c) Auto-link PiN → file_node for each affected file (relationship='references')
+    Test: Fetch a GitHub issue through IRIS, verify PiN anchored with file_refs
+    Landmark: github_pin_wired
+
+  [12.5] PiN auto-anchor policy
+    Status: NOT STARTED
+    What: Define when IRIS should anchor a PiN automatically vs. requiring
+          explicit user instruction. Prevents PiN graph from becoming noise.
+    Policy:
+      AUTO-ANCHOR (always):
+        - Files edited during a DER task (file_refs, pin_type='file')
+        - External URLs fetched during RESEARCH mode (url_refs, pin_type='url')
+        - Design decisions made in a SPEC task (pin_type='decision', permanent=True)
+      ASK-FIRST:
+        - Large documents (>5000 chars) — ask before snapshotting
+        - External files the user hasn't explicitly referenced
+      NEVER:
+        - Authentication tokens or credentials
+        - Ephemeral session data
+    Implementation: Policy checked in tool_bridge.py after each tool execution.
+    Test: Run a DER task that edits a file, verify auto-PiN anchored.
+          Run a task that fetches a URL, verify URL PiN anchored.
+    Landmark: pin_auto_anchor_policy
+
+  Graduate condition: IRIS reads a Google Drive doc, a Discord thread,
+  and fetches a GitHub issue in a single session. All three appear as PiNs
+  in pin.py --list with correct types, refs, and links to active landmarks.
+  The Reviewer sees them in subsequent tasks involving the same landmark cluster.
   [1.00] Never mark a landmark without a passing test.
   [1.00] Run the quality check before running any test. A passing test on
          unoptimized code is a time bomb, not a landmark.

@@ -2,7 +2,7 @@
 ## How the Agent Processes Prompts Into Executing Tasks
 
 **File:** `IRISVOICE/docs/DER_LOOP_MYCELIUM.md`
-**Last updated:** Session 6 (Gate 4)
+**Last updated:** v1.7 — all DER gaps resolved, PiN layer + landmark bridges added
 
 ---
 
@@ -11,9 +11,11 @@
 IRIS uses a two-phase agent architecture:
 
 1. **DER Loop** (Director → Explorer → Reviewer) — structured execution brain that breaks tasks into steps, filters each step through a Reviewer, executes via tools or direct model inference, and records everything to Mycelium.
-2. **Mycelium Memory** — coordinate graph stored in SQLite that gives the DER loop spatial context: where the agent is, what has worked before, what failure patterns exist, and what to prioritize next.
+2. **Mycelium Memory** — coordinate graph stored in SQLite (`data/memory.db` at runtime, `bootstrap/coordinates.db` during build). Gives the DER loop spatial context: where the agent is, what has worked before, what failure patterns exist, and what to prioritize next.
+3. **PiN Layer** — Primordial Information Nodes anchor explicit human knowledge (files, docs, images, decisions, URLs) as typed graph nodes that participate in context assembly and decay alongside coordinate nodes.
+4. **Landmark Bridges** — cross-project equivalence maps that let patterns crystallized in one project activate immediately in another, without re-learning from scratch.
 
-The loop and the memory are inseparable. Without a mature Mycelium graph, the Reviewer has no signal and falls back to PASS on every step. As the graph matures, the Reviewer begins shaping the execution trajectory based on real coordinate history.
+The loop and the memory are inseparable. Without a mature Mycelium graph, the Reviewer has no signal and falls back to PASS on every step. As the graph matures, the Reviewer begins shaping the execution trajectory based on real coordinate history. PiNs provide the explicit knowledge layer that coordinates cannot — human decisions, design intent, and external references — feeding the Reviewer with richer context.
 
 ---
 
@@ -22,11 +24,14 @@ The loop and the memory are inseparable. Without a mature Mycelium graph, the Re
 ### 2.1 Path from message to execution
 
 ```
-User types message in frontend
+User types message in frontend  (or speaks → STT → text)
     ↓
 WebSocket → IRISGateway.handle_message()          [iris_gateway.py]
-    ↓
+    ↓ routes by msg_type
 msg_type == "text_message" → _handle_chat()
+    ↓
+security_filter.py → message sanitization + injection detection
+mcp_security.py    → HyphaChannel trust enforcement
     ↓
 get_agent_kernel(session_id)                       [AgentKernel instance per session]
     ↓
@@ -35,7 +40,7 @@ agent_kernel.process_text_message(text, session_id)   [agent_kernel.py]
 
 ### 2.2 process_text_message() — the staging area
 
-Before the DER loop runs, four things happen in fixed order:
+Before the DER loop runs, these steps happen in fixed order:
 
 ```python
 # Step 1 — Sanitize (injection protection)
@@ -51,14 +56,18 @@ task_class, space_subset = TaskClassifier.classify(task)
 context_package, is_mature = memory_interface.get_task_context_package(
     task, session_id, space_subset
 )
-# is_mature=True → ContextPackage with full coordinate data
+# is_mature=True → ContextPackage with full coordinate data + PiN summaries
 # is_mature=False → plain string context (graph not ready yet)
 
 # Step 4 — Plan the task
 plan = _plan_task(text, context_package=context_package, is_mature=is_mature)
 # Returns ExecutionPlan with strategy + list of PlanSteps
+# temperature = 0.1 if is_mature, else 0.25
 
-# Step 5 — Route by strategy
+# Step 5 — Ingest planning reasoning as coordinate statement
+memory_interface.mycelium_ingest_statement(reasoning_text, session_id)
+
+# Step 6 — Route by strategy
 if plan.strategy == "do_it_myself":
     return _execute_plan_der(plan, context_package, is_mature, task_class, session_id)
 else:
@@ -123,17 +132,17 @@ max_cycles = 40  — hard cap (emergency stop)
 ### 3.3 The main loop
 
 ```python
+# Token budget set from mode (DER_TOKEN_BUDGETS dict, not just cycle count)
+_token_budget = DER_TOKEN_BUDGETS.get(task_class, DER_TOKEN_BUDGETS["DEFAULT"])
+_tokens_used = 0
+
 while not queue.is_complete() and not queue.hit_cycle_limit():
     queue.cycle_count += 1
 
     # ── DIRECTOR ─────────────────────────────────────────────────
     item = queue.next_ready()
-    # next_ready() returns the first item where:
-    #   - not in completed_ids
-    #   - not in vetoed_ids
-    #   - all depends_on IDs are in completed_ids
     if item is None:
-        break  # dependency deadlock — no step can proceed
+        break  # dependency deadlock
 
     # ── REVIEWER ─────────────────────────────────────────────────
     verdict, feedback = reviewer.review(
@@ -144,10 +153,15 @@ while not queue.is_complete() and not queue.hit_cycle_limit():
         item.veto_count += 1
         if item.veto_count >= DER_MAX_VETO_PER_ITEM:   # 2
             queue.mark_vetoed(item.step_id)
-        continue  # try again next cycle (or skip if maxed)
+        continue
 
     if verdict == ReviewVerdict.REFINE:
-        item.description = feedback   # Reviewer rewrote the step
+        item.description = feedback
+
+    # ── MID-LOOP EPISODIC RETRIEVAL (Context Engineering C.4) ────
+    similar = episodic_store.retrieve_similar(item.description, threshold=0.55)
+    if similar:
+        item.coordinate_signal += "\nSUB-TASK HINT: " + similar[0].summary
 
     # ── EXPLORER ─────────────────────────────────────────────────
     if item.tool:
@@ -164,7 +178,19 @@ while not queue.is_complete() and not queue.hit_cycle_limit():
         session_id=session_id
     )
 
-    # ── QUEUE UPDATE ─────────────────────────────────────────────
+    # ── TOKEN BUDGET CHECK ────────────────────────────────────────
+    _tokens_used += len(step_result) // 4   # rough: 4 chars ≈ 1 token
+    if _tokens_used >= _token_budget:
+        break  # budget exceeded — stop cleanly
+
+    # ── TRAILING DIRECTOR ─────────────────────────────────────────
+    if len(completed_items) % TRAILING_GAP_MIN == 0:
+        gap_items = trailing_director.analyze_gaps(
+            item, plan, context_package, is_mature
+        )
+        for gi in gap_items:
+            queue.add_item(gi)   # non-critical, can be vetoed
+
     queue.mark_complete(item.step_id)
     completed_items.append(item)
     step_outputs.append(step_result)
@@ -182,147 +208,27 @@ return "\n".join(step_outputs)
 
 The Reviewer is not a gate. Its job is to filter, not block. It always falls back to PASS on failure.
 
-**How it works:**
-```python
-class Reviewer:
-    REVIEWER_MAX_TOKENS = 200
-    REVIEWER_TEMPERATURE = 0.0   # deterministic
-
-    def review(self, item, completed_steps, context_package, is_mature):
-        # Fast path: no Mycelium data → PASS immediately
-        if not context_package or not is_mature:
-            return ReviewVerdict.PASS, None
-
-        # Build compact prompt:
-        # - objective
-        # - last 3 completed steps (summaries)
-        # - gradient_warnings from context_package
-        # - active_contracts from context_package
-
-        # Call model inference
-        response = adapter.infer(prompt, max_tokens=200, temperature=0.0)
-
-        # Parse JSON: {"verdict": "pass|refine|veto", "reason": "...", "refined": "..."}
-        # Return (ReviewVerdict.PASS/REFINE/VETO, refined_description or reason)
-
-        # Never raises — any exception returns (PASS, None)
-        except Exception:
-            return ReviewVerdict.PASS, None
-```
-
 **Three verdicts:**
 - `PASS` — step approved as-is, continue to Explorer
-- `REFINE` — Reviewer rewrote the step description (item.description updated), continue to Explorer
-- `VETO` — step rejected; veto_count incremented; after 2 vetoes the step is permanently skipped
+- `REFINE` — Reviewer rewrote the step description, continue to Explorer
+- `VETO` — step rejected; after 2 vetoes the step is permanently skipped
 
-**When the Reviewer is active:** Only when Mycelium is mature (`is_mature=True`) AND a context package with real gradient warnings / contracts is available. In the early sessions, every Reviewer call is a fast-path PASS.
+**When the Reviewer is active:** Only when Mycelium is mature (`is_mature=True`) AND a context package with real gradient warnings / contracts is available. In early sessions, every Reviewer call is a fast-path PASS.
+
+**What the Reviewer sees (when mature):**
+```
+- objective
+- last 3 completed steps (summaries)
+- gradient_warnings from context_package  ← from Mycelium graph
+- active_contracts from context_package   ← behavioral rules
+- PiN summaries relevant to this step     ← from pin_links graph
+```
+
+The Reviewer never raises — any exception returns `(PASS, None)`. Max 200 tokens, temperature 0.0.
 
 ---
 
-## 4. Mode Detection — Before Planning
-
-Before `_plan_task()` is called, the `ModeDetector` determines what kind of task this is:
-
-```python
-class AgentMode(Enum):
-    SPEC       # /spec — route to SpecEngine, bypass DER loop
-    RESEARCH   # /research
-    IMPLEMENT  # default
-    DEBUG      # /debug
-    TEST       # /test
-    REVIEW     # /review
-```
-
-**Detection priority:**
-1. **Slash commands** (deterministic, confidence 1.0): `/spec`, `/debug`, `/ask`, etc.
-2. **Keyword inference**: multi-word keyword phrases score higher than single words
-3. **Default**: IMPLEMENT with confidence 0.3
-
-**Special case — SPEC mode bypasses DER entirely.** When `mode == AgentMode.SPEC`, the task routes directly to `SpecEngine.produce()` and the DER loop never runs. This is intentional — spec production is a planning operation, not an execution one.
-
-**Complexity detection:**
-- `SIMPLE`: "small", "quick", "minor", "just", "tweak", "rename"
-- `COMPLEX`: "system", "architecture", "full", "complete", "redesign"
-- `UNKNOWN`: neither dominates
-
-**Clarification logic:** If the task is SPEC + UNKNOWN complexity OR confidence < 0.5 AND the task is long, `needs_clarification=True` is returned. Suppressed if Mycelium already knows the answer (`topology_primitive != "unknown"`).
-
----
-
-## 5. DER Constants
-
-```python
-# Trailing crystallizer gap range
-TRAILING_GAP_MIN = 2    # min completed steps before crystallizer checks
-TRAILING_GAP_MAX = 4    # max gap before crystallizer must run
-
-# Token budgets per mode (enforcement: NOT YET IMPLEMENTED — see gaps)
-DER_TOKEN_BUDGETS = {
-    "SPEC":      60_000,
-    "RESEARCH":  80_000,
-    "IMPLEMENT": 40_000,
-    "DEBUG":     30_000,
-    "TEST":      40_000,
-    "REVIEW":    20_000,
-    "DEFAULT":   40_000,
-}
-
-# Safety limits
-DER_EMERGENCY_STOP = 200       # cycle count last resort
-DER_MAX_VETO_PER_ITEM = 2      # vetoes before permanent skip
-DER_MAX_CYCLES = 40            # hard cycle cap
-DER_WRITE_LOCK_TIMEOUT = 5.0   # Mycelium write lock timeout (seconds)
-```
-
----
-
-## 6. Trailing Director — Gap Filling (Defined, Not Yet Wired)
-
-The `TrailingDirector` is a second Director brain that runs *behind* the main loop, analyzing completed steps for depth gaps and injecting gap-filling items back into the queue.
-
-```python
-class TrailingDirector:
-    def analyze_gaps(self, completed_step, plan, context_package, is_mature):
-        # Builds a GAP_ANALYSIS_PROMPT:
-        # - objective
-        # - the completed step + its result
-        # - graph_state from context_package
-        # - gradient_warnings
-        # Calls adapter.infer() with max_tokens=800, temperature=0.1
-        # Parses: {"has_gaps": bool, "confidence": float, "gap_items": [...]}
-        # Returns List[QueueItem] with critical=False, depth_layer set
-        # Hard cap: 3 gap items per completed step
-        # Never raises — returns [] on any failure
-```
-
-**Gap items are non-critical by design.** They can be vetoed without blocking the main loop. Their `step_id` follows the pattern `gap-{parent_step_id}-{i}`.
-
-**Current status:** `TrailingDirector.analyze_gaps()` is fully implemented. It is **NOT called anywhere in `agent_kernel._execute_plan_der()`**. Wiring it in is a known gap (see Section 8).
-
----
-
-## 7. Mycelium Memory System
-
-### 7.1 What Mycelium is
-
-Mycelium is a coordinate graph stored in SQLite (`bootstrap/coordinates.db` during build, `data/memory.db` at runtime). It encodes the agent's spatial knowledge:
-
-- **Where files are** in coordinate space (CORE, ACQUIRING, EXPLORING, EVOLVING, ORBIT)
-- **Which paths are reinforced** by repeated test passes (pheromone edges)
-- **What has failed** (high-signal failures with scores)
-- **Behavioral contracts** derived from repeated patterns
-- **Landmarks** — permanent verified features (crystallized after 3 passes)
-
-### 7.2 Maturity check
-
-```python
-def is_mature(self) -> bool:
-    # True when: >= 3 distinct spaces each have >= 1 node with confidence >= 0.6
-    # Caches True indefinitely once reached
-    # At maturity, the Reviewer activates and context packages become rich
-```
-
-### 7.3 ContextPackage — the DER loop's compass
+## 4. Context Package — What the DER Loop Gets
 
 When Mycelium is mature, `get_task_context_package()` returns a `ContextPackage`:
 
@@ -333,7 +239,7 @@ class ContextPackage:
     topology_path: str        # Current topology layer context
     manifest: Dict            # Address registry (URLs, tokens, summaries)
     tier1_directives: str     # Top-level goals / primary direction
-    tier2_predictions: str    # Predicted next steps based on graph
+    tier2_predictions: str    # Predicted next steps (BehavioralPredictor)
     tier3_failures: str       # Known failure patterns + resolutions
     active_contracts: str     # Behavioral rules currently enforced
     gradient_warnings: str    # Danger zones from prior failures
@@ -343,162 +249,277 @@ class ContextPackage:
     task_class: str           # Classification of this task
 ```
 
-Key accessor:
+**What feeds into the context package:**
+
+| Source | What it contributes |
+|--------|---------------------|
+| Coordinate graph | 7-space position → task routing, reviewer signal |
+| Landmark index | Permanent patterns → tier1_directives, tier2_predictions |
+| Episodic store | Similar past tasks → episodic injections (C.4) |
+| Gradient warnings | Past failures → tier3_failures, Reviewer warnings |
+| Contracts | Behavioral rules → active_contracts |
+| Topology layer | Spatial position → topology_position, topology_path |
+| PiNs (v1.7) | Relevant knowledge nodes → ambient_signals, manifest |
+
+**BehavioralPredictor** (`interpreter.py`) ranks outgoing pheromone edges by `(hit_count/traversal_count) × confidence` → top-3 predicted tool names → `tier2_predictions`. The Planner uses these to front-load likely tools in the plan.
+
+**CoordinateInterpreter** (`interpreter.py`) arbitrates conflicting coordinate values: confidence → recency → pheromone edge strength. Resolution basis stored in `mycelium_conflicts`.
+
+---
+
+## 5. Mode Detection — Before Planning
+
+The `ModeDetector` determines task type and flows into DER token budget selection:
+
+| Mode | DER token budget | When |
+|------|-----------------|------|
+| `SPEC` | 60,000 | Bypasses DER — routes to SpecEngine |
+| `RESEARCH` | 80,000 | Web/file heavy |
+| `IMPLEMENT` | 40,000 | Default coding/building |
+| `DEBUG` | 30,000 | Targeted fix |
+| `TEST` | 40,000 | Test writing/running |
+| `REVIEW` | 20,000 | Code review |
+
+**SPEC mode bypasses DER entirely.** Routes to `SpecEngine.produce()` — planning, not execution.
+
+**Clarification suppressed** when `topology_primitive != "unknown"` — Mycelium already knows the answer.
+
+---
+
+## 6. Context Lifecycle — Pacman Model
+
+The context system follows a Pacman lifecycle (defined in `docs/CONTEXT_ENGINEERING.md`):
+
+**Zone membrane (Dimension 1):**
+- `context_fragment` → trusted (user's own conversation)
+- `der_output` → tool (verified DER/executor output)
+
+**Age-weighted retrieval scoring:**
+```
+combined = similarity × 0.80 + recency × 0.20
+recency  = 1 / (1 + age_hours / 24.0)   # half-life = 24h
+```
+
+**Crystallization pathway:**
+`retrieval_count >= 5` → triggers `episode_indexer.index_episode()` → Mycelium crystallization candidate. Crystallization candidates are never pruned.
+
+**Pacman decay:**
+`cleanup_stale_chunks()` removes chunks older than `max_age_hours` with `retrieval_count <= min_retrievals`.
+
+**Unlimited effective context (Layer architecture):**
+- **Layer 1 (direct):** All conversation history that fits the 32k window — oldest trimmed when budget exceeded
+- **Layer 2 (episodic):** Summaries of past DER tasks via `assemble_episodic_context()` — carries the gist forward even when raw history is trimmed
+- **Layer 3 (Mycelium):** Coordinate context package — the compressed accumulated intelligence of all sessions
+
+The 32k window is the immediate execution buffer. Mycelium + episodic is the permanent long-term store. Together they give unbounded effective recall.
+
+---
+
+## 7. Trailing Director — Gap Filling (WIRED)
+
+The `TrailingDirector` runs behind the main loop, analyzing completed steps for depth gaps and injecting gap-filling items:
+
 ```python
-def get_system_zone_content(self) -> str:
-    # Returns: contracts + warnings + context + directives + path + topology + signals
-    # Used by _run_step_direct() to prime direct model inference
+class TrailingDirector:
+    def analyze_gaps(self, completed_step, plan, context_package, is_mature):
+        # Builds GAP_ANALYSIS_PROMPT from:
+        #   - objective, completed step + result, graph_state, gradient_warnings
+        # Calls adapter.infer() — max_tokens=800, temperature=0.1
+        # Parses: {"has_gaps": bool, "confidence": float, "gap_items": [...]}
+        # Returns List[QueueItem] with critical=False, depth_layer set
+        # Hard cap: 3 gap items per completed step
+        # Never raises — returns [] on any failure
 ```
 
-### 7.4 Proxy methods — how the DER loop talks to Mycelium
+**Gap items are non-critical.** They can be vetoed without blocking the main loop. Their `step_id` follows `gap-{parent_step_id}-{i}`. Wired in `_execute_plan_der()` at every `TRAILING_GAP_MIN` completed steps.
 
-All proxy methods live in `backend/memory/interface.py`. Every call is wrapped in `try/except` — Mycelium failures NEVER block the DER loop. When `_mycelium` is None, all calls are silent no-ops.
+---
 
-| Method | When called | What it does |
-|--------|-------------|--------------|
-| `mycelium_ingest_tool_call(tool, success, pos, total, session)` | After each DER step | Records tool execution signal into graph |
-| `mycelium_record_outcome(task, outcome, session)` | After DER loop completes | Records "hit" / "partial" / "miss" outcome |
-| `mycelium_crystallize_landmark(session, score, outcome, label)` | After outcome recording | Attempts to crystallize a permanent landmark |
-| `mycelium_clear_session(session)` | After crystallization | Clears session state, pre-warms cache if mature |
-| `mycelium_record_plan_stats(...)` | Last, after clear | Inserts execution stats into mycelium_plan_stats table |
-| `mycelium_ingest_statement(text, session)` | After _plan_task() | Ingests planning reasoning as coordinate statement |
-| `get_task_context_package(task, session, space_subset)` | Before _plan_task() | Returns (ContextPackage, is_mature) or (string, False) |
+## 8. PiNs in the DER Loop
 
-### 7.5 Post-loop ordering — why order matters
+PiNs (Primordial Information Nodes) are typed knowledge artifacts that sit in the graph alongside coordinate nodes and landmarks. The DER loop interacts with them in two ways:
 
+### 8.1 Context injection
+
+When a PiN is `is_permanent=True` or has high `pin_link` weight to the active landmark cluster, it surfaces in `context_package.ambient_signals` and `context_package.manifest`. The Reviewer reads these when deciding PASS / REFINE / VETO.
+
+A PiN of type `decision` that documents why a particular approach was chosen (e.g. "TTS primary = F5-TTS because voice cloning is core to IRIS identity") prevents the Reviewer from approving a step that would re-select Piper as the TTS engine.
+
+### 8.2 PiN recording after task completion
+
+After the DER loop completes a task that references files, URLs, or design decisions, the agent can anchor a PiN to crystallize that knowledge:
+
+```python
+# After a successful DER task that touched a key design file:
+pin_id = mycelium_interface.record_pin(
+    title="Design decision recorded during task",
+    pin_type="decision",
+    file_refs=[item.file_path],
+    is_permanent=relevant_to_architecture,
+)
+# Add link from pin to the landmark it supported
+mycelium_interface.add_pin_link(
+    source_type="pin", source_id=pin_id,
+    target_type="landmark", target_id=session_landmark_id,
+    relationship="documents",
+)
 ```
-1. record_outcome()       ← must run before crystallize (outcome needed for scoring)
-2. crystallize_landmark() ← must run before clear (session data needed)
-3. clear_session()        ← must run before record_stats (clean state for stats)
-4. record_plan_stats()    ← always last (summary of everything above)
+
+### 8.3 PiN + MCP storage
+
+PiNs are the mechanism by which external storage systems become first-class memory nodes:
+- A file in Google Drive → PiN of type `doc` with `url_refs` pointing to the Drive link
+- A Discord message thread → PiN of type `note` with the channel/message URL
+- A Notion page → PiN of type `doc` with the page URL and markdown content snapshot
+- A GitHub issue or PR → PiN of type `fragment` with code refs and URL
+
+When the MCP integration for these services is active, IRIS can automatically anchor PiNs as it reads from or writes to external systems, making every external artifact part of the memory graph.
+
+---
+
+## 9. Landmark Bridges — Cross-Project Pattern Transfer
+
+Landmark bridges allow patterns crystallized in one project to activate immediately in another, without re-running the 12-activation crystallization cycle.
+
+### 9.1 How bridges activate
+
+```python
+# On entering a new project, context assembly checks for bridges:
+existing_bridge = landmark_index.find_bridge(
+    remote_landmark_name="g1_api_healthy",   # landmark name in new project
+    remote_instance_id=instance_id,
+)
+if existing_bridge and existing_bridge["confidence"] >= 0.80:
+    # Treat as equivalent to local landmark — activate its traversal history
+    local_lm = landmark_index.get_by_id(existing_bridge["local_landmark_id"])
+    context_package.tier1_directives += f"\nBRIDGE: {local_lm.label} (conf={existing_bridge['confidence']:.2f})"
 ```
 
-Reversing this order corrupts the graph. The sequence is fixed.
+### 9.2 Bridge types and DER effect
 
-### 7.6 How Mycelium matures over sessions
+| Bridge type | DER effect |
+|-------------|------------|
+| `equivalent` | Full prior activation — traversal history loaded as if same project |
+| `similar` | Partial boost to `tier2_predictions` — suggested tools weighted higher |
+| `inverse` | Warning injected into `gradient_warnings` — step involving this pattern triggers Reviewer scrutiny |
+
+### 9.3 Projects don't need to share a domain
+
+A bridge requires only the same seven-space coordinate map. A landmark from a music production workflow (`g1_audio_pipeline_stable`) can bridge to `g1_backend_health` in a software project if both represent the same underlying pattern: "primary output path verified and healthy." The coordinate signature is the same. Domain is irrelevant.
+
+---
+
+## 10. Mycelium Maturation Cycle
 
 Each session:
-1. Tool calls are ingested → strengthen or weaken pheromone edges
-2. Outcomes are recorded → CORE nodes gain confidence, ORBIT nodes lose it
-3. Crystallization attempts → successful sessions produce permanent landmarks
-4. `run_maintenance()` runs periodically:
+1. **Tool calls ingested** → strengthen or weaken pheromone edges
+2. **Outcomes recorded** → CORE nodes gain confidence, ORBIT nodes lose it
+3. **Crystallization attempts** → successful sessions produce permanent landmarks
+4. **`run_maintenance()` fires periodically:**
    - `EdgeScorer.apply_decay()` — old edges fade
    - `MapManager.run_condense()` / `run_expand()` — topology shifts
    - `LandmarkIndex.apply_landmark_decay()` — unverified landmarks lose confidence
    - `ProfileRenderer.render_dirty_sections()` — profile cache refreshed
    - `TopologyLayer.run_topology_maintenance()` — topology state updated
+5. **PiN decay pass** — non-permanent PiNs without recent `pin_link` traversal lose weight; permanent PiNs are untouched
+
+**Maturity check:**
+```python
+def is_mature(self) -> bool:
+    # True when: >= 3 distinct spaces each have >= 1 node with confidence >= 0.6
+    # Caches True indefinitely once reached
+    # At maturity: Reviewer activates, context packages become rich
+```
 
 ---
 
-## 8. Known Gaps (Not Yet Implemented)
+## 11. Post-Loop Ordering — Strict Sequence
 
-These are architectural features that are defined but incomplete or unwired:
+```
+1. record_outcome()         ← outcome needed for crystallization scoring
+2. crystallize_landmark()   ← session data needed before clear
+3. clear_session()          ← clean state before stats
+4. record_plan_stats()      ← summary of everything above — always last
+```
 
-### 8.1 Trailing Director not called from DER loop
-- **File:** `agent_kernel.py` → `_execute_plan_der()`
-- **Gap:** `TrailingDirector.analyze_gaps()` exists and is correct but is never called
-- **Fix needed:** After each `queue.mark_complete()`, check if `len(completed_items)` mod `TRAILING_GAP_MIN` == 0, call `trailing_director.analyze_gaps(item, plan, context_package, is_mature)`, and add returned gap items via `queue.add_item()`
-
-### 8.2 DER token budgets defined but not enforced
-- **File:** `agent_kernel.py` → `_execute_plan_der()`
-- **Gap:** `DER_TOKEN_BUDGETS` constants exist in `der_constants.py` but `_execute_plan_der()` only uses cycle count (`max_cycles = 40`), not token count
-- **Fix needed:** Track `_der_tokens_used` across the loop, check against `DER_TOKEN_BUDGETS[mode]` each iteration, break when exceeded
-
-### 8.3 CoordinateInterpreter and BehavioralPredictor are empty stubs
-- **File:** `backend/memory/mycelium/interpreter.py`
-- **Gap:** `ResolutionEncoder` is implemented; `CoordinateInterpreter` and `BehavioralPredictor` are `class X: pass`
-- **Fix needed:** Implement both classes based on their spec roles
-
-### 8.4 Mode detection not wired to _plan_task temperature
-- **File:** `agent_kernel.py`
-- **Gap:** `ModeDetector.detect()` result exists but the detected mode doesn't flow into `_plan_task()` to select the correct token budget or temperature
-- **Fix needed:** Pass `mode_result.mode` into `_plan_task()` and `_execute_plan_der()`
-
-### 8.5 record_plan_stats signature mismatch
-- **File:** `backend/memory/interface.py` vs `backend/memory/mycelium/interface.py`
-- **Gap:** The proxy method signature and the underlying MyceliumInterface signature have field mismatches (missing `plan_id`, `task` fields in some call sites)
-- **Fix needed:** Audit and align both signatures
+Reversing this order corrupts the graph. The sequence is fixed.
 
 ---
 
-## 9. Complete Prompt Flow Diagram
+## 12. Proxy Methods — DER Loop ↔ Mycelium Interface
+
+All proxy methods live in `backend/memory/interface.py`. Every call is wrapped in `try/except` — Mycelium failures NEVER block the DER loop. When `_mycelium` is None, all calls are silent no-ops.
+
+| Method | When called | What it does |
+|--------|-------------|--------------|
+| `mycelium_ingest_tool_call(tool, success, pos, total, session)` | After each DER step | Records tool execution signal |
+| `mycelium_record_outcome(task, outcome, session)` | After DER loop | Records "hit"/"partial"/"miss" |
+| `mycelium_crystallize_landmark(session, score, outcome, label)` | After outcome | Attempts crystallization |
+| `mycelium_clear_session(session)` | After crystallization | Clears session state |
+| `mycelium_record_plan_stats(...)` | Last | Inserts execution stats |
+| `mycelium_ingest_statement(text, session)` | After _plan_task() | Ingests planning reasoning |
+| `get_task_context_package(task, session, space_subset)` | Before _plan_task() | Returns (ContextPackage, is_mature) |
+
+---
+
+## 13. Complete Prompt Flow Diagram
 
 ```
 Frontend (chat-view.tsx)
-    │ WebSocket send: {type: "text_message", payload: {text: "..."}}
+    │ WebSocket: {type: "text_message", payload: {text: "..."}}
     ▼
 IRISGateway.handle_message()                    [iris_gateway.py]
-    │ routes by msg_type
-    ▼
-_handle_chat(client_id, payload, session_id)
+    │
+    ├─ security_filter.py  ← sanitize + injection detect
+    ├─ mcp_security.py     ← HyphaChannel trust enforcement
     │
     ▼
 AgentKernel.process_text_message(text, session_id)   [agent_kernel.py]
     │
     ├─ [1] _sanitize_task(text)
-    │       └─ replaces [CORE], [ORBIT], etc. with [filtered]
-    │
-    ├─ [2] TaskClassifier.classify(text)
-    │       └─ → (task_class, space_subset)
-    │
-    ├─ [3] memory_interface.get_task_context_package(task, session_id, space_subset)
-    │       ├─ mature → ContextPackage, is_mature=True
-    │       └─ immature → context_string, is_mature=False
-    │
+    ├─ [2] TaskClassifier.classify(text) → (task_class, space_subset)
+    ├─ [3] memory_interface.get_task_context_package()
+    │       ├─ mature  → ContextPackage (coordinates + PiNs + landmarks)
+    │       └─ immature → plain string
     ├─ [4] _plan_task(text, context_package, is_mature)
-    │       ├─ temperature = 0.1 if is_mature, else 0.25
-    │       ├─ calls model → parses ExecutionPlan JSON
-    │       └─ fallback: single-step plan with strategy="do_it_myself"
-    │
-    └─ [5] route by strategy
-            │
-            ├─ "do_it_myself" → _execute_plan_der()
-            │
-            └─ else → ReAct/agentic loop
+    ├─ [5] mycelium_ingest_statement(reasoning)
+    └─ [6] route by strategy
 
 _execute_plan_der(plan, context_package, is_mature, task_class, session_id)
     │
+    ├─ token_budget = DER_TOKEN_BUDGETS[task_class]
     ├─ Build DirectorQueue from plan.steps
     │
-    ├─ LOOP (while not complete and not hit_cycle_limit):
-    │   │
-    │   ├─ DIRECTOR: queue.next_ready() → item (dependency-aware)
-    │   │
-    │   ├─ REVIEWER: reviewer.review(item, completed_steps, context_package, is_mature)
-    │   │   ├─ Fast path (immature): return PASS immediately
-    │   │   ├─ PASS  → continue to Explorer
-    │   │   ├─ REFINE → update item.description, continue to Explorer
-    │   │   └─ VETO  → veto_count++; skip if >= 2; else retry next cycle
-    │   │
-    │   ├─ EXPLORER:
-    │   │   ├─ item.tool set → _tool_bridge.execute_tool(item.tool, item.params)
-    │   │   └─ no tool    → _run_step_direct(item, context_package, session_id)
-    │   │
-    │   ├─ SIGNAL: mycelium_ingest_tool_call(tool, success, pos, total, session)
-    │   │
-    │   └─ queue.mark_complete(item.step_id)
+    ├─ LOOP:
+    │   ├─ DIRECTOR: queue.next_ready() → item
+    │   ├─ REVIEWER: review(item, completed, context_package, is_mature)
+    │   │   ├─ reads: gradient_warnings, contracts, PiN summaries
+    │   │   └─ PASS / REFINE / VETO
+    │   ├─ MID-LOOP EPISODIC: inject sub-task hints from episodic store
+    │   ├─ EXPLORER: execute_tool() or _run_step_direct()
+    │   ├─ SIGNAL: mycelium_ingest_tool_call()
+    │   ├─ TOKEN CHECK: break if _tokens_used >= token_budget
+    │   ├─ TRAILING DIRECTOR: analyze_gaps() → inject gap items
+    │   └─ queue.mark_complete()
     │
     ├─ POST-LOOP (strictly ordered):
-    │   ├─ mycelium_record_outcome(task, outcome, session_id)
-    │   ├─ mycelium_crystallize_landmark(session_id, score, outcome, label)
-    │   ├─ mycelium_clear_session(session_id)
-    │   └─ mycelium_record_plan_stats(stats)
+    │   ├─ mycelium_record_outcome()
+    │   ├─ mycelium_crystallize_landmark()
+    │   ├─ mycelium_clear_session()
+    │   └─ mycelium_record_plan_stats()
     │
-    └─ return "\n".join(step_outputs)
+    └─ return response
 
-IRISGateway
-    │ send: {type: "chat_message", payload: {role: "assistant", content: response}}
-    ▼
-Frontend (chat-view.tsx) receives and displays response
+IRISGateway → WebSocket → Frontend (chat-view.tsx or xterm.js TUI)
 ```
 
 ---
 
-## 10. Key Files Reference
+## 14. Key Files Reference
 
 | File | Role |
 |------|------|
-| `backend/iris_gateway.py` | WebSocket handler, routes to AgentKernel |
+| `backend/iris_gateway.py` | WebSocket handler, security filter, routes to AgentKernel |
 | `backend/agent/agent_kernel.py` | Main agent class — sanitize, classify, plan, DER loop |
 | `backend/agent/der_loop.py` | ReviewVerdict, QueueItem, DirectorQueue, Reviewer |
 | `backend/agent/mode_detector.py` | AgentMode, ModeDetector, ComplexityLevel |
@@ -507,5 +528,9 @@ Frontend (chat-view.tsx) receives and displays response
 | `backend/agent/spec_engine.py` | SpecEngine — handles /spec tasks outside DER loop |
 | `backend/memory/interface.py` | Proxy methods — DER loop's interface to Mycelium |
 | `backend/memory/mycelium/interface.py` | MyceliumInterface, ContextPackage, core graph operations |
-| `backend/memory/mycelium/interpreter.py` | ResolutionEncoder (implemented), stubs for CoordinateInterpreter/BehavioralPredictor |
+| `backend/memory/mycelium/interpreter.py` | CoordinateInterpreter, BehavioralPredictor, ResolutionEncoder |
+| `backend/memory/mycelium/landmark.py` | LandmarkIndex — save, activate, bridge, decay |
+| `backend/memory/db.py` | Schema: mycelium_pins, mycelium_pin_links, mycelium_landmark_bridges |
+| `backend/memory/episodic.py` | Episodic store — Pacman lifecycle, crystallization |
 | `bootstrap/coordinates.db` | Build-time coordinate graph (transfers to data/memory.db at graduation) |
+| `bootstrap/pin.py` | PiN CLI — anchor, search, link, bridge |

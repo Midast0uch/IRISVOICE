@@ -508,15 +508,64 @@ IRIS Mycelium Layer — v1.6 &lt;page_number&gt;Page 15&lt;/page_number&gt;
 
 # Part 9: How It Connects to the Full Architecture
 
-## Data Flow — From Session to Memory
+## Data Flow — From Session to Memory (v1.7)
 
-1. User sends a message. SwarmBridge receives it, wraps in TaskMessage.
-2. PrimaryNode calls get_task_context() — Mycelium assembles coordinate path + semantic header + episodic injections.
-3. REASONING model receives ~350 tokens of dense context. Produces execution plan.
-4. Whiteboard seeded with plan. Workers (1 brain + 2 parallel) receive their assigned steps.
-5. Task executes. Outcomes observed.
-6. Episode stored — task summary, tool sequence, outcome score, coordinate fingerprint.
-7. Distillation pass (background, idle-triggered) extracts coordinate updates, updates profile, crystallizes new landmarks if thresholds met.
+```
+User message (text or voice → STT)
+    │
+    ▼ security_filter → mcp_security (HyphaChannel trust)
+    ▼
+AgentKernel.process_text_message()
+    │
+    ├─ TaskClassifier.classify() → (task_class, space_subset)
+    │
+    ├─ get_task_context_package()
+    │     └─ Mycelium assembles:
+    │         • coordinate path (7-space position)
+    │         • tier1 directives + tier2 predictions (BehavioralPredictor)
+    │         • tier3 failures (gradient warnings)
+    │         • active contracts (behavioral rules)
+    │         • episodic injections (similar past tasks)
+    │         • PiN summaries (relevant knowledge anchors)
+    │         • topology position
+    │
+    ├─ _plan_task() → ExecutionPlan
+    │     temperature = 0.1 (mature) | 0.25 (immature)
+    │
+    └─ _execute_plan_der()
+          │
+          ├─ [DIRECTOR] → picks next step (dependency-aware)
+          ├─ [REVIEWER] → reads warnings + contracts + PiN context → PASS/REFINE/VETO
+          ├─ [EPISODIC C.4] → mid-loop sub-task hint injection
+          ├─ [EXPLORER] → execute tool or direct inference
+          ├─ [TOKEN BUDGET] → DER_TOKEN_BUDGETS[mode] enforced per step
+          ├─ [TRAILING DIRECTOR] → gap analysis every TRAILING_GAP_MIN steps
+          └─ POST-LOOP:
+               record_outcome → crystallize_landmark → clear_session → record_stats
+```
+
+**After each successful task:**
+- Tool call signals update pheromone edge weights
+- Outcomes promote CORE nodes, demote ORBIT nodes
+- High-score sessions crystallize permanent landmarks (activation threshold: 12)
+- Episodic summaries persist beyond context window via Layer 2 storage
+- PiNs may be anchored to lock in design decisions made during the task
+
+**Background maintenance (idle-triggered):**
+- Edge decay pass — old pheromone trails fade
+- Map condense/expand — topology shifts to match usage patterns
+- Landmark decay — unverified entries lose confidence
+- Profile renderer — dirty sections regenerated
+- PiN decay pass — non-permanent PiNs without recent traversal lose weight
+
+## The Pacman Context Lifecycle
+
+Context chunks have zones (trusted / tool), age-weighted retrieval scoring, and a crystallization pathway. Frequently retrieved chunks become Mycelium crystallization candidates — they graduate from episodic memory to permanent landmark status automatically. Stale chunks decay and are pruned. The context window self-compresses over time.
+
+**Layer architecture for unlimited effective context:**
+- Layer 1: Raw conversation history (trimmed oldest when budget exceeded)
+- Layer 2: Episodic summaries — carries gist forward beyond raw history
+- Layer 3: Mycelium coordinate package — compressed accumulated intelligence
 
 ## The Swarm Connection
 
@@ -525,6 +574,8 @@ The Mycelium Layer was designed around the swarm geometry: 1 brain + 2 parallel 
 ## The Torus Connection
 
 When tasks overflow local capacity, the Planner dispatches to Torus network nodes. Remote workers receive the coordinate path — not the full prose conversation history. This is how the architecture scales to network size without scaling memory cost. The coordinate graph is the compression format for the entire system's accumulated intelligence.
+
+PiNs travel with the coordinate path in the dispatch payload — permanent PiNs relevant to the landmark cluster active during the task are included. Remote workers have both the coordinate structure and the explicit knowledge anchors needed to understand design intent without reading raw conversation history.
 
 Confidential · IRIS / Torus Network · March 2026
 
