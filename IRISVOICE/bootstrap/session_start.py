@@ -117,44 +117,45 @@ def get_current_gate(store: CoordinateStore) -> tuple[int, str]:
     landmarks = store.get_landmarks(permanent_only=True)
     permanent_names = {lm["name"] for lm in landmarks}
 
-    # Gate 1 landmarks in step order (determines "Next" display)
+    # Gate 1 — Developer Mode (GOALS.md current gate)
+    # Verified manually: start both servers, load GGUF, chat, confirm GPU active
     gate1_ordered = [
-        "der_loop_foundation",
-        "mode_detector",
-        "ask_user_tool",
-        "spec_engine",
-        "der_constants",
-        "trailing_director",
-        "agent_kernel_der_integration",
-        "mycelium_proxies",
-        "resolution_encoder",
+        "g1_backend_health",        # /health returns 200
+        "g1_frontend_orb",          # frontend loads, orb connects green
+        "g1_models_screen",         # ModelsScreen lists GGUFs from ~/.lmstudio/models
+        "g1_cuda_verified",         # llama_supports_gpu_offload()=True [DONE 2026-03-31]
+        "g1_model_loaded",          # 9B model loads, 25+ tok/s [DONE 2026-03-31]
+        "g1_chat_response",         # chat message → reply from local GGUF
+        "g1_no_memory_spike",       # backend starts clean, CUDA lazy [DONE 2026-04-05]
+        "g1_tool_calling",          # tool calls work with iris_local in session
     ]
     gate1_required = set(gate1_ordered)
 
-    # Gate 2 landmarks in step order
+    # Gate 2 — Chat/Terminal Hybrid (xterm.js embedded in chat-view)
     gate2_ordered = [
+        "g2_xterm_embedded",        # xterm.js renders in chat-view.tsx
+        "g2_ws_input_output",       # keystrokes → WS → agent, stream → terminal
+        "g2_security_wired",        # security_filter + mcp_security in request path
+        "g2_context_management",    # iris_gateway session/persona flows through TUI
+        "g2_tool_output_parsed",    # tool_bridge output formatted for terminal stream
+    ]
+    gate2_required = set(gate2_ordered)
+
+    # Gate 3 — Agent Kernel Upgrade
+    gate3_ordered = [
+        "g3_der_token_budgets",     # DER loop enforces token budgets per mode
+        "g3_trailing_director",     # TrailingDirector wired and active
+        "g3_deep_task_stable",      # multi-step tasks complete without context loss
+    ]
+    gate3_required = set(gate3_ordered)
+
+    # Legacy gate 2 landmarks in step order (old GOALS.md — kept for history)
+    _legacy_gate2_ordered = [
         "skills_loader_verified",
         "skill_creator_working",
         "ui_skill_sync",
         "skill_creator_end_to_end",
     ]
-    gate2_required = set(gate2_ordered)
-
-    # Gate 3 landmarks in step order
-    gate3_ordered = [
-        "mcp_dispatch_verified",
-        "telegram_notifier",
-        "telegram_wired",
-    ]
-    gate3_required = set(gate3_ordered)
-
-    # Special case: coordinate store is Gate 0 / prerequisite
-    if "coordinate_store" not in permanent_names:
-        return 0, "SESSION 1 — Build the coordinate store first (bootstrap/GOALS.md)"
-
-    gate1_done = gate1_required.issubset(permanent_names)
-    gate2_done = gate2_required.issubset(permanent_names)
-    gate3_done = gate3_required.issubset(permanent_names)
 
     def first_missing(ordered: list, done: set) -> str:
         for name in ordered:
@@ -162,16 +163,23 @@ def get_current_gate(store: CoordinateStore) -> tuple[int, str]:
                 return name
         return "unknown"
 
+    gate1_done = gate1_required.issubset(permanent_names)
+    gate2_done = gate2_required.issubset(permanent_names)
+    gate3_done = gate3_required.issubset(permanent_names)
+
     if not gate1_done:
-        return 1, f"GATE 1 — DER Loop + Director Mode | Next: {first_missing(gate1_ordered, permanent_names)}"
+        nxt = first_missing(gate1_ordered, permanent_names)
+        return 1, f"GATE 1 — DEVELOPER MODE | Next: {nxt}"
 
     if not gate2_done:
-        return 2, f"GATE 2 — Skill Creator + UI Sync | Next: {first_missing(gate2_ordered, permanent_names)}"
+        nxt = first_missing(gate2_ordered, permanent_names)
+        return 2, f"GATE 2 — CHAT/TERMINAL HYBRID | Next: {nxt}"
 
     if not gate3_done:
-        return 3, f"GATE 3 — MCP + Telegram | Next: {first_missing(gate3_ordered, permanent_names)}"
+        nxt = first_missing(gate3_ordered, permanent_names)
+        return 3, f"GATE 3 — AGENT KERNEL UPGRADE | Next: {nxt}"
 
-    return 4, "GATE 4 — FREE RANGE | All gates cleared"
+    return 4, "GATE 4 — MEMORY VISUALIZATION | All prior gates cleared"
 
 
 def print_full_state(store: CoordinateStore):
@@ -359,7 +367,7 @@ def print_full_state(store: CoordinateStore):
     print("  After condense: run python bootstrap/session_start.py --compact")
     print()
     print("OBJECTIVE ANCHOR:")
-    print("  Build IRIS until it can run a Tauri build without external tools.")
+    print("  Build IRIS until it runs fully autonomously — receives tasks through its")
     print("=" * 65)
     print()
     print("Read IRISVOICE/bootstrap/GOALS.md for your current gate details.")
@@ -401,7 +409,7 @@ def print_compact_state(store: CoordinateStore):
         for c in contracts[:2]:
             print(f"  {c['rule'][:65]}")
 
-    print(f"Objective: Build IRIS until Tauri build works without Roo Code.")
+    print(f"Objective: Build IRIS until fully autonomous — own interface, own backend, self-improving.")
     print("--- END COORDINATE STATE ---")
     print()
     print("Continue from where you left off. Check GOALS.md for current gate.")
@@ -433,7 +441,7 @@ if __name__ == "__main__":
         print("Read: IRISVOICE/bootstrap/GOALS.md")
         print("Then: python bootstrap/coordinates.py --test")
         print()
-        print("Objective: Build IRIS until Tauri build works without Roo Code.")
+        print("Objective: Build IRIS until fully autonomous — own interface, own backend, self-improving.")
         print("=" * 65)
         sys.exit(0)
 
@@ -443,6 +451,27 @@ if __name__ == "__main__":
     # Auto-sync: record any git commits not yet in code_events (idempotent, silent)
     if "--no-sync" not in sys.argv:
         auto_sync_commits(store, root_dir)
+
+    # Decay pass — runs once per session, applies time-based confidence decay
+    # to non-landmark nodes. Stale context fades, permanent landmarks never decay.
+    # This is what keeps the DB from accumulating stale gate/objective state.
+    try:
+        import time
+        with store._conn() as conn:
+            last_decay = conn.execute(
+                "SELECT MAX(created_at) FROM code_events WHERE event_type='decay_pass'"
+            ).fetchone()[0]
+        now = time.time()
+        days_since = (now - (last_decay or 0)) / 86400
+        if days_since >= 1.0:
+            store.run_decay_pass(days_elapsed=max(days_since, 1.0))
+            store.record_code_event(
+                agent_id="session_start",
+                event_type="decay_pass",
+                description=f"decay pass: {days_since:.1f} days elapsed",
+            )
+    except Exception:
+        pass  # never block session load
 
     if "--compact" in sys.argv:
         print_compact_state(store)

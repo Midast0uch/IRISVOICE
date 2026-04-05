@@ -165,7 +165,7 @@ def interactive_update(store: CoordinateStore):
     # Record the session
     store.record_session(
         session_number=session_number,
-        objective="Build IRIS until it can run a Tauri build without Roo Code",
+        objective="Build IRIS until fully autonomous — own interface, own backend, self-improving.",
         tasks_completed=tasks,
         landmarks_added=landmarks_added,
         warnings_added=warnings_added
@@ -255,7 +255,7 @@ def non_interactive_update(store: CoordinateStore, args):
     # Record session
     store.record_session(
         session_number=session_number,
-        objective="Build IRIS until it can run a Tauri build without Roo Code",
+        objective="Build IRIS until fully autonomous — own interface, own backend, self-improving.",
         tasks_completed=tasks,
         landmarks_added=landmarks_added,
         warnings_added=warnings_added
