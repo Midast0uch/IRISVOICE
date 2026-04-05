@@ -65,19 +65,46 @@ Specs for Gates 2-4 will be provided after each gate is confirmed working.
 
   GATE 2 — CHAT/TERMINAL HYBRID (spec pending — provided after Gate 1 verified)
   Goal: chat-view.tsx becomes a chat/terminal hybrid by embedding an existing
-        open-source terminal interface (xterm.js or equivalent) rather than
-        building a CLI renderer from scratch. The terminal is the driver for
-        the IRIS agent — input/output flows through the embedded terminal,
-        the agent backend remains unchanged. Works in tandem with
-        dashboard-wing.tsx. Spec to be given once Gate 1 is confirmed.
+        open-source terminal interface (xterm.js or equivalent). The TUI is a
+        pure display/input layer — IRIS owns all intelligence, context, security,
+        and output parsing. Zero setup or config required inside the terminal.
+        Works in tandem with dashboard-wing.tsx.
 
-  Design intent:
-    - Embed xterm.js (or similar) inside chat-view.tsx as a React component
-    - Terminal receives agent streaming output and renders it natively
-    - User input goes through the terminal → WebSocket → agent kernel
-    - Existing open-source CLI platforms/tools can be wired as alternate
-      drivers (e.g. pipe output from another CLI tool into the terminal view)
-    - No custom CLI rendering code — leverage the open-source ecosystem
+  Architecture (TUI is dumb, IRIS is smart):
+    User input → xterm.js → WebSocket → security_filter → iris_gateway
+                                                         → agent_kernel
+                                                         → tool_bridge
+                                                         → output parser
+    Streaming output → WebSocket → xterm.js (renders as-is)
+
+  What the TUI does (only):
+    - Accepts raw user keystrokes and sends them via WebSocket
+    - Renders streaming text/ANSI output from the agent
+    - Displays tool call activity, DER loop steps, memory signals as they arrive
+    - No config, no setup, no state — stateless display driver
+
+  What IRIS handles (unchanged, just wired to the new driver):
+    - security_filter.py + mcp_security.py: all permission checks, allowlists,
+      audit logging — every tool call validated before execution, result sanitized
+      before it reaches the terminal
+    - iris_gateway.py: application context management — session, persona, mode
+    - agent_kernel.py: DER loop, task planning, tool orchestration
+    - tool_bridge.py: MCP tool execution and output parsing — raw tool results
+      are parsed and formatted before being written to the terminal stream
+    - Mycelium memory: context assembly, episodic recall, landmark injection
+      all happen transparently — terminal never needs to know
+
+  Security wiring (already built, needs UI connection):
+    - gateway/security_filter.py: message sanitization + injection detection
+    - security/allowlists.py: tool execution allowlists
+    - security/mcp_security.py: MCP channel trust + HyphaChannel guards
+    - All three must be in the request path before any tool runs through the TUI
+    - Security violations surface as formatted error lines in the terminal output
+
+  Alternate drivers:
+    - Any open-source CLI tool that writes to stdout can pipe through as an
+      alternate agent driver without backend changes
+    - The WebSocket protocol is the only interface — the TUI is interchangeable
 
   GATE 3 — AGENT KERNEL UPGRADE (spec pending — provided after Gate 2 verified)
   Goal: Agent kernel handles deep multi-step tasks with no loss of direction
