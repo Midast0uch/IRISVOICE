@@ -229,7 +229,7 @@ class AudioEngine:
 
         While active, Porcupine wake-word processing is suppressed:
         - Prevents speaker output from bleeding into the mic and triggering false detections.
-        - Reduces CPU load so the CosyVoice synthesis thread is not starved of frames.
+        - Reduces CPU load so the F5-TTS synthesis thread is not starved of frames.
         Call set_tts_active(True) before the first sentence plays and
         set_tts_active(False) once playback finishes.
         """

@@ -317,16 +317,15 @@ class VoiceCommandHandler:
                 if self._whisper is None:
                     from faster_whisper import WhisperModel
                     logger.info("[VoiceCommand] Loading faster-whisper tiny/int8 on CPU...")
-                    # Always use CPU for STT even when CUDA is available.
-                    # CosyVoice can use the GPU for synthesis; keeping STT on CPU
-                    # avoids CUDA context serialisation and is fast enough — tiny/int8
+                    # Always use CPU for STT.  F5-TTS also runs on CPU so keeping
+                    # STT on CPU avoids any CUDA context serialisation; tiny/int8
                     # transcribes a 3 s clip in ~80 ms on any modern CPU.
                     self._whisper = WhisperModel(
                         "tiny",
                         device="cpu",
                         compute_type="int8",
                         num_workers=1,          # single-threaded is fine for our latency target
-                        cpu_threads=4,          # cap so we don't starve the CosyVoice thread
+                        cpu_threads=4,          # cap so we don't starve the F5-TTS thread
                     )
                     logger.info("[VoiceCommand] faster-whisper ready")
         return self._whisper

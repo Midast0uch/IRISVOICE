@@ -2,6 +2,55 @@
 
 ## [Unreleased] — IRISVOICEv.4
 
+### feat: replace CosyVoice3 with F5-TTS — full cleanup, CPU voice cloning preserved
+
+**Why**: CosyVoice3-0.5B was a 9.1 GB model (despite the "0.5B" name), required ~4.25 GB
+VRAM at runtime, conflicted with the local LLM on the RTX 3070 (8 GB VRAM), and caused
+the PC to thrash at startup via an auto-prewarm thread. F5-TTS achieves the same zero-shot
+voice cloning with 24 GB RAM unused, ~800 MB model, CPU RTF ~0.15 (still fast), and zero
+VRAM impact.
+
+**Migration**:
+- `pip install f5-tts` — replaces all CosyVoice deps
+- `backend/voice/pretrained_models/CosyVoice3-0.5B/` deleted (~6.3 GB freed this session,
+  remaining from prior cleanup; full 9.1 GB now gone)
+- `backend/voice/CosyVoice/` source directory deleted
+- Matcha-TTS PYTHONPATH entry removed from `start-backend.py`
+- CosyVoice deps (`conformer`, `hydra-core`, `hyperpyyaml`, `x-transformers`, `diffusers`)
+  removed from `requirements.txt`; `f5-tts>=0.9.0` added
+
+#### `backend/agent/tts.py` (full rewrite)
+
+- **Engine replaced**: CosyVoice3 → F5-TTS (`F5TTS_v1_Base`, ~800 MB)
+- **Voice cloning preserved**: TOMV2.wav is passed as `ref_file` to `f5tts.infer()` on every
+  synthesis call — same reference audio, zero-shot cloning, no speaker registration step needed
+- **Text normalizer wired in**: `_normalize()` calls `tts_normalizer.normalize_for_speech()`
+  before every synthesis — strips markdown, expands symbols (`$`→"dollars", `%`→"percent",
+  `->`, `**bold**`, etc.) so TTS never reads raw markup
+- **Chunked synthesis**: `_split_into_chunks()` splits text at sentence boundaries
+  (`.`, `!`, `?`) then at commas if sentences are too long (> 200 chars). Each chunk is
+  synthesized and yielded immediately — approximates streaming with natural sentence pauses
+- **CPU-only**: F5-TTS runs entirely on CPU, leaving full VRAM for the local LLM
+- **Fallback chain unchanged**: Piper en_US-ryan-high → pyttsx3 SAPI5
+- **`F5TTS_NATIVE_RATE`** constant replaces `COSYVOICE_NATIVE_RATE` (both 24 kHz)
+- **`_prewarm_tts` RAM guard** lowered from 12 GB → 2 GB (F5-TTS is ~800 MB vs 9 GB)
+- All CosyVoice constants, imports, and methods removed: `MODEL_DIR`, `COSYVOICE_DIR`,
+  `SPK_ID`, `COSYVOICE3_PROMPT_PREFIX`, `_ensure_cosyvoice_paths`, `_load_cosyvoice`,
+  `_register_speaker`, `_stream_cosyvoice`, `_warm_tts_pipeline`
+
+#### Other files (comment cleanup)
+
+- `backend/iris_gateway.py` — CosyVoice3 references in comments updated to F5-TTS;
+  `_prewarm_tts` doc and RAM guard updated; `tts._warm_tts_pipeline()` → `tts._load_f5tts()`
+- `backend/audio/engine.py`, `pipeline.py`, `voice_command.py`, `agent_kernel.py`,
+  `agent/lfm_audio_manager.py` — inline CosyVoice comments updated to F5-TTS
+- `requirements.txt` — CosyVoice comment block replaced; `f5-tts` added; old CosyVoice-only
+  deps removed
+- `start-backend.py` — Matcha-TTS PYTHONPATH injection removed
+- `backend/tests/test_voice_pipeline.py` — `TestTTSManagerPaths` updated: `MODEL_DIR` /
+  `COSYVOICE_NATIVE_RATE` tests replaced with `F5TTS_NATIVE_RATE` / `OUTPUT_SAMPLE_RATE`;
+  `test_cosyvoice3_referenced_in_comments` replaced with `test_f5tts_referenced_in_requirements`
+
 ### fix: CosyVoice3 VRAM conflict with local LLM — switch default to Piper
 
 **Why CosyVoice3-0.5B was 9.1 GB**: The "0.5B" refers only to the LLM text

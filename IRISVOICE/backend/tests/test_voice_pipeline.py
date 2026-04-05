@@ -4,7 +4,7 @@ test_voice_pipeline.py — IRIS Voice Pipeline Integration Tests
 Tests the full voice pipeline without requiring real audio hardware or
 downloaded models (mocked where needed).  Covers:
 
-  1. TTSManager preflight path detection (CosyVoice3 + reference audio)
+  1. TTSManager preflight path detection (F5-TTS + reference audio)
   2. TTSManager pyttsx3 fallback path
   3. TTSManager singleton behaviour
   4. VoiceCommandHandler state machine (start/stop/cancel)
@@ -38,17 +38,10 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 # ---------------------------------------------------------------------------
-# 1. TTSManager — CosyVoice3 path constants
+# 1. TTSManager — F5-TTS path constants
 # ---------------------------------------------------------------------------
 
 class TestTTSManagerPaths:
-    def test_model_dir_points_to_cosyvoice3(self):
-        """MODEL_DIR must reference CosyVoice3-0.5B not CosyVoice2."""
-        from backend.agent.tts import MODEL_DIR
-        assert "CosyVoice3-0.5B" in str(MODEL_DIR), (
-            f"MODEL_DIR still points to old model: {MODEL_DIR}"
-        )
-
     def test_reference_audio_path_is_in_data_dir(self):
         """Reference audio must be under IRISVOICE/data/."""
         from backend.agent.tts import REFERENCE_AUDIO
@@ -65,10 +58,10 @@ class TestTTSManagerPaths:
             "Place the reference audio file at IRISVOICE/data/TOMV2.wav."
         )
 
-    def test_cosyvoice_native_rate_is_24khz(self):
-        """Output sample rate must be 24 kHz to match CosyVoice3 native rate."""
-        from backend.agent.tts import COSYVOICE_NATIVE_RATE, OUTPUT_SAMPLE_RATE
-        assert COSYVOICE_NATIVE_RATE == 24_000
+    def test_output_sample_rate_is_24khz(self):
+        """Output sample rate must be 24 kHz (F5-TTS native rate)."""
+        from backend.agent.tts import F5TTS_NATIVE_RATE, OUTPUT_SAMPLE_RATE
+        assert F5TTS_NATIVE_RATE == 24_000
         assert OUTPUT_SAMPLE_RATE == 24_000
 
     def test_available_voices_list(self):
@@ -360,12 +353,14 @@ class TestRequirements:
         )
         assert found, "faster-whisper not found in requirements.txt"
 
-    def test_cosyvoice3_referenced_in_comments(self, req_lines):
-        """requirements.txt comment must reference CosyVoice3 not CosyVoice2."""
-        full_text = "\n".join(req_lines)
-        assert "CosyVoice3" in full_text, (
-            "requirements.txt comment still references CosyVoice2 — update needed"
+    def test_f5tts_referenced_in_requirements(self, req_lines):
+        """requirements.txt must list f5-tts as a dependency."""
+        found = any(
+            line.strip().startswith("f5-tts")
+            for line in req_lines
+            if not line.strip().startswith("#")
         )
+        assert found, "f5-tts not found in requirements.txt"
 
 
 # ---------------------------------------------------------------------------

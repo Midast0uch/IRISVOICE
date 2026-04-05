@@ -3,7 +3,7 @@ LFMAudioManager — Lightweight wake word / voice configuration adapter.
 
 Porcupine wake word detection  — backend/audio/engine.py
 STT (speech-to-text)           — backend/audio/voice_command.py (faster-whisper)
-TTS (text-to-speech)           — backend/agent/tts.py (CosyVoice3-0.5B)
+TTS (text-to-speech)           — backend/agent/tts.py (F5-TTS)
 
 This class only holds wake phrase / TTS voice configuration state.
 It does not load any models.

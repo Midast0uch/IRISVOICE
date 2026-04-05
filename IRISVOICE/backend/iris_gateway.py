@@ -115,13 +115,11 @@ class IRISGateway:
         # (e.g. _on_voice_result) that need to dispatch back to the event loop from
         # a background thread without calling asyncio.get_event_loop() in that thread.
         import threading
-        # CosyVoice3-0.5B is a 9+ GB model.  Pre-loading it at startup causes
-        # the machine to become unresponsive (all RAM consumed before the user
-        # sends a single message).  Load it LAZILY — only on first actual TTS
-        # synthesis request inside _speak_response → synthesize_stream.
-        # _tts_prewarmed = True suppresses all the "safety net" re-trigger paths
-        # so nothing tries to load it early.  synthesize_stream calls
-        # _select_engine() + _load_cosyvoice() itself when it first runs.
+        # F5-TTS loads lazily — only on first actual TTS synthesis request
+        # inside _speak_response → synthesize_stream.  _tts_prewarmed = True
+        # suppresses all "safety net" re-trigger paths so nothing tries to load
+        # it early.  synthesize_stream calls _select_engine() + _load_f5tts()
+        # itself when it first runs.
         self._tts_prewarmed = True  # no startup prewarm — lazy load on first use
 
     def set_main_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -923,9 +921,9 @@ class IRISGateway:
                 # Track which client triggered this so wake-word callback knows where to respond
                 self._active_voice_client[session_id] = client_id
 
-                # CosyVoice3 loads lazily on first synthesize_stream() call.
-                # No pre-trigger here — the model is 9+ GB and must not load
-                # until the user actually requests speech output.
+                # F5-TTS loads lazily on first synthesize_stream() call.
+                # No pre-trigger here — model must not load until the user
+                # actually requests speech output.
 
                 # Broadcast LISTENING immediately so IrisOrb animates
                 await self._ws_manager.broadcast_to_session(session_id, {
@@ -1179,35 +1177,29 @@ class IRISGateway:
             self._logger.debug(f"[Voice] Pipeline complete for session {session_id}")
 
     def _prewarm_tts(self) -> None:
-        """Pre-load CosyVoice2-0.5B and register voice reference in a background thread.
+        """Optionally pre-warm the TTS engine in a background thread.
 
         Idempotent — early-exits if already called successfully so re-triggering
         on the first voice command (as a safety net) does not double-load.
 
-        A 6-second startup delay is intentional: it lets the backend finish
-        initialising other components (FastAPI, audio pipeline, WebSocket manager,
-        Porcupine) before the ~1-2 GB CosyVoice model begins loading into RAM.
-        This smooths the startup memory curve without delaying the first voice
-        response (the model is ready long before the user speaks).
+        F5-TTS is ~800 MB on CPU and loads in a few seconds.  A 6-second startup
+        delay lets other components (FastAPI, audio pipeline, WebSocket manager,
+        Porcupine) finish initialising before the model load begins.
         """
         if self._tts_prewarmed:
             return
         try:
             import time as _time
-            _time.sleep(6)  # let backend fully start before CosyVoice RAM load
+            _time.sleep(6)  # let backend fully start before TTS model load
 
-            # RAM safety check: CosyVoice3-0.5B needs ~2 GB.
-            # Skip prewarm if available RAM < 4 GB to prevent a memory spike
-            # that would degrade or crash the host system.
+            # RAM safety check: F5-TTS needs ~1–2 GB.
             try:
                 import psutil as _psutil
                 _free_gb = _psutil.virtual_memory().available / (1024 ** 3)
-                # CosyVoice3-0.5B weights = ~9 GB on disk.  Require at least
-                # 12 GB free RAM before loading (model + Python overhead + OS).
-                if _free_gb < 12.0:
+                if _free_gb < 2.0:
                     self._logger.warning(
                         f"[IRISGateway] TTS load skipped — only {_free_gb:.1f} GB RAM free "
-                        "(need >= 12 GB for CosyVoice3-0.5B ~9 GB model). "
+                        "(need >= 2 GB for F5-TTS). "
                         "Voice TTS will be unavailable this session."
                     )
                     self._tts_prewarmed = True
@@ -1221,9 +1213,9 @@ class IRISGateway:
             if tts.config.get("tts_voice") == "Built-in":
                 self._tts_prewarmed = True  # built-in engine needs no warm-up
                 return
-            tts._warm_tts_pipeline()
+            tts._load_f5tts()
             self._tts_prewarmed = True
-            self._logger.info("[IRISGateway] CosyVoice3 pipeline warmed up")
+            self._logger.info("[IRISGateway] F5-TTS pipeline warmed up")
         except Exception as e:
             self._logger.warning(
                 f"[IRISGateway] TTS pre-warm failed (non-fatal): {e}")
@@ -1291,7 +1283,7 @@ class IRISGateway:
         def _producer():
             try:
                 if isinstance(input_source, str):
-                    # Single-call path: pass the FULL text to CosyVoice in one go.
+                    # Single-call path: pass the FULL text to F5-TTS in one go.
                     # This preserves natural prosody across the entire response —
                     # sentence-by-sentence synthesis creates prosody breaks and
                     # robotic-sounding stitching at boundaries.
@@ -1352,10 +1344,10 @@ class IRISGateway:
             producer_thread.start()
 
             # 4. Consumer: play each chunk as soon as it arrives.
-            # First-chunk timeout is generous (90 s) to cover CosyVoice model
+            # First-chunk timeout is generous (90 s) to cover F5-TTS model
             # load time on first call after startup.  Subsequent chunks use
             # a tighter timeout (15 s) — once the model is warm each chunk
-            # arrives within ~1-2 s even on CPU.
+            # arrives within ~1-2 s on CPU.
             import numpy as _np
             _first_chunk = True
             while True:

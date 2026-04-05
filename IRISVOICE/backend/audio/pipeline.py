@@ -182,7 +182,7 @@ class AudioPipeline:
         try:
             audio_float = audio_data.astype(np.float32)
 
-            # Normalise amplitude — CosyVoice cloned voice can be very quiet (~0.05 peak).
+            # Normalise amplitude — F5-TTS cloned voice can be quiet (~0.05 peak).
             # Target 0.85 peak: loud and clear, safely below hard clip at 1.0.
             peak = np.max(np.abs(audio_float))
             if peak > 1e-6:

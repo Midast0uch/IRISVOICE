@@ -18,10 +18,6 @@ sys.path.insert(0, str(base_dir))
 # Set PYTHONPATH environment variable for subprocesses
 os.environ['PYTHONPATH'] = str(base_dir) + os.pathsep + os.environ.get('PYTHONPATH', '')
 
-# Add Matcha-TTS to PYTHONPATH for CosyVoice imports
-matcha_path = base_dir / 'backend' / 'voice' / 'CosyVoice' / 'third_party' / 'Matcha-TTS'
-os.environ['PYTHONPATH'] = str(matcha_path) + os.pathsep + str(base_dir) + os.pathsep + os.environ.get('PYTHONPATH', '')
-
 # Load environment variables from .env file
 from dotenv import load_dotenv
 load_dotenv(base_dir / ".env")

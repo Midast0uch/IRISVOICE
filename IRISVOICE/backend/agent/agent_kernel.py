@@ -1596,7 +1596,7 @@ class AgentKernel:
 
     def prepare_spoken_text(self, full_response: str, user_message: str = "") -> str:
         """
-        Returns ONLY the text that should be sent to CosyVoice2 streaming TTS.
+        Returns ONLY the text that should be sent to the TTS engine (F5-TTS).
         Full response is ALWAYS sent separately via text_response.
 
         No second LLM call — uses direct text processing to extract speakable prose.
