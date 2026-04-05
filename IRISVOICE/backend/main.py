@@ -189,13 +189,12 @@ async def lifespan(app: FastAPI):
             logger.error(f"    [x] [VOICE HANDLER] Failed to create: {e}")
             raise
         
-        # Step 5: Warm up faster-whisper in background with progress logging
-        try:
-            voice_handler.warm_up()
-            logger.info("    [+] [VOICE HANDLER] faster-whisper warm-up started in background")
-        except Exception as e:
-            logger.error(f"    [x] [VOICE HANDLER] Warm-up failed: {e}")
-            raise
+        # faster-whisper / ctranslate2 warm-up is intentionally deferred.
+        # Importing ctranslate2 allocates ~400 MB RAM and initialises a CUDA
+        # context on GPU machines.  Running this at startup races with the
+        # Next.js dev-server compilation and has caused OOM crashes.
+        # Whisper loads lazily on the first voice command instead (~1-2 s).
+        logger.info("    [+] [VOICE HANDLER] faster-whisper will load on first voice command (deferred)")
         
         # ==========================================================================
         # IRIS GATEWAY INITIALIZATION WITH DIAGNOSTIC LOGGING
@@ -395,6 +394,9 @@ async def lifespan(app: FastAPI):
         # visible memory spike on startup before the user has done anything.
         # Hardware info is fetched lazily when the user first opens ModelsScreen.
         async def _prewarm_model_cache() -> None:
+            # Delay 30 s so this I/O-heavy scan doesn't race with the Next.js
+            # dev-server compilation that peaks RAM immediately after startup.
+            await asyncio.sleep(30)
             try:
                 from backend.agent.local_model_manager import get_local_model_manager
                 import asyncio as _asyncio

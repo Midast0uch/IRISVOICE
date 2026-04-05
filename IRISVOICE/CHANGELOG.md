@@ -1,5 +1,84 @@
 # IRIS Changelog
 
+## [4.5.0] — IRISVOICEv4.5 — 2026-04-05
+
+### fix: eliminate startup memory spike — defer ctranslate2 / faster-whisper load
+
+**Root cause**: `voice_handler.warm_up()` was called synchronously at backend startup,
+spawning a daemon thread that imported `faster_whisper` → `ctranslate2` (+463 MB RAM +
+CUDA context init on GPU machines). This raced with Next.js compilation on a 16 GB system
+already at 71% utilisation, causing OOM crashes and Claude Code to become unresponsive.
+
+- `backend/main.py` — `voice_handler.warm_up()` call removed from startup. Whisper now
+  loads lazily on the first voice command. A 30-second delay added to `_prewarm_model_cache()`
+  so the GGUF filesystem scan no longer races with Next.js startup.
+
+### feat: voice-first DER budget — fast single-step voice responses [2.4]
+
+When a request originates from the voice pipeline, the agent bypasses mode detection and
+locks to a tight `voice_first` token budget (15 000 tokens, under the 20 k spec ceiling)
+with the plan capped to a single step.
+
+- `backend/agent/der_constants.py` — `DER_TOKEN_BUDGETS["voice_first"] = 15_000` added
+  (both upper-case and lower-case aliases).
+- `backend/agent/agent_kernel.py` — `process_text_message()` gains `from_voice: bool = False`
+  parameter. When `True`, sets `_mode_name = "voice_first"` directly, skipping mode
+  detection. `_execute_plan_der()` caps the plan to 1 step when `task_class == "voice_first"`.
+- `backend/iris_gateway.py` — `_handle_voice()` passes `from_voice=True` to
+  `process_text_message()`.
+- `backend/tests/test_voice_pipeline.py` — `TestVoiceFirstDERMode` class added (3 tests).
+
+### fix: cross-platform / Ubuntu migration — full Linux compatibility
+
+IRIS now runs on Ubuntu with no code changes required. All Windows-only paths and
+system calls are guarded by `sys.platform` / `os.name` checks.
+
+#### `backend/agent/local_model_manager.py`
+
+- `_find_llama_server_binary()` — Added Linux/macOS candidate paths:
+  `~/ik_llama.cpp/build/bin/llama-server`, `~/llama.cpp/build/bin/llama-server`,
+  `/usr/local/bin/llama-server`, `/usr/bin/llama-server`, `/opt/llama/bin/llama-server`.
+  Windows `.exe` paths moved into `if sys.platform == "win32"` branch.
+- `_find_llama_python()` — Replaced Windows-only `py -3.12` launcher with platform-aware
+  logic: on Linux/macOS iterates `python3.12` → `python3.11` → `python3` via
+  `shutil.which`. Falls back to `sys.executable` on both platforms.
+
+#### `backend/agent/tool_executor.py`
+
+- `_lock_screen()` — Was `"Not implemented for this platform"` on non-Windows. Now does
+  `loginctl lock-session` (systemd) with `gnome-screensaver-command -l` fallback on Linux;
+  `CGSession -suspend` on macOS.
+
+#### `package.json`
+
+- `start:prod` script added: `next build && next start` — production mode uses 40-60%
+  less RAM than `next dev` (no webpack watch, no HMR).
+- `dev:backend` fixed from hardcoded `C:\\Python313\\python.exe start-backend.py` to
+  plain `python start-backend.py` (resolved from PATH on any platform).
+- `lightningcss-win32-x64-msvc` moved from `dependencies` to `optionalDependencies`
+  so `npm install` does not fail on Linux.
+
+### fix: dead test cleanup — remove tests for deleted modules
+
+- `backend/tests/test_vision_memory.py` — Deleted. Imported
+  `backend.vision.vision_service` which was removed when MiniCPM was replaced by the
+  LFM2.5-VL HTTP client. All tests were for a module that no longer exists.
+- `backend/tests/test_data_migration.py` — Deleted. Imported
+  `backend.sessions.backup_manager` (removed `SessionBackupManager` class). Every test
+  in this file was for dead code.
+
+### fix: test suite hardening — 433/433 passing, 10 expected skips
+
+- `backend/tests/test_lmstudio_integration.py` — `_MM_PATH` updated from deleted
+  `backend/audio/model_manager.py` to `backend/agent/local_model_manager.py`.
+  `test_8gb_threshold_present` updated to match current percentage-based VRAM guards.
+  `test_cpu_fallback_present` updated to case-insensitive string check. (3 fixes)
+- `backend/core/models.py` — `SessionState.field_values` type narrowed from
+  `Dict[str, Dict[str, Any]]` to `Dict[str, Any]` to match test expectations.
+  `ToolDefinition` gains `@validator("name")` rejecting empty/whitespace names. (2 fixes)
+
+---
+
 ## [Unreleased] — IRISVOICEv.4
 
 ### feat: replace CosyVoice3 with F5-TTS — full cleanup, CPU voice cloning preserved

@@ -1119,7 +1119,8 @@ class IRISGateway:
                 resp = agent_kernel.process_text_message(
                     enriched,
                     session_id=session_id,
-                    chunk_callback=chunk_callback
+                    chunk_callback=chunk_callback,
+                    from_voice=True,
                 )
                 spoken = agent_kernel.prepare_spoken_text(resp, enriched)
                 return resp, spoken

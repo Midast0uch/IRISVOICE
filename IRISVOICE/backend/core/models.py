@@ -50,7 +50,14 @@ class ToolDefinition(BaseModel):
     category: ToolCategory
     parameters: List[ToolParameter]
     required_params: List[str] = Field(default_factory=list)
-    
+
+    @validator("name")
+    @classmethod
+    def name_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("name cannot be empty")
+        return v
+
     class Config:
         use_enum_values = True
 
@@ -189,7 +196,7 @@ class SessionState(BaseModel):
     session_id: str
     category: Optional[str] = None
     section: Optional[str] = None
-    field_values: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    field_values: Dict[str, Any] = Field(default_factory=dict)
     theme: ThemeSettings = Field(default_factory=ThemeSettings)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

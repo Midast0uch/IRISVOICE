@@ -13,7 +13,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
 
 ### 🤖 AI Agent System
-- **Flexible Inference**: Any GGUF model via llama-cpp-python (port 8082) or OpenAI-compatible VPS — select in Settings
+- **Flexible Inference**: Any GGUF model via llama-server (ik_llama.cpp binary, preferred) or llama-cpp-python (port 8082) or OpenAI-compatible VPS — select in Settings
 - **Tool Execution**: LFM2.5-1.2B-Instruct handles structured tool calls; main LLM handles reasoning and conversation
 - **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer
 - **Model-Agnostic Design**: Works with Local GGUF, VPS, or OpenAI inference backends
@@ -151,9 +151,14 @@ Terminal 1 (Backend):
 python start-backend.py
 ```
 
-Terminal 2 (Frontend):
+Terminal 2 (Frontend — production mode, ~1 GB lighter than dev):
 ```bash
-npm run dev
+npm run start:prod       # next build && next start (recommended)
+```
+
+Or for hot-reload during active frontend development:
+```bash
+npm run dev              # next dev (heavier, webpack watch mode)
 ```
 
 **Option 3: Tauri Desktop App**
@@ -185,7 +190,7 @@ npm run dev:tauri
 - **Audio**: High-quality USB microphone
 
 ### Software Requirements
-- **OS**: Windows 10/11, macOS 10.15+, or Linux (Ubuntu 20.04+)
+- **OS**: Windows 10/11, macOS 10.15+, or Ubuntu 20.04+ (Linux fully supported — preferred for lower RAM baseline)
 - **Python**: 3.10+
 - **Node.js**: 18.x+
 - **CUDA Toolkit**: 11.8 or 12.1 (optional, for GPU acceleration)
@@ -321,7 +326,7 @@ npm run dev:tauri
 
 | Model | Role | Size | Notes |
 |-------|------|------|-------|
-| **Any GGUF model** | Reasoning & conversation | User's choice | Served via llama-cpp-python on port 8082; selected in Models Browser |
+| **Any GGUF model** | Reasoning & conversation | User's choice | Served via llama-server (ik_llama.cpp, preferred) or llama-cpp-python on port 8082; selected in Models Browser |
 | **lfm2.5-1.2b-instruct** | Tool execution | ~1.2 GB | Structured tool calls only; optional |
 | **LFM2.5-VL-1.6B** | Vision / GUI | ~1 GB | Optional; served via llama-server on port 8081 |
 
@@ -757,6 +762,6 @@ For issues and questions:
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: February 2026  
+**Version**: 4.5.0
+**Last Updated**: April 2026
 **Status**: Production Ready ✅

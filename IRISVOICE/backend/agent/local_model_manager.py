@@ -904,13 +904,23 @@ class LocalModelManager:
         found = shutil.which("llama-server")
         if found:
             return found
-        # 3. Common Windows install locations for ik_llama.cpp
-        candidates = [
-            Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server.exe",
-            Path.home() / "llama.cpp" / "build" / "bin" / "llama-server.exe",
-            Path("C:/tools/llama-server.exe"),
-            Path("C:/llama/llama-server.exe"),
-        ]
+        # 3. Common install locations — platform-aware
+        if sys.platform == "win32":
+            candidates = [
+                Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server.exe",
+                Path.home() / "llama.cpp" / "build" / "bin" / "llama-server.exe",
+                Path("C:/tools/llama-server.exe"),
+                Path("C:/llama/llama-server.exe"),
+            ]
+        else:
+            # Linux / macOS
+            candidates = [
+                Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server",
+                Path.home() / "llama.cpp" / "build" / "bin" / "llama-server",
+                Path("/usr/local/bin/llama-server"),
+                Path("/usr/bin/llama-server"),
+                Path("/opt/llama/bin/llama-server"),
+            ]
         for c in candidates:
             if c.is_file():
                 return str(c)
@@ -958,25 +968,37 @@ class LocalModelManager:
         if _has_cuda(sys.executable):
             return sys.executable
 
-        # Try Python 3.12 via py launcher (Windows) — CUDA wheels exist for 3.12
+        # Try to find a Python 3.12 with CUDA/llama support
         import shutil
-        py_launcher = shutil.which("py")
-        if py_launcher:
-            try:
-                result = subprocess.run(
-                    [py_launcher, "-3.12", "-c", "import sys; print(sys.executable)"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0:
-                    py312 = result.stdout.strip()
-                    if _has_cuda(py312):
-                        logger.info(f"[LocalModelManager] Using Python 3.12 with CUDA: {py312}")
-                        return py312
-                    elif _has_llama(py312):
-                        logger.info(f"[LocalModelManager] Using Python 3.12 (no CUDA): {py312}")
-                        return py312
-            except Exception:
-                pass
+        if sys.platform == "win32":
+            # Windows: use py launcher
+            py_candidates: List[str] = []
+            py_launcher = shutil.which("py")
+            if py_launcher:
+                try:
+                    result = subprocess.run(
+                        [py_launcher, "-3.12", "-c", "import sys; print(sys.executable)"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if result.returncode == 0:
+                        py_candidates.append(result.stdout.strip())
+                except Exception:
+                    pass
+        else:
+            # Linux/macOS: check versioned executables in PATH
+            py_candidates = []
+            for name in ("python3.12", "python3.11", "python3"):
+                found_py = shutil.which(name)
+                if found_py and found_py != sys.executable:
+                    py_candidates.append(found_py)
+
+        for py312 in py_candidates:
+            if _has_cuda(py312):
+                logger.info(f"[LocalModelManager] Using Python with CUDA: {py312}")
+                return py312
+            elif _has_llama(py312):
+                logger.info(f"[LocalModelManager] Using Python (no CUDA): {py312}")
+                return py312
 
         # Fall back to current interpreter even without CUDA
         return sys.executable

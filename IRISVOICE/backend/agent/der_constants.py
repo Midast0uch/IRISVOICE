@@ -16,21 +16,23 @@ TRAILING_GAP_MAX = 4   # maximum gap before crystallizer must run
 # ── Token budgets per mode (replaces cycle count limit) ──────────────────
 
 DER_TOKEN_BUDGETS = {
-    "SPEC":      60_000,
-    "RESEARCH":  80_000,
-    "IMPLEMENT": 40_000,
-    "DEBUG":     30_000,
-    "TEST":      40_000,
-    "REVIEW":    20_000,
-    "DEFAULT":   40_000,   # fallback when mode unknown
+    "SPEC":       60_000,
+    "RESEARCH":   80_000,
+    "IMPLEMENT":  40_000,
+    "DEBUG":      30_000,
+    "TEST":       40_000,
+    "REVIEW":     20_000,
+    "DEFAULT":    40_000,   # fallback when mode unknown
+    "VOICE_FIRST": 15_000,  # voice: tight budget → fast, single-turn responses
     # lowercase aliases — agent_kernel uses mode.value which may be lowercase
-    "spec":      60_000,
-    "research":  80_000,
-    "implement": 40_000,
-    "debug":     30_000,
-    "test":      40_000,
-    "review":    20_000,
-    "default":   40_000,
+    "spec":        60_000,
+    "research":    80_000,
+    "implement":   40_000,
+    "debug":       30_000,
+    "test":        40_000,
+    "review":      20_000,
+    "default":     40_000,
+    "voice_first": 15_000,  # voice alias
 }
 
 # ── Safety limits ─────────────────────────────────────────────────────────

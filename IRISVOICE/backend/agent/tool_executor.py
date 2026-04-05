@@ -679,8 +679,16 @@ class ToolExecutor:
         try:
             if os.name == "nt":
                 subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"])
-                return {"success": True, "message": "Screen locked"}
-            return {"success": False, "error": "Not implemented for this platform"}
+            elif hasattr(os, "uname") and os.uname().sysname == "Darwin":
+                subprocess.run(["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend"])
+            else:
+                # Linux — try loginctl first (systemd), fall back to gnome-screensaver
+                import shutil
+                if shutil.which("loginctl"):
+                    subprocess.run(["loginctl", "lock-session"])
+                else:
+                    subprocess.run(["gnome-screensaver-command", "-l"])
+            return {"success": True, "message": "Screen locked"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

@@ -700,3 +700,46 @@ class TestTextResponsePayload:
         assert '"level"' in source, (
             "audio_level broadcast must include a 'level' key in its payload"
         )
+
+
+# ---------------------------------------------------------------------------
+# 15. Voice-first DER loop mode
+# ---------------------------------------------------------------------------
+
+class TestVoiceFirstDERMode:
+    """
+    Voice requests must use a tighter DER token budget (< 20k) so the agent
+    responds quickly without spinning multi-step plans over voice.
+    Spec: GOALS.md [2.4].
+    """
+
+    def test_voice_first_budget_exists_in_der_constants(self):
+        """DER_TOKEN_BUDGETS must contain 'voice_first' with budget under 20k."""
+        from backend.agent.der_constants import DER_TOKEN_BUDGETS
+        assert "voice_first" in DER_TOKEN_BUDGETS, (
+            "DER_TOKEN_BUDGETS missing 'voice_first' key — "
+            "voice pipeline has no dedicated token budget"
+        )
+        budget = DER_TOKEN_BUDGETS["voice_first"]
+        assert budget < 20_000, (
+            f"voice_first budget is {budget}, must be under 20k for fast voice responses"
+        )
+
+    def test_process_text_message_accepts_from_voice_param(self):
+        """process_text_message() must accept from_voice keyword argument."""
+        import inspect
+        from backend.agent.agent_kernel import AgentKernel
+        sig = inspect.signature(AgentKernel.process_text_message)
+        assert "from_voice" in sig.parameters, (
+            "AgentKernel.process_text_message() missing 'from_voice' parameter — "
+            "iris_gateway cannot signal voice origin to the DER loop"
+        )
+
+    def test_handle_voice_passes_from_voice_true(self):
+        """iris_gateway._handle_voice must call process_text_message with from_voice=True."""
+        gateway_path = Path(__file__).parent.parent / "iris_gateway.py"
+        source = gateway_path.read_text(encoding="utf-8")
+        assert "from_voice=True" in source, (
+            "iris_gateway.py must pass from_voice=True to process_text_message() "
+            "inside _handle_voice so voice requests use the voice_first DER budget"
+        )

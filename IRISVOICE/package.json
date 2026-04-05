@@ -111,7 +111,6 @@
     "keyv": "^4.5.4",
     "levn": "^0.4.1",
     "lightningcss": "^1.30.2",
-    "lightningcss-win32-x64-msvc": "^1.30.2",
     "locate-path": "^6.0.0",
     "lodash": "^4.17.23",
     "log-symbols": "^6.0.0",
@@ -212,14 +211,18 @@
     "dev:frontend": "next dev",
     "build": "next build",
     "start": "next start",
+    "start:prod": "next build && next start",
     "lint": "eslint .",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:preservation": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/preservation-property.test.js",
     "test:bug-condition": "node tests/bug-condition-navigation-level3.test.js",
     "tauri": "tauri",
-    "dev:backend": "C:\\\\Python313\\\\python.exe start-backend.py",
+    "dev:backend": "python start-backend.py",
     "dev:tauri": "npx tauri dev",
     "dev:tauri:nowatch": "npx tauri dev -- --no-watch"
+  },
+  "optionalDependencies": {
+    "lightningcss-win32-x64-msvc": "^1.30.2"
   },
   "keywords": [],
   "author": "",

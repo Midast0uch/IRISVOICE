@@ -1860,10 +1860,15 @@ class AgentKernel:
             )],
         )
 
-    def process_text_message(self, text: str, session_id: Optional[str] = None, chunk_callback: Optional[Callable[[str], None]] = None) -> str:
+    def process_text_message(self, text: str, session_id: Optional[str] = None, chunk_callback: Optional[Callable[[str], None]] = None, from_voice: bool = False) -> str:
         """
         Main entry point for text messages.
         Decides between direct response and agentic (tool-calling) loop.
+
+        from_voice: when True the request came from the voice pipeline.
+          - Overrides mode detection → "voice_first"
+          - Uses DER_TOKEN_BUDGETS["voice_first"] (15k tokens, under 20k)
+          - Planning caps at 1 step for fast first-token response
         """
         _t_start = time.perf_counter()
 
@@ -1989,17 +1994,22 @@ class AgentKernel:
             # can suppress clarification mode and improve confidence.
             # Result flows into _plan_task() (temperature) and _execute_plan_der()
             # (token budget via DER_TOKEN_BUDGETS[mode]).
-            _mode_name = "full"   # default maps to DER_TOKEN_BUDGETS["full"]
-            if self._mode_detector is not None:
-                try:
-                    _mode_result = self._mode_detector.detect(
-                        task=_task_clean,
-                        context_package=_context_package,
-                        is_mature=_is_mature,
-                    )
-                    _mode_name = _mode_result.mode.name.lower()
-                except Exception:
-                    pass
+            # Voice requests skip mode detection and lock to "voice_first" so
+            # they always get the tight 15k token budget and single-step plan.
+            if from_voice:
+                _mode_name = "voice_first"
+            else:
+                _mode_name = "full"   # default maps to DER_TOKEN_BUDGETS["full"]
+                if self._mode_detector is not None:
+                    try:
+                        _mode_result = self._mode_detector.detect(
+                            task=_task_clean,
+                            context_package=_context_package,
+                            is_mature=_is_mature,
+                        )
+                        _mode_name = _mode_result.mode.name.lower()
+                    except Exception:
+                        pass
 
             _plan = self._plan_task(
                 text=_task_clean,
@@ -2587,6 +2597,12 @@ Respond with a JSON object:
             )
             for step in plan.steps
         ]
+        # Voice-first: cap to single step so the response arrives quickly.
+        # The token budget (15k) is the primary throttle; this is a secondary
+        # guard ensuring the plan never fans out into multi-step work on voice.
+        if task_class == "voice_first" and len(items) > 1:
+            items = items[:1]
+
         queue = DirectorQueue(objective=plan.original_task, items=items)
 
         # C.1 LiveContextPackage — refreshes ContextPackage mid-loop so the
