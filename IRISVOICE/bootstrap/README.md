@@ -30,11 +30,13 @@ FILES
   coordinates.py          Core store — SQLite schema, all read/write methods
   coordinates.db          The live database (git-ignored or committed, your choice)
   session_start.py        Load state into context. Also auto-syncs git commits.
-  record_event.py         Record a single code action (edit, create, test, note)
+  record_event.py         Record a single code action (edit, create, test, note, wiki)
   agent_context.py        Work queue — claim items, complete them, run in parallel
   query_graph.py          Query the graph (file state, routes, failures, summary)
   mid_session_snapshot.py Save a progress note mid-session (before context condense)
   update_coordinates.py   Close out a session, record landmarks and warnings
+  wiki.py                 Wiki CLI — add/search/link knowledge nodes (docs, images, designs)
+  merge_db.py             Federation merge — import permanent knowledge from another IRIS instance
   GOALS.md                Project-specific roadmap (replace with your own)
   signals/                Sub-agent completion signals (for parallel agent coordination)
 
@@ -99,6 +101,22 @@ Manual recording (for uncommitted work, high-signal failures, or notes):
   python bootstrap/record_event.py --type test_run --file tests/test_foo --result fail --score 0.70 --desc "what failed revealed"
   python bootstrap/record_event.py --type note --desc "why X was chosen over Y"
 
+Wiki knowledge nodes (docs, images, design notes):
+  python bootstrap/record_event.py --type wiki_entry --title "TTS Pipeline" --content "F5-TTS is primary..." --tags tts voice
+  python bootstrap/record_event.py --type image_ref --title "Arch Diagram" --image-refs docs/arch.png --file-refs backend/agent/agent_kernel.py
+  python bootstrap/record_event.py --type project_ref --project-name "my-project" --project-path /path/to/project
+
+  # Or use the dedicated wiki CLI for more control:
+  python bootstrap/wiki.py --add "Design Decision: TTS" --content "..." --tags decision tts --permanent
+  python bootstrap/wiki.py --search "tts"
+  python bootstrap/wiki.py --link wiki:ENTRY_ID landmark:lm_foo documents
+  python bootstrap/wiki.py --list
+
+Federation (share permanent knowledge between IRIS instances):
+  python bootstrap/merge_db.py --source /path/to/other/coordinates.db
+  python bootstrap/merge_db.py --dry-run --source /path/to/other/coordinates.db
+  python bootstrap/merge_db.py --log
+
 ---
 
 LANDMARK CRYSTALLIZATION
@@ -156,6 +174,53 @@ Work claiming is atomic.
 
 ---
 
+WIKI LAYER
+
+The wiki extends the graph into human knowledge — design docs, architecture diagrams,
+decisions, image references, and external links — all first-class graph nodes.
+
+  # Record a design decision that future agents should know about:
+  python bootstrap/wiki.py --add "Decision: TTS primary = F5-TTS" \
+    --content "F5-TTS chosen over Piper because voice cloning is core to IRIS identity." \
+    --tags decision tts voice --permanent
+
+  # Link an architecture diagram to the file it describes:
+  python bootstrap/wiki.py --add "Arch: DER Loop" --image-refs docs/der_loop.png \
+    --file-refs backend/agent/der_loop.py
+  python bootstrap/wiki.py --link wiki:ENTRY_ID file:backend/agent/der_loop.py documents
+
+  # Search across all wiki nodes:
+  python bootstrap/wiki.py --search "tts"
+  python bootstrap/wiki.py --list --permanent   # only permanent entries
+
+Wiki entries appear in compact output so agents arriving mid-project understand
+what knowledge already exists without reading random files.
+
+---
+
+FEDERATION
+
+Each IRIS installation has a unique instance_id (UUID, auto-created on first init).
+Permanent landmarks and wiki entries carry an origin_id — provenance is always known.
+
+When two IRIS instances want to share knowledge:
+  python bootstrap/merge_db.py --source /path/to/other/coordinates.db
+
+What travels across the network:
+  - Permanent landmarks (verified features — never overwritten by default)
+  - Wiki entries (permanent entries always travel; non-permanent follow the strategy)
+  - Pheromone edge weights (compounded — the more instances agree, the higher the weight)
+
+Conflict strategies:
+  landmark_wins  — keep local if same landmark name exists (safe default)
+  newer_wins     — whichever was updated most recently wins
+  manual         — list conflicts and exit, no writes (for review before committing)
+
+Every merge is audited:
+  python bootstrap/merge_db.py --log
+
+---
+
 PORTABILITY NOTES
 
 - Python 3.8+ required. No dependencies beyond stdlib + sqlite3.
@@ -163,3 +228,4 @@ PORTABILITY NOTES
 - The database schema is stable. It can transfer to a runtime memory store
   when the project reaches production (same schema, no migration needed).
 - To use in a new project: copy bootstrap/, update GOALS.md, wire the hooks.
+- Federation: instance_registry auto-created on first init. No configuration needed.

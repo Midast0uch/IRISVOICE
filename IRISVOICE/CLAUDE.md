@@ -186,3 +186,5 @@ Graph queries:          python bootstrap/query_graph.py --help
 Work queue:             python bootstrap/agent_context.py --help
 Event recording:        python bootstrap/record_event.py --help
 Session update:         python bootstrap/update_coordinates.py --help
+Wiki (knowledge nodes): python bootstrap/wiki.py --help
+Federation merge:       python bootstrap/merge_db.py --help

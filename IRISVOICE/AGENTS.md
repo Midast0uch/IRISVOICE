@@ -393,6 +393,23 @@ RECORDING:
   python bootstrap/record_event.py --type test_run    --file path --result pass --covers impl
   python bootstrap/record_event.py --type test_run    --file path --result fail --score 0.70 --desc "..."
   python bootstrap/record_event.py --type note        --desc "decision and reasoning"
+  python bootstrap/record_event.py --type wiki_entry  --title "..." --content "..." --tags t1 t2
+  python bootstrap/record_event.py --type image_ref   --title "..." --image-refs path/to/img.png
+  python bootstrap/record_event.py --type project_ref --project-name "..." --project-path /path
+
+WIKI (knowledge nodes — docs, images, design decisions):
+  python bootstrap/wiki.py --add "Title" --content "body" --tags tag1 tag2
+  python bootstrap/wiki.py --add "Image: Diagram" --image-refs docs/arch.png --permanent
+  python bootstrap/wiki.py --search "query"
+  python bootstrap/wiki.py --list
+  python bootstrap/wiki.py --link wiki:ENTRY_ID landmark:lm_foo documents
+  python bootstrap/wiki.py --projects
+  python bootstrap/wiki.py --ensure-project "name" --path /path
+
+FEDERATION (share permanent knowledge between IRIS instances):
+  python bootstrap/merge_db.py --source /path/to/coordinates.db
+  python bootstrap/merge_db.py --dry-run --source /path/to/coordinates.db
+  python bootstrap/merge_db.py --log
 
 SESSION BOUNDARIES:
   python bootstrap/mid_session_snapshot.py --progress "..."    # before condense

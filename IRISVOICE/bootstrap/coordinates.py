@@ -243,6 +243,72 @@ CREATE INDEX IF NOT EXISTS idx_file_nodes_path ON file_nodes(file_path);
 CREATE INDEX IF NOT EXISTS idx_test_nodes_file ON test_nodes(test_file);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_type, target_id);
+
+-- ── Federation & Wiki layer ──────────────────────────────────────────────────
+-- Unique identity per IRIS installation (one row, auto-created on first init)
+CREATE TABLE IF NOT EXISTS instance_registry (
+    instance_id  TEXT PRIMARY KEY,   -- UUID v4
+    name         TEXT,               -- e.g. "midas-desktop"
+    owner        TEXT,
+    created_at   REAL NOT NULL,
+    last_seen    REAL NOT NULL,
+    version      TEXT DEFAULT '1.0'
+);
+
+-- Multi-project tracking in one DB (each project gets a UUID)
+CREATE TABLE IF NOT EXISTS project_registry (
+    project_id   TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    path         TEXT,
+    description  TEXT,
+    tags         TEXT DEFAULT '[]',  -- JSON array
+    created_at   REAL NOT NULL,
+    last_active  REAL NOT NULL
+);
+
+-- Wiki knowledge nodes: docs, images, design notes linked into the graph
+CREATE TABLE IF NOT EXISTS wiki_entries (
+    entry_id     TEXT PRIMARY KEY,
+    title        TEXT NOT NULL,
+    content      TEXT,               -- markdown body
+    tags         TEXT DEFAULT '[]',  -- JSON array
+    file_refs    TEXT DEFAULT '[]',  -- JSON array of file paths
+    image_refs   TEXT DEFAULT '[]',  -- JSON array of image paths/URLs
+    project_id   TEXT,               -- FK → project_registry (nullable)
+    origin_id    TEXT,               -- instance_id that created this
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL,
+    is_permanent INTEGER DEFAULT 0   -- 1 = never decays, survives federation merges
+);
+
+-- Typed edges between wiki entries, file nodes, and landmarks
+CREATE TABLE IF NOT EXISTS wiki_links (
+    link_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type  TEXT NOT NULL,      -- 'wiki' | 'file' | 'landmark'
+    source_id    TEXT NOT NULL,
+    target_type  TEXT NOT NULL,
+    target_id    TEXT NOT NULL,
+    relationship TEXT NOT NULL,      -- 'documents'|'references'|'implements'|'depends_on'
+    weight       REAL DEFAULT 1.0,
+    created_at   REAL NOT NULL
+);
+
+-- Federation merge audit log
+CREATE TABLE IF NOT EXISTS merge_log (
+    merge_id                TEXT PRIMARY KEY,
+    source_instance_id      TEXT NOT NULL,
+    source_path             TEXT NOT NULL,
+    merged_at               REAL NOT NULL,
+    landmarks_imported      INTEGER DEFAULT 0,
+    wiki_entries_imported   INTEGER DEFAULT 0,
+    conflicts_resolved      INTEGER DEFAULT 0,
+    strategy                TEXT DEFAULT 'landmark_wins'  -- 'landmark_wins'|'newer_wins'|'manual'
+);
+
+CREATE INDEX IF NOT EXISTS idx_wiki_entries_project ON wiki_entries(project_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_entries_origin  ON wiki_entries(origin_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_links_source    ON wiki_links(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_wiki_links_target    ON wiki_links(target_type, target_id);
 """
 
 
@@ -308,12 +374,19 @@ class CoordinateStore:
                 "ALTER TABLE graph_edges ADD COLUMN compound_count INTEGER DEFAULT 0",
                 "ALTER TABLE graph_edges ADD COLUMN decay_rate REAL DEFAULT 0.020",
                 "ALTER TABLE graph_edges ADD COLUMN last_scored REAL",
+                # Federation provenance columns — track which instance/project owns a node
+                "ALTER TABLE file_nodes ADD COLUMN origin_id TEXT DEFAULT NULL",
+                "ALTER TABLE file_nodes ADD COLUMN project_id TEXT DEFAULT NULL",
+                "ALTER TABLE landmarks ADD COLUMN origin_id TEXT DEFAULT NULL",
+                "ALTER TABLE landmarks ADD COLUMN project_id TEXT DEFAULT NULL",
             ]
             for stmt in migrations:
                 try:
                     conn.execute(stmt)
                 except Exception:
                     pass  # column already exists
+            # Auto-create instance identity on first init
+            self._ensure_instance_identity(conn)
             # Seed all 7 coordinate spaces if not present
             for space in BOOTSTRAP_SPACES:
                 conn.execute(
@@ -327,6 +400,240 @@ class CoordinateStore:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _ensure_instance_identity(self, conn: sqlite3.Connection):
+        """Create the local instance identity row if it doesn't exist yet."""
+        row = conn.execute("SELECT instance_id FROM instance_registry LIMIT 1").fetchone()
+        if not row:
+            instance_id = str(uuid.uuid4())
+            import socket
+            hostname = socket.gethostname()
+            conn.execute(
+                "INSERT INTO instance_registry "
+                "(instance_id, name, owner, created_at, last_seen, version) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (instance_id, hostname, None, time.time(), time.time(), "1.0")
+            )
+        else:
+            # Update last_seen on every init
+            conn.execute(
+                "UPDATE instance_registry SET last_seen = ?",
+                (time.time(),)
+            )
+
+    def get_instance_id(self) -> str:
+        """Return the local instance UUID (created on first init)."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT instance_id FROM instance_registry LIMIT 1").fetchone()
+            return row["instance_id"] if row else ""
+
+    # ── Project Registry ─────────────────────────────────────────────────
+
+    def ensure_project(self, name: str, path: str = "", description: str = "",
+                       tags: list = None) -> str:
+        """
+        Return project_id for a named project, creating it if absent.
+        Idempotent — safe to call on every session start.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT project_id FROM project_registry WHERE name = ?", (name,)
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE project_registry SET last_active = ? WHERE name = ?",
+                    (time.time(), name)
+                )
+                return row["project_id"]
+            project_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO project_registry "
+                "(project_id, name, path, description, tags, created_at, last_active) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (project_id, name, path, description,
+                 json.dumps(tags or []), time.time(), time.time())
+            )
+            return project_id
+
+    def get_projects(self) -> list:
+        """Return all registered projects."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM project_registry ORDER BY last_active DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ── Wiki Entries ─────────────────────────────────────────────────────
+
+    def add_wiki_entry(
+        self,
+        title: str,
+        content: str = "",
+        tags: list = None,
+        file_refs: list = None,
+        image_refs: list = None,
+        project_id: str = None,
+        is_permanent: bool = False,
+    ) -> str:
+        """
+        Add a wiki knowledge node and return its entry_id.
+        Automatically stamps origin_id from the local instance registry.
+        """
+        entry_id = f"wiki_{uuid.uuid4().hex[:12]}"
+        origin_id = self.get_instance_id()
+        now = time.time()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO wiki_entries "
+                "(entry_id, title, content, tags, file_refs, image_refs, "
+                " project_id, origin_id, created_at, updated_at, is_permanent) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry_id, title, content,
+                    json.dumps(tags or []),
+                    json.dumps(file_refs or []),
+                    json.dumps(image_refs or []),
+                    project_id, origin_id, now, now,
+                    1 if is_permanent else 0,
+                )
+            )
+        return entry_id
+
+    def get_wiki_entries(
+        self,
+        project_id: str = None,
+        permanent_only: bool = False,
+        limit: int = 50,
+    ) -> list:
+        """Return wiki entries, optionally filtered by project or permanence."""
+        with self._conn() as conn:
+            clauses, params = [], []
+            if project_id:
+                clauses.append("project_id = ?")
+                params.append(project_id)
+            if permanent_only:
+                clauses.append("is_permanent = 1")
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            rows = conn.execute(
+                f"SELECT * FROM wiki_entries {where} "
+                f"ORDER BY updated_at DESC LIMIT ?",
+                params + [limit]
+            ).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                for field in ("tags", "file_refs", "image_refs"):
+                    try:
+                        d[field] = json.loads(d[field] or "[]")
+                    except Exception:
+                        d[field] = []
+                result.append(d)
+            return result
+
+    def search_wiki(self, query: str, limit: int = 20) -> list:
+        """Full-text search across wiki entry titles, content, and tags."""
+        q = f"%{query}%"
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM wiki_entries "
+                "WHERE title LIKE ? OR content LIKE ? OR tags LIKE ? "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (q, q, q, limit)
+            ).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                for field in ("tags", "file_refs", "image_refs"):
+                    try:
+                        d[field] = json.loads(d[field] or "[]")
+                    except Exception:
+                        d[field] = []
+                result.append(d)
+            return result
+
+    def add_wiki_link(
+        self,
+        source_type: str, source_id: str,
+        target_type: str, target_id: str,
+        relationship: str = "references",
+        weight: float = 1.0,
+    ) -> int:
+        """Create a typed graph edge between any two node types."""
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "INSERT INTO wiki_links "
+                "(source_type, source_id, target_type, target_id, "
+                " relationship, weight, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (source_type, source_id, target_type, target_id,
+                 relationship, weight, time.time())
+            )
+            return cursor.lastrowid
+
+    def update_wiki_entry(
+        self,
+        entry_id: str,
+        content: str = None,
+        tags: list = None,
+        file_refs: list = None,
+        image_refs: list = None,
+        is_permanent: bool = None,
+    ):
+        """Update mutable fields of an existing wiki entry."""
+        with self._conn() as conn:
+            sets, params = [], []
+            if content is not None:
+                sets.append("content = ?"); params.append(content)
+            if tags is not None:
+                sets.append("tags = ?"); params.append(json.dumps(tags))
+            if file_refs is not None:
+                sets.append("file_refs = ?"); params.append(json.dumps(file_refs))
+            if image_refs is not None:
+                sets.append("image_refs = ?"); params.append(json.dumps(image_refs))
+            if is_permanent is not None:
+                sets.append("is_permanent = ?"); params.append(1 if is_permanent else 0)
+            if not sets:
+                return
+            sets.append("updated_at = ?"); params.append(time.time())
+            params.append(entry_id)
+            conn.execute(
+                f"UPDATE wiki_entries SET {', '.join(sets)} WHERE entry_id = ?",
+                params
+            )
+
+    # ── Federation / Merge ───────────────────────────────────────────────
+
+    def get_merge_log(self) -> list:
+        """Return the full merge audit log."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM merge_log ORDER BY merged_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def record_merge(
+        self,
+        source_instance_id: str,
+        source_path: str,
+        landmarks_imported: int = 0,
+        wiki_entries_imported: int = 0,
+        conflicts_resolved: int = 0,
+        strategy: str = "landmark_wins",
+    ) -> str:
+        """Record a completed federation merge in the audit log."""
+        merge_id = f"merge_{uuid.uuid4().hex[:12]}"
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO merge_log "
+                "(merge_id, source_instance_id, source_path, merged_at, "
+                " landmarks_imported, wiki_entries_imported, "
+                " conflicts_resolved, strategy) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (merge_id, source_instance_id, source_path, time.time(),
+                 landmarks_imported, wiki_entries_imported,
+                 conflicts_resolved, strategy)
+            )
+        return merge_id
 
     # ── Landmarks ────────────────────────────────────────────────────────
 

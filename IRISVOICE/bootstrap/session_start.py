@@ -375,11 +375,23 @@ def print_full_state(store: CoordinateStore):
     print()
 
 
+def print_ultra_compact_state(store: CoordinateStore):
+    """
+    3-line output for conversational prompts — minimal context cost (~40 tokens).
+    Gate + landmark count + objective. Nothing else.
+    """
+    session_count = store.get_session_count()
+    permanent = store.get_landmarks(permanent_only=True)
+    gate_num, gate_desc = get_current_gate(store)
+    print(f"[IRIS] Gate: {gate_desc} | Landmarks: {len(permanent)} permanent")
+    print(f"[IRIS] Objective: Build IRIS until fully autonomous — own interface, own backend, self-improving.")
+
+
 def print_compact_state(store: CoordinateStore):
     """
     Compact state for after context condense.
-    Just the essentials — gate, recent landmarks, active warnings.
-    Keeps post-condense context addition small (~500 tokens).
+    Just the essentials — gate, recent landmarks, active warnings, wiki summary.
+    Keeps post-condense context addition small (~600 tokens).
     """
     session_count = store.get_session_count()
     permanent     = store.get_landmarks(permanent_only=True)
@@ -408,6 +420,19 @@ def print_compact_state(store: CoordinateStore):
         print("Contracts:")
         for c in contracts[:2]:
             print(f"  {c['rule'][:65]}")
+
+    # Wiki summary — entry count + 2 most recent titles
+    try:
+        wiki = store.get_wiki_entries(limit=2)
+        all_wiki = store.get_wiki_entries(limit=1000)
+        perm_wiki = [e for e in all_wiki if e.get("is_permanent")]
+        if all_wiki:
+            print(f"Wiki: {len(all_wiki)} entries ({len(perm_wiki)} permanent)")
+            for e in wiki[:2]:
+                perm_flag = " ★" if e.get("is_permanent") else ""
+                print(f"  [{e['entry_id'][:8]}]{perm_flag} {e['title'][:55]}")
+    except Exception:
+        pass  # wiki tables may not exist on older DBs
 
     print(f"Objective: Build IRIS until fully autonomous — own interface, own backend, self-improving.")
     print("--- END COORDINATE STATE ---")
@@ -473,7 +498,9 @@ if __name__ == "__main__":
     except Exception:
         pass  # never block session load
 
-    if "--compact" in sys.argv:
+    if "--ultra-compact" in sys.argv:
+        print_ultra_compact_state(store)
+    elif "--compact" in sys.argv:
         print_compact_state(store)
     elif "--gate" in sys.argv:
         print_gate_only(store)
