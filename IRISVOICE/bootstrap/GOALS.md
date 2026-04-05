@@ -63,9 +63,21 @@ Specs for Gates 2-4 will be provided after each gate is confirmed working.
   Verify by: Start both servers, open the app, load a model via ModelsScreen,
   type a message in chat, confirm reply comes from the local GGUF with GPU active.
 
-  GATE 2 — CLI CHAT (spec pending — provided after Gate 1 verified)
-  Goal: chat-view.tsx becomes a CLI-style interface working in tandem with
+  GATE 2 — CHAT/TERMINAL HYBRID (spec pending — provided after Gate 1 verified)
+  Goal: chat-view.tsx becomes a chat/terminal hybrid by embedding an existing
+        open-source terminal interface (xterm.js or equivalent) rather than
+        building a CLI renderer from scratch. The terminal is the driver for
+        the IRIS agent — input/output flows through the embedded terminal,
+        the agent backend remains unchanged. Works in tandem with
         dashboard-wing.tsx. Spec to be given once Gate 1 is confirmed.
+
+  Design intent:
+    - Embed xterm.js (or similar) inside chat-view.tsx as a React component
+    - Terminal receives agent streaming output and renders it natively
+    - User input goes through the terminal → WebSocket → agent kernel
+    - Existing open-source CLI platforms/tools can be wired as alternate
+      drivers (e.g. pipe output from another CLI tool into the terminal view)
+    - No custom CLI rendering code — leverage the open-source ecosystem
 
   GATE 3 — AGENT KERNEL UPGRADE (spec pending — provided after Gate 2 verified)
   Goal: Agent kernel handles deep multi-step tasks with no loss of direction
