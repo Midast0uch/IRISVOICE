@@ -16,8 +16,8 @@ Usage:
   python bootstrap/record_event.py --type test_run --file backend/tests/test_der_loop.py --result pass --covers backend/agent/der_loop.py
   python bootstrap/record_event.py --type note --desc "Chose WAL mode for concurrent SQLite access"
   python bootstrap/record_event.py --type git_commit --desc "feat: DER loop foundation"
-  python bootstrap/record_event.py --type wiki_entry --title "TTS Pipeline Design" --content "F5-TTS is primary..." --tags tts voice
-  python bootstrap/record_event.py --type image_ref --title "Architecture Diagram" --image-refs docs/arch.png --file-refs backend/agent/agent_kernel.py
+  python bootstrap/record_event.py --type pin --title "TTS Pipeline Design" --content "F5-TTS is primary..." --tags tts voice
+  python bootstrap/record_event.py --type pin --pin-type image --title "Architecture Diagram" --image-refs docs/arch.png --file-refs backend/agent/agent_kernel.py
   python bootstrap/record_event.py --type project_ref --project-name "my-other-project" --project-path /path/to/project
 
   # Override the computed score — a failure that taught you something important:
@@ -25,7 +25,8 @@ Usage:
 
 Options:
   --type         Event type: file_edit | file_create | test_run | git_commit | note
-                             | wiki_entry | image_ref | project_ref
+                             | pin | project_ref
+                 pin covers all PiN types — use --pin-type to specify: note|file|folder|image|doc|url|decision|fragment
   --file         File path (relative to IRISVOICE/)
   --desc         Description of what changed and why
   --result       For test_run: pass | fail
@@ -89,7 +90,7 @@ def main():
     parser = argparse.ArgumentParser(description="Record a code event in the coordinate graph")
     parser.add_argument("--type", required=True,
                         choices=["file_edit", "file_create", "test_run", "git_commit", "note",
-                                 "wiki_entry", "image_ref", "project_ref"],
+                                 "pin", "project_ref"],
                         help="Event type")
     parser.add_argument("--file", default=None, help="File path affected")
     parser.add_argument("--desc", default=None, help="Description of what changed and why")
@@ -110,19 +111,24 @@ def main():
     parser.add_argument("--tags", nargs="+", default=None,
                         help="Tags for wiki_entry or image_ref")
     parser.add_argument("--image-refs", nargs="+", default=None,
-                        help="Image paths/URLs for wiki_entry or image_ref")
+                        help="Image paths/URLs for pin type=image")
     parser.add_argument("--file-refs", nargs="+", default=None,
-                        help="File paths for wiki_entry or image_ref")
+                        help="File paths referenced by this PiN")
+    parser.add_argument("--url-refs", nargs="+", default=None,
+                        help="External URLs referenced by this PiN")
+    parser.add_argument("--pin-type", default=None,
+                        choices=["note", "file", "folder", "image", "doc", "url", "decision", "fragment"],
+                        help="PiN sub-type (for --type pin)")
     parser.add_argument("--permanent", action="store_true",
-                        help="Mark wiki entry as permanent")
+                        help="Mark PiN as permanent (survives decay)")
     parser.add_argument("--project-name", default=None,
                         help="Project name for project_ref")
     parser.add_argument("--project-path", default=None,
                         help="Project path for project_ref")
     args = parser.parse_args()
 
-    # --desc is optional for wiki_entry / image_ref / project_ref
-    if args.type not in ("wiki_entry", "image_ref", "project_ref") and not args.desc:
+    # --desc is optional for pin / project_ref (title takes precedence)
+    if args.type not in ("pin", "project_ref") and not args.desc:
         parser.error("--desc is required for this event type")
 
     # Validate score range if provided
@@ -134,47 +140,38 @@ def main():
     gate = get_current_gate()
     store = CoordinateStore()
 
-    # ── Wiki / federation event types ────────────────────────────────────
-    if args.type == "wiki_entry":
+    # ── PiN (Primordial Information Node) ────────────────────────────────
+    if args.type == "pin":
         title = args.title or args.desc or "Untitled"
-        entry_id = store.add_wiki_entry(
+        pin_type = args.pin_type or "note"
+        pin_id = store.add_pin(
             title=title,
+            pin_type=pin_type,
             content=args.content or "",
             tags=args.tags or [],
             file_refs=args.file_refs or ([args.file] if args.file else []),
             image_refs=args.image_refs or [],
+            url_refs=args.url_refs or [],
             is_permanent=args.permanent,
         )
-        print(f"WIKI ENTRY RECORDED: {entry_id}")
+        print(f"PiN RECORDED: {pin_id}  [{pin_type}]")
         print(f"  title: {title}")
         if args.tags:
             print(f"  tags:  {', '.join(args.tags)}")
+        if args.image_refs:
+            print(f"  images: {', '.join(args.image_refs)}")
+        if args.file_refs:
+            print(f"  files: {', '.join(args.file_refs)}")
         if args.permanent:
             print("  ★ PERMANENT")
-        # Also record a note-type code_event so the event stream reflects this
+        # Mirror into code_event stream so the graph reflects this
         store.record_code_event(
             agent_id=agent_id,
             event_type="note",
-            description=f"wiki_entry: {title}",
+            description=f"pin[{pin_type}]: {title}",
             file_path=args.file,
             gate=gate,
         )
-        return
-
-    if args.type == "image_ref":
-        title = args.title or args.desc or "Image"
-        entry_id = store.add_wiki_entry(
-            title=title,
-            content=args.content or "",
-            tags=(args.tags or []) + ["image"],
-            file_refs=args.file_refs or ([args.file] if args.file else []),
-            image_refs=args.image_refs or [],
-            is_permanent=args.permanent,
-        )
-        print(f"IMAGE REF RECORDED: {entry_id}")
-        print(f"  title:  {title}")
-        if args.image_refs:
-            print(f"  images: {', '.join(args.image_refs)}")
         return
 
     if args.type == "project_ref":

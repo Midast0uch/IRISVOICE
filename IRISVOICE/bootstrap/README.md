@@ -30,13 +30,12 @@ FILES
   coordinates.py          Core store — SQLite schema, all read/write methods
   coordinates.db          The live database (git-ignored or committed, your choice)
   session_start.py        Load state into context. Also auto-syncs git commits.
-  record_event.py         Record a single code action (edit, create, test, note, wiki)
+  record_event.py         Record a single code action (edit, create, test, note, pin)
   agent_context.py        Work queue — claim items, complete them, run in parallel
   query_graph.py          Query the graph (file state, routes, failures, summary)
   mid_session_snapshot.py Save a progress note mid-session (before context condense)
   update_coordinates.py   Close out a session, record landmarks and warnings
-  wiki.py                 Wiki CLI — add/search/link knowledge nodes (docs, images, designs)
-  merge_db.py             Federation merge — import permanent knowledge from another IRIS instance
+  pin.py                  PiN CLI — anchor/search/link Primordial Information Nodes
   GOALS.md                Project-specific roadmap (replace with your own)
   signals/                Sub-agent completion signals (for parallel agent coordination)
 
@@ -101,21 +100,21 @@ Manual recording (for uncommitted work, high-signal failures, or notes):
   python bootstrap/record_event.py --type test_run --file tests/test_foo --result fail --score 0.70 --desc "what failed revealed"
   python bootstrap/record_event.py --type note --desc "why X was chosen over Y"
 
-Wiki knowledge nodes (docs, images, design notes):
-  python bootstrap/record_event.py --type wiki_entry --title "TTS Pipeline" --content "F5-TTS is primary..." --tags tts voice
-  python bootstrap/record_event.py --type image_ref --title "Arch Diagram" --image-refs docs/arch.png --file-refs backend/agent/agent_kernel.py
-  python bootstrap/record_event.py --type project_ref --project-name "my-project" --project-path /path/to/project
+PiNs (Primordial Information Nodes — anchor any knowledge artifact into the graph):
+  python bootstrap/record_event.py --type pin --title "TTS Pipeline" --content "F5-TTS is primary..." --tags tts voice
+  python bootstrap/record_event.py --type pin --pin-type image --title "Arch Diagram" --image-refs docs/arch.png
+  python bootstrap/record_event.py --type pin --pin-type decision --title "Chose SQLite over Postgres" --permanent
 
-  # Or use the dedicated wiki CLI for more control:
-  python bootstrap/wiki.py --add "Design Decision: TTS" --content "..." --tags decision tts --permanent
-  python bootstrap/wiki.py --search "tts"
-  python bootstrap/wiki.py --link wiki:ENTRY_ID landmark:lm_foo documents
-  python bootstrap/wiki.py --list
+  # Or use the dedicated PiN CLI for more control:
+  python bootstrap/pin.py --add "Design: TTS pipeline" --type decision --content "..." --permanent
+  python bootstrap/pin.py --search "tts"
+  python bootstrap/pin.py --link pin:PIN_ID landmark:lm_foo documents
+  python bootstrap/pin.py --list --type decision
 
-Federation (share permanent knowledge between IRIS instances):
-  python bootstrap/merge_db.py --source /path/to/other/coordinates.db
-  python bootstrap/merge_db.py --dry-run --source /path/to/other/coordinates.db
-  python bootstrap/merge_db.py --log
+Cross-project landmark bridging (register equivalent landmarks across projects):
+  python bootstrap/pin.py --bridge lm_g1_backend_health \
+    --remote-name "g1_api_healthy" --remote-project "other-project" --confidence 0.95
+  python bootstrap/pin.py --bridges   # list all bridges
 
 ---
 
@@ -174,50 +173,65 @@ Work claiming is atomic.
 
 ---
 
-WIKI LAYER
+PiN LAYER (Primordial Information Nodes)
 
-The wiki extends the graph into human knowledge — design docs, architecture diagrams,
-decisions, image references, and external links — all first-class graph nodes.
+A PiN is any meaningful unit of knowledge anchored to this project's memory graph.
+The name is intentional — "primordia" are the first growth points of a fungal network.
+PiNs are the attachment points IRIS memory crystallises around.
 
-  # Record a design decision that future agents should know about:
-  python bootstrap/wiki.py --add "Decision: TTS primary = F5-TTS" \
-    --content "F5-TTS chosen over Piper because voice cloning is core to IRIS identity." \
-    --tags decision tts voice --permanent
+PiN types:
+  note       — freeform note or observation
+  file       — a specific file or set of files
+  folder     — a directory / subtree
+  image      — diagram, screenshot, visual reference
+  doc        — document, spec, README, design brief
+  url        — external link, API reference, library docs
+  decision   — architectural or technical decision record
+  fragment   — code snippet, prompt fragment, reusable pattern
+
+  # Anchor a design decision permanently:
+  python bootstrap/pin.py --add "Decision: TTS primary = F5-TTS" --type decision \
+    --content "F5-TTS over Piper: voice cloning is core to IRIS identity." \
+    --tags tts voice decision --permanent
 
   # Link an architecture diagram to the file it describes:
-  python bootstrap/wiki.py --add "Arch: DER Loop" --image-refs docs/der_loop.png \
-    --file-refs backend/agent/der_loop.py
-  python bootstrap/wiki.py --link wiki:ENTRY_ID file:backend/agent/der_loop.py documents
+  python bootstrap/pin.py --add "Arch: DER Loop" --type image \
+    --image-refs docs/der_loop.png --file-refs backend/agent/der_loop.py
+  python bootstrap/pin.py --link pin:PIN_ID file:backend/agent/der_loop.py documents
 
-  # Search across all wiki nodes:
-  python bootstrap/wiki.py --search "tts"
-  python bootstrap/wiki.py --list --permanent   # only permanent entries
+  # Search all PiNs:
+  python bootstrap/pin.py --search "tts"
+  python bootstrap/pin.py --list --type decision   # only decision PiNs
 
-Wiki entries appear in compact output so agents arriving mid-project understand
-what knowledge already exists without reading random files.
+PiNs appear in compact output so agents arriving mid-project know what knowledge
+already exists without reading random files.
 
 ---
 
-FEDERATION
+CROSS-PROJECT LANDMARK BRIDGING
 
 Each IRIS installation has a unique instance_id (UUID, auto-created on first init).
-Permanent landmarks and wiki entries carry an origin_id — provenance is always known.
+Permanent landmarks and PiNs carry an origin_id — provenance is always known.
 
-When two IRIS instances want to share knowledge:
-  python bootstrap/merge_db.py --source /path/to/other/coordinates.db
+A landmark bridge maps a local landmark to an equivalent landmark in another project.
+Projects don't have to be code or the same domain — they just need the same 7-space
+coordinate map. IRIS uses bridges to bootstrap faster on new projects: familiar
+patterns activate from prior traversals rather than re-crystallising from scratch.
 
-What travels across the network:
-  - Permanent landmarks (verified features — never overwritten by default)
-  - Wiki entries (permanent entries always travel; non-permanent follow the strategy)
-  - Pheromone edge weights (compounded — the more instances agree, the higher the weight)
+Bridge types:
+  equivalent — same pattern, different codebase / domain / instance
+  similar    — overlapping pattern, partial activation expected
+  inverse    — opposite pattern — activates as a warning, not a boost
 
-Conflict strategies:
-  landmark_wins  — keep local if same landmark name exists (safe default)
-  newer_wins     — whichever was updated most recently wins
-  manual         — list conflicts and exit, no writes (for review before committing)
+  python bootstrap/pin.py --bridge lm_g1_backend_health \
+    --remote-name "g1_api_healthy" --remote-project "other-project" \
+    --confidence 0.95 --bridge-type equivalent
+  python bootstrap/pin.py --bridges                  # list all
+  python bootstrap/pin.py --bridges lm_g1_backend_health   # one landmark
 
-Every merge is audited:
-  python bootstrap/merge_db.py --log
+Federation (full DB merge between IRIS instances) is built into the IRIS application
+layer — not the bootstrap. The application will expose a federation interface once
+Gate 3 is complete.
 
 ---
 
@@ -225,7 +239,7 @@ PORTABILITY NOTES
 
 - Python 3.8+ required. No dependencies beyond stdlib + sqlite3.
 - Works on any OS. All paths use os.path — no hardcoded separators.
-- The database schema is stable. It can transfer to a runtime memory store
-  when the project reaches production (same schema, no migration needed).
+- The database schema is stable. It transfers to data/memory.db at production.
+  (same coordinate map schema — no migration needed).
 - To use in a new project: copy bootstrap/, update GOALS.md, wire the hooks.
-- Federation: instance_registry auto-created on first init. No configuration needed.
+- Instance identity: instance_registry auto-created on first init. No config needed.

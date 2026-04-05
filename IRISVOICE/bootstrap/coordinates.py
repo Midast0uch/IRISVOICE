@@ -18,7 +18,7 @@ import uuid
 import os
 import hashlib
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -244,7 +244,12 @@ CREATE INDEX IF NOT EXISTS idx_test_nodes_file ON test_nodes(test_file);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_type, target_id);
 
--- ── Federation & Wiki layer ──────────────────────────────────────────────────
+-- ── Federation & PiN layer ────────────────────────────────────────────────────
+-- PiN = Primordial Information Node
+-- Any meaningful unit of knowledge anchored to this project's memory:
+-- files, folders, docs, images, designs, decisions, URLs, code fragments.
+-- PiNs are the attachment points of IRIS memory across projects and instances.
+
 -- Unique identity per IRIS installation (one row, auto-created on first init)
 CREATE TABLE IF NOT EXISTS instance_registry (
     instance_id  TEXT PRIMARY KEY,   -- UUID v4
@@ -266,49 +271,59 @@ CREATE TABLE IF NOT EXISTS project_registry (
     last_active  REAL NOT NULL
 );
 
--- Wiki knowledge nodes: docs, images, design notes linked into the graph
-CREATE TABLE IF NOT EXISTS wiki_entries (
-    entry_id     TEXT PRIMARY KEY,
+-- PiN nodes: any knowledge artifact linked to this project's memory graph
+-- pin_type hints at what kind of artifact this is (helps queries/rendering)
+CREATE TABLE IF NOT EXISTS pins (
+    pin_id       TEXT PRIMARY KEY,
     title        TEXT NOT NULL,
-    content      TEXT,               -- markdown body
-    tags         TEXT DEFAULT '[]',  -- JSON array
-    file_refs    TEXT DEFAULT '[]',  -- JSON array of file paths
-    image_refs   TEXT DEFAULT '[]',  -- JSON array of image paths/URLs
-    project_id   TEXT,               -- FK → project_registry (nullable)
-    origin_id    TEXT,               -- instance_id that created this
+    pin_type     TEXT DEFAULT 'note',  -- 'note'|'file'|'folder'|'image'|'doc'|'url'|'decision'|'fragment'
+    content      TEXT,                 -- markdown body, description, or raw text
+    tags         TEXT DEFAULT '[]',    -- JSON array
+    file_refs    TEXT DEFAULT '[]',    -- JSON array of file/folder paths
+    image_refs   TEXT DEFAULT '[]',    -- JSON array of image paths/URLs
+    url_refs     TEXT DEFAULT '[]',    -- JSON array of external URLs
+    project_id   TEXT,                 -- FK → project_registry (nullable = global)
+    origin_id    TEXT,                 -- instance_id that created this PiN
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL,
-    is_permanent INTEGER DEFAULT 0   -- 1 = never decays, survives federation merges
+    is_permanent INTEGER DEFAULT 0     -- 1 = never decays, survives across sessions
 );
 
--- Typed edges between wiki entries, file nodes, and landmarks
-CREATE TABLE IF NOT EXISTS wiki_links (
+-- Typed edges connecting PiNs to any graph node (file, landmark, other pin)
+CREATE TABLE IF NOT EXISTS pin_links (
     link_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_type  TEXT NOT NULL,      -- 'wiki' | 'file' | 'landmark'
+    source_type  TEXT NOT NULL,   -- 'pin' | 'file' | 'landmark'
     source_id    TEXT NOT NULL,
     target_type  TEXT NOT NULL,
     target_id    TEXT NOT NULL,
-    relationship TEXT NOT NULL,      -- 'documents'|'references'|'implements'|'depends_on'
+    relationship TEXT NOT NULL,   -- 'documents'|'references'|'implements'|'depends_on'|'contains'|'related_to'
     weight       REAL DEFAULT 1.0,
     created_at   REAL NOT NULL
 );
 
--- Federation merge audit log
-CREATE TABLE IF NOT EXISTS merge_log (
-    merge_id                TEXT PRIMARY KEY,
-    source_instance_id      TEXT NOT NULL,
-    source_path             TEXT NOT NULL,
-    merged_at               REAL NOT NULL,
-    landmarks_imported      INTEGER DEFAULT 0,
-    wiki_entries_imported   INTEGER DEFAULT 0,
-    conflicts_resolved      INTEGER DEFAULT 0,
-    strategy                TEXT DEFAULT 'landmark_wins'  -- 'landmark_wins'|'newer_wins'|'manual'
+-- Cross-project landmark bridging
+-- Maps a local landmark to an equivalent landmark in another project/instance.
+-- Allows IRIS to bootstrap faster on new projects by recognising familiar patterns.
+CREATE TABLE IF NOT EXISTS landmark_bridges (
+    bridge_id              TEXT PRIMARY KEY,
+    local_landmark_id      TEXT NOT NULL,    -- FK → landmarks.landmark_id
+    remote_project_id      TEXT,             -- FK → project_registry
+    remote_instance_id     TEXT,             -- the origin instance
+    remote_landmark_name   TEXT NOT NULL,    -- name/task_class in the remote project
+    remote_landmark_id     TEXT,             -- optional direct ID if known
+    confidence             REAL DEFAULT 1.0, -- how certain this equivalence is
+    bridge_type            TEXT DEFAULT 'equivalent',  -- 'equivalent'|'similar'|'inverse'
+    notes                  TEXT,
+    created_at             REAL NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_wiki_entries_project ON wiki_entries(project_id);
-CREATE INDEX IF NOT EXISTS idx_wiki_entries_origin  ON wiki_entries(origin_id);
-CREATE INDEX IF NOT EXISTS idx_wiki_links_source    ON wiki_links(source_type, source_id);
-CREATE INDEX IF NOT EXISTS idx_wiki_links_target    ON wiki_links(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_pins_project         ON pins(project_id);
+CREATE INDEX IF NOT EXISTS idx_pins_origin          ON pins(origin_id);
+CREATE INDEX IF NOT EXISTS idx_pins_type            ON pins(pin_type);
+CREATE INDEX IF NOT EXISTS idx_pin_links_source     ON pin_links(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_pin_links_target     ON pin_links(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_bridges_local        ON landmark_bridges(local_landmark_id);
+CREATE INDEX IF NOT EXISTS idx_bridges_remote_inst  ON landmark_bridges(remote_instance_id);
 """
 
 
@@ -463,66 +478,77 @@ class CoordinateStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    # ── Wiki Entries ─────────────────────────────────────────────────────
+    # ── PiNs (Primordial Information Nodes) ──────────────────────────────
+    # Any knowledge artifact anchored to this project's memory graph:
+    # files, folders, docs, images, designs, decisions, URLs, fragments.
 
-    def add_wiki_entry(
+    def add_pin(
         self,
         title: str,
+        pin_type: str = "note",
         content: str = "",
         tags: list = None,
         file_refs: list = None,
         image_refs: list = None,
+        url_refs: list = None,
         project_id: str = None,
         is_permanent: bool = False,
     ) -> str:
         """
-        Add a wiki knowledge node and return its entry_id.
+        Anchor a Primordial Information Node into the graph and return its pin_id.
         Automatically stamps origin_id from the local instance registry.
+
+        pin_type: 'note'|'file'|'folder'|'image'|'doc'|'url'|'decision'|'fragment'
         """
-        entry_id = f"wiki_{uuid.uuid4().hex[:12]}"
+        pin_id = f"pin_{uuid.uuid4().hex[:12]}"
         origin_id = self.get_instance_id()
         now = time.time()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO wiki_entries "
-                "(entry_id, title, content, tags, file_refs, image_refs, "
+                "INSERT INTO pins "
+                "(pin_id, title, pin_type, content, tags, file_refs, image_refs, url_refs, "
                 " project_id, origin_id, created_at, updated_at, is_permanent) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    entry_id, title, content,
+                    pin_id, title, pin_type, content,
                     json.dumps(tags or []),
                     json.dumps(file_refs or []),
                     json.dumps(image_refs or []),
+                    json.dumps(url_refs or []),
                     project_id, origin_id, now, now,
                     1 if is_permanent else 0,
                 )
             )
-        return entry_id
+        return pin_id
 
-    def get_wiki_entries(
+    def get_pins(
         self,
         project_id: str = None,
+        pin_type: str = None,
         permanent_only: bool = False,
         limit: int = 50,
     ) -> list:
-        """Return wiki entries, optionally filtered by project or permanence."""
+        """Return PiNs, optionally filtered by project, type, or permanence."""
         with self._conn() as conn:
             clauses, params = [], []
             if project_id:
                 clauses.append("project_id = ?")
                 params.append(project_id)
+            if pin_type:
+                clauses.append("pin_type = ?")
+                params.append(pin_type)
             if permanent_only:
                 clauses.append("is_permanent = 1")
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             rows = conn.execute(
-                f"SELECT * FROM wiki_entries {where} "
+                f"SELECT * FROM pins {where} "
                 f"ORDER BY updated_at DESC LIMIT ?",
                 params + [limit]
             ).fetchall()
             result = []
             for r in rows:
                 d = dict(r)
-                for field in ("tags", "file_refs", "image_refs"):
+                for field in ("tags", "file_refs", "image_refs", "url_refs"):
                     try:
                         d[field] = json.loads(d[field] or "[]")
                     except Exception:
@@ -530,20 +556,20 @@ class CoordinateStore:
                 result.append(d)
             return result
 
-    def search_wiki(self, query: str, limit: int = 20) -> list:
-        """Full-text search across wiki entry titles, content, and tags."""
+    def search_pins(self, query: str, limit: int = 20) -> list:
+        """Full-text search across PiN titles, content, tags, and file_refs."""
         q = f"%{query}%"
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM wiki_entries "
-                "WHERE title LIKE ? OR content LIKE ? OR tags LIKE ? "
+                "SELECT * FROM pins "
+                "WHERE title LIKE ? OR content LIKE ? OR tags LIKE ? OR file_refs LIKE ? "
                 "ORDER BY updated_at DESC LIMIT ?",
-                (q, q, q, limit)
+                (q, q, q, q, limit)
             ).fetchall()
             result = []
             for r in rows:
                 d = dict(r)
-                for field in ("tags", "file_refs", "image_refs"):
+                for field in ("tags", "file_refs", "image_refs", "url_refs"):
                     try:
                         d[field] = json.loads(d[field] or "[]")
                     except Exception:
@@ -551,17 +577,17 @@ class CoordinateStore:
                 result.append(d)
             return result
 
-    def add_wiki_link(
+    def add_pin_link(
         self,
         source_type: str, source_id: str,
         target_type: str, target_id: str,
         relationship: str = "references",
         weight: float = 1.0,
     ) -> int:
-        """Create a typed graph edge between any two node types."""
+        """Create a typed graph edge connecting any two node types via a PiN link."""
         with self._conn() as conn:
             cursor = conn.execute(
-                "INSERT INTO wiki_links "
+                "INSERT INTO pin_links "
                 "(source_type, source_id, target_type, target_id, "
                 " relationship, weight, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -570,16 +596,17 @@ class CoordinateStore:
             )
             return cursor.lastrowid
 
-    def update_wiki_entry(
+    def update_pin(
         self,
-        entry_id: str,
+        pin_id: str,
         content: str = None,
         tags: list = None,
         file_refs: list = None,
         image_refs: list = None,
+        url_refs: list = None,
         is_permanent: bool = None,
     ):
-        """Update mutable fields of an existing wiki entry."""
+        """Update mutable fields of an existing PiN."""
         with self._conn() as conn:
             sets, params = [], []
             if content is not None:
@@ -590,50 +617,94 @@ class CoordinateStore:
                 sets.append("file_refs = ?"); params.append(json.dumps(file_refs))
             if image_refs is not None:
                 sets.append("image_refs = ?"); params.append(json.dumps(image_refs))
+            if url_refs is not None:
+                sets.append("url_refs = ?"); params.append(json.dumps(url_refs))
             if is_permanent is not None:
                 sets.append("is_permanent = ?"); params.append(1 if is_permanent else 0)
             if not sets:
                 return
             sets.append("updated_at = ?"); params.append(time.time())
-            params.append(entry_id)
+            params.append(pin_id)
             conn.execute(
-                f"UPDATE wiki_entries SET {', '.join(sets)} WHERE entry_id = ?",
+                f"UPDATE pins SET {', '.join(sets)} WHERE pin_id = ?",
                 params
             )
 
-    # ── Federation / Merge ───────────────────────────────────────────────
+    # ── Cross-Project Landmark Bridges ────────────────────────────────────
 
-    def get_merge_log(self) -> list:
-        """Return the full merge audit log."""
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM merge_log ORDER BY merged_at DESC"
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def record_merge(
+    def add_landmark_bridge(
         self,
-        source_instance_id: str,
-        source_path: str,
-        landmarks_imported: int = 0,
-        wiki_entries_imported: int = 0,
-        conflicts_resolved: int = 0,
-        strategy: str = "landmark_wins",
+        local_landmark_id: str,
+        remote_landmark_name: str,
+        remote_project_id: str = None,
+        remote_instance_id: str = None,
+        remote_landmark_id: str = None,
+        confidence: float = 1.0,
+        bridge_type: str = "equivalent",
+        notes: str = None,
     ) -> str:
-        """Record a completed federation merge in the audit log."""
-        merge_id = f"merge_{uuid.uuid4().hex[:12]}"
+        """
+        Register that a local landmark is equivalent (or similar) to a landmark
+        in another project or IRIS instance.
+
+        bridge_type: 'equivalent' | 'similar' | 'inverse'
+        """
+        bridge_id = f"bridge_{uuid.uuid4().hex[:12]}"
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO merge_log "
-                "(merge_id, source_instance_id, source_path, merged_at, "
-                " landmarks_imported, wiki_entries_imported, "
-                " conflicts_resolved, strategy) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (merge_id, source_instance_id, source_path, time.time(),
-                 landmarks_imported, wiki_entries_imported,
-                 conflicts_resolved, strategy)
+                "INSERT INTO landmark_bridges "
+                "(bridge_id, local_landmark_id, remote_project_id, remote_instance_id, "
+                " remote_landmark_name, remote_landmark_id, confidence, bridge_type, "
+                " notes, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (bridge_id, local_landmark_id, remote_project_id, remote_instance_id,
+                 remote_landmark_name, remote_landmark_id, confidence, bridge_type,
+                 notes, time.time())
             )
-        return merge_id
+        return bridge_id
+
+    def get_landmark_bridges(self, local_landmark_id: str = None) -> list:
+        """
+        Return all landmark bridges, optionally filtered to a specific local landmark.
+        """
+        with self._conn() as conn:
+            if local_landmark_id:
+                rows = conn.execute(
+                    "SELECT * FROM landmark_bridges WHERE local_landmark_id = ? "
+                    "ORDER BY confidence DESC",
+                    (local_landmark_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM landmark_bridges ORDER BY confidence DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def find_bridge(
+        self,
+        remote_landmark_name: str,
+        remote_instance_id: str = None,
+    ) -> Optional[dict]:
+        """
+        Look up a bridge by the remote landmark name (and optionally instance).
+        Returns the highest-confidence match, or None.
+        """
+        with self._conn() as conn:
+            if remote_instance_id:
+                row = conn.execute(
+                    "SELECT * FROM landmark_bridges "
+                    "WHERE remote_landmark_name = ? AND remote_instance_id = ? "
+                    "ORDER BY confidence DESC LIMIT 1",
+                    (remote_landmark_name, remote_instance_id)
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM landmark_bridges "
+                    "WHERE remote_landmark_name = ? "
+                    "ORDER BY confidence DESC LIMIT 1",
+                    (remote_landmark_name,)
+                ).fetchone()
+            return dict(row) if row else None
 
     # ── Landmarks ────────────────────────────────────────────────────────
 

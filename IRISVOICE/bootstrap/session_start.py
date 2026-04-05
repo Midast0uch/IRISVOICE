@@ -421,18 +421,19 @@ def print_compact_state(store: CoordinateStore):
         for c in contracts[:2]:
             print(f"  {c['rule'][:65]}")
 
-    # Wiki summary — entry count + 2 most recent titles
+    # PiN summary — count + 2 most recent titles
     try:
-        wiki = store.get_wiki_entries(limit=2)
-        all_wiki = store.get_wiki_entries(limit=1000)
-        perm_wiki = [e for e in all_wiki if e.get("is_permanent")]
-        if all_wiki:
-            print(f"Wiki: {len(all_wiki)} entries ({len(perm_wiki)} permanent)")
-            for e in wiki[:2]:
-                perm_flag = " ★" if e.get("is_permanent") else ""
-                print(f"  [{e['entry_id'][:8]}]{perm_flag} {e['title'][:55]}")
+        recent_pins = store.get_pins(limit=2)
+        all_pins = store.get_pins(limit=1000)
+        perm_pins = [p for p in all_pins if p.get("is_permanent")]
+        if all_pins:
+            print(f"PiNs: {len(all_pins)} ({len(perm_pins)} permanent)")
+            for p in recent_pins[:2]:
+                perm_flag = " ★" if p.get("is_permanent") else ""
+                ptype = p.get("pin_type", "note")
+                print(f"  [{p['pin_id'][:8]}]{perm_flag} [{ptype}] {p['title'][:50]}")
     except Exception:
-        pass  # wiki tables may not exist on older DBs
+        pass  # pins table may not exist on older DBs
 
     print(f"Objective: Build IRIS until fully autonomous — own interface, own backend, self-improving.")
     print("--- END COORDINATE STATE ---")
