@@ -237,9 +237,16 @@ class TTSManager:
         if use_f5:
             engine_name = "F5-TTS F5TTS_v1_Base (zero-shot voice cloning, CPU)"
             engine_ready = self._f5tts is not None
+            # "model available" = f5-tts pip package installed
+            try:
+                import importlib.util
+                model_path_exists = importlib.util.find_spec("f5_tts") is not None
+            except Exception:
+                model_path_exists = False
         else:
             engine_name = "Piper en_US-ryan-high (CPU)"
             engine_ready = self._piper is not None
+            model_path_exists = PIPER_MODEL_ONNX.exists()
 
         return {
             "available_voices":       AVAILABLE_VOICES,
@@ -247,6 +254,7 @@ class TTSManager:
             "config":                 self.get_config(),
             "model":                  engine_name,
             "model_ready":            engine_ready,
+            "model_path_exists":      model_path_exists,
             "reference_audio":        str(REFERENCE_AUDIO),
             "reference_audio_exists": REFERENCE_AUDIO.exists(),
             "sample_rate":            OUTPUT_SAMPLE_RATE,
