@@ -2,6 +2,30 @@
 
 ## [Unreleased] — IRISVOICEv.4
 
+### fix: stop 9.1 GB CosyVoice3 model auto-loading at every backend start
+
+**Root cause of PC becoming unresponsive**: `CosyVoice3-0.5B` weights on disk are
+9.1 GB. `IRISGateway.__init__` was spawning a background thread to pre-load this
+model 6 seconds after every backend start, regardless of whether the user was using
+voice TTS. The RAM guard was set at 4.0 GB free — a threshold the model alone
+exceeds. On a 16–32 GB consumer system already running Next.js + browser + Python,
+loading 9.1 GB in the background saturated RAM and caused the OS to thrash.
+
+#### `backend/iris_gateway.py`
+
+- **Startup prewarm removed**: The `if _cosyvoice_model_dir.exists()` block in
+  `__init__` no longer spawns the prewarm thread. `_tts_prewarmed = True` is set
+  immediately so all "safety net" re-trigger paths are also suppressed.
+  CosyVoice3 now loads **lazily** — only when the user sends their first voice
+  message and `synthesize_stream()` runs for the first time. `synthesize_stream`
+  already calls `_select_engine()` + `_load_cosyvoice()` itself; the prewarm was
+  purely an optimisation that was killing the machine.
+- **On-demand re-trigger removed**: The `if not self._tts_prewarmed` block in
+  `_handle_voice` that spawned a second prewarm thread when voice started is also
+  removed. Comments explain the lazy-load contract.
+- **RAM guard raised**: `_prewarm_tts` RAM check raised from 4.0 GB → 12.0 GB
+  (model = 9.1 GB + Python overhead + OS = minimum 12 GB headroom required).
+
 ### perf: eliminate PC-grinding memory spikes (frontend + backend)
 
 Root-cause audit found 3 issues causing the PC to become unresponsive when both servers ran simultaneously.

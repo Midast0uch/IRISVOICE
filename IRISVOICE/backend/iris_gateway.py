@@ -115,17 +115,14 @@ class IRISGateway:
         # (e.g. _on_voice_result) that need to dispatch back to the event loop from
         # a background thread without calling asyncio.get_event_loop() in that thread.
         import threading
-        # Only start TTS prewarm if CosyVoice3 model files exist on disk.
-        # On fresh installs or CPU-only machines this avoids importing torch
-        # (~360 MB) for nothing.  The on-demand prewarm in _handle_voice()
-        # still acts as a safety net if the model appears later.
-        from pathlib import Path as _Path
-        _cosyvoice_model_dir = _Path(__file__).parent / "voice" / "pretrained_models" / "CosyVoice3-0.5B"
-        if _cosyvoice_model_dir.exists():
-            threading.Thread(target=self._prewarm_tts,
-                             daemon=True, name="tts-prewarm").start()
-        else:
-            self._tts_prewarmed = True  # No CosyVoice model to prewarm
+        # CosyVoice3-0.5B is a 9+ GB model.  Pre-loading it at startup causes
+        # the machine to become unresponsive (all RAM consumed before the user
+        # sends a single message).  Load it LAZILY — only on first actual TTS
+        # synthesis request inside _speak_response → synthesize_stream.
+        # _tts_prewarmed = True suppresses all the "safety net" re-trigger paths
+        # so nothing tries to load it early.  synthesize_stream calls
+        # _select_engine() + _load_cosyvoice() itself when it first runs.
+        self._tts_prewarmed = True  # no startup prewarm — lazy load on first use
 
     def set_main_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Capture the running event loop for background task dispatch.
@@ -926,13 +923,9 @@ class IRISGateway:
                 # Track which client triggered this so wake-word callback knows where to respond
                 self._active_voice_client[session_id] = client_id
 
-                # Safety-net: if the startup TTS prewarm hasn't finished yet, kick it
-                # again now so it completes before the user finishes speaking.
-                if not self._tts_prewarmed:
-                    import threading
-                    threading.Thread(
-                        target=self._prewarm_tts, daemon=True, name="tts-prewarm-ondemand"
-                    ).start()
+                # CosyVoice3 loads lazily on first synthesize_stream() call.
+                # No pre-trigger here — the model is 9+ GB and must not load
+                # until the user actually requests speech output.
 
                 # Broadcast LISTENING immediately so IrisOrb animates
                 await self._ws_manager.broadcast_to_session(session_id, {
@@ -1209,14 +1202,17 @@ class IRISGateway:
             try:
                 import psutil as _psutil
                 _free_gb = _psutil.virtual_memory().available / (1024 ** 3)
-                if _free_gb < 4.0:
+                # CosyVoice3-0.5B weights = ~9 GB on disk.  Require at least
+                # 12 GB free RAM before loading (model + Python overhead + OS).
+                if _free_gb < 12.0:
                     self._logger.warning(
-                        f"[IRISGateway] TTS prewarm skipped — only {_free_gb:.1f} GB RAM free "
-                        "(need >= 4 GB for CosyVoice3). Will load on first TTS request instead."
+                        f"[IRISGateway] TTS load skipped — only {_free_gb:.1f} GB RAM free "
+                        "(need >= 12 GB for CosyVoice3-0.5B ~9 GB model). "
+                        "Voice TTS will be unavailable this session."
                     )
                     self._tts_prewarmed = True
                     return
-                self._logger.info(f"[IRISGateway] TTS prewarm: {_free_gb:.1f} GB RAM free — proceeding")
+                self._logger.info(f"[IRISGateway] TTS load: {_free_gb:.1f} GB RAM free — proceeding")
             except Exception:
                 pass  # psutil unavailable — proceed with prewarm
 
