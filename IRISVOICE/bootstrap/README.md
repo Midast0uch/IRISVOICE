@@ -84,6 +84,8 @@ Every prompt:
   - session_start.py runs automatically
   - auto_sync_commits() scans the last 10 git commits
   - Any commit not yet in code_events gets recorded (idempotent — SHA checked)
+  - Decay pass runs once per day — non-landmark node confidence fades without
+    reinforcement. Stale context self-corrects. Permanent landmarks never decay.
   - You never need to manually call record_event.py for committed files
 
 Session end:

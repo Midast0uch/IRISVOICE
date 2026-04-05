@@ -49,7 +49,8 @@ THE COMPRESSION PROGRESSION:
 
   Nodes reinforced enough times (activation_count >= 12) become crystallization candidates.
   Landmarks that overlap in coordinate space merge — redundancy collapses.
-  Unreinforced nodes decay toward zero and fade from navigation.
+  Unreinforced nodes decay toward zero and fade from navigation automatically —
+  a decay pass runs once per day at session start (no manual action needed).
   The more sessions that run, the more precise and lightweight the map becomes.
   Context cost goes DOWN with time, not up.
 
@@ -247,10 +248,10 @@ UNDERSTANDING WHAT THE GRAPH IS TELLING YOU
 
 The MYCELIUM line in session_start output:
 
-  MYCELIUM: context:[1.00,0.85,0.02]@gate4 | toolpath:[w:4.1,ev:127] | confidence:0.95
+  MYCELIUM: context:[0.62,0.55,0.01]@gate1 | toolpath:[w:4.1,ev:127] | confidence:0.75
 
-  context:[1.00,0.85,0.02]  — gate completion, landmark density, session depth
-  @gate4                    — current gate
+  context:[0.62,0.55,0.01]  — gate completion, landmark density, session depth
+  @gate1                    — current gate (DEVELOPER MODE)
   toolpath:[w:4.1,ev:127]   — strongest edge weight, total events recorded
   confidence:0.95           — overall graph confidence
 
