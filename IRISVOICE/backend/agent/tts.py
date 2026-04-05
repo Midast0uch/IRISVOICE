@@ -132,10 +132,10 @@ class TTSManager:
     Singleton TTS manager.
 
     Engine selection (user-controlled via Settings):
-      "Cloned Voice"  → F5-TTS zero-shot voice cloning from TOMV2.wav
-                        CPU-based, RTF ~0.15, ~800 MB model
-      "Built-in"      → Piper en_US-ryan-high (CPU, RTF ~0.04x, ~65 MB)
-      Final fallback  → pyttsx3 SAPI5 (always available on Windows)
+      "Cloned Voice"  → F5-TTS zero-shot voice cloning from TOMV2.wav   [DEFAULT]
+                        CPU-based, RTF ~0.15, ~800 MB model (lazy load)
+      "Built-in"      → Piper en_US-ryan-high (CPU, RTF ~0.04x, ~65 MB) [FALLBACK]
+      Final fallback  → pyttsx3 (cross-platform, always available)
 
     All engines produce float32 audio at OUTPUT_SAMPLE_RATE (24 kHz).
 
@@ -166,10 +166,10 @@ class TTSManager:
 
         self.config: Dict[str, Any] = {
             "tts_enabled":   True,
-            # Default to Built-in (Piper, ~65 MB CPU model) so the backend
-            # starts without any heavy model load. Switch to "Cloned Voice"
-            # (F5-TTS, ~800 MB CPU, RTF ~0.15) in Settings for voice cloning.
-            "tts_voice":     "Built-in",
+            # F5-TTS is the primary voice engine (zero-shot cloning from TOMV2.wav,
+            # ~800 MB CPU, RTF ~0.15). Loads lazily on first voice command.
+            # Piper ("Built-in") is the fallback if F5-TTS is unavailable.
+            "tts_voice":     "Cloned Voice",
             "speaking_rate": 1.0,
         }
 
