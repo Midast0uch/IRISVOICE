@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useRef, useCallback } from "react"
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink } from 'lucide-react';
 import { useNavigation } from "@/contexts/NavigationContext";
@@ -9,6 +9,9 @@ import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
 import { SpotlightState, SpotlightStateType } from "@/hooks/useUILayoutState";
+import { useLauncherMode } from "@/hooks/useLauncherMode";
+import { ConversationChips } from "@/components/chat/ConversationChips";
+import type { ConversationChip } from "@/types/iris";
 
 // Notification types for the universal notification system
 interface Notification {
@@ -37,6 +40,22 @@ const ContentTypePatterns = {
   markdown: /(?:^#{1,6}\s|\*\*|__|\[.+?\]\(.+?\)|```)/m,
   email: /(?:^From:|^To:|^Subject:|\S+@\S+\.\S+)/m
 };
+
+// Heuristic: does this message look like a web-research / search query?
+// If yes, route to crawler_query WS type instead of text_message.
+const CRAWLER_PATTERNS = [
+  /\b(search|look up|find|google|bing|lookup)\b/i,
+  /\b(latest|current|recent|today'?s?|right now|as of)\b/i,
+  /\b(news|headlines|article|report|prices?|stock|weather)\b/i,
+  /\b(what('?s| is) (the )?(price|cost|rate|score|status|news))\b/i,
+  /\b(show me|get me|fetch|retrieve|pull up)\b/i,
+]
+
+function isCrawlerQuery(text: string): boolean {
+  const t = text.trim()
+  if (t.length < 10) return false
+  return CRAWLER_PATTERNS.some(re => re.test(t))
+}
 
 const ContentTypeLabels: Record<ContentType, string> = {
   markdown: 'Markdown Document',
@@ -219,20 +238,43 @@ export function ChatWing({
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [draggedFileType, setDraggedFileType] = useState<'image' | 'video' | 'file' | null>(null);
   
+  // Conversation chips — input focus state (chips slide away on focus)
+  const { isDeveloper } = useLauncherMode()
+  const [isInputFocused, setIsInputFocused] = useState(false)
+
   // Derive isTyping: use isChatTyping for text messages (won't animate the orb),
   // and voiceState for voice pipeline processing/tool states.
   const isTyping = isChatTyping || voiceState === "processing_tool";
-  
+
   // Get theme colors from BrandColorContext for real-time updates
   const { getThemeConfig } = useBrandColor();
   const brandTheme = getThemeConfig();
   const glowColor = brandTheme.glow.color || "#00d4ff";
   const primaryColor = brandTheme.glow.color || "#00d4ff";
   const fontColor = brandTheme.text.primary || "#ffffff";
-  
+
   // Get active conversation messages
   const activeConversation = conversations.find(c => c.id === activeConversationId);
   const messages = activeConversation?.messages || [];
+
+  // Conversation chips — derived from user messages, front-end only, no LLM
+  const conversationChips: ConversationChip[] = useMemo(() => (
+    messages
+      .filter(m => m.sender === 'user')
+      .map((m, index) => ({
+        messageId: m.id,
+        label: m.text.length > 30 ? m.text.slice(0, 30) + '\u2026' : m.text,
+        index,
+      }))
+  ), [messages])
+
+  const handleChipClick = useCallback((messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('chip-highlight')
+    setTimeout(() => el.classList.remove('chip-highlight'), 2000)
+  }, [])
 
   // Calculate unread count when notifications change
   useEffect(() => {
@@ -462,8 +504,12 @@ export function ChatWing({
       }
     });
 
-    // Send message via WebSocket if available
-    sendMessage?.("text_message", { text: userMessage.text })
+    // Route to crawler if the query looks like a web-research request
+    const msgType = isCrawlerQuery(userMessage.text) ? "crawler_query" : "text_message"
+    const payload = msgType === "crawler_query"
+      ? { query: userMessage.text }
+      : { text: userMessage.text }
+    sendMessage?.(msgType, payload)
   }
 
   // Conversation management functions
@@ -1416,7 +1462,7 @@ ${message.text}`;
                     };
                     
                     return (
-                    <div key={message.id}>
+                    <div key={message.id} id={`msg-${message.id}`}>
                       {/* Horizontal separator */}
                       {index > 0 && (
                         <div 
@@ -2047,6 +2093,13 @@ ${message.text}`;
                 )}
               </AnimatePresence>
 
+              {/* Conversation chips — history toggle bar + vertical drop-up panel */}
+              <ConversationChips
+                chips={conversationChips}
+                glowColor={glowColor}
+                onChipClick={handleChipClick}
+              />
+
               <div className="relative flex items-end gap-6" style={{ marginRight: '12px' }}>
                 <div className="flex-1 relative">
                   <textarea
@@ -2066,6 +2119,8 @@ ${message.text}`;
                         if (inputRef.current) inputRef.current.style.height = 'auto';
                       }
                     }}
+                    onFocus={() => setIsInputFocused(true)}
+                    onBlur={() => setIsInputFocused(false)}
                     placeholder={voiceState === 'listening' ? 'Listening...' : 'Type command or drop file...'}
                     disabled={voiceState === 'listening'}
                     className="w-full bg-transparent border-0 border-b py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"

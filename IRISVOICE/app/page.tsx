@@ -11,7 +11,8 @@ import { WheelViewErrorBoundary } from "@/components/wheel-view/WheelViewErrorBo
 import { useUILayoutState, UILayoutState, SpotlightState } from "@/hooks/useUILayoutState"
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation"
 import { BackdropBlur } from "@/components/backdrop-blur"
-import { DashboardWing } from "@/components/dashboard-wing"
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const DashboardWing = lazy(() => import("@/components/dashboard-wing") as any)
 import { isTauri } from "@/hooks/useDeepLink"
 import { SetupWizard, useFirstRunCheck } from "@/components/setup/SetupWizard"
 
@@ -258,21 +259,23 @@ export default function Home() {
       </Suspense>
 
       {/* DashboardWing - sibling to ChatWing */}
-      <DashboardWing
-        isOpen={isDashboardOpen || isBothOpen}
-        onClose={() => {
-          setPendingSubApp(null);
-          if (isBothOpen) closeDashboard(); else closeAll();
-        }}
-        sendMessage={sendMessage}
-        spotlightState={spotlightState}
-        onSpotlightToggle={toggleDashboardSpotlight}
-        isSolo={isDashboardOpen}
-        uiState={uiLayoutState}
-        onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}
-        isChatOpen={isChatOpen || isBothOpen}
-        initialSubApp={pendingSubApp}
-      />
+      <Suspense fallback={null}>
+        <DashboardWing
+          isOpen={isDashboardOpen || isBothOpen}
+          onClose={() => {
+            setPendingSubApp(null);
+            if (isBothOpen) closeDashboard(); else closeAll();
+          }}
+          sendMessage={sendMessage}
+          spotlightState={spotlightState}
+          onSpotlightToggle={toggleDashboardSpotlight}
+          isSolo={isDashboardOpen}
+          uiState={uiLayoutState}
+          onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}
+          isChatOpen={isChatOpen || isBothOpen}
+          initialSubApp={pendingSubApp}
+        />
+      </Suspense>
     </main>
   )
 }

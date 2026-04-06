@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react"
+import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg } from "@/types/iris"
 
 // WebSocket connection states
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error"
@@ -891,6 +892,67 @@ export function useIRISWebSocket(
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:ws_message', {
             detail: { type, payload }
+          }))
+        }
+        break
+      }
+
+      // ── Tab system ────────────────────────────────────────────────────────
+      // open_tab / close_tab are forwarded as CustomEvents so DashboardWing
+      // can receive them without threading state through NavigationContext.
+      case "open_tab": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:open_tab', {
+            detail: message as unknown as OpenTabMsg
+          }))
+        }
+        break
+      }
+
+      case "close_tab": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:close_tab', {
+            detail: message as unknown as CloseTabMsg
+          }))
+        }
+        break
+      }
+
+      // ── Crawler status ─────────────────────────────────────────────────────
+      case "crawler_started": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_started', {
+            detail: message as unknown as CrawlerStartedMsg
+          }))
+        }
+        break
+      }
+
+      case "crawler_page_fetched": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_page_fetched', {
+            detail: message as unknown as CrawlerPageMsg
+          }))
+        }
+        break
+      }
+
+      case "crawler_error": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_error', {
+            detail: message as unknown as CrawlerErrorMsg
+          }))
+        }
+        break
+      }
+
+      // ── Mode change ────────────────────────────────────────────────────────
+      // Broadcast from /api/mode POST — iris-launcher set a new mode.
+      // Forwarded so useLauncherMode can react without polling.
+      case "mode_changed": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:mode_changed', {
+            detail: { mode: (message as Record<string, unknown>).mode as string }
           }))
         }
         break

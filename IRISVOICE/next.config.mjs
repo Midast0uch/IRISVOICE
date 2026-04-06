@@ -27,6 +27,12 @@ const nextConfig = {
       'lodash',
       'zod',
     ],
+    // Persist Turbopack's compiled module graph across server restarts.
+    // Without this, every `npm run dev` restart re-compiles the full module
+    // graph from scratch (120s+ cold start). With it, only changed modules
+    // are recompiled — typically < 5s after the first run.
+    // Key was renamed from turbopackPersistentCaching in Next.js 16.
+    turbopackFileSystemCacheForDev: true,
   },
   compiler: {
     removeConsole: { exclude: ['error'] },

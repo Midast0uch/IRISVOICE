@@ -567,6 +567,15 @@ async def set_launcher_mode(request: dict):
         logger.warning(f"[Mode] Could not apply mode to agent kernel: {exc}")
 
     logger.info(f"[Mode] Launch mode set to: {mode}")
+
+    # Broadcast mode_changed to all connected WebSocket clients so the
+    # IRISVOICE frontend can react immediately without polling.
+    try:
+        ws_manager = get_websocket_manager()
+        await ws_manager.broadcast({"type": "mode_changed", "mode": mode})
+    except Exception as exc:
+        logger.debug(f"[Mode] WS broadcast skipped (no clients?): {exc}")
+
     return {"mode": mode, "status": "ok"}
 
 

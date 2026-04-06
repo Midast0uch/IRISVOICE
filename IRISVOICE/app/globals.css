@@ -454,6 +454,17 @@ body {
   animation-play-state: paused;
 }
 
+/* Conversation chip — brief highlight pulse when user clicks a chip to jump to that message */
+@keyframes chip-highlight-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(255,255,255,0.0); background: transparent; }
+  15%  { box-shadow: 0 0 12px 3px rgba(255,255,255,0.2); background: rgba(255,255,255,0.06); }
+  100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.0); background: transparent; }
+}
+.chip-highlight {
+  animation: chip-highlight-pulse 2s ease-out forwards;
+  border-radius: 6px;
+}
+
 /* Phase 91: Hyper-Flux High-Speed Energy Beams */
 .ring-hyper-flux-ccw {
   animation: ring-rotate-ccw-mid 4s linear infinite;

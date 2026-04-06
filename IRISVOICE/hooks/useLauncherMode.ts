@@ -25,6 +25,7 @@ export function useLauncherMode(): {
   const [mode, setMode] = useState<LauncherMode>(null)
   const [isLoading, setIsLoading] = useState(true)
 
+  // Fetch once on mount
   useEffect(() => {
     let cancelled = false
 
@@ -48,6 +49,20 @@ export function useLauncherMode(): {
 
     fetchMode()
     return () => { cancelled = true }
+  }, [])
+
+  // React to real-time mode_changed WS events (broadcast from /api/mode POST)
+  // so the UI updates instantly when the launcher switches modes mid-session.
+  useEffect(() => {
+    function onModeChanged(e: Event) {
+      const detail = (e as CustomEvent<{ mode: string }>).detail
+      if (detail?.mode === "personal" || detail?.mode === "developer") {
+        setMode(detail.mode as LauncherMode)
+        setIsLoading(false)
+      }
+    }
+    window.addEventListener('iris:mode_changed', onModeChanged)
+    return () => window.removeEventListener('iris:mode_changed', onModeChanged)
   }, [])
 
   return {

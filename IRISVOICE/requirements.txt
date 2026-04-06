@@ -59,3 +59,10 @@ sse-starlette>=1.6.0     # required by llama_cpp.server
 pydantic-settings>=2.0.0 # required by llama_cpp.server
 starlette-context>=0.3.6 # required by llama_cpp.server
 huggingface-hub>=0.20.0  # Model download from HuggingFace Hub
+
+# Developer Mode & Web Crawler (Domain 14)
+# Install order: pip install crawl4ai && python -m playwright install chromium
+watchdog>=4.0.0          # File system events for CLI dev mode file activity panel
+crawl4ai>=0.4.0          # Headless web crawler — AsyncWebCrawler + BM25ContentFilter
+playwright>=1.44.0       # Managed by crawl4ai internally; listed here for explicit version pin
+# Note: after pip install, run once: python -m playwright install chromium

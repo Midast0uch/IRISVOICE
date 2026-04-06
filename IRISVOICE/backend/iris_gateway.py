@@ -320,6 +320,18 @@ class IRISGateway:
             elif msg_type == "message_exported":
                 await self._handle_message_exported(session_id, client_id, message)
 
+            elif msg_type == "crawler_query":
+                # Explicit web research request — route to CrawlerEngine
+                await self._handle_crawler_query(session_id, client_id, message)
+
+            elif msg_type == "dev_cli":
+                # Developer mode — route query to CLI tool via DevOrchestrator
+                await self._handle_dev_cli(session_id, client_id, message)
+
+            elif msg_type == "dev_abort":
+                # Developer mode — abort active CLI subprocess for this session
+                await self._handle_dev_abort(session_id, client_id)
+
             elif msg_type in {
                 "integration_list", "integration_enable", "integration_disable",
                 "integration_state", "integration_oauth_callback",
@@ -3802,6 +3814,162 @@ class IRISGateway:
             })
         except Exception as e:
             self._logger.error(f"[LocalModel] toggle_pin error: {e}")
+
+
+    # ── Crawler handler ─────────────────────────────────────────────────────
+
+    async def _handle_crawler_query(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """
+        Handle a crawler_query message.
+        Payload: { query: str }
+        Flow:
+          1. Plan URLs + extraction instructions via CrawlPlanner (LLM)
+          2. Emit crawler_started WS event
+          3. Crawl pages via CrawlerEngine (Crawl4AI), emitting crawler_page_fetched per page
+          4. Extract structured DashboardData via DataExtractor (LLM)
+          5. Emit open_tab WS event with DashboardData
+          6. Emit text_response with one-liner summary
+        """
+        import uuid
+        from .crawler.crawler_engine import CrawlerEngine, CrawlerUnavailable
+        from .crawler.crawl_planner import get_crawl_planner
+        from .crawler.data_extractor import get_data_extractor
+
+        payload = message.get("payload", message)
+        query: str = payload.get("query", "").strip()
+
+        if not query:
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "text_response",
+                "text": "No query provided for web research.",
+                "sender": "assistant",
+            })
+            return
+
+        async def send(msg: dict) -> None:
+            await self._ws_manager.send_to_client(client_id, msg)
+
+        # Step 1: Plan
+        try:
+            plan = await get_crawl_planner().plan(query)
+        except Exception as exc:
+            self._logger.error("[Crawler] planning failed: %s", exc)
+            await send({"type": "crawler_error", "message": f"Planning failed: {exc}"})
+            return
+
+        # Step 2: Notify start
+        await send({
+            "type": "crawler_started",
+            "query": query,
+            "url_count": len(plan.urls),
+        })
+
+        # Step 3: Crawl
+        try:
+            loop = asyncio.get_running_loop()
+
+            def _on_page(url: str, page_num: int, total: int) -> None:
+                asyncio.run_coroutine_threadsafe(
+                    send({"type": "crawler_page_fetched", "url": url,
+                          "page_number": page_num, "total": total}),
+                    loop,
+                )
+
+            async with CrawlerEngine() as engine:
+                crawl_result = await engine.crawl(
+                    query=query,
+                    urls=plan.urls,
+                    instructions=plan.instructions,
+                    on_page_done=_on_page,
+                )
+        except CrawlerUnavailable as exc:
+            await send({"type": "crawler_error", "message": str(exc)})
+            await send({
+                "type": "text_response",
+                "text": str(exc),
+                "sender": "assistant",
+            })
+            return
+        except Exception as exc:
+            self._logger.error("[Crawler] crawl failed: %s", exc)
+            await send({"type": "crawler_error", "message": f"Crawl failed: {exc}"})
+            return
+
+        # Step 4: Extract structured DashboardData
+        try:
+            dashboard_data = await get_data_extractor().extract(
+                result=crawl_result,
+                instructions=plan.instructions,
+                result_type=plan.result_type,
+                title=plan.title,
+            )
+        except Exception as exc:
+            self._logger.error("[Crawler] extraction failed: %s", exc)
+            await send({"type": "crawler_error", "message": f"Extraction failed: {exc}"})
+            return
+
+        # Step 5: Open dashboard tab in wing
+        tab_id = str(uuid.uuid4())
+        await send({
+            "type": "open_tab",
+            "tab_type": "dashboard",
+            "id": tab_id,
+            "title": plan.title,
+            "data": dashboard_data,
+        })
+
+        # Step 6: Summary text response in ChatView
+        page_count = len(crawl_result.pages)
+        summary = dashboard_data.get("summary", "")
+        await send({
+            "type": "text_response",
+            "text": (
+                f"{summary or f'Found results for: {query}'} "
+                f"— see Dashboard →"
+            ),
+            "sender": "assistant",
+        })
+
+    # ── Developer Mode CLI handlers ─────────────────────────────────────────
+
+    async def _handle_dev_cli(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """
+        Route a dev_cli message to the DevOrchestrator.
+        Payload: { query: str, workdir: str, tool_hint?: str }
+        """
+        from .dev.orchestrator import get_dev_orchestrator  # lazy import
+
+        payload = message.get("payload", message)
+
+        async def _ws_send(msg: dict) -> None:
+            await self._ws_manager.send_to_client(client_id, msg)
+
+        orchestrator = get_dev_orchestrator()
+        try:
+            await orchestrator.handle_dev_cli(session_id, payload, _ws_send)
+        except Exception as exc:
+            self._logger.error("[DevCLI][%s] error: %s", session_id, exc)
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "text_response",
+                "text": f"Developer CLI error: {exc}",
+                "sender": "assistant",
+            })
+
+    async def _handle_dev_abort(self, session_id: str, client_id: str) -> None:
+        """Abort the active CLI subprocess for this session."""
+        from .dev.orchestrator import get_dev_orchestrator  # lazy import
+
+        orchestrator = get_dev_orchestrator()
+        await orchestrator.abort_session(session_id)
+        await self._ws_manager.send_to_client(client_id, {
+            "type": "text_response",
+            "text": "CLI process aborted.",
+            "sender": "assistant",
+        })
 
 
 # Global instance

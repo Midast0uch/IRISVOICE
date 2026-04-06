@@ -10,18 +10,21 @@ Build IRIS until it can run fully autonomously: receive tasks through its own in
 
 WHAT NEEDS WORK RIGHT NOW (quick read for session start)
 
-  GATE STATUS: Gate 1 is the current gate.
-    G1.1–G1.5 verified. G1.6, G1.7, G1.8 need hands-on confirmation.
+  GATE STATUS: Gate 1 substantially done; Gate 2 (Launcher + Developer Mode) is next.
+    G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation.
+    TOP PRIORITY THIS SPRINT: Domain 15 (Linux Build + Launcher) + Domain 13 (Gate 2).
 
   DOMAINS WITH OPEN ITEMS:
-    Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2][2.3][2.4] open)
+    Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2][2.3] manual e2e not confirmed)
     Domain 3  — Vision          (DEVELOPING — [3.1][3.2] need 2 more passing runs each)
     Domain 4  — Skills          (PARTIAL — [4.4][4.5] not done)
     Domain 7  — Backend quality (PARTIAL — [7.5] logging not standardised)
     Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run these next)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (ALL items not started) ← THIS IS GATE 2
+    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1-13.5] not done) ← GATE 2
+    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C done; [14.2][14.16][14.19][14.21] remain)
+    Domain 15 — Linux Build + Cross-Platform Launcher (ALL items not started — new)
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
@@ -30,15 +33,20 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 10 — Performance/memory  ✓ all 10 items verified
 
   PRIORITY ORDER FOR NEW SESSIONS:
-    1. Domain 13 — Launcher + Developer Mode = GATE 2 (do in order: 13.1→13.2→13.3→13.4→13.5)
-    2. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
-    3. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
-    4. Domain 2  — Voice pipeline (primary input modality)
-    5. Domain 12 — PiN + MCP storage integrations (after D11 verified)
-    6. Domain 4  — Skills library (self-extension)
-    7. Domain 7  — Backend reliability (logging standardisation)
-    8. Domain 8  — Distribution (MSI clean install)
-    9. Domain 9  — Advanced features (after everything else)
+    1. Domain 15 — Linux Build + Cross-Platform Launcher ← TOP PRIORITY
+         Start with [15.3] mode-switch flow (no Linux hardware needed, works on Windows too)
+         Then [15.5] packaging decision, then [15.1] Linux Tauri build, then [15.2][15.4]
+    2. Domain 13 — Launcher + Developer Mode = GATE 2 (13.1→13.2→13.3→13.4→13.5)
+         D15 [15.3] and D13 [13.3] overlap heavily — do them together
+    3. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
+    4. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
+    5. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
+    6. Domain 2  — Voice pipeline (primary input modality)
+    7. Domain 12 — PiN + MCP storage integrations (after D11 verified)
+    8. Domain 4  — Skills library (self-extension)
+    9. Domain 7  — Backend reliability (logging standardisation)
+    9. Domain 8  — Distribution (MSI clean install)
+    10. Domain 9  — Advanced features (after everything else)
 
 ---
 
@@ -865,5 +873,553 @@ AGENT RULES (weight = minimum confidence before acting)
 
 ---
 
-IRIS Production Roadmap — bootstrap/GOALS.md
-Twelve domains. One objective. Ship a working autonomous assistant.
+---
+
+DOMAIN 14 — CLI TOOLKIT + WEB CRAWLER
+Spec: IRISVOICE/CLI-crawler-Spec.md (v3.1)
+Gives IRIS the ability to invoke any registered CLI on the user's behalf (developer mode),
+show real-time file activity in the wing, and crawl the web headlessly in both modes using
+Crawl4AI. Crawler results surface as a structured dashboard tab — never as raw HTML.
+
+Architecture decisions (locked):
+  - CLI routing handled by DER Director inside iris_gateway.py — no separate orchestrator module
+  - Crawler results labeled "external" zone in Pacman context window (not user/tool zone)
+  - SuggestionPills appear in both personal and developer mode (different visual style)
+  - Crawler activates in both modes when brain model detects web-search intent
+  - Wing: extend existing browser tab in dashboard-wing.tsx — no new WingComponent
+  - CLI tools pre-configured: kilo code CLI, claude CLI, opencode CLI
+  - DEV_ALLOWED_ROOTS left blank in .env — user fills in before use
+
+Phase A — Frontend Foundations (no backend required, can mock):
+  [14.1] types/iris.ts — shared TypeScript interfaces
+    Status: DONE — IRISVOICE/types/iris.ts created; tsc --noEmit passes. Landmark: iris_types_defined
+    What to build:
+      Tab { id, type: 'code'|'web'|'html'|'dashboard', title, data?, url?, content? }
+      DashboardData { title, query, timestamp, summary, sections: DashboardSection[] }
+      DashboardSection = MetricsSection | TableSection | CardsSection | ChartSection
+      MetricsSection { type:'metrics', items:[{label,value,delta?,trend?}] }
+      TableSection   { type:'table',   title?, headers, rows }
+      CardsSection   { type:'cards',   title?, items:[{title,subtitle?,body,url?,tag?}] }
+      ChartSection   { type:'chart',   title?, chart_type:'bar'|'line'|'pie', labels, datasets }
+      Suggestion { id, label, message }
+      DevModeState { isDevMode, workDir, activeTool, model }
+      CrawlerStatus { state:'idle'|'planning'|'crawling'|'extracting', urlCount, pagesDone }
+    File: types/iris.ts (new file at IRISVOICE/types/iris.ts)
+    Test: tsc --noEmit passes after creation
+    Landmark: iris_types_defined
+
+  [14.2] components/chat/SuggestionPills.tsx — context-aware action pills
+    Status: NOT STARTED (Phase F dependency — backend suggestion injection needed first)
+    What to build:
+      Props: suggestions: Suggestion[], onSelect: (s: Suggestion) => void, onDismiss: () => void
+             mode: 'personal' | 'developer'
+      Personal mode: rounded pill buttons, glass style, Framer Motion layout animation
+      Developer mode: monospace, "> " prefix on each pill, subtle terminal aesthetic
+      Behaviours:
+        - Maximum one pill row visible at a time (replaces previous on new response)
+        - Selecting a pill calls onSelect(s) and removes the row permanently
+        - Backdrop click (or Escape) calls onDismiss() — row never reappears on scroll
+        - Pills morph/animate into user bubble on select (Framer Motion layoutId)
+      Integration: mount inside chat-view.tsx below last assistant message
+    File: components/chat/SuggestionPills.tsx (new)
+    Test: renders with mock suggestions, click fires onSelect, backdrop fires onDismiss
+    Landmark: suggestion_pills_component
+
+  [14.3] Modify components/chat-view.tsx — dev mode CLI skin + mount SuggestionPills
+    Status: PARTIAL — isCrawlerQuery heuristic added; crawler_query WS routing wired.
+            ConversationChips fully built and mounted. Scroll fix (container ref) done.
+            Orb→ChatView display fix (lastProcessedResponseRef + activeConversationIdRef) done.
+            Remaining: dev mode CLI skin (monospace bubbles, top status bar, DEV badge) + SuggestionPills mount
+    What to add (conditional on iris_mode === 'developer'):
+      a) Top status bar: workDir (truncated), activeTool name, model name
+         Uses DevModeState from useDevMode hook (or read from WS message)
+      b) CLI skin: user messages → monospace text with "> " prefix, no rounded bubble
+         Assistant messages → monospace block, no glass bubble styling
+      c) Mount <SuggestionPills> below last assistant message block
+         Pass currentSuggestions state (updated on each text_response WS message)
+         onSelect → sendMessage(s.message), clear suggestions
+         onDismiss → clear suggestions
+      d) Dev mode badge in header (small "DEV" pill, brand color border)
+      IMPORTANT: Normal mode layout must be completely unchanged. All changes
+      are behind if (isDevMode) guards. No shared JSX restructuring.
+    Files: components/chat-view.tsx, hooks/useDevMode.ts (read from it)
+    Test: toggle dev mode, verify CLI skin appears; toggle back, verify normal skin
+    Landmark: chatview_dev_skin
+
+  [14.4] Extend components/dashboard-wing.tsx — tabbed content in browser tab
+    Status: DONE — Tab state (tabs[], activeTabId), openTab/closeTab callbacks, CustomEvent
+            listeners for iris:open_tab + iris:close_tab, tab bar with close buttons,
+            TabContent switcher for code/web/html/dashboard types. Landmark: wing_tab_system
+    What to build inside the existing browser tab section of dashboard-wing.tsx:
+      a) TabBar sub-component (inline or extracted): tabs array state
+         Each tab: { id, type, title, closeable }
+         Tab types shown: code | web | html | dashboard
+         Tab bar only visible when tabs.length > 0
+         Close (×) on each tab → removes tab, switches to adjacent automatically
+      b) TabContent renderer:
+         'code'      → code block with syntax highlighting (highlight.js or Prism, lazy)
+                        Shows "modified" indicator dot if written this session
+         'web'       → <iframe src={url} sandbox="allow-scripts allow-same-origin" />
+         'html'      → <iframe srcDoc={content} sandbox="allow-scripts" />
+         'dashboard' → <DashboardRenderer data={data} />
+      c) open_tab WS message handling: if tab.id already exists → update in place (no duplicate)
+      d) close_tab WS message handling: remove tab by id
+      e) File activity panel (developer mode only, collapsible):
+         Lists files modified by CLI this session: filename, change type (edit/create/delete)
+         Clicking a file → opens it as a 'code' tab
+         Populated by file_activity WS messages
+      IMPORTANT: Do NOT restructure existing notification system, nav, or sub-app routing.
+      The tab system lives inside the browser/web sub-app panel only.
+    Files: components/dashboard-wing.tsx, components/wing/DashboardRenderer.tsx (new)
+    Test: send mock open_tab message via WS, verify tab appears and content renders
+    Landmark: wing_tab_system
+
+  [14.5] components/wing/DashboardRenderer.tsx — structured data renderer
+    Status: DONE — MetricsSection KPI cards with trend arrows, sortable TableSection,
+            CardsSection 2-col grid, ChartSection CSS bar chart, JSON/CSV export,
+            Save button → POST /api/crawler/pin/save. Landmark: dashboard_renderer
+    What to build:
+      Props: data: DashboardData
+      Renders in order:
+        Header: title + query + timestamp (ISO → human readable)
+        Summary: italic one-liner
+        Sections (in array order):
+          MetricsSection → row of KPI cards: value (xl, brand color), label (sm, muted),
+                           delta (colored: green up / red down / gray flat), trend arrow
+          TableSection   → table with sticky header, sortable columns (click header → sort),
+                           alternating row shading, horizontal scroll on overflow
+          CardsSection   → 2-column grid (1-col mobile), each card: title bold, subtitle
+                           muted, body text, optional url (opens in browser tab), tag pill
+          ChartSection   → Recharts BarChart | LineChart | PieChart
+                           Lazy import Recharts (heavy dep, only load when chart present)
+                           Axes, legend, tooltip with brand color theme
+        Footer: "Crawled N pages · Xms · Export " [JSON] [CSV] buttons
+          JSON: Blob download, filename = title.json
+          CSV: flatten all TableSection rows → CSV string → download (no backend call)
+    File: components/wing/DashboardRenderer.tsx (new)
+    Test: render with mock DashboardData containing all 4 section types
+    Landmark: dashboard_renderer
+
+Phase B — Backend CLI Layer (developer mode, requires Gate 2):
+  [14.6] backend/dev/cli_registry.py + cli_tools.yaml
+    Status: DONE — CLITool frozen dataclass, CLIRegistry loads YAML, available_tools(),
+            build_selection_context(), select_tool_for_query() via LLM. Landmark: cli_registry_loaded
+    cli_tools.yaml schema per entry:
+      name: string            — e.g. "kilo"
+      display_name: string    — e.g. "Kilo Code"
+      command: string         — e.g. "kilo"
+      args_template: string   — e.g. "{task}"
+      when_to_use: string     — natural language descriptor for brain model routing
+      allowed_modes: list     — ["developer"] (CLI only in developer mode)
+      timeout_seconds: int    — per-invocation timeout
+      stream_stdout: bool     — stream output in real time vs wait for completion
+    Pre-configured tools:
+      kilo: Kilo Code CLI — when_to_use: "write or refactor code files using AI assistance"
+      claude: Claude CLI  — when_to_use: "complex reasoning, planning, or multi-step tasks"
+      opencode: OpenCode  — when_to_use: "code generation or editing with model selection"
+    DEV_ALLOWED_ROOTS: left blank (read from .env — user fills before use)
+    cli_registry.py:
+      load_tools(yaml_path) → dict[name, ToolConfig]
+      get_tool_for_task(task_description, available_tools) → ToolConfig | None
+        Uses when_to_use descriptor + simple keyword scoring (no LLM call in registry itself)
+      is_path_allowed(path, allowed_roots) → bool
+        Checks path starts with one of allowed_roots (case-insensitive, normalised)
+        Returns False (with log) if allowed_roots is empty
+    Files: backend/dev/__init__.py, backend/dev/cli_registry.py, backend/dev/cli_tools.yaml
+    Test: load yaml, get_tool_for_task("write code"), verify returns kilo config
+    Landmark: cli_registry_loaded
+
+  [14.7] backend/dev/subprocess_manager.py — subprocess lifecycle
+    Status: DONE — ActiveProcess dataclass, bounded output queue (500), daemon reader thread,
+            hard kill timer, DEV_ALLOWED_ROOTS validation, abort()/is_running()/status().
+            Landmark: subprocess_manager_wired
+    What to build:
+      class SubprocessManager:
+        start(tool: ToolConfig, args: str, cwd: str, session_id: str) → proc_id: str
+          - spawn subprocess with Popen(stdin=PIPE, stdout=PIPE, stderr=STDOUT)
+          - stream stdout line-by-line → yield to WS as { type:'cli_output', line, proc_id }
+          - set idle_timer = asyncio.create_task(kill after DEV_CLI_IDLE_TIMEOUT_SECONDS)
+        send_input(proc_id, text) → forwards to stdin
+        abort(proc_id) → SIGTERM + SIGKILL fallback after 3s
+        cleanup_idle() → called on session end; kill all procs for session_id
+        _on_stdout_line(proc_id, line) → emit WS message + reset idle_timer
+      Security: validate cwd is within allowed_roots before spawn
+      Never run: rm -rf, git reset --hard, pip install (blocklist in yaml)
+      Output: raw stdout goes to wing terminal panel only, NOT to ChatView directly
+    File: backend/dev/subprocess_manager.py
+    Test: spawn "echo hello", verify line streamed, proc cleaned up after timeout
+    Landmark: subprocess_manager_wired
+
+  [14.8] backend/dev/file_watcher.py — file activity monitor
+    Status: DONE — watchdog Observer, 100ms debounce per (path,change) key, FileEvent dataclass,
+            graceful degradation if watchdog not installed. Landmark: file_watcher_active
+    What to build:
+      Uses watchdog library (already in requirements.txt candidate)
+      class FileWatcher:
+        start(watch_dir: str, session_id: str, ws_send: callable)
+          - watchdog Observer on watch_dir (recursive)
+          - on_modified / on_created / on_deleted → emit { type:'file_activity',
+            path, change:'edit'|'create'|'delete', session_id }
+          - Debounce: ignore events within 200ms of previous for same path
+        stop() → observer.stop() + join
+      Only active in developer mode. Watches the active worktree path.
+      Ignored paths: __pycache__, .git, node_modules, *.pyc, .next
+    File: backend/dev/file_watcher.py
+    Test: create a temp file in watch dir, verify file_activity WS message fires
+    Landmark: file_watcher_active
+
+  [14.9] Wire CLI routing into iris_gateway.py + DER Director
+    Status: DONE — dev_cli + dev_abort message handlers in iris_gateway; DevOrchestrator
+            selects tool (LLM or tool_hint), starts FileWatcher, spawns subprocess,
+            streams cli_output WS messages, emits text_response on exit. Landmark: cli_routing_wired
+    What to add:
+      a) On mode=developer: init SubprocessManager + FileWatcher for session
+         FileWatcher.start(worktree_path, session_id, ws_send)
+      b) New message type handler in iris_gateway: 'dev_cli'
+         Payload: { type:'dev_cli', task, cwd? }
+         Flow: validate cwd in allowed_roots → cli_registry.get_tool_for_task(task)
+               → if tool found: SubprocessManager.start(tool, task, cwd, session_id)
+               → send { type:'cli_started', tool_name, proc_id } to WS
+               → stream stdout as { type:'cli_output', line, proc_id }
+               → on complete: DER Director synthesises summary → text_response to ChatView
+      c) DER Director injection: when task_class detects CLI intent (developer mode only)
+         → route to dev_cli handler instead of LLM direct response
+         After CLI completes: pass stdout summary through prepare_spoken_text() then TTS
+      d) 'dev_abort' message type: SubprocessManager.abort(proc_id)
+      e) Send { type:'cli_activity', tool_name, workdir } to update ChatView top bar
+    Files: backend/iris_gateway.py, backend/agent/agent_kernel.py (DER Director routing)
+    Test: send dev_cli message, verify cli_started then cli_output then text_response
+    Landmark: cli_routing_wired
+
+Phase C — Web Crawler (both modes):
+  [14.10] pip install crawl4ai + playwright install chromium
+    Status: DONE — crawl4ai 0.8.6, playwright 1.58.0, watchdog installed. requirements.txt updated.
+    Verified: from crawl4ai import AsyncWebCrawler → OK. Landmark: crawl4ai_installed
+
+  [14.11] backend/crawler/robots_checker.py — polite crawling
+    Status: DONE — 1h TTL domain cache, httpx fetch with 5s timeout, urllib.robotparser,
+            returns True on fetch failure (don't block crawl on network issues). Landmark: robots_checker_wired
+    What to build:
+      class RobotsChecker:
+        _cache: dict[domain, RobotFileParser]  — session-scoped, one parse per domain
+        is_allowed(url: str, user_agent: str) → bool
+          Parse robots.txt for domain (cache after first fetch)
+          Return False if disallowed → log warning + note in crawl summary
+    CRAWLER_USER_AGENT from .env (default: "IRIS-Agent/1.0 (respectful crawler)")
+    File: backend/crawler/robots_checker.py
+    Test: mock robots.txt disallowing /private, verify is_allowed("/private/page") = False
+    Landmark: robots_checker_wired
+
+  [14.12] backend/crawler/crawler_engine.py — Crawl4AI wrapper
+    Status: DONE — async context manager, BM25ContentFilter, robots.txt gate per URL,
+            polite delay, markdown_v2/markdown fallback, on_page_done callback, CrawlerUnavailable
+            raised when crawl4ai missing. Landmark: crawler_engine_wired
+    What to build:
+      class CrawlerEngine (async context manager):
+        __aenter__: AsyncWebCrawler(config=BrowserConfig(headless=True, user_agent=...))
+                    await self.crawler.start()
+        __aexit__: await self.crawler.close()
+        async crawl(query, urls, instructions, max_pages, delay_ms) → CrawlResult:
+          BM25ContentFilter(query=query, bm25_threshold=1.0)
+          CrawlerRunConfig(content_filter=filter, delay_between_requests=delay_ms,
+                           page_timeout=TIMEOUT, markdown=True, screenshot=False)
+          For each url (up to max_pages):
+            Check robots_checker.is_allowed(url) — skip if disallowed
+            result = await self.crawler.arun(url, config)
+            Append PageData(url, title, markdown=result.markdown, metadata=result.metadata)
+            Emit { type:'crawler_page_fetched', url, page_number, total } via ws_send callback
+          Return CrawlResult(query, pages, duration_ms, crawled_at)
+      Dataclasses: CrawlResult, PageData (url, title, markdown, html|None, metadata, error|None)
+      No browser window ever (headless=True is not optional)
+    File: backend/crawler/crawler_engine.py
+    Test: crawl https://example.com, verify PageData.markdown is non-empty string
+    Landmark: crawler_engine_wired
+
+  [14.13] backend/crawler/crawl_planner.py — brain model URL planner
+    Status: DONE — LLM generates {urls,instructions,result_type,title} JSON, strips markdown
+            fences, DuckDuckGo fallback on parse failure, URL count capped at CRAWL4AI_MAX_PAGES.
+            Landmark: crawl_planner_wired
+    What to build:
+      async plan_crawl(user_query: str, current_date: str, llm_call: callable) → CrawlPlan:
+        System prompt: "You are a URL planning assistant. Output JSON only."
+        User prompt: query + date + instruction to output:
+          { "urls": [...1-5...], "instructions": "Extract: ...",
+            "result_type": "table"|"cards"|"metrics"|"mixed", "title": "..." }
+        Call llm_call() with max_tokens=256 (small, structured output)
+        Parse JSON response → CrawlPlan(urls, instructions, result_type, title)
+        Fallback: if JSON parse fails → CrawlPlan with DuckDuckGo search URL for query
+      CrawlPlan dataclass: urls, instructions, result_type, title
+    File: backend/crawler/crawl_planner.py
+    Test: mock llm_call returning valid JSON, verify CrawlPlan fields populated
+    Landmark: crawl_planner_wired
+
+  [14.14] backend/crawler/data_extractor.py — brain model data structurer
+    Status: DONE — combined markdown capped at 12k chars, LLM extracts DashboardData JSON,
+            defensive parse with fallback CardsSection per page. Landmark: data_extractor_wired
+    What to build:
+      async extract(query, pages: list[PageData], plan: CrawlPlan, llm_call) → DashboardData:
+        Concatenate page markdowns (already BM25-filtered by Crawl4AI — no extra cleanup needed)
+        System prompt: "You are a data extraction assistant. Output JSON only matching schema."
+        Provide DashboardData JSON schema in prompt
+        User prompt: query + instructions + concatenated markdown (truncate to 8000 chars if over)
+        Call llm_call() with max_tokens=1500
+        Parse JSON → DashboardData
+        Fallback: if JSON parse fails → DashboardData with single CardsSection, one card per page
+                  (title=page title, body=first 200 chars of markdown, url=page url)
+      Pacman context label: crawler results are EXTERNAL zone — do NOT feed raw markdown
+        into user/tool context zones; only the extracted DashboardData summary enters tool zone
+    File: backend/crawler/data_extractor.py
+    Test: mock pages with markdown content, verify DashboardData sections populated
+    Landmark: data_extractor_wired
+
+  [14.15] Wire crawler into iris_gateway.py — intent detection + open_tab event
+    Status: DONE — _handle_crawler_query() wired: plan→crawl→extract→open_tab(dashboard)→text_response.
+            Frontend isCrawlerQuery() heuristic routes matching queries to crawler_query WS type.
+            external_research zone in ContextManager at 0.5x weight. Landmark: crawler_gateway_wired
+    What to add:
+      a) Intent classifier in iris_gateway (lightweight, keyword-first):
+           CRAWLER_INTENT_PHRASES = ["find", "search", "what are people saying",
+             "compare", "get the pricing", "monitor", "latest news", "fetch from"]
+           is_crawler_query(message) → bool: phrase match + heuristic (contains URL-like or site name)
+           Only routes to crawler if not already a dev_cli task
+      b) Crawler flow in _process_text_message():
+           if is_crawler_query and CrawlerEngine available:
+             emit { type:'crawler_started', query, url_count } to WS
+             plan = await crawl_planner.plan_crawl(query, date, llm_call)
+             async with CrawlerEngine() as engine:
+               result = await engine.crawl(plan.urls, plan.instructions, ws_send=self._ws_send)
+             data = await data_extractor.extract(query, result.pages, plan, llm_call)
+             emit { type:'open_tab', tab_type:'dashboard', id:uuid, title:plan.title, data }
+             synthesis = f"Found results for '{query}' — see Dashboard →"
+             generate_suggestions(query, data) → 3 contextual refinement suggestions
+             emit { type:'text_response', content:synthesis, suggestions:[...] }
+           on error: emit { type:'crawler_error', message:str(e) }
+      c) Pacman context: crawler summary tagged EXTERNAL (not user/tool zone)
+         Only DashboardData.summary injected into context assembly — not raw page content
+    Files: backend/iris_gateway.py, backend/crawler/__init__.py
+    Test: send "find latest AI funding rounds" → verify crawler_started, open_tab, text_response
+    Landmark: crawler_gateway_wired
+
+Phase D — Frontend WS Hooks:
+  [14.16] hooks/useDevMode.ts — developer mode state + WS handlers
+    Status: NOT STARTED — cli_activity/cli_started/cli_output/file_activity WS handlers needed
+    What to build:
+      State: workDir (string), activeTool (string|null), fileActivity (FileActivityEvent[])
+      WS message handlers:
+        'cli_activity'  → update workDir + activeTool
+        'cli_started'   → set activeTool = tool_name
+        'cli_output'    → append to terminal buffer (wing panel consumes this)
+        'file_activity' → prepend to fileActivity list (cap at 50 items)
+      openFileAsTab(path) → emit open_tab message with type='code', content=file content
+        (reads via GET /api/files/read?path=... endpoint — add to main.py)
+      Export: { workDir, activeTool, fileActivity, openFileAsTab }
+    File: hooks/useDevMode.ts (new)
+    Test: dispatch mock WS events, verify state updates
+    Landmark: use_dev_mode_hook
+
+  [14.17] hooks/useCrawler.ts — crawler state + WS handlers
+    Status: PARTIAL — crawler_started/crawler_page_fetched/open_tab/close_tab/crawler_error
+            forwarded as CustomEvents via useIRISWebSocket; dark-glass-dashboard.tsx listens.
+            Dedicated useCrawler.ts hook not yet extracted.
+    What to build:
+      State: status: CrawlerStatus, tabs: Tab[]
+      WS message handlers:
+        'crawler_started'      → status = { state:'planning', urlCount, pagesDone:0 }
+        'crawler_page_fetched' → status.pagesDone++, status.state='crawling'
+        'open_tab'             → add/update tab in tabs array (dedup by id)
+        'close_tab'            → remove tab by id, auto-select adjacent
+        'crawler_error'        → status = { state:'idle', ... }, show error toast
+      Export: { status, tabs, activeTabId, setActiveTabId }
+    File: hooks/useCrawler.ts (new)
+    Test: dispatch mock crawler WS sequence, verify tabs and status update correctly
+    Landmark: use_crawler_hook
+
+  [14.18] Modify hooks/useIRISWebSocket.ts — forward new message types
+    Status: DONE — open_tab, close_tab, crawler_started, crawler_page_fetched, crawler_error
+            all forwarded as window CustomEvents. Landmark: websocket_forwarding_updated
+    What to add:
+      Forward to useDevMode handlers: cli_activity, cli_started, cli_output, file_activity
+      Forward to useCrawler handlers: crawler_started, crawler_page_fetched, open_tab,
+                                      close_tab, crawler_error
+      text_response: extract suggestions array if present → pass to ChatView suggestion state
+    File: hooks/useIRISWebSocket.ts
+    Test: verify existing message types still work after changes
+    Landmark: websocket_forwarding_updated
+
+Phase E — Backend Config + State:
+  [14.19] backend/state_manager.py — persist CLI working directory + dev mode state
+    Status: NOT STARTED — working_directory, recent_directories, active_cli_tool per session
+    What to add:
+      working_directory: str (per session) — default to project root or last used dir
+      recent_directories: list[str] (last 5) — persisted in session state
+      active_cli_tool: str | None — cleared on session end
+      dev_mode_active: bool — mirrors iris_mode == "developer"
+      Methods: set_working_directory(path), get_recent_directories(), clear_cli_state()
+    File: backend/state_manager.py
+    Test: set working directory, verify persisted and retrieved next call
+    Landmark: state_manager_cli_extended
+
+  [14.20] backend/main.py + .env + requirements.txt — config additions
+    Status: PARTIAL — requirements.txt updated (crawl4ai, playwright, watchdog). .env vars
+            (CRAWL4AI_* and DEV_ALLOWED_ROOTS) read from env in crawler_engine.py + subprocess_manager.py.
+            main.py startup warning for empty DEV_ALLOWED_ROOTS not yet added.
+    .env additions:
+      DEV_ALLOWED_ROOTS=          # blank — user fills in their allowed paths
+      DEV_CLI_IDLE_TIMEOUT_SECONDS=300
+      CRAWLER_DELAY_MS=1000
+      CRAWLER_MAX_PAGES=5
+      CRAWLER_TIMEOUT_MS=10000
+      CRAWLER_USER_AGENT=IRIS-Agent/1.0 (respectful crawler; contact: set-in-env)
+    requirements.txt: add watchdog, crawl4ai, playwright
+    package.json: verify recharts present (add if missing)
+    main.py: on startup (developer mode): init CLIRegistry, warn if DEV_ALLOWED_ROOTS empty
+             on startup (both modes): lazy-import CrawlerEngine (don't init until first crawl)
+    Landmark: crawler_cli_config_wired
+
+Phase F — Agent Suggestion Injection:
+  [14.21] Modify backend/agent/agent_kernel.py — suggestion generation
+    Status: NOT STARTED — short LLM call after each response to generate 3 contextual follow-up pills
+    What to add:
+      After every _respond_direct() or DER loop final response:
+        generate_suggestions(response_text, task_class, mode) → list[Suggestion]
+        Uses a short LLM call (max_tokens=100) with prompt:
+          "Given this assistant response, suggest 3 short follow-up actions the user
+           might want. Output JSON array: [{id, label, message}]. Be specific and
+           contextually relevant. Never repeat the last user message."
+        Attach suggestions to the text_response WS payload:
+          { type:'text_response', content:..., suggestions:[...] }
+        Suggestions must be contextually relevant — not generic ("tell me more" is banned)
+        If LLM call fails: emit text_response without suggestions (graceful degradation)
+    File: backend/agent/agent_kernel.py
+    Test: mock LLM response, verify text_response payload contains suggestions array
+    Landmark: suggestion_injection_wired
+
+  Graduate condition:
+    Phase A: TypeScript compiles clean. SuggestionPills render after responses in both modes.
+             Dev mode CLI skin shows in ChatView. Dashboard wing shows tabbed content.
+             DashboardRenderer renders all 4 section types.
+    Phase B: Send dev_cli task in developer mode. Correct CLI tool selected and spawned.
+             stdout streams to wing. ChatView receives synthesised summary. File activity updates.
+    Phase C: Say "find the latest AI funding rounds". Crawler fires (no browser window).
+             Dashboard tab opens with MetricsSection + CardsSection. ChatView gets one-liner.
+             Suggestion pills offer: filter, sort, export, dig deeper.
+    Phase D: Hooks tested. WS forwarding verified. No existing message types broken.
+    Phase E: Config clean. Requirements installable. No startup regression.
+    Phase F: Every response has contextual suggestion pills. LLM failure degrades gracefully.
+
+  Dependency notes:
+    Phase A: no backend needed, start immediately after Gate 2 verified
+    Phase B: requires Gate 2 [13.2] worktree isolation for cwd safety
+    Phase C: requires crawl4ai install [14.10] — can be done in parallel with Phase B
+    Phase D: requires Phase A interfaces (types/iris.ts) and Phase B+C WS message shapes
+    Phase E: config file edits only — no dependencies
+    Phase F: requires Phase C (suggestions wired to crawler flow) + Phase A (pills UI)
+
+  Regression tests after any Phase change:
+    npx tsc --noEmit                              (TypeScript clean)
+    python -m pytest backend/tests/ -v --tb=short (no backend regressions)
+    python -c "from backend.iris_gateway import IRISGateway; print('OK')"
+
+---
+
+DOMAIN 15 — LINUX BUILD + CROSS-PLATFORM LAUNCHER
+Goal: IRIS ships on Linux (Ubuntu/Debian .deb + AppImage) and the iris-launcher
+works on both Windows and Linux, correctly launching IRIS in personal or developer mode.
+The user must be able to switch modes from the launcher and have IRIS start in the
+selected mode — on both platforms.
+
+  Architecture note:
+    iris-launcher is a Vite+React app (NOT Tauri). On desktop it opens at localhost:5173.
+    It calls POST localhost:8000/api/mode to set the mode, then navigates to the IRIS app.
+    For Linux: the launcher needs to spawn the correct backend + frontend commands for Linux.
+    For Tauri (Windows MSI + Linux .deb/.AppImage): the Tauri shell auto-starts the backend.
+    The launcher should detect whether it is in a Tauri context or a standalone dev context
+    and adjust how it starts IRIS accordingly.
+
+  [15.1] Linux Tauri build — .deb + AppImage
+    Status: PARTIAL — tauri.conf.json updated: targets now ["msi", "deb", "appimage"],
+            linux.deb.depends + linux.appimage.bundleMediaFramework set.
+            build_backend.py already outputs iris-backend-x86_64-unknown-linux-gnu.
+            Remaining: run cargo tauri build on a Linux machine (or CI) to produce artifacts.
+    Prerequisites:
+      - Install Rust + Cargo: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+      - Install Tauri CLI deps:
+          sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf
+      - Build: cd IRISVOICE && cargo tauri build
+    Output: src-tauri/target/release/bundle/deb/*.deb AND .AppImage
+    Verify: install .deb, launch app, confirm backend starts, orb connects
+    Gaps to fix before building:
+      a) src-tauri/tauri.conf.json: verify bundle.targets includes "deb" and "appimage"
+      b) Backend binary bundled via build_backend.py must produce Linux ELF, not PE
+         (currently built on Windows — needs Linux CI or cross-compile setup)
+      c) src-tauri/src/main.rs: backend launch path must handle forward slashes on Linux
+    Landmark: linux_tauri_build
+
+  [15.2] iris-launcher Linux compatibility
+    Status: PARTIAL — ModeSelectPage.tsx updated: after setMode() succeeds, detects Tauri via
+            window.__TAURI__ check. In Tauri: stays in-app (navigate "/""). In dev/standalone:
+            window.open(VITE_IRIS_APP_URL || 'http://localhost:3000', '_blank') + navigate('/').
+            VITE_IRIS_APP_URL env var configurable for non-standard ports.
+            Remaining: install node_modules in iris-launcher, verify tsc clean, test flow.
+    Landmark: launcher_linux_compat (pending manual verification)
+
+  [15.3] Mode switch → IRIS launch flow (both platforms)
+    Status: DONE — Full real-time flow wired:
+      backend /api/mode POST now broadcasts { type:'mode_changed', mode } to all WS clients.
+      useIRISWebSocket.ts forwards it as iris:mode_changed CustomEvent.
+      useLauncherMode.ts listens for iris:mode_changed → updates mode state instantly (no polling).
+      iris-launcher ModeSelectPage opens IRISVOICE after mode set (__TAURI__ aware).
+    Verified: CustomEvent dispatch/receive tested in browser preview. tsc exit 0.
+    Landmark: mode_switch_launch_flow
+    Full end-to-end flow:
+      1. User opens launcher / IRIS startup screen
+      2. Picks Personal or Developer
+      3. Launcher POSTs /api/mode → backend stores mode
+      4. IRIS frontend reads GET /api/mode (or receives mode_changed WS event)
+      5. useLauncherMode() reflects mode immediately
+      6. ChatView, tab bar, terminal tab all update
+    What to build:
+      a) useLauncherMode.ts: add WS event listener for 'mode_changed' (avoid polling)
+      b) Backend /api/mode POST: broadcast { type:'mode_changed', mode } WS event
+      c) IRISVOICE tab bar: terminal tab gated on isDeveloper
+      d) iris-launcher ModeSelectPage: after POST succeeds, navigate to IRIS
+         - Packaged Tauri: Tauri window already IS the IRIS app (same shell)
+         - Dev standalone: window.open('http://localhost:3000') or redirect
+    Files: IRISVOICE/hooks/useLauncherMode.ts, IRISVOICE/components/chat-view.tsx,
+           iris-launcher/src/pages/ModeSelectPage.tsx, IRISVOICE/backend/main.py
+    Landmark: mode_switch_launch_flow
+
+  [15.4] Linux voice pipeline — end-to-end verification
+    Status: PARTIAL — Linux compat confirmed in tests (Domain 2); manual test needed
+    Linux prerequisites:
+      sudo apt install portaudio19-dev libsndfile1 libasound2-dev
+      pip install -r requirements.txt
+    Remaining gaps:
+      a) Piper TTS: downloads en_US-ryan-high.onnx on first run — verify writable path in AppImage
+         Default download target should be ~/.iris/models/ not the bundle dir
+      b) Wake word .ppn: Linux path exists in code; actual .ppn file must be present at that path
+      c) faster-whisper: downloads model on first use — verify ~/.cache/huggingface writable
+    Landmark: linux_voice_verified
+
+  [15.5] Single-app packaging — merge launcher into IRISVOICE (recommended)
+    Status: DECISION NEEDED — implement after Gate 2 [13.1-13.4] complete
+    Option A (recommended): Merge launcher as IRISVOICE startup route
+      - Tauri app starts → no mode in localStorage → show ModeSelectPage
+      - Same Tauri window, no IPC, no port conflicts, one installer on each platform
+      - iris-launcher components embedded in IRISVOICE/app/mode-select/
+    Option B: Two separate apps
+      - More complex install story, but cleaner separation
+    Landmark: packaging_decision_recorded
+
+  Graduate condition:
+    1. Linux .deb installs cleanly on Ubuntu 22.04 LTS
+    2. App launches → mode select screen appears (no terminal required)
+    3. Select Personal → IRIS starts in personal mode (no terminal tab)
+    4. Select Developer → IRIS starts with DEV badge + terminal tab + CLI routing active
+    5. Voice pipeline functional on Linux (wake word, STT, TTS)
+    6. Same mode-switch flow verified on Windows Tauri build
+
+---
+
+SESSION START CHECKLIST

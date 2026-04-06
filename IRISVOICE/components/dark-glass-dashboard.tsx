@@ -7,6 +7,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useBrandColor } from '@/contexts/BrandColorContext';
 import { useNavigation } from '@/contexts/NavigationContext';
 import type { MainCategoryId } from '@/data/navigation-ids';
+import type { Tab, TabType, OpenTabMsg, CloseTabMsg } from '@/types/iris';
+import { DashboardRenderer } from '@/components/wing/DashboardRenderer';
 import { CARDS_BY_SECTION, getCardsForSection, CARDS_DATA } from '@/data/cards';
 import { SECTION_TO_LABEL, SECTION_TO_ICON, CARD_TO_SECTION_ID } from '@/data/navigation-constants';
 import { ActivityPanel } from './dashboard/ActivityPanel';
@@ -18,7 +20,7 @@ import { ModelsScreen } from './models/ModelsScreen';
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
-  LayoutDashboard, ShoppingBag, Menu, User, ArrowLeft, RotateCcw, Home, ArrowRight as ArrowRightIcon, ExternalLink, History, AlertCircle
+  LayoutDashboard, ShoppingBag, Menu, User, ArrowLeft, RotateCcw, Home, ArrowRight as ArrowRightIcon, ExternalLink, History, AlertCircle, Code, FileCode, Plus as PlusIcon
 } from 'lucide-react';
 
 interface DarkGlassDashboardProps {
@@ -379,6 +381,45 @@ export function DarkGlassDashboard({
   const [browserInput, setBrowserInput] = useState<string>('https://www.google.com');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
+  // Tab system — receives open_tab / close_tab WebSocket messages
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+
+  const openTab = useCallback((msg: OpenTabMsg) => {
+    setTabs(prev => {
+      const existing = prev.findIndex(t => t.id === msg.id)
+      const tab: Tab = {
+        id: msg.id,
+        type: msg.tab_type,
+        title: msg.title,
+        data: msg.data,
+        url: msg.url,
+        content: msg.content,
+        language: msg.language,
+      }
+      if (existing >= 0) {
+        const next = [...prev]
+        next[existing] = { ...next[existing], ...tab }
+        return next
+      }
+      return [...prev, tab]
+    })
+    setActiveTabId(msg.id)
+  }, [])
+
+  const closeTab = useCallback((tabId: string) => {
+    setTabs(prev => {
+      const next = prev.filter(t => t.id !== tabId)
+      return next
+    })
+    setActiveTabId(prev => {
+      if (prev !== tabId) return prev
+      // Fall back to the last remaining tab
+      const remaining = tabs.filter(t => t.id !== tabId)
+      return remaining.length > 0 ? remaining[remaining.length - 1].id : null
+    })
+  }, [tabs])
+
   const { getThemeConfig } = useBrandColor();
   const localTheme = getThemeConfig();
 
@@ -411,6 +452,30 @@ export function DarkGlassDashboard({
       seededRef.current = true;
     }
   }, [contextFieldValues]);
+
+  // Wire CustomEvent listeners for tab system and crawler status.
+  // iris:open_tab / iris:close_tab are dispatched by useIRISWebSocket when
+  // the backend sends open_tab / close_tab WS messages.
+  useEffect(() => {
+    const onOpenTab = (e: Event) => {
+      openTab((e as CustomEvent).detail)
+    }
+    const onCloseTab = (e: Event) => {
+      closeTab(((e as CustomEvent).detail as { id: string }).id)
+      // If the browser panel isn't visible, open it so the user sees the tab
+      if (activeSubApp !== 'browser') setActiveSubApp('browser')
+    }
+    const onOpenTabBrowser = (e: Event) => {
+      onOpenTab(e)
+      if (activeSubApp !== 'browser') setActiveSubApp('browser')
+    }
+    window.addEventListener('iris:open_tab', onOpenTabBrowser)
+    window.addEventListener('iris:close_tab', onCloseTab)
+    return () => {
+      window.removeEventListener('iris:open_tab', onOpenTabBrowser)
+      window.removeEventListener('iris:close_tab', onCloseTab)
+    }
+  }, [openTab, closeTab, activeSubApp])
 
   // Local write handler — updates our local store so FieldRow reflects changes instantly.
   const localUpdateField = useCallback((sectionId: string, fieldId: string, value: any) => {
@@ -811,26 +876,116 @@ export function DarkGlassDashboard({
        ) : activeSubApp === 'browser' ? (
          <div className="w-full h-full p-4 md:px-10">
            <div className="w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
-            <div className="flex items-center gap-2 px-3 h-10 border-b border-white/5 bg-black/20">
-              <button 
-                onClick={() => {
-                  try {
-                    // This can fail if iframe content is cross-origin
-                    if (iframeRef.current?.contentWindow) {
-                      window.history.back(); // Fallback/default behavior for widget or non-iframe context
-                    }
-                  } catch (e) {
-                    console.warn("Cross-origin navigation blocked", e);
-                  }
-                }} 
-                className="p-1.5 hover:bg-white/5 rounded text-white/50 hover:text-white"
-              >
-                <ArrowLeft size={14} />
-              </button>
-              <input value={browserInput} onChange={(e) => setBrowserInput(e.target.value)} onKeyDown={handleBrowserInputSubmit} className="flex-1 text-[11px] rounded px-3 h-7 bg-white/5 border border-white/5 outline-none font-mono text-white" />
-              <button onClick={() => window.open(browserUrl, '_blank')} className="p-1.5"><ExternalLink size={14} className="text-white/50" /></button>
-            </div>
-             <iframe ref={iframeRef} src={browserUrl} className="flex-1 w-full border-none bg-white" />
+
+             {/* ── Tab bar ─────────────────────────────────────────────────── */}
+             {tabs.length > 0 && (
+               <div
+                 className="flex items-center gap-0 border-b overflow-x-auto"
+                 style={{ borderColor: 'rgba(255,255,255,0.06)', scrollbarWidth: 'none', minHeight: 36 }}
+               >
+                 {tabs.map((tab) => {
+                   const isActive = tab.id === activeTabId
+                   const TabIcon = tab.type === 'code' ? FileCode : tab.type === 'dashboard' ? LayoutDashboard : Globe
+                   return (
+                     <button
+                       key={tab.id}
+                       onClick={() => setActiveTabId(tab.id)}
+                       className="flex items-center gap-1.5 px-3 h-9 shrink-0 text-[11px] font-medium transition-all duration-150 border-r group"
+                       style={{
+                         borderColor: 'rgba(255,255,255,0.05)',
+                         background: isActive ? 'rgba(255,255,255,0.06)' : 'transparent',
+                         color: isActive ? glowColor : 'rgba(255,255,255,0.45)',
+                         borderBottom: isActive ? `1px solid ${glowColor}` : '1px solid transparent',
+                       }}
+                     >
+                       <TabIcon size={11} />
+                       <span className="max-w-[120px] truncate">{tab.title}</span>
+                       {tab.modifiedThisSession && (
+                         <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                       )}
+                       <span
+                         onClick={(e) => { e.stopPropagation(); closeTab(tab.id) }}
+                         className="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-all cursor-pointer"
+                       >
+                         <X size={9} className="text-white/50" />
+                       </span>
+                     </button>
+                   )
+                 })}
+               </div>
+             )}
+
+             {/* ── Tab content ──────────────────────────────────────────────── */}
+             {(() => {
+               const activeTab = tabs.find(t => t.id === activeTabId)
+               if (activeTab?.type === 'dashboard' && activeTab.data) {
+                 return (
+                   <div className="flex-1 overflow-hidden">
+                     <DashboardRenderer data={activeTab.data} glowColor={glowColor} />
+                   </div>
+                 )
+               }
+               if (activeTab?.type === 'code') {
+                 return (
+                   <div className="flex-1 overflow-auto p-4">
+                     <pre
+                       className="text-[12px] font-mono text-white/80 whitespace-pre-wrap break-words"
+                       style={{ fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}
+                     >
+                       {activeTab.content ?? ''}
+                     </pre>
+                   </div>
+                 )
+               }
+               if (activeTab?.type === 'html') {
+                 return (
+                   <iframe
+                     srcDoc={activeTab.content ?? ''}
+                     className="flex-1 w-full border-none bg-white"
+                     sandbox="allow-scripts allow-same-origin"
+                   />
+                 )
+               }
+               // Default — web tab or no active tab: show address bar + iframe
+               return (
+                 <>
+                   <div className="flex items-center gap-2 px-3 h-10 border-b border-white/5 bg-black/20">
+                     <button
+                       onClick={() => {
+                         try {
+                           if (iframeRef.current?.contentWindow) {
+                             window.history.back()
+                           }
+                         } catch (e) {
+                           console.warn("Cross-origin navigation blocked", e)
+                         }
+                       }}
+                       className="p-1.5 hover:bg-white/5 rounded text-white/50 hover:text-white"
+                     >
+                       <ArrowLeft size={14} />
+                     </button>
+                     <input
+                       value={activeTab?.url ?? browserInput}
+                       onChange={(e) => setBrowserInput(e.target.value)}
+                       onKeyDown={handleBrowserInputSubmit}
+                       className="flex-1 text-[11px] rounded px-3 h-7 bg-white/5 border border-white/5 outline-none font-mono text-white"
+                     />
+                     <button
+                       onClick={() => window.open(activeTab?.url ?? browserUrl, '_blank')}
+                       className="p-1.5"
+                     >
+                       <ExternalLink size={14} className="text-white/50" />
+                     </button>
+                   </div>
+                   <iframe
+                     ref={iframeRef}
+                     src={activeTab?.url ?? browserUrl}
+                     className="flex-1 w-full border-none bg-white"
+                   />
+                 </>
+               )
+             })()}
+
            </div>
          </div>
        ) : activeSubApp === 'activity' ? (
