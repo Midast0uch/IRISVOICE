@@ -25,9 +25,15 @@ def mock_adapter():
 
 @pytest.fixture
 def temp_db_path():
-    """Create a temporary database path."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield f"{tmpdir}/test.db"
+    """Create a temporary database path (Windows-safe: gc.collect before rmtree
+    flushes sqlite3 finalizers so the file lock is released before cleanup)."""
+    import gc
+    import os
+    import shutil
+    tmpdir = tempfile.mkdtemp()
+    yield os.path.join(tmpdir, "test.db")
+    gc.collect()
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @pytest.fixture
@@ -42,19 +48,18 @@ class TestUserProfileDisplay:
     def test_get_user_profile_display_returns_entries(self, mock_adapter, temp_db_path, biometric_key):
         """
         Verify get_user_profile_display returns entries after interactions.
-        
+
         _Requirement: 3.5 - User-facing display of learned preferences
         """
         memory = MemoryInterface(mock_adapter, temp_db_path, biometric_key)
-        
-        # Mock display entries
-        memory.semantic.get_display_entries.return_value = [
+
+        # Patch the SemanticStore method so the real DB is not consulted
+        with patch.object(memory.semantic, 'get_display_entries', return_value=[
             {"display_name": "Prefers concise answers", "confidence": 1.0},
             {"display_name": "Dark mode enabled", "confidence": 0.9}
-        ]
-        
-        entries = memory.get_user_profile_display()
-        
+        ]):
+            entries = memory.get_user_profile_display()
+
         assert len(entries) == 2
         assert entries[0]["display_name"] == "Prefers concise answers"
     
@@ -77,14 +82,13 @@ class TestUserProfileDisplay:
     def test_display_entries_editable(self, mock_adapter, temp_db_path, biometric_key):
         """Verify display entries have editable flag."""
         memory = MemoryInterface(mock_adapter, temp_db_path, biometric_key)
-        
-        memory.semantic.get_display_entries.return_value = [
+
+        with patch.object(memory.semantic, 'get_display_entries', return_value=[
             {"display_name": "Test", "editable": 1},
             {"display_name": "Auto-learned", "editable": 0}
-        ]
-        
-        entries = memory.get_user_profile_display()
-        
+        ]):
+            entries = memory.get_user_profile_display()
+
         # Check editable flags
         assert entries[0]["editable"] == 1
         assert entries[1]["editable"] == 0

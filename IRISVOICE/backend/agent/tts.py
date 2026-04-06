@@ -131,11 +131,19 @@ class TTSManager:
     """
     Singleton TTS manager.
 
-    Engine selection (user-controlled via Settings):
-      "Cloned Voice"  → F5-TTS zero-shot voice cloning from TOMV2.wav   [DEFAULT]
-                        CPU-based, RTF ~0.15, ~800 MB model (lazy load)
-      "Built-in"      → Piper en_US-ryan-high (CPU, RTF ~0.04x, ~65 MB) [FALLBACK]
-      Final fallback  → pyttsx3 (cross-platform, always available)
+    Engine priority (automatic — not user-selected):
+      1. F5-TTS (F5TTS_v1_Base) — PRIMARY
+            Zero-shot voice cloning from TOMV2.wav.
+            CPU-based, RTF ~0.15, ~800 MB model (lazy load).
+            Always tried first unless user forces "Built-in".
+      2. Piper en_US-ryan-high — FALLBACK
+            Fast CPU engine, RTF ~0.04x, ~65 MB model (auto-downloaded).
+            Used when F5-TTS is not installed, fails to load, or stream errors.
+      3. pyttsx3 (SAPI5 on Windows) — LAST RESORT
+            Zero download, always available on Windows.
+
+    Voice setting "Built-in" skips F5-TTS and goes directly to Piper.
+    This is the only way to bypass F5-TTS (e.g. for testing or low-resource mode).
 
     All engines produce float32 audio at OUTPUT_SAMPLE_RATE (24 kHz).
 
@@ -166,9 +174,10 @@ class TTSManager:
 
         self.config: Dict[str, Any] = {
             "tts_enabled":   True,
-            # F5-TTS is the primary voice engine (zero-shot cloning from TOMV2.wav,
-            # ~800 MB CPU, RTF ~0.15). Loads lazily on first voice command.
-            # Piper ("Built-in") is the fallback if F5-TTS is unavailable.
+            # F5-TTS is always the primary TTS engine.
+            # "Cloned Voice" = F5-TTS primary (default).
+            # "Built-in"     = force Piper (skips F5-TTS).
+            # In both cases Piper → pyttsx3 are available as automatic fallbacks.
             "tts_voice":     "Cloned Voice",
             "speaking_rate": 1.0,
         }
@@ -189,27 +198,44 @@ class TTSManager:
     AVAILABLE_VOICES = AVAILABLE_VOICES
 
     def _log_preflight(self) -> None:
-        """Log TTS preflight status at startup."""
-        if self.config.get("tts_voice") == "Cloned Voice":
+        """Log TTS preflight status at startup.
+
+        F5-TTS is always the primary engine.  Piper is the fallback.
+        "Built-in" voice setting forces Piper directly (skips F5-TTS).
+        """
+        force_builtin = self.config.get("tts_voice") == "Built-in"
+
+        if not force_builtin:
+            # F5-TTS primary path
             issues = []
             if not REFERENCE_AUDIO.exists():
                 issues.append(
-                    f"Voice cloning reference audio not found at {REFERENCE_AUDIO}. "
-                    "Place TOMV2.wav at IRISVOICE/data/TOMV2.wav to enable cloning."
+                    f"Reference audio not found at {REFERENCE_AUDIO}. "
+                    "Place TOMV2.wav at IRISVOICE/data/TOMV2.wav to enable voice cloning."
                 )
             if issues:
                 logger.warning(
-                    "[TTSManager] F5-TTS preflight issues:\n"
+                    "[TTSManager] F5-TTS primary — preflight issues:\n"
                     + "\n".join(f"  - {i}" for i in issues)
+                    + "\n  Will fall back to Piper."
                 )
             else:
                 logger.info(
-                    f"[TTSManager] F5-TTS preflight OK — "
-                    f"reference audio at {REFERENCE_AUDIO}"
+                    f"[TTSManager] F5-TTS primary — reference audio OK at {REFERENCE_AUDIO}"
+                )
+            # Always log Piper status as fallback
+            if PIPER_MODEL_ONNX.exists():
+                logger.info(f"[TTSManager] Piper fallback ready at {PIPER_MODEL_ONNX}")
+            else:
+                logger.warning(
+                    f"[TTSManager] Piper fallback model not found at {PIPER_MODEL_ONNX} — "
+                    "will fall back to pyttsx3 if F5-TTS also fails"
                 )
         else:
+            # User explicitly selected "Built-in" → Piper only
+            logger.info("[TTSManager] Voice set to 'Built-in' — using Piper directly (F5-TTS skipped)")
             if PIPER_MODEL_ONNX.exists():
-                logger.info(f"[TTSManager] CPU mode — Piper engine at {PIPER_MODEL_ONNX}")
+                logger.info(f"[TTSManager] Piper engine at {PIPER_MODEL_ONNX}")
             else:
                 logger.warning(
                     f"[TTSManager] Piper model not found at {PIPER_MODEL_ONNX} — "
@@ -275,14 +301,17 @@ class TTSManager:
         return None
 
     def _select_engine(self) -> None:
-        """Resolve which engine to use on first call (no-op after that)."""
+        """Resolve which engine to use on first call (no-op after that).
+
+        F5-TTS is always the primary.  Selecting "Built-in" forces Piper.
+        """
         if self._engine_selected:
             return
         self._engine_selected = True
-        voice = self.config.get("tts_voice", "Built-in")
+        force_builtin = self.config.get("tts_voice") == "Built-in"
         logger.info(
-            f"[TTSManager] Engine selected: "
-            f"{'F5-TTS (CPU voice cloning)' if voice == 'Cloned Voice' else 'Piper/pyttsx3 (CPU)'}"
+            f"[TTSManager] Engine priority: "
+            f"{'Piper/pyttsx3 (Built-in selected — F5-TTS skipped)' if force_builtin else 'F5-TTS (primary) → Piper (fallback) → pyttsx3 (last resort)'}"
         )
 
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
@@ -308,8 +337,9 @@ class TTSManager:
 
         self._select_engine()
 
-        if self.config.get("tts_voice") == "Cloned Voice":
-            # --- F5-TTS path: CPU zero-shot cloning --------------------------
+        # --- F5-TTS: primary engine (always tried unless user forces "Built-in") ---
+        force_builtin = self.config.get("tts_voice") == "Built-in"
+        if not force_builtin:
             with self._lock:
                 loaded = self._load_f5tts()
                 f5tts = self._f5tts
@@ -324,8 +354,13 @@ class TTSManager:
                         f"[TTSManager] F5-TTS stream failed, falling back to Piper: {exc}",
                         exc_info=True,
                     )
+            else:
+                logger.info(
+                    "[TTSManager] F5-TTS unavailable (not installed or model load failed) — "
+                    "falling back to Piper"
+                )
 
-        # --- Piper path: fast CPU engine ------------------------------------
+        # --- Piper path: fallback engine ------------------------------------
         with self._lock:
             piper_loaded = self._load_piper()
             piper = self._piper

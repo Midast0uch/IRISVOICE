@@ -21,6 +21,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run these next)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
+    Domain 13 — Launcher: Personal/Developer Mode (ALL items not started)
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
@@ -29,14 +30,15 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 10 — Performance/memory  ✓ all 10 items verified
 
   PRIORITY ORDER FOR NEW SESSIONS:
-    1. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
-    2. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
-    3. Domain 2  — Voice pipeline (primary input modality)
-    4. Domain 12 — PiN + MCP storage integrations (after D11 verified)
-    5. Domain 4  — Skills library (self-extension)
-    6. Domain 7  — Backend reliability (logging standardisation)
-    7. Domain 8  — Distribution (MSI clean install)
-    8. Domain 9  — Advanced features (after everything else)
+    1. Domain 13 — Launcher: Personal/Developer Mode (prerequisite for developer use)
+    2. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
+    3. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
+    4. Domain 2  — Voice pipeline (primary input modality)
+    5. Domain 12 — PiN + MCP storage integrations (after D11 verified)
+    6. Domain 4  — Skills library (self-extension)
+    7. Domain 7  — Backend reliability (logging standardisation)
+    8. Domain 8  — Distribution (MSI clean install)
+    9. Domain 9  — Advanced features (after everything else)
 
 ---
 
@@ -258,18 +260,26 @@ interact naturally. This is the primary input modality.
     Remaining gap: manual end-to-end (speak, verify transcript in chat)
     Test: speak a sentence, verify transcript appears in ChatView (manual)
 
-  [2.3] Text-to-speech (F5-TTS or Piper)
-    Status: STRUCTURAL VERIFIED
+  [2.3] Text-to-speech (F5-TTS primary, Piper fallback)
+    Status: STRUCTURAL VERIFIED + ENGINE PRIORITY UPDATED (2026-04-05)
+    Engine priority (hardcoded — not user-selectable):
+      1. F5-TTS (F5TTS_v1_Base) — PRIMARY — always tried first when installed
+         Zero-shot voice cloning from data/TOMV2.wav. CPU, RTF ~0.15, ~800 MB.
+      2. Piper (en_US-ryan-high) — FALLBACK — used when F5-TTS absent or fails
+         Fast CPU, RTF ~0.04x, ~65 MB. Auto-downloads on first Piper use.
+      3. pyttsx3 (SAPI5) — LAST RESORT — zero download, Windows-only.
+    Voice setting "Built-in" skips F5-TTS and goes straight to Piper.
+    All other settings (including default "Cloned Voice") try F5-TTS first.
     What was confirmed:
       - piper-tts installed (find_spec passes)
-      - f5_tts NOT installed (optional — Piper fallback active automatically)
-      - _select_engine() falls back to Piper without raising when F5-TTS absent
-      - synthesize() returns None when tts_enabled=False (no audio produced)
+      - f5_tts NOT yet installed — Piper fallback active (install to activate primary)
+      - _select_engine() logs correct engine priority chain — does not raise
+      - synthesize() returns None when tts_enabled=False
       - synthesize_stream() yields nothing when disabled
-      - f5_tts NOT imported at module level in tts.py
+      - f5_tts NOT imported at module level in tts.py (lazy load)
       - Gateway broadcasts "speaking" state during TTS playback
     Remaining gap: manual end-to-end (agent responds, audio plays through speakers)
-    To enable Cloned Voice (F5-TTS): pip install f5-tts + place TOMV2.wav at data/TOMV2.wav
+    To activate F5-TTS primary: pip install f5-tts + place TOMV2.wav at data/TOMV2.wav
 
   [2.4] Voice-first DER loop mode
     Status: DONE — already fully implemented
@@ -694,6 +704,155 @@ Prerequisite: Domain 11 must be fully verified before starting Domain 12.
   and fetches a GitHub issue in a single session. All three appear as PiNs
   in pin.py --list with correct types, refs, and links to active landmarks.
   The Reviewer sees them in subsequent tasks involving the same landmark cluster.
+
+---
+
+DOMAIN 13 — LAUNCHER: PERSONAL MODE / DEVELOPER MODE
+IRIS needs two distinct operating modes with a clean launch mechanism.
+This has never been built before — full spec below.
+
+WHY THIS MATTERS:
+  Personal mode: IRIS as a polished voice assistant. No source access. No terminal.
+  Developer mode: IRIS as a self-aware coding partner. Unlocks terminal (Gate 2),
+  gives the agent read/write access to the IRIS source repo via an isolated git
+  worktree — so the agent can modify its own code without touching the live branch.
+
+WHAT A MODE IS:
+  A mode is a startup flag passed to both the Tauri frontend and the Python backend.
+  It controls:
+    - Which UI panels are visible (terminal tab: off in personal, on in developer)
+    - Which backend capabilities are active (repo access: off in personal)
+    - Which agent context is injected at session start
+  Modes are NOT user accounts. They are runtime configurations. One user, two modes.
+
+ARCHITECTURE:
+  Launcher screen (appears on first launch, or via tray icon "Switch Mode"):
+    ┌───────────────────────────────────┐
+    │  IRIS                             │
+    │                                   │
+    │  [ Personal Mode  ]               │
+    │  Talk, ask, automate. No code.    │
+    │                                   │
+    │  [ Developer Mode ]               │
+    │  Full agent + terminal + source.  │
+    └───────────────────────────────────┘
+
+  Selected mode → stored in app config (iris_mode: "personal" | "developer")
+  → passed to backend as env var IRIS_MODE on process spawn
+  → backend loads mode-specific capabilities
+
+DEVELOPER MODE — REPO ACCESS WITHOUT CONTAMINATION:
+  The "without contaminating the main repo" requirement means:
+    - Agent works in a git WORKTREE, not the main repo clone
+    - A worktree is a second checkout of the same repo at a separate path,
+      linked to the original. It shares all commit history but has its own
+      working directory and can check out its own branch.
+    - Agent edits happen on a feature branch inside the worktree
+    - Changes are only merged to main when the user explicitly approves
+    - If the session ends without approval, the worktree branch can be discarded
+      cleanly — main is never touched
+
+  Implementation plan:
+    a) At developer mode startup, check if a worktree already exists at
+       data/dev_worktree/ (relative to IRISVOICE root)
+    b) If not: git worktree add data/dev_worktree iris-agent-session-YYYYMMDD
+       (creates a new branch automatically)
+    c) Agent receives repo path = data/dev_worktree/ as its working directory
+    d) Agent can read/write/commit within the worktree freely
+    e) On session end: show diff summary. User chooses:
+       - "Merge" → cherry-pick / merge the worktree branch to main
+       - "Discard" → git worktree remove --force data/dev_worktree
+    f) Backend injects IRIS_SOURCE_DIR = data/dev_worktree/ into agent context
+       so the agent knows where to find and modify its own source
+
+  Files involved:
+    - Tauri: src-tauri/src/main.rs or equivalent — read/write iris_mode config
+    - Frontend: components/ — LauncherScreen.tsx (new), conditional panel render
+    - Backend: iris_gateway.py — read IRIS_MODE env, set mode capabilities
+    - Backend: agent startup — inject repo path when mode=developer
+    - Bootstrap: session_start.py — detect IRIS_MODE, adjust context injection
+
+  [13.1] Launcher screen UI
+    Status: NOT STARTED
+    What to build:
+      a) LauncherScreen.tsx — shows on first load if no mode selected
+      b) Two buttons: "Personal Mode" and "Developer Mode" with descriptions
+      c) Selection stored in localStorage (or Tauri store) as iris_mode
+      d) Mode indicator in top-right corner of main app (small badge: "DEV" or nothing)
+      e) "Switch Mode" option accessible from tray menu or settings
+    Test: App opens, shows launcher, selecting Personal Mode loads normal IRIS,
+          selecting Developer Mode shows "DEV" badge + terminal tab unlocked.
+    Landmark: launcher_screen_mode_select
+
+  [13.2] Mode propagation to backend
+    Status: NOT STARTED
+    What to build:
+      a) Tauri spawn command includes IRIS_MODE=personal|developer in env
+      b) backend/iris_gateway.py reads os.environ.get("IRIS_MODE", "personal")
+      c) Mode stored in session state and logged at startup
+      d) CapabilitySet: personal = {tts, voice, chat}, developer = {tts, voice, chat,
+         terminal, repo_access}
+      e) /api/mode endpoint returns current mode and active capabilities
+    Test: python -c "import os; os.environ['IRIS_MODE']='developer';
+                     from backend.iris_gateway import get_mode; print(get_mode())"
+          should print "developer"
+    Landmark: mode_propagation_wired
+
+  [13.3] Developer mode — git worktree isolation
+    Status: NOT STARTED
+    What to build:
+      a) scripts/dev_worktree.py — manages the isolated source worktree:
+           setup()   → git worktree add data/dev_worktree iris-agent-YYYYMMDD
+           teardown(merge=True|False) → merge or discard worktree
+           status()  → return current branch, uncommitted changes, diff summary
+      b) On developer mode start: call setup() if worktree absent
+      c) Inject IRIS_SOURCE_DIR into agent context:
+           "You are working in an isolated copy of the IRIS source at {path}.
+            Changes here do NOT affect the live codebase until you approve them.
+            Use git to commit your changes. At session end you will be asked to
+            merge or discard."
+      d) At session end (Stop hook): call status(), show diff to user, await decision
+    Test:
+      python scripts/dev_worktree.py --setup
+      python scripts/dev_worktree.py --status
+      (worktree created at data/dev_worktree/, on new branch iris-agent-YYYYMMDD)
+    Landmark: dev_worktree_isolation
+
+  [13.4] Terminal tab — developer mode only
+    Status: NOT STARTED (Gate 2 spec written — this wires it to developer mode)
+    What to build:
+      a) Terminal tab in tab bar only visible when iris_mode == "developer"
+      b) Uses xterm.js (or equivalent) — stateless display driver
+      c) Input → WebSocket → security_filter → iris_gateway → agent_kernel
+      d) All Gate 2 security wiring (security_filter, allowlists, mcp_security)
+         must be in the request path — no raw shell access
+      e) Terminal has access to data/dev_worktree/ as working directory
+      f) Agent can run git commands, read/edit source files, run tests
+    Test: Start in developer mode, open terminal tab, run "git status" in worktree,
+          verify output appears. Run a pytest, verify results stream to terminal.
+    Landmark: developer_terminal_wired
+    Note: This IS Gate 2. Completing this item also verifies Gate 2.
+
+  [13.5] Session end — merge or discard workflow
+    Status: NOT STARTED
+    What to build:
+      a) On backend Stop hook (developer mode only):
+           - Run dev_worktree.status() → collect diff summary
+           - Send summary to frontend via WebSocket "session_end" event
+      b) Frontend shows modal: "Agent made N changes. Review and decide:"
+           [View Diff] [Merge to main] [Discard changes]
+      c) "Merge to main" → backend runs git worktree branch → merge/PR
+      d) "Discard" → git worktree remove --force data/dev_worktree
+      e) Either way: session closes cleanly, worktree state resolved
+    Test: Make a file edit in developer mode, end session, verify modal appears
+          with correct diff. Choose discard → verify worktree removed.
+    Landmark: session_end_merge_or_discard
+
+  Graduate condition:
+    Personal mode: App launches, no terminal tab, agent has no source access.
+    Developer mode: App launches with DEV badge, terminal tab visible, agent
+    works in isolated worktree, session end shows merge/discard modal.
+    Main repo is clean throughout — no developer mode changes leak to main.
 
 ---
 
