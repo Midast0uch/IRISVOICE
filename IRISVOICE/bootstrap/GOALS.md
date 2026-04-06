@@ -21,7 +21,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run these next)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (ALL items not started)
+    Domain 13 — Launcher: Personal/Developer Mode (ALL items not started) ← THIS IS GATE 2
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
@@ -30,7 +30,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 10 — Performance/memory  ✓ all 10 items verified
 
   PRIORITY ORDER FOR NEW SESSIONS:
-    1. Domain 13 — Launcher: Personal/Developer Mode (prerequisite for developer use)
+    1. Domain 13 — Launcher + Developer Mode = GATE 2 (do in order: 13.1→13.2→13.3→13.4→13.5)
     2. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
     3. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
     4. Domain 2  — Voice pipeline (primary input modality)
@@ -95,25 +95,33 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
   type a message in chat, confirm reply comes from the local GGUF with GPU active.
   Do NOT verify Gate 1 on CPU-only. CPU+GPU together is the requirement.
 
-  GATE 2 — CHAT/TERMINAL HYBRID (spec written — activate after Gate 1 verified)
-  Goal: chat-view.tsx becomes a chat/terminal hybrid by embedding an existing
-        open-source terminal interface (xterm.js or equivalent). The TUI is a
-        pure display/input layer — IRIS owns all intelligence, context, security,
-        and output parsing. Zero setup or config required inside the terminal.
-        Works in tandem with dashboard-wing.tsx.
+  GATE 2 — LAUNCHER + DEVELOPER MODE (activate after Gate 1 verified)
+  Goal: IRIS launches in one of two modes selected at startup.
+        Personal mode: voice assistant, no terminal, no source access.
+        Developer mode: full agent + chat/terminal hybrid + isolated source repo access.
+        The launcher must work before the terminal is built — it is the prerequisite.
 
-  Architecture (TUI is dumb, IRIS is smart):
+  Gate 2 checklist (in order — do not skip ahead):
+    [G2.1] Launcher screen built and mode selection persisted (Domain 13.1)
+    [G2.2] Mode propagated to backend via IRIS_MODE env var (Domain 13.2)
+    [G2.3] Git worktree isolation working — agent writes to data/dev_worktree/,
+           main repo stays clean (Domain 13.3)
+    [G2.4] Terminal tab visible in developer mode only, wired to security stack (Domain 13.4)
+    [G2.5] Session-end merge/discard modal — user approves or discards agent edits (Domain 13.5)
+
+  Terminal architecture (developer mode only — TUI is dumb, IRIS is smart):
     User input → xterm.js → WebSocket → security_filter → iris_gateway
                                                          → agent_kernel
                                                          → tool_bridge
                                                          → output parser
     Streaming output → WebSocket → xterm.js (renders as-is)
 
-  What the TUI does (only):
+  What the terminal does (only):
     - Accepts raw user keystrokes and sends them via WebSocket
     - Renders streaming text/ANSI output from the agent
     - Displays tool call activity, DER loop steps, memory signals as they arrive
     - No config, no setup, no state — stateless display driver
+    - Only visible and active when iris_mode == "developer"
 
   What IRIS handles (unchanged, just wired to the new driver):
     - security_filter.py + mcp_security.py: all permission checks, allowlists,
@@ -133,10 +141,12 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
     - All three must be in the request path before any tool runs through the TUI
     - Security violations surface as formatted error lines in the terminal output
 
-  Alternate drivers:
-    - Any open-source CLI tool that writes to stdout can pipe through as an
-      alternate agent driver without backend changes
-    - The WebSocket protocol is the only interface — the TUI is interchangeable
+  Verify Gate 2 by:
+    1. App launches → launcher screen appears
+    2. Select Personal Mode → no terminal tab, no source access, voice works
+    3. Select Developer Mode → DEV badge visible, terminal tab appears
+    4. In terminal: run a git command → output streams, worktree stays isolated
+    5. End session → merge/discard modal appears with diff summary
 
   GATE 3 — AGENT KERNEL UPGRADE (spec pending — provided after Gate 2 verified)
   Goal: Agent kernel handles deep multi-step tasks with no loss of direction
@@ -707,9 +717,9 @@ Prerequisite: Domain 11 must be fully verified before starting Domain 12.
 
 ---
 
-DOMAIN 13 — LAUNCHER: PERSONAL MODE / DEVELOPER MODE
-IRIS needs two distinct operating modes with a clean launch mechanism.
-This has never been built before — full spec below.
+DOMAIN 13 — LAUNCHER: PERSONAL MODE / DEVELOPER MODE  [GATE 2]
+This domain IS Gate 2. Complete all 5 items to verify Gate 2.
+Launcher must work before the terminal — do [13.1]→[13.2]→[13.3]→[13.4]→[13.5] in order.
 
 WHY THIS MATTERS:
   Personal mode: IRIS as a polished voice assistant. No source access. No terminal.
@@ -831,7 +841,8 @@ DEVELOPER MODE — REPO ACCESS WITHOUT CONTAMINATION:
     Test: Start in developer mode, open terminal tab, run "git status" in worktree,
           verify output appears. Run a pytest, verify results stream to terminal.
     Landmark: developer_terminal_wired
-    Note: This IS Gate 2. Completing this item also verifies Gate 2.
+    Note: Terminal is the last piece of Gate 2. Do [13.1]→[13.2]→[13.3] first —
+          the launcher and worktree must work before wiring the terminal.
 
   [13.5] Session end — merge or discard workflow
     Status: NOT STARTED
