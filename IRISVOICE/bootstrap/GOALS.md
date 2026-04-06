@@ -102,12 +102,14 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
         The launcher must work before the terminal is built — it is the prerequisite.
 
   Gate 2 checklist (in order — do not skip ahead):
-    [G2.1] Launcher screen built and mode selection persisted (Domain 13.1)
-    [G2.2] Mode propagated to backend via IRIS_MODE env var (Domain 13.2)
-    [G2.3] Git worktree isolation working — agent writes to data/dev_worktree/,
-           main repo stays clean (Domain 13.3)
-    [G2.4] Terminal tab visible in developer mode only, wired to security stack (Domain 13.4)
-    [G2.5] Session-end merge/discard modal — user approves or discards agent edits (Domain 13.5)
+    [G2.1] DONE — Launcher UI exists at C:\Users\midas\Desktop\dev\iris-launcher\
+           ModeSelectPage, AppContext, use-iris-mode, GitPage, DiffReviewPage all built.
+           /api/mode and /api/projects already in IRISVOICE backend.
+    [G2.2] Backend git + diff endpoints (Domain 13.1) — NOT DONE ← start here
+    [G2.3] Git worktree isolation — agent writes to isolated branch (Domain 13.2)
+    [G2.4] Developer mode capabilities gated in IRISVOICE (Domain 13.3)
+    [G2.5] Terminal tab visible in developer mode only (Domain 13.4)
+    [G2.6] Session-end diff review in Launcher DiffReviewPage (Domain 13.5)
 
   Terminal architecture (developer mode only — TUI is dumb, IRIS is smart):
     User input → xterm.js → WebSocket → security_filter → iris_gateway
@@ -718,152 +720,105 @@ Prerequisite: Domain 11 must be fully verified before starting Domain 12.
 ---
 
 DOMAIN 13 — LAUNCHER: PERSONAL MODE / DEVELOPER MODE  [GATE 2]
-This domain IS Gate 2. Complete all 5 items to verify Gate 2.
-Launcher must work before the terminal — do [13.1]→[13.2]→[13.3]→[13.4]→[13.5] in order.
+This domain IS Gate 2. Complete all open items to verify Gate 2.
+Launcher must work before the terminal — do [13.2]→[13.3]→[13.4]→[13.5] in order.
 
-WHY THIS MATTERS:
-  Personal mode: IRIS as a polished voice assistant. No source access. No terminal.
-  Developer mode: IRIS as a self-aware coding partner. Unlocks terminal (Gate 2),
-  gives the agent read/write access to the IRIS source repo via an isolated git
-  worktree — so the agent can modify its own code without touching the live branch.
+LAUNCHER EXISTS — at C:\Users\midas\Desktop\dev\iris-launcher\
+  Separate Vite + React app (NOT inside IRISVOICE). Run with: cd iris-launcher && npm run dev
+  Already substantially built. Do NOT rewrite — extend what is there.
 
-WHAT A MODE IS:
-  A mode is a startup flag passed to both the Tauri frontend and the Python backend.
-  It controls:
-    - Which UI panels are visible (terminal tab: off in personal, on in developer)
-    - Which backend capabilities are active (repo access: off in personal)
-    - Which agent context is injected at session start
-  Modes are NOT user accounts. They are runtime configurations. One user, two modes.
+WHAT IS ALREADY BUILT (do not re-do these):
+  ✅ ModeSelectPage.tsx     — Personal/Developer mode selection UI (full UI, animations)
+  ✅ AppContext.tsx          — mode persisted to localStorage as "iris-mode"
+  ✅ use-iris-mode.ts       — setMode() updates AppContext AND POSTs to /api/mode
+  ✅ App.tsx routing        — if no mode in localStorage → redirect to /mode-select
+  ✅ FirstRunPage.tsx       — Dilithium3 identity + seed phrase (UI built, flow works)
+  ✅ GitPage.tsx            — git status, commit all, rollback UI (wired to backend hooks)
+  ✅ DiffReviewPage.tsx     — approve/reject pending agent writes before commit
+  ✅ OverviewPage.tsx       — agent status dashboard
+  ✅ ProjectsPage.tsx       — project list (personal/developer per project)
+  ✅ use-iris-backend.ts    — React Query hooks for all backend API calls
+  ✅ iris-api.ts            — API client (commitAll, rollback, getPendingWrites,
+                               approveWrite, rejectWrite, getProjects, getMode, setMode)
+  ✅ /api/mode GET+POST     — already in IRISVOICE backend/main.py (lines 538, 573)
+  ✅ /api/projects GET+POST — already in IRISVOICE backend/main.py (lines 615, 644)
 
-ARCHITECTURE:
-  Launcher screen (appears on first launch, or via tray icon "Switch Mode"):
-    ┌───────────────────────────────────┐
-    │  IRIS                             │
-    │                                   │
-    │  [ Personal Mode  ]               │
-    │  Talk, ask, automate. No code.    │
-    │                                   │
-    │  [ Developer Mode ]               │
-    │  Full agent + terminal + source.  │
-    └───────────────────────────────────┘
+WHAT IS MISSING (build these):
 
-  Selected mode → stored in app config (iris_mode: "personal" | "developer")
-  → passed to backend as env var IRIS_MODE on process spawn
-  → backend loads mode-specific capabilities
+  [13.1] Backend git + diff API endpoints  ← START HERE
+    Status: NOT STARTED
+    The launcher GitPage and DiffReviewPage call these backend routes — none exist yet:
+      GET  /api/git/status   → branch, clean, lastCommit, uncommittedFiles
+      GET  /api/git/log      → commits list (hash, message, time)
+      POST /api/git/commit   → body: {message} → git add -A && git commit
+      POST /api/git/rollback → body: {target} → git reset --hard {target}
+      GET  /api/diff/pending → list of pending agent writes awaiting approval
+      POST /api/diff/approve → body: {id} → write approved file to disk
+      POST /api/diff/reject  → body: {id} → discard pending write
+    All operate on the ACTIVE project path (from /api/mode or /api/projects context).
+    Use subprocess to call git. Store pending writes in a dict (in-memory is fine for now).
+    File: IRISVOICE/backend/main.py (add routes) + IRISVOICE/backend/git_ops.py (logic)
+    Test: Start backend, open launcher GitPage — git status must load without error.
+    Landmark: launcher_git_api_wired
 
-DEVELOPER MODE — REPO ACCESS WITHOUT CONTAMINATION:
-  The "without contaminating the main repo" requirement means:
-    - Agent works in a git WORKTREE, not the main repo clone
-    - A worktree is a second checkout of the same repo at a separate path,
-      linked to the original. It shares all commit history but has its own
-      working directory and can check out its own branch.
-    - Agent edits happen on a feature branch inside the worktree
-    - Changes are only merged to main when the user explicitly approves
-    - If the session ends without approval, the worktree branch can be discarded
-      cleanly — main is never touched
-
-  Implementation plan:
-    a) At developer mode startup, check if a worktree already exists at
-       data/dev_worktree/ (relative to IRISVOICE root)
-    b) If not: git worktree add data/dev_worktree iris-agent-session-YYYYMMDD
-       (creates a new branch automatically)
-    c) Agent receives repo path = data/dev_worktree/ as its working directory
-    d) Agent can read/write/commit within the worktree freely
-    e) On session end: show diff summary. User chooses:
-       - "Merge" → cherry-pick / merge the worktree branch to main
-       - "Discard" → git worktree remove --force data/dev_worktree
-    f) Backend injects IRIS_SOURCE_DIR = data/dev_worktree/ into agent context
-       so the agent knows where to find and modify its own source
-
-  Files involved:
-    - Tauri: src-tauri/src/main.rs or equivalent — read/write iris_mode config
-    - Frontend: components/ — LauncherScreen.tsx (new), conditional panel render
-    - Backend: iris_gateway.py — read IRIS_MODE env, set mode capabilities
-    - Backend: agent startup — inject repo path when mode=developer
-    - Bootstrap: session_start.py — detect IRIS_MODE, adjust context injection
-
-  [13.1] Launcher screen UI
+  [13.2] Developer mode — git worktree isolation
     Status: NOT STARTED
     What to build:
-      a) LauncherScreen.tsx — shows on first load if no mode selected
-      b) Two buttons: "Personal Mode" and "Developer Mode" with descriptions
-      c) Selection stored in localStorage (or Tauri store) as iris_mode
-      d) Mode indicator in top-right corner of main app (small badge: "DEV" or nothing)
-      e) "Switch Mode" option accessible from tray menu or settings
-    Test: App opens, shows launcher, selecting Personal Mode loads normal IRIS,
-          selecting Developer Mode shows "DEV" badge + terminal tab unlocked.
-    Landmark: launcher_screen_mode_select
-
-  [13.2] Mode propagation to backend
-    Status: NOT STARTED
-    What to build:
-      a) Tauri spawn command includes IRIS_MODE=personal|developer in env
-      b) backend/iris_gateway.py reads os.environ.get("IRIS_MODE", "personal")
-      c) Mode stored in session state and logged at startup
-      d) CapabilitySet: personal = {tts, voice, chat}, developer = {tts, voice, chat,
-         terminal, repo_access}
-      e) /api/mode endpoint returns current mode and active capabilities
-    Test: python -c "import os; os.environ['IRIS_MODE']='developer';
-                     from backend.iris_gateway import get_mode; print(get_mode())"
-          should print "developer"
-    Landmark: mode_propagation_wired
-
-  [13.3] Developer mode — git worktree isolation
-    Status: NOT STARTED
-    What to build:
-      a) scripts/dev_worktree.py — manages the isolated source worktree:
-           setup()   → git worktree add data/dev_worktree iris-agent-YYYYMMDD
-           teardown(merge=True|False) → merge or discard worktree
-           status()  → return current branch, uncommitted changes, diff summary
-      b) On developer mode start: call setup() if worktree absent
-      c) Inject IRIS_SOURCE_DIR into agent context:
+      a) IRISVOICE/backend/dev_worktree.py — manages the isolated worktree:
+           setup(project_path)   → git worktree add {project_path}/dev_worktree iris-agent-YYYYMMDD
+           teardown(merge=True|False) → merge branch or git worktree remove --force
+           status()  → {branch, uncommitted_files, diff_summary}
+      b) When /api/mode sets mode=developer: call setup() for active project
+      c) Inject IRIS_SOURCE_DIR = worktree path into agent context:
            "You are working in an isolated copy of the IRIS source at {path}.
-            Changes here do NOT affect the live codebase until you approve them.
-            Use git to commit your changes. At session end you will be asked to
-            merge or discard."
-      d) At session end (Stop hook): call status(), show diff to user, await decision
+            Changes here do NOT affect the live codebase until approved.
+            Commit your changes; they will be reviewed in the Launcher diff view."
+      d) Pending writes → /api/diff/pending feed (wires [13.1] to [13.2])
     Test:
-      python scripts/dev_worktree.py --setup
-      python scripts/dev_worktree.py --status
-      (worktree created at data/dev_worktree/, on new branch iris-agent-YYYYMMDD)
+      POST /api/mode body={mode: "developer"}
+      GET  /api/git/status → should show worktree branch (iris-agent-YYYYMMDD)
     Landmark: dev_worktree_isolation
+
+  [13.3] Developer mode capabilities in IRISVOICE
+    Status: PARTIAL — /api/mode exists but capabilities not gated on mode
+    What to build:
+      a) iris_gateway.py: read current mode → set CapabilitySet
+           personal  = {tts, voice, chat}
+           developer = {tts, voice, chat, terminal, repo_access}
+      b) Terminal tab in IRISVOICE tab-bar: visible only when mode=developer
+      c) Agent context injection: mode=developer → prepend IRIS_SOURCE_DIR block
+    Test: Set mode=personal → no terminal tab. Set mode=developer → terminal tab appears.
+    Landmark: mode_capabilities_gated
 
   [13.4] Terminal tab — developer mode only
     Status: NOT STARTED (Gate 2 spec written — this wires it to developer mode)
     What to build:
-      a) Terminal tab in tab bar only visible when iris_mode == "developer"
+      a) Terminal tab in IRISVOICE tab bar only visible when iris_mode == "developer"
       b) Uses xterm.js (or equivalent) — stateless display driver
       c) Input → WebSocket → security_filter → iris_gateway → agent_kernel
-      d) All Gate 2 security wiring (security_filter, allowlists, mcp_security)
-         must be in the request path — no raw shell access
-      e) Terminal has access to data/dev_worktree/ as working directory
-      f) Agent can run git commands, read/edit source files, run tests
+      d) All Gate 2 security wiring (security_filter, allowlists, mcp_security) in path
+      e) Working directory = active worktree path
     Test: Start in developer mode, open terminal tab, run "git status" in worktree,
           verify output appears. Run a pytest, verify results stream to terminal.
     Landmark: developer_terminal_wired
-    Note: Terminal is the last piece of Gate 2. Do [13.1]→[13.2]→[13.3] first —
-          the launcher and worktree must work before wiring the terminal.
+    Note: Terminal is the last piece of Gate 2. Do [13.1]→[13.2]→[13.3] first.
 
-  [13.5] Session end — merge or discard workflow
-    Status: NOT STARTED
-    What to build:
-      a) On backend Stop hook (developer mode only):
-           - Run dev_worktree.status() → collect diff summary
-           - Send summary to frontend via WebSocket "session_end" event
-      b) Frontend shows modal: "Agent made N changes. Review and decide:"
-           [View Diff] [Merge to main] [Discard changes]
-      c) "Merge to main" → backend runs git worktree branch → merge/PR
-      d) "Discard" → git worktree remove --force data/dev_worktree
-      e) Either way: session closes cleanly, worktree state resolved
-    Test: Make a file edit in developer mode, end session, verify modal appears
-          with correct diff. Choose discard → verify worktree removed.
-    Landmark: session_end_merge_or_discard
+  [13.5] Session end — merge or discard in Launcher
+    Status: PARTIAL — DiffReviewPage exists, approve/reject hooks built
+    The Launcher DiffReviewPage already has the UI for approve/reject.
+    What still needs wiring:
+      a) Backend Stop hook (developer mode): push pending diff summary to /api/diff/pending
+      b) Launcher auto-opens DiffReviewPage on backend "session_end" WebSocket event
+      c) "Approve all" → commit, "Discard all" → git worktree remove --force
+    Test: Make a file edit in developer mode, end session, verify DiffReviewPage
+          shows the diff. Approve → verify commit appears in GitPage log.
+    Landmark: session_end_diff_review
 
   Graduate condition:
-    Personal mode: App launches, no terminal tab, agent has no source access.
-    Developer mode: App launches with DEV badge, terminal tab visible, agent
-    works in isolated worktree, session end shows merge/discard modal.
-    Main repo is clean throughout — no developer mode changes leak to main.
+    Personal mode: Launcher opens, user selects Personal, IRISVOICE loads, no terminal tab.
+    Developer mode: Launcher opens, user selects Developer, IRISVOICE loads with DEV
+    context, terminal tab visible, agent works in isolated worktree, session end
+    routes to DiffReviewPage for approve/discard. Main repo clean throughout.
 
 ---
 
