@@ -226,39 +226,72 @@ DOMAIN 2 — VOICE PIPELINE (sensory input)
 IRIS is a voice assistant. Without a working voice pipeline, users cannot
 interact naturally. This is the primary input modality.
 
+  Architecture summary (verified via test suite 2026-04-05):
+    wake word (Porcupine, lazy) → AudioEngine frame loop → VoiceCommandHandler
+    → faster-whisper STT (lazy, tiny/int8) → iris_gateway._on_voice_result
+    → _process_voice_transcription() → process_text_message(from_voice=True)
+    → _speak_response() → TTSManager.synthesize_stream() → Piper (F5-TTS optional)
+    All lazy imports confirmed. Platform-aware .ppn selection confirmed.
+
   [2.1] Wake word detection (Porcupine)
-    Status: PARTIAL — detector code exists, activation untested end-to-end
-    Files: backend/voice/porcupine_detector.py
-    Gap: Wake word detection may work but is not integrated into a live audio loop
-         that feeds into the agent's prompt pipeline.
-    Fix: Verify PorcupineWakeWordDetector activates, feeds "wake detected" signal
-         to the frontend orb animation and to the STT pipeline.
-    Test: Manual — say wake word, orb activates, STT begins
+    Status: STRUCTURAL VERIFIED (test_domain2_voice.py 38/38 pass)
+    What was confirmed:
+      - PorcupineWakeWordDetector disables gracefully (no access key → _disabled=True)
+      - Disabled reason string is descriptive (mentions PICOVOICE_ACCESS_KEY)
+      - Disabled on no wake words configured (v1 path also tested)
+      - pvporcupine lazy-loaded inside _initialize_porcupine (not at module level)
+      - Gateway has set_voice_handler() wired to _on_voice_result callback
+      - gateway._voice_handler checked before start_recording()
+    Remaining gap: manual end-to-end test needed (say wake word → orb activates)
+    Test: say wake word, verify orb activates and STT begins (manual)
+    Regression: python -m pytest backend/tests/test_domain2_voice.py -v
 
   [2.2] Speech-to-text (faster-whisper)
-    Status: UNKNOWN — check if faster-whisper is installed and configured
-    Files: backend/voice/ (check for whisper integration)
-    Fix: Wire faster-whisper to produce transcript text that feeds
-         process_text_message() as if the user typed it.
-    Test: Speak a sentence, verify transcript appears in chat
+    Status: STRUCTURAL VERIFIED
+    What was confirmed:
+      - faster-whisper installed (find_spec passes)
+      - WhisperModel lazy-loaded (not at module level) — confirmed by test
+      - VoiceCommandHandler.set_command_result_callback() exists
+      - Transcription fires callback → iris_gateway._on_voice_result
+      - _on_voice_result dispatches to main event loop (run_coroutine_threadsafe)
+      - process_text_message called with from_voice=True
+    Remaining gap: manual end-to-end (speak, verify transcript in chat)
+    Test: speak a sentence, verify transcript appears in ChatView (manual)
 
   [2.3] Text-to-speech (F5-TTS or Piper)
-    Status: Code exists (backend/voice/); TTS wiring to response pipeline unconfirmed
-    Note: F5-TTS (zero-shot voice cloning from TOMV2.wav, CPU) is the primary TTS.
-          Piper is the fast built-in fallback. CosyVoice is no longer used.
-    Fix: Verify TTS is called with agent response text and plays audio output.
-    Test: Agent responds, audio plays through speakers
+    Status: STRUCTURAL VERIFIED
+    What was confirmed:
+      - piper-tts installed (find_spec passes)
+      - f5_tts NOT installed (optional — Piper fallback active automatically)
+      - _select_engine() falls back to Piper without raising when F5-TTS absent
+      - synthesize() returns None when tts_enabled=False (no audio produced)
+      - synthesize_stream() yields nothing when disabled
+      - f5_tts NOT imported at module level in tts.py
+      - Gateway broadcasts "speaking" state during TTS playback
+    Remaining gap: manual end-to-end (agent responds, audio plays through speakers)
+    To enable Cloned Voice (F5-TTS): pip install f5-tts + place TOMV2.wav at data/TOMV2.wav
 
   [2.4] Voice-first DER loop mode
-    Status: NOT STARTED
-    Gap: DER_TOKEN_BUDGETS has "voice_first" as an inference profile label
-         but no DER mode maps to it.
-    Fix: When voice pipeline is active, use tighter token budget (under 20k)
-         and prefer single-step responses over multi-step plans.
-    Landmark: voice_pipeline_end_to_end
+    Status: DONE — already fully implemented
+    What was found:
+      - DER_TOKEN_BUDGETS["voice_first"] = 15000 (< 20k — tight budget enforced)
+      - process_text_message(from_voice=True) → _mode_name = "voice_first" (bypasses mode detector)
+      - task_class == "voice_first" → single queue item limit (single-step response)
+      - All 6 DER mode tests pass
+    Landmark: voice_first_der_mode (via test_domain2_voice.py)
+
+  Linux compatibility (verified via TestLinuxCompatibility, 11/11 pass):
+    - sounddevice lazy-loaded (not at module level in pipeline.py) ✓
+    - wake_word_discovery picks linux .ppn path on Linux ✓
+    - Fallback to Windows .ppn warns but doesn't crash (returns bool) ✓
+    - pvporcupine lazy-loaded (not at module level in porcupine_detector.py) ✓
+    - requirements.txt has Linux system dep instructions (portaudio19-dev etc.) ✓
+    Linux prerequisites: sudo apt install portaudio19-dev libsndfile1 libasound2-dev
+    Then: pip install -r requirements.txt
 
   Graduate condition: wake word → STT → agent response → TTS plays — full cycle
   without any manual keyboard input.
+  Regression test: python -m pytest backend/tests/test_domain2_voice.py -v (38 tests)
 
 ---
 

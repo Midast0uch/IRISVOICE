@@ -13,11 +13,19 @@ keyring>=25.0.0          # Secure credential storage in OS keychain
 aiohttp>=3.9.0           # async HTTP client — used by auth_handlers, integrations
 
 # Audio/Voice Processing
+# Linux system prerequisites (install before pip install):
+#   sudo apt install portaudio19-dev libsndfile1 libasound2-dev python3-dev
+#   pvporcupine will download its Linux shared library automatically on first use.
+#   Wake word models are platform-specific (.ppn files):
+#     Windows: hey-iris_en_windows_v4_0_0.ppn
+#     Linux:   hey-iris_en_linux_v4_0_0.ppn
+#     macOS:   hey-iris_en_mac_v4_0_0.ppn
+#   Discovery falls back to any hey-iris .ppn if the platform-specific file is missing.
 pyaudio>=0.2.11
 numpy>=1.24.0
 scipy>=1.11.0
 pvporcupine>=4.0.0       # wake word detection; v4+ required for .ppn v4 model files.
-sounddevice>=0.5.0
+sounddevice>=0.5.0       # cross-platform audio I/O via PortAudio (lazy-loaded at runtime)
 # PyTorch (CPU is sufficient — F5-TTS and Piper both run on CPU)
 # For GPU acceleration of the local LLM only, install the CUDA variant:
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
