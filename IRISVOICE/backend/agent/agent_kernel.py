@@ -1599,8 +1599,18 @@ class AgentKernel:
         Returns ONLY the text that should be sent to the TTS engine (F5-TTS).
         Full response is ALWAYS sent separately via text_response.
 
-        No second LLM call — uses direct text processing to extract speakable prose.
-        This keeps first-audio latency to synthesis time only (~1-2s warm, ~40s cold).
+        Conversational-first design: IRIS speaks a short, natural summary.
+        The full response is always visible in ChatView — voice is a companion,
+        not a reader.  Thresholds keep spoken output under ~20-25 seconds.
+
+        No second LLM call — direct text processing keeps first-audio latency
+        to synthesis time only (~1-2s warm, ~40s cold F5-TTS).
+
+        Rules (applied after code/markdown is stripped):
+          ≤ 60 words  → spoken verbatim (always — short answers, confirmations)
+          61-120 words, conversational → spoken verbatim (user asked, answer given)
+          61-120 words, document-like → first sentence + "in the chat window"
+          > 120 words → first sentence to boundary (≤ 60 words) + "in the chat window"
         """
         import re as _re
         from backend.voice.tts_normalizer import normalize_text
@@ -1619,29 +1629,37 @@ class AgentKernel:
         cleaned = " ".join(cleaned.split())
 
         had_code = "```" in full_response
+        is_doc = self._is_document_content(full_response)
         word_count = len(cleaned.split())
 
-        # If the prose after stripping code is short enough, speak all of it
-        if word_count <= 200:
+        # Short response — always spoken verbatim (~0-15s at 150 wpm)
+        if word_count <= 60:
             spoken = normalize_text(cleaned)
             if had_code:
                 spoken += " The full code is in the chat window."
             return spoken
 
-        # Long response — keep first ~120 words of prose, add chat hint
+        # Medium conversational response — spoken in full if not document-like (~15-25s)
+        if word_count <= 120 and not is_doc and not had_code:
+            return normalize_text(cleaned)
+
+        # Document, code, or long response — speak first sentence(s) up to 60 words
         words = cleaned.split()
-        truncated = " ".join(words[:120])
-        # Find last sentence boundary to avoid cutting mid-sentence
-        last_sentence = max(
+        truncated = " ".join(words[:60])
+        # Walk back to last sentence boundary to avoid mid-sentence cut
+        last_boundary = max(
             truncated.rfind(". "),
             truncated.rfind("! "),
             truncated.rfind("? "),
         )
-        if last_sentence > 60:
-            truncated = truncated[:last_sentence + 1]
+        if last_boundary > 25:
+            truncated = truncated[:last_boundary + 1]
 
         spoken = normalize_text(truncated)
-        spoken += " The full response is in the chat window."
+        if had_code:
+            spoken += " The full code is in the chat window."
+        else:
+            spoken += " Full response in the chat window."
         return spoken
 
     def _sanitize_task(self, task: str) -> str:

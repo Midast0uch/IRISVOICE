@@ -25,8 +25,9 @@ interface Notification {
 export type ContentType = 'markdown' | 'email' | 'video' | 'picture' | 'text';
 
 const MESSAGE_THRESHOLDS = {
-  TRUNCATE_AT: 500,       // plain text expand/collapse threshold (raised for bigger windows)
-  DOCUMENT_MODE_AT: 400,  // artifact card threshold — only for structured content, never plain text
+  TRUNCATE_AT: 500,            // plain text expand/collapse threshold
+  DOCUMENT_MODE_AT: 400,       // artifact card threshold for media/email/file uploads
+  MARKDOWN_ARTIFACT_AT: 800,   // artifact card threshold for long markdown from assistant
   WARNING_AT: 3000
 } as const;
 
@@ -1392,10 +1393,15 @@ ${message.text}`;
                     const contentType = getContentType(message);
                     const isExpanded = isMessageExpanded(message.id);
                     const shouldTruncate = charCount > MESSAGE_THRESHOLDS.TRUNCATE_AT;
-                    // Only media, emails, or explicit file attachments become artifact cards.
-                    // Markdown and plain text always flow as chat - never collapse to a document card.
+                    // Artifact card rules:
+                    //   - Media, email, explicit file uploads → artifact at DOCUMENT_MODE_AT (400 chars)
+                    //   - Long markdown from assistant (code blocks, headers) → artifact at MARKDOWN_ARTIFACT_AT (800 chars)
+                    //     This keeps voice-first UX clean: the full response is always readable,
+                    //     but the chat thread stays concise — tap to expand if needed.
+                    //   - Plain conversational text → always flows as chat (truncate/expand only)
                     const isExplicitFile = message.text.startsWith('[File:') || message.text.startsWith('[IMAGE:') || message.text.startsWith('[VIDEO:');
-                    const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video') && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
+                    const isAssistantMarkdown = message.sender === 'assistant' && contentType === 'markdown' && charCount > MESSAGE_THRESHOLDS.MARKDOWN_ARTIFACT_AT;
+                    const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video' || isAssistantMarkdown) && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
                     
                     // Content type icon mapping
                     const ContentTypeIcon = ({ size = 12 }: { size?: number }) => {
