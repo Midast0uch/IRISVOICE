@@ -169,9 +169,9 @@ export function ConversationChips({
               <div
                 className="overflow-hidden"
                 style={{
-                  backdropFilter: 'blur(20px) saturate(1.5)',
-                  WebkitBackdropFilter: 'blur(20px) saturate(1.5)',
-                  background: 'rgba(8, 8, 12, 0.82)',
+                  backdropFilter: 'blur(24px) saturate(1.8)',
+                  WebkitBackdropFilter: 'blur(24px) saturate(1.8)',
+                  background: 'rgba(8, 8, 14, 0.55)',
                   border: `1px solid ${glowColor}28`,
                   boxShadow: `0 -8px 40px rgba(0,0,0,0.6), 0 0 0 0.5px ${glowColor}15, inset 0 1px 0 ${glowColor}12`,
                   borderRadius: 0,
@@ -189,7 +189,7 @@ export function ConversationChips({
                     ref={scrollRef}
                     className="overflow-y-auto"
                     style={{
-                      maxHeight: '184px',
+                      maxHeight: '155px',
                       scrollbarWidth: 'none',
                     }}
                   >
