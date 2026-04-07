@@ -166,8 +166,8 @@ export function ConversationChips({
               className="absolute bottom-full right-0 mb-3 z-50 w-52"
               style={{ transformOrigin: 'bottom right' }}
             >
+              {/* Blur layer — no overflow:hidden here, that kills backdrop-filter in Chromium */}
               <div
-                className="overflow-hidden"
                 style={{
                   backdropFilter: 'blur(24px) saturate(1.8)',
                   WebkitBackdropFilter: 'blur(24px) saturate(1.8)',
@@ -177,23 +177,23 @@ export function ConversationChips({
                   borderRadius: 0,
                 }}
               >
-                {/* Scrollable list — items scale based on distance from center */}
-                <div className="relative">
+                {/* Clipping wrapper — separate from blur layer so they don't conflict */}
+                <div className="overflow-hidden relative">
                   {/* Top fade */}
                   <div
                     className="absolute top-0 left-0 right-0 h-5 pointer-events-none z-10"
-                    style={{ background: `linear-gradient(to bottom, rgba(8,8,12,0.95), transparent)` }}
+                    style={{ background: `linear-gradient(to bottom, rgba(8,8,12,0.85), transparent)` }}
                   />
 
                   <div
                     ref={scrollRef}
                     className="overflow-y-auto"
                     style={{
-                      maxHeight: '155px',
+                      maxHeight: '105px',
                       scrollbarWidth: 'none',
                     }}
                   >
-                    <div className="px-1.5 py-3 flex flex-col gap-0.5">
+                    <div className="px-1.5 py-2 flex flex-col gap-0.5">
                       {chips.map((chip) => (
                         <ChipRow
                           key={chip.messageId}
