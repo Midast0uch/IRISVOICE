@@ -124,7 +124,7 @@ class WebSocketManager:
                     # when the client previously disconnected.
                     existing_session.cleanup_scheduled = False
                     existing_session.is_active = True
-                    await existing_session.touch()
+                    existing_session.touch()
                     logger.info(
                         f"Client {client_id} re-joined existing session {session_id}"
                     )
@@ -134,7 +134,7 @@ class WebSocketManager:
                     # and loads the persisted JSON from
                     # backend/sessions/{session_id}/session_state.json if it
                     # exists, so confirmed values survive backend restarts.
-                    await self._session_manager.create_session(session_id=session_id)
+                    self._session_manager.create_session(session_id=session_id)
                     logger.info(
                         f"Client {client_id} started session {session_id} "
                         f"(loaded from disk if prior state existed)"

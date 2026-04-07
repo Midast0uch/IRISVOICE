@@ -6,7 +6,7 @@ These models have no dependencies on other backend modules to avoid circular imp
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import re
 
 
@@ -159,9 +159,7 @@ class IRISState(BaseModel):
     current_section: Optional[str] = None
     field_values: Dict[str, Dict[str, Any]] = Field(default_factory=_build_default_field_values)
     
-    class Config:
-        populate_by_name = True
-        extra = 'forbid'  # Reject any extra fields not defined in the model
+    model_config = ConfigDict(populate_by_name=True, extra='forbid')
     active_theme: ColorTheme = Field(default_factory=ColorTheme)
     app_state: AppState = Field(default=AppState.STARTING)
     

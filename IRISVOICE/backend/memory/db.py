@@ -18,6 +18,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Suppress repeated sqlcipher3 fallback warnings — only warn once per process.
+_sqlcipher_warned: bool = False
+
 # Default configuration values
 DEFAULT_CIPHER_PAGE_SIZE = 4096
 DEFAULT_KDF_ITERATIONS = 64000
@@ -75,12 +78,15 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
                 "sqlcipher3 not installed and IRIS_MEMORY_ENCRYPTION=1. "
                 "See docs/MEMORY_SETUP.md for platform-specific instructions."
             )
-        logger.warning(
-            "[db] sqlcipher3 not available — falling back to unencrypted sqlite3. "
-            "Memory data is NOT encrypted at rest. "
-            "To suppress: install sqlcipher3. "
-            "To require encryption: set IRIS_MEMORY_ENCRYPTION=1."
-        )
+        global _sqlcipher_warned
+        if not _sqlcipher_warned:
+            _sqlcipher_warned = True
+            logger.warning(
+                "[db] sqlcipher3 not available — falling back to unencrypted sqlite3. "
+                "Memory data is NOT encrypted at rest. "
+                "To suppress: install sqlcipher3. "
+                "To require encryption: set IRIS_MEMORY_ENCRYPTION=1."
+            )
         conn = sqlite3.connect(str(db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")

@@ -4,7 +4,7 @@ Pydantic models for type validation and serialization
 """
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import re
 
 from .core_models import AppState
@@ -126,9 +126,7 @@ class IRISState(BaseModel):
     current_section: Optional[str] = None
     field_values: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     
-    class Config:
-        populate_by_name = True
-        extra = 'forbid'  # Reject any extra fields not defined in the model
+    model_config = ConfigDict(populate_by_name=True, extra='forbid')
     active_theme: ColorTheme = Field(default_factory=ColorTheme)
     app_state: AppState = Field(default=AppState.STARTING)
     

@@ -8,7 +8,7 @@ import json
 import logging
 import logging.handlers
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
@@ -35,7 +35,7 @@ class StructuredFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Format the log record as JSON."""
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -98,6 +98,10 @@ class StructuredLogger:
 
         # Clear existing handlers to avoid duplicates
         self.logger.handlers.clear()
+
+        # Do NOT propagate to root logger — prevents every message from appearing
+        # twice when uvicorn (or basicConfig) has added root-level handlers.
+        self.logger.propagate = False
 
         # Create formatter
         formatter = StructuredFormatter(self.context)

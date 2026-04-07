@@ -1702,8 +1702,8 @@ class IRISGateway:
                 #   "VPS Gateway"  / "vps"    → "vps"
                 #   "OpenAI API"   / "api"    → "api"
                 _raw_mode = (
-                    await session_state.get_field_value("inference_mode", "inference_mode", "lmstudio")
-                    or await session_state.get_field_value("model_selection", "model_provider", "lmstudio")
+                    session_state.get_field_value("inference_mode", "inference_mode", "lmstudio")
+                    or session_state.get_field_value("model_selection", "model_provider", "lmstudio")
                     or "lmstudio"
                 )
                 _mode_map = {
@@ -1713,11 +1713,11 @@ class IRISGateway:
                     "openai api": "api",      "api": "api",
                 }
                 inference_mode = _mode_map.get(str(_raw_mode).lower().strip(), "lmstudio")
-                vps_url = await session_state.get_field_value("model_selection", "vps_url", "") or await session_state.get_field_value("inference_mode", "vps_url", "") or ""
-                openai_api_key = await session_state.get_field_value("model_selection", "api_key", "") or await session_state.get_field_value("inference_mode", "openai_api_key", "") or ""
-                api_base_url = await session_state.get_field_value("model_selection", "api_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"
-                lmstudio_endpoint = await session_state.get_field_value("model_selection", "lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
-                ollama_endpoint = await session_state.get_field_value("model_selection", "ollama_endpoint", "http://localhost:11434") or "http://localhost:11434"
+                vps_url = session_state.get_field_value("model_selection", "vps_url", "") or session_state.get_field_value("inference_mode", "vps_url", "") or ""
+                openai_api_key = session_state.get_field_value("model_selection", "api_key", "") or session_state.get_field_value("inference_mode", "openai_api_key", "") or ""
+                api_base_url = session_state.get_field_value("model_selection", "api_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"
+                lmstudio_endpoint = session_state.get_field_value("model_selection", "lmstudio_endpoint", "http://localhost:1234") or "http://localhost:1234"
+                ollama_endpoint = session_state.get_field_value("model_selection", "ollama_endpoint", "http://localhost:11434") or "http://localhost:11434"
 
             self._logger.info(
                 f"[Session: {session_id}] Getting available models for provider: {inference_mode}"
@@ -2242,12 +2242,12 @@ class IRISGateway:
                 if not api_key:
                     state_manager = await self._state_manager._get_session_state_manager(session_id)
                     if state_manager:
-                        api_key = await state_manager.get_decrypted_field_value("model", "openai_api_key")
+                        api_key = state_manager.get_decrypted_field_value("model", "openai_api_key")
 
                 if not api_url:
                     state_manager = await self._state_manager._get_session_state_manager(session_id)
                     if state_manager:
-                        api_url = await state_manager.get_field_value("model", "openai_api_url")
+                        api_url = state_manager.get_field_value("model", "openai_api_url")
 
                 # Use default URL if not provided
                 if not api_url:
