@@ -263,7 +263,7 @@ export function ChatWing({
       .filter(m => m.sender === 'user')
       .map((m, index) => ({
         messageId: m.id,
-        label: m.text.length > 30 ? m.text.slice(0, 30) + '\u2026' : m.text,
+        label: m.text.length > 24 ? m.text.slice(0, 24) + '\u2026' : m.text,
         index,
       }))
   ), [messages])
@@ -1472,7 +1472,7 @@ ${message.text}`;
                       )}
                       
                       <div
-                        className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                        className={`flex justify-start`}
                       >
                         {message.sender === 'user' ? (
                           // User message - no bubble container
@@ -2061,15 +2061,21 @@ ${message.text}`;
             </AnimatePresence>
 
             {/* Input Area - Command Line Style with Drag & Drop */}
-            <div 
+            <div
               className="px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"
-              style={{
-                borderColor: 'rgba(255,255,255,0.05)'
-              }}
+              style={{ borderColor: 'rgba(255,255,255,0.05)' }}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
+              {/* Chips trigger — pinned to top-right of input area, peeking above the border */}
+              <div className="absolute right-3 top-0 -translate-y-full pb-1 z-40">
+                <ConversationChips
+                  chips={conversationChips}
+                  glowColor={glowColor}
+                  onChipClick={handleChipClick}
+                />
+              </div>
               {/* Drag overlay with smile/file icon */}
               <AnimatePresence>
                 {isDraggingFile && (
@@ -2092,13 +2098,6 @@ ${message.text}`;
                   </motion.div>
                 )}
               </AnimatePresence>
-
-              {/* Conversation chips — history toggle bar + vertical drop-up panel */}
-              <ConversationChips
-                chips={conversationChips}
-                glowColor={glowColor}
-                onChipClick={handleChipClick}
-              />
 
               <div className="relative flex items-end gap-6" style={{ marginRight: '12px' }}>
                 <div className="flex-1 relative">
@@ -2192,6 +2191,7 @@ ${message.text}`;
                   >
                     <Plus size={18} />
                   </motion.button>
+
                 </div>
               </div>
             </div>
