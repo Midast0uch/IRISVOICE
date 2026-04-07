@@ -1,8 +1,8 @@
 'use client'
 
 import { useRef, useState, useEffect, useCallback } from 'react'
-import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'framer-motion'
-import { AlignJustify, X } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { AlignJustify } from 'lucide-react'
 import type { ConversationChip } from '@/types/iris'
 
 interface ConversationChipsProps {
@@ -14,38 +14,28 @@ interface ConversationChipsProps {
 // Individual chip row — scales up when scrolled to center of the list
 function ChipRow({
   chip,
-  index,
   glowColor,
   scrollContainerRef,
   onSelect,
 }: {
   chip: ConversationChip
-  index: number
   glowColor: string
   scrollContainerRef: React.RefObject<HTMLDivElement>
   onSelect: (id: string) => void
 }) {
   const rowRef = useRef<HTMLButtonElement>(null)
-  const [scale, setScale] = useState(0.94)
-  const [brightness, setBrightness] = useState(0.45)
+  const [hovered, setHovered] = useState(false)
+  const [scrollScale, setScrollScale] = useState(0.94)
 
   const updateScale = useCallback(() => {
     const container = scrollContainerRef.current
     const row = rowRef.current
     if (!container || !row) return
-
     const cRect = container.getBoundingClientRect()
     const rRect = row.getBoundingClientRect()
-
-    const containerMid = cRect.top + cRect.height / 2
-    const rowMid = rRect.top + rRect.height / 2
-    const dist = Math.abs(containerMid - rowMid)
-    const maxDist = cRect.height / 2
-
-    // 0 = centered, 1 = at edge
-    const t = Math.min(dist / maxDist, 1)
-    setScale(0.94 + (1 - t) * 0.1)          // 0.94 → 1.04
-    setBrightness(0.35 + (1 - t) * 0.55)    // 0.35 → 0.90
+    const dist = Math.abs((cRect.top + cRect.height / 2) - (rRect.top + rRect.height / 2))
+    const t = Math.min(dist / (cRect.height / 2), 1)
+    setScrollScale(0.94 + (1 - t) * 0.06)   // 0.94 → 1.00 based on scroll position
   }, [scrollContainerRef])
 
   useEffect(() => {
@@ -56,38 +46,27 @@ function ChipRow({
     return () => container.removeEventListener('scroll', updateScale)
   }, [updateScale, scrollContainerRef])
 
+  // Hover wins: scale up to 1.06 and brighten text
+  const finalScale = hovered ? 1.06 : scrollScale
+  const finalColor = hovered ? 'rgba(255,255,255,0.95)' : `rgba(255,255,255,${0.35 + (scrollScale - 0.94) / 0.06 * 0.45})`
+
   return (
     <motion.button
       ref={rowRef}
       onClick={() => onSelect(chip.messageId)}
-      className="w-full text-left px-2.5 py-2 text-[11px] font-medium
-                 flex items-start gap-2.5 origin-left"
-      animate={{ scale, opacity: 0.4 + (scale - 0.94) / 0.10 * 0.6 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className="w-full text-left px-2.5 py-2 text-[11px] font-medium origin-left"
+      animate={{ scale: finalScale }}
+      transition={{ type: 'spring', stiffness: 400, damping: 28 }}
       style={{
-        background: 'transparent',
-        border: `1px solid transparent`,
-        color: `rgba(255,255,255,${brightness})`,
+        background: hovered ? `${glowColor}14` : 'transparent',
+        border: `1px solid ${hovered ? `${glowColor}45` : 'transparent'}`,
+        color: finalColor,
         borderRadius: 0,
       }}
-      onMouseEnter={e => {
-        e.currentTarget.style.background = `${glowColor}12`
-        e.currentTarget.style.borderColor = `${glowColor}40`
-        e.currentTarget.style.color = 'rgba(255,255,255,0.92)'
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.background = 'transparent'
-        e.currentTarget.style.borderColor = 'transparent'
-        e.currentTarget.style.color = `rgba(255,255,255,${brightness})`
-      }}
     >
-      <span
-        className="shrink-0 text-[8px] font-mono mt-0.5 w-3.5 text-right tabular-nums"
-        style={{ color: `${glowColor}50` }}
-      >
-        {index + 1}
-      </span>
-      <span className="truncate leading-snug">{chip.label}</span>
+      <span className="truncate leading-snug block">{chip.label}</span>
     </motion.button>
   )
 }
@@ -137,7 +116,7 @@ export function ConversationChips({
       <motion.button
         ref={triggerRef}
         onClick={() => setIsOpen(o => !o)}
-        className="flex items-center gap-1 px-2 py-1.5 mb-2 transition-all duration-150 flex-shrink-0"
+        className="flex items-center gap-2 px-3 py-2 mb-1 transition-all duration-150 flex-shrink-0"
         style={{
           color: isOpen ? glowColor : `${glowColor}70`,
           background: isOpen ? `${glowColor}14` : `${glowColor}08`,
@@ -148,9 +127,9 @@ export function ConversationChips({
         whileTap={{ scale: 0.95 }}
         title={`Conversation history (${chips.length})`}
       >
-        <AlignJustify size={13} style={{ color: isOpen ? glowColor : `${glowColor}80` }} />
+        <AlignJustify size={16} style={{ color: isOpen ? glowColor : `${glowColor}80` }} />
         <span
-          className="text-[9px] font-mono leading-none"
+          className="text-[11px] font-mono leading-none"
           style={{ color: isOpen ? glowColor : `${glowColor}70` }}
         >
           {chips.length}
@@ -198,21 +177,6 @@ export function ConversationChips({
                   borderRadius: 0,
                 }}
               >
-                {/* Header — icon + close only */}
-                <div
-                  className="flex items-center justify-between px-2.5 py-2 border-b"
-                  style={{ borderColor: `${glowColor}18` }}
-                >
-                  <AlignJustify size={11} style={{ color: glowColor }} />
-                  <button
-                    onClick={() => setIsOpen(false)}
-                    className="p-0.5 transition-opacity opacity-40 hover:opacity-100"
-                    style={{ color: 'rgba(255,255,255,0.7)' }}
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-
                 {/* Scrollable list — items scale based on distance from center */}
                 <div className="relative">
                   {/* Top fade */}
@@ -226,16 +190,14 @@ export function ConversationChips({
                     className="overflow-y-auto"
                     style={{
                       maxHeight: '220px',
-                      scrollbarWidth: 'thin',
-                      scrollbarColor: `${glowColor}25 transparent`,
+                      scrollbarWidth: 'none',
                     }}
                   >
                     <div className="px-1.5 py-3 flex flex-col gap-0.5">
-                      {chips.map((chip, i) => (
+                      {chips.map((chip) => (
                         <ChipRow
                           key={chip.messageId}
                           chip={chip}
-                          index={i}
                           glowColor={glowColor}
                           scrollContainerRef={scrollRef as React.RefObject<HTMLDivElement>}
                           onSelect={handleSelect}
@@ -243,12 +205,6 @@ export function ConversationChips({
                       ))}
                     </div>
                   </div>
-
-                  {/* Bottom fade */}
-                  <div
-                    className="absolute bottom-0 left-0 right-0 h-5 pointer-events-none"
-                    style={{ background: `linear-gradient(to top, rgba(8,8,12,0.95), transparent)` }}
-                  />
                 </div>
               </div>
             </motion.div>
