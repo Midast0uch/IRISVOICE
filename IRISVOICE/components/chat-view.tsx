@@ -2070,15 +2070,6 @@ ${message.text}`;
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
-              {/* Chips trigger — pinned to top-right of input area, peeking above the border */}
-              <div className="absolute right-3 top-0 -translate-y-full pb-4 z-40">
-                <ConversationChips
-                  chips={conversationChips}
-                  glowColor={glowColor}
-                  onChipClick={handleChipClick}
-                  containerRef={chatPanelRef}
-                />
-              </div>
               {/* Drag overlay with smile/file icon */}
               <AnimatePresence>
                 {isDraggingFile && (
@@ -2194,6 +2185,14 @@ ${message.text}`;
                   >
                     <Plus size={18} />
                   </motion.button>
+
+                  {/* Conversation chips — inline with action buttons, panel opens via portal */}
+                  <ConversationChips
+                    chips={conversationChips}
+                    glowColor={glowColor}
+                    onChipClick={handleChipClick}
+                    containerRef={chatPanelRef}
+                  />
 
                 </div>
               </div>
