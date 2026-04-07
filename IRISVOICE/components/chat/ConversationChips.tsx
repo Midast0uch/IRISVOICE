@@ -10,6 +10,7 @@ interface ConversationChipsProps {
   chips: ConversationChip[]
   glowColor: string
   onChipClick: (messageId: string) => void
+  containerRef?: React.RefObject<HTMLElement>
 }
 
 // Individual chip row — scales up when scrolled to center of the list
@@ -77,9 +78,11 @@ export function ConversationChips({
   chips,
   glowColor,
   onChipClick,
+  containerRef,
 }: ConversationChipsProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [triggerRect, setTriggerRect] = useState<DOMRect | null>(null)
+  const [containerRect, setContainerRect] = useState<DOMRect | null>(null)
   const [mounted, setMounted] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -88,10 +91,11 @@ export function ConversationChips({
   // Only portal after hydration
   useEffect(() => { setMounted(true) }, [])
 
-  // Capture trigger position when opening
+  // Capture trigger + container position when opening
   function handleToggle() {
-    if (!isOpen && triggerRef.current) {
-      setTriggerRect(triggerRef.current.getBoundingClientRect())
+    if (!isOpen) {
+      if (triggerRef.current) setTriggerRect(triggerRef.current.getBoundingClientRect())
+      if (containerRef?.current) setContainerRect(containerRef.current.getBoundingClientRect())
     }
     setIsOpen(o => !o)
   }
@@ -137,7 +141,7 @@ export function ConversationChips({
     <AnimatePresence>
       {isOpen && (
         <>
-          {/* Scrim — truly full-viewport since it's at body level */}
+          {/* Scrim — constrained to chat panel bounds via containerRect */}
           <motion.div
             key="scrim"
             initial={{ opacity: 0 }}
@@ -146,7 +150,10 @@ export function ConversationChips({
             transition={{ duration: 0.15 }}
             style={{
               position: 'fixed',
-              inset: 0,
+              top: containerRect?.top ?? 0,
+              left: containerRect?.left ?? 0,
+              width: containerRect?.width ?? '100vw',
+              height: containerRect?.height ?? '100vh',
               zIndex: 9040,
               pointerEvents: 'none',
               backdropFilter: 'blur(10px)',

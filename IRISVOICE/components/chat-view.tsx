@@ -210,6 +210,7 @@ export function ChatWing({
   const activeConversationIdRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const chatPanelRef = useRef<HTMLDivElement>(null)
   const { lastTextResponse, voiceState, isChatTyping, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
   
   // Notification system state
@@ -946,7 +947,8 @@ ${message.text}`;
           }}
         >
           {/* HUD Glass Panel Container */}
-          <motion.div 
+          <motion.div
+            ref={chatPanelRef}
             className="h-full overflow-hidden flex flex-col relative"
             animate={{
               transform: getSpotlightTransform()
@@ -2074,6 +2076,7 @@ ${message.text}`;
                   chips={conversationChips}
                   glowColor={glowColor}
                   onChipClick={handleChipClick}
+                  containerRef={chatPanelRef}
                 />
               </div>
               {/* Drag overlay with smile/file icon */}
