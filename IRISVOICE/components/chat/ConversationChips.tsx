@@ -149,9 +149,9 @@ export function ConversationChips({
               transition={{ duration: 0.15 }}
               className="fixed inset-0 z-40 pointer-events-none"
               style={{
-                backdropFilter: 'blur(4px)',
-                WebkitBackdropFilter: 'blur(4px)',
-                background: 'rgba(4,4,10,0.65)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                background: 'rgba(4,4,10,0.72)',
               }}
             />
 
@@ -171,9 +171,9 @@ export function ConversationChips({
                 style={{
                   backdropFilter: 'blur(20px) saturate(1.6)',
                   WebkitBackdropFilter: 'blur(20px) saturate(1.6)',
-                  background: `rgba(10, 10, 18, 0.92)`,
-                  border: `1px solid ${glowColor}35`,
-                  boxShadow: `0 -8px 40px rgba(0,0,0,0.7), 0 0 0 0.5px ${glowColor}20, inset 0 1px 0 ${glowColor}15`,
+                  background: `linear-gradient(160deg, rgba(16,16,28,0.96) 0%, rgba(10,10,18,0.93) 60%, ${glowColor}0d 100%)`,
+                  border: `1px solid ${glowColor}40`,
+                  boxShadow: `0 -8px 40px rgba(0,0,0,0.7), 0 0 0 0.5px ${glowColor}25, inset 0 1px 0 ${glowColor}20`,
                   borderRadius: 0,
                 }}
               >
