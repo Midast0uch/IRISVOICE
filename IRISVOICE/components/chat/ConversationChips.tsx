@@ -149,9 +149,9 @@ export function ConversationChips({
               transition={{ duration: 0.15 }}
               className="fixed inset-0 z-40 pointer-events-none"
               style={{
-                backdropFilter: 'blur(3px)',
-                WebkitBackdropFilter: 'blur(3px)',
-                background: 'rgba(4,4,8,0.45)',
+                backdropFilter: 'blur(4px)',
+                WebkitBackdropFilter: 'blur(4px)',
+                background: 'rgba(4,4,10,0.65)',
               }}
             />
 
@@ -169,11 +169,11 @@ export function ConversationChips({
               {/* Blur layer — no overflow:hidden here, that kills backdrop-filter in Chromium */}
               <div
                 style={{
-                  backdropFilter: 'blur(24px) saturate(1.8)',
-                  WebkitBackdropFilter: 'blur(24px) saturate(1.8)',
-                  background: 'rgba(8, 8, 14, 0.55)',
-                  border: `1px solid ${glowColor}28`,
-                  boxShadow: `0 -8px 40px rgba(0,0,0,0.6), 0 0 0 0.5px ${glowColor}15, inset 0 1px 0 ${glowColor}12`,
+                  backdropFilter: 'blur(20px) saturate(1.6)',
+                  WebkitBackdropFilter: 'blur(20px) saturate(1.6)',
+                  background: `rgba(10, 10, 18, 0.92)`,
+                  border: `1px solid ${glowColor}35`,
+                  boxShadow: `0 -8px 40px rgba(0,0,0,0.7), 0 0 0 0.5px ${glowColor}20, inset 0 1px 0 ${glowColor}15`,
                   borderRadius: 0,
                 }}
               >
