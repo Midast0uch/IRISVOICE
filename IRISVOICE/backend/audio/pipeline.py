@@ -199,8 +199,16 @@ class AudioPipeline:
         with self._buffer_lock:
             self._audio_buffer.clear()
     
+    def remove_frame_listener(self, callback: Callable[[np.ndarray], None]) -> None:
+        """Remove a previously registered frame listener."""
+        try:
+            self._frame_listeners.remove(callback)
+        except ValueError:
+            pass
+
     def cleanup(self):
         """Release audio resources"""
+        self._frame_listeners.clear()
         if self._input_stream:
             self._input_stream.stop()
             self._input_stream.close()

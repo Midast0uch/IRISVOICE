@@ -94,6 +94,7 @@ class ConversationMemory:
         self.max_context_tokens = max_context_tokens
         self.messages: List[Message] = []
         self.task_records: List[TaskRecord] = []
+        self._max_task_records: int = 100  # rolling cap — prevents unbounded growth
         self.session_start = time.time()
 
         if session_storage_path is None:
@@ -147,6 +148,9 @@ class ConversationMemory:
         been done, even if those messages have rolled off the window.
         """
         self.task_records.append(task_record)
+        # Keep only the most recent records to bound memory usage
+        if len(self.task_records) > self._max_task_records:
+            self.task_records = self.task_records[-self._max_task_records:]
         self._persist_to_session_storage()
         logger.debug(
             f"[ConversationMemory] Recorded task {task_record.task_id}: "

@@ -383,11 +383,19 @@ class AudioEngine:
             self.initialize()
             self.start()
 
+    def remove_state_callback(self, callback: Callable) -> None:
+        """Remove a previously registered state change callback."""
+        try:
+            self._state_callbacks.remove(callback)
+        except ValueError:
+            pass
+
     def cleanup(self):
         """Clean up resources"""
         try:
             print("[AudioEngine] Cleaning up...")
             self.stop()
+            self._state_callbacks.clear()
 
             # Clean up Porcupine wake word detector
             if self._porcupine:

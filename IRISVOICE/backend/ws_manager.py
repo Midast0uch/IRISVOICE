@@ -174,16 +174,23 @@ class WebSocketManager:
             del self.active_connections[client_id]
             # Dissociate client from session but don't end the session
             session_id = self._session_manager.dissociate_client(client_id)
-            
-            # Cancel heartbeat task
-            if client_id in self._heartbeat_tasks:
-                self._heartbeat_tasks[client_id].cancel()
-                del self._heartbeat_tasks[client_id]
-            
+
+            # Cancel heartbeat and schedule awaiting it so CancelledError is consumed
+            task = self._heartbeat_tasks.pop(client_id, None)
+            if task and not task.done():
+                task.cancel()
+                # Schedule a fire-and-forget await so the task fully exits
+                async def _reap(t: asyncio.Task) -> None:
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                asyncio.ensure_future(_reap(task))
+
             # Clean up pong tracking
             if client_id in self._last_pong:
                 del self._last_pong[client_id]
-            
+
             logger.debug(f"Client {client_id} disconnected from session {session_id}. Total clients: {len(self.active_connections)}")
     
     async def _heartbeat_loop(self, client_id: str):

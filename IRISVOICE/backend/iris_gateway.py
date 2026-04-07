@@ -97,6 +97,7 @@ class IRISGateway:
             "[IRISGateway] Vision provider initialized (LFM2.5-VL @ http://localhost:8081/v1)")
 
         # Initialize model cache for lazy loading (5 minute TTL)
+        # Entries are purged by _purge_model_cache() called on every lookup
         self._model_cache: Dict[str, tuple[List[str], datetime]] = {}
         self._model_cache_ttl = timedelta(minutes=5)
         self._logger.info("[IRISGateway] Model cache initialized (5 min TTL)")
@@ -2052,10 +2053,15 @@ class IRISGateway:
         payload = message.get("payload", {})
         endpoint = payload.get("endpoint", "http://localhost:11434")
 
+        # Purge expired entries on every lookup to prevent unbounded dict growth
+        now = datetime.now()
+        expired_keys = [k for k, (_, t) in self._model_cache.items() if (now - t) >= self._model_cache_ttl]
+        for k in expired_keys:
+            del self._model_cache[k]
+
         # Check cache first
-        cached_models, cache_time = self._model_cache.get(
-            endpoint, (None, None))
-        if cached_models and cache_time and (datetime.now() - cache_time) < self._model_cache_ttl:
+        cached_models, cache_time = self._model_cache.get(endpoint, (None, None))
+        if cached_models and cache_time and (now - cache_time) < self._model_cache_ttl:
             self._logger.info(
                 f"[IRISGateway] Returning cached models for {endpoint}")
             await self._ws_manager.send_to_client(client_id, {
