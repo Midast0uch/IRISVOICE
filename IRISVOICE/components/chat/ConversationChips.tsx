@@ -189,7 +189,7 @@ export function ConversationChips({
                     ref={scrollRef}
                     className="overflow-y-auto"
                     style={{
-                      maxHeight: '220px',
+                      maxHeight: '184px',
                       scrollbarWidth: 'none',
                     }}
                   >
