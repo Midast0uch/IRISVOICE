@@ -81,9 +81,10 @@ export function ConversationChips({
   containerRef,
 }: ConversationChipsProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [triggerRect, setTriggerRect] = useState<DOMRect | null>(null)
-  const [containerRect, setContainerRect] = useState<DOMRect | null>(null)
   const [mounted, setMounted] = useState(false)
+  // Refs — set synchronously before setIsOpen so the re-render reads correct values
+  const triggerRectRef = useRef<DOMRect | null>(null)
+  const containerRectRef = useRef<DOMRect | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -91,11 +92,11 @@ export function ConversationChips({
   // Only portal after hydration
   useEffect(() => { setMounted(true) }, [])
 
-  // Capture trigger + container position when opening
+  // Capture rects synchronously then toggle — guarantees values exist on first render
   function handleToggle() {
     if (!isOpen) {
-      if (triggerRef.current) setTriggerRect(triggerRef.current.getBoundingClientRect())
-      if (containerRef?.current) setContainerRect(containerRef.current.getBoundingClientRect())
+      triggerRectRef.current = triggerRef.current?.getBoundingClientRect() ?? null
+      containerRectRef.current = containerRef?.current?.getBoundingClientRect() ?? null
     }
     setIsOpen(o => !o)
   }
@@ -130,18 +131,16 @@ export function ConversationChips({
   }
 
   // Panel anchored to trigger via viewport coords — escapes any CSS transform
-  const panelRight = triggerRect
-    ? window.innerWidth - triggerRect.right
-    : 0
-  const panelBottom = triggerRect
-    ? window.innerHeight - triggerRect.top + 8
-    : 0
+  const tr = triggerRectRef.current
+  const cr = containerRectRef.current
+  const panelRight = tr ? window.innerWidth - tr.right : 0
+  const panelBottom = tr ? window.innerHeight - tr.top + 8 : 0
 
   const overlay = (
     <AnimatePresence>
       {isOpen && (
         <>
-          {/* Scrim — constrained to chat panel bounds via containerRect */}
+          {/* Scrim — constrained to chat panel bounds via containerRectRef */}
           <motion.div
             key="scrim"
             initial={{ opacity: 0 }}
@@ -150,10 +149,10 @@ export function ConversationChips({
             transition={{ duration: 0.15 }}
             style={{
               position: 'fixed',
-              top: containerRect?.top ?? 0,
-              left: containerRect?.left ?? 0,
-              width: containerRect?.width ?? '100vw',
-              height: containerRect?.height ?? '100vh',
+              top: cr?.top ?? 0,
+              left: cr?.left ?? 0,
+              width: cr?.width ?? '100vw',
+              height: cr?.height ?? '100vh',
               zIndex: 9040,
               pointerEvents: 'none',
               backdropFilter: 'blur(10px)',
