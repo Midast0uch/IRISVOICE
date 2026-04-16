@@ -17,6 +17,10 @@ import { InferenceConsolePanel } from './dashboard/InferenceConsolePanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { ModelsScreen } from './models/ModelsScreen';
+import { TerminalWidget } from './terminal/TerminalWidget'
+import { FloatingTerminalPanel } from './terminal/FloatingTerminalPanel'
+import { useTerminal } from '@/contexts/TerminalContext'
+import { useLauncherMode } from '@/hooks/useLauncherMode';
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
@@ -46,6 +50,8 @@ const MAIN_NODES_DATA = [
   { id: 'system', label: 'System', icon: Settings },
   { id: 'customize', label: 'Customize', icon: Palette },
   { id: 'monitor', label: 'Monitor', icon: BarChart3 },
+  // Domain 13.3 — terminal tab: only visible in developer mode
+  { id: 'terminal', label: 'Terminal', icon: Monitor, developerOnly: true },
 ];
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -60,6 +66,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   marketplace: 'Marketplace',
   models: 'Models',
   inference_console: 'Inference Console',
+  terminal: 'Terminal',
 };
 
 // Helper function to map icon names from SECTION_TO_ICON to Lucide components
@@ -366,6 +373,12 @@ export function DarkGlassDashboard({
   initialSubApp,
   onRequestSpotlight,
 }: DarkGlassDashboardProps) {
+  // Domain 13.3 — iris mode from launcher (personal | developer).
+  // Fetches persisted mode from backend on mount; listens for real-time WS events.
+  // useLauncherMode fetches /api/mode so this works even when iris-launcher ran before IRISVOICE loaded.
+  const { mode: irisMode } = useLauncherMode();
+  const { isFloating: terminalIsFloating } = useTerminal();
+
   // Persist active tab so the app restores to the last used panel on reopen
   const [activeTab, setActiveTab] = useState<string>(() => {
     if (typeof window === "undefined") return 'voice'
@@ -725,7 +738,7 @@ export function DarkGlassDashboard({
 
       <div className="flex-1 py-1 overflow-y-auto scrollbar-hide">
         <div className="flex flex-col gap-5">
-          {MAIN_NODES_DATA.map((node) => {
+          {MAIN_NODES_DATA.filter(n => !('developerOnly' in n && n.developerOnly && irisMode !== 'developer')).map((node) => {
             const Icon = node.icon;
             const isActive = activeTab === node.id && !activeSubApp;
             return (
@@ -846,6 +859,9 @@ export function DarkGlassDashboard({
   const renderContentZone = () => (
     <div className="flex-1 overflow-y-auto p-0">
        {!activeSubApp ? (
+         activeTab === 'terminal' ? (
+           <TerminalWidget />
+         ) : (
          <div className="w-full h-full pl-12 pr-24 py-10 space-y-3">
            {activeSections.map((section: any) => {
              const isExpanded = expandedSections.has(section.id);
@@ -873,6 +889,7 @@ export function DarkGlassDashboard({
              );
            })}
          </div>
+         )
        ) : activeSubApp === 'browser' ? (
          <div className="w-full h-full p-4 md:px-10">
            <div className="w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
@@ -1018,6 +1035,7 @@ export function DarkGlassDashboard({
         </div>
       </div>
       {renderActionBar()}
+      <FloatingTerminalPanel />
     </div>
   );
 }

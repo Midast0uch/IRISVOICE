@@ -333,6 +333,9 @@ class IRISGateway:
                 # Developer mode — abort active CLI subprocess for this session
                 await self._handle_dev_abort(session_id, client_id)
 
+            elif msg_type == "terminal_input":
+                await self._handle_terminal_input(session_id, client_id, message)
+
             elif msg_type in {
                 "integration_list", "integration_enable", "integration_disable",
                 "integration_state", "integration_oauth_callback",
@@ -772,6 +775,12 @@ class IRISGateway:
                         # _get_lmstudio_client() doesn't double up to /v1/v1/...
                         _iris_base = mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
                         kernel.configure_openai_compat(_iris_base, provider_name="iris_local")
+                        # Restore in-process binding if a model is already
+                        # loaded — e.g. user flipped back to iris_local after
+                        # experimenting with another provider. No-op when
+                        # mgr.get_inprocess_client() returns None.
+                        if hasattr(kernel, "configure_inprocess_local"):
+                            kernel.configure_inprocess_local(mgr)
                         kernel.configure_vps({"enabled": False})
                         self._logger.info(
                             f"[iris_local] Provider selected: {mgr.ENDPOINT} (session {session_id})",
@@ -3479,10 +3488,12 @@ class IRISGateway:
                             "error": "Model server exited unexpectedly",
                         },
                     })
-                    # De-wire kernel after crash
+                    # De-wire kernel after crash (both HTTP + in-process paths)
                     from .agent import get_agent_kernel
                     kernel = get_agent_kernel(session_id)
                     kernel.configure_openai_compat(None)
+                    if hasattr(kernel, "configure_inprocess_local"):
+                        kernel.configure_inprocess_local(None)
                 except Exception:
                     pass
 
@@ -3498,8 +3509,11 @@ class IRISGateway:
                 "type": "local_model_loading",
                 "payload": payload_out,
             })
-            # Wire kernel to iris_local provider (port 8082, OpenAI-compatible).
-            # This is distinct from lmstudio — IRIS owns this server, not the user.
+            # Wire kernel to iris_local provider. When the in-process path is
+            # active (IRIS_INPROCESS_LLAMA=1, default) we ALSO bind the manager
+            # directly onto the kernel so `_get_lmstudio_client()` returns the
+            # in-process adapter instead of creating an HTTP client that would
+            # hit a port nobody is listening on.
             if ok:
                 try:
                     from .agent import get_agent_kernel
@@ -3508,8 +3522,14 @@ class IRISGateway:
                     # _get_lmstudio_client() appends /v1 itself — strip to avoid /v1/v1
                     _base = mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
                     kernel.configure_openai_compat(_base, provider_name="iris_local")
+                    # In-process binding (no-op on legacy subprocess path since
+                    # mgr.get_inprocess_client() returns None when self._llm is None)
+                    if hasattr(kernel, "configure_inprocess_local"):
+                        kernel.configure_inprocess_local(mgr)
+                    _inproc = getattr(mgr, "_llm", None) is not None
                     self._logger.info(
-                        f"[iris_local] Kernel wired: {_base} (session {session_id})"
+                        f"[iris_local] Kernel wired: {_base} "
+                        f"({'in-process' if _inproc else 'subprocess HTTP'}, session {session_id})"
                     )
                 except Exception as kw_err:
                     self._logger.warning(f"[iris_local] Kernel wire failed: {kw_err}")
@@ -3548,10 +3568,14 @@ class IRISGateway:
             await mgr.unload_model()
 
             # [10.7] De-wire the kernel — prevent stale requests to dead :8082 endpoint
+            # AND release the in-process adapter binding so the next model load
+            # starts from a clean slate.
             try:
                 from .agent import get_agent_kernel
                 kernel = get_agent_kernel(session_id)
                 kernel.configure_openai_compat(None)
+                if hasattr(kernel, "configure_inprocess_local"):
+                    kernel.configure_inprocess_local(None)
                 self._logger.info(f"[iris_local] Kernel de-wired after unload (session {session_id})")
             except Exception as kw_err:
                 self._logger.debug(f"[iris_local] Kernel de-wire skipped: {kw_err}")
@@ -3669,6 +3693,10 @@ class IRISGateway:
                     kernel = get_agent_kernel(session_id)
                     _base = mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
                     kernel.configure_openai_compat(_base, provider_name="iris_local")
+                    # Re-bind in-process adapter after reload (unload above
+                    # would have cleared it, so this restores the direct path)
+                    if hasattr(kernel, "configure_inprocess_local"):
+                        kernel.configure_inprocess_local(mgr)
                 except Exception as kw_err:
                     self._logger.warning(f"[iris_local] Kernel re-wire failed: {kw_err}")
 
@@ -3947,6 +3975,18 @@ class IRISGateway:
         Route a dev_cli message to the DevOrchestrator.
         Payload: { query: str, workdir: str, tool_hint?: str }
         """
+        # [13.3] Capability gate — terminal requires developer mode
+        import os
+        _cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "iris_config.json")
+        try:
+            with open(_cfg_path) as _f:
+                _cfg = json.load(_f)
+        except Exception:
+            _cfg = {}
+        if _cfg.get("mode") != "developer":
+            self._logger.warning("[13.3] dev_cli blocked: mode=%s", _cfg.get("mode"))
+            return
+
         from .dev.orchestrator import get_dev_orchestrator  # lazy import
 
         payload = message.get("payload", message)
@@ -3967,6 +4007,18 @@ class IRISGateway:
 
     async def _handle_dev_abort(self, session_id: str, client_id: str) -> None:
         """Abort the active CLI subprocess for this session."""
+        # [13.3] Capability gate — terminal requires developer mode
+        import os
+        _cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "iris_config.json")
+        try:
+            with open(_cfg_path) as _f:
+                _cfg = json.load(_f)
+        except Exception:
+            _cfg = {}
+        if _cfg.get("mode") != "developer":
+            self._logger.warning("[13.3] dev_abort blocked: mode=%s", _cfg.get("mode"))
+            return
+
         from .dev.orchestrator import get_dev_orchestrator  # lazy import
 
         orchestrator = get_dev_orchestrator()
@@ -3976,6 +4028,41 @@ class IRISGateway:
             "text": "CLI process aborted.",
             "sender": "assistant",
         })
+
+    async def _handle_terminal_input(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """
+        Route a terminal_input message to TerminalHandler for direct shell access.
+        Domain 13.4 — developer mode only, security-filtered.
+        """
+        _cfg = self._state_manager.get_current_config(session_id)
+        if _cfg.get("mode") != "developer":
+            self._logger.warning(
+                "[13.4] terminal_input blocked: mode=%s", _cfg.get("mode")
+            )
+            await self._send_error(
+                client_id, "Terminal only available in developer mode"
+            )
+            return
+
+        try:
+            from .dev.terminal_handler import get_terminal_handler
+
+            payload = message.get("payload", message)
+            line = payload.get("line", "")
+
+            async def _ws_send(msg_dict: dict):
+                await self._ws_manager.send_to_client(client_id, msg_dict)
+
+            handler = get_terminal_handler()
+            await handler.handle_input(session_id, line, _ws_send)
+        except Exception as exc:
+            self._logger.exception("[13.4] terminal_input error: %s", exc)
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "text_response",
+                "payload": {"text": f"Terminal error: {exc}", "sender": "assistant"},
+            })
 
 
 # Global instance

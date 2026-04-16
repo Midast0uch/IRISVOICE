@@ -505,6 +505,18 @@ export function ChatWing({
       }
     });
 
+    // Developer mode: prefix routing for direct shell commands
+    if (isDeveloper && (userMessage.text.startsWith('>') || userMessage.text.startsWith('/run '))) {
+      const command = userMessage.text.startsWith('>')
+        ? userMessage.text.slice(1).trim()
+        : userMessage.text.slice(5).trim()
+      if (command) {
+        sendMessage?.('terminal_input', { line: command })
+        setInputText('')
+        return
+      }
+    }
+
     // Route to crawler if the query looks like a web-research request
     const msgType = isCrawlerQuery(userMessage.text) ? "crawler_query" : "text_message"
     const payload = msgType === "crawler_query"

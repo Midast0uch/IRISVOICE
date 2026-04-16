@@ -1,5 +1,157 @@
 # IRIS Changelog
 
+## [4.5.2] — IRISVOICEv4.5 — 2026-04-16
+
+### feat: in-process local inference — eliminate port-8082 subprocess hang
+
+`LocalModelManager` previously spawned `python -m llama_cpp.server` as a
+subprocess on port 8082 and forwarded all inference through an HTTP client.
+This path hung reliably on Windows when loading Q3_K_S weights with full GPU
+offload (`n_gpu_layers=-1`), making local GGUF inference unusable. The
+benchmark script (`scripts/bench_9b_tps.py`) proved the in-process
+`from llama_cpp import Llama` path works at **50.8 tok/s** on RTX 3070.
+
+#### `backend/agent/local_model_manager.py`
+
+- `_load_inprocess()` — constructs `Llama(**ctor)` on a thread executor,
+  emitting synthetic progress events every 2 s via `_start_progress_heartbeat()`
+  since the library gives no native load-progress signal.
+- `InProcessOpenAIAdapter` — duck-types `openai.OpenAI.chat.completions.create`
+  so the agent kernel's existing call sites work unchanged. Handles both
+  non-streaming (`resp.choices[0].message.content`) and streaming
+  (`for chunk in resp: chunk.choices[0].delta.content`) with full tool-call
+  accumulation (`tc.index`, `tc.function.name`, `tc.function.arguments`).
+- `_wrap_chat_response` / `_wrap_chat_chunk` — convert llama-cpp dicts into
+  attribute-access `SimpleNamespace` trees matching the openai Pydantic surface.
+- `_sanitise_completion_kwargs` — drops OpenAI-only kwargs (`model`,
+  `extra_body`, `max_tokens=-1`, `timeout`, `user`) before handing to Llama.
+- `threading.Lock` (`_inference_lock`) — serialises concurrent inference
+  calls into the single-threaded Llama instance.
+- `create_chat_completion()` / `create_chat_completion_stream()` — sync
+  wrappers around `Llama.create_chat_completion` (non-streaming and streaming).
+- `get_inprocess_client()` — returns `InProcessOpenAIAdapter` when a model is
+  loaded, `None` otherwise.
+- `_resolve_profile_for_environment()` — falls back to `performance` with a
+  warning when a profile declares `requires_fork: "llama-cpp-turboquant"` and
+  the fork is not installed.
+- `_build_llama_ctor_kwargs()` — maps PROFILES dict to `Llama(**ctor)` form;
+  handles stock llama-cpp-python (`type_k`/`type_v` int) vs RotorQuant fork
+  (`cache_type_k`/`cache_type_v` string) split.
+- `IRIS_INPROCESS_LLAMA` env var (default `1`) — set to `0` to restore the
+  legacy subprocess path while verification proceeds; scheduled for deletion
+  after V1–V3 pass.
+- `_rotorquant_available` — detects the llama-cpp-turboquant fork at init via
+  `inspect.signature(Llama.__init__)`.
+- `research_rotorquant` profile added — 128k context via `planar3` KV cache
+  (5–10× compression); falls back to `performance` when fork absent.
+- `get_status()` — extended with `inprocess: bool` and `rotorquant: bool` fields.
+- `unload_model()` / `_sync_cleanup()` — drop `self._llm = None; gc.collect()`
+  on the in-process path; subprocess kill path preserved unchanged.
+- `_GGML_TYPE_INT` and `_ROTORQUANT_KV_TYPES` promoted to module-scope
+  constants shared between the in-process constructor builder and the
+  existing `_build_server_cmd`.
+
+#### `backend/agent/agent_kernel.py`
+
+- `_inprocess_local_mgr: Any = None` — init field for the manager binding.
+- `configure_inprocess_local(mgr)` — binds (or clears) a `LocalModelManager`
+  on the kernel; invalidates the cached openai HTTP client.
+- `_get_lmstudio_client()` — returns `mgr.get_inprocess_client()` (the
+  in-process adapter) when `provider == "iris_local"` and a model is loaded;
+  falls through to the cached real openai HTTP client otherwise. No existing
+  call sites changed.
+
+#### `backend/iris_gateway.py`
+
+- `_handle_load_local_model` — after `configure_openai_compat(...)`, also
+  calls `kernel.configure_inprocess_local(mgr)`; logs whether inference is
+  in-process or subprocess HTTP.
+- `_handle_unload_local_model` — clears `configure_inprocess_local(None)` on
+  unload.
+- Crash callback — clears `configure_inprocess_local(None)` after subprocess
+  crash.
+- `_handle_apply_inference_settings` re-wire — restores in-process binding
+  after hot-reload.
+- Provider-select path (`iris_local` in `update_config`) — restores in-process
+  binding when user flips back to `iris_local` after trying another provider.
+
+#### `docs/ROTORQUANT_BUILD.md` (new)
+
+Build instructions for the `johndpope/llama-cpp-turboquant` fork
+(feature/planarquant-kv-cache) on Windows + CUDA 12 / VS2022 and Linux.
+Includes verification command, expected log output, and rollback instructions.
+
+---
+
+### feat: terminal widget — self-contained, floatable agent workspace [13.4]
+
+Replaces the static `TerminalPanel.tsx` with a fully self-contained widget
+that docks in the nav-rail or floats as a draggable, resizable overlay.
+
+#### New files
+
+- `contexts/TerminalContext.tsx` — React Context owning all terminal state:
+  `isFloating`, `fileActivity` (ring-buffer of 50), `isFileActivityOpen`,
+  `autoFloat()` (fires on `iris:cli_started`). Mounted in `app/layout.tsx`.
+- `components/terminal/TerminalWidget.tsx` — xterm.js host. Portal pattern:
+  xterm container created once, `ReactDOM.createPortal`'d into either the
+  docked slot (`TERMINAL_DOCKED_ID`) or floating panel (`TERMINAL_FLOATING_ID`)
+  — the xterm instance survives dock↔float transitions without recreation.
+  Input handler sends `terminal_input` to backend (direct shell via
+  `terminal_handler.py`). Listens for `iris:cli_output`, `iris:cli_started`,
+  `iris:cli_activity`, `iris:text_response`.
+- `components/terminal/TerminalHeaderBar.tsx` — label, workdir display, file
+  activity toggle, float/dock button, clear button.
+- `components/terminal/FileActivityPanel.tsx` — collapsible 200 px sidebar,
+  color-coded rows (create=green, edit=yellow, delete=red), auto-scrolls to
+  newest. Driven by `TerminalContext.fileActivity`.
+- `components/terminal/FloatingTerminalPanel.tsx` — `framer-motion` drag via
+  `useDragControls` (constrained to header bar only), pointer-event resize
+  handle at bottom-right, `z-index: 40`, `pointer-events: none` on backdrop
+  so the dashboard stays interactive.
+- `hooks/useFloatingPanel.ts` — geometry persistence via `localStorage`
+  (default 700×450, bottom-right; min 400×300, max 90vw×80vh).
+
+#### Modified files
+
+- `app/layout.tsx` — `<TerminalProvider>` added inside `NavigationProvider`.
+- `components/dark-glass-dashboard.tsx` — `TerminalPanel` → `TerminalWidget` +
+  `<FloatingTerminalPanel />` sibling; `useTerminal` for `isFloating` state.
+- `components/chat-view.tsx` — prefix routing in developer mode: messages
+  starting with `>` or `/run ` bypass `text_message` and route directly to
+  `terminal_input` (direct shell), with the trimmed command sent immediately.
+- `hooks/useIRISWebSocket.ts` — `case 'file_activity'` added; dispatches
+  `iris:file_activity` custom DOM event for `TerminalContext` to consume.
+- `backend/iris_gateway.py` — `_handle_terminal_input` added; gated on
+  `mode == "developer"`, delegates to `terminal_handler.py`.
+
+#### Architecture notes
+
+- DevOrchestrator layer removed from the plan. Agent kernel is the single
+  routing brain (`_launcher_mode`, `tool_bridge`, agentic loop). No extra
+  routing layer needed.
+- External tool integration (Figma, Blender, etc.) → MCP server interfaces,
+  not CLI drivers (see Domain 13.6).
+- Terminal widget input is always **direct shell** (security-filtered).
+  Agent-routed commands flow through chat → kernel → `tool_bridge` → CLI
+  events piped back to terminal via WebSocket.
+
+**Status: IMPLEMENTED — awaits e2e manual verification** (see Domain 13.4
+checklist in `bootstrap/GOALS.md` for the 8-step verification sequence).
+
+---
+
+### chore: GOALS.md — Gate 1 + Domain 2 inference + Domain 13.4 status
+
+- Gate 1.6, 1.8: marked `IMPLEMENTED — awaits e2e verification`.
+- Domain 2: inference backend note added explaining the in-process switch,
+  `IRIS_INPROCESS_LLAMA` flag, and `research_rotorquant` profile availability.
+- Domain 13.4: expanded with full 8-step manual verification checklist;
+  landmark gate explicitly not awarded until all 8 pass.
+- Domain 13.6: MCP-first external tool note added.
+
+---
+
 ## [4.5.0] — IRISVOICEv4.5 — 2026-04-05
 
 ### fix: eliminate startup memory spike — defer ctranslate2 / faster-whisper load

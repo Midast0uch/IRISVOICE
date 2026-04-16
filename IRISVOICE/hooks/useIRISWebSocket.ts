@@ -958,6 +958,34 @@ export function useIRISWebSocket(
         break
       }
 
+      case 'cli_output': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:cli_output', { detail: payload }))
+        }
+        break
+      }
+
+      case 'cli_started': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:cli_started', { detail: payload }))
+        }
+        break
+      }
+
+      case 'cli_activity': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:cli_activity', { detail: payload }))
+        }
+        break
+      }
+
+      case 'file_activity': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:file_activity', { detail: payload }))
+        }
+        break
+      }
+
       default: {
         // Only log unknown message types in development mode
         if (process.env.NODE_ENV !== 'production') {

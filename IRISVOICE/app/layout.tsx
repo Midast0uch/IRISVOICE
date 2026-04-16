@@ -9,6 +9,7 @@ import { NavigationProvider } from "@/contexts/NavigationContext"
 import { BrandColorProvider } from "@/contexts/BrandColorContext"
 import { TransitionProvider } from "@/contexts/TransitionContext"
 import { IntegrationsProvider } from "@/contexts/IntegrationsContext"
+import { TerminalProvider } from "@/contexts/TerminalContext"
 
 export const metadata: Metadata = {
   title: 'Control Center | TTS Chatbot',
@@ -66,9 +67,11 @@ export default function RootLayout({
         <BrandColorProvider>
           <TransitionProvider>
             <NavigationProvider>
-              <IntegrationsProvider>
-                {children}
-              </IntegrationsProvider>
+              <TerminalProvider>
+                <IntegrationsProvider>
+                  {children}
+                </IntegrationsProvider>
+              </TerminalProvider>
               {/* Transition testing components removed - they were interfering with widget drag */}
               {/* <TransitionIndicator /> */}
               {/* <TransitionSwitch /> */}

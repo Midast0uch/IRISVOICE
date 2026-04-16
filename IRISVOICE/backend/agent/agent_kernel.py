@@ -150,6 +150,13 @@ class AgentKernel:
         # Defaults to LM Studio's default port; overridden when the user saves settings.
         self._lmstudio_endpoint: str = "http://localhost:1234"
 
+        # In-process `LocalModelManager` binding — non-None when iris_gateway
+        # has loaded a model via the in-process path. `_get_lmstudio_client()`
+        # checks this before creating a real HTTP client; when set AND the
+        # provider is `iris_local`, inference goes through the manager's
+        # `InProcessOpenAIAdapter` with zero network hops.
+        self._inprocess_local_mgr: Any = None
+
         # Ollama native API endpoint (used when provider == "local").
         self._ollama_endpoint: str = "http://localhost:11434"
 
@@ -174,6 +181,15 @@ class AgentKernel:
         self._launcher_mode: str = "personal"
         # cached PROJECT.md content
         self._developer_context: Optional[str] = None
+
+        # Domain 4.5 — proactive skill creation.
+        # Tracks how many times each normalized tool-name sequence (joined with "→")
+        # has been used this session.  When a pattern hits the threshold, the agent
+        # is prompted to codify it as a SKILL.md.
+        self._session_tool_patterns: dict[str, int] = {}
+        self._skill_trigger_threshold: int = 3
+        # Patterns already prompted this session — avoid repeating the prompt.
+        self._prompted_skill_patterns: set[str] = set()
 
         # Cached OpenAI client for LM Studio — created once, reused on every call.
         # Rebuilding _OpenAI() per-call recreates the full httpx connection pool,
@@ -639,18 +655,56 @@ class AgentKernel:
         """Return True if the user selected a remote API provider."""
         return self._model_provider == "api"
 
-    def _get_lmstudio_client(self) -> Any:
-        """Return a cached OpenAI-compatible client pointed at the configured endpoint.
+    def configure_inprocess_local(self, mgr: Any) -> None:
+        """Bind (or unbind) a `LocalModelManager` for in-process inference.
 
-        The client is created once and reused for the lifetime of this
-        AgentKernel instance (or until the endpoint changes).  Reusing the
-        client preserves the underlying httpx connection pool so that every
-        inference call does NOT pay the cost of TCP handshake + connection
-        setup — especially important for localhost where the overhead is small
-        but still measurable (~5-20 ms per call).
+        Called by `iris_gateway` immediately after the manager loads a model
+        via the in-process path. Once set, ``_get_lmstudio_client()`` returns
+        the manager's ``InProcessOpenAIAdapter`` instead of a real openai
+        HTTP client whenever the provider is ``iris_local`` — eliminating
+        the port-8082 subprocess round-trip and the Windows hang that
+        motivated this refactor.
 
-        Invalidated by configure_lmstudio() when the base URL changes.
+        Pass ``None`` to clear the binding (called on unload).
         """
+        self._inprocess_local_mgr = mgr
+        # Invalidate any cached HTTP client so the next call picks up the
+        # new adapter (or falls back to HTTP if mgr was cleared).
+        self._lmstudio_client = None
+        if mgr is None:
+            logger.info("[AgentKernel] In-process local binding cleared")
+        else:
+            logger.info("[AgentKernel] In-process local binding active")
+
+    def _get_lmstudio_client(self) -> Any:
+        """Return an OpenAI-compatible client.
+
+        Two paths:
+
+        1. **In-process adapter** — when the provider is ``iris_local`` and
+           a `LocalModelManager` has been bound via
+           ``configure_inprocess_local()`` with a loaded model. Returns the
+           manager's ``InProcessOpenAIAdapter``, which duck-types the
+           openai client surface but routes straight to the in-process
+           ``Llama`` instance. No HTTP, no subprocess, no port 8082.
+
+        2. **Real openai HTTP client** — all other cases. Created once and
+           cached so every inference call reuses the same httpx connection
+           pool (saves ~5–20 ms per call on localhost).
+
+        Invalidated by ``configure_lmstudio()`` / ``configure_inprocess_local()``
+        when the binding changes.
+        """
+        # Path 1: in-process adapter when iris_local + manager loaded.
+        mgr = getattr(self, "_inprocess_local_mgr", None)
+        if mgr is not None and self._model_provider == "iris_local":
+            adapter = mgr.get_inprocess_client()
+            if adapter is not None:
+                return adapter
+            # Manager was bound but model isn't loaded → fall through to
+            # HTTP path (which will 404 cleanly instead of silently hanging).
+
+        # Path 2: cached real OpenAI HTTP client.
         if self._lmstudio_client is None:
             from openai import OpenAI as _OpenAI
             self._lmstudio_client = _OpenAI(
@@ -764,17 +818,105 @@ class AgentKernel:
 
         if self._launcher_mode == "developer":
             dev_ctx = self._get_developer_context()
+            # Resolve active worktree path (set when /api/mode switches to developer)
+            try:
+                from backend.dev_worktree import get_active as _get_wt
+                _wt = _get_wt()
+                worktree_path = _wt.get_path() if _wt else None
+            except Exception:
+                worktree_path = None
+
+            worktree_block = (
+                f"IRIS_SOURCE_DIR={worktree_path}\n"
+                "You are working in an isolated copy of the IRIS source. "
+                "Changes here do NOT affect the live codebase until the session "
+                "ends and the user approves the diff in the Launcher.\n"
+                if worktree_path
+                else
+                "You have full access to the IRISVOICE source code. "
+                "Always commit your changes to the iris-agent branch. "
+                "Never commit to main or IRISVOICEv.3.\n"
+            )
+
             if dev_ctx:
                 base = (
                     base
                     + "\n\n"
                     + "--- DEVELOPER MODE ACTIVE ---\n"
-                    + "You have full access to the IRISVOICE source code. "
-                    + "Always commit changes to the ``iris-agent-dev`` branch. "
-                    + "Never commit to main or IRISVOICEv.3.\n\n"
+                    + worktree_block
+                    + "\n"
                     + dev_ctx
                 )
+            else:
+                base = base + "\n\n--- DEVELOPER MODE ACTIVE ---\n" + worktree_block
         return base
+
+    # ------------------------------------------------------------------
+    # Domain 4.5 — Proactive skill creation
+    # ------------------------------------------------------------------
+
+    def _maybe_trigger_skill_creation(
+        self,
+        tool_sequence: list,
+        task_summary: str,
+    ) -> None:
+        """
+        After each task, check whether any tool-name pattern has recurred
+        enough times to warrant codifying as a skill.
+
+        tool_sequence is the list of tool-call dicts recorded by the DER loop.
+        Only sequences of 2+ tools are considered (single-tool calls are noise).
+        When a pattern reaches self._skill_trigger_threshold uses this session,
+        the agent is prompted once to create a SKILL.md for it.
+        """
+        if not tool_sequence or len(tool_sequence) < 2:
+            return
+
+        # Normalise: extract just tool names in order.
+        names = []
+        for tc in tool_sequence:
+            if isinstance(tc, dict):
+                name = tc.get("name") or tc.get("tool") or tc.get("function", {}).get("name", "")
+                if name:
+                    names.append(name)
+        if len(names) < 2:
+            return
+
+        pattern_key = " → ".join(names)
+
+        self._session_tool_patterns[pattern_key] = (
+            self._session_tool_patterns.get(pattern_key, 0) + 1
+        )
+        count = self._session_tool_patterns[pattern_key]
+
+        if (
+            count >= self._skill_trigger_threshold
+            and pattern_key not in self._prompted_skill_patterns
+        ):
+            self._prompted_skill_patterns.add(pattern_key)
+            prompt = (
+                f"I noticed you used the tool sequence [{pattern_key}] "
+                f"{count} times this session while working on tasks like "
+                f'"{task_summary[:80]}". '
+                "This pattern is a good candidate for a reusable skill. "
+                "Please create a SKILL.md in backend/agent/skills/ that codifies "
+                "this sequence so future sessions can invoke it by name instead of "
+                "repeating the same steps. Name the skill after what it accomplishes."
+            )
+            logger.info(
+                "[AgentKernel] Skill trigger fired for pattern: %s (used %d times)",
+                pattern_key,
+                count,
+            )
+            # Queue the skill-creation prompt as a follow-up message.
+            # We use the internal message queue if available; otherwise log only.
+            try:
+                if hasattr(self, "_pending_follow_ups"):
+                    self._pending_follow_ups.append(prompt)
+                else:
+                    self._pending_follow_ups = [prompt]
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Helpers: thinking-token stripping, planning gate, direct response
@@ -2946,6 +3088,14 @@ Respond with a JSON object:
                     session_id=_session,
                     duration_ms=_der_duration_ms,
                 )
+                # Domain 4.5 — check if this tool sequence warrants a new skill
+                try:
+                    self._maybe_trigger_skill_creation(
+                        tool_sequence=_tool_seq,
+                        task_summary=plan.original_task,
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
 

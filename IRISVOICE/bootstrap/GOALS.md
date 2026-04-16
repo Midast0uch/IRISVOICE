@@ -90,14 +90,25 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
     [G1.5] DONE — Load a 9B model with balanced profile (32k ctx, n_batch=2048, full GPU)
             Verified: Qwen3.5-9B-Q3_K_S loads in ~55s, 50.8 tok/s at 32k.
     [G1.6] Send chat through IRIS — response from local GGUF confirmed
-            Status: needs hands-on run (G1.4/G1.5 done, full chat loop not confirmed)
+            Status: IMPLEMENTED — awaits e2e verification. Local inference now
+            runs in-process (see Domain 2 note below); subprocess port-8082
+            path retained behind IRIS_INPROCESS_LLAMA=0 as rollback lever.
+            Manual test: load Qwen3.5-9B-Q3_K_S, type a chat message, confirm
+            the reply streams back at ≥40 tok/s with no orphaned processes
+            in Task Manager.
     [G1.7] No memory spike on startup — backend starts clean, CUDA only inits
             when user explicitly loads a model (not at startup)
             Status: startup RSS delta < 200 MB verified (Domain 10 audit), but
             end-to-end with frontend not confirmed
     [G1.8] Tool calling works with iris_local model — skills can be created and
             recalled within the same session (DER loop + episodic memory active)
-            Status: DER loop + episodic verified in tests; end-to-end not confirmed
+            Status: IMPLEMENTED — awaits e2e verification. The in-process
+            OpenAI adapter (InProcessOpenAIAdapter) preserves tools /
+            tool_choice kwargs and streams tool_calls in the same shape
+            openai-python emits; DER loop + episodic layer untouched. Manual
+            test: in developer mode, ask the agent to "create a skill that
+            lists files" — verify the tool call executes and the skill is
+            recalled on a follow-up.
 
   Verify by: Start both servers, open the app, load a model via ModelsScreen,
   type a message in chat, confirm reply comes from the local GGUF with GPU active.
@@ -106,7 +117,10 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
   GATE 2 — LAUNCHER + DEVELOPER MODE (activate after Gate 1 verified)
   Goal: IRIS launches in one of two modes selected at startup.
         Personal mode: voice assistant, no terminal, no source access.
-        Developer mode: full agent + chat/terminal hybrid + isolated source repo access.
+        Developer mode: agent workspace — terminal observation window, direct shell access,
+                        file activity monitoring, git operations. Agent kernel is the single
+                        routing brain. MCP server interfaces (Figma, Blender, etc.) for
+                        external tool integration — not CLI drivers.
         The launcher must work before the terminal is built — it is the prerequisite.
 
   Gate 2 checklist (in order — do not skip ahead):
@@ -322,6 +336,19 @@ interact naturally. This is the primary input modality.
   Graduate condition: wake word → STT → agent response → TTS plays — full cycle
   without any manual keyboard input.
   Regression test: python -m pytest backend/tests/test_domain2_voice.py -v (38 tests)
+
+  Inference backend note (2026-04-16):
+    LocalModelManager now loads GGUF weights in-process via
+    `from llama_cpp import Llama` — no more `python -m llama_cpp.server`
+    subprocess on port 8082. The old HTTP path hung reliably on Windows
+    with n_gpu_layers=-1 on Q3_K_S. InProcessOpenAIAdapter
+    (backend/agent/local_model_manager.py) duck-types the openai Python
+    client's chat.completions.create surface so the agent kernel calls the
+    same API it did against the subprocess. Set IRIS_INPROCESS_LLAMA=0 to
+    temporarily restore the subprocess path (scheduled for deletion after
+    V1–V3 verification passes). The research_rotorquant profile unlocks
+    128k ctx via the llama-cpp-turboquant fork (see docs/ROTORQUANT_BUILD.md)
+    — falls back to `performance` with a warning when the fork is absent.
 
 ---
 
@@ -799,16 +826,39 @@ WHAT IS MISSING (build these):
     Landmark: mode_capabilities_gated
 
   [13.4] Terminal tab — developer mode only
-    Status: NOT STARTED (Gate 2 spec written — this wires it to developer mode)
-    What to build:
-      a) Terminal tab in IRISVOICE tab bar only visible when iris_mode == "developer"
-      b) Uses xterm.js (or equivalent) — stateless display driver
-      c) Input → WebSocket → security_filter → iris_gateway → agent_kernel
-      d) All Gate 2 security wiring (security_filter, allowlists, mcp_security) in path
-      e) Working directory = active worktree path
-    Test: Start in developer mode, open terminal tab, run "git status" in worktree,
-          verify output appears. Run a pytest, verify results stream to terminal.
-    Landmark: developer_terminal_wired
+    Status: IMPLEMENTED — awaits e2e verification. Cannot be landmarked until
+            local model loading is verified (see Gate 1.6/1.7/1.8 + Domain 2
+            inference note) because agent-routed CLI tests depend on the
+            model actually running.
+    What was built:
+      a) TerminalContext (contexts/TerminalContext.tsx) — widget state owner,
+         auto-floats on iris:cli_started, tracks file activity ring-buffer.
+      b) TerminalWidget (components/terminal/TerminalWidget.tsx) — xterm.js
+         host using a portal pattern so the xterm instance survives
+         dock↔float transitions.
+      c) FloatingTerminalPanel — framer-motion drag + resize, z-index 40,
+         pointer-events passthrough so dashboard stays interactive.
+      d) TerminalHeaderBar, FileActivityPanel — header controls + file
+         activity sidebar (create/edit/delete color coded).
+      e) ChatView prefix routing (>, /run) — direct shell bypass in
+         developer mode only; routes through terminal_input message type.
+      f) Backend: iris_gateway._handle_terminal_input gated on developer
+         mode, dispatches to terminal_handler.py (allowlist/blocklist).
+      g) file_activity WebSocket message type added to useIRISWebSocket.ts
+         → fires iris:file_activity custom event.
+    Manual verification checklist (run these to crystallise the landmark):
+      1. Developer mode → Terminal tab → `git status` → output appears.
+      2. Click float button → terminal becomes draggable floating panel;
+         dashboard underneath stays clickable.
+      3. Float → Dock → xterm history preserved (portal pattern).
+      4. Chat `> npm -v` → terminal auto-floats, npm version appears.
+      5. Chat "list files in this directory" (no prefix) → agent kernel
+         invokes an appropriate tool; terminal auto-floats and output streams.
+      6. Agent edits a file → FileActivityPanel row appears in <1s.
+      7. Terminal: `rm -rf /` → rejected by terminal_handler security.
+      8. Personal mode → terminal tab hidden; sending terminal_input from
+         devtools is rejected by backend.
+    Landmark (DO NOT ADD until 1–8 all pass manually): developer_terminal_wired
     Note: Terminal is the last piece of Gate 2. Do [13.1]→[13.2]→[13.3] first.
 
   [13.5] Session end — merge or discard in Launcher
@@ -821,6 +871,12 @@ WHAT IS MISSING (build these):
     Test: Make a file edit in developer mode, end session, verify DiffReviewPage
           shows the diff. Approve → verify commit appears in GitPage log.
     Landmark: session_end_diff_review
+
+  [13.6] MCP-first external tool integration
+    Status: PLANNED
+    Note: CLI driver approach deprioritized. External tools (Figma, Blender, etc.)
+          will integrate via MCP server interfaces, not terminal/CLI drivers.
+          Agent kernel routes to MCP tools through tool_bridge.
 
   Graduate condition:
     Personal mode: Launcher opens, user selects Personal, IRISVOICE loads, no terminal tab.
