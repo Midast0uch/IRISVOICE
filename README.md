@@ -9,15 +9,15 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
 - **End-to-End Audio Processing**: LFM 2.5 audio model handles complete audio pipeline
 - **Voice Commands**: Natural language voice interaction with double-click activation
-- **Text-to-Speech**: F5-TTS (zero-shot voice cloning from TOMV2.wav, CPU) or Piper (fast built-in)
+- **Text-to-Speech**: High-quality speech synthesis with configurable voices
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
 
 ### 🤖 AI Agent System
-- **Flexible Inference**: Any GGUF model via llama-server (ik_llama.cpp binary, preferred) or llama-cpp-python (port 8082) or OpenAI-compatible VPS — select in Settings
-- **Tool Execution**: LFM2.5-1.2B-Instruct handles structured tool calls; main LLM handles reasoning and conversation
+- **Dual-LLM Architecture**: lfm2-8b (reasoning) + lfm2.5-1.2b-instruct (execution)
 - **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer
-- **Model-Agnostic Design**: Works with Local GGUF, VPS, or OpenAI inference backends
-- **Flexible Inference Modes**: Choose between Local Models (Models Browser), VPS Gateway, or OpenAI API
+- **Model-Agnostic Design**: Works with Local, VPS, or OpenAI inference backends
+- **Flexible Inference Modes**: Choose between Local Models, VPS Gateway, or OpenAI API
+- **User-Configurable Models**: Select which models handle reasoning and tool execution
 - **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
@@ -85,10 +85,10 @@ git clone <repository-url>
 cd IRISVOICE
 ```
 
-### 2. Vision Model Setup (LFM2.5-VL, optional)
+### 2. Vision Model Setup (LFM2.5-VL)
 
 ```python
-# Download LFM2.5-VL GGUF files (one-time, ~1GB total) — optional, only for vision features
+# Download LFM2.5-VL GGUF files (one-time, ~1GB total)
 from huggingface_hub import hf_hub_download
 import os
 base = os.path.expanduser("~/models/LFM2.5-VL-1.6B/")
@@ -100,6 +100,9 @@ hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "mmproj-LFM2.5-VL-1.6B-Q4_0.gguf
 ```bash
 # Start vision server (Windows)
 start_vl.bat
+
+# Start vision server (macOS/Linux)
+bash start_vl.sh
 
 # Install vision dependencies
 pip install mss httpx pywinauto pyautogui pillow win32clipboard
@@ -123,8 +126,8 @@ pip install f5-tts
 # Set up environment variables
 # Create .env file with:
 # PICOVOICE_ACCESS_KEY=your_access_key_here
-# TELEGRAM_BOT_TOKEN=your_bot_token  (optional)
-# TELEGRAM_CHAT_ID=your_chat_id      (optional)
+# TELEGRAM_BOT_TOKEN=your_bot_token
+# TELEGRAM_CHAT_ID=your_chat_id
 ```
 
 ### 3. Frontend Setup
@@ -704,16 +707,19 @@ lsof -i :8000  # macOS/Linux
 
 **Models not loading:**
 ```bash
-# Models are NOT loaded automatically on startup (lazy loading by design)
+# Note: Models are NOT loaded automatically on startup (lazy loading)
 # Select inference mode in Agent settings first
 
 # For Local Models mode:
-# Open Settings → Models Browser → pick a GGUF model → click Load
-# GPU RAM needed depends on your chosen model (e.g. 8B Q4_K_M ≈ 5 GB VRAM)
+# Re-download models if needed
+python download_text_model.py
+python download_lfm_audio.py
+
+# Check available GPU RAM (need ~20GB for local models)
 nvidia-smi
 
 # For VPS/OpenAI modes:
-# No local models needed — configure endpoint in Agent settings
+# No local models needed - configure in Agent settings
 ```
 
 **Wake word not detected:**
@@ -762,6 +768,6 @@ For issues and questions:
 
 ---
 
-**Version**: 4.5.0
-**Last Updated**: April 2026
+**Version**: 1.0.0  
+**Last Updated**: February 2026  
 **Status**: Production Ready ✅
