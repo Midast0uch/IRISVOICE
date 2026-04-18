@@ -4,7 +4,7 @@ Pydantic models for type validation and serialization
 """
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import re
 
 from .core_models import AppState
@@ -126,9 +126,7 @@ class IRISState(BaseModel):
     current_section: Optional[str] = None
     field_values: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     
-    class Config:
-        populate_by_name = True
-        extra = 'forbid'  # Reject any extra fields not defined in the model
+    model_config = ConfigDict(populate_by_name=True, extra='forbid')
     active_theme: ColorTheme = Field(default_factory=ColorTheme)
     app_state: AppState = Field(default=AppState.STARTING)
     
@@ -419,7 +417,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
                 InputField(id="proactive_monitor", type=FieldType.TOGGLE, label="Proactive Monitor", value=False),
                 InputField(id="monitor_interval", type=FieldType.SLIDER, label="Monitor Interval", min=5, max=120, value=30, unit="s"),
                 InputField(id="ollama_endpoint", type=FieldType.TEXT, label="Ollama Endpoint", placeholder="http://localhost:11434", value="http://localhost:11434"),
-                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm-o4.5", "llava", "bakllava"], value="minicpm-o4.5"),
+                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["lfm2.5-vl", "llava", "bakllava"], value="lfm2.5-vl"),
             ]
         ),
         Section(
@@ -428,7 +426,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             icon="Monitor",
             fields=[
                 InputField(id="ui_tars_provider", type=FieldType.DROPDOWN, label="UI-TARS Provider", options=["cli_npx", "native_python", "api_cloud"], value="native_python"),
-                InputField(id="model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm_ollama", "anthropic", "volcengine", "local"], value="minicpm_ollama"),
+                InputField(id="model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["llama_server", "anthropic", "volcengine", "local"], value="llama_server"),
                 InputField(id="vision_settings", type=FieldType.TEXT, label="Vision Settings", placeholder="Configure vision", value=""),
                 InputField(id="automation_rules", type=FieldType.TEXT, label="Automation Rules", placeholder="Rules", value=""),
             ]

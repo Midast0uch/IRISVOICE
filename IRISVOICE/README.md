@@ -9,20 +9,40 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
 - **End-to-End Audio Processing**: LFM 2.5 audio model handles complete audio pipeline
 - **Voice Commands**: Natural language voice interaction with double-click activation
-- **Text-to-Speech**: High-quality speech synthesis with configurable voices
+- **Text-to-Speech**: F5-TTS (zero-shot voice cloning from TOMV2.wav, CPU) or Piper (fast built-in)
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
 
 ### 🤖 AI Agent System
-- **Dual-LLM Architecture**: lfm2-8b (reasoning) + lfm2.5-1.2b-instruct (execution)
-- **Model-Agnostic Design**: Works with Local, VPS, or OpenAI inference backends
-- **Flexible Inference Modes**: Choose between Local Models, VPS Gateway, or OpenAI API
-- **User-Configurable Models**: Select which models handle reasoning and tool execution
+- **Flexible Inference**: Any GGUF model via llama-server (ik_llama.cpp binary, preferred) or llama-cpp-python (port 8082) or OpenAI-compatible VPS — select in Settings
+- **Tool Execution**: LFM2.5-1.2B-Instruct handles structured tool calls; main LLM handles reasoning and conversation
+- **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer, token-budget enforcement, and mid-loop episodic retrieval (C.4)
+- **Mycelium v1.7**: 6-layer coordinate-graph memory — episodic events, semantic compression, landmarks, Pacman lifecycle, PiNs, and cross-project landmark bridges
+- **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — files, folders, images, URLs, decisions, fragments — persists across sessions and surfaces in the DER context package
+- **Cross-Project Landmark Bridging**: Maps a verified landmark to an equivalent pattern in another IRIS instance or project; bridges carry confidence scores and bridge types (equivalent / similar / inverse)
+- **Unlimited Effective Context**: 3-layer retrieval — raw history (trimmed) + episodic summaries (Layer 2) + Mycelium coordinate package (Layer 3, includes PiNs)
+- **Model-Agnostic Design**: Works with Local GGUF, VPS, or OpenAI inference backends
+- **Flexible Inference Modes**: Choose between Local Models (Models Browser), VPS Gateway, or OpenAI API
 - **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
 - **Personality System**: Configurable assistant personality and behavior
 - **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
 - **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
+
+### 👁 Vision Layer (LFM2.5-VL)
+- **LFM2.5-VL-1.6B**: Liquid AI's vision-language model running via `llama-server` on port 8081
+- **VisionMCPServer**: 5 MCP tools — `vision.analyze_screen`, `vision.find_ui_element`, `vision.read_text`, `vision.suggest_next_action`, `vision.describe_live_frame`
+- **UniversalGUIOperator**: Controls any Windows application — UIA accessibility first, VL coordinate prediction second, PIL diff verification third
+- **Perception-Action-Verify Loop**: Every GUI action is preceded by VL perception and followed by result verification
+- **smart_click()**: VL finds element by natural language description → UIA by name → known coordinates — no hardcoded pixel hunting
+- **PIL Fallback**: Pixel diff verification when VL is offline; all pipelines degrade gracefully
+- **MiniCPM Removed**: Fully replaced by LFM2.5-VL + llama-server (no Ollama dependency)
+
+### 🖥 Desktop Automation
+- **Any Windows App**: UniversalGUIOperator works with Paint, Notepad, Chrome, Office — no app-specific code
+- **Drawing Pipeline**: Programmatic star + sine wave via mouse drag
+- **Text Pipeline**: PIL generates Segoe Script 36pt text → clipboard DIB → Ctrl+V paste → drag to position
+- **Telegram Integration**: Sends canvas screenshots with caption via bot API
 
 ### 🎨 User Interface
 - **Hexagonal Hub Interface**: 6 main categories (Voice, Agent, Automate, System, Customize, Monitor)
@@ -69,7 +89,27 @@ git clone <repository-url>
 cd IRISVOICE
 ```
 
-### 2. Backend Setup
+### 2. Vision Model Setup (LFM2.5-VL, optional)
+
+```python
+# Download LFM2.5-VL GGUF files (one-time, ~1GB total) — optional, only for vision features
+from huggingface_hub import hf_hub_download
+import os
+base = os.path.expanduser("~/models/LFM2.5-VL-1.6B/")
+os.makedirs(base, exist_ok=True)
+hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "LFM2.5-VL-1.6B-Q4_0.gguf", local_dir=base)
+hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "mmproj-LFM2.5-VL-1.6B-Q4_0.gguf", local_dir=base)
+```
+
+```bash
+# Start vision server (Windows)
+start_vl.bat
+
+# Install vision dependencies
+pip install mss httpx pywinauto pyautogui pillow win32clipboard
+```
+
+### 3. Backend Setup
 
 ```bash
 # Create and activate virtual environment
@@ -78,19 +118,17 @@ python -m venv venv
 # Windows
 venv\Scripts\activate
 
-# macOS/Linux
-source venv/bin/activate
-
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Download AI models
-python download_text_model.py
-python download_lfm_audio.py
+# Install F5-TTS for voice cloning (optional — uses Piper built-in if skipped)
+pip install f5-tts
 
 # Set up environment variables
 # Create .env file with:
 # PICOVOICE_ACCESS_KEY=your_access_key_here
+# TELEGRAM_BOT_TOKEN=your_bot_token  (optional)
+# TELEGRAM_CHAT_ID=your_chat_id      (optional)
 ```
 
 ### 3. Frontend Setup
@@ -117,9 +155,14 @@ Terminal 1 (Backend):
 python start-backend.py
 ```
 
-Terminal 2 (Frontend):
+Terminal 2 (Frontend — production mode, ~1 GB lighter than dev):
 ```bash
-npm run dev
+npm run start:prod       # next build && next start (recommended)
+```
+
+Or for hot-reload during active frontend development:
+```bash
+npm run dev              # next dev (heavier, webpack watch mode)
 ```
 
 **Option 3: Tauri Desktop App**
@@ -151,7 +194,7 @@ npm run dev:tauri
 - **Audio**: High-quality USB microphone
 
 ### Software Requirements
-- **OS**: Windows 10/11, macOS 10.15+, or Linux (Ubuntu 20.04+)
+- **OS**: Windows 10/11, macOS 10.15+, or Ubuntu 20.04+ (Linux fully supported — preferred for lower RAM baseline)
 - **Python**: 3.10+
 - **Node.js**: 18.x+
 - **CUDA Toolkit**: 11.8 or 12.1 (optional, for GPU acceleration)
@@ -170,13 +213,12 @@ npm run dev:tauri
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
    ```
 
-3. **Download AI Models**
+3. **Install TTS** (one-time)
    ```bash
-   # Download text models (lfm2-8b and lfm2.5-1.2b-instruct)
-   python download_text_model.py
-   
-   # Download audio model (LFM 2.5 Audio)
-   python download_lfm_audio.py
+   # F5-TTS for zero-shot voice cloning (optional — falls back to Piper if skipped)
+   pip install f5-tts
+   # Place TOMV2.wav at IRISVOICE/data/TOMV2.wav for voice cloning
+   # F5-TTS model weights (~800 MB) download automatically on first "Cloned Voice" use
    ```
 
 4. **Configure Environment**
@@ -242,24 +284,25 @@ npm run dev:tauri
 │  │              Agent Kernel (Orchestrator)             │  │
 │  │  ┌────────────────┐      ┌────────────────┐         │  │
 │  │  │  Model Router  │      │  Tool Bridge   │         │  │
-│  │  │  (Dual-LLM)    │      │  (MCP Tools)   │         │  │
+│  │  │                │      │  (MCP Tools)   │         │  │
 │  │  └────────────────┘      └────────────────┘         │  │
 │  └──────────────────────────────────────────────────────┘  │
 │         │                           │                       │
 │  ┌──────▼──────┐           ┌────────▼────────┐            │
-│  │  LFM 2-8B   │           │  MCP Servers    │            │
-│  │  (Brain)    │           │  - Browser      │            │
-│  │             │           │  - File Mgr     │            │
-│  │  LFM 2.5    │           │  - System       │            │
-│  │  (Executor) │           │  - App Launch   │            │
-│  └─────────────┘           │  - Vision       │            │
-│                            └─────────────────┘            │
+│  │  GGUF LLM   │           │  MCP Servers    │            │
+│  │  (user's    │           │  - Browser      │            │
+│  │   model,    │           │  - File Mgr     │            │
+│  │   port 8082)│           │  - System       │            │
+│  │             │           │  - App Launch   │            │
+│  │  LFM 2.5    │           │  - Vision       │            │
+│  │  (tool calls│           └─────────────────┘            │
+│  └─────────────┘                                           │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │           Voice Pipeline (LFM 2.5 Audio)             │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐          │  │
-│  │  │ Porcupine│  │   STT    │  │   TTS    │          │  │
-│  │  │ Wake Word│  │ (Whisper)│  │(SpeechT5)│          │  │
-│  │  └──────────┘  └──────────┘  └──────────┘          │  │
+│  │                   Voice Pipeline                     │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
+│  │  │ Porcupine│  │   STT    │  │   TTS            │  │  │
+│  │  │ Wake Word│  │ (Whisper)│  │(F5-TTS / Piper)  │  │  │
+│  │  └──────────┘  └──────────┘  └──────────────────┘  │  │
 │  └──────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -279,24 +322,23 @@ npm run dev:tauri
 - **State Manager**: Settings persistence and synchronization
 - **Session Manager**: Multi-client session handling
 - **Agent Kernel**: AI agent orchestration
-- **Model Router**: Dual-LLM coordination
+- **Model Router**: Routes requests between GGUF LLM and LFM instruct (tool calls)
 - **Tool Bridge**: MCP tool execution
 - **Voice Pipeline**: End-to-end audio processing
 
-### Dual-LLM Architecture
+### Model Architecture
 
-| Model | Role | Size | Capabilities |
-|-------|------|------|--------------|
-| **lfm2-8b** | Brain (Reasoning) | ~8GB | Planning, reasoning, conversation |
-| **lfm2.5-1.2b-instruct** | Executor | ~1.2GB | Tool execution, instruction following |
+| Model | Role | Size | Notes |
+|-------|------|------|-------|
+| **Any GGUF model** | Reasoning & conversation | User's choice | Served via llama-server (ik_llama.cpp, preferred) or llama-cpp-python on port 8082; selected in Models Browser |
+| **lfm2.5-1.2b-instruct** | Tool execution | ~1.2 GB | Structured tool calls only; optional |
+| **LFM2.5-VL-1.6B** | Vision / GUI | ~1 GB | Optional; served via llama-server on port 8081 |
 
 **Communication Flow:**
-1. User input → Brain analyzes and creates plan
-2. Brain → Executor: Tool execution requests
-3. Executor → Tools: Execute operations
-4. Tools → Executor: Return results
-5. Executor → Brain: Report outcomes
-6. Brain → User: Generate response
+1. User input → GGUF LLM (your chosen model) analyzes and responds
+2. When tools needed → LFM2.5-1.2B-Instruct generates structured tool calls
+3. Tool Bridge → MCP Servers: Execute operations
+4. Results returned → LLM incorporates and responds
 
 ## ⚙️ Configuration
 
@@ -330,21 +372,33 @@ LOG_DIR=backend/logs
 
 ```yaml
 models:
-  - id: "brain"
-    path: "./models/LFM2-8B-A1B"
-    capabilities: ["reasoning", "planning"]
-    constraints:
-      device: "cuda"
-      dtype: "bfloat16"
-    optional: false
-
+  # Tool execution — LFM2.5-1.2B-Instruct handles structured tool calls
   - id: "executor"
     path: "./models/LFM2.5-1.2B-Instruct"
     capabilities: ["tool_execution", "instruction_following"]
     constraints:
-      device: "cuda"
-      dtype: "bfloat16"
-    optional: false
+      device: "cpu"
+      dtype: "float32"
+    optional: true
+
+  # GGUF local inference — user picks model in Settings → Models Browser
+  # Served via llama-cpp-python on port 8082 (never auto-loaded)
+  - id: "gguf_local"
+    path: null
+    capabilities: ["conversation", "tool_execution", "reasoning"]
+    constraints:
+      inference_server_url: "http://127.0.0.1:8082/v1"
+      auto_load: false
+    optional: true
+
+  # Vision (optional) — LFM2.5-VL via llama-server on port 8081
+  - id: "vision"
+    path: null
+    capabilities: ["vision", "gui_interaction"]
+    constraints:
+      vision_server_url: "http://localhost:8081/v1"
+      auto_load: false
+    optional: true
 
 communication:
   timeout: 30.0
@@ -429,9 +483,20 @@ IRISVOICE/
 │   ├── iris_gateway.py  # Message router
 │   ├── state_manager.py # State persistence
 │   └── ws_manager.py    # WebSocket manager
+├── bootstrap/           # Coordinate-graph build memory (dev agents)
+│   ├── coordinates.py   # CoordinateStore — nodes, edges, landmarks, PiNs, bridges
+│   ├── coordinates.db   # SQLite WAL-mode persistent graph
+│   ├── session_start.py # Auto-loaded at every session start (hook)
+│   ├── agent_context.py # Work queue — claim/complete/poll
+│   ├── query_graph.py   # Navigation — file, routes, failures, summary
+│   ├── record_event.py  # Record edits, tests, notes, PiNs
+│   ├── pin.py           # PiN CLI — add, search, link, bridge, projects
+│   ├── mid_session_snapshot.py
+│   ├── update_coordinates.py
+│   └── GOALS.md         # Production roadmap + all gate specs
 ├── models/              # AI model files
-│   ├── LFM2-8B-A1B/
-│   ├── LFM2.5-1.2B-Instruct/
+│   ├── LFM2.5-1.2B-Instruct/   # tool execution (optional)
+│   ├── LFM2.5-VL-1.6B/         # vision (optional)
 │   └── wake_words/
 ├── tests/               # Test suites
 │   ├── integration/     # Integration tests
@@ -503,6 +568,43 @@ npm test -- tests/wheelview.test.js
 npm test -- --coverage
 ```
 
+### Mycelium Layer — Architecture (v1.7)
+
+The Mycelium layer is IRIS's coordinate-graph memory system. It compresses episodic events into a navigable semantic map that feeds every DER loop iteration.
+
+**6 memory layers:**
+
+| Layer | What it stores | Lifecycle |
+|-------|----------------|-----------|
+| 1. Episodic events | Raw code events, edits, test runs | Decays unless reinforced |
+| 2. Semantic compression | `file_node` confidence + edge weights | Rises with reinforcement, decays with neglect |
+| 3. Landmarks | Verified, crystallised features | Permanent after 3 passing runs |
+| 4. Pacman context lifecycle | Zone membrane (trusted/tool chunks), age-weighted retrieval | `combined = similarity×0.80 + recency×0.20` |
+| 5. PiNs | Files, folders, images, URLs, decisions, fragments | Permanent flag available; auto-anchored on edit/decision |
+| 6. Landmark bridges | Cross-project / cross-instance equivalence map | Survives instance migrations |
+
+**PiNs — Primordial Information Nodes:**
+Named after mycological primordia (first growth points of a fungal network). A PiN anchors any knowledge artifact into the coordinate graph so it surfaces in the DER context package automatically.
+
+```bash
+# Add a PiN
+python bootstrap/pin.py --add "Architecture Decision: token budget" \
+  --type decision --content "chose token budget over cycle count..."
+
+# Search PiNs
+python bootstrap/pin.py --search "token budget"
+
+# Bridge a local landmark to a remote project equivalent
+python bootstrap/pin.py --bridge lm_g1_api_healthy \
+  --remote-name "health_gate_passed" --remote-project "other-iris-instance" --confidence 0.95
+
+# List bridges
+python bootstrap/pin.py --bridges
+```
+
+**MCP storage integration (Domain 12):**
+PiNs can be backed by external stores — Google Drive, Discord, Notion, GitHub — via the `backend/integrations/models.py` OAuthConfig layer. A PiN written locally can mirror to a Drive folder; a PiN read from Discord surfaces in the next DER context package.
+
 ### Mycelium Layer — Test Coverage
 
 The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a comprehensive, requirement-anchored test suite with **139 tests** across 12 test modules. All tests pass against `sqlite3` in-memory databases (no SQLCipher dependency required for testing).
@@ -568,6 +670,8 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[Agent Architecture](./docs/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
 - **[System Overview](./docs/SYSTEM_OVERVIEW.md)**: Complete system architecture
 - **[UI Architecture](./docs/UI_ARCHITECTURE.md)**: Frontend component structure
+- **[DER Loop + Mycelium v1.7](./docs/DER_LOOP_MYCELIUM.md)**: Full DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges
+- **[Mycelium Guide](./docs/Mycellium%20Guide.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
 
 ### API Documentation
 
@@ -654,19 +758,16 @@ lsof -i :8000  # macOS/Linux
 
 **Models not loading:**
 ```bash
-# Note: Models are NOT loaded automatically on startup (lazy loading)
+# Models are NOT loaded automatically on startup (lazy loading by design)
 # Select inference mode in Agent settings first
 
 # For Local Models mode:
-# Re-download models if needed
-python download_text_model.py
-python download_lfm_audio.py
-
-# Check available GPU RAM (need ~20GB for local models)
+# Open Settings → Models Browser → pick a GGUF model → click Load
+# GPU RAM needed depends on your chosen model (e.g. 8B Q4_K_M ≈ 5 GB VRAM)
 nvidia-smi
 
 # For VPS/OpenAI modes:
-# No local models needed - configure in Agent settings
+# No local models needed — configure endpoint in Agent settings
 ```
 
 **Wake word not detected:**
@@ -715,6 +816,6 @@ For issues and questions:
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: February 2026  
+**Version**: 4.5.0
+**Last Updated**: April 2026
 **Status**: Production Ready ✅

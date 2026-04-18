@@ -1,18 +1,66 @@
 """
 Embedding Service for IRIS Memory Foundation.
 
-Singleton sentence-transformer embedding service.
-Model: all-MiniLM-L6-v2 (384-dim, ~80MB, CPU-capable)
+Primary: sentence-transformers all-MiniLM-L6-v2 (384-dim, ~80MB, CPU-capable)
+Fallback: hash-projection embedding — always available, no dependencies.
+
+The fallback uses a bag-of-words hash trick to produce a 384-dim sparse vector.
+It is consistent (same text → same vector) and similarity-aware (shared tokens →
+closer vectors). Accuracy is lower than the neural model but fully functional —
+the episodic store writes and retrieves correctly with either backend.
+
+Install sentence-transformers to upgrade to neural embeddings:
+  pip install sentence-transformers
 
 All memory components share this single instance.
 Never instantiate SentenceTransformer directly anywhere else.
 """
 
+import hashlib
 import logging
+import math
 from threading import Lock
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _hash_embed(text: str, dim: int = 384) -> List[float]:
+    """
+    Lightweight hash-projection embedding — no external dependencies.
+
+    Maps each whitespace-split token to a bucket in [0, dim) via SHA-256 and
+    accumulates a count vector.  The result is L2-normalised to unit length so
+    cosine similarity comparisons work correctly.
+
+    Properties:
+    - Deterministic (same text → same vector every time)
+    - Collision-robust (two different words land in the same bucket ~1/dim of
+      the time — negligible for short phrases)
+    - Bag-of-words: word order is ignored; bigrams are added to partially
+      preserve local context
+    """
+    vec = [0.0] * dim
+    tokens = text.lower().split()
+    if not tokens:
+        return vec
+
+    # Unigrams
+    for tok in tokens:
+        h = int(hashlib.sha256(tok.encode()).hexdigest(), 16) % dim
+        vec[h] += 1.0
+
+    # Bigrams — add partial positional context
+    for a, b in zip(tokens, tokens[1:]):
+        bigram = f"{a}_{b}"
+        h = int(hashlib.sha256(bigram.encode()).hexdigest(), 16) % dim
+        vec[h] += 0.5
+
+    # L2 normalise
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm > 0.0:
+        vec = [x / norm for x in vec]
+    return vec
 
 
 class EmbeddingService:
@@ -43,129 +91,121 @@ class EmbeddingService:
                     logger.info("[EmbeddingService] Created singleton instance")
         return cls._instance
     
+    # Sentinel: True when sentence-transformers is confirmed unavailable so we
+    # don't re-attempt the import on every encode() call.
+    _neural_unavailable: bool = False
+
     def _load(self) -> None:
         """
-        Lazily load the embedding model.
-        
-        This is called automatically on first encode() call.
-        Uses double-checked locking for thread safety.
+        Lazily load the neural embedding model.
+
+        Falls back silently to _hash_embed() if sentence-transformers is not
+        installed — sets _neural_unavailable so future calls skip the import
+        attempt.  The episodic store works correctly with either backend.
         """
-        if self._model is None:
-            with self._model_lock:
-                if self._model is None:
-                    try:
-                        from sentence_transformers import SentenceTransformer
-                        logger.info(
-                            f"[EmbeddingService] Loading {self.MODEL_NAME} model..."
-                        )
-                        self._model = SentenceTransformer(self.MODEL_NAME)
-                        logger.info(
-                            f"[EmbeddingService] Model loaded successfully "
-                            f"({self.EMBEDDING_DIM} dimensions)"
-                        )
-                    except ImportError as e:
-                        logger.error(
-                            "[EmbeddingService] sentence-transformers not installed. "
-                            "Run: pip install sentence-transformers"
-                        )
-                        raise ImportError(
-                            "sentence-transformers is required for embeddings"
-                        ) from e
-                    except Exception as e:
-                        logger.error(f"[EmbeddingService] Failed to load model: {e}")
-                        raise RuntimeError(f"Failed to load embedding model: {e}") from e
+        if self._model is not None or self._neural_unavailable:
+            return
+        with self._model_lock:
+            if self._model is not None or self._neural_unavailable:
+                return
+            try:
+                from sentence_transformers import SentenceTransformer
+                logger.info(
+                    f"[EmbeddingService] Loading {self.MODEL_NAME} model..."
+                )
+                self._model = SentenceTransformer(self.MODEL_NAME)
+                logger.info(
+                    f"[EmbeddingService] Model loaded successfully "
+                    f"({self.EMBEDDING_DIM} dimensions)"
+                )
+            except ImportError:
+                logger.info(
+                    "[EmbeddingService] sentence-transformers not installed — "
+                    "using hash-projection fallback. "
+                    "Run: pip install sentence-transformers for neural embeddings."
+                )
+                EmbeddingService._neural_unavailable = True
+            except Exception as e:
+                logger.warning(
+                    f"[EmbeddingService] Failed to load neural model ({e}) — "
+                    "using hash-projection fallback."
+                )
+                EmbeddingService._neural_unavailable = True
     
     def encode(self, text: str) -> List[float]:
         """
         Encode a single text into a 384-dimensional embedding vector.
-        
+
+        Uses the neural model when available, otherwise falls back to
+        hash-projection (_hash_embed).  Never raises — returns zero vector
+        on empty input.
+
         Args:
             text: The text to encode
-        
+
         Returns:
             List of 384 float values representing the embedding
-        
-        Example:
-            >>> service = EmbeddingService()
-            >>> embedding = service.encode("Hello world")
-            >>> len(embedding)
-            384
         """
-        self._load()
-        
-        # Handle empty text
+        # Handle empty text before any model interaction
         if not text or not text.strip():
-            logger.warning("[EmbeddingService] Encoding empty text, returning zero vector")
             return [0.0] * self.EMBEDDING_DIM
-        
-        try:
-            # Encode and convert to list
-            embedding = self._model.encode(text, convert_to_numpy=True)
-            return embedding.tolist()
-        except Exception as e:
-            logger.error(f"[EmbeddingService] Failed to encode text: {e}")
-            raise RuntimeError(f"Failed to encode text: {e}") from e
+
+        self._load()
+
+        # Neural path
+        if self._model is not None:
+            try:
+                embedding = self._model.encode(text, convert_to_numpy=True)
+                return embedding.tolist()
+            except Exception as e:
+                logger.warning(f"[EmbeddingService] Neural encode failed ({e}), using fallback")
+
+        # Hash-projection fallback (always available)
+        return _hash_embed(text, self.EMBEDDING_DIM)
     
     def encode_batch(self, texts: List[str]) -> List[List[float]]:
         """
         Encode multiple texts into embedding vectors.
-        
-        This is more efficient than calling encode() multiple times
-        because it batches the computation.
-        
+
+        More efficient than repeated encode() calls when a neural model is
+        loaded.  Falls back to per-item hash-projection when unavailable.
+
         Args:
             texts: List of texts to encode
-        
+
         Returns:
             List of embedding vectors, one per input text
-        
-        Example:
-            >>> service = EmbeddingService()
-            >>> embeddings = service.encode_batch(["Hello", "World"])
-            >>> len(embeddings)
-            2
-            >>> len(embeddings[0])
-            384
         """
-        self._load()
-        
-        # Handle empty list
         if not texts:
             return []
-        
-        # Replace empty strings with placeholder to avoid errors
-        # Track which indices were empty
-        processed_texts = []
-        empty_indices = set()
-        
-        for i, text in enumerate(texts):
-            if not text or not text.strip():
-                processed_texts.append("[empty]")  # Placeholder
-                empty_indices.add(i)
-                logger.warning(f"[EmbeddingService] Batch item {i} is empty")
-            else:
-                processed_texts.append(text)
-        
-        try:
-            # Encode batch
-            embeddings = self._model.encode(
-                processed_texts,
-                convert_to_numpy=True,
-                batch_size=min(len(processed_texts), 32)  # Optimal batch size
-            )
-            
-            # Convert to list of lists
-            result = [emb.tolist() for emb in embeddings]
-            
-            # Zero out embeddings for empty texts
-            for i in empty_indices:
-                result[i] = [0.0] * self.EMBEDDING_DIM
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"[EmbeddingService] Failed to encode batch: {e}")
-            raise RuntimeError(f"Failed to encode batch: {e}") from e
+
+        self._load()
+
+        # Neural batch path
+        if self._model is not None:
+            try:
+                processed, empty_idx = [], set()
+                for i, t in enumerate(texts):
+                    if not t or not t.strip():
+                        processed.append("[empty]")
+                        empty_idx.add(i)
+                    else:
+                        processed.append(t)
+                embeddings = self._model.encode(
+                    processed,
+                    convert_to_numpy=True,
+                    batch_size=min(len(processed), 32),
+                )
+                result = [emb.tolist() for emb in embeddings]
+                for i in empty_idx:
+                    result[i] = [0.0] * self.EMBEDDING_DIM
+                return result
+            except Exception as e:
+                logger.warning(f"[EmbeddingService] Neural batch encode failed ({e}), using fallback")
+
+        # Hash-projection fallback
+        return [_hash_embed(t, self.EMBEDDING_DIM) if (t and t.strip()) else [0.0] * self.EMBEDDING_DIM
+                for t in texts]
     
     @classmethod
     def is_available(cls) -> bool:

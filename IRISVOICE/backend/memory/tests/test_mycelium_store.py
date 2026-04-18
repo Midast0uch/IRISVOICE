@@ -131,3 +131,66 @@ def test_distance_to_dimension_mismatch(mem_conn):
     n = store.upsert_node("domain", [0.5, 0.5, 0.5, 0.5, 0.5], "n", 0.6)
     dist = n.distance_to([0.1, 0.2])  # wrong dimension
     assert dist == float("inf"), f"Expected inf for dimension mismatch, got {dist}"
+
+
+# ---------------------------------------------------------------------------
+# Domain 11.5 — PiN + bridge schema presence in app-layer DB
+# Requirement: mycelium_pins, mycelium_pin_links, mycelium_landmark_bridges
+# must all exist after initialise_mycelium_schema() runs.
+# ---------------------------------------------------------------------------
+
+def test_pin_and_bridge_tables_present_in_app_schema():
+    """[11.5] initialise_mycelium_schema() creates all three PiN/bridge tables."""
+    import sqlite3
+    from backend.memory.db import initialise_mycelium_schema
+
+    conn = sqlite3.connect(":memory:")
+    initialise_mycelium_schema(conn)
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    required = {"mycelium_pins", "mycelium_pin_links", "mycelium_landmark_bridges"}
+    missing = required - tables
+    assert not missing, f"Missing tables in app-layer schema: {missing}"
+    conn.close()
+
+
+def test_pin_table_has_required_columns():
+    """[11.5] mycelium_pins has all expected columns."""
+    import sqlite3
+    from backend.memory.db import initialise_mycelium_schema
+
+    conn = sqlite3.connect(":memory:")
+    initialise_mycelium_schema(conn)
+    cols = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info(mycelium_pins)").fetchall()
+    }
+    required = {"pin_id", "title", "pin_type", "content", "tags",
+                "file_refs", "url_refs", "is_permanent", "created_at"}
+    missing = required - cols
+    assert not missing, f"mycelium_pins missing columns: {missing}"
+    conn.close()
+
+
+def test_landmark_bridge_table_has_required_columns():
+    """[11.5] mycelium_landmark_bridges has all expected columns."""
+    import sqlite3
+    from backend.memory.db import initialise_mycelium_schema
+
+    conn = sqlite3.connect(":memory:")
+    initialise_mycelium_schema(conn)
+    cols = {
+        r[1]
+        for r in conn.execute(
+            "PRAGMA table_info(mycelium_landmark_bridges)"
+        ).fetchall()
+    }
+    required = {"bridge_id", "local_landmark_id", "remote_landmark_name",
+                "confidence", "bridge_type"}
+    missing = required - cols
+    assert not missing, f"mycelium_landmark_bridges missing columns: {missing}"
+    conn.close()

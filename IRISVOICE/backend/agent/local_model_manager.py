@@ -1,0 +1,1747 @@
+"""
+LocalModelManager — GGUF model lifecycle manager for IRISVOICE v.3.
+
+Two load paths coexist, selected by the IRIS_INPROCESS_LLAMA env var
+(default ``"1"`` — in-process):
+
+* **In-process (preferred)** — ``from llama_cpp import Llama`` runs in the
+  backend process. An ``InProcessOpenAIAdapter`` duck-types the openai
+  Python client's ``.chat.completions.create(**kwargs)`` surface so the
+  agent kernel continues to call the same API it used against the
+  subprocess server. This is the path that actually works at the
+  measured 50.8 tok/s (RTX 3070, Qwen3.5-9B-Q3_K_S).
+
+* **Legacy subprocess** — spawns ``python -m llama_cpp.server`` on port
+  8082 and points the kernel at it via OpenAI HTTP. Kept alive behind
+  ``IRIS_INPROCESS_LLAMA=0`` as a rollback lever while the in-process
+  path is verified end-to-end; scheduled for deletion after V1–V3 pass.
+
+Neither path auto-loads at startup — both only activate when the user
+picks a model from the ModelsScreen.
+"""
+import asyncio
+import atexit
+import gc
+import inspect
+import io
+import json
+import logging
+import os
+import signal
+import struct
+import subprocess
+import sys
+import threading
+from multiprocessing import cpu_count
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, AsyncGenerator, Dict, Iterator, List, Optional
+
+import httpx
+
+# ── Hardware detection (import-guarded, matches audio/model_manager.py pattern) ──
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+
+# NOTE: torch is NOT imported at module level — it costs ~360 MB.
+# Imported lazily inside get_hardware_info() on first use.
+TORCH_AVAILABLE = False  # legacy flag — kept for backward compat, never set True at import
+
+# ── HuggingFace Hub (import-guarded) ──
+HF_HUB_AVAILABLE = False
+try:
+    from huggingface_hub import hf_hub_download
+    HF_HUB_AVAILABLE = True
+except ImportError:
+    pass
+
+logger = logging.getLogger(__name__)
+
+IRISVOICE_ROOT = Path(__file__).parent.parent.parent
+
+# ── Quantization bits-per-weight table (for VRAM estimation) ──
+QUANT_BPW: Dict[str, float] = {
+    "Q2_K": 2.56,  "Q3_K_S": 3.0,  "Q3_K_M": 3.35, "Q3_K_L": 3.6,
+    "Q4_0": 4.5,   "Q4_K_S": 4.37, "Q4_K_M": 4.85, "Q4_K": 4.85,
+    "Q5_0": 5.5,   "Q5_K_S": 5.54, "Q5_K_M": 5.69, "Q5_K": 5.69,
+    "Q6_K": 6.56,  "Q8_0": 8.5,    "F16": 16.0,     "F32": 32.0,
+    "BF16": 16.0,
+}
+
+# ── Hardware profile definitions ──
+PROFILES: Dict[str, Dict[str, Any]] = {
+    # CPU-only fallback — zero VRAM, minimal RAM footprint
+    "eco": {
+        "n_gpu_layers": 0,
+        "n_ctx": 2048,
+        "flash_attn": False,
+        "cache_type_k": "f16",
+        "cache_type_v": "f16",
+        "n_batch": 512,
+        "offload_kv_cache": False,
+        "unified_kv_cache": False,
+        "keep_model_in_memory": False,
+        "use_mmap": True,
+    },
+    # VERIFIED: 45+ tok/s on RTX 3070 8GB with Qwen3.5-9B-Q3_K_S and Q4_K_M.
+    # n_batch=2048 maximises prompt processing (prefill) speed.
+    # q8_0 KV compression keeps VRAM overhead low at 32k context.
+    # This is the IRIS standard for iris_local inference.
+    "balanced": {
+        "n_gpu_layers": -1,          # all layers on GPU — mandatory for 25+ tok/s
+        "n_ctx": 32768,              # 32k context window
+        "flash_attn": True,          # required: saves VRAM + faster attention
+        "cache_type_k": "q8_0",     # compressed KV key cache
+        "cache_type_v": "q8_0",     # compressed KV value cache
+        "n_batch": 2048,             # max physical batch — fast prompt processing
+        "offload_kv_cache": True,
+        "unified_kv_cache": True,
+        "keep_model_in_memory": True,
+        "use_mmap": True,
+    },
+    # High-throughput: same as balanced but context reduced for minimum first-token latency.
+    # Use for fast iterative coding / tool-calling tasks.
+    "performance": {
+        "n_gpu_layers": -1,
+        "n_ctx": 16384,
+        "flash_attn": True,
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0",
+        "n_batch": 2048,
+        "offload_kv_cache": True,
+        "unified_kv_cache": True,
+        "keep_model_in_memory": True,
+        "use_mmap": True,
+    },
+    # Voice latency: 8k context, smaller KV footprint = faster first-token for voice.
+    "voice_first": {
+        "n_gpu_layers": -1,
+        "n_ctx": 8192,
+        "flash_attn": True,
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0",
+        "n_batch": 2048,
+        "offload_kv_cache": True,
+        "unified_kv_cache": True,
+        "keep_model_in_memory": True,
+        "use_mmap": True,
+    },
+    # Long-context: 100k window with Q4 KV compression to fit 8 GB VRAM.
+    # Verified on RTX 3070 8GB with Qwen3.5-9B-Q3_K_S (4.32 GB weights +
+    # ~1.8 GB Q4 KV at 100k tokens = 6.1 GB total).
+    # Use for document analysis, large codebase queries.
+    "research": {
+        "n_gpu_layers": -1,
+        "n_ctx": 102400,             # ~100k context
+        "flash_attn": True,          # mandatory at this context length
+        "cache_type_k": "q4_0",     # Q4 KV cache — halves VRAM vs q8_0 at long ctx
+        "cache_type_v": "q4_0",
+        "n_batch": 2048,
+        "offload_kv_cache": True,
+        "unified_kv_cache": True,
+        "keep_model_in_memory": True,
+        "use_mmap": True,
+    },
+    # RotorQuant research profile — requires the scrya-com/rotorquant fork
+    # (johndpope/llama-cpp-turboquant, feature/planarquant-kv-cache branch).
+    # PlanarQuant / IsoQuant compress KV cache 5–10× vs q8_0, so a 131k ctx
+    # window fits where q4_0 at 100k currently does. If the fork is not
+    # installed, the profile selector falls back to `performance` with a
+    # warning (see _rotorquant_available detection in __init__).
+    "research_rotorquant": {
+        "n_gpu_layers": -1,
+        "n_ctx": 131072,             # 128k — unlocked by planar3 compression
+        "flash_attn": True,
+        "cache_type_k": "planar3",  # RotorQuant key: 5–10× KV compression
+        "cache_type_v": "planar3",
+        "n_batch": 2048,
+        "offload_kv_cache": True,
+        "unified_kv_cache": True,
+        "keep_model_in_memory": True,
+        "use_mmap": True,
+        "requires_fork": "llama-cpp-turboquant",
+    },
+}
+
+# Split GGUF filename pattern: model-00001-of-00003.gguf
+_SPLIT_SUFFIX_PART = "-of-"
+
+# ── GGML type string → llama_cpp integer constant ─────────────────────────
+# Kept module-scope so _load_inprocess and _build_server_cmd share one source
+# of truth. Values mirror llama_cpp.GGML_TYPE_* (verified against
+# llama-cpp-python ≥ 0.3). Strings that have no llama_cpp.Llama constructor
+# mapping (e.g. "planar3" / "iso3" from the RotorQuant fork) are intentionally
+# excluded — they are passed through verbatim when _rotorquant_available.
+_GGML_TYPE_INT: Dict[str, int] = {
+    "f32": 0, "f16": 1, "bf16": 30,
+    "q4_0": 2, "q4_1": 3, "q5_0": 6, "q5_1": 7,
+    "q8_0": 8, "q8_1": 9,
+    "q2_k": 10, "q3_k": 11, "q3_k_s": 11, "q3_k_m": 11,
+    "q4_k": 12, "q4_k_s": 12, "q4_k_m": 12,
+    "q5_k": 13, "q5_k_s": 13, "q5_k_m": 13,
+    "q6_k": 14, "q8_k": 15,
+}
+
+# RotorQuant-only KV cache types (not understood by stock llama-cpp-python).
+# When present in a profile and the fork IS installed, they are forwarded to
+# Llama(cache_type_k=..., cache_type_v=...) as strings.
+_ROTORQUANT_KV_TYPES = frozenset({"planar3", "iso3", "planarquant", "isoquant"})
+
+
+class LocalModelManager:
+    """
+    Manages GGUF model loading via llama-cpp-python server mode subprocess.
+    Port 8082, OpenAI-compatible API.
+
+    Loading contract:
+      - NEVER auto-loads at startup
+      - Only spawns subprocess when user calls load_model()
+      - Registers atexit + SIGTERM cleanup to kill subprocess on backend exit
+    """
+
+    PORT = 8082
+    ENDPOINT = f"http://127.0.0.1:{PORT}/v1"
+
+    # ── Model scan directory resolution ─────────────────────────────────────
+    # Priority: IRIS_MODELS_DIR env var → LM Studio default → IRIS fallback
+    _env_dir = os.environ.get("IRIS_MODELS_DIR")
+    _lmstudio_dir = Path.home() / ".lmstudio" / "models"
+    _iris_fallback = IRISVOICE_ROOT / "models" / "gguf"
+    if _env_dir:
+        MODELS_DIR = Path(_env_dir)
+    elif _lmstudio_dir.exists():
+        MODELS_DIR = _lmstudio_dir
+    else:
+        MODELS_DIR = _iris_fallback
+
+    SETTINGS_FILE = _iris_fallback / ".iris_model_settings.json"
+
+    def __init__(self) -> None:
+        # Always ensure the IRIS fallback dir exists for downloads
+        (IRISVOICE_ROOT / "models" / "gguf").mkdir(parents=True, exist_ok=True)
+        # ── Legacy subprocess state (used when IRIS_INPROCESS_LLAMA=0) ──
+        self._process: Optional[subprocess.Popen] = None
+        # ── In-process Llama state (used when IRIS_INPROCESS_LLAMA=1) ───
+        # Held lazily; constructed on the executor in _load_inprocess.
+        self._llm: Any = None  # Optional[llama_cpp.Llama]
+        # Serializes concurrent inference calls into the single Llama instance.
+        # llama-cpp is thread-hostile — one call at a time through this lock.
+        self._inference_lock = threading.Lock()
+        self._current_model_path: Optional[str] = None
+        self._current_profile: str = "balanced"
+        self._current_params: Dict[str, Any] = {}
+        self._lock = threading.Lock()
+        # [10.6] Async lock — prevents concurrent load_model() calls racing
+        self._load_lock: Optional[asyncio.Lock] = None
+        # Metadata cache: key = "path::mtime" -> parsed GGUF metadata dict
+        # Persists across calls — only re-parsed when file changes (mtime check)
+        self._metadata_cache: Dict[str, Dict[str, Any]] = {}
+        # Hardware info cache — invalidated on model load/unload (VRAM changes)
+        self._hw_cache: Optional[Dict[str, Any]] = None
+        self._hw_cache_time: float = 0.0
+        # [10.7] Watchdog task — detects subprocess crash after load
+        self._watchdog_task: Optional[asyncio.Task] = None
+        # [10.10] TPS rolling window — last 3 measurements for gradient warning
+        self._tps_window: list = []
+        self._tps_slow_warned: bool = False
+        # ── RotorQuant fork detection ───────────────────────────────────
+        # The scrya-com/rotorquant fork adds `cache_type_k` / `cache_type_v`
+        # string kwargs to Llama.__init__ that accept "planar3" / "iso3" etc.
+        # Stock llama-cpp-python uses `type_k` / `type_v` ints instead.
+        self._rotorquant_available: bool = False
+        try:
+            from llama_cpp import Llama as _Llama_probe
+            _sig = inspect.signature(_Llama_probe.__init__)
+            self._rotorquant_available = "cache_type_k" in _sig.parameters
+        except Exception:
+            # llama_cpp not importable yet — that's fine, just means no
+            # in-process path available. detection retries on load_model.
+            pass
+        logger.info(
+            f"[LocalModelManager] RotorQuant (planar3/iso3) available: "
+            f"{self._rotorquant_available}"
+        )
+        # Progress heartbeat task — synthesises load_progress events during
+        # in-process load since Llama() gives no native progress.
+        self._progress_task: Optional[asyncio.Task] = None
+        self._register_cleanup()
+
+    def _get_load_lock(self) -> asyncio.Lock:
+        """Lazy-create asyncio.Lock (must be created in async context)."""
+        if self._load_lock is None:
+            self._load_lock = asyncio.Lock()
+        return self._load_lock
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # In-process inference (preferred path — IRIS_INPROCESS_LLAMA=1)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _inprocess_enabled() -> bool:
+        """Feature flag — default on. Set IRIS_INPROCESS_LLAMA=0 to restore
+        the subprocess path while the in-process implementation is verified."""
+        return os.environ.get("IRIS_INPROCESS_LLAMA", "1") != "0"
+
+    def _build_llama_ctor_kwargs(self, model_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Map a PROFILES dict into ``Llama(**kwargs)`` form.
+
+        Handles the fork split:
+          * Stock llama-cpp-python → ``type_k`` / ``type_v`` = GGML int
+          * RotorQuant fork       → ``cache_type_k`` / ``cache_type_v`` = string
+        """
+        ctor: Dict[str, Any] = {
+            "model_path": str(model_path),
+            "n_gpu_layers": int(params.get("n_gpu_layers", -1)),
+            "n_ctx": int(params.get("n_ctx", 8192)),
+            "n_batch": int(params.get("n_batch", 2048)),
+            "n_threads": int(params.get("n_threads", cpu_count())),
+            "flash_attn": bool(params.get("flash_attn", True)),
+            "use_mmap": bool(params.get("use_mmap", True)),
+            "use_mlock": bool(params.get("keep_model_in_memory", False)),
+            "offload_kqv": bool(params.get("offload_kv_cache", True)),
+            "verbose": False,
+        }
+
+        k_name = (params.get("cache_type_k") or "").lower()
+        v_name = (params.get("cache_type_v") or "").lower()
+
+        if k_name in _ROTORQUANT_KV_TYPES or v_name in _ROTORQUANT_KV_TYPES:
+            # Profile requested a RotorQuant KV type — only honoured if fork
+            # is installed; otherwise leave KV cache at library default (f16).
+            if self._rotorquant_available:
+                if k_name:
+                    ctor["cache_type_k"] = k_name
+                if v_name:
+                    ctor["cache_type_v"] = v_name
+            else:
+                logger.warning(
+                    f"[LocalModelManager] Profile requested RotorQuant KV "
+                    f"'{k_name}/{v_name}' but llama-cpp-turboquant fork not "
+                    f"installed. Falling back to default f16 KV cache. "
+                    f"See docs/rotorquant_build.md."
+                )
+        else:
+            # Stock llama-cpp-python path — map string → GGML_TYPE integer.
+            if k_name and k_name in _GGML_TYPE_INT:
+                ctor["type_k"] = _GGML_TYPE_INT[k_name]
+            if v_name and v_name in _GGML_TYPE_INT:
+                ctor["type_v"] = _GGML_TYPE_INT[v_name]
+
+        seed = params.get("seed")
+        if seed is not None and int(seed) != -1:
+            ctor["seed"] = int(seed)
+
+        return ctor
+
+    async def _start_progress_heartbeat(self, progress_cb) -> None:
+        """Synthesise load_progress events every 500 ms until cancelled.
+
+        Llama() gives no native progress signal from Python — this keeps the
+        frontend's "model loading…" UI alive instead of staring at a frozen
+        bar for the 15–30 s of GPU upload.
+        """
+        if progress_cb is None:
+            return
+
+        async def _pump() -> None:
+            phases = [
+                (5,  "init",    "Initialising llama-cpp runtime"),
+                (20, "loading", "Reading GGUF from disk"),
+                (50, "loading", "Uploading weights to GPU"),
+                (80, "context", "Allocating KV cache"),
+                (95, "context", "Warming up"),
+            ]
+            idx = 0
+            try:
+                while idx < len(phases):
+                    pct, phase, msg = phases[idx]
+                    try:
+                        await progress_cb({"phase": phase, "pct": pct, "msg": msg})
+                    except Exception:
+                        pass
+                    idx += 1
+                    await asyncio.sleep(2.0)
+                # After scripted phases, idle at 95% until caller cancels.
+                while True:
+                    await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                return
+
+        self._progress_task = asyncio.ensure_future(_pump())
+
+    def _stop_progress_heartbeat(self) -> None:
+        if self._progress_task is not None and not self._progress_task.done():
+            self._progress_task.cancel()
+        self._progress_task = None
+
+    async def _load_inprocess(
+        self,
+        model_path: str,
+        params: Dict[str, Any],
+        progress_cb=None,
+    ) -> bool:
+        """Construct a `llama_cpp.Llama` on a thread executor (no subprocess).
+
+        Returns True when the instance is ready for inference. Emits
+        synthetic progress events via progress_cb (Llama itself gives none).
+        """
+        try:
+            from llama_cpp import Llama
+        except ImportError as exc:
+            logger.error(f"[LocalModelManager] llama-cpp-python not importable: {exc}")
+            if progress_cb:
+                try:
+                    await progress_cb({
+                        "phase": "error", "pct": 0,
+                        "msg": "llama-cpp-python not installed in backend env",
+                    })
+                except Exception:
+                    pass
+            return False
+
+        # Re-detect in case the env changed since __init__ (e.g. fork was just
+        # installed). Cheap — one inspect.signature call.
+        try:
+            self._rotorquant_available = (
+                "cache_type_k" in inspect.signature(Llama.__init__).parameters
+            )
+        except Exception:
+            pass
+
+        ctor = self._build_llama_ctor_kwargs(model_path, params)
+        logger.info(
+            f"[LocalModelManager] Loading in-process: "
+            f"model={Path(model_path).name} n_ctx={ctor.get('n_ctx')} "
+            f"n_gpu_layers={ctor.get('n_gpu_layers')} "
+            f"flash_attn={ctor.get('flash_attn')} "
+            f"rotorquant={self._rotorquant_available}"
+        )
+
+        await self._start_progress_heartbeat(progress_cb)
+        loop = asyncio.get_running_loop()
+        try:
+            llm = await loop.run_in_executor(None, lambda: Llama(**ctor))
+        except Exception as exc:
+            logger.exception(f"[LocalModelManager] In-process Llama construction failed: {exc}")
+            if progress_cb:
+                try:
+                    await progress_cb({
+                        "phase": "error", "pct": 0,
+                        "msg": f"Load failed: {exc}",
+                    })
+                except Exception:
+                    pass
+            self._stop_progress_heartbeat()
+            return False
+        finally:
+            self._stop_progress_heartbeat()
+
+        self._llm = llm
+        self._current_model_path = model_path
+        self._current_params = params
+        logger.info(
+            f"[LocalModelManager] In-process Llama ready "
+            f"(model={Path(model_path).name}, ctx={ctor.get('n_ctx')})"
+        )
+        if progress_cb:
+            try:
+                await progress_cb({"phase": "ready", "pct": 100, "msg": "Model ready"})
+            except Exception:
+                pass
+        return True
+
+    def create_chat_completion(self, **kwargs) -> Dict[str, Any]:
+        """Synchronous wrapper around `Llama.create_chat_completion`.
+
+        Kept sync to match the caller shape in agent_kernel (OpenAI Python
+        client is sync). Serialised by `_inference_lock` — only one inference
+        runs through the single Llama instance at a time.
+
+        `stream=True` routes through `create_chat_completion_stream`.
+
+        Returns an OpenAI-format dict — the caller (`InProcessOpenAIAdapter`)
+        wraps it in attribute-access objects to match the Pydantic surface
+        the kernel expects from the real openai client.
+        """
+        if self._llm is None:
+            raise RuntimeError("LocalModelManager: no in-process model loaded")
+        if kwargs.get("stream"):
+            # Collapse to the streaming generator; caller decides what to do.
+            return self.create_chat_completion_stream(**kwargs)  # type: ignore[return-value]
+        with self._inference_lock:
+            return self._llm.create_chat_completion(**_sanitise_completion_kwargs(kwargs))
+
+    def create_chat_completion_stream(self, **kwargs) -> Iterator[Dict[str, Any]]:
+        """Token-by-token generator. Holds `_inference_lock` for the whole run.
+
+        Yields OpenAI-format chunk dicts straight from llama-cpp-python.
+        Caller is responsible for wrapping chunks in attribute-access objects
+        if it speaks the openai Pydantic surface.
+        """
+        if self._llm is None:
+            raise RuntimeError("LocalModelManager: no in-process model loaded")
+        kwargs = _sanitise_completion_kwargs(kwargs)
+        kwargs["stream"] = True
+        with self._inference_lock:
+            for chunk in self._llm.create_chat_completion(**kwargs):
+                yield chunk
+
+    def get_inprocess_client(self) -> Optional["InProcessOpenAIAdapter"]:
+        """Return an OpenAI-client shim bound to this manager, or None if no
+        in-process model is loaded.
+
+        Agent kernel's `_get_lmstudio_client()` calls this when the provider
+        is ``iris_local`` and the feature flag is on. The adapter mimics
+        ``openai.OpenAI().chat.completions.create(**kwargs)`` closely enough
+        for the kernel's existing call sites — both the non-streaming
+        ``resp.choices[0].message.content`` access and the streaming
+        ``for chunk in resp: chunk.choices[0].delta.content`` iteration.
+        """
+        if self._llm is None:
+            return None
+        return InProcessOpenAIAdapter(self)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Hardware info
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _invalidate_hw_cache(self) -> None:
+        """Call after model load/unload — VRAM state changes, cache stale."""
+        self._hw_cache = None
+        self._hw_cache_time = 0.0
+
+    def get_hardware_info(self, force_refresh: bool = False) -> Dict[str, Any]:
+        import time as _time
+        # Cache for 60 seconds — VRAM doesn't change unless a model loads/unloads
+        # (which calls _invalidate_hw_cache). This avoids re-initializing CUDA on
+        # every models-list request.
+        if (
+            not force_refresh
+            and self._hw_cache is not None
+            and (_time.monotonic() - self._hw_cache_time) < 60.0
+        ):
+            return self._hw_cache
+
+        info: Dict[str, Any] = {
+            "cuda_available": False,
+            "gpu_name": "No GPU",
+            "vram_total_gb": 0.0,
+            "vram_free_gb": 0.0,
+            "ram_total_gb": 0.0,
+        }
+        if PSUTIL_AVAILABLE:
+            vm = psutil.virtual_memory()
+            info["ram_total_gb"] = round(vm.total / (1024 ** 3), 1)
+
+        # Lazy torch import — avoids 360 MB cost at startup.
+        try:
+            import torch as _torch
+            _has_cuda = _torch.cuda.is_available()
+        except ImportError:
+            _torch = None
+            _has_cuda = False
+
+        if _has_cuda:
+            try:
+                props = _torch.cuda.get_device_properties(0)
+                total = props.total_memory / (1024 ** 3)
+                allocated = _torch.cuda.memory_allocated(0) / (1024 ** 3)
+                reserved = _torch.cuda.memory_reserved(0) / (1024 ** 3)
+                used = max(allocated, reserved)
+                info.update({
+                    "cuda_available": True,
+                    "gpu_name": props.name,
+                    "vram_total_gb": round(total, 1),
+                    "vram_free_gb": round(max(0.0, total - used), 1),
+                })
+            except Exception as e:
+                logger.warning(f"[LocalModelManager] VRAM query failed: {e}")
+        # NOTE: No llama_cpp fallback here. Importing llama_cpp at this point
+        # triggers CUDA driver initialization, which spikes memory at startup.
+        # GPU detection via llama_cpp only happens when the user explicitly loads
+        # a model (load_model → _build_server_cmd). Until then, cuda_available
+        # stays False and the UI shows the "No GPU" placeholder — this is correct
+        # because no inference is running yet.
+
+        info["models_dir"] = str(self.MODELS_DIR)
+        self._hw_cache = info
+        self._hw_cache_time = _time.monotonic()
+        return info
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Model scanning
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def scan_models(self) -> List[Dict[str, Any]]:
+        """
+        Walk MODELS_DIR for *.gguf files.
+        Groups split-shard files (model-00001-of-NNNNN.gguf) under one entry.
+        Returns list of model dicts with metadata.
+        """
+        settings = self.load_model_settings()
+        seen_bases: Dict[str, Dict[str, Any]] = {}  # base_name -> entry
+
+        for gguf_path in sorted(self.MODELS_DIR.rglob("*.gguf")):
+            filename = gguf_path.name
+            stem = gguf_path.stem  # without .gguf
+
+            # Stat the file once — used for both size and cache key
+            try:
+                st = gguf_path.stat()
+            except OSError:
+                continue
+
+            # Detect split shards (e.g., model-00001-of-00003)
+            is_shard = False
+            shard_idx = 0
+            base_stem = stem
+            if _SPLIT_SUFFIX_PART in stem:
+                parts = stem.rsplit(_SPLIT_SUFFIX_PART, 1)
+                if len(parts) == 2 and parts[0][-6:].lstrip("-").isdigit():
+                    base_stem = parts[0][:-7]  # strip "-NNNNN"
+                    shard_str = parts[0][-5:]
+                    is_shard = True
+                    try:
+                        shard_idx = int(shard_str)
+                    except ValueError:
+                        pass
+
+            if base_stem in seen_bases:
+                # Already have this model; only keep the first shard as load path
+                if is_shard and shard_idx == 1:
+                    seen_bases[base_stem]["path"] = str(gguf_path)
+                seen_bases[base_stem]["shard_count"] = seen_bases[base_stem].get("shard_count", 1) + 1
+                continue
+
+            # Metadata cache: key = "path::mtime" — avoids re-parsing unchanged files.
+            # First call is slow (reads GGUF headers). Subsequent calls are instant.
+            cache_key = f"{gguf_path}::{st.st_mtime}"
+            if cache_key in self._metadata_cache:
+                meta = self._metadata_cache[cache_key]
+            else:
+                try:
+                    meta = self.parse_gguf_metadata(gguf_path)
+                except Exception as e:
+                    logger.debug(f"[LocalModelManager] Could not parse GGUF header for {filename}: {e}")
+                    meta = {}
+                self._metadata_cache[cache_key] = meta
+
+            size_gb = round(st.st_size / (1024 ** 3), 2)
+            quant = meta.get("quantization") or self._quant_from_filename(stem)
+            vram_est = self.estimate_vram_gb(meta) if meta.get("params_b") else 0.0
+
+            model_settings = settings.get(filename, {})
+
+            entry = {
+                "path": str(gguf_path),
+                "filename": filename,
+                "display_name": base_stem.replace("-", " ").replace("_", " "),
+                "size_gb": size_gb,
+                "architecture": meta.get("architecture", "unknown"),
+                "params_b": meta.get("params_b", 0),
+                "native_ctx": meta.get("context_length", 0),
+                "quantization": quant,
+                "vram_estimate_gb": round(vram_est, 1),
+                "loaded": self._current_model_path == str(gguf_path),
+                "pinned": model_settings.get("pinned", False),
+                "last_profile": model_settings.get("last_profile", "balanced"),
+                "last_ctx": model_settings.get("last_ctx", 32768),
+                "last_gpu_layers": model_settings.get("last_gpu_layers", -1),
+                "shard_count": 1,
+            }
+            seen_bases[base_stem] = entry
+
+        models = list(seen_bases.values())
+        # Pinned models float to top
+        models.sort(key=lambda m: (not m["pinned"], m["display_name"].lower()))
+        return models
+
+    def parse_gguf_metadata(self, path: Path) -> Dict[str, Any]:
+        """
+        Read GGUF binary header to extract architecture, parameter count,
+        context length, and quantization type.
+
+        GGUF format:
+          magic (4 bytes) + version (uint32) + tensor_count (uint64) +
+          metadata_kv_count (uint64) + kv pairs
+        """
+        meta: Dict[str, Any] = {}
+        GGUF_MAGIC = b"GGUF"
+        STRING_TYPE = 8
+        UINT32_TYPE = 4
+        UINT64_TYPE = 7
+
+        def read_str(f: io.RawIOBase) -> str:
+            length = struct.unpack("<Q", f.read(8))[0]
+            return f.read(length).decode("utf-8", errors="replace")
+
+        def read_value(f: io.RawIOBase, vtype: int) -> Any:
+            if vtype == 4:    return struct.unpack("<I", f.read(4))[0]   # uint32
+            elif vtype == 5:  return struct.unpack("<i", f.read(4))[0]   # int32
+            elif vtype == 6:  return struct.unpack("<f", f.read(4))[0]   # float32
+            elif vtype == 7:  return struct.unpack("<Q", f.read(8))[0]   # uint64
+            elif vtype == 8:  return read_str(f)                          # string
+            elif vtype == 10: return struct.unpack("<q", f.read(8))[0]   # int64
+            elif vtype == 11: return struct.unpack("<d", f.read(8))[0]   # float64
+            elif vtype == 1:  return struct.unpack("<?", f.read(1))[0]   # bool
+            elif vtype == 2:  return struct.unpack("<B", f.read(1))[0]   # uint8
+            elif vtype == 3:  return struct.unpack("<H", f.read(2))[0]   # uint16
+            elif vtype == 9:
+                # array: elem_type (uint32) + count (uint64) + elements
+                elem_type = struct.unpack("<I", f.read(4))[0]
+                count = struct.unpack("<Q", f.read(8))[0]
+                return [read_value(f, elem_type) for _ in range(min(count, 16))]
+            else:
+                raise ValueError(f"Unknown GGUF value type: {vtype}")
+
+        with open(path, "rb") as f:
+            magic = f.read(4)
+            if magic != GGUF_MAGIC:
+                return meta
+            version = struct.unpack("<I", f.read(4))[0]
+            if version not in (1, 2, 3):
+                return meta
+            _tensor_count = struct.unpack("<Q", f.read(8))[0]
+            kv_count = struct.unpack("<Q", f.read(8))[0]
+
+            arch = "unknown"
+            for _ in range(min(kv_count, 256)):
+                try:
+                    key = read_str(f)
+                    vtype = struct.unpack("<I", f.read(4))[0]
+                    val = read_value(f, vtype)
+                except Exception:
+                    break
+
+                if key == "general.architecture" and isinstance(val, str):
+                    arch = val
+                    meta["architecture"] = val
+                elif key == "general.parameter_count" and isinstance(val, int):
+                    meta["params_b"] = round(val / 1e9, 1)
+                elif key == "general.quantization_version":
+                    pass  # not the quant name, skip
+                elif key.endswith(".context_length") and isinstance(val, int):
+                    meta["context_length"] = val
+                elif key == "general.name" and isinstance(val, str):
+                    meta["model_name"] = val
+
+        return meta
+
+    def _quant_from_filename(self, stem: str) -> str:
+        """Fallback: extract quantization type from filename."""
+        stem_upper = stem.upper()
+        for quant in sorted(QUANT_BPW.keys(), key=len, reverse=True):
+            if quant in stem_upper:
+                return quant
+        return "unknown"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # VRAM estimation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def estimate_vram_gb(self, model_meta: Dict[str, Any]) -> float:
+        """
+        Estimate VRAM requirement: params_B × bits_per_weight / 8 × 1.1 overhead.
+        Falls back to 0.0 if params or quant unknown.
+        """
+        params_b = model_meta.get("params_b", 0)
+        quant = model_meta.get("quantization", "Q4_K_M")
+        bpw = QUANT_BPW.get(quant.upper(), 4.85)
+        if not params_b:
+            return 0.0
+        return params_b * bpw / 8.0 * 1.1
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Profile resolution
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def get_profile_params(self, profile: str, custom: Dict[str, Any] = None) -> Dict[str, Any]:
+        if profile == "custom" and custom:
+            base = dict(PROFILES["balanced"])
+            base.update(custom)
+            return base
+        return dict(PROFILES.get(profile, PROFILES["balanced"]))
+
+    def recommend_profile(self, model_meta: Dict[str, Any]) -> str:
+        """
+        Auto-select profile based on model size + available hardware.
+        Returns profile name string.
+        """
+        hw = self.get_hardware_info()
+        vram = hw.get("vram_free_gb", 0.0)
+        cuda = hw.get("cuda_available", False)
+        vram_needed = self.estimate_vram_gb(model_meta)
+
+        if not cuda or vram < 4.0:
+            return "eco"
+        if vram_needed > 0 and vram_needed > vram * 0.9:
+            return "eco"
+        # Always prefer balanced (32k ctx / 1536 batch) — it's the 24GB RAM sweet spot.
+        # performance is only for explicit user override.
+        return "balanced"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Subprocess lifecycle
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_load_progress(line: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse a line of llama.cpp / llama-cpp-python server stdout into a
+        progress event dict, or return None if the line carries no progress info.
+
+        Progress events: {"phase": str, "pct": int, "msg": str}
+        Phases: init → loading → context → ready
+        """
+        import re
+
+        # CUDA device detection: first sign of life
+        if "ggml_cuda_init" in line or ("CUDA device" in line and "VRAM" in line):
+            return {"phase": "init", "pct": 5, "msg": "CUDA device detected"}
+
+        # Model header load begins
+        if ("llama_model_load" in line or "llm_load_print_meta" in line) and (
+            "loading" in line.lower() or "metadata" in line.lower() or "arch" in line.lower()
+        ):
+            return {"phase": "init", "pct": 10, "msg": "Reading model metadata"}
+
+        # Tensor loading / GPU layer offloading
+        # "llm_load_tensors: offloading 32 repeating layers to GPU"
+        # "llm_load_tensors: offloaded 32/33 layers to GPU"
+        m = re.search(r"offloaded?\s+(\d+)(?:/(\d+))?\s+(?:repeating\s+)?layers", line)
+        if m:
+            n = int(m.group(1))
+            total = int(m.group(2)) if m.group(2) else n
+            pct = max(15, min(75, int(n / max(total, 1) * 65) + 10))
+            return {"phase": "loading", "pct": pct, "msg": f"Offloading layers {n}/{total} to GPU"}
+
+        # Tensor loading generic: "llm_load_tensors: ggml ctx size"
+        if "llm_load_tensors" in line and "ggml" in line:
+            return {"phase": "loading", "pct": 20, "msg": "Loading tensors"}
+
+        # Context / KV cache allocation
+        if "llama_new_context_with_model" in line or (
+            "kv cache" in line.lower() and "size" in line.lower()
+        ):
+            return {"phase": "context", "pct": 85, "msg": "Building KV cache"}
+
+        # Prompt cache / batch alloc
+        if "llama_kv_cache_init" in line or "ggml_backend_alloc" in line:
+            return {"phase": "context", "pct": 90, "msg": "Allocating compute buffers"}
+
+        # Server listening (about to be ready)
+        if re.search(r"(listening|HTTP server|server started|server is running)", line, re.I):
+            return {"phase": "ready", "pct": 98, "msg": "Server online"}
+
+        return None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # [10.5] Pre-load resource validation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _preflight_resource_check(
+        self, model_path: str, params: Dict[str, Any]
+    ) -> Optional[str]:
+        """
+        Estimate VRAM/RAM requirements before spawning the subprocess.
+        Returns an error string if resources are insufficient, None if OK.
+        Fails open (returns None) if hardware info is unavailable —
+        we never block a load due to a failed check.
+        """
+        try:
+            path = Path(model_path)
+            if not path.exists():
+                return f"Model file not found: {model_path}"
+
+            file_gb = path.stat().st_size / (1024 ** 3)
+
+            hw = self.get_hardware_info()
+            n_gpu = params.get("n_gpu_layers", -1)
+            n_ctx = params.get("n_ctx", 8192)
+
+            # Estimate KV cache RAM: ~2 bytes * n_ctx * n_layers (rough: ctx/1000 GB)
+            kv_cache_gb = (n_ctx / 1000.0) * 0.1
+
+            if n_gpu != 0 and hw.get("cuda_available"):
+                # GPU load: model fits in VRAM + KV cache overhead
+                vram_needed = file_gb * 1.05 + kv_cache_gb
+                vram_free = hw.get("vram_free_gb", 0.0)
+                if vram_free > 0 and vram_needed > vram_free * 0.92:
+                    return (
+                        f"Insufficient VRAM: model needs ~{vram_needed:.1f} GB, "
+                        f"{vram_free:.1f} GB free. Try a smaller quantization or "
+                        f"reduce n_ctx."
+                    )
+            else:
+                # CPU load: model + KV cache must fit in RAM
+                ram_needed = file_gb + kv_cache_gb
+                if PSUTIL_AVAILABLE:
+                    ram_free = psutil.virtual_memory().available / (1024 ** 3)
+                    if ram_needed > ram_free * 0.85:
+                        return (
+                            f"Insufficient RAM: model needs ~{ram_needed:.1f} GB, "
+                            f"{ram_free:.1f} GB free. Close other applications or "
+                            f"use a smaller model."
+                        )
+        except Exception as e:
+            logger.debug(f"[LocalModelManager] Pre-flight check skipped: {e}")
+        return None  # fail open — never block load due to check error
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # [10.7] Subprocess death watchdog
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _run_watchdog(self, crash_cb=None) -> None:
+        """
+        Poll is_loaded() every 5 seconds after a successful model load.
+        If the subprocess exits unexpectedly (OOM, segfault, etc.), call crash_cb
+        so the gateway can broadcast a crashed event to the frontend.
+        """
+        try:
+            while True:
+                await asyncio.sleep(5)
+                if not self.is_loaded():
+                    # Process died — reset state
+                    with self._lock:
+                        self._current_model_path = None
+                        self._current_profile = "balanced"
+                        self._current_params = {}
+                    self._invalidate_hw_cache()
+                    logger.warning("[LocalModelManager] Model server exited unexpectedly")
+                    if crash_cb:
+                        try:
+                            await crash_cb()
+                        except Exception as e:
+                            logger.debug(f"[LocalModelManager] crash_cb failed: {e}")
+                    break
+        except asyncio.CancelledError:
+            pass  # normal — watchdog cancelled by unload_model()
+
+    def _stop_watchdog(self) -> None:
+        """Cancel the watchdog task if running."""
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # [10.9] Settings comparison — decide if reload is required
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def would_require_reload(self, new_profile: str, custom_params: Dict[str, Any]) -> bool:
+        """
+        Return True if applying new_profile + custom_params requires a subprocess
+        restart (n_ctx or n_gpu_layers differ from current loaded params).
+        Return False if only hot-applicable params changed (e.g. n_batch only).
+        """
+        new_params = self.get_profile_params(new_profile, custom_params)
+        reload_keys = {"n_ctx", "n_gpu_layers"}
+        for k in reload_keys:
+            if new_params.get(k) != self._current_params.get(k):
+                return True
+        return False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # [10.10] TPS recording + gradient warning
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def record_tps(self, tps: float, gpu_active: bool = True) -> None:
+        """
+        Record a TPS measurement. If the last 3 are all below the threshold,
+        emit a gradient warning to the coordinate graph (fire-and-forget).
+        Threshold: 8 tok/s GPU, 2 tok/s CPU.
+        """
+        threshold = 8.0 if gpu_active else 2.0
+        self._tps_window.append(tps)
+        if len(self._tps_window) > 3:
+            self._tps_window.pop(0)
+
+        if (
+            len(self._tps_window) >= 3
+            and all(t < threshold for t in self._tps_window)
+            and not self._tps_slow_warned
+        ):
+            self._tps_slow_warned = True
+            avg = sum(self._tps_window) / len(self._tps_window)
+            logger.warning(
+                f"[LocalModelManager] TPS degraded: {avg:.1f} tok/s avg "
+                f"(threshold {threshold:.0f}) for last 3 responses"
+            )
+            # Best-effort write to coordinate graph
+            try:
+                import subprocess as _sp
+                import sys as _sys
+                _sp.Popen(
+                    [_sys.executable, "bootstrap/record_event.py",
+                     "--type", "note",
+                     "--desc", f"TPS degraded: {avg:.1f} tok/s avg for 3 consecutive responses "
+                               f"(threshold {threshold:.0f} tok/s {'GPU' if gpu_active else 'CPU'})"],
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                    cwd=str(IRISVOICE_ROOT),
+                )
+            except Exception:
+                pass
+        elif tps >= threshold:
+            # Reset: fast response clears the warning window
+            self._tps_slow_warned = False
+
+    async def load_model(
+        self,
+        model_path: str,
+        profile: str = "balanced",
+        custom_params: Dict[str, Any] = None,
+        progress_cb=None,  # async callable(event: dict) — optional progress hook
+        crash_cb=None,     # async callable() — called if subprocess dies after load
+    ) -> bool:
+        """
+        Stop existing subprocess (if any), spawn new llama-cpp-python server.
+        Streams incremental load progress via progress_cb if provided.
+        Returns True when /health responds 200.
+
+        [10.6] Held under _load_lock — concurrent calls return False immediately.
+        [10.5] Pre-flight resource check before spawning subprocess.
+        [10.7] Starts watchdog task after successful load.
+        """
+        # [10.6] Concurrent load guard
+        lock = self._get_load_lock()
+        if lock.locked():
+            logger.warning("[LocalModelManager] Load already in progress — rejecting concurrent request")
+            if progress_cb:
+                try:
+                    await progress_cb({
+                        "phase": "error", "pct": 0,
+                        "msg": "Load already in progress — wait for current load to complete",
+                    })
+                except Exception:
+                    pass
+            return False
+
+        async with lock:
+            self._stop_watchdog()  # cancel any existing watchdog
+            await self.unload_model()
+            self._invalidate_hw_cache()  # VRAM state will change during load
+
+            # Resolve requested profile; may fall back if the fork isn't
+            # installed and the profile demands it.
+            profile = self._resolve_profile_for_environment(profile)
+            params = self.get_profile_params(profile, custom_params or {})
+
+            # [10.5] Pre-flight resource check — fail fast before spawning
+            preflight_error = self._preflight_resource_check(model_path, params)
+            if preflight_error:
+                logger.error(f"[LocalModelManager] Pre-flight failed: {preflight_error}")
+                if progress_cb:
+                    try:
+                        await progress_cb({"phase": "error", "pct": 0, "msg": preflight_error})
+                    except Exception:
+                        pass
+                return False
+
+            # ── In-process path (preferred) ──────────────────────────────
+            # Short-circuits the entire subprocess machinery below.
+            if self._inprocess_enabled():
+                self._current_profile = profile
+                ok = await self._load_inprocess(model_path, params, progress_cb=progress_cb)
+                if ok:
+                    filename = Path(model_path).name
+                    self.save_model_settings(filename, {
+                        "last_profile": profile,
+                        "last_ctx": params.get("n_ctx", 8192),
+                        "last_gpu_layers": params.get("n_gpu_layers", -1),
+                    })
+                    self._invalidate_hw_cache()
+                return ok
+
+            # ── Legacy subprocess path (IRIS_INPROCESS_LLAMA=0) ──────────
+            cmd = self._build_server_cmd(model_path, params)
+            logger.info(f"[LocalModelManager] Starting llama-cpp-python server: {' '.join(cmd)}")
+
+            loop = asyncio.get_running_loop()
+
+            with self._lock:
+                try:
+                    self._process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,  # line-buffered so we get progress lines as they arrive
+                    )
+                    self._current_model_path = model_path
+                    self._current_profile = profile
+                    self._current_params = params  # [10.9] track for hot-apply comparison
+                except FileNotFoundError:
+                    logger.error("[LocalModelManager] llama-cpp-python not installed or python not found")
+                    return False
+
+            # ── Background thread reads stdout and pushes parsed events to queue ──
+            progress_queue: asyncio.Queue = asyncio.Queue()
+
+            def _read_stdout() -> None:
+                try:
+                    proc = self._process
+                    if proc is None or proc.stdout is None:
+                        return
+                    for raw_line in proc.stdout:
+                        line = raw_line.rstrip()
+                        if not line:
+                            continue
+                        logger.debug(f"[llama-server] {line}")
+                        event = self._parse_load_progress(line)
+                        if event:
+                            loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+                except Exception as exc:
+                    logger.debug(f"[LocalModelManager] stdout reader exited: {exc}")
+                finally:
+                    loop.call_soon_threadsafe(progress_queue.put_nowait, None)  # sentinel
+
+            reader = threading.Thread(target=_read_stdout, daemon=True, name="llm-stdout-reader")
+            reader.start()
+
+            # ── Async wait loop — drain progress queue + poll for server ready ──
+            # Poll with exponential backoff: starts at 1 s, doubles each miss up to 8 s.
+            # This prevents 2 HTTP requests/sec thrashing the event loop during a 3-min load.
+            deadline = loop.time() + 180.0  # 3 min max (large models on slow HW need time)
+            ready = False
+            last_pct = 0
+            poll_interval = 1.0  # seconds; grows with backoff
+
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                while loop.time() < deadline:
+                    if not self.is_loaded():
+                        break  # process died
+
+                    # Drain any queued progress events before polling health
+                    while True:
+                        try:
+                            event = progress_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        if event is None:
+                            break  # stdout EOF
+                        if progress_cb and event.get("pct", 0) > last_pct:
+                            last_pct = event["pct"]
+                            try:
+                                await progress_cb(event)
+                            except Exception:
+                                pass
+
+                    # Poll health endpoint
+                    for path in ("/health", "/v1/models"):
+                        try:
+                            r = await client.get(f"http://127.0.0.1:{self.PORT}{path}")
+                            if r.status_code == 200:
+                                ready = True
+                                break
+                        except Exception:
+                            pass
+
+                    if ready:
+                        break
+                    await asyncio.sleep(poll_interval)
+                    # Exponential backoff: 1 s → 2 s → 4 s → 8 s (cap) per missed poll
+                    poll_interval = min(poll_interval * 2, 8.0)
+
+            if ready:
+                filename = Path(model_path).name
+                self.save_model_settings(filename, {
+                    "last_profile": profile,
+                    "last_ctx": params.get("n_ctx", 8192),
+                    "last_gpu_layers": params.get("n_gpu_layers", -1),
+                })
+                self._invalidate_hw_cache()  # refresh VRAM after model occupies GPU
+                # [10.7] Start watchdog — detects subprocess death after load
+                self._watchdog_task = asyncio.ensure_future(
+                    self._run_watchdog(crash_cb=crash_cb)
+                )
+                logger.info(f"[LocalModelManager] Model ready at {self.ENDPOINT}")
+            else:
+                logger.error("[LocalModelManager] Timed out waiting for server to start")
+                await self.unload_model()
+            return ready
+
+    def _resolve_profile_for_environment(self, profile: str) -> str:
+        """If the requested profile demands a fork we don't have, fall back
+        to a safe default and log a warning. No-op for profiles that don't
+        declare ``requires_fork``."""
+        cfg = PROFILES.get(profile)
+        if not cfg:
+            return profile
+        needed = cfg.get("requires_fork")
+        if not needed:
+            return profile
+        if needed == "llama-cpp-turboquant" and not self._rotorquant_available:
+            logger.warning(
+                f"[LocalModelManager] Profile '{profile}' requires the "
+                f"llama-cpp-turboquant fork (RotorQuant); not installed. "
+                f"Falling back to 'performance'. See docs/rotorquant_build.md."
+            )
+            return "performance"
+        return profile
+
+    async def unload_model(self) -> bool:
+        # [10.7] Cancel watchdog before stopping subprocess
+        self._stop_watchdog()
+        self._stop_progress_heartbeat()
+
+        # ── In-process path: drop the Llama instance and let GC free VRAM ──
+        if self._llm is not None:
+            with self._inference_lock:
+                self._llm = None
+            gc.collect()
+            with self._lock:
+                self._current_model_path = None
+                self._current_params = {}
+            self._invalidate_hw_cache()
+            logger.info("[LocalModelManager] In-process model unloaded")
+            return True
+
+        # ── Legacy subprocess path ─────────────────────────────────────────
+        with self._lock:
+            if self._process is None:
+                return True
+            try:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait()
+            except Exception as e:
+                logger.warning(f"[LocalModelManager] Error stopping subprocess: {e}")
+            finally:
+                self._process = None
+                self._current_model_path = None
+                self._current_params = {}  # [10.9] reset param tracking
+        self._invalidate_hw_cache()
+        logger.info("[LocalModelManager] Model unloaded")
+        return True
+
+    async def health_check(self) -> bool:
+        # In-process: simply check the Llama instance exists. Subprocess:
+        # probe HTTP endpoints as before.
+        if self._llm is not None:
+            return True
+        for path in ("/health", "/v1/models"):
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    r = await client.get(f"http://127.0.0.1:{self.PORT}{path}")
+                    if r.status_code == 200:
+                        return True
+            except Exception:
+                pass
+        return False
+
+    def is_loaded(self) -> bool:
+        # In-process wins: if a Llama instance is held we're loaded.
+        if self._llm is not None:
+            return True
+        with self._lock:
+            return self._process is not None and self._process.poll() is None
+
+    def get_status(self) -> Dict[str, Any]:
+        loaded = self.is_loaded()
+        inprocess = self._llm is not None
+        return {
+            "loaded": loaded,
+            "model_path": self._current_model_path if loaded else None,
+            "profile": self._current_profile if loaded else None,
+            # Endpoint is only meaningful when we're running the subprocess
+            # HTTP server; in-process has no URL.
+            "endpoint": None if inprocess else (self.ENDPOINT if loaded else None),
+            "pid": None if inprocess else (self._process.pid if loaded and self._process else None),
+            "inprocess": inprocess,
+            "rotorquant": self._rotorquant_available,
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Subprocess command builder
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _find_llama_server_binary() -> Optional[str]:
+        """
+        Locate ik_llama.cpp's llama-server binary.
+        Priority: IK_LLAMA_SERVER env var → PATH → common install locations.
+        Returns full path string, or None if not found.
+        """
+        import shutil
+        # 1. Explicit override
+        env_path = os.environ.get("IK_LLAMA_SERVER")
+        if env_path and Path(env_path).is_file():
+            return env_path
+        # 2. PATH lookup
+        found = shutil.which("llama-server")
+        if found:
+            return found
+        # 3. Common install locations — platform-aware
+        if sys.platform == "win32":
+            candidates = [
+                Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server.exe",
+                Path.home() / "llama.cpp" / "build" / "bin" / "llama-server.exe",
+                Path("C:/tools/llama-server.exe"),
+                Path("C:/llama/llama-server.exe"),
+            ]
+        else:
+            # Linux / macOS
+            candidates = [
+                Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server",
+                Path.home() / "llama.cpp" / "build" / "bin" / "llama-server",
+                Path("/usr/local/bin/llama-server"),
+                Path("/usr/bin/llama-server"),
+                Path("/opt/llama/bin/llama-server"),
+            ]
+        for c in candidates:
+            if c.is_file():
+                return str(c)
+        return None
+
+    @staticmethod
+    def _find_llama_python() -> str:
+        """
+        Find the best Python interpreter for running llama_cpp.server.
+        Prefers one with CUDA support; falls back to sys.executable.
+
+        Logic:
+          1. Check sys.executable (current interpreter) for CUDA support
+          2. Check IRIS_LLAMA_PYTHON env var override
+          3. Try py -3.12 (Python 3.12 has pre-built CUDA wheels)
+          4. Fall back to sys.executable regardless
+        """
+        def _has_cuda(python_exe: str) -> bool:
+            try:
+                result = subprocess.run(
+                    [python_exe, "-c",
+                     "import llama_cpp; exit(0 if llama_cpp.llama_supports_gpu_offload() else 1)"],
+                    capture_output=True, timeout=10,
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
+
+        def _has_llama(python_exe: str) -> bool:
+            try:
+                result = subprocess.run(
+                    [python_exe, "-c", "import llama_cpp"],
+                    capture_output=True, timeout=10,
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
+
+        # Env override
+        env_py = os.environ.get("IRIS_LLAMA_PYTHON")
+        if env_py and Path(env_py).is_file():
+            return env_py
+
+        # Check current interpreter first (fast path)
+        if _has_cuda(sys.executable):
+            return sys.executable
+
+        # Try to find a Python 3.12 with CUDA/llama support
+        import shutil
+        if sys.platform == "win32":
+            # Windows: use py launcher
+            py_candidates: List[str] = []
+            py_launcher = shutil.which("py")
+            if py_launcher:
+                try:
+                    result = subprocess.run(
+                        [py_launcher, "-3.12", "-c", "import sys; print(sys.executable)"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if result.returncode == 0:
+                        py_candidates.append(result.stdout.strip())
+                except Exception:
+                    pass
+        else:
+            # Linux/macOS: check versioned executables in PATH
+            py_candidates = []
+            for name in ("python3.12", "python3.11", "python3"):
+                found_py = shutil.which(name)
+                if found_py and found_py != sys.executable:
+                    py_candidates.append(found_py)
+
+        for py312 in py_candidates:
+            if _has_cuda(py312):
+                logger.info(f"[LocalModelManager] Using Python with CUDA: {py312}")
+                return py312
+            elif _has_llama(py312):
+                logger.info(f"[LocalModelManager] Using Python (no CUDA): {py312}")
+                return py312
+
+        # Fall back to current interpreter even without CUDA
+        return sys.executable
+
+    def _build_server_cmd(self, model_path: str, params: Dict[str, Any]) -> List[str]:
+        """
+        Build the inference server command.
+        Prefers ik_llama.cpp's llama-server binary when available.
+        Falls back to python -m llama_cpp.server (llama-cpp-python).
+
+        ik_llama.cpp flags use hyphens and different names:
+          --ctx-size instead of --n_ctx
+          --batch-size instead of --n_batch
+          --n-gpu-layers instead of --n_gpu_layers
+          --threads instead of --n_threads
+        """
+        llama_server = self._find_llama_server_binary()
+
+        if llama_server:
+            # ── ik_llama.cpp / compiled llama-server ───────────────────────
+            logger.info(f"[LocalModelManager] Using ik_llama.cpp binary: {llama_server}")
+            cmd = [
+                llama_server,
+                "--model", str(model_path),
+                "--port", str(self.PORT),
+                "--host", "127.0.0.1",
+                "--threads", str(cpu_count()),
+            ]
+            n_gpu = params.get("n_gpu_layers")
+            if n_gpu is not None:
+                cmd += ["--n-gpu-layers", str(n_gpu)]
+            if params.get("n_ctx"):
+                cmd += ["--ctx-size", str(params["n_ctx"])]
+            if params.get("n_batch"):
+                cmd += ["--batch-size", str(params["n_batch"])]
+            if params.get("flash_attn"):
+                cmd += ["--flash-attn"]
+            if params.get("cache_type_k"):
+                cmd += ["--cache-type-k", params["cache_type_k"]]
+            if params.get("cache_type_v"):
+                cmd += ["--cache-type-v", params["cache_type_v"]]
+            if params.get("use_mmap", True):
+                cmd += ["--mmap"]
+            if params.get("keep_model_in_memory"):
+                cmd += ["--mlock"]
+            if params.get("offload_kv_cache"):
+                cmd += ["--offload-kqv"]
+            seed = params.get("seed")
+            if seed is not None and seed != -1:
+                cmd += ["--seed", str(int(seed))]
+        else:
+            # ── llama-cpp-python fallback ──────────────────────────────────
+            # Flag reference (llama_cpp.server v0.3+):
+            #   --type_k / --type_v expect GGML_TYPE integer (F16=1, Q4_0=2, Q8_0=8, Q4_K=12)
+            #   --offload_kqv  bool  (default: True)
+            #   --flash_attn   bool
+            _GGML_TYPE = {
+                "f32": 0, "f16": 1, "bf16": 30,
+                "q4_0": 2, "q4_1": 3, "q5_0": 6, "q5_1": 7,
+                "q8_0": 8, "q8_1": 9,
+                "q2_k": 10, "q3_k": 11, "q3_k_s": 11, "q3_k_m": 11,
+                "q4_k": 12, "q4_k_s": 12, "q4_k_m": 12,
+                "q5_k": 13, "q5_k_s": 13, "q5_k_m": 13,
+                "q6_k": 14, "q8_k": 15,
+            }
+            python_exe = self._find_llama_python()
+            logger.info(f"[LocalModelManager] llama-server not found; using {python_exe} -m llama_cpp.server")
+            cmd = [
+                python_exe, "-m", "llama_cpp.server",
+                "--model", str(model_path),
+                "--port", str(self.PORT),
+                "--host", "127.0.0.1",
+                "--n_threads", str(cpu_count()),
+            ]
+            n_gpu = params.get("n_gpu_layers")
+            if n_gpu is not None:
+                cmd += ["--n_gpu_layers", str(n_gpu)]
+            if params.get("n_ctx"):
+                cmd += ["--n_ctx", str(params["n_ctx"])]
+            if params.get("n_batch"):
+                cmd += ["--n_batch", str(params["n_batch"])]
+            if params.get("flash_attn"):
+                cmd += ["--flash_attn", "true"]
+            if params.get("cache_type_k"):
+                type_int = _GGML_TYPE.get(params["cache_type_k"].lower(), 1)
+                cmd += ["--type_k", str(type_int)]
+            if params.get("cache_type_v"):
+                type_int = _GGML_TYPE.get(params["cache_type_v"].lower(), 1)
+                cmd += ["--type_v", str(type_int)]
+            if params.get("use_mmap"):
+                cmd += ["--use_mmap", "true"]
+            if params.get("keep_model_in_memory"):
+                cmd += ["--use_mlock", "true"]
+            if params.get("offload_kv_cache"):
+                cmd += ["--offload_kqv", "true"]
+            seed = params.get("seed")
+            if seed is not None and seed != -1:
+                cmd += ["--seed", str(int(seed))]
+
+        return cmd
+
+    async def _wait_for_ready(self, timeout: float = 90.0) -> bool:
+        # Probe both /health (ik_llama.cpp) and /v1/models (llama-cpp-python)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            while loop.time() < deadline:
+                if not self.is_loaded():
+                    return False
+                for path in ("/health", "/v1/models"):
+                    try:
+                        r = await client.get(f"http://127.0.0.1:{self.PORT}{path}")
+                        if r.status_code == 200:
+                            return True
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.75)
+        return False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # HuggingFace download
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def download_model(
+        self, repo_id: str, filename: str, dest_dir: Optional[Path] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Download a GGUF file from HuggingFace Hub.
+        Yields progress dicts: {status, progress_pct, bytes_downloaded, total_bytes, error?}
+        """
+        if not HF_HUB_AVAILABLE:
+            yield {"status": "error", "error": "huggingface_hub not installed", "progress_pct": 0}
+            return
+
+        dest = (dest_dir or self.MODELS_DIR) / filename
+        if dest.exists():
+            yield {"status": "complete", "progress_pct": 100, "path": str(dest)}
+            return
+
+        yield {"status": "starting", "progress_pct": 0, "filename": filename}
+
+        loop = asyncio.get_running_loop()
+        try:
+            path = await loop.run_in_executor(
+                None,
+                lambda: hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    local_dir=str(dest_dir or self.MODELS_DIR),
+                ),
+            )
+            yield {
+                "status": "complete",
+                "progress_pct": 100,
+                "filename": filename,
+                "path": path,
+            }
+        except Exception as e:
+            yield {"status": "error", "error": str(e), "progress_pct": 0, "filename": filename}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Per-model settings persistence
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def load_model_settings(self) -> Dict[str, Any]:
+        if not self.SETTINGS_FILE.exists():
+            return {}
+        try:
+            return json.loads(self.SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def save_model_settings(self, filename: str, settings: Dict[str, Any]) -> None:
+        all_settings = self.load_model_settings()
+        existing = all_settings.get(filename, {})
+        existing.update(settings)
+        all_settings[filename] = existing
+        try:
+            self.SETTINGS_FILE.write_text(
+                json.dumps(all_settings, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.warning(f"[LocalModelManager] Could not save model settings: {e}")
+
+    def toggle_pin(self, filename: str) -> bool:
+        """Toggle pin state for a model. Returns new pin state."""
+        settings = self.load_model_settings()
+        current = settings.get(filename, {})
+        new_pin = not current.get("pinned", False)
+        self.save_model_settings(filename, {"pinned": new_pin})
+        return new_pin
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Cleanup
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _register_cleanup(self) -> None:
+        atexit.register(self._sync_cleanup)
+        try:
+            signal.signal(signal.SIGTERM, lambda *_: self._sync_cleanup())
+        except (OSError, ValueError):
+            pass  # SIGTERM not available on Windows console
+
+    def _sync_cleanup(self) -> None:
+        # In-process instance — best-effort drop. Python's GC will free the
+        # CUDA context when the interpreter exits even if we skip this.
+        if self._llm is not None:
+            try:
+                self._llm = None
+                gc.collect()
+                logger.info("[LocalModelManager] In-process model released on shutdown")
+            except Exception:
+                pass
+        with self._lock:
+            if self._process is not None:
+                try:
+                    self._process.terminate()
+                    self._process.wait(timeout=3)
+                except Exception:
+                    try:
+                        self._process.kill()
+                    except Exception:
+                        pass
+                self._process = None
+                logger.info("[LocalModelManager] Subprocess killed on shutdown")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Helpers + OpenAI-client adapter for the in-process path
+# ─────────────────────────────────────────────────────────────────────────
+
+# openai-client kwargs that aren't meaningful to Llama.create_chat_completion,
+# or that map differently. We strip these before handing kwargs to llama-cpp.
+_OPENAI_ONLY_KWARGS = frozenset({
+    # "model" is required by openai; Llama already knows which weights are loaded.
+    "model",
+    # "extra_body" carries provider-specific hints like chat_template_kwargs.
+    # Stock llama-cpp-python does not consume it; silently drop.
+    "extra_body",
+    # Timeouts are HTTP concerns.
+    "timeout",
+    # Not yet supported by our path.
+    "user",
+    "response_format",
+    "logit_bias",
+    "seed",  # Llama accepts via ctor, not per-call
+})
+
+
+def _sanitise_completion_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop kwargs meaningful only to the OpenAI HTTP client; translate where
+    straightforward. Returns a new dict — does not mutate input."""
+    out: Dict[str, Any] = {}
+    for k, v in kwargs.items():
+        if k in _OPENAI_ONLY_KWARGS:
+            continue
+        # max_tokens=-1 is OpenAI shorthand for "no cap"; llama-cpp wants None.
+        if k == "max_tokens" and v == -1:
+            continue
+        out[k] = v
+    return out
+
+
+def _wrap_chat_response(data: Dict[str, Any]) -> Any:
+    """Convert a `Llama.create_chat_completion` dict into an attribute-access
+    object tree so caller code can do `resp.choices[0].message.content` —
+    matching the shape the kernel expects from the real openai Pydantic
+    response.
+
+    Tool calls are handled: each tool_call dict gets wrapped such that
+    ``tc.id``, ``tc.function.name``, ``tc.function.arguments`` are all
+    attribute-accessible, and ``tc.index`` is set so the kernel's
+    accumulation loop (which works off stream-style indices) is happy.
+    """
+    def _wrap(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return SimpleNamespace(**{k: _wrap(v) for k, v in obj.items()})
+        if isinstance(obj, list):
+            return [_wrap(i) for i in obj]
+        return obj
+
+    wrapped = _wrap(data)
+
+    # llama-cpp returns usage as a dict with prompt_tokens / completion_tokens
+    # — the wrapping above turns it into a SimpleNamespace already. Nothing
+    # extra to do on the non-streaming path.
+    return wrapped
+
+
+def _wrap_chat_chunk(chunk: Dict[str, Any]) -> Any:
+    """Convert a streaming chunk dict into the object shape the kernel
+    iterates over: ``chunk.choices[0].delta.content``,
+    ``chunk.choices[0].delta.tool_calls[i].{index,id,function.name,function.arguments}``,
+    ``chunk.choices[0].finish_reason``.
+    """
+    # llama-cpp chunk shape matches OpenAI closely; the generic wrapper works.
+    wrapped = _wrap_chat_response(chunk)
+    # Defensive: some llama-cpp builds emit choices[].delta without a
+    # `content` attribute on empty deltas — ensure it's at least present.
+    try:
+        for ch in wrapped.choices:
+            if not hasattr(ch, "delta"):
+                ch.delta = SimpleNamespace(content=None, tool_calls=None)
+            else:
+                if not hasattr(ch.delta, "content"):
+                    ch.delta.content = None
+                if not hasattr(ch.delta, "tool_calls"):
+                    ch.delta.tool_calls = None
+    except Exception:
+        pass
+    return wrapped
+
+
+class InProcessOpenAIAdapter:
+    """Duck-types ``openai.OpenAI`` narrowly enough for the agent kernel's
+    three call sites:
+
+      client.chat.completions.create(**kwargs)          → non-streaming dict → wrapped obj
+      client.chat.completions.create(..., stream=True)  → iterator of wrapped chunks
+
+    All access patterns that the kernel uses on the returned object
+    (``resp.choices[0].message.content``, ``resp.choices[0].message.tool_calls``,
+    ``chunk.choices[0].delta.content``, ``chunk.choices[0].delta.tool_calls``,
+    ``chunk.choices[0].finish_reason``, ``resp.usage.prompt_tokens``, etc.)
+    go through ``_wrap_chat_response`` / ``_wrap_chat_chunk``.
+
+    NOT a general-purpose OpenAI replacement — specifically targets the
+    ``iris_local`` provider path in ``AgentKernel``. Other providers still
+    use the real openai HTTP client.
+    """
+
+    def __init__(self, mgr: "LocalModelManager") -> None:
+        self._mgr = mgr
+        # openai-python style surface: client.chat.completions.create(...)
+        self.chat = self
+        self.completions = self
+
+    def create(self, **kwargs) -> Any:
+        if kwargs.get("stream"):
+            return _WrappedStream(self._mgr.create_chat_completion_stream(**kwargs))
+        raw = self._mgr.create_chat_completion(**kwargs)
+        return _wrap_chat_response(raw)
+
+
+class _WrappedStream:
+    """Iterator over wrapped streaming chunks.
+
+    Kept as a class so the kernel can ``for chunk in resp: ...`` — matching
+    how the real openai client's stream object behaves.
+    """
+
+    def __init__(self, inner: Iterator[Dict[str, Any]]) -> None:
+        self._inner = inner
+
+    def __iter__(self) -> "_WrappedStream":
+        return self
+
+    def __next__(self) -> Any:
+        raw = next(self._inner)
+        return _wrap_chat_chunk(raw)
+
+
+# ── Singleton ──────────────────────────────────────────────────────────────
+_local_model_manager: Optional[LocalModelManager] = None
+_manager_lock = threading.Lock()
+
+
+def get_local_model_manager() -> LocalModelManager:
+    global _local_model_manager
+    if _local_model_manager is None:
+        with _manager_lock:
+            if _local_model_manager is None:
+                _local_model_manager = LocalModelManager()
+    return _local_model_manager

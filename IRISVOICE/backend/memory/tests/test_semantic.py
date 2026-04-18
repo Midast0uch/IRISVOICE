@@ -18,9 +18,15 @@ from backend.memory.semantic import SemanticStore, SemanticEntry
 
 @pytest.fixture
 def temp_db_path():
-    """Create a temporary database path."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield os.path.join(tmpdir, "test_semantic.db")
+    """Create a temporary database path (Windows-safe: SQLite holds file lock on Windows
+    so TemporaryDirectory().__exit__ raises PermissionError. Use mkdtemp + explicit
+    gc.collect() to flush Python's SQLite connection finalizers before rmtree.)"""
+    import gc
+    import shutil
+    tmpdir = tempfile.mkdtemp()
+    yield os.path.join(tmpdir, "test_semantic.db")
+    gc.collect()  # flush any lingering sqlite3.Connection finalizers
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @pytest.fixture
@@ -92,30 +98,32 @@ class TestUpdate:
     def test_update_creates_new_entry(self, temp_db_path, biometric_key):
         """Test that update creates a new entry."""
         store = SemanticStore(temp_db_path, biometric_key)
-        
+
         # Mock the database
-        store.conn = Mock()
-        store.conn.execute = Mock()
-        store.conn.commit = Mock()
-        
+        store._db = Mock()
+        store._db.execute = Mock()
+        store._db.execute.return_value.fetchone.return_value = (1,)
+        store._db.commit = Mock()
+
         store.update("user_preferences", "response_length", "concise")
-        
-        store.conn.execute.assert_called()
-        store.conn.commit.assert_called()
+
+        store._db.execute.assert_called()
+        store._db.commit.assert_called()
     
     def test_update_increments_version(self, temp_db_path, biometric_key):
         """Test that update increments version on conflict."""
         store = SemanticStore(temp_db_path, biometric_key)
-        
-        store.conn = Mock()
-        store.conn.execute = Mock()
-        store.conn.commit = Mock()
-        
-        # First update
-        store.update("user_preferences", "response_length", "concise", version=1)
-        
+
+        store._db = Mock()
+        store._db.execute = Mock()
+        store._db.execute.return_value.fetchone.return_value = (2,)
+        store._db.commit = Mock()
+
+        # update() auto-increments version via ON CONFLICT upsert — no version kwarg
+        store.update("user_preferences", "response_length", "concise")
+
         # Check that upsert is used (INSERT ... ON CONFLICT)
-        call_args = str(store.conn.execute.call_args)
+        call_args = str(store._db.execute.call_args)
         assert "INSERT" in call_args or "upsert" in call_args.lower()
 
 
@@ -126,8 +134,8 @@ class TestGet:
         """Test that get returns an entry."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchone.return_value = (
+        store._db = Mock()
+        store._db.execute.return_value.fetchone.return_value = (
             "user_preferences", "response_length", "concise", 1, 1.0, "user_set", "2024-01-01"
         )
         
@@ -140,8 +148,8 @@ class TestGet:
         """Test that get returns None for missing entry."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchone.return_value = None
+        store._db = Mock()
+        store._db.execute.return_value.fetchone.return_value = None
         
         entry = store.get("user_preferences", "nonexistent")
         
@@ -154,15 +162,16 @@ class TestDelete:
     def test_delete_removes_entry(self, temp_db_path, biometric_key):
         """Test that delete removes an entry."""
         store = SemanticStore(temp_db_path, biometric_key)
-        
-        store.conn = Mock()
-        store.conn.execute = Mock()
-        store.conn.commit = Mock()
-        
+
+        store._db = Mock()
+        store._db.execute = Mock()
+        store._db.execute.return_value.rowcount = 1  # delete() checks cursor.rowcount > 0
+        store._db.commit = Mock()
+
         store.delete("user_preferences", "response_length")
-        
-        store.conn.execute.assert_called()
-        store.conn.commit.assert_called()
+
+        store._db.execute.assert_called()
+        store._db.commit.assert_called()
 
 
 class TestGetByCategory:
@@ -172,8 +181,8 @@ class TestGetByCategory:
         """Test that get_by_category returns a list."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchall.return_value = [
+        store._db = Mock()
+        store._db.execute.return_value.fetchall.return_value = [
             ("user_preferences", "response_length", "concise", 1, 1.0, "user_set", "2024-01-01"),
             ("user_preferences", "tone", "friendly", 1, 0.9, "distillation", "2024-01-01"),
         ]
@@ -190,15 +199,16 @@ class TestGetStartupHeader:
     def test_get_startup_header_includes_preferences(self, temp_db_path, biometric_key):
         """Test that header includes user preferences."""
         store = SemanticStore(temp_db_path, biometric_key)
-        
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchall.return_value = [
-            ("response_length", "concise"),
-            ("tone", "friendly"),
+
+        store._db = Mock()
+        # get_by_category() selects: category, key, value, version, confidence, source, updated
+        store._db.execute.return_value.fetchall.return_value = [
+            ("user_preferences", "response_length", "concise", 1, 1.0, "user_set", "2024-01-01"),
+            ("user_preferences", "tone", "friendly", 1, 0.9, "user_set", "2024-01-01"),
         ]
-        
+
         header = store.get_startup_header()
-        
+
         assert "concise" in header
         assert "friendly" in header
     
@@ -206,13 +216,13 @@ class TestGetStartupHeader:
         """Test that header filters by HEADER_CATEGORIES."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchall.return_value = []
+        store._db = Mock()
+        store._db.execute.return_value.fetchall.return_value = []
         
         store.get_startup_header()
         
         # Verify query includes category filter
-        call_args = str(store.conn.execute.call_args)
+        call_args = str(store._db.execute.call_args)
         assert "category" in call_args.lower()
 
 
@@ -223,39 +233,40 @@ class TestDeltaSync:
         """Test getting entries changed since version."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchall.return_value = [
+        store._db = Mock()
+        store._db.execute.return_value.fetchall.return_value = [
             ("user_preferences", "response_length", "concise", 5, 1.0, "user_set", "2024-01-01"),
         ]
         
         entries = store.get_delta_since_version(since_version=3)
-        
+
         # Should only return entries with version > 3
+        # get_delta_since_version returns list of dicts keyed by field name
         assert len(entries) == 1
-        assert entries[0][3] > 3  # version > 3
+        assert entries[0]["version"] > 3
     
     def test_get_delta_orders_by_version(self, temp_db_path, biometric_key):
         """Test that delta entries are ordered by version."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchall.return_value = [
+        store._db = Mock()
+        store._db.execute.return_value.fetchall.return_value = [
             ("cat1", "key1", "val1", 4, 1.0, "user_set", "2024-01-01"),
             ("cat1", "key2", "val2", 5, 1.0, "user_set", "2024-01-01"),
         ]
         
         entries = store.get_delta_since_version(since_version=3)
-        
-        # Verify ordering
-        versions = [e[3] for e in entries]
+
+        # Verify ordering — returns list of dicts keyed by field name
+        versions = [e["version"] for e in entries]
         assert versions == sorted(versions)
     
     def test_get_max_version(self, temp_db_path, biometric_key):
         """Test getting maximum version."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchone.return_value = (42,)
+        store._db = Mock()
+        store._db.execute.return_value.fetchone.return_value = (42,)
         
         max_version = store.get_max_version()
         
@@ -269,13 +280,15 @@ class TestUserDisplay:
         """Test that get_display_entries returns a list."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute.return_value.fetchall.return_value = [
-            ("pref_1", "Prefers concise answers", "user_preferences.response_length", "user_set", 1.0, 1),
+        store._db = Mock()
+        # get_display_entries selects: display_key, display_name, internal_ref, source,
+        #                              confidence, editable, created  (7 columns)
+        store._db.execute.return_value.fetchall.return_value = [
+            ("pref_1", "Prefers concise answers", "user_preferences.response_length", "user_set", 1.0, 1, "2024-01-01"),
         ]
-        
+
         entries = store.get_display_entries()
-        
+
         assert isinstance(entries, list)
         assert len(entries) == 1
     
@@ -283,31 +296,32 @@ class TestUserDisplay:
         """Test that update_user_display creates display entry."""
         store = SemanticStore(temp_db_path, biometric_key)
         
-        store.conn = Mock()
-        store.conn.execute = Mock()
-        store.conn.commit = Mock()
+        store._db = Mock()
+        store._db.execute = Mock()
+        store._db.commit = Mock()
         
+        # update_user_display signature: (key, display_name, source, editable)
         store.update_user_display(
-            display_key="pref_1",
-            display_name="Prefers concise answers",
-            internal_ref="user_preferences.response_length"
+            key="pref_1",
+            display_name="Prefers concise answers"
         )
         
-        store.conn.execute.assert_called()
-        store.conn.commit.assert_called()
+        store._db.execute.assert_called()
+        store._db.commit.assert_called()
     
     def test_delete_display_entry_removes_entry(self, temp_db_path, biometric_key):
         """Test that delete_display_entry removes display entry."""
         store = SemanticStore(temp_db_path, biometric_key)
-        
-        store.conn = Mock()
-        store.conn.execute = Mock()
-        store.conn.commit = Mock()
-        
+
+        store._db = Mock()
+        store._db.execute = Mock()
+        store._db.execute.return_value.rowcount = 1  # delete_display_entry() checks cursor.rowcount > 0
+        store._db.commit = Mock()
+
         store.delete_display_entry("pref_1")
-        
-        store.conn.execute.assert_called()
-        store.conn.commit.assert_called()
+
+        store._db.execute.assert_called()
+        store._db.commit.assert_called()
 
 
 class TestVersioning:
@@ -326,16 +340,17 @@ class TestVersioning:
     def test_update_increments_version(self, temp_db_path, biometric_key):
         """Test that updates increment version."""
         store = SemanticStore(temp_db_path, biometric_key)
-        
-        store.conn = Mock()
-        store.conn.execute = Mock()
-        store.conn.commit = Mock()
-        
-        # Simulate update with version increment
-        store.update("user_preferences", "key", "value", version=5)
-        
-        # Verify version is used in query
-        call_args = str(store.conn.execute.call_args)
+
+        store._db = Mock()
+        store._db.execute = Mock()
+        store._db.execute.return_value.fetchone.return_value = (5,)
+        store._db.commit = Mock()
+
+        # update() auto-increments version via ON CONFLICT upsert — no version kwarg
+        store.update("user_preferences", "key", "value")
+
+        # Verify version increment is encoded in the upsert SQL
+        call_args = str(store._db.execute.call_args)
         assert "version" in call_args.lower()
 
 

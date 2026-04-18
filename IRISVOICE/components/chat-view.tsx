@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useRef, useCallback } from "react"
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink } from 'lucide-react';
 import { useNavigation } from "@/contexts/NavigationContext";
@@ -9,6 +9,9 @@ import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
 import { SpotlightState, SpotlightStateType } from "@/hooks/useUILayoutState";
+import { useLauncherMode } from "@/hooks/useLauncherMode";
+import { ConversationChips } from "@/components/chat/ConversationChips";
+import type { ConversationChip } from "@/types/iris";
 
 // Notification types for the universal notification system
 interface Notification {
@@ -25,8 +28,9 @@ interface Notification {
 export type ContentType = 'markdown' | 'email' | 'video' | 'picture' | 'text';
 
 const MESSAGE_THRESHOLDS = {
-  TRUNCATE_AT: 500,       // plain text expand/collapse threshold (raised for bigger windows)
-  DOCUMENT_MODE_AT: 400,  // artifact card threshold — only for structured content, never plain text
+  TRUNCATE_AT: 500,            // plain text expand/collapse threshold
+  DOCUMENT_MODE_AT: 400,       // artifact card threshold for media/email/file uploads
+  MARKDOWN_ARTIFACT_AT: 800,   // artifact card threshold for long markdown from assistant
   WARNING_AT: 3000
 } as const;
 
@@ -36,6 +40,22 @@ const ContentTypePatterns = {
   markdown: /(?:^#{1,6}\s|\*\*|__|\[.+?\]\(.+?\)|```)/m,
   email: /(?:^From:|^To:|^Subject:|\S+@\S+\.\S+)/m
 };
+
+// Heuristic: does this message look like a web-research / search query?
+// If yes, route to crawler_query WS type instead of text_message.
+const CRAWLER_PATTERNS = [
+  /\b(search|look up|find|google|bing|lookup)\b/i,
+  /\b(latest|current|recent|today'?s?|right now|as of)\b/i,
+  /\b(news|headlines|article|report|prices?|stock|weather)\b/i,
+  /\b(what('?s| is) (the )?(price|cost|rate|score|status|news))\b/i,
+  /\b(show me|get me|fetch|retrieve|pull up)\b/i,
+]
+
+function isCrawlerQuery(text: string): boolean {
+  const t = text.trim()
+  if (t.length < 10) return false
+  return CRAWLER_PATTERNS.some(re => re.test(t))
+}
 
 const ContentTypeLabels: Record<ContentType, string> = {
   markdown: 'Markdown Document',
@@ -76,7 +96,8 @@ interface Message {
   timestamp: Date
   errorType?: "agent" | "voice" | "validation"
   words?: string[]; // For TTS word highlighting
-  currentWordIndex?: number; // Current word being spoken
+  // NOTE: currentWordIndex is NOT stored in message state — it lives in ttsWordIndex
+  // component state to avoid re-serialising all conversations on every 200 ms tick.
   feedback?: 'positive' | 'negative' | null; // User feedback on AI responses
   thinking?: string; // Chain-of-thought from the model, shown in a collapsible block
 }
@@ -123,15 +144,73 @@ export function ChatWing({
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
-  // Thread-based conversation state
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Thread-based conversation state — persisted to localStorage so history
+  // survives page reloads and Tauri window closes.
+  // Max 50 conversations kept; messages within each conversation capped at 200.
+  const STORAGE_KEY = "iris_conversations_v1"
+  const ACTIVE_ID_KEY = "iris_active_conversation_id_v1"
+  const MAX_CONVERSATIONS = 50
+  const MAX_MESSAGES_PER_CONV = 200
+
+  const [conversations, setConversations] = useState<Conversation[]>(() => {
+    if (typeof window === "undefined") return []
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return []
+      const parsed: Conversation[] = JSON.parse(raw)
+      // Deserialise timestamp strings back to Date objects
+      return parsed.map(c => ({
+        ...c,
+        timestamp: new Date(c.timestamp),
+        messages: c.messages.map(m => ({ ...m, timestamp: new Date(m.timestamp) })),
+      }))
+    } catch {
+      return []
+    }
+  })
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null
+    return localStorage.getItem(ACTIVE_ID_KEY) || null
+  })
+
+  // Persist conversations with a 1 s debounce — avoids hammering localStorage on every
+  // fast state change (typing, streaming, etc.).  isSpeaking is excluded from the debounce
+  // because the TTS interval no longer mutates conversations anyway.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const id = setTimeout(() => {
+      try {
+        const toStore = conversations.slice(-MAX_CONVERSATIONS).map(c => ({
+          ...c,
+          messages: c.messages.slice(-MAX_MESSAGES_PER_CONV),
+        }))
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore))
+      } catch {
+        // localStorage full or unavailable — silently skip
+      }
+    }, 1000);
+    return () => clearTimeout(id);
+  }, [conversations])
+
+  // Persist active conversation ID
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (activeConversationId) {
+      localStorage.setItem(ACTIVE_ID_KEY, activeConversationId)
+    } else {
+      localStorage.removeItem(ACTIVE_ID_KEY)
+    }
+  }, [activeConversationId])
   const [inputText, setInputText] = useState("")
   const [justSent, setJustSent] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const lastProcessedResponseRef = useRef<typeof lastTextResponse>(null)
+  const activeConversationIdRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const chatPanelRef = useRef<HTMLDivElement>(null)
   const { lastTextResponse, voiceState, isChatTyping, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
   
   // Notification system state
@@ -142,6 +221,9 @@ export function ChatWing({
   // TTS state
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [currentTtsMessageId, setCurrentTtsMessageId] = useState<string | null>(null);
+  // Word index lives here, NOT inside Message/Conversations, so the 200 ms tick
+  // updates a single number rather than remapping all conversations + localStorage.
+  const [ttsWordIndex, setTtsWordIndex] = useState(-1);
   
   // Copy feedback state
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -157,20 +239,43 @@ export function ChatWing({
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [draggedFileType, setDraggedFileType] = useState<'image' | 'video' | 'file' | null>(null);
   
+  // Conversation chips — input focus state (chips slide away on focus)
+  const { isDeveloper } = useLauncherMode()
+  const [isInputFocused, setIsInputFocused] = useState(false)
+
   // Derive isTyping: use isChatTyping for text messages (won't animate the orb),
   // and voiceState for voice pipeline processing/tool states.
   const isTyping = isChatTyping || voiceState === "processing_tool";
-  
+
   // Get theme colors from BrandColorContext for real-time updates
   const { getThemeConfig } = useBrandColor();
   const brandTheme = getThemeConfig();
   const glowColor = brandTheme.glow.color || "#00d4ff";
   const primaryColor = brandTheme.glow.color || "#00d4ff";
   const fontColor = brandTheme.text.primary || "#ffffff";
-  
+
   // Get active conversation messages
   const activeConversation = conversations.find(c => c.id === activeConversationId);
   const messages = activeConversation?.messages || [];
+
+  // Conversation chips — derived from user messages, front-end only, no LLM
+  const conversationChips: ConversationChip[] = useMemo(() => (
+    messages
+      .filter(m => m.sender === 'user')
+      .map((m, index) => ({
+        messageId: m.id,
+        label: m.text.length > 24 ? m.text.slice(0, 24) + '\u2026' : m.text,
+        index,
+      }))
+  ), [messages])
+
+  const handleChipClick = useCallback((messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('chip-highlight')
+    setTimeout(() => el.classList.remove('chip-highlight'), 2000)
+  }, [])
 
   // Calculate unread count when notifications change
   useEffect(() => {
@@ -191,67 +296,83 @@ export function ChatWing({
     }
   }, [isOpen])
 
-  // Scroll to bottom when messages change
+  // Keep ref in sync with activeConversationId state
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages, isTyping])
+    activeConversationIdRef.current = activeConversationId
+  }, [activeConversationId])
 
-  // Handle incoming WebSocket messages from the navigation context
+  // Scroll to bottom when messages change — use container scroll to avoid
+  // scrollIntoView propagating up the DOM tree and shifting the Tauri frame
   useEffect(() => {
-    if (lastTextResponse) {
-      const isUserVoice = lastTextResponse.sender === "user"
+    const el = messagesContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
 
-      // User voice transcriptions show as user bubbles (no TTS — server handles audio)
-      // Assistant responses show as assistant bubbles (client-side TTS highlighting)
-      const newMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: lastTextResponse.text,
-        sender: lastTextResponse.sender,
-        timestamp: new Date(),
-        words: isUserVoice ? undefined : lastTextResponse.text.split(' '),
-        currentWordIndex: isUserVoice ? undefined : -1,
-        feedback: isUserVoice ? undefined : null,
-        thinking: lastTextResponse.thinking || undefined,
-      }
+  // Handle incoming WebSocket messages from the navigation context.
+  // Uses refs instead of state deps to prevent double-processing when
+  // activeConversationId updates cause the effect to re-run.
+  useEffect(() => {
+    if (!lastTextResponse) return
+    // Deduplicate: skip if this exact response object was already processed
+    if (lastTextResponse === lastProcessedResponseRef.current) return
+    lastProcessedResponseRef.current = lastTextResponse
 
-      // Add to active conversation or create new one
-      setConversations(prev => {
-        if (activeConversationId) {
-          // Add to existing conversation
-          return prev.map(conv =>
-            conv.id === activeConversationId
-              ? {
-                  ...conv,
-                  messages: [...conv.messages, newMessage],
-                  lastMessagePreview: newMessage.text.substring(0, 60),
-                  timestamp: new Date()
-                }
-              : conv
-          )
-        } else {
-          // Create new conversation
-          const newConv: Conversation = {
-            id: Date.now().toString(),
-            title: `Conversation ${prev.length + 1}`,
-            preview: newMessage.text.substring(0, 60),
-            messages: [newMessage],
-            timestamp: new Date(),
-            isPinned: false,
-            lastMessagePreview: newMessage.text.substring(0, 60)
-          }
-          setActiveConversationId(newConv.id)
-          return [...prev, newConv]
-        }
-      })
+    const isUserVoice = lastTextResponse.sender === "user"
 
-      // Only trigger client-side TTS word-highlight for assistant messages.
-      // Voice responses: TTS audio is played server-side via TTSManager.
-      if (!isUserVoice) {
-        setCurrentTtsMessageId(newMessage.id)
-        setIsSpeaking(true)
-      }
+    // User voice transcriptions show as user bubbles (no TTS — server handles audio)
+    // Assistant responses show as assistant bubbles (client-side TTS highlighting)
+    const newMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      text: lastTextResponse.text,
+      sender: lastTextResponse.sender,
+      timestamp: new Date(),
+      words: isUserVoice ? undefined : lastTextResponse.text.split(' '),
+      feedback: isUserVoice ? undefined : null,
+      thinking: lastTextResponse.thinking || undefined,
     }
-  }, [lastTextResponse, activeConversationId])
+
+    // Read active ID from ref (not closure) to avoid stale-closure double-trigger
+    const currentActiveId = activeConversationIdRef.current
+
+    if (currentActiveId) {
+      // Add to existing conversation
+      setConversations(prev => prev.map(conv =>
+        conv.id === currentActiveId
+          ? {
+              ...conv,
+              messages: [...conv.messages, newMessage],
+              lastMessagePreview: newMessage.text.substring(0, 60),
+              timestamp: new Date()
+            }
+          : conv
+      ))
+    } else {
+      // Create new conversation — set active ID BEFORE setConversations to
+      // ensure the ref is current when the state update lands
+      const newId = Date.now().toString()
+      activeConversationIdRef.current = newId
+      setActiveConversationId(newId)
+      setConversations(prev => {
+        const newConv: Conversation = {
+          id: newId,
+          title: `Conversation ${prev.length + 1}`,
+          preview: newMessage.text.substring(0, 60),
+          messages: [newMessage],
+          timestamp: new Date(),
+          isPinned: false,
+          lastMessagePreview: newMessage.text.substring(0, 60)
+        }
+        return [...prev, newConv]
+      })
+    }
+
+    // Only trigger client-side TTS word-highlight for assistant messages.
+    // Voice responses: TTS audio is played server-side via TTSManager.
+    if (!isUserVoice) {
+      setCurrentTtsMessageId(newMessage.id)
+      setIsSpeaking(true)
+    }
+  }, [lastTextResponse, isOpen])
   
   // Handle voice command errors
   useEffect(() => {
@@ -299,37 +420,39 @@ export function ChatWing({
     }
   }, [fieldErrors, activeConversationId])
 
-  // Handle TTS word highlighting simulation (fallback when backend doesn't provide tts_word events)
+  // Handle TTS word highlighting simulation (fallback when backend doesn't provide tts_word events).
+  // PERF: word index lives in ttsWordIndex state — a single number — so each 200 ms tick does
+  // NOT remap all conversations or trigger a localStorage write.  messages is NOT in deps;
+  // we snapshot the words array into a ref when speaking starts to avoid re-creating the
+  // interval on every message change.
   useEffect(() => {
-    if (isSpeaking && currentTtsMessageId && activeConversationId) {
-      const message = messages.find((m: Message) => m.id === currentTtsMessageId);
-      if (message && message.words && message.words.length > 0) {
-        let wordIndex = 0;
-        const interval = setInterval(() => {
-          if (wordIndex >= message.words!.length) {
-            setIsSpeaking(false);
-            clearInterval(interval);
-            return;
-          }
-          setConversations((prev: Conversation[]) => prev.map((conv: Conversation) => 
-            conv.id === activeConversationId
-              ? {
-                  ...conv,
-                  messages: conv.messages.map((m: Message) => 
-                    m.id === currentTtsMessageId 
-                      ? { ...m, currentWordIndex: wordIndex }
-                      : m
-                  )
-                }
-              : conv
-          ));
-          wordIndex++;
-        }, 200); // 200ms per word - adjust based on actual TTS speed
-        
-        return () => clearInterval(interval);
-      }
+    if (!isSpeaking || !currentTtsMessageId) {
+      setTtsWordIndex(-1);
+      return;
     }
-  }, [isSpeaking, currentTtsMessageId, activeConversationId, messages]);
+    const message = messages.find((m: Message) => m.id === currentTtsMessageId);
+    if (!message?.words?.length) return;
+
+    const words = message.words; // stable snapshot — won't change while speaking
+    setTtsWordIndex(0);
+    let wordIndex = 0;
+    const interval = setInterval(() => {
+      wordIndex++;
+      if (wordIndex >= words.length) {
+        setIsSpeaking(false);
+        setTtsWordIndex(-1);
+        clearInterval(interval);
+        return;
+      }
+      setTtsWordIndex(wordIndex);
+    }, 200);
+
+    return () => {
+      clearInterval(interval);
+      setTtsWordIndex(-1);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSpeaking, currentTtsMessageId]); // intentionally omit `messages` — words are snapshotted above
 
   // Reset speaking state when voice changes to idle
   useEffect(() => {
@@ -382,8 +505,24 @@ export function ChatWing({
       }
     });
 
-    // Send message via WebSocket if available
-    sendMessage?.("text_message", { text: userMessage.text })
+    // Developer mode: prefix routing for direct shell commands
+    if (isDeveloper && (userMessage.text.startsWith('>') || userMessage.text.startsWith('/run '))) {
+      const command = userMessage.text.startsWith('>')
+        ? userMessage.text.slice(1).trim()
+        : userMessage.text.slice(5).trim()
+      if (command) {
+        sendMessage?.('terminal_input', { line: command })
+        setInputText('')
+        return
+      }
+    }
+
+    // Route to crawler if the query looks like a web-research request
+    const msgType = isCrawlerQuery(userMessage.text) ? "crawler_query" : "text_message"
+    const payload = msgType === "crawler_query"
+      ? { query: userMessage.text }
+      : { text: userMessage.text }
+    sendMessage?.(msgType, payload)
   }
 
   // Conversation management functions
@@ -820,7 +959,8 @@ ${message.text}`;
           }}
         >
           {/* HUD Glass Panel Container */}
-          <motion.div 
+          <motion.div
+            ref={chatPanelRef}
             className="h-full overflow-hidden flex flex-col relative"
             animate={{
               transform: getSpotlightTransform()
@@ -1283,7 +1423,7 @@ ${message.text}`;
             </AnimatePresence>
 
             {/* Messages Area - Thread-Based with Separators */}
-            <div className="flex-1 overflow-y-auto px-3 py-3 relative z-10">
+            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-3 py-3 relative z-10">
               {messages.length === 0 && !isTyping ? (
                 <div 
                   className="flex-1 flex items-center justify-center h-full"
@@ -1313,9 +1453,15 @@ ${message.text}`;
                     const contentType = getContentType(message);
                     const isExpanded = isMessageExpanded(message.id);
                     const shouldTruncate = charCount > MESSAGE_THRESHOLDS.TRUNCATE_AT;
-                    // Only structured content (markdown, email, etc.) becomes an artifact card.
-                    // Plain text always flows as chat — never collapses to a document card.
-                    const isDocumentMode = contentType !== 'text' && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
+                    // Artifact card rules:
+                    //   - Media, email, explicit file uploads → artifact at DOCUMENT_MODE_AT (400 chars)
+                    //   - Long markdown from assistant (code blocks, headers) → artifact at MARKDOWN_ARTIFACT_AT (800 chars)
+                    //     This keeps voice-first UX clean: the full response is always readable,
+                    //     but the chat thread stays concise — tap to expand if needed.
+                    //   - Plain conversational text → always flows as chat (truncate/expand only)
+                    const isExplicitFile = message.text.startsWith('[File:') || message.text.startsWith('[IMAGE:') || message.text.startsWith('[VIDEO:');
+                    const isAssistantMarkdown = message.sender === 'assistant' && contentType === 'markdown' && charCount > MESSAGE_THRESHOLDS.MARKDOWN_ARTIFACT_AT;
+                    const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video' || isAssistantMarkdown) && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
                     
                     // Content type icon mapping
                     const ContentTypeIcon = ({ size = 12 }: { size?: number }) => {
@@ -1330,7 +1476,7 @@ ${message.text}`;
                     };
                     
                     return (
-                    <div key={message.id}>
+                    <div key={message.id} id={`msg-${message.id}`}>
                       {/* Horizontal separator */}
                       {index > 0 && (
                         <div 
@@ -1340,7 +1486,7 @@ ${message.text}`;
                       )}
                       
                       <div
-                        className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                        className={`flex justify-start`}
                       >
                         {message.sender === 'user' ? (
                           // User message - no bubble container
@@ -1606,19 +1752,22 @@ ${message.text}`;
                                 <div className="relative">
                                   <div className="text-[13px] leading-relaxed text-white/85 prose prose-invert prose-sm max-w-none">
                                     {isExpanded ? (
-                                      message.words ? message.words.map((word, idx) => (
+                                      message.words ? message.words.map((word, idx) => {
+                                        const activeIdx = message.id === currentTtsMessageId ? ttsWordIndex : -1;
+                                        return (
                                         <motion.span
                                           key={idx}
-                                          initial={idx === message.currentWordIndex ? { opacity: 0.5 } : false}
-                                          animate={{ 
-                                            opacity: idx === message.currentWordIndex ? 1 : idx < (message.currentWordIndex || -1) ? 0.7 : 0.85,
-                                            color: idx === message.currentWordIndex ? glowColor : 'rgba(255,255,255,0.85)',
+                                          initial={idx === activeIdx ? { opacity: 0.5 } : false}
+                                          animate={{
+                                            opacity: idx === activeIdx ? 1 : idx < activeIdx ? 0.7 : 0.85,
+                                            color: idx === activeIdx ? glowColor : 'rgba(255,255,255,0.85)',
                                           }}
                                           transition={{ duration: prefersReducedMotion ? 0 : 0.1 }}
                                         >
                                           {word}{' '}
                                         </motion.span>
-                                      )) : message.text
+                                        );
+                                      }) : message.text
                                     ) : (
                                       message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT) + '...'
                                     )}
@@ -1666,19 +1815,22 @@ ${message.text}`;
                             ) : (
                               // Short message - display fully with TTS highlighting
                               <div className="text-[13px] leading-relaxed text-white/85 prose prose-invert prose-sm max-w-none">
-                                {message.words ? message.words.map((word, idx) => (
+                                {message.words ? message.words.map((word, idx) => {
+                                  const activeIdx = message.id === currentTtsMessageId ? ttsWordIndex : -1;
+                                  return (
                                   <motion.span
                                     key={idx}
-                                    initial={idx === message.currentWordIndex ? { opacity: 0.5 } : false}
+                                    initial={idx === activeIdx ? { opacity: 0.5 } : false}
                                     animate={{
-                                      opacity: idx === message.currentWordIndex ? 1 : idx < (message.currentWordIndex || -1) ? 0.7 : 0.85,
-                                      color: idx === message.currentWordIndex ? glowColor : 'rgba(255,255,255,0.85)',
+                                      opacity: idx === activeIdx ? 1 : idx < activeIdx ? 0.7 : 0.85,
+                                      color: idx === activeIdx ? glowColor : 'rgba(255,255,255,0.85)',
                                     }}
                                     transition={{ duration: prefersReducedMotion ? 0 : 0.1 }}
                                   >
                                     {word}{' '}
                                   </motion.span>
-                                )) : renderWithLinks(message.text)}
+                                  );
+                                }) : renderWithLinks(message.text)}
                               </div>
                             )}
                             
@@ -1923,15 +2075,22 @@ ${message.text}`;
             </AnimatePresence>
 
             {/* Input Area - Command Line Style with Drag & Drop */}
-            <div 
+            <div
               className="px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"
-              style={{
-                borderColor: 'rgba(255,255,255,0.05)'
-              }}
+              style={{ borderColor: 'rgba(255,255,255,0.05)' }}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
+              {/* Chips trigger — sits above the border-t, right side */}
+              <div className="absolute right-3 top-0 -translate-y-full pb-2 z-40">
+                <ConversationChips
+                  chips={conversationChips}
+                  glowColor={glowColor}
+                  onChipClick={handleChipClick}
+                  containerRef={chatPanelRef}
+                />
+              </div>
               {/* Drag overlay with smile/file icon */}
               <AnimatePresence>
                 {isDraggingFile && (
@@ -1974,6 +2133,8 @@ ${message.text}`;
                         if (inputRef.current) inputRef.current.style.height = 'auto';
                       }
                     }}
+                    onFocus={() => setIsInputFocused(true)}
+                    onBlur={() => setIsInputFocused(false)}
                     placeholder={voiceState === 'listening' ? 'Listening...' : 'Type command or drop file...'}
                     disabled={voiceState === 'listening'}
                     className="w-full bg-transparent border-0 border-b py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
@@ -2045,6 +2206,7 @@ ${message.text}`;
                   >
                     <Plus size={18} />
                   </motion.button>
+
                 </div>
               </div>
             </div>

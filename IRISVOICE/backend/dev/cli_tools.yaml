@@ -1,0 +1,51 @@
+# IRIS CLI Tool Registry
+# Each tool entry defines how the dev orchestrator should invoke a CLI.
+# Fields:
+#   name:         identifier (used in WS messages)
+#   display_name: shown in the ChatView top bar
+#   command:      executable to run (must be on PATH or absolute)
+#   args_template: list; {query} is replaced with the user's text at runtime
+#   when_to_use:  plain-English descriptor — the orchestrator brain reads this
+#   workdir_required: if true, reject invocation if workdir is not set
+#   stream_output: if true, pipe stdout/stderr to wing terminal in real time
+#   timeout_seconds: hard kill timeout (in addition to idle timeout)
+#   tags: list of routing categories for intent classification
+
+tools:
+  - name: kilo_code
+    display_name: "Kilo Code"
+    command: kilo
+    args_template: ["code", "{query}"]
+    when_to_use: >
+      Use when the user asks to write, edit, refactor, debug, or explain code.
+      Also use for tasks like "add a feature", "fix this bug", "create a test",
+      or any task that modifies files in the working directory.
+    workdir_required: true
+    stream_output: true
+    timeout_seconds: 300
+    tags: [code, edit, refactor, debug, test, file]
+
+  - name: claude_code
+    display_name: "Claude Code"
+    command: claude
+    args_template: ["{query}"]
+    when_to_use: >
+      Use when the user asks about architecture, code review, explanations,
+      or general coding assistance that benefits from Claude's broad knowledge.
+      Also use as a fallback when kilo_code is unavailable.
+    workdir_required: false
+    stream_output: true
+    timeout_seconds: 300
+    tags: [code, review, explain, architecture, general]
+
+  - name: opencode
+    display_name: "OpenCode"
+    command: opencode
+    args_template: ["{query}"]
+    when_to_use: >
+      Use when the user asks for open-source code generation, library research,
+      or tasks that benefit from OpenCode's specialised model selection.
+    workdir_required: false
+    stream_output: true
+    timeout_seconds: 300
+    tags: [code, library, open_source, research]

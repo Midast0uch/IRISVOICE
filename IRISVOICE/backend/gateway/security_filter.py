@@ -370,20 +370,23 @@ class SecurityFilter:
         if key not in self._rate_limits:
             self._rate_limits[key] = []
         
-        # Clean up old entries
+        # Clean up old entries; delete key entirely when empty to prevent dict bloat
         cutoff_time = now - timedelta(seconds=time_window_seconds)
         self._rate_limits[key] = [
             timestamp for timestamp in self._rate_limits[key]
             if timestamp > cutoff_time
         ]
-        
+        if not self._rate_limits[key]:
+            del self._rate_limits[key]
+
         # Check if limit exceeded
-        if len(self._rate_limits[key]) >= max_requests:
-            self.logger.warning(f"Rate limit exceeded for {key}: {len(self._rate_limits[key])} requests in {time_window_seconds}s")
+        current = self._rate_limits.get(key, [])
+        if len(current) >= max_requests:
+            self.logger.warning(f"Rate limit exceeded for {key}: {len(current)} requests in {time_window_seconds}s")
             return True
-        
+
         # Add current request
-        self._rate_limits[key].append(now)
+        self._rate_limits.setdefault(key, []).append(now)
         return False
     
     def check_tool_execution_rate_limit(self, session_id: str, tool_name: str) -> bool:

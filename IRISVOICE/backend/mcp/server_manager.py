@@ -6,6 +6,7 @@ import logging
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,10 @@ class ServerManager:
         if ServerManager._initialized:
             return
         
+        import time
+        start_time = time.time()
+        logger.info(f"[ServerManager] Initializing (start: {start_time:.3f}s)")
+        
         self._servers: Dict[str, ServerConfig] = {}
         self._clients: Dict[str, MCPClient] = {}
         self._connected: Dict[str, bool] = {}
@@ -66,6 +71,7 @@ class ServerManager:
         self._shutdown_event = asyncio.Event()
         
         ServerManager._initialized = True
+        logger.info(f"[ServerManager] Initialization complete (elapsed: {time.time() - start_time:.3f}s)")
     
     def register_server(self, config: ServerConfig) -> None:
         """Register a server configuration"""
@@ -91,6 +97,9 @@ class ServerManager:
             logger.info(f"[ServerManager] Server {name} is disabled")
             return False
         
+        import time
+        connect_start = time.time()
+        
         # Create client
         client = get_mcp_client(name, config.type)
         self._clients[name] = client
@@ -100,11 +109,17 @@ class ServerManager:
         error_message = None
         try:
             if config.type == "stdio" and config.command:
+                connect_start_stdio = time.time()
                 success = await client.connect_stdio(config.command, config.args)
+                logger.debug(f"[ServerManager] connect_stdio completed in {time.time() - connect_start_stdio:.3f}s")
             elif config.type == "websocket" and config.url:
+                connect_start_websocket = time.time()
                 success = await client.connect_websocket(config.url)
+                logger.debug(f"[ServerManager] connect_websocket completed in {time.time() - connect_start_websocket:.3f}s")
             elif config.type == "http" and config.url:
+                connect_start_http = time.time()
                 success = await client.connect_http(config.url)
+                logger.debug(f"[ServerManager] connect_http completed in {time.time() - connect_start_http:.3f}s")
         except Exception as e:
             error_message = str(e)
             logger.error(f"[ServerManager] Error connecting to {name}: {e}")
@@ -120,6 +135,9 @@ class ServerManager:
             consecutive_failures=0 if success else 1,
             error_message=error_message
         )
+        
+        connect_end = time.time()
+        logger.debug(f"[ServerManager] Total connect_server for {name} took {connect_end - connect_start:.3f}s")
         
         if success:
             logger.info(f"[ServerManager] Connected to {name}")

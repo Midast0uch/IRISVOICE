@@ -57,6 +57,7 @@ interface DashboardWingProps {
   uiState?: UILayoutState
   onOpenChat?: () => void
   isChatOpen?: boolean
+  initialSubApp?: string | null
 }
 
 export function DashboardWing({
@@ -71,6 +72,7 @@ export function DashboardWing({
   uiState,
   onOpenChat,
   isChatOpen = false,
+  initialSubApp,
 }: DashboardWingProps) {
   const { voiceState } = useNavigation()
   const { getThemeConfig } = useBrandColor()
@@ -308,6 +310,8 @@ export function DashboardWing({
                 spotlightState={spotlightState}
                 uiState={uiState}
                 onOpenChat={onOpenChat}
+                initialSubApp={initialSubApp}
+                onRequestSpotlight={onSpotlightToggle}
               />
             </div>
           </motion.div>

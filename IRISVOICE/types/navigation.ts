@@ -19,6 +19,8 @@ export interface FieldConfig {
   loadOptions?: () => Promise<{ label: string; value: string }[]>
   // button props
   action?: string
+  // conditional visibility
+  showIf?: { field: string; values: string[] }
 }
 
 export interface Card {

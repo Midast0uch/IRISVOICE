@@ -153,7 +153,7 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'tts_voice',
           type: 'dropdown',
           label: 'Voice',
-          // LuxTTS voice cloning (requires data/voice_clone_ref.wav) + pyttsx3 fallback
+          // CosyVoice2 zero-shot voice cloning (uses data/TOMV2.wav) + pyttsx3 fallback
           options: [
             'Cloned Voice',
             'Built-in',
@@ -187,7 +187,7 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'model_provider',
           type: 'dropdown',
           label: 'Provider',
-          options: ['lmstudio', 'local', 'api', 'vps'],
+          options: ['lmstudio', 'api', 'vps', 'iris_local'],
           defaultValue: 'lmstudio'
         },
         {
@@ -213,23 +213,70 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
         {
           id: 'lmstudio_endpoint',
           type: 'text',
-          label: 'LM Studio Endpoint',
+          label: 'Endpoint',
           placeholder: 'http://localhost:1234',
-          defaultValue: 'http://localhost:1234'
+          defaultValue: 'http://localhost:1234',
+          showIf: { field: 'model_provider', values: ['lmstudio'] }
+        },
+        {
+          id: 'api_base_url',
+          type: 'text',
+          label: 'API Base URL',
+          placeholder: 'https://api.openai.com/v1',
+          defaultValue: 'https://api.openai.com/v1',
+          showIf: { field: 'model_provider', values: ['api', 'vps'] }
         },
         {
           id: 'api_key',
           type: 'text',
           label: 'API Key',
           placeholder: 'sk-...',
-          defaultValue: ''
+          defaultValue: '',
+          showIf: { field: 'model_provider', values: ['api', 'vps'] }
+        },
+        // ── iris_local GGUF section ──────────────────────────────────────────
+        {
+          id: 'iris_local_model_path',
+          type: 'text',
+          label: 'Active GGUF Model',
+          placeholder: '(none — select in Models Browser)',
+          defaultValue: '',
+          showIf: { field: 'model_provider', values: ['iris_local'] }
         },
         {
-          id: 'vps_endpoint',
-          type: 'text',
-          label: 'VPS Endpoint',
-          placeholder: 'http://vps.example.com',
-          defaultValue: ''
+          id: 'iris_local_profile',
+          type: 'dropdown',
+          label: 'Hardware Profile',
+          options: ['eco', 'balanced', 'performance', 'voice_first', 'research', 'custom'],
+          defaultValue: 'balanced',
+          showIf: { field: 'model_provider', values: ['iris_local'] }
+        },
+        {
+          id: 'iris_local_ctx',
+          type: 'slider',
+          label: 'Context Length',
+          min: 1024,
+          max: 65536,
+          step: 1024,
+          defaultValue: 16384,
+          showIf: { field: 'model_provider', values: ['iris_local'] }
+        },
+        {
+          id: 'iris_local_gpu_layers',
+          type: 'slider',
+          label: 'GPU Offload (-1 = auto)',
+          min: -1,
+          max: 128,
+          step: 1,
+          defaultValue: -1,
+          showIf: { field: 'model_provider', values: ['iris_local'] }
+        },
+        {
+          id: 'browse_local_models',
+          type: 'button',
+          label: 'Browse & Manage Models',
+          action: 'open_models_screen',
+          showIf: { field: 'model_provider', values: ['iris_local'] }
         }
       ]
     }
@@ -375,15 +422,8 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
         {
           id: 'vision_enabled',
           type: 'toggle',
-          label: 'Vision Enabled',
+          label: 'Vision Enabled (LFM2.5-VL)',
           defaultValue: false
-        },
-        {
-          id: 'vision_model',
-          type: 'dropdown',
-          label: 'Vision Model',
-          options: ['minicpm-o4.5', 'llava', 'bakllava'],
-          defaultValue: 'minicpm-o4.5'
         }
       ]
     }
@@ -410,20 +450,6 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           label: 'UI-TARS Provider',
           options: ['cli_npx', 'native_python', 'api_cloud'],
           defaultValue: 'native_python'
-        },
-        {
-          id: 'vision_model_provider',
-          type: 'dropdown',
-          label: 'Vision Model',
-          options: ['minicpm_ollama', 'anthropic', 'volcengine', 'local'],
-          defaultValue: 'minicpm_ollama'
-        },
-        {
-          id: 'api_key',
-          type: 'text',
-          label: 'API Key',
-          placeholder: 'sk-...',
-          defaultValue: ''
         },
         {
           id: 'max_steps',
@@ -774,6 +800,12 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
       label: 'Diagnostics',
       icon: 'Stethoscope',
       fields: [
+        {
+          id: 'open_inference_console',
+          type: 'button',
+          label: 'Open Inference Console',
+          action: 'open_inference_console'
+        },
         {
           id: 'run_diagnostics',
           type: 'custom',

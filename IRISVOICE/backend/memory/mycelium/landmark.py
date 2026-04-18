@@ -680,6 +680,100 @@ class LandmarkIndex:
         )
 
 
+    # ------------------------------------------------------------------
+    # Cross-project landmark bridges (Req future — PiN layer)
+    # ------------------------------------------------------------------
+
+    def add_bridge(
+        self,
+        local_landmark_id: str,
+        remote_landmark_name: str,
+        remote_project_id: Optional[str] = None,
+        remote_instance_id: Optional[str] = None,
+        remote_landmark_id: Optional[str] = None,
+        confidence: float = 1.0,
+        bridge_type: str = "equivalent",
+        notes: Optional[str] = None,
+    ) -> str:
+        """
+        Register a cross-project landmark bridge.
+
+        A bridge maps a local landmark to an equivalent (or similar) landmark
+        in another project or IRIS instance. IRIS uses bridges to bootstrap
+        faster when entering a new project — familiar patterns activate
+        immediately rather than re-crystallising from scratch.
+
+        bridge_type: 'equivalent' | 'similar' | 'inverse'
+        """
+        bridge_id = _short_uuid()
+        now = time.time()
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO mycelium_landmark_bridges
+                (bridge_id, local_landmark_id, remote_project_id, remote_instance_id,
+                 remote_landmark_name, remote_landmark_id, confidence, bridge_type,
+                 notes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (bridge_id, local_landmark_id, remote_project_id, remote_instance_id,
+             remote_landmark_name, remote_landmark_id, confidence, bridge_type,
+             notes, now),
+        )
+        self._conn.commit()
+        logger.debug(
+            "[landmark] bridge registered: %s → %s (%s, conf=%.2f)",
+            local_landmark_id, remote_landmark_name, bridge_type, confidence,
+        )
+        return bridge_id
+
+    def get_bridges(self, local_landmark_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Return all landmark bridges, optionally filtered to a single local landmark.
+        Results ordered by confidence DESC.
+        """
+        if local_landmark_id:
+            cursor = self._conn.execute(
+                "SELECT * FROM mycelium_landmark_bridges "
+                "WHERE local_landmark_id = ? ORDER BY confidence DESC",
+                (local_landmark_id,),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT * FROM mycelium_landmark_bridges ORDER BY confidence DESC"
+            )
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    def find_bridge(
+        self,
+        remote_landmark_name: str,
+        remote_instance_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Look up the highest-confidence bridge for a remote landmark name.
+        Returns the bridge dict, or None if no match.
+        """
+        if remote_instance_id:
+            cursor = self._conn.execute(
+                "SELECT * FROM mycelium_landmark_bridges "
+                "WHERE remote_landmark_name = ? AND remote_instance_id = ? "
+                "ORDER BY confidence DESC LIMIT 1",
+                (remote_landmark_name, remote_instance_id),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT * FROM mycelium_landmark_bridges "
+                "WHERE remote_landmark_name = ? "
+                "ORDER BY confidence DESC LIMIT 1",
+                (remote_landmark_name,),
+            )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        cols = [d[0] for d in cursor.description]
+        return dict(zip(cols, row))
+
+
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------

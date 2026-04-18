@@ -1,20 +1,35 @@
 """
-TTS Manager — LuxTTS voice synthesis for IRIS.
+TTS Manager — F5-TTS (zero-shot voice cloning) for IRIS.
 
-Primary engine : LuxTTS / ZipVoice (offline, high quality, voice cloning)
-  - Requires a reference wav at: IRISVOICE/data/voice_clone_ref.wav (3-5 seconds)
-  - Model downloads automatically from HuggingFace (YatharthS/LuxTTS, ~1 GB)
-  - Output: 48 kHz → resampled to 16 kHz for playback
-  - Uses CUDA if available, falls back to CPU automatically
+Primary engine : F5-TTS (F5TTS_v1_Base)
+  - ~800 MB model, CPU-compatible (RTF ~0.15 on modern CPU — fast)
+  - Zero-shot voice cloning from TOMV2.wav reference audio
+  - Chunked synthesis: text split into sentences, each synthesized
+    sequentially and yielded as audio — approximates streaming
+  - Text normalizer wired in: strips markdown, expands symbols, removes
+    code blocks so TTS never reads out "$", "%", "->", "**bold**" etc.
+  - 24 kHz native output
 
-Fallback        : pyttsx3 Built-in (Windows SAPI5 — zero download, instant)
+Fallback        : Piper en_US-ryan-high (fast CPU, ~65 MB, no cloning)
+Final fallback  : pyttsx3 (Windows SAPI5 — zero download, instant)
+
+Setup           : pip install f5-tts
+                  Place TOMV2.wav at IRISVOICE/data/TOMV2.wav
+
+Lock discipline
+  self._lock guards model initialisation only.  It is released before
+  inference so synthesis never blocks the consumer's audio-queue timeout.
+  The lock is NOT reentrant — do not acquire it inside _stream_f5tts.
 """
 import logging
 import os
+import re
+import sys
 import tempfile
 import threading
+import wave
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Generator
 
 import numpy as np
 
@@ -23,20 +38,122 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-LUXTTS_MODEL = "YatharthS/LuxTTS"
-LUXTTS_SAMPLE_RATE = 48000
+
+F5TTS_NATIVE_RATE:  int = 24_000  # F5-TTS native output sample rate
+PIPER_NATIVE_RATE:  int = 22_050  # Piper ryan-high native rate
+OUTPUT_SAMPLE_RATE: int = F5TTS_NATIVE_RATE  # pipeline rate
+PYTTSX_NATIVE_RATE: int = 22_050
+SAMPLE_RATE:        int = OUTPUT_SAMPLE_RATE  # legacy alias
+
+# Paths (relative to this file: backend/agent/tts.py)
+_THIS_DIR    = Path(__file__).parent          # backend/agent/
+_BACKEND_DIR = _THIS_DIR.parent               # backend/
+_PROJECT_DIR = _BACKEND_DIR.parent            # IRISVOICE/
+
+REFERENCE_AUDIO = _PROJECT_DIR / "data" / "TOMV2.wav"
+
+# Piper TTS — fast CPU engine (RTF ~0.04x). Used as fallback.
+PIPER_MODEL_DIR  = _BACKEND_DIR / "voice" / "piper_models"
+PIPER_MODEL_ONNX = PIPER_MODEL_DIR / "en_US-ryan-high.onnx"
 
 AVAILABLE_VOICES: List[str] = ["Cloned Voice", "Built-in"]
 
-# Path to user's voice clone reference audio (3-5 seconds recommended)
-_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
-_CLONE_REF = _DATA_DIR / "voice_clone_ref.wav"
+# F5-TTS model identifier — F5TTS_v1_Base (~800 MB, downloads on first use)
+F5TTS_MODEL = "F5TTS_v1_Base"
 
+
+# ---------------------------------------------------------------------------
+# Helper — resample to pipeline rate
+# ---------------------------------------------------------------------------
+
+def _resample(audio: np.ndarray, orig_sr: int) -> np.ndarray:
+    """Resample *audio* (float32) from *orig_sr* to OUTPUT_SAMPLE_RATE.
+
+    Uses scipy.signal.resample for quality; falls back to numpy interp.
+    No-op when orig_sr == OUTPUT_SAMPLE_RATE.
+    """
+    if orig_sr == OUTPUT_SAMPLE_RATE:
+        return audio.astype(np.float32)
+    try:
+        from scipy.signal import resample as _sp_resample
+        n_out = int(len(audio) * OUTPUT_SAMPLE_RATE / orig_sr)
+        return _sp_resample(audio, n_out).astype(np.float32)
+    except Exception as exc:
+        logger.warning(f"[TTSManager] scipy resample failed ({exc}); using numpy interp fallback")
+        n_out = int(len(audio) * OUTPUT_SAMPLE_RATE / orig_sr)
+        return np.interp(
+            np.linspace(0, len(audio) - 1, n_out),
+            np.arange(len(audio)),
+            audio
+        ).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Helper — sentence chunker
+# ---------------------------------------------------------------------------
+
+def _split_into_chunks(text: str, max_chars: int = 200) -> List[str]:
+    """Split *text* into sentence-level chunks suitable for F5-TTS synthesis.
+
+    Splits on sentence-ending punctuation (. ! ?) followed by whitespace.
+    Chunks that are still too long are split further at commas.
+    Empty chunks are discarded.
+    """
+    # Split at sentence boundaries
+    raw = re.split(r'(?<=[.!?])\s+', text.strip())
+    chunks: List[str] = []
+    for sentence in raw:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if len(sentence) <= max_chars:
+            chunks.append(sentence)
+        else:
+            # Long sentence — split further at commas
+            parts = re.split(r',\s+', sentence)
+            buf = ""
+            for part in parts:
+                if buf and len(buf) + len(part) + 2 > max_chars:
+                    chunks.append(buf.strip())
+                    buf = part
+                else:
+                    buf = f"{buf}, {part}" if buf else part
+            if buf.strip():
+                chunks.append(buf.strip())
+    return chunks if chunks else [text.strip()]
+
+
+# ---------------------------------------------------------------------------
+# TTSManager
+# ---------------------------------------------------------------------------
 
 class TTSManager:
     """
-    Singleton TTS manager. Lazy-loads LuxTTS on first synthesis so
-    startup is never blocked by model downloading/loading.
+    Singleton TTS manager.
+
+    Engine priority (automatic — not user-selected):
+      1. F5-TTS (F5TTS_v1_Base) — PRIMARY
+            Zero-shot voice cloning from TOMV2.wav.
+            CPU-based, RTF ~0.15, ~800 MB model (lazy load).
+            Always tried first unless user forces "Built-in".
+      2. Piper en_US-ryan-high — FALLBACK
+            Fast CPU engine, RTF ~0.04x, ~65 MB model (auto-downloaded).
+            Used when F5-TTS is not installed, fails to load, or stream errors.
+      3. pyttsx3 (SAPI5 on Windows) — LAST RESORT
+            Zero download, always available on Windows.
+
+    Voice setting "Built-in" skips F5-TTS and goes directly to Piper.
+    This is the only way to bypass F5-TTS (e.g. for testing or low-resource mode).
+
+    All engines produce float32 audio at OUTPUT_SAMPLE_RATE (24 kHz).
+
+    Text is normalised before synthesis (markdown stripped, symbols
+    expanded to spoken words) via backend/voice/tts_normalizer.py.
+
+    IMPORTANT — first-time setup:
+      pip install f5-tts
+      Place TOMV2.wav at IRISVOICE/data/TOMV2.wav to enable voice cloning.
+      F5TTS_v1_Base weights (~800 MB) are downloaded automatically on first use.
     """
 
     _instance: Optional["TTSManager"] = None
@@ -51,18 +168,28 @@ class TTSManager:
         if TTSManager._initialized:
             return
 
+        # Engine selection is deferred to first synthesize_stream() call
+        # via _select_engine().  Avoids importing heavy deps at startup.
+        self._engine_selected = False
+
         self.config: Dict[str, Any] = {
             "tts_enabled":   True,
+            # F5-TTS is always the primary TTS engine.
+            # "Cloned Voice" = F5-TTS primary (default).
+            # "Built-in"     = force Piper (skips F5-TTS).
+            # In both cases Piper → pyttsx3 are available as automatic fallbacks.
             "tts_voice":     "Cloned Voice",
-            "speaking_rate": 1.0,   # 0.5 – 2.0
+            "speaking_rate": 1.0,
         }
 
-        self._lux: Optional[Any] = None
-        self._lux_encode_dict: Optional[Any] = None
-        self._lux_lock = threading.Lock()
-        self._pyttsx_engine = None
+        # Engine instances (lazy-loaded)
+        self._f5tts       = None    # F5TTS instance
+        self._piper       = None    # PiperVoice instance
+        self._lock        = threading.Lock()   # guards init only, NOT inference
 
         TTSManager._initialized = True
+
+        threading.Thread(target=self._log_preflight, daemon=True, name="tts-preflight").start()
 
     # ------------------------------------------------------------------
     # Public API
@@ -70,210 +197,404 @@ class TTSManager:
 
     AVAILABLE_VOICES = AVAILABLE_VOICES
 
+    def _log_preflight(self) -> None:
+        """Log TTS preflight status at startup.
+
+        F5-TTS is always the primary engine.  Piper is the fallback.
+        "Built-in" voice setting forces Piper directly (skips F5-TTS).
+        """
+        force_builtin = self.config.get("tts_voice") == "Built-in"
+
+        if not force_builtin:
+            # F5-TTS primary path
+            issues = []
+            if not REFERENCE_AUDIO.exists():
+                issues.append(
+                    f"Reference audio not found at {REFERENCE_AUDIO}. "
+                    "Place TOMV2.wav at IRISVOICE/data/TOMV2.wav to enable voice cloning."
+                )
+            if issues:
+                logger.warning(
+                    "[TTSManager] F5-TTS primary — preflight issues:\n"
+                    + "\n".join(f"  - {i}" for i in issues)
+                    + "\n  Will fall back to Piper."
+                )
+            else:
+                logger.info(
+                    f"[TTSManager] F5-TTS primary — reference audio OK at {REFERENCE_AUDIO}"
+                )
+            # Always log Piper status as fallback
+            if PIPER_MODEL_ONNX.exists():
+                logger.info(f"[TTSManager] Piper fallback ready at {PIPER_MODEL_ONNX}")
+            else:
+                logger.warning(
+                    f"[TTSManager] Piper fallback model not found at {PIPER_MODEL_ONNX} — "
+                    "will fall back to pyttsx3 if F5-TTS also fails"
+                )
+        else:
+            # User explicitly selected "Built-in" → Piper only
+            logger.info("[TTSManager] Voice set to 'Built-in' — using Piper directly (F5-TTS skipped)")
+            if PIPER_MODEL_ONNX.exists():
+                logger.info(f"[TTSManager] Piper engine at {PIPER_MODEL_ONNX}")
+            else:
+                logger.warning(
+                    f"[TTSManager] Piper model not found at {PIPER_MODEL_ONNX} — "
+                    "will fall back to pyttsx3"
+                )
+
     def update_config(self, **kwargs) -> None:
-        """Update TTS configuration (called by iris_gateway on confirm_card)."""
+        """Update TTS configuration."""
+        voice_changed = "tts_voice" in kwargs and kwargs["tts_voice"] != self.config.get("tts_voice")
         for key, value in kwargs.items():
             if key in self.config:
                 self.config[key] = value
+        if voice_changed:
+            # Force engine re-selection on next synthesize_stream.
+            self._engine_selected = False
         logger.info(f"[TTSManager] Config updated: {kwargs}")
 
     def get_config(self) -> Dict[str, Any]:
-        return self.config.copy()
+        """Return current TTS configuration."""
+        return dict(self.config)
 
     def get_voice_info(self) -> Dict[str, Any]:
+        """Return available voice information."""
+        use_f5 = self.config.get("tts_voice") == "Cloned Voice"
+        if use_f5:
+            engine_name = "F5-TTS F5TTS_v1_Base (zero-shot voice cloning, CPU)"
+            engine_ready = self._f5tts is not None
+            # "model available" = f5-tts pip package installed
+            try:
+                import importlib.util
+                model_path_exists = importlib.util.find_spec("f5_tts") is not None
+            except Exception:
+                model_path_exists = False
+        else:
+            engine_name = "Piper en_US-ryan-high (CPU)"
+            engine_ready = self._piper is not None
+            model_path_exists = PIPER_MODEL_ONNX.exists()
+
         return {
-            "available_voices": AVAILABLE_VOICES,
-            "current_voice":    self.config["tts_voice"],
-            "config":           self.config,
+            "available_voices":       AVAILABLE_VOICES,
+            "current_voice":          self.config.get("tts_voice", "Built-in"),
+            "config":                 self.get_config(),
+            "model":                  engine_name,
+            "model_ready":            engine_ready,
+            "model_path_exists":      model_path_exists,
+            "reference_audio":        str(REFERENCE_AUDIO),
+            "reference_audio_exists": REFERENCE_AUDIO.exists(),
+            "sample_rate":            OUTPUT_SAMPLE_RATE,
         }
 
-    def synthesize(self, text: str) -> Optional[np.ndarray]:
-        """
-        Synthesize text → float32 numpy audio array (mono, 16 kHz).
-        Returns None if TTS is disabled, text is empty, or synthesis fails.
+    def synthesize(self, text: Optional[str]) -> Optional[np.ndarray]:
+        """Synthesize speech from text.
+
+        Returns float32 array at OUTPUT_SAMPLE_RATE Hz, or None on failure.
         """
         if not self.config.get("tts_enabled", True):
             return None
-        text = (text or "").strip()
-        if not text:
+        if not text or not text.strip():
             return None
+        chunks = list(self.synthesize_stream(text))
+        if chunks:
+            return np.concatenate(chunks)
+        return None
 
-        voice_label = self.config.get("tts_voice", "Cloned Voice")
+    def _select_engine(self) -> None:
+        """Resolve which engine to use on first call (no-op after that).
 
-        if voice_label == "Built-in":
-            return self._synthesize_pyttsx(text)
-
-        return self._synthesize_luxtts(text)
-
-    # ------------------------------------------------------------------
-    # LuxTTS engine
-    # ------------------------------------------------------------------
-
-    def _get_lux(self) -> Any:
-        """Lazy-load and cache the LuxTTS instance (thread-safe)."""
-        if self._lux is None:
-            with self._lux_lock:
-                if self._lux is None:
-                    try:
-                        from zipvoice.luxvoice import LuxTTS
-                        import torch
-                        device = "cuda" if torch.cuda.is_available() else "cpu"
-                        logger.info(f"[TTSManager] Loading LuxTTS on {device} ...")
-                        lux = LuxTTS(LUXTTS_MODEL, device=device)
-                        self._lux = lux
-                        logger.info(f"[TTSManager] LuxTTS ready ({device})")
-                    except Exception as e:
-                        logger.error(f"[TTSManager] LuxTTS load failed: {e}")
-                        raise
-        return self._lux
-
-    def _get_encode_dict(self, lux: Any) -> Optional[Any]:
+        F5-TTS is always the primary.  Selecting "Built-in" forces Piper.
         """
-        Encode the voice reference prompt (result is cached).
-        Returns None if the reference file is missing.
-        """
-        if self._lux_encode_dict is None:
-            if not _CLONE_REF.exists():
-                return None
-            try:
-                logger.info(f"[TTSManager] Encoding voice reference: {_CLONE_REF}")
-                self._lux_encode_dict = lux.encode_prompt(str(_CLONE_REF))
-                logger.info("[TTSManager] Voice reference encoded OK")
-            except Exception as e:
-                logger.error(f"[TTSManager] encode_prompt failed: {e}")
-                return None
-        return self._lux_encode_dict
+        if self._engine_selected:
+            return
+        self._engine_selected = True
+        force_builtin = self.config.get("tts_voice") == "Built-in"
+        logger.info(
+            f"[TTSManager] Engine priority: "
+            f"{'Piper/pyttsx3 (Built-in selected — F5-TTS skipped)' if force_builtin else 'F5-TTS (primary) → Piper (fallback) → pyttsx3 (last resort)'}"
+        )
 
-    def _synthesize_luxtts(self, text: str) -> Optional[np.ndarray]:
-        """
-        Synthesize with LuxTTS voice cloning.
-        Falls back to pyttsx3 if the reference file is missing or LuxTTS fails.
-        """
-        try:
-            lux = self._get_lux()
-        except Exception:
-            logger.warning("[TTSManager] LuxTTS unavailable, falling back to Built-in")
-            return self._synthesize_pyttsx(text)
+    def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
+        """Stream synthesis — yields float32 arrays at OUTPUT_SAMPLE_RATE Hz.
 
-        encode_dict = self._get_encode_dict(lux)
-        if encode_dict is None:
-            if _CLONE_REF.exists():
-                logger.warning(
-                    f"[TTSManager] Voice reference encoding failed (torchcodec/FFmpeg unavailable). "
-                    "Install FFmpeg full-shared (e.g. 'winget install ffmpeg') and restart IRIS. "
-                    "Falling back to Built-in TTS."
-                )
+        Text is normalised before synthesis (strips markdown / expands symbols).
+        F5-TTS path: text split into sentence chunks; each chunk synthesized
+        in sequence and yielded immediately — approximates streaming.
+        Piper path:  native per-sentence streaming via piper.synthesize().
+        pyttsx3:     one full chunk as last resort.
+
+        Lock discipline: self._lock held only during model load, not inference.
+        """
+        if not self.config.get("tts_enabled", True):
+            return
+        if not text.strip():
+            return
+
+        # Normalise text before synthesis
+        normalized = self._normalize(text)
+        if not normalized:
+            return
+
+        self._select_engine()
+
+        # --- F5-TTS: primary engine (always tried unless user forces "Built-in") ---
+        force_builtin = self.config.get("tts_voice") == "Built-in"
+        if not force_builtin:
+            with self._lock:
+                loaded = self._load_f5tts()
+                f5tts = self._f5tts
+
+            if loaded and f5tts is not None:
+                try:
+                    for chunk in self._stream_f5tts(f5tts, normalized):
+                        yield chunk
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        f"[TTSManager] F5-TTS stream failed, falling back to Piper: {exc}",
+                        exc_info=True,
+                    )
             else:
-                logger.warning(
-                    f"[TTSManager] Voice reference not found at {_CLONE_REF}. "
-                    "Place a 3-5s WAV of your target voice there, then restart IRIS. "
-                    "Falling back to Built-in TTS."
+                logger.info(
+                    "[TTSManager] F5-TTS unavailable (not installed or model load failed) — "
+                    "falling back to Piper"
                 )
-            return self._synthesize_pyttsx(text)
 
-        try:
-            rate = float(self.config.get("speaking_rate", 1.0))
-            wav = lux.generate_speech(text, encode_dict, num_steps=4, speed=rate)
-            audio: np.ndarray = wav.numpy().squeeze().astype(np.float32)
-            if audio.ndim > 1:
-                audio = audio.mean(axis=1)
-            audio = self._resample(audio, LUXTTS_SAMPLE_RATE, 16000)
-            peak = np.abs(audio).max()
-            if peak > 0:
-                audio = audio / peak * 0.9
-            logger.debug(f"[TTSManager] LuxTTS synthesized {len(audio)} samples ({len(audio)/16000:.2f}s)")
-            return audio
-        except RuntimeError as e:
-            if "Kernel size can't be greater than actual input size" in str(e):
-                # Text is too short for LuxTTS vocoder convolution kernel.
-                # Fall back to pyttsx3 for very short utterances.
+        # --- Piper path: fallback engine ------------------------------------
+        with self._lock:
+            piper_loaded = self._load_piper()
+            piper = self._piper
+
+        if piper_loaded and piper is not None:
+            try:
+                for chunk in self._stream_piper(piper, normalized):
+                    yield chunk
+                return
+            except Exception as exc:
                 logger.warning(
-                    f"[TTSManager] LuxTTS: text too short for vocoder ({len(text)} chars), "
-                    "falling back to Built-in TTS."
+                    f"[TTSManager] Piper stream failed, falling back to pyttsx3: {exc}"
                 )
-                return self._synthesize_pyttsx(text)
-            logger.error(f"[TTSManager] LuxTTS synthesis error: {e}", exc_info=True)
-            return self._synthesize_pyttsx(text)
-        except Exception as e:
-            logger.error(f"[TTSManager] LuxTTS synthesis error: {e}", exc_info=True)
-            return self._synthesize_pyttsx(text)
+
+        # --- pyttsx3 last-resort fallback ------------------------------------
+        try:
+            result = self._synthesize_pyttsx(normalized)
+            if result is not None:
+                yield result
+        except Exception as exc:
+            logger.error(f"[TTSManager] pyttsx3 stream error: {exc}")
 
     # ------------------------------------------------------------------
-    # pyttsx3 fallback (Built-in / Windows SAPI5)
+    # Text normalization
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Run text through tts_normalizer before synthesis.
+
+        Strips markdown, expands symbols ($→dollars, %→percent, etc.),
+        removes code blocks so TTS never reads out raw symbols or markup.
+        Falls back to stripping obvious markdown if the normalizer import fails.
+        """
+        try:
+            from backend.voice.tts_normalizer import normalize_for_speech
+            return normalize_for_speech(text)
+        except ImportError:
+            # Minimal inline fallback — remove markdown code fences and bold/italic
+            text = re.sub(r"```[\s\S]*?```", "", text)
+            text = re.sub(r"`[^`]+`", "", text)
+            text = re.sub(r"\*{1,3}(.*?)\*{1,3}", r"\1", text)
+            return text.strip()
+
+    # ------------------------------------------------------------------
+    # F5-TTS engine (CPU primary — zero-shot voice cloning)
+    # ------------------------------------------------------------------
+
+    def _load_f5tts(self) -> bool:
+        """Load F5-TTS model.  Must be called under self._lock.
+
+        Downloads F5TTS_v1_Base (~800 MB) from HuggingFace on first run.
+        CPU-only — does not consume any VRAM.
+        """
+        if self._f5tts is not None:
+            return True
+        try:
+            from f5_tts.api import F5TTS
+            logger.info(f"[TTSManager] Loading F5-TTS ({F5TTS_MODEL})...")
+            self._f5tts = F5TTS(model=F5TTS_MODEL)
+            logger.info("[TTSManager] F5-TTS loaded (CPU mode)")
+            return True
+        except ImportError:
+            logger.error(
+                "[TTSManager] f5-tts not installed. "
+                "Run: pip install f5-tts"
+            )
+            self._f5tts = None
+            return False
+        except Exception as exc:
+            logger.error(f"[TTSManager] Failed to load F5-TTS: {exc}", exc_info=True)
+            self._f5tts = None
+            return False
+
+    def _stream_f5tts(
+        self, f5tts, text: str
+    ) -> Generator[np.ndarray, None, None]:
+        """Synthesize *text* with F5-TTS using TOMV2.wav as reference voice.
+
+        Text is split into sentence chunks and each is synthesized in sequence.
+        Yields float32 audio at OUTPUT_SAMPLE_RATE Hz per chunk.
+
+        ref_text is left empty — F5-TTS auto-transcribes the reference audio.
+        """
+        if not REFERENCE_AUDIO.exists():
+            logger.warning(
+                f"[TTSManager] Reference audio missing: {REFERENCE_AUDIO}. "
+                "Falling back to Piper."
+            )
+            return
+
+        ref_file = str(REFERENCE_AUDIO)
+        speed = float(self.config.get("speaking_rate", 1.0))
+        chunks = _split_into_chunks(text)
+
+        for i, chunk_text in enumerate(chunks):
+            if not chunk_text.strip():
+                continue
+            try:
+                wav, sr, _ = f5tts.infer(
+                    ref_file=ref_file,
+                    ref_text="",        # auto-transcribed from TOMV2.wav
+                    gen_text=chunk_text,
+                    speed=speed,
+                )
+                # wav may be a torch.Tensor or numpy array
+                try:
+                    audio = wav.cpu().numpy().flatten().astype(np.float32)
+                except AttributeError:
+                    audio = np.asarray(wav, dtype=np.float32).flatten()
+
+                if len(audio) == 0:
+                    continue
+
+                audio = _resample(audio, sr)
+                logger.debug(
+                    f"[TTSManager] F5-TTS chunk {i+1}/{len(chunks)}: "
+                    f"{len(audio)} samples @ {sr} Hz"
+                )
+                yield audio
+            except Exception as exc:
+                logger.warning(
+                    f"[TTSManager] F5-TTS chunk {i+1} failed: {exc}. Skipping."
+                )
+                continue
+
+    # ------------------------------------------------------------------
+    # Piper engine (CPU fallback)
+    # ------------------------------------------------------------------
+
+    def _load_piper(self) -> bool:
+        """Load Piper voice model.  Must be called under self._lock."""
+        if self._piper is not None:
+            return True
+        if not PIPER_MODEL_ONNX.exists():
+            logger.warning(f"[TTSManager] Piper model not found at {PIPER_MODEL_ONNX}")
+            return False
+        try:
+            from piper import PiperVoice
+            logger.info(f"[TTSManager] Loading Piper from {PIPER_MODEL_ONNX}...")
+            self._piper = PiperVoice.load(str(PIPER_MODEL_ONNX))
+            logger.info("[TTSManager] Piper loaded (en_US-ryan-high)")
+            return True
+        except Exception as exc:
+            logger.error(f"[TTSManager] Failed to load Piper: {exc}", exc_info=True)
+            self._piper = None
+            return False
+
+    @staticmethod
+    def _stream_piper(piper, text: str) -> Generator[np.ndarray, None, None]:
+        """Run Piper inference and yield float32 chunks at OUTPUT_SAMPLE_RATE.
+
+        piper.synthesize() yields AudioChunk objects per sentence.
+        Each chunk has audio_int16_array (numpy int16) and sample_rate.
+        RTF ~0.04x on CPU; first chunk typically in <100 ms.
+        """
+        for chunk in piper.synthesize(text):
+            arr = chunk.audio_int16_array  # numpy int16
+            piper_rate = chunk.sample_rate
+            audio = arr.astype(np.float32) / 32768.0
+            audio = _resample(audio, piper_rate)
+            if len(audio) > 0:
+                yield audio
+
+    # ------------------------------------------------------------------
+    # pyttsx3 fallback (SAPI5)
     # ------------------------------------------------------------------
 
     def _synthesize_pyttsx(self, text: str) -> Optional[np.ndarray]:
-        """Synthesize with pyttsx3 SAPI5. Returns float32 array at 16 kHz."""
+        """Synthesize with pyttsx3 SAPI5.
+
+        Returns float32 array at OUTPUT_SAMPLE_RATE Hz.
+        """
         try:
-            if self._pyttsx_engine is None:
-                import pyttsx3
-                self._pyttsx_engine = pyttsx3.init()
-                self._pyttsx_engine.setProperty("rate", 175)
-                self._pyttsx_engine.setProperty("volume", 1.0)
+            import pyttsx3
+        except ImportError:
+            logger.error("[TTSManager] pyttsx3 not installed")
+            return None
+
+        tmp_path = None
+        try:
+            engine = pyttsx3.init()
+
+            voices = engine.getProperty("voices")
+            if voices:
+                for v in voices:
+                    if any(n in v.name.lower() for n in ("english", "david", "zira")):
+                        engine.setProperty("voice", v.id)
+                        break
+
+            rate_multiplier = float(self.config.get("speaking_rate", 1.0))
+            engine.setProperty("rate", int(150 * rate_multiplier))
+            engine.setProperty("volume", 1.0)
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 tmp_path = f.name
 
-            try:
-                self._pyttsx_engine.save_to_file(text, tmp_path)
-                self._pyttsx_engine.runAndWait()
-                audio, sr = self._read_wav(tmp_path)
-            finally:
+            engine.save_to_file(text, tmp_path)
+            engine.runAndWait()
+            engine.stop()
+
+            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                logger.warning("[TTSManager] pyttsx3 produced empty WAV")
+                return None
+
+            with wave.open(tmp_path, "rb") as wf:
+                n_frames   = wf.getnframes()
+                samp_width = wf.getsampwidth()
+                n_channels = wf.getnchannels()
+                file_rate  = wf.getframerate()
+                raw        = wf.readframes(n_frames)
+
+            if samp_width == 2:
+                audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            elif samp_width == 4:
+                audio = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+            else:
+                logger.warning(f"[TTSManager] pyttsx3 unsupported sample width: {samp_width}")
+                return None
+
+            if n_channels > 1:
+                audio = audio.reshape(-1, n_channels).mean(axis=1)
+
+            return _resample(audio, file_rate)
+
+        except Exception as exc:
+            logger.error(f"[TTSManager] pyttsx3 error: {exc}", exc_info=True)
+            return None
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
-
-            audio = audio.astype(np.float32)
-            if audio.ndim > 1:
-                audio = audio.mean(axis=1)
-            if sr != 16000:
-                audio = self._resample(audio, sr, 16000)
-            return audio
-
-        except Exception as e:
-            logger.error(f"[TTSManager] pyttsx3 synthesis error: {e}")
-            return None
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _read_wav(path: str) -> Tuple[np.ndarray, int]:
-        """Read a WAV file using stdlib wave, returning (float32_array, sample_rate)."""
-        import wave
-        with wave.open(path, "rb") as wf:
-            sr = wf.getframerate()
-            n_frames = wf.getnframes()
-            n_channels = wf.getnchannels()
-            sampwidth = wf.getsampwidth()
-            raw = wf.readframes(n_frames)
-
-        dtype_map = {1: np.int8, 2: np.int16, 4: np.int32}
-        dtype = dtype_map.get(sampwidth, np.int16)
-        audio = np.frombuffer(raw, dtype=dtype).astype(np.float32)
-        audio = audio / float(np.iinfo(dtype).max)
-
-        if n_channels > 1:
-            audio = audio.reshape(-1, n_channels).mean(axis=1)
-
-        return audio, sr
-
-    @staticmethod
-    def _resample(audio: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:
-        """Resample mono float32 array using torchaudio (with scipy fallback)."""
-        try:
-            import torch
-            import torchaudio.functional as F
-            t = torch.from_numpy(audio).unsqueeze(0)
-            t = F.resample(t, from_sr, to_sr)
-            return t.squeeze(0).numpy()
-        except Exception:
-            from scipy.signal import resample_poly
-            from math import gcd
-            g = gcd(from_sr, to_sr)
-            return resample_poly(audio, to_sr // g, from_sr // g).astype(np.float32)
 
 
 def get_tts_manager() -> TTSManager:

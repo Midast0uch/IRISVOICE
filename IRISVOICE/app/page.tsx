@@ -1,6 +1,6 @@
 "use client"
 
-import { lazy, Suspense, useCallback } from "react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { motion } from "framer-motion"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
@@ -11,8 +11,10 @@ import { WheelViewErrorBoundary } from "@/components/wheel-view/WheelViewErrorBo
 import { useUILayoutState, UILayoutState, SpotlightState } from "@/hooks/useUILayoutState"
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation"
 import { BackdropBlur } from "@/components/backdrop-blur"
-import { DashboardWing } from "@/components/dashboard-wing"
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const DashboardWing = lazy(() => import("@/components/dashboard-wing") as any)
 import { isTauri } from "@/hooks/useDeepLink"
+import { SetupWizard, useFirstRunCheck } from "@/components/setup/SetupWizard"
 
 // Lazy load heavy components for faster initial page load
 // Note: Using 'any' here due to TypeScript/React.lazy() compatibility issues with Next.js 16/React 19
@@ -23,8 +25,11 @@ const LazyChatWing = lazy(() => import("@/components/chat-view") as any)
 const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-control-center") as any)
 
 export default function Home() {
-  const { state, handleExpandToMain, handleGoBack, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand } = useNavigation()
+  const { state, handleExpandToMain, handleGoBack, handleCollapseToIdle, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand } = useNavigation()
   const { getThemeConfig } = useBrandColor()
+
+  // First-run wizard — shows once when no model is configured
+  const { showWizard, dismissWizard } = useFirstRunCheck()
   
   // Initialize UI layout state machine
   const {
@@ -53,8 +58,46 @@ export default function Home() {
     browserUrl,
   } = useUILayoutState()
 
+  // Track which sub-app to open when the dashboard is triggered from WheelView
+  const [pendingSubApp, setPendingSubApp] = useState<string | null>(null);
+  const pendingSubAppRef = useRef<string | null>(null);
+
+  // Listen for card action events fired from WheelView (dashboard not yet mounted)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent;
+      const action = ce.detail?.action;
+      const subApp =
+        action === 'open_models_screen' ? 'models' :
+        action === 'open_inference_console' ? 'inference_console' :
+        null;
+      if (subApp) {
+        pendingSubAppRef.current = subApp;
+        setPendingSubApp(subApp);
+        if (state.level !== 1) {
+          // Exit WheelView first — openDashboardSolo fires in the level-watch effect below
+          handleCollapseToIdle();
+        } else {
+          // Already at level 1: open immediately and consume the ref
+          pendingSubAppRef.current = null;
+          openDashboardSolo();
+        }
+      }
+    };
+    window.addEventListener('iris:card_action', handler);
+    return () => window.removeEventListener('iris:card_action', handler);
+  }, [state.level, handleCollapseToIdle, openDashboardSolo]);
+
+  // When nav collapses back to level 1 with a pending subapp, open the dashboard
+  useEffect(() => {
+    if (state.level === 1 && pendingSubAppRef.current) {
+      pendingSubAppRef.current = null; // consume so subsequent level-1 navigations don't re-trigger
+      openDashboardSolo();
+    }
+  }, [state.level, openDashboardSolo]);
+
   // Enable keyboard navigation (Escape key to close wings, or restore balanced in spotlight)
-  useKeyboardNavigation({ 
+  useKeyboardNavigation({
     closeAll, 
     uiState: uiLayoutState,
     spotlightState,
@@ -80,11 +123,9 @@ export default function Home() {
   const glowColor = theme.glow.color
 
   const handleSingleClick = useCallback(() => {
-    // Phase 121: Single-click to stop voice engine if active
-    // Use endVoiceCommand (optimistic reset) instead of raw sendMessage
-    // so voiceState snaps to idle immediately without waiting for backend
+    // Single-click always cancels voice immediately
     if (voiceState !== "idle") {
-      endVoiceCommand()
+      cancelVoiceCommand()
       return
     }
 
@@ -100,7 +141,7 @@ export default function Home() {
     } else {
       handleExpandToMain()
     }
-  }, [voiceState, uiLayoutState, state.level, endVoiceCommand, closeAll, handleGoBack, handleExpandToMain])
+  }, [voiceState, uiLayoutState, state.level, cancelVoiceCommand, closeAll, handleGoBack, handleExpandToMain])
 
   const handleDoubleClick = useCallback(() => {
     // Phase 121: Double-click to start voice engine if idle
@@ -125,7 +166,10 @@ export default function Home() {
   }
 
   return (
-    <main className="bg-transparent w-full min-h-screen flex flex-col items-center justify-center relative" style={{ perspective: '1200px' }}>
+    <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ perspective: '1200px' }}>
+      {/* First-run setup wizard — shown once when no model is configured */}
+      {showWizard && <SetupWizard onComplete={dismissWizard} />}
+
       {/* Backdrop Blur - renders when wings are open */}
       <BackdropBlur uiState={uiLayoutState} />
       
@@ -215,20 +259,23 @@ export default function Home() {
       </Suspense>
 
       {/* DashboardWing - sibling to ChatWing */}
-      <DashboardWing
-        isOpen={isDashboardOpen || isBothOpen}
-        onClose={isBothOpen ? closeDashboard : closeAll}
-        sendMessage={sendMessage}
-        spotlightState={spotlightState}
-        onSpotlightToggle={toggleDashboardSpotlight}
-        isSolo={isDashboardOpen}
-        uiState={uiLayoutState}
-        onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}
-        isChatOpen={isChatOpen || isBothOpen}
-        activeTab={activeDashboardTab}
-        onTabChange={setActiveDashboardTab}
-        initialBrowserUrl={browserUrl}
-      />
+      <Suspense fallback={null}>
+        <DashboardWing
+          isOpen={isDashboardOpen || isBothOpen}
+          onClose={() => {
+            setPendingSubApp(null);
+            if (isBothOpen) closeDashboard(); else closeAll();
+          }}
+          sendMessage={sendMessage}
+          spotlightState={spotlightState}
+          onSpotlightToggle={toggleDashboardSpotlight}
+          isSolo={isDashboardOpen}
+          uiState={uiLayoutState}
+          onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}
+          isChatOpen={isChatOpen || isBothOpen}
+          initialSubApp={pendingSubApp}
+        />
+      </Suspense>
     </main>
   )
 }

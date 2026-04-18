@@ -37,7 +37,23 @@ venv/
 # local models
 models/
 backend/audio/models/
+backend/voice/pretrained_models/
+backend/voice/piper_models/
+backend/voice/CosyVoice/
 offload/
+
+# test/hypothesis artifacts
+.hypothesis/
+*.hypothesis
+
+# generated debug images / temp files
+*.png
+data/smoke_tts_output.wav
+.tmp_test.py
+
+# editor / tool config
+.roomodes
+.opencode/
 
 # tauri
 src-tauri/target/

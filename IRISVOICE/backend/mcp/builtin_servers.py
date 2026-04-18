@@ -14,20 +14,20 @@ from .protocol import MCPRequest, MCPResponse, MCPTool, MCPMessageType
 
 class BuiltinServer:
     """Base class for built-in MCP servers"""
-    
+
     def __init__(self, name: str):
         self.name = name
         self._tools: List[MCPTool] = []
         self._setup_tools()
-    
+
     def _setup_tools(self):
         """Override to define tools"""
         pass
-    
+
     def get_tools(self) -> List[MCPTool]:
         """Get available tools"""
         return self._tools
-    
+
     async def handle_request(self, request: MCPRequest) -> MCPResponse:
         """Handle MCP request"""
         if request.method == MCPMessageType.TOOLS_LIST:
@@ -40,22 +40,23 @@ class BuiltinServer:
         else:
             return MCPResponse(
                 id=request.id,
-                error={"code": -32601, "message": f"Method not found: {request.method}"}
+                error={"code": -32601,
+                       "message": f"Method not found: {request.method}"}
             )
-    
+
     async def _handle_tool_call(self, request: MCPRequest) -> MCPResponse:
         """Handle tool execution"""
         params = request.params or {}
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
-        
+
         result = await self.execute_tool(tool_name, arguments)
-        
+
         return MCPResponse(
             id=request.id,
             result=result
         )
-    
+
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """Execute a tool - override in subclasses"""
         return {"error": "Not implemented"}
@@ -63,10 +64,10 @@ class BuiltinServer:
 
 class BrowserServer(BuiltinServer):
     """Browser control MCP server"""
-    
+
     def __init__(self):
         super().__init__("browser")
-    
+
     def _setup_tools(self):
         self._tools = [
             MCPTool(
@@ -103,7 +104,7 @@ class BrowserServer(BuiltinServer):
                 }
             )
         ]
-    
+
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if name == "open_url":
             url = arguments.get("url", "")
@@ -111,29 +112,29 @@ class BrowserServer(BuiltinServer):
                 url = "https://" + url
             webbrowser.open(url)
             return {"success": True, "message": f"Opened {url}"}
-        
+
         elif name == "search":
             query = arguments.get("query", "")
             # Use Google search
             url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
             webbrowser.open(url)
             return {"success": True, "message": f"Searched for: {query}"}
-        
+
         elif name == "open_incognito":
             url = arguments.get("url", "")
             # Note: incognito opening is browser-specific
             # This is a simplified version
             return {"success": False, "message": "Incognito mode not implemented for this browser"}
-        
+
         return {"error": f"Unknown tool: {name}"}
 
 
 class AppLauncherServer(BuiltinServer):
     """Application launcher MCP server"""
-    
+
     def __init__(self):
         super().__init__("app_launcher")
-    
+
     def _setup_tools(self):
         self._tools = [
             MCPTool(
@@ -164,7 +165,7 @@ class AppLauncherServer(BuiltinServer):
                 input_schema={"type": "object", "properties": {}}
             )
         ]
-    
+
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if name == "launch_app":
             app_name = arguments.get("app_name", "")
@@ -176,31 +177,32 @@ class AppLauncherServer(BuiltinServer):
                 return {"success": True, "message": f"Launched {app_name}"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "open_file":
             file_path = arguments.get("file_path", "")
             try:
                 if os.name == "nt":
                     os.startfile(file_path)
                 elif os.name == "posix":
-                    subprocess.call(["open" if os.uname().sysname == "Darwin" else "xdg-open", file_path])
+                    subprocess.call(
+                        ["open" if os.uname().sysname == "Darwin" else "xdg-open", file_path])
                 return {"success": True, "message": f"Opened {file_path}"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "list_running_apps":
             # Platform-specific implementation would go here
             return {"success": True, "apps": ["Feature requires platform-specific implementation"]}
-        
+
         return {"error": f"Unknown tool: {name}"}
 
 
 class SystemServer(BuiltinServer):
     """System control MCP server"""
-    
+
     def __init__(self):
         super().__init__("system")
-    
+
     def _setup_tools(self):
         self._tools = [
             MCPTool(
@@ -239,7 +241,7 @@ class SystemServer(BuiltinServer):
                 input_schema={"type": "object", "properties": {}}
             )
         ]
-    
+
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if name == "get_system_info":
             import platform
@@ -253,7 +255,7 @@ class SystemServer(BuiltinServer):
                     "processor": platform.processor()
                 }
             }
-        
+
         elif name == "shutdown":
             delay = arguments.get("delay", 0)
             # Note: This requires elevated permissions
@@ -265,7 +267,7 @@ class SystemServer(BuiltinServer):
                 return {"success": True, "message": f"Shutdown scheduled in {delay} seconds"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "restart":
             delay = arguments.get("delay", 0)
             try:
@@ -276,11 +278,12 @@ class SystemServer(BuiltinServer):
                 return {"success": True, "message": f"Restart scheduled in {delay} seconds"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "sleep":
             try:
                 if os.name == "nt":
-                    subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+                    subprocess.run(
+                        ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
                 elif os.uname().sysname == "Darwin":
                     subprocess.run(["pmset", "sleepnow"])
                 else:
@@ -288,28 +291,30 @@ class SystemServer(BuiltinServer):
                 return {"success": True, "message": "Sleep initiated"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "lock":
             try:
                 if os.name == "nt":
-                    subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"])
+                    subprocess.run(
+                        ["rundll32.exe", "user32.dll,LockWorkStation"])
                 elif os.uname().sysname == "Darwin":
-                    subprocess.run(["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend"])
+                    subprocess.run(
+                        ["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend"])
                 else:
                     subprocess.run(["gnome-screensaver-command", "-l"])
                 return {"success": True, "message": "Screen locked"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         return {"error": f"Unknown tool: {name}"}
 
 
 class FileManagerServer(BuiltinServer):
     """File manager MCP server"""
-    
+
     def __init__(self):
         super().__init__("file_manager")
-    
+
     def _setup_tools(self):
         self._tools = [
             MCPTool(
@@ -370,7 +375,7 @@ class FileManagerServer(BuiltinServer):
                 }
             )
         ]
-    
+
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if name == "read_file":
             path = arguments.get("path", "")
@@ -380,7 +385,7 @@ class FileManagerServer(BuiltinServer):
                 return {"success": True, "content": content, "path": path}
             except Exception as e:
                 return {"success": False, "error": str(e), "path": path}
-        
+
         elif name == "write_file":
             path = arguments.get("path", "")
             content = arguments.get("content", "")
@@ -390,7 +395,7 @@ class FileManagerServer(BuiltinServer):
                 return {"success": True, "message": f"Written to {path}", "bytes": len(content)}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "list_directory":
             path = arguments.get("path", ".")
             recursive = arguments.get("recursive", False)
@@ -416,7 +421,7 @@ class FileManagerServer(BuiltinServer):
                 return {"success": True, "items": items, "path": path}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "create_directory":
             path = arguments.get("path", "")
             try:
@@ -424,7 +429,7 @@ class FileManagerServer(BuiltinServer):
                 return {"success": True, "message": f"Created directory {path}"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "delete_file":
             path = arguments.get("path", "")
             try:
@@ -437,16 +442,16 @@ class FileManagerServer(BuiltinServer):
                 return {"success": True, "message": f"Deleted {path}"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         return {"error": f"Unknown tool: {name}"}
 
 
 class GUIAutomationServer(BuiltinServer):
     """GUI automation MCP server"""
-    
+
     def __init__(self):
         super().__init__("gui_automation")
-    
+
     def _setup_tools(self):
         self._tools = [
             MCPTool(
@@ -516,14 +521,14 @@ class GUIAutomationServer(BuiltinServer):
                 }
             )
         ]
-    
+
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """Execute GUI automation tool"""
         try:
             import pyautogui
         except ImportError:
             return {"success": False, "error": "pyautogui not installed. Install with: pip install pyautogui"}
-        
+
         if name == "click":
             x = arguments.get("x")
             y = arguments.get("y")
@@ -533,7 +538,7 @@ class GUIAutomationServer(BuiltinServer):
                 return {"success": True, "message": f"Clicked at ({x}, {y}) with {button} button"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "type_text":
             text = arguments.get("text", "")
             try:
@@ -541,7 +546,7 @@ class GUIAutomationServer(BuiltinServer):
                 return {"success": True, "message": f"Typed: {text}"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "press_key":
             key = arguments.get("key", "")
             try:
@@ -554,7 +559,7 @@ class GUIAutomationServer(BuiltinServer):
                 return {"success": True, "message": f"Pressed key: {key}"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "move_mouse":
             x = arguments.get("x")
             y = arguments.get("y")
@@ -563,7 +568,7 @@ class GUIAutomationServer(BuiltinServer):
                 return {"success": True, "message": f"Moved mouse to ({x}, {y})"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
         elif name == "screenshot":
             region = arguments.get("region")
             try:
@@ -573,12 +578,13 @@ class GUIAutomationServer(BuiltinServer):
                     ))
                 else:
                     screenshot = pyautogui.screenshot()
-                
+
                 # Save to temp file
                 import tempfile
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                temp_file = tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".png")
                 screenshot.save(temp_file.name)
-                
+
                 return {
                     "success": True,
                     "message": "Screenshot captured",
@@ -587,5 +593,56 @@ class GUIAutomationServer(BuiltinServer):
                 }
             except Exception as e:
                 return {"success": False, "error": str(e)}
-        
+
+        return {"error": f"Unknown tool: {name}"}
+
+
+class InternalCapabilityServer(BuiltinServer):
+    """Internal capability server for agent self-improvement and skill creation"""
+
+    def __init__(self):
+        super().__init__("internal")
+        # backend/mcp/builtin_servers.py -> backend/agent/skills
+        self.skills_dir = Path(__file__).parent.parent / "agent" / "skills"
+
+    def _setup_tools(self):
+        self._tools = [
+            MCPTool(
+                name="create_skill",
+                description="Create a new learned skill for IRIS. The skill will be stored as a SKILL.md file in a new directory.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Skill name (kebab-case, e.g. 'python-expert')"},
+                        "description": {"type": "string", "description": "Brief description of what the skill does"},
+                        "content": {"type": "string", "description": "Full markdown content of the SKILL.md file (including YAML frontmatter)"}
+                    },
+                    "required": ["name", "content"]
+                }
+            )
+        ]
+
+    async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+        if name == "create_skill":
+            skill_name = arguments.get(
+                "name", "").strip().lower().replace(" ", "-")
+            content = arguments.get("content", "")
+
+            if not skill_name:
+                return {"success": False, "error": "Skill name is required"}
+
+            target_dir = self.skills_dir / skill_name
+            try:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                skill_file = target_dir / "SKILL.md"
+                skill_file.write_text(content, encoding="utf-8")
+
+                return {
+                    "success": True,
+                    "message": f"Skill '{skill_name}' created successfully at {skill_file}",
+                    "path": str(skill_file)
+                }
+            except Exception as e:
+                return {"success": False, "error": f"Failed to create skill: {str(e)}"}
+
         return {"error": f"Unknown tool: {name}"}

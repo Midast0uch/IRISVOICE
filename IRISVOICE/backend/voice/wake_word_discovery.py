@@ -7,6 +7,7 @@ Scans the wake_words directory for .ppn files and provides metadata extraction.
 """
 
 import os
+import sys
 import logging
 import re
 import subprocess
@@ -41,8 +42,16 @@ class WakeWordDiscovery:
         r'^(?P<name>[a-zA-Z0-9\-]+)_(?P<lang>[a-z]{2})_(?P<platform>[a-z\-]+)_(?P<version>v\d+_\d+_\d+)\.ppn$'
     )
     
-    # Expected hey-iris filename
-    HEY_IRIS_FILENAME = "hey-iris_en_windows_v4_0_0.ppn"
+    # Expected hey-iris filename — platform-specific suffix
+    # Windows: hey-iris_en_windows_v4_0_0.ppn
+    # Linux:   hey-iris_en_linux_v4_0_0.ppn
+    # macOS:   hey-iris_en_mac_v4_0_0.ppn
+    if sys.platform == "win32":
+        HEY_IRIS_FILENAME = "hey-iris_en_windows_v4_0_0.ppn"
+    elif sys.platform == "darwin":
+        HEY_IRIS_FILENAME = "hey-iris_en_mac_v4_0_0.ppn"
+    else:
+        HEY_IRIS_FILENAME = "hey-iris_en_linux_v4_0_0.ppn"
     
     def __init__(self, wake_words_dir: Optional[str] = None):
         """
@@ -266,27 +275,42 @@ class WakeWordDiscovery:
     
     def verify_hey_iris(self) -> bool:
         """
-        Verify that the hey-iris wake word file exists.
-        
+        Verify that a hey-iris wake word file exists.
+
+        First checks for the platform-specific filename (e.g. hey-iris_en_linux_v4_0_0.ppn).
+        Falls back to any discovered file whose name starts with "hey-iris" so that a
+        Windows .ppn can still be flagged as found on Linux during transition — Porcupine
+        will refuse to load the wrong-platform binary but at least discovery succeeds.
+
         Returns:
-            True if hey-iris file is found, False otherwise
+            True if any hey-iris file is found, False otherwise
         """
+        # Exact platform match
         hey_iris_found = any(
             wf.filename == self.HEY_IRIS_FILENAME
             for wf in self._discovered_files
         )
-        
+
         if hey_iris_found:
             logger.info(
                 f"[WakeWordDiscovery] Verified: {self.HEY_IRIS_FILENAME} found"
             )
-        else:
+            return True
+
+        # Fallback: any hey-iris model (may be wrong platform — Porcupine will handle gracefully)
+        any_hey_iris = [wf for wf in self._discovered_files if wf.filename.startswith("hey-iris")]
+        if any_hey_iris:
             logger.warning(
-                f"[WakeWordDiscovery] Warning: {self.HEY_IRIS_FILENAME} not found in "
-                f"{self._wake_words_dir}"
+                f"[WakeWordDiscovery] Platform-specific file '{self.HEY_IRIS_FILENAME}' not found "
+                f"but found: {[wf.filename for wf in any_hey_iris]}. "
+                f"Download the {sys.platform} version for best results."
             )
-        
-        return hey_iris_found
+            return True
+
+        logger.warning(
+            f"[WakeWordDiscovery] Warning: no hey-iris .ppn found in {self._wake_words_dir}"
+        )
+        return False
     
     def get_discovered_files(self) -> List[WakeWordFile]:
         """

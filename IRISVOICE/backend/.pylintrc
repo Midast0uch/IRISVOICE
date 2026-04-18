@@ -1,0 +1,61 @@
+[MASTER]
+# Ignore common virtual env / dist directories
+ignore=CVS,.git,__pycache__,node_modules
+
+[MESSAGES CONTROL]
+disable=
+    # ── Formatting / cosmetic (handled by formatter, not pylint) ──
+    C0301,  # line-too-long
+    C0303,  # trailing-whitespace
+    C0304,  # missing-final-newline
+    C0305,  # trailing-newlines
+    C0321,  # multiple-statements
+    W0311,  # bad-indentation
+    W0312,  # mixed-indentation
+
+    # ── Import placement / style ──
+    C0415,  # import-not-toplevel  (intentional lazy imports throughout)
+    C0411,  # wrong-import-order
+    C0412,  # ungrouped-imports
+    C0413,  # wrong-import-position
+    W0404,  # reimported
+
+    # ── Naming conventions ──
+    C0103,  # invalid-name (UPPER_CASE constants flagged as bad)
+
+    # ── Exception handling style ──
+    W0703,  # broad-except  (intentional broad catches for robustness)
+    W0706,  # try-except-raise
+
+    # ── Logging format ──
+    W1201,  # logging-not-lazy (f-string in logger.debug)
+    W1202,  # logging-format-interpolation
+    W1203,  # logging-fstring-interpolation
+
+    # ── Class / attribute style ──
+    W0201,  # attribute-defined-outside-init (_memory_interface set via method)
+    W0212,  # protected-access  (intentional cross-module attribute access)
+    W0603,  # global-statement
+
+    # ── Misc low-value warnings ──
+    C0302,  # too-many-lines  (large file is intentional monolith for now)
+    W0611,  # unused-import    (keep OFF unless you want to enable; can be noisy)
+    R0801,  # duplicate-code
+    R0903,  # too-few-public-methods
+    R0902,  # too-many-instance-attributes
+
+[FORMAT]
+# Align with project's actual line lengths
+max-line-length=140
+
+[DESIGN]
+max-args=12
+max-locals=25
+max-returns=8
+max-branches=20
+max-statements=60
+max-attributes=20
+
+[SIMILARITIES]
+# Minimum lines to consider as duplicate code
+min-similarity-lines=10

@@ -178,7 +178,7 @@ class RagIngestionBridge:
     """
 
     _VISUAL_SOURCE_TYPES: frozenset = frozenset({
-        "minicpm", "visual_observation", "vision", "screenshot",
+        "lfm2.5-vl", "minicpm", "visual_observation", "vision", "screenshot",
         "ocr", "image_caption",
     })
 

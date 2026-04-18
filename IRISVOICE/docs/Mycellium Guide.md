@@ -508,15 +508,64 @@ IRIS Mycelium Layer — v1.6 &lt;page_number&gt;Page 15&lt;/page_number&gt;
 
 # Part 9: How It Connects to the Full Architecture
 
-## Data Flow — From Session to Memory
+## Data Flow — From Session to Memory (v1.7)
 
-1. User sends a message. SwarmBridge receives it, wraps in TaskMessage.
-2. PrimaryNode calls get_task_context() — Mycelium assembles coordinate path + semantic header + episodic injections.
-3. REASONING model receives ~350 tokens of dense context. Produces execution plan.
-4. Whiteboard seeded with plan. Workers (1 brain + 2 parallel) receive their assigned steps.
-5. Task executes. Outcomes observed.
-6. Episode stored — task summary, tool sequence, outcome score, coordinate fingerprint.
-7. Distillation pass (background, idle-triggered) extracts coordinate updates, updates profile, crystallizes new landmarks if thresholds met.
+```
+User message (text or voice → STT)
+    │
+    ▼ security_filter → mcp_security (HyphaChannel trust)
+    ▼
+AgentKernel.process_text_message()
+    │
+    ├─ TaskClassifier.classify() → (task_class, space_subset)
+    │
+    ├─ get_task_context_package()
+    │     └─ Mycelium assembles:
+    │         • coordinate path (7-space position)
+    │         • tier1 directives + tier2 predictions (BehavioralPredictor)
+    │         • tier3 failures (gradient warnings)
+    │         • active contracts (behavioral rules)
+    │         • episodic injections (similar past tasks)
+    │         • PiN summaries (relevant knowledge anchors)
+    │         • topology position
+    │
+    ├─ _plan_task() → ExecutionPlan
+    │     temperature = 0.1 (mature) | 0.25 (immature)
+    │
+    └─ _execute_plan_der()
+          │
+          ├─ [DIRECTOR] → picks next step (dependency-aware)
+          ├─ [REVIEWER] → reads warnings + contracts + PiN context → PASS/REFINE/VETO
+          ├─ [EPISODIC C.4] → mid-loop sub-task hint injection
+          ├─ [EXPLORER] → execute tool or direct inference
+          ├─ [TOKEN BUDGET] → DER_TOKEN_BUDGETS[mode] enforced per step
+          ├─ [TRAILING DIRECTOR] → gap analysis every TRAILING_GAP_MIN steps
+          └─ POST-LOOP:
+               record_outcome → crystallize_landmark → clear_session → record_stats
+```
+
+**After each successful task:**
+- Tool call signals update pheromone edge weights
+- Outcomes promote CORE nodes, demote ORBIT nodes
+- High-score sessions crystallize permanent landmarks (activation threshold: 12)
+- Episodic summaries persist beyond context window via Layer 2 storage
+- PiNs may be anchored to lock in design decisions made during the task
+
+**Background maintenance (idle-triggered):**
+- Edge decay pass — old pheromone trails fade
+- Map condense/expand — topology shifts to match usage patterns
+- Landmark decay — unverified entries lose confidence
+- Profile renderer — dirty sections regenerated
+- PiN decay pass — non-permanent PiNs without recent traversal lose weight
+
+## The Pacman Context Lifecycle
+
+Context chunks have zones (trusted / tool), age-weighted retrieval scoring, and a crystallization pathway. Frequently retrieved chunks become Mycelium crystallization candidates — they graduate from episodic memory to permanent landmark status automatically. Stale chunks decay and are pruned. The context window self-compresses over time.
+
+**Layer architecture for unlimited effective context:**
+- Layer 1: Raw conversation history (trimmed oldest when budget exceeded)
+- Layer 2: Episodic summaries — carries gist forward beyond raw history
+- Layer 3: Mycelium coordinate package — compressed accumulated intelligence
 
 ## The Swarm Connection
 
@@ -525,6 +574,8 @@ The Mycelium Layer was designed around the swarm geometry: 1 brain + 2 parallel 
 ## The Torus Connection
 
 When tasks overflow local capacity, the Planner dispatches to Torus network nodes. Remote workers receive the coordinate path — not the full prose conversation history. This is how the architecture scales to network size without scaling memory cost. The coordinate graph is the compression format for the entire system's accumulated intelligence.
+
+PiNs travel with the coordinate path in the dispatch payload — permanent PiNs relevant to the landmark cluster active during the task are included. Remote workers have both the coordinate structure and the explicit knowledge anchors needed to understand design intent without reading raw conversation history.
 
 Confidential · IRIS / Torus Network · March 2026
 
@@ -603,11 +654,114 @@ Confidential · IRIS / Torus Network · March 2026
 
 IRIS Mycelium Layer — v1.6 &lt;page_number&gt;Page 18&lt;/page_number&gt;
 
-# Part 12: Summary
+# Part 12: PiNs — The Knowledge Attachment Layer
+
+## What a PiN Is
+
+A PiN — Primordial Information Node — is any meaningful unit of knowledge anchored to the coordinate graph. The name is intentional. In mycology, primordia are the first visible growth points of a fungal body: the moment underground mycelium becomes something that can be seen, touched, referenced. PiNs are exactly that for IRIS memory. They are the points at which invisible coordinate knowledge becomes a concrete, retrievable artifact.
+
+Unlike coordinate nodes, which are abstract positions in seven-dimensional space, a PiN is a named, typed, human-legible object:
+
+| PiN Type   | What it anchors                                              |
+|------------|--------------------------------------------------------------|
+| `note`     | Freeform observation or decision record                      |
+| `file`     | A specific file or set of files in the project               |
+| `folder`   | A directory or subtree                                       |
+| `image`    | Architecture diagram, screenshot, visual reference           |
+| `doc`      | Specification, README, design brief, research paper          |
+| `url`      | External link, API reference, library documentation          |
+| `decision` | Architectural or technical decision record (ADR)             |
+| `fragment` | Code snippet, prompt fragment, reusable pattern              |
+
+## How PiNs Connect to the Graph
+
+A PiN is not a memo. It is a graph node with typed edges — `pin_links` — connecting it to any other node: landmarks, file nodes, episodes, other PiNs. The edges carry the same relationship vocabulary as the rest of the graph: `documents`, `references`, `implements`, `depends_on`, `contains`, `related_to`.
+
+This means PiNs participate in the pheromone trail system. When a PiN is referenced during a successful task traversal, the edge connecting it strengthens. Repeatedly referenced PiNs accumulate weight. Neglected ones decay — unless marked permanent.
+
+## Permanent PiNs
+
+A PiN marked permanent never decays. This is the same permanence contract as a landmark. Use it for:
+- Irreversible architectural decisions
+- Specifications that define correct behavior
+- Diagrams that future agents must read before touching a module
+- Any knowledge that should outlast the sessions that produced it
+
+## PiNs and Provenance
+
+Every PiN carries an `origin_id` — the UUID of the IRIS instance that created it. When IRIS eventually runs on a network of instances, origin provenance ensures that knowledge attribution is preserved regardless of where the PiN ends up.
+
+## What PiNs Are Not
+
+PiNs do not replace coordinates or landmarks. Coordinates describe who the user is and how they work. Landmarks crystallize navigational patterns. PiNs anchor explicit human knowledge — the things that are true because a person decided they are true, not because behavior converged on them. Both layers are necessary. The coordinate graph handles inference. PiNs handle declaration.
+
+Confidential · IRIS / Torus Network · March 2026
+
+---
+
+
+## Page 12b
+
+# Part 13: Cross-Project Landmark Bridging
+
+## The Problem This Solves
+
+Mycelium accumulates navigational truth within a single project. After dozens of sessions on IRIS, the graph has rich regional density — proven paths, crystallized landmarks, earned edge weights. Now the user starts a new project. Or opens a second codebase. Or moves from one domain entirely to another.
+
+Without bridging, IRIS starts from scratch. The context space shifts. No landmarks. No edge weights. The map is blank where the user has the most experience. This is wasteful — and inaccurate. Some patterns are universal.
+
+## What a Bridge Is
+
+A landmark bridge maps a local landmark to an equivalent landmark in another project or another IRIS instance. It says: "this pattern here is the same pattern as that pattern there."
+
+```
+local: lm_g1_backend_health  (IRISVOICE project)
+         │
+         ── [equivalent, confidence=0.95] ──▶
+                                               remote: g1_api_healthy (torus-node project)
+```
+
+When IRIS enters the torus-node project and sees a landmark named `g1_api_healthy`, it checks the bridge table. If a match exists with high confidence, it activates the local traversal history for `lm_g1_backend_health` as a prior. The pattern fires immediately rather than re-crystallising from scratch over twelve sessions.
+
+## Bridge Types
+
+| Type         | Meaning                                                         | Effect                              |
+|--------------|-----------------------------------------------------------------|-------------------------------------|
+| `equivalent` | Same pattern, different codebase, domain, or instance           | Full activation — treated as same   |
+| `similar`    | Overlapping pattern — partial match                             | Partial activation — weighted boost |
+| `inverse`    | Opposite pattern — what succeeded here tends to fail there      | Fires as a warning, not a boost     |
+
+## Projects Don't Need to Be Code
+
+This is a critical design point. A bridge requires only one thing: that both projects use the same seven-space coordinate map. They do not have to be in the same domain. They do not have to share a codebase, a language, or even a user.
+
+A landmark in a software architecture project (`g1_backend_health`) can bridge to an equivalent landmark in a music production workflow (`g1_audio_pipeline_stable`) if both represent the same underlying pattern: "the primary output path is verified and healthy." The coordinate signature is the same. The domain is irrelevant.
+
+This is what makes Mycelium a universal foundation rather than a code-specific tool. The seven spaces describe the user and how they work — not what they are working on. A landmark is a crystallized pattern of that work. Patterns transfer.
+
+## Bridges as the Precursor to Federation
+
+Cross-project landmark bridging is the first layer of IRIS federation — the mechanism by which knowledge flows between instances on the same network. The full federation architecture (built into the IRIS application layer, not the bootstrap) will eventually:
+
+1. Auto-discover bridges between instances sharing known landmark signatures
+2. Compound pheromone edge weights across the network (the more instances agree a path works, the stronger it becomes)
+3. Propagate permanent PiNs and permanent landmarks to registered peers
+4. Track every merge in an audit log with provenance preserved via `origin_id`
+
+Federation is not synchronisation. It is not replication. It is what happens when many mycelium threads independently navigate the same territory and their pheromone trails begin to converge. The strongest paths win — not because a central authority decided, but because the network agreed through use.
+
+Confidential · IRIS / Torus Network · March 2026
+
+---
+
+
+## Page 13
+
+# Part 14: Summary
 
 ## What Was Built and Why It Matters
 
-### The Core Achievement — v1.6
+### The Core Achievement — v1.7
 
 - Semantic header: 60 tokens of prose -> 15 tokens of coordinates. 75% reduction.
 - Swarm semantic load: constant across all workers via shared whiteboard.
@@ -618,37 +772,45 @@ IRIS Mycelium Layer — v1.6 &lt;page_number&gt;Page 18&lt;/page_number&gt;
 - Seven spaces, three categories — Identity, Operational, Environmental.
 - Memory persistence: survives conversation deletion at the navigational truth layer.
 - Scaling: context cost stays constant as history grows. The graph ages. The bill does not.
-- The architecture grows into correctness. Each space can evolve without touching the others.
+- PiNs (v1.7): explicit human knowledge anchored as typed graph nodes with decay + permanence.
+- Landmark bridges (v1.7): proven patterns activate across projects and domains without re-crystallisation.
+- The architecture grows into correctness. Each layer can evolve without touching the others.
 
-## The Four Layers in Plain Language
+## The Six Layers in Plain Language
 
-Coordinates are the truth. Seven spaces across three categories. The map holds them in mathematical language the model reads natively. Conduct tells it how to work with this person. Context tells it what they are working on right now.
+**Coordinates** are the truth. Seven spaces across three categories. The map holds them in mathematical language the model reads natively. Conduct tells it how to work with this person. Context tells it what they are working on right now.
 
-Landmarks are the inheritance. Each session crystallizes its navigational truth into a permanent entry. Conversations come and go. The truth accumulates. Context landmarks build regional density around each project — the map develops detail where the user spends time.
+**Landmarks** are the inheritance. Each session crystallizes its navigational truth into a permanent entry. Conversations come and go. The truth accumulates. Context landmarks build regional density around each project — the map develops detail where the user spends time.
 
-The profile is the translation. The map rendered into human language, always current, never written by hand. Seven sections, each derived from its space. The context section shows what project the user is in and what constraints are active.
+**The profile** is the translation. The map rendered into human language, always current, never written by hand. Seven sections, each derived from its space. The context section shows what project the user is in and what constraints are active.
 
-Resonance is the retrieval signal. Multi-axis pattern recognition across all seven spaces. Context resonance finds past episodes in the same project. Conduct resonance finds episodes under the same operational contract. Both together: the right lesson from the right context.
+**Resonance** is the retrieval signal. Multi-axis pattern recognition across all seven spaces. Context resonance finds past episodes in the same project. Conduct resonance finds episodes under the same operational contract. Both together: the right lesson from the right context.
+
+**PiNs** are the attachment points. Explicit human knowledge — decisions, diagrams, documents, files, URLs — anchored as typed graph nodes. PiNs carry the things coordinates cannot: the things that are true because a person decided they are true. They decay unless marked permanent. They compound in weight like edges when referenced during successful traversals.
+
+**Bridges** are the transfer mechanism. Landmark bridges carry proven navigational patterns across projects, domains, and IRIS instances. They do not require the same codebase or the same domain — only the same seven-space coordinate map. Bridges are the first layer of federation. When many instances independently crystallize the same landmark signature, the network has agreed — without central coordination — on what works.
 
 Confidential · IRIS / Torus Network · March 2026
 
 ---
 
 
-## Page 19
+## Page 14
 
-IRIS Mycelium Layer — v1.6 &lt;page_number&gt;Page 19&lt;/page_number&gt;
+IRIS Mycelium Layer — v1.7
 
 ---
 
-**IRIS Mycelium Layer — v1.6**
+**IRIS Mycelium Layer — v1.7**
 
 Coordinates are the truth. Landmarks are the inheritance.
 
 The profile is the translation. Resonance is the retrieval signal.
 
+PiNs are the attachment points. Bridges are the transfer mechanism.
+
 Seven spaces. The right seven. Identity, operational, environmental.
 
-Prime, complete, and designed to grow.
+Prime, complete, and designed to grow — into every ecosystem.
 
 Confidential · IRIS / Torus Network · March 2026

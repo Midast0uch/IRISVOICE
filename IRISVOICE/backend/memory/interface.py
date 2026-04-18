@@ -13,6 +13,7 @@ Design Principles:
 import hashlib
 import json
 import logging
+import threading
 from typing import Optional, List, Dict, Any
 
 from backend.memory.working import ContextManager
@@ -80,6 +81,16 @@ class MemoryInterface:
             logger.info("[MemoryInterface] Mycelium coordinate layer initialised")
         except Exception as _myc_err:
             logger.warning("[MemoryInterface] Mycelium init failed (non-fatal): %s", _myc_err)
+
+        # Write lock: serializes all Mycelium writes across concurrent sessions.
+        # Two DER loops can share the same MemoryInterface (CLAUDE.md spec).
+        # WAL mode handles concurrent reads; this lock guards writes.
+        self._mycelium_write_lock = threading.Lock()
+
+        # Maintenance schedule: run_maintenance() every N completed tasks
+        # GOALS.md [5.4]: five-step sequence fires every MAINTENANCE_INTERVAL tasks.
+        self._task_completion_count: int = 0
+        self._MAINTENANCE_INTERVAL: int = 5   # every 5 completed DER tasks
 
         logger.info("[MemoryInterface] Initialized with encrypted storage")
     
@@ -413,3 +424,178 @@ class MemoryInterface:
             Session statistics
         """
         return self.context.get_session_stats(session_id)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # DER Loop — Mycelium proxy methods (Gate 1 Step 1.8)
+    # Every proxy wraps _mycelium in try/except — never raises to caller.
+    # When _mycelium is None all calls are no-ops that return None silently.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _mycelium_write(self, fn, *args, **kwargs) -> None:
+        """
+        Execute a Mycelium write operation under the write lock.
+        All writes from concurrent sessions are serialized here.
+        Never raises — swallows exceptions so callers stay unblocked.
+        """
+        if self._mycelium is None:
+            return
+        try:
+            with self._mycelium_write_lock:
+                fn(*args, **kwargs)
+        except Exception:
+            pass
+
+    def mycelium_ingest_tool_call(
+        self,
+        tool_name: str,
+        success: bool,
+        sequence_position: int,
+        total_steps: int,
+        session_id: str,
+    ) -> None:
+        """Ingest a tool-call signal into the Mycelium graph. Never raises."""
+        if self._mycelium is None:
+            return
+        self._mycelium_write(
+            self._mycelium.ingest_tool_call,
+            tool_name=tool_name,
+            success=success,
+            sequence_position=sequence_position,
+            total_steps=total_steps,
+            session_id=session_id,
+        )
+
+    def mycelium_record_outcome(
+        self,
+        session_id: str,
+        task: str,
+        outcome: str,
+    ) -> None:
+        """Record a task outcome in the Mycelium graph. Never raises."""
+        if self._mycelium is None:
+            return
+        try:
+            from backend.memory.mycelium.store import MemoryPath
+            empty_path = MemoryPath(
+                nodes=[], cumulative_score=0.0,
+                token_encoding="", spaces_covered=[],
+                traversal_id=""
+            )
+            self._mycelium_write(
+                self._mycelium.record_outcome,
+                empty_path, outcome, session_id, task,
+            )
+        except Exception:
+            pass
+
+        # Maintenance schedule [5.4]: fire run_maintenance every N tasks
+        try:
+            self._task_completion_count += 1
+            if self._task_completion_count % self._MAINTENANCE_INTERVAL == 0:
+                logger.info(
+                    "[MemoryInterface] Scheduling maintenance "
+                    f"(task #{self._task_completion_count})"
+                )
+                with self._mycelium_write_lock:
+                    self._mycelium.run_maintenance()
+        except Exception:
+            pass
+
+    def mycelium_crystallize_landmark(
+        self,
+        session_id: str,
+        score: float,
+        outcome: str,
+        task_entry_label: str,
+    ) -> None:
+        """Crystallize a landmark in the Mycelium graph. Never raises."""
+        if self._mycelium is None:
+            return
+        self._mycelium_write(
+            self._mycelium.crystallize_landmark,
+            session_id=session_id,
+            cumulative_score=score,
+            outcome=outcome,
+            task_entry_label=task_entry_label,
+        )
+
+    def mycelium_clear_session(self, session_id: str) -> None:
+        """Clear Mycelium session state. Never raises."""
+        if self._mycelium is None:
+            return
+        self._mycelium_write(self._mycelium.clear_session, session_id)
+
+    def mycelium_ingest_statement(
+        self,
+        statement: str,
+        session_id: str,
+    ) -> None:
+        """Ingest a free-text coordinate statement. Never raises."""
+        if self._mycelium is None:
+            return
+        self._mycelium_write(
+            self._mycelium.ingest_statement,
+            text=statement, session_id=session_id,
+        )
+
+    def mycelium_record_plan_stats(
+        self,
+        session_id: str,
+        task_class: str,
+        strategy: str,
+        total_steps: int,
+        steps_completed: int,
+        tokens_used: int,
+        avg_step_duration_ms: float,
+        outcome: str,
+        graph_mature: bool,
+    ) -> None:
+        """Record plan execution statistics. Never raises."""
+        if self._mycelium is None:
+            return
+        self._mycelium_write(
+            self._mycelium.record_plan_stats,
+            session_id=session_id,
+            task_class=task_class,
+            strategy=strategy,
+            total_steps=total_steps,
+            steps_completed=steps_completed,
+            tokens_used=tokens_used,
+            avg_step_duration_ms=avg_step_duration_ms,
+            outcome=outcome,
+            graph_mature=graph_mature,
+        )
+
+    def get_task_context_package(self, task: str, session_id: str,
+                                   space_subset=None):
+        """
+        Assemble a ContextPackage for the DER Director.
+        Returns (ContextPackage, True) when Mycelium is mature.
+        Returns (context_string, False) when Mycelium is unavailable or immature.
+        Never raises.
+        """
+        try:
+            if self._mycelium is None or not self._mycelium.is_mature():
+                try:
+                    return self.get_task_context(task, session_id), False
+                except Exception:
+                    return "", False
+            pkg = self._mycelium.get_context_path(
+                task_text=task, session_id=session_id, space_subset=space_subset
+            )
+            if not pkg or isinstance(pkg, str):
+                try:
+                    return self.get_task_context(task, session_id), False
+                except Exception:
+                    return "", False
+            return pkg, True
+        except Exception:
+            try:
+                return self.get_task_context(task, session_id), False
+            except Exception:
+                return "", False
+
+    @property
+    def working(self):
+        """Alias to context manager for DER loop working memory writes."""
+        return self.context

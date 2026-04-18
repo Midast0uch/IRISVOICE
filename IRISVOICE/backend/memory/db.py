@@ -18,6 +18,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Suppress repeated sqlcipher3 fallback warnings — only warn once per process.
+_sqlcipher_warned: bool = False
+
 # Default configuration values
 DEFAULT_CIPHER_PAGE_SIZE = 4096
 DEFAULT_KDF_ITERATIONS = 64000
@@ -75,12 +78,15 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
                 "sqlcipher3 not installed and IRIS_MEMORY_ENCRYPTION=1. "
                 "See docs/MEMORY_SETUP.md for platform-specific instructions."
             )
-        logger.warning(
-            "[db] sqlcipher3 not available — falling back to unencrypted sqlite3. "
-            "Memory data is NOT encrypted at rest. "
-            "To suppress: install sqlcipher3. "
-            "To require encryption: set IRIS_MEMORY_ENCRYPTION=1."
-        )
+        global _sqlcipher_warned
+        if not _sqlcipher_warned:
+            _sqlcipher_warned = True
+            logger.warning(
+                "[db] sqlcipher3 not available — falling back to unencrypted sqlite3. "
+                "Memory data is NOT encrypted at rest. "
+                "To suppress: install sqlcipher3. "
+                "To require encryption: set IRIS_MEMORY_ENCRYPTION=1."
+            )
         conn = sqlite3.connect(str(db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -294,7 +300,54 @@ def initialise_mycelium_schema(conn) -> None:
     """)
 
     # -------------------------------------------------------------------------
-    # Block 2 — Topology v2.0 tables (FK references mycelium_landmarks above)
+    # Block 2 — PiN layer + Cross-project landmark bridges
+    # PiN = Primordial Information Node: any knowledge artifact anchored to
+    # IRIS memory — files, folders, docs, images, decisions, URLs, fragments.
+    # -------------------------------------------------------------------------
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS mycelium_pins (
+            pin_id       TEXT PRIMARY KEY,
+            title        TEXT NOT NULL,
+            pin_type     TEXT DEFAULT 'note',   -- 'note'|'file'|'folder'|'image'|'doc'|'url'|'decision'|'fragment'
+            content      TEXT,                  -- markdown body or description
+            tags         TEXT DEFAULT '[]',     -- JSON array
+            file_refs    TEXT DEFAULT '[]',     -- JSON array of file/folder paths
+            image_refs   TEXT DEFAULT '[]',     -- JSON array of image paths/URLs
+            url_refs     TEXT DEFAULT '[]',     -- JSON array of external URLs
+            project_id   TEXT,                  -- optional project scope
+            origin_id    TEXT,                  -- instance UUID that created this PiN
+            created_at   REAL NOT NULL,
+            updated_at   REAL NOT NULL,
+            is_permanent INTEGER DEFAULT 0      -- 1 = never decays
+        );
+
+        CREATE TABLE IF NOT EXISTS mycelium_pin_links (
+            link_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type  TEXT NOT NULL,         -- 'pin' | 'landmark' | 'episode' | 'node'
+            source_id    TEXT NOT NULL,
+            target_type  TEXT NOT NULL,
+            target_id    TEXT NOT NULL,
+            relationship TEXT NOT NULL,         -- 'documents'|'references'|'implements'|'depends_on'|'contains'|'related_to'
+            weight       REAL DEFAULT 1.0,
+            created_at   REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS mycelium_landmark_bridges (
+            bridge_id              TEXT PRIMARY KEY,
+            local_landmark_id      TEXT NOT NULL REFERENCES mycelium_landmarks(landmark_id),
+            remote_project_id      TEXT,        -- project scope (nullable = global)
+            remote_instance_id     TEXT,        -- origin instance UUID
+            remote_landmark_name   TEXT NOT NULL,
+            remote_landmark_id     TEXT,        -- optional direct landmark ID
+            confidence             REAL DEFAULT 1.0,
+            bridge_type            TEXT DEFAULT 'equivalent',  -- 'equivalent'|'similar'|'inverse'
+            notes                  TEXT,
+            created_at             REAL NOT NULL
+        );
+    """)
+
+    # -------------------------------------------------------------------------
+    # Block 3 — Topology v2.0 tables (FK references mycelium_landmarks above)
     # -------------------------------------------------------------------------
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS mycelium_charts (
@@ -372,7 +425,23 @@ def initialise_mycelium_schema(conn) -> None:
             ON mycelium_charts(stale);
         CREATE INDEX IF NOT EXISTS idx_trajectories_landmark
             ON mycelium_trajectories(landmark_id);
+
+        -- PiN + bridge indexes
+        CREATE INDEX IF NOT EXISTS idx_pins_type
+            ON mycelium_pins(pin_type);
+        CREATE INDEX IF NOT EXISTS idx_pins_origin
+            ON mycelium_pins(origin_id);
+        CREATE INDEX IF NOT EXISTS idx_pins_project
+            ON mycelium_pins(project_id);
+        CREATE INDEX IF NOT EXISTS idx_pin_links_source
+            ON mycelium_pin_links(source_type, source_id);
+        CREATE INDEX IF NOT EXISTS idx_pin_links_target
+            ON mycelium_pin_links(target_type, target_id);
+        CREATE INDEX IF NOT EXISTS idx_bridges_local
+            ON mycelium_landmark_bridges(local_landmark_id);
+        CREATE INDEX IF NOT EXISTS idx_bridges_remote
+            ON mycelium_landmark_bridges(remote_instance_id);
     """)
 
     conn.commit()
-    logger.info("[db] Mycelium schema initialised: 13 tables, 22 indexes")
+    logger.info("[db] Mycelium schema initialised: 16 tables, 31 indexes")

@@ -12,7 +12,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-from .model_manager import ModelManager
 from .pipeline import AudioPipeline
 from backend.ws_manager import get_websocket_manager
 from backend.voice.porcupine_detector import PorcupineWakeWordDetector
@@ -29,12 +28,11 @@ class VoiceState(str, Enum):
 
 class AudioEngine:
     """
-    Singleton audio engine managing the native audio pipeline:
+    Singleton audio engine managing the audio pipeline:
     1. Wake word detection (Porcupine)
-    2. Voice activity detection (Silero VAD)
-    3. Audio buffering
-    4. LFM2-Audio native processing (16kHz -> 24kHz)
-    5. Native audio output
+    2. Audio frame distribution to registered listeners
+    3. TTS suppression (Porcupine paused while IRIS is speaking)
+    4. Speech interrupt signalling for in-progress TTS cancellation
     """
 
     _instance: Optional['AudioEngine'] = None
@@ -50,7 +48,6 @@ class AudioEngine:
             return
 
         # Core components
-        self.model_manager = ModelManager()
         self.pipeline: Optional[AudioPipeline] = None
 
         # Porcupine wake word detector (initialized lazily via initialize_porcupine())
@@ -232,7 +229,7 @@ class AudioEngine:
 
         While active, Porcupine wake-word processing is suppressed:
         - Prevents speaker output from bleeding into the mic and triggering false detections.
-        - Reduces CPU load so the LuxTTS synthesis thread is not starved of frames.
+        - Reduces CPU load so the F5-TTS synthesis thread is not starved of frames.
         Call set_tts_active(True) before the first sentence plays and
         set_tts_active(False) once playback finishes.
         """
@@ -263,23 +260,26 @@ class AudioEngine:
         try:
             logger.info("[AudioEngine] Initializing...")
 
-            if self.config.get("input_device") is None or self.config.get("output_device") is None:
+            # Auto-select input device if not explicitly configured.
+            # Output device intentionally stays None (system default) unless the
+            # user has explicitly chosen one — this ensures TTS goes to whatever
+            # Windows has set as the default playback device (speakers/headphones).
+            if self.config.get("input_device") is None:
                 try:
                     devices = AudioPipeline.list_devices()
-                    if self.config.get("input_device") is None:
-                        first_input = next((d for d in devices if d.get("input")), None)
-                        if first_input:
-                            self.config["input_device"] = first_input.get("index")
-                    if self.config.get("output_device") is None:
-                        first_output = next((d for d in devices if d.get("output")), None)
-                        if first_output:
-                            self.config["output_device"] = first_output.get("index")
+                    first_input = next((d for d in devices if d.get("input")), None)
+                    if first_input:
+                        self.config["input_device"] = first_input.get("index")
+                        logger.info(f"[AudioEngine] Auto-selected input: {first_input['name']} (index {first_input['index']})")
                 except Exception as device_err:
-                    logger.error(f"[AudioEngine] Failed to auto-select devices: {device_err}")
+                    logger.error(f"[AudioEngine] Failed to auto-select input device: {device_err}")
+
+            output_device = self.config.get("output_device")
+            logger.info(f"[AudioEngine] Output device: {'system default' if output_device is None else output_device}")
 
             self.pipeline = AudioPipeline(
                 input_device=self.config["input_device"],
-                output_device=self.config["output_device"],
+                output_device=output_device,
                 sample_rate=self.config["sample_rate"],
                 frame_length=self.config["frame_length"]
             )
@@ -334,10 +334,14 @@ class AudioEngine:
         try:
             # Wake word detection (only when Porcupine is initialized and TTS is not playing)
             if self._porcupine_initialized and self._porcupine and not self._tts_active:
-                # Convert float32 [-1,1] → int16 PCM for Porcupine
-                pcm_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16).tolist()
+                # Convert float32 [-1,1] → int16 PCM for Porcupine.
+                # PERF: keep as numpy array — avoid .tolist() which allocates a Python
+                # int object per sample (512 objects × 31 frames/sec = ~16k allocs/sec).
+                # pvporcupine.process() accepts any sequence supporting the buffer protocol,
+                # including numpy int16 arrays.
+                pcm_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16)
                 frame_len = self._porcupine.frame_length
-                # Process in Porcupine-sized chunks
+                # Process in Porcupine-sized chunks (numpy slicing is O(1), zero-copy)
                 for i in range(0, len(pcm_int16) - frame_len + 1, frame_len):
                     chunk = pcm_int16[i:i + frame_len]
                     detected, word = self._porcupine.process_frame(chunk)
@@ -379,11 +383,19 @@ class AudioEngine:
             self.initialize()
             self.start()
 
+    def remove_state_callback(self, callback: Callable) -> None:
+        """Remove a previously registered state change callback."""
+        try:
+            self._state_callbacks.remove(callback)
+        except ValueError:
+            pass
+
     def cleanup(self):
         """Clean up resources"""
         try:
             print("[AudioEngine] Cleaning up...")
             self.stop()
+            self._state_callbacks.clear()
 
             # Clean up Porcupine wake word detector
             if self._porcupine:
@@ -400,10 +412,9 @@ class AudioEngine:
     def get_status(self) -> Dict[str, Any]:
         """Get current engine status"""
         return {
-            "state": self._state.value,
-            "is_running": self._is_running,
-            "config": self.config,
-            "model_loaded": self.model_manager.is_loaded if self.model_manager else False,
+            "state":                 self._state.value,
+            "is_running":            self._is_running,
+            "config":                self.config,
             "porcupine_initialized": self._porcupine_initialized,
         }
 

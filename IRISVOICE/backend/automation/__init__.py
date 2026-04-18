@@ -10,5 +10,5 @@ __all__ = [
     "VisionModelClient",
     "GUIAgent",
     "ElementDetection",
-    "VisionProvider"
+    "VisionProvider",
 ]

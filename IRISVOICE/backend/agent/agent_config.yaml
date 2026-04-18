@@ -28,11 +28,25 @@ models:
     optional: true   # optional=true: startup continues if file is missing
 
   - id: "vision"
-    # MiniCPM is pre-loaded and accessed via a dedicated toolkit, so no path is needed here.
-    # This entry is for the router to know that the 'vision' capability exists.
+    # LFM2.5-VL runs via llama-server on port 8081, exposed as vision.* MCP tools in AgentToolBridge.
+    # No path needed — VisionMCPServer is registered directly in tool_bridge._mcp_servers.
+    # LAZY LOAD: does NOT start at backend startup. Activated by vision_enabled toggle in frontend.
     path: null
     capabilities: ["vision", "gui_interaction"]
-    constraints: null
+    constraints:
+      vision_server_url: "http://localhost:8081/v1"
+      auto_load: false
+    optional: true
+
+  - id: "gguf_local"
+    # GGUF brain models via llama-cpp-python server on port 8082 (OpenAI-compatible).
+    # NEVER auto-loaded — only spawns when user selects a model in the Models Browser.
+    # Managed by LocalModelManager in backend/agent/local_model_manager.py.
+    path: null
+    capabilities: ["conversation", "tool_execution", "reasoning"]
+    constraints:
+      inference_server_url: "http://127.0.0.1:8082/v1"
+      auto_load: false
     optional: true
 
 # Tool execution settings

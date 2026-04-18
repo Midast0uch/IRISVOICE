@@ -3,9 +3,10 @@ IRIS Backend Core Data Models
 Core Pydantic models for type validation and serialization
 These models have no dependencies on other backend modules to avoid circular imports
 """
+from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import re
 
 
@@ -17,6 +18,11 @@ class Category(str, Enum):
     SYSTEM = "system"
     CUSTOMIZE = "customize"
     MONITOR = "monitor"
+    # Virtual sub-app categories — frontend-only navigation; no backend sections
+    MARKETPLACE = "marketplace"
+    MODELS = "models"
+    BROWSER = "browser"
+    INFERENCE_CONSOLE = "inference_console"
 
 
 class AppState(str, Enum):
@@ -153,9 +159,7 @@ class IRISState(BaseModel):
     current_section: Optional[str] = None
     field_values: Dict[str, Dict[str, Any]] = Field(default_factory=_build_default_field_values)
     
-    class Config:
-        populate_by_name = True
-        extra = 'forbid'  # Reject any extra fields not defined in the model
+    model_config = ConfigDict(populate_by_name=True, extra='forbid')
     active_theme: ColorTheme = Field(default_factory=ColorTheme)
     app_state: AppState = Field(default=AppState.STARTING)
     
@@ -340,7 +344,8 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             label="INFERENCE MODE",
             icon="Server",
             fields=[
-                InputField(id="inference_mode", type=FieldType.DROPDOWN, label="Inference Mode", options=["Local Models", "VPS Gateway", "OpenAI API"], value="Local Models"),
+                InputField(id="inference_mode", type=FieldType.DROPDOWN, label="Inference Mode", options=["LM Studio", "Local Models", "VPS Gateway", "OpenAI API"], value="LM Studio"),
+                InputField(id="lmstudio_endpoint", type=FieldType.TEXT, label="LM Studio URL", placeholder="http://localhost:1234", value="http://localhost:1234"),
                 InputField(id="vps_url", type=FieldType.TEXT, label="VPS URL", placeholder="https://vps.example.com", value=""),
                 InputField(id="vps_api_key", type=FieldType.TEXT, label="VPS API Key", placeholder="Enter API key", value=""),
                 InputField(id="openai_api_key", type=FieldType.TEXT, label="OpenAI API Key", placeholder="sk-...", value=""),
@@ -466,7 +471,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             icon="Eye",
             fields=[
                 InputField(id="vision_enabled", type=FieldType.TOGGLE, label="Vision Enabled", value=False),
-                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm-o4.5", "llava", "bakllava"], value="minicpm-o4.5"),
+                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["lfm2.5-vl", "llava", "bakllava"], value="lfm2.5-vl"),
             ]
         ),
         Section(
@@ -476,7 +481,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             fields=[
                 InputField(id="desktop_control_enabled", type=FieldType.TOGGLE, label="Desktop Control Enabled", value=False),
                 InputField(id="ui_tars_provider", type=FieldType.DROPDOWN, label="UI-TARS Provider", options=["cli_npx", "native_python", "api_cloud"], value="native_python"),
-                InputField(id="vision_model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["minicpm_ollama", "anthropic", "volcengine", "local"], value="minicpm_ollama"),
+                InputField(id="vision_model_provider", type=FieldType.DROPDOWN, label="Vision Model", options=["llama_server", "anthropic", "volcengine", "local"], value="llama_server"),
                 InputField(id="api_key", type=FieldType.TEXT, label="API Key", placeholder="sk-...", value=""),
                 InputField(id="max_steps", type=FieldType.SLIDER, label="Max Automation Steps", min=5, max=50, value=25),
                 InputField(id="require_confirmation", type=FieldType.TOGGLE, label="Require Confirmation", value=True),
@@ -684,3 +689,88 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
         ),
     ],
 }
+
+
+# ---------------------------------------------------------------------------
+# DER Loop execution models (Gate 1 Step 1.7)
+# ---------------------------------------------------------------------------
+
+class StepStatus(str, Enum):
+    """Status of a single plan step in the DER execution loop."""
+    PENDING   = "pending"
+    RUNNING   = "running"
+    COMPLETED = "completed"
+    FAILED    = "failed"
+    SKIPPED   = "skipped"
+    BLOCKED   = "blocked"
+
+
+@dataclass
+class PlanStep:
+    """
+    One step in the Director's ExecutionPlan.
+    Richer than QueueItem — carries execution state and results.
+    """
+    step_id: str
+    step_number: int
+    description: str
+    status: StepStatus              = StepStatus.PENDING
+    tool: Optional[str]             = None
+    params: Dict[str, Any]          = dc_field(default_factory=dict)
+    depends_on: List[str]           = dc_field(default_factory=list)
+    critical: bool                  = True
+    required_permission: Optional[str] = None
+    result: Any                     = None
+    failure_reason: Optional[str]   = None
+    duration_ms: int                = 0
+    expected_output: Optional[str]  = None
+
+
+@dataclass
+class ExecutionPlan:
+    """
+    The Director's complete execution plan.
+    Initialized from _plan_task(), consumed by _execute_plan_der().
+    """
+    plan_id: str
+    original_task: str
+    strategy: str
+    reasoning: str
+    steps: List[PlanStep]           = dc_field(default_factory=list)
+    outcome: str                    = "success"
+
+    def has_failed(self) -> bool:
+        return self.outcome == "failure"
+
+    def to_context_string(self) -> str:
+        """
+        Serialize plan as HZA-formatted string for model context injection.
+        Uses ASCII markers only — never Unicode (encoding errors on Windows).
+        [+] = completed, [x] = failed, [~] = running, [ ] = pending/other
+        """
+        hza = self.plan_id[:8]
+        lines = [
+            f"[system://plan/{hza}]",
+            f"EXECUTION PLAN [{hza}]",
+            f"Task: {self.original_task}",
+            f"Strategy: {self.strategy}",
+            f"Reasoning: {self.reasoning}",
+            "",
+            "Steps:",
+        ]
+        for step in self.steps:
+            if step.status == StepStatus.COMPLETED:
+                marker = "[+]"
+            elif step.status == StepStatus.FAILED:
+                marker = "[x]"
+            elif step.status == StepStatus.RUNNING:
+                marker = "[~]"
+            else:
+                marker = "[ ]"
+            lines.append(f"[system://plan/{hza}/step/{step.step_id}]")
+            lines.append(f"  {marker} Step {step.step_number}: {step.description}")
+            if step.result:
+                lines.append(f"      Result: {str(step.result)[:100]}")
+            if step.failure_reason:
+                lines.append(f"      Failed: {step.failure_reason}")
+        return "\n".join(lines)

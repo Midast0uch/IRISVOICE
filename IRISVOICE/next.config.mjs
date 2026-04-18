@@ -1,7 +1,10 @@
+const isProd = process.env.NODE_ENV === 'production';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'export',   // Tauri needs a static bundle — no Node.js server at runtime
-  distDir: 'dist',
+  // distDir/output only apply to production builds (next build).
+  // Dev mode (Turbopack) must not use static export — it needs a live server.
+  ...(isProd ? { distDir: 'dist', output: 'export' } : {}),
   compress: true,
   productionBrowserSourceMaps: false,
   typescript: {
@@ -24,31 +27,42 @@ const nextConfig = {
       'lodash',
       'zod',
     ],
+    // Persist Turbopack's compiled module graph across server restarts.
+    // Without this, every `npm run dev` restart re-compiles the full module
+    // graph from scratch (120s+ cold start). With it, only changed modules
+    // are recompiled — typically < 5s after the first run.
+    // Key was renamed from turbopackPersistentCaching in Next.js 16.
+    turbopackFileSystemCacheForDev: true,
   },
   compiler: {
     removeConsole: { exclude: ['error'] },
   },
-  // Limit webpack memory and caching
+
+  // ===========================================================================
+  // Webpack exclusions — applies to `next build` (production) only.
+  //
+  // Dev mode now uses Turbopack (lazy, path-independent cache, respects
+  // .gitignore) which avoids the 18GB+ models/ scan entirely.
+  //
+  // For production builds (`next build`) these exclusions still prevent
+  // webpack from scanning model-weight directories.
+  //
+  // watchOptions.ignored MUST be a RegExp — webpack 5 only processes RegExp
+  // correctly here (glob strings are silently ignored on Windows).
+  //
+  // History: see docs/OPTIMIZATION_LOG.md — February 23, 2026.
+  // ===========================================================================
   webpack: (config, { isServer, dev }) => {
-    // Exclude models directory from webpack processing and watching
-    // Models are loaded lazily by the backend on-demand (see backend/agent/lfm_audio_manager.py)
-    // This prevents memory spikes (7000+ MB) and extended freeze times during dev mode startup
     config.watchOptions = {
       ...config.watchOptions,
-      // Exclude backend Python files and session data — they are never frontend source
-      // Backend session JSON files (backend/sessions/**) are written at runtime and
-      // would otherwise trigger constant Hot Module Replacement rebuilds.
-      // Use a RegExp (not glob strings or a function) — webpack 5 only accepts
-      // string | string[] | RegExp for watchOptions.ignored.
-      // The character class [/\\] matches both forward-slash (Unix) and
-      // backslash (Windows) so this works cross-platform without path normalisation.
+      // Exclude backend Python files, session data, and model weights.
+      // The [/\\] character class matches both / (Unix) and \ (Windows).
       ignored: /[/\\](node_modules|\.git|\.next|dist|backend|models)[/\\]/,
     };
 
-    // Exclude model files from webpack asset processing
-    // Model file types (.bin, .safetensors) should not be processed by webpack
+    // Prevent webpack from trying to process model weight files as JS assets.
     config.module.rules.push({
-      test: /\.(bin|safetensors)$/,
+      test: /\.(bin|safetensors|gguf|pt|pth)$/,
       type: 'javascript/auto',
       exclude: /models\//,
     });
@@ -62,13 +76,20 @@ const nextConfig = {
         chunkIds: 'named',
       };
     }
+
     return config;
   },
-  // Next.js 16 enables Turbopack by default. We run with `next dev --no-turbopack`
-  // (see .claude/launch.json) so webpack's watchOptions.ignored above can exclude
-  // backend/sessions/*.json — preventing constant HMR rebuilds from backend writes.
-  // turbopack: {} silences the "webpack config without turbopack config" warning.
-  turbopack: {},
-}
 
-export default nextConfig
+  // Turbopack configuration (used by default in Next.js 16 dev).
+  //
+  // Turbopack is lazy — it only compiles what is actually imported.  It also
+  // respects .gitignore for file watching.  Both together mean the 18 GB+
+  // models/ and backend/voice/pretrained_models/ directories are never
+  // touched at startup, giving near-instant first compile regardless of
+  // which worktree the project is opened from.
+  //
+  // The webpack: callback below still runs for `next build` (production).
+  turbopack: {},
+};
+
+export default nextConfig;

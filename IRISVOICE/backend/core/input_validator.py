@@ -331,7 +331,22 @@ class InputValidator:
                 allowed_attrs = schema.get("x-allowed-html-attrs", {}) if schema else {}
                 result = bleach.clean(result, tags=allowed_tags, attributes=allowed_attrs, strip=True)
             else:
-                # Basic HTML tag removal
+                # Basic HTML sanitization: strip dangerous tag blocks (including content)
+                # then strip remaining tags.  Order matters — block removal must come first.
+                result = re.sub(
+                    r'<(script|style|iframe|object|embed|link|meta)[^>]*>.*?</\1>',
+                    '',
+                    result,
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+                # Also strip self-closing dangerous tags
+                result = re.sub(
+                    r'<(script|style|iframe|object|embed|link|meta)[^>]*/?>',
+                    '',
+                    result,
+                    flags=re.IGNORECASE,
+                )
+                # Strip remaining tags
                 result = re.sub(r'<[^>]+>', '', result)
         
         # Escape HTML entities
@@ -519,11 +534,19 @@ class InputValidator:
         }
         
         error_type = type_map.get(validator, ValidationErrorType.CUSTOM)
-        
+
+        # Include field name and error_type label in message for pattern/required errors
+        # so callers can check for "pattern" or "filename" in error.lower().
+        message = error.message
+        if error_type == ValidationErrorType.PATTERN and field and field != "_root":
+            message = f"Pattern validation failed for '{field}': {message}"
+        elif error_type == ValidationErrorType.REQUIRED:
+            message = f"Required field missing: {message}"
+
         return ValidationError(
             field=field,
             error_type=error_type,
-            message=error.message,
+            message=message,
             value=error.instance
         )
 

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react"
+import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg } from "@/types/iris"
 
 // WebSocket connection states
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error"
@@ -82,6 +83,7 @@ interface UseIRISWebSocketReturn {
   // Voice actions
   startVoiceCommand: () => void
   endVoiceCommand: () => void
+  cancelVoiceCommand: () => void
   sendMessage: (type: string, payload?: Record<string, unknown>) => boolean
   // Device actions
   getWakeWords: () => void
@@ -105,7 +107,14 @@ const DEFAULT_THEME: ColorTheme = {
 }
 
 // WebSocket resilience constants (module-level — stable references across renders)
-const NON_QUEUEABLE_TYPES = new Set(['ping', 'pong'])
+// Transient navigation messages must NOT replay on reconnect —
+// the backend rejects them if they refer to stale state (e.g. an old
+// "marketplace" category that is no longer valid after a reconnect).
+const NON_QUEUEABLE_TYPES = new Set([
+  'ping', 'pong',
+  'select_category', 'select_section', 'go_back',
+  'expand_to_main', 'collapse_to_idle',
+])
 const RECONNECT_MAX_DELAY = 30_000   // 30 s ceiling
 const STABILITY_THRESHOLD = 10_000  // reset backoff counter after 10 s of uptime
 
@@ -159,7 +168,7 @@ export function useIRISWebSocket(
     load_progress_percent: null,
     error_message: null,
     last_used: null,
-    model_name: "minicpm-o4.5",
+    model_name: "lfm2.5-vl",
     quantization_enabled: true,
     is_available: false
   })
@@ -228,16 +237,37 @@ export function useIRISWebSocket(
     setConnectionState("connecting")
     setLastError(null)
 
-    // Fix 1 — Readiness check: probe the HTTP health endpoint before opening
-    // the WebSocket socket. This prevents noisy ECONNREFUSED WebSocket errors
-    // when the backend is still starting or temporarily down.
-    const httpUrl = url.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/ws.*$/, '/')
-    try {
-      await fetch(httpUrl, { signal: AbortSignal.timeout(2000) })
-    } catch {
-      // Backend not reachable — skip WebSocket, schedule a backoff retry
+    // Fix 1 — Readiness check: poll /ready before opening the WebSocket.
+    // The sidecar backend may take several seconds to initialize after spawn.
+    // /ready returns 200 after full startup, 503 while still loading.
+    // Falls back to / health check for older backends that lack /ready.
+    const httpBase = url.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/ws.*$/, '')
+    const readyUrl = `${httpBase}/ready`
+    const healthUrl = `${httpBase}/`
+
+    let backendReady = false
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        const res = await fetch(readyUrl, { signal: AbortSignal.timeout(2000) })
+        if (res.ok) { backendReady = true; break }
+        if (res.status === 503) {
+          // Still starting — wait and retry
+          await new Promise(r => setTimeout(r, 800))
+          continue
+        }
+        // 404 = backend doesn't have /ready — fall back to basic health check
+        const health = await fetch(healthUrl, { signal: AbortSignal.timeout(2000) })
+        if (health.ok) { backendReady = true; break }
+        break
+      } catch {
+        if (attempt < 4) { await new Promise(r => setTimeout(r, 600)); continue }
+        break
+      }
+    }
+
+    if (!backendReady) {
       if (process.env.NODE_ENV !== 'production') {
-        console.log("[IRIS WebSocket] Backend not reachable, will retry...")
+        console.log("[IRIS WebSocket] Backend not ready, will retry...")
       }
       setConnectionState("disconnected")
       scheduleReconnect()
@@ -541,6 +571,31 @@ export function useIRISWebSocket(
         break
       }
 
+      case "chat_message": {
+        // Final assistant response from text_message flow (streamed then complete)
+        const content = typeof payload.content === 'string' ? payload.content : null
+        if (content) {
+          setLastTextResponse({
+            text: content,
+            sender: "assistant",
+            ...(payload.thinking && typeof payload.thinking === 'string'
+              ? { thinking: payload.thinking }
+              : {}),
+          })
+        }
+        break
+      }
+
+      case "chat_chunk": {
+        // Streaming chunk — dispatch for progressive rendering
+        if (typeof window !== 'undefined' && typeof payload.chunk === 'string') {
+          window.dispatchEvent(new CustomEvent('iris:chat_chunk', {
+            detail: { chunk: payload.chunk }
+          }))
+        }
+        break
+      }
+
       case "audio_level": {
         // Audio level update during listening
         if (typeof payload.level === 'number') {
@@ -725,12 +780,42 @@ export function useIRISWebSocket(
         break
       }
 
+      case "skills_list": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skills_list', { detail: { payload } }))
+        }
+        break
+      }
+
+      case "skill_toggled": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skill_toggled', { detail: { payload } }))
+        }
+        break
+      }
+
+      case "skill_deleted": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skill_deleted', { detail: { payload } }))
+        }
+        break
+      }
+
+      case "skill_created": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skill_created', { detail: { payload } }))
+        }
+        break
+      }
+
       case "skills_reloaded": {
-        // Skills reloaded successfully
+        // Skills reloaded by agent kernel — re-fetch the skills list
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Skills reloaded:", payload)
         }
-        // Skills are reloaded by the agent kernel
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:skills_reloaded', { detail: { payload } }))
+        }
         break
       }
 
@@ -789,6 +874,115 @@ export function useIRISWebSocket(
       case "cleanup_report":
       case "cleanup_result": {
         // Session cleanup reports — no UI action needed
+        break
+      }
+
+      case "inference_event":
+      case "model_load_event":
+      // ── Local model / hardware events ── forwarded to iris:ws_message so
+      // ModelsScreen and InferenceConsolePanel receive them without prop-drilling.
+      case "local_models_list":
+      case "hardware_info":
+      case "local_model_status":
+      case "local_model_loading":
+      case "gguf_download_progress":
+      case "model_pin_updated":
+      case "hf_models_list": {
+        // Forward to any panel that listens on iris:ws_message
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:ws_message', {
+            detail: { type, payload }
+          }))
+        }
+        break
+      }
+
+      // ── Tab system ────────────────────────────────────────────────────────
+      // open_tab / close_tab are forwarded as CustomEvents so DashboardWing
+      // can receive them without threading state through NavigationContext.
+      case "open_tab": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:open_tab', {
+            detail: message as unknown as OpenTabMsg
+          }))
+        }
+        break
+      }
+
+      case "close_tab": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:close_tab', {
+            detail: message as unknown as CloseTabMsg
+          }))
+        }
+        break
+      }
+
+      // ── Crawler status ─────────────────────────────────────────────────────
+      case "crawler_started": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_started', {
+            detail: message as unknown as CrawlerStartedMsg
+          }))
+        }
+        break
+      }
+
+      case "crawler_page_fetched": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_page_fetched', {
+            detail: message as unknown as CrawlerPageMsg
+          }))
+        }
+        break
+      }
+
+      case "crawler_error": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_error', {
+            detail: message as unknown as CrawlerErrorMsg
+          }))
+        }
+        break
+      }
+
+      // ── Mode change ────────────────────────────────────────────────────────
+      // Broadcast from /api/mode POST — iris-launcher set a new mode.
+      // Forwarded so useLauncherMode can react without polling.
+      case "mode_changed": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:mode_changed', {
+            detail: { mode: (message as Record<string, unknown>).mode as string }
+          }))
+        }
+        break
+      }
+
+      case 'cli_output': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:cli_output', { detail: payload }))
+        }
+        break
+      }
+
+      case 'cli_started': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:cli_started', { detail: payload }))
+        }
+        break
+      }
+
+      case 'cli_activity': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:cli_activity', { detail: payload }))
+        }
+        break
+      }
+
+      case 'file_activity': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:file_activity', { detail: payload }))
+        }
         break
       }
 
@@ -920,14 +1114,26 @@ export function useIRISWebSocket(
   }, [sendMessage])
 
   const endVoiceCommand = useCallback(() => {
-    // Optimistic update: reset to idle immediately
+    // Optimistic update: show processing immediately (backend will transcribe + respond)
+    // Avoids flicker: listening → idle (wrong) → processing_conversation (backend)
+    setVoiceState("processing_conversation")
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
+        detail: { state: "processing_conversation" }
+      }))
+    }
+    sendMessage("voice_command_end", {})
+  }, [sendMessage])
+
+  const cancelVoiceCommand = useCallback(() => {
+    // Immediate cancel — resets to idle without waiting for transcription/agent
     setVoiceState("idle")
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
         detail: { state: "idle" }
       }))
     }
-    sendMessage("voice_command_end", {})
+    sendMessage("voice_command_cancel", {})
   }, [sendMessage])
 
   // Clear field error
@@ -1005,6 +1211,7 @@ export function useIRISWebSocket(
     // Voice actions
     startVoiceCommand,
     endVoiceCommand,
+    cancelVoiceCommand,
     sendMessage,
     // Device actions
     getWakeWords,

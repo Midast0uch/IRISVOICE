@@ -12,14 +12,9 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Lazy imports — torch and transformers are only needed when a local model is
-# actually loaded.  Importing them at module level adds 10-30 s to startup.
-try:
-    import torch as _torch_module
-    _TORCH_AVAILABLE = True
-except ImportError:
-    _torch_module = None  # type: ignore
-    _TORCH_AVAILABLE = False
+# torch/transformers are NOT imported at module level — doing so costs 360 MB of
+# RAM on startup before the user has loaded anything.  All torch usage is inside
+# methods that are only called when a model is actually being loaded/run.
 
 class ModelWrapper:
     """Wraps an AI model, providing a standard interface for loading and generation."""
@@ -29,8 +24,11 @@ class ModelWrapper:
         self.model_path = model_path
         self.capabilities = capabilities
         self.constraints = constraints or {}
-        _cuda = _TORCH_AVAILABLE and _torch_module.cuda.is_available()
-        self.device = self.constraints.get("device", "cuda" if _cuda else "cpu")
+        # Defer CUDA check to first use — importing torch here costs ~360 MB
+        self._device_override = self.constraints.get("device")
+        self._dtype = self.constraints.get("dtype", "auto")
+        self.device = self._device_override or "cpu"  # refined on first load
+        self.dtype = self._dtype
         self.dtype = self.constraints.get("dtype", "auto")
         self.model = None
         self.tokenizer = None
@@ -51,6 +49,9 @@ class ModelWrapper:
         try:
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
+            # Resolve device now that torch is available
+            if not self._device_override:
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
             # Map string dtype to torch dtype
             torch_dtype_map = {

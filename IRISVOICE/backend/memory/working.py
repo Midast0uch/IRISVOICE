@@ -30,9 +30,21 @@ class ContextManager:
         "episodic_injection",
         "task_anchor",
         "active_tool_state",
+        "external_research",   # Domain 14: crawler results (lower weight, compressible)
         "working_history"
     ]
-    
+
+    # Budget weight per zone (relative to total budget).
+    # external_research uses 0.5x weight — it's supplementary context, not primary.
+    ZONE_WEIGHTS = {
+        "semantic_header":   1.0,
+        "episodic_injection": 1.0,
+        "task_anchor":        1.0,
+        "active_tool_state":  1.0,
+        "external_research":  0.5,
+        "working_history":    1.0,
+    }
+
     # Zones that should never be compressed
     ANCHOR_ZONES = {"semantic_header", "task_anchor", "active_tool_state"}
     

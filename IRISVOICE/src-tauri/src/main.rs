@@ -20,6 +20,7 @@ fn main() {
             window.set_shadow(false).ok();
             window.set_always_on_top(true).ok();
             window.set_skip_taskbar(true).ok();
+
             // Must be resizable=true so the JS API can expand/contract the window
             // when chat/dashboard wings open.  The user cannot drag-resize because
             // there are no window decorations, so this doesn't expose a resize handle.
@@ -31,8 +32,11 @@ fn main() {
             window.set_max_size(None::<PhysicalSize<u32>>).ok();
 
             // ── Launch the Python backend sidecar ─────────────────────────
-            // Only runs when the app is built/installed (sidecar binary exists).
-            // In dev mode the backend is started separately via start-backend.py.
+            // Only runs in release builds (production installs).
+            // In dev mode (`cargo tauri dev`) the backend is started separately
+            // via start-backend.py — spawning the sidecar here would race with
+            // that process for port 8000 and cause startup errors/memory spikes.
+            #[cfg(not(debug_assertions))]
             match app.shell().sidecar("iris-backend") {
                 Ok(cmd) => {
                     match cmd.spawn() {
@@ -41,8 +45,7 @@ fn main() {
                             *sidecar_child.lock().unwrap() = Some(child);
                         }
                         Err(e) => {
-                            // Non-fatal: in dev the backend is already running externally
-                            println!("[Tauri] Sidecar spawn skipped ({})", e);
+                            println!("[Tauri] Sidecar spawn failed ({})", e);
                         }
                     }
                 }
@@ -50,6 +53,8 @@ fn main() {
                     println!("[Tauri] Sidecar not found — assuming external backend ({})", e);
                 }
             }
+            #[cfg(debug_assertions)]
+            println!("[Tauri] Dev mode — backend sidecar skipped (use start-backend.py)");
 
             // ── Deep link handler ─────────────────────────────────────────
             let app_handle = app.handle().clone();

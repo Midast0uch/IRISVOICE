@@ -50,7 +50,14 @@ class ToolDefinition(BaseModel):
     category: ToolCategory
     parameters: List[ToolParameter]
     required_params: List[str] = Field(default_factory=list)
-    
+
+    @validator("name")
+    @classmethod
+    def name_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("name cannot be empty")
+        return v
+
     class Config:
         use_enum_values = True
 
@@ -84,7 +91,7 @@ class VisionStatus(BaseModel):
     load_progress_percent: Optional[float] = None
     error_message: Optional[str] = None
     last_used: Optional[datetime] = None
-    model_name: str = "minicpm-o4.5"
+    model_name: str = "lfm2.5-vl"
     quantization_enabled: bool = True
     is_available: bool = False
 
@@ -175,13 +182,13 @@ class TextMessage(BaseModel):
 
 class ThemeSettings(BaseModel):
     """UI theme settings."""
-    primary: str = Field(default="#00ff88", regex=r"^#[0-9a-fA-F]{6}$")
-    glow: str = Field(default="#00ff88", regex=r"^#[0-9a-fA-F]{6}$")
-    font: str = Field(default="#ffffff", regex=r"^#[0-9a-fA-F]{6}$")
-    idle_color: Optional[str] = Field(None, regex=r"^#[0-9a-fA-F]{6}$")
-    listening_color: Optional[str] = Field(None, regex=r"^#[0-9a-fA-F]{6}$")
-    processing_color: Optional[str] = Field(None, regex=r"^#[0-9a-fA-F]{6}$")
-    error_color: Optional[str] = Field(None, regex=r"^#[0-9a-fA-F]{6}$")
+    primary: str = Field(default="#00ff88", pattern=r"^#[0-9a-fA-F]{6}$")
+    glow: str = Field(default="#00ff88", pattern=r"^#[0-9a-fA-F]{6}$")
+    font: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
+    idle_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    listening_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    processing_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    error_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 class SessionState(BaseModel):
@@ -189,7 +196,7 @@ class SessionState(BaseModel):
     session_id: str
     category: Optional[str] = None
     section: Optional[str] = None
-    field_values: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    field_values: Dict[str, Any] = Field(default_factory=dict)
     theme: ThemeSettings = Field(default_factory=ThemeSettings)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
