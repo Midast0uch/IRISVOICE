@@ -1,0 +1,28 @@
+{
+  "protocol_version": "0.2",
+  "description": "Recall fallback ladder configuration",
+  "last_updated": "2026-04-18",
+  "fallback_ladder": [
+    {
+      "pass": 1,
+      "name": "nbl_checkpoint",
+      "description": "Load NBL checkpoint for session_id — free, ≤40 tokens",
+      "enabled": true
+    },
+    {
+      "pass": 2,
+      "name": "episodic_similarity",
+      "description": "Semantic similarity search in episodic store",
+      "enabled": true,
+      "min_similarity": 0.25
+    },
+    {
+      "pass": 3,
+      "name": "file_name_match",
+      "description": "Substring match against active_files in checkpoint",
+      "enabled": true
+    }
+  ],
+  "max_results_per_pass": 3,
+  "episodic_context_max_tokens": 2000
+}

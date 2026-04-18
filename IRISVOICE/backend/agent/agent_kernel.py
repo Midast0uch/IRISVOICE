@@ -274,6 +274,9 @@ class AgentKernel:
         # Memory Foundation integration
         self._memory_interface: Optional[Any] = None
 
+        # MCM Protocol Orchestrator — wired after set_memory_interface()
+        self._mcm_orch = None
+
         # ── DER Loop components ────────────────────────────────────────────
         # DER_MAX_CYCLES / DER_MAX_VETO_PER_ITEM re-exported at module level
         # for spec compliance (Gap 11). Canonical values live in der_constants.
@@ -337,6 +340,17 @@ class AgentKernel:
         if self._trailing_director is not None:
             self._trailing_director.memory = memory_interface
         logger.info("[AgentKernel] Memory interface connected")
+        try:
+            from backend.agent.mcm_protocol import MCMOrchestrator
+            self._mcm_orch = MCMOrchestrator(
+                memory_interface=memory_interface,
+                session_id=self.session_id,
+                thread_id=getattr(self, "_thread_id", None),
+            )
+            logger.info("[AgentKernel] MCMOrchestrator initialized")
+        except Exception as _mcm_err:
+            logger.warning(f"[AgentKernel] MCMOrchestrator unavailable: {_mcm_err}")
+            self._mcm_orch = None
 
     def infer(
         self,
@@ -1082,6 +1096,13 @@ class AgentKernel:
         # Ensure the list ends on the current user turn
         if not messages or messages[-1].get("content") != text or messages[-1].get("role") != "user":
             messages.append({"role": "user", "content": text})
+
+        # ── MCM Protocol: MITO tag injection + DCP prune ─────────────────
+        if self._mcm_orch is not None:
+            try:
+                messages = self._mcm_orch.pre_call(messages, text)
+            except Exception:
+                pass  # MCM failure never blocks the response
 
         return messages
 
@@ -1956,21 +1977,26 @@ class AgentKernel:
                 pass
             # Option B / Pacman: fragment this turn-pair into the vector DB so future
             # context assembly can retrieve it semantically (PACMAN.md §Digestion).
-            # Zone = 'trusted' — user's own conversation (PACMAN.md Dimension 1).
+            # MCM orchestrator handles fragmentation + compression check when available.
             try:
-                if (
-                    self._memory_interface is not None
-                    and hasattr(self._memory_interface, "episodic")
-                    and hasattr(self._memory_interface.episodic, "fragment_and_store")
-                    and response
-                ):
+                if response:
                     _turn = f"User: {text}\nAssistant: {response}"
-                    self._memory_interface.episodic.fragment_and_store(
-                        _turn,
-                        session_id=session_id or self.session_id,
-                        chunk_type="context_fragment",
-                        zone="trusted",
-                    )
+                    if self._mcm_orch is not None:
+                        self._mcm_orch.post_turn(
+                            self._conversation_memory.messages if self._conversation_memory else [],
+                            response_text=response,
+                        )
+                    elif (
+                        self._memory_interface is not None
+                        and hasattr(self._memory_interface, "episodic")
+                        and hasattr(self._memory_interface.episodic, "fragment_and_store")
+                    ):
+                        self._memory_interface.episodic.fragment_and_store(
+                            _turn,
+                            session_id=session_id or self.session_id,
+                            chunk_type="context_fragment",
+                            zone="trusted",
+                        )
             except Exception:
                 pass
             if response is None:
@@ -2789,24 +2815,30 @@ Respond with a JSON object:
 
             # Option B / Pacman: fragment DER step output into vector DB so it can be
             # retrieved as context in later steps or future sessions.
-            # Zone = 'tool' — verified DER/tool execution output (PACMAN.md Dimension 1).
+            # MCM orchestrator handles fragmentation + compression check when available.
             try:
-                if (
-                    self._memory_interface is not None
-                    and hasattr(self._memory_interface, "episodic")
-                    and hasattr(self._memory_interface.episodic, "fragment_and_store")
-                    and step_result and step_success
-                ):
+                if step_result and step_success:
                     _der_text = (
                         f"[Step {item.step_number}: {item.description[:120]}]"
                         f"\n{step_result}"
                     )
-                    self._memory_interface.episodic.fragment_and_store(
-                        _der_text,
-                        session_id=_session,
-                        chunk_type="der_output",
-                        zone="tool",
-                    )
+                    if self._mcm_orch is not None:
+                        self._mcm_orch.post_turn(
+                            [{"role": "assistant", "content": _der_text}],
+                            response_text=_der_text,
+                            tool_name=getattr(item, "tool_name", ""),
+                        )
+                    elif (
+                        self._memory_interface is not None
+                        and hasattr(self._memory_interface, "episodic")
+                        and hasattr(self._memory_interface.episodic, "fragment_and_store")
+                    ):
+                        self._memory_interface.episodic.fragment_and_store(
+                            _der_text,
+                            session_id=_session,
+                            chunk_type="der_output",
+                            zone="tool",
+                        )
             except Exception:
                 pass
 

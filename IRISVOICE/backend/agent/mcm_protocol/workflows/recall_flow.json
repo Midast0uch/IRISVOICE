@@ -1,0 +1,12 @@
+{
+  "name": "recall_flow",
+  "description": "NBL-first recall: checkpoint -> episodic -> file match.",
+  "dry_run": false,
+  "steps": [
+    {
+      "action": "mcm_recall",
+      "on_error": "continue",
+      "params": {}
+    }
+  ]
+}
