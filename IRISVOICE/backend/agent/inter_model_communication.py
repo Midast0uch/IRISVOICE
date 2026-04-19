@@ -384,31 +384,44 @@ Return ONLY a JSON object:
 }}"""
 
     def _parse_executor_response(self, request: ToolRequest, executor_output: str) -> ToolResponse:
-        """Parse executor output into a ToolResponse, echoing context fields."""
+        """Parse executor output into a ToolResponse using OutputParser (5-format priority chain)."""
         try:
-            data = json.loads(executor_output)
-            if "status" not in data:
-                raise ValueError("Missing 'status' field")
-            response = ToolResponse.from_dict(data)
-            # Always echo back user_intent so brain can correlate
-            response.tool_name = request.tool_name
-            response.user_intent = request.user_intent
-            return response
-        except json.JSONDecodeError:
-            # Raw text output — treat as successful result
+            from backend.agent.mcm_protocol.actions.output_parse import OutputParser
+            parsed = OutputParser().parse(executor_output)
+            if parsed.tool_calls:
+                tc = parsed.tool_calls[0]
+                output_data = tc.get("arguments", tc)
+            else:
+                output_data = {"output": parsed.content or executor_output.strip()}
+            return ToolResponse(
+                request_id=request.request_id,
+                status=ExecutionStatus.SUCCESS,
+                output_data=output_data,
+                diagnostics={
+                    "parsing": "output_parser",
+                    "format": getattr(parsed, "format_used", "unknown"),
+                },
+                tool_name=request.tool_name,
+                user_intent=request.user_intent,
+            )
+        except Exception as e:
+            # Final fallback: try legacy JSON parse, then raw text
+            try:
+                data = json.loads(executor_output)
+                if "status" in data:
+                    response = ToolResponse.from_dict(data)
+                    response.tool_name = request.tool_name
+                    response.user_intent = request.user_intent
+                    return response
+            except Exception:
+                pass
             return ToolResponse(
                 request_id=request.request_id,
                 status=ExecutionStatus.SUCCESS,
                 output_data={"output": executor_output.strip()},
-                diagnostics={"parsing": "raw_text"},
+                diagnostics={"parsing": "raw_text_fallback", "error": str(e)},
                 tool_name=request.tool_name,
-                user_intent=request.user_intent
-            )
-        except Exception as e:
-            return ToolResponse.create_failure(
-                request.request_id,
-                f"Failed to parse executor response: {str(e)}",
-                tool_name=request.tool_name
+                user_intent=request.user_intent,
             )
 
     def get_request_history(self, limit: int = 10) -> List[Dict[str, Any]]:
