@@ -316,6 +316,13 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           label: 'Tool Mode',
           options: ['auto', 'ask_first', 'disabled'],
           defaultValue: 'auto'
+        },
+        {
+          id: 'swarm_enabled',
+          type: 'toggle',
+          label: 'Swarm Mode',
+          description: 'Enable multi-agent compound collaboration — agents self-join tasks and share context through Mycelium',
+          default: false,
         }
       ]
     }

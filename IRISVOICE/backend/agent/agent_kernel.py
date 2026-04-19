@@ -175,6 +175,11 @@ class AgentKernel:
         # Internet access control (default: False to match UI default)
         self._internet_access_enabled: bool = False
 
+        # Swarm compound collaboration (default: False — enabled via UI toggle)
+        self._swarm_enabled: bool = False
+        self._swarm_coordinator = None
+        self._context_control_handler = None
+
         # Launcher mode: "personal" (default) or "developer"
         # Developer mode injects PROJECT.md into every system prompt so the
         # local agent has full codebase context and can modify source files.
@@ -3939,6 +3944,56 @@ If any tools failed, address those issues in your response.
             True if internet access is enabled, False otherwise
         """
         return self._internet_access_enabled
+
+    def set_swarm_enabled(self, enabled: bool) -> None:
+        """
+        Enable or disable multi-agent swarm compound collaboration.
+        Initialises SwarmCoordinator and ContextControlHandler lazily on first enable.
+        """
+        self._swarm_enabled = enabled
+        if enabled and self._memory_interface is not None and self._swarm_coordinator is None:
+            try:
+                from backend.agent.swarm import SwarmCoordinator, ContextControlHandler
+                from backend.agent.mcm import MCM
+                _mcm = MCM(self._memory_interface, self.session_id)
+                _protocol = self._mcm_orch._protocol if self._mcm_orch else None
+                self._swarm_coordinator = SwarmCoordinator(
+                    memory_interface=self._memory_interface,
+                    session_id=self.session_id,
+                    agent_id=self.session_id,
+                    protocol=_protocol,
+                )
+                self._context_control_handler = ContextControlHandler(
+                    memory_interface=self._memory_interface,
+                    mcm_instance=_mcm,
+                    session_id=self.session_id,
+                )
+                logger.info("[AgentKernel] SwarmCoordinator + ContextControlHandler initialized")
+            except Exception as _swarm_err:
+                logger.warning("[AgentKernel] Swarm init failed: %s", _swarm_err)
+        logger.info("[AgentKernel] Swarm %s", "enabled" if enabled else "disabled")
+
+    def get_swarm_enabled(self) -> bool:
+        """Return current swarm enabled state."""
+        return self._swarm_enabled
+
+    def _handle_control_codes(self, response_text: str,
+                               messages: list) -> list:
+        """
+        Scan response for MCM: control codes (MCM:999/998/997/996) and execute.
+        Called after every agent response when swarm is enabled.
+        Never raises. Returns messages (potentially modified by MCM:999 prune).
+        """
+        if not self._swarm_enabled or self._context_control_handler is None:
+            return messages
+        try:
+            self._context_control_handler.scan_and_execute(
+                response_text, messages,
+                self._current_task if hasattr(self, "_current_task") else "",
+            )
+        except Exception:
+            pass
+        return messages
 
 
 # Singleton instance management

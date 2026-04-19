@@ -131,6 +131,7 @@ class MCMOrchestrator:
         core_data     = self._read_json(core_dir / "mcm_core.json")
         nbl_data      = self._read_json(core_dir / "nbl_schema.json")
         recall_data   = self._read_json(core_dir / "recall_rules.json")
+        collab_data   = self._read_json(core_dir / "collaboration_rules.json")
 
         # Load workflows
         workflows: dict[str, Workflow] = {}
@@ -144,11 +145,13 @@ class MCMOrchestrator:
                     logger.warning("[MCMOrchestrator] failed to load %s: %s", wf_file.name, exc)
 
         try:
+            from .schemas import CollaborationRules
             protocol = MCMProtocol(
-                core         = MCMCore.model_validate(core_data)         if core_data   else MCMCore(),
-                nbl_schema   = NBLSchema.model_validate(nbl_data)        if nbl_data    else NBLSchema(),
-                recall_rules = RecallRules.model_validate(recall_data)   if recall_data else RecallRules(),
-                workflows    = workflows,
+                core          = MCMCore.model_validate(core_data)                  if core_data   else MCMCore(),
+                nbl_schema    = NBLSchema.model_validate(nbl_data)                 if nbl_data    else NBLSchema(),
+                recall_rules  = RecallRules.model_validate(recall_data)            if recall_data else RecallRules(),
+                collaboration = CollaborationRules.model_validate(collab_data)     if collab_data else CollaborationRules(),
+                workflows     = workflows,
             )
         except Exception as exc:
             logger.warning("[MCMOrchestrator] protocol validation failed, using defaults: %s", exc)

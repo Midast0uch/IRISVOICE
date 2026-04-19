@@ -99,6 +99,44 @@ class Workflow(BaseModel):
     steps:       list[WorkflowStep] = Field(default_factory=list)
 
 
+# ── Collaboration / swarm models ─────────────────────────────────────────
+
+
+class ContextControlCode(BaseModel):
+    action:      str = ""
+    description: str = ""
+
+
+class CompoundModeConfig(BaseModel):
+    enabled:               bool      = True
+    max_helpers_per_task:  int       = 2
+    open_after_pct:        float     = 0.75
+    min_task_tokens:       int       = 500
+    join_window_seconds:   int       = 120
+    context_load_strategy: str       = "pacman_recall"
+    allowed_task_types:    list[str] = Field(default_factory=list)
+    skills_required:       list[str] = Field(default_factory=list)
+
+
+class JoinPolicy(BaseModel):
+    allow_self_join:      bool = True
+    require_skill_match:  bool = False
+    max_pivot_after_join: int  = 1
+    signal_expiry_seconds: int = 300
+
+
+class CollaborationRules(BaseModel):
+    protocol_version:       str                            = "0.2"
+    description:            str                            = ""
+    enabled:                bool                           = True
+    last_updated:           str                            = ""
+    compound_mode:          CompoundModeConfig             = Field(default_factory=CompoundModeConfig)
+    context_control_codes:  dict[str, ContextControlCode] = Field(default_factory=dict)
+    join_policy:            JoinPolicy                     = Field(default_factory=JoinPolicy)
+    signals:                dict[str, Any]                 = Field(default_factory=dict)
+    natural_language_rules: list[str]                      = Field(default_factory=list)
+
+
 # ── Root protocol model ───────────────────────────────────────────────────
 
 
@@ -107,7 +145,8 @@ class MCMProtocol(BaseModel):
     Root model — merged from all JSON files at orchestrator startup.
     Batch-loaded once; hot-reloaded when any JSON mtime changes.
     """
-    core:         MCMCore              = Field(default_factory=MCMCore)
-    nbl_schema:   NBLSchema            = Field(default_factory=NBLSchema)
-    recall_rules: RecallRules          = Field(default_factory=RecallRules)
-    workflows:    dict[str, Workflow]  = Field(default_factory=dict)
+    core:          MCMCore              = Field(default_factory=MCMCore)
+    nbl_schema:    NBLSchema            = Field(default_factory=NBLSchema)
+    recall_rules:  RecallRules          = Field(default_factory=RecallRules)
+    collaboration: CollaborationRules   = Field(default_factory=CollaborationRules)
+    workflows:     dict[str, Workflow]  = Field(default_factory=dict)

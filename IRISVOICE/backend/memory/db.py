@@ -443,5 +443,40 @@ def initialise_mycelium_schema(conn) -> None:
             ON mycelium_landmark_bridges(remote_instance_id);
     """)
 
+    # ── Swarm collaboration tables ────────────────────────────────────────
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS task_collaboration (
+            collab_id      TEXT PRIMARY KEY,
+            task_id        TEXT NOT NULL,
+            session_id     TEXT NOT NULL,
+            status         TEXT NOT NULL DEFAULT 'working',
+            primary_agent  TEXT NOT NULL,
+            helper_agents  TEXT DEFAULT '[]',
+            max_helpers    INTEGER DEFAULT 2,
+            required_skills TEXT DEFAULT '[]',
+            task_summary   TEXT DEFAULT '',
+            context_pin_id TEXT,
+            created_at     REAL NOT NULL,
+            opened_at      REAL,
+            completed_at   REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS swarm_join_signals (
+            signal_id     TEXT PRIMARY KEY,
+            collab_id     TEXT NOT NULL REFERENCES task_collaboration(collab_id),
+            agent_id      TEXT NOT NULL,
+            signal_type   TEXT NOT NULL,
+            payload       TEXT DEFAULT '{}',
+            created_at    REAL NOT NULL,
+            read_by       TEXT DEFAULT '[]'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_collab_task    ON task_collaboration(task_id);
+        CREATE INDEX IF NOT EXISTS idx_collab_status  ON task_collaboration(status);
+        CREATE INDEX IF NOT EXISTS idx_collab_session ON task_collaboration(session_id);
+        CREATE INDEX IF NOT EXISTS idx_signals_collab ON swarm_join_signals(collab_id);
+        CREATE INDEX IF NOT EXISTS idx_signals_type   ON swarm_join_signals(signal_type);
+    """)
+
     conn.commit()
-    logger.info("[db] Mycelium schema initialised: 16 tables, 31 indexes")
+    logger.info("[db] Mycelium schema initialised: 18 tables, 36 indexes")

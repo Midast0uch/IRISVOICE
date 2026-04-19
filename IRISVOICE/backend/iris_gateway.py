@@ -682,6 +682,15 @@ class IRISGateway:
                             self._logger.info(f"[Session: {session_id}] inference_mode confirmed → VPS {vps_ep}")
                     # Also refresh model list for the UI
                     await self._handle_get_available_models(session_id, client_id, {})
+
+                    # Apply swarm_enabled if present in inference_mode values
+                    if "swarm_enabled" in values:
+                        swarm_on = bool(values.get("swarm_enabled", False))
+                        if hasattr(kernel, "set_swarm_enabled"):
+                            kernel.set_swarm_enabled(swarm_on)
+                            self._logger.info(
+                                f"[Session: {session_id}] Swarm {'enabled' if swarm_on else 'disabled'}"
+                            )
                 except Exception as e:
                     self._logger.error(f"[Session: {session_id}] Error applying inference_mode: {e}", exc_info=True)
 
