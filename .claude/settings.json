@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/Users/midas/.local/share/mcm-sdk/hooks/mcm_hook.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|Read|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/Users/midas/.local/share/mcm-sdk/hooks/mcm_hook.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/Users/midas/.local/share/mcm-sdk/hooks/mcm_stop_hook.py",
+            "timeout": 25
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {
+    "mcm": {
+      "type": "stdio",
+      "command": "mcm-mcp",
+      "args": ["--db", "bootstrap/coordinates.db"]
+    }
+  },
+  "env": {
+    "MCM_DB_PATH": "C:/Users/midas/Desktop/dev/bootstrap/coordinates.db"
+  }
+}
