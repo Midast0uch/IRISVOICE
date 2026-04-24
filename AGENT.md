@@ -127,6 +127,65 @@ Never write new tests to match your code.
 Never modify existing tests to make them pass.
 The test is the requirement.
 
+## Recording Code Actions (Builds the Pheromone Trail)
+
+Git commits are auto-recorded by the MCM plugin on every prompt.
+You only need to manually record events that are NOT part of a commit:
+
+  # After editing a file (if not yet committed):
+  record_edit(file_path)
+
+  # After creating a file:
+  record_create(file_path)
+
+  # After a test passes:
+  record_test(test_file, test_name, outcome='pass', covers=['src/foo.py'])
+
+  # After a test fails but reveals something important:
+  record_test(test_file, test_name, outcome='fail', description='what the failure revealed')
+
+  # After an architectural decision:
+  pin_add(title='Decision: chose X over Y', pin_type='decision', content='why')
+
+## Parallel Sub-Agent Protocol
+
+The database is WAL-mode SQLite — safe for concurrent processes.
+Work claiming is atomic — two agents cannot take the same item.
+
+  # Orchestrator: see what is available and in progress
+  get_session() → check work_items in state
+
+  # Sub-agent workflow:
+  claim_work(agent_id='agent_001')
+  # ... build the feature ...
+  complete_task(item_id, agent_id='agent_001', status='success')
+
+## Context Window Management
+
+At ~50k tokens used or when NBL pos 28 > 800:
+  mcm_compress(active_task='what was just completed', active_files=['file1.py', 'file2.py'])
+Then condense. After condensing, call mcm_recall(query) to recover knowledge.
+
+Loop prevention — same error twice in a row = change approach:
+  health.add_warning(space='conduct', description='loop detected', approach='repeated', correction='try different approach')
+
+Session end is handled automatically by the MCM lifecycle protocol.
+
+## What Done Looks Like
+
+The coordinate graph is complete when:
+  get_session() shows:
+    - Events recorded for every file touched
+    - Pheromone edges with weight > 1.0 on major test connections
+    - Near-crystallization candidates on the most-used files
+  NBL pos 18-24 (coordinates) show confidence >= 0.85
+  Topology shows CORE files with stable Z-trajectory
+
+The three layers should all be present:
+  EPISODIC:  code_events for every build action
+  SEMANTIC:  file_node confidence + Z-trajectory + edge weights
+  LANDMARK:  permanent landmarks for every verified feature
+
 ## Safety Rails
 
 - **Never delete or overwrite files without reading them first.**
@@ -148,5 +207,7 @@ The test is the requirement.
 - Work queue: `claim_work()` / `get_session()`
 - Event recording: `record_edit()`, `record_test()`, `record_create()`
 - Session update: handled automatically by SDK lifecycle
+- PiN: `pin_add()`, `pin_search()`, `pin_list()`
+- Landmark bridges: `pin_link()`
 - PiN (Primordial Info Nodes): `pin_add()`, `pin_search()`, `pin_list()`
 - Landmark bridges: `pin_link()`

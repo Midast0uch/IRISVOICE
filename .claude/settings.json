@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python C:/Users/midas/.local/share/mcm-sdk/hooks/mcm_hook.py",
+            "command": "C:\\Python313\\python.exe C:\\Users\\midas\\.local\\share\\mcm-sdk\\hooks\\mcm_hook.py",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python C:/Users/midas/.local/share/mcm-sdk/hooks/mcm_hook.py",
+            "command": "C:\\Python313\\python.exe C:\\Users\\midas\\.local\\share\\mcm-sdk\\hooks\\mcm_hook.py",
             "timeout": 15
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python C:/Users/midas/.local/share/mcm-sdk/hooks/mcm_stop_hook.py",
+            "command": "C:\\Python313\\python.exe C:\\Users\\midas\\.local\\share\\mcm-sdk\\hooks\\mcm_stop_hook.py",
             "timeout": 25
           }
         ]
@@ -38,7 +38,7 @@
   "mcpServers": {
     "mcm": {
       "type": "stdio",
-      "command": "mcm-mcp",
+      "command": "C:\\Users\\midas\\AppData\\Roaming\\Python\\Python313\\Scripts\\mcm-mcp.exe",
       "args": ["--db", "bootstrap/coordinates.db"]
     }
   },

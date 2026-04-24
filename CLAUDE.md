@@ -5,6 +5,16 @@ MCM SDK keeps the coordinate graph current automatically — no manual DB update
 ---
 
 WHAT THIS PROJECT IS
+
+You are working on **IRIS Voice**, a voice-controlled desktop assistant.
+
+- **Frontend**: Next.js 15, React, Tailwind CSS v4, Tauri API
+- **Backend**: Python FastAPI, WebSockets, async architecture
+- **Desktop**: Tauri (Rust) — borderless widget, system tray, global shortcuts
+- **Audio**: Porcupine wake word, WebRTC/STT pipeline, WebSocket streaming
+- **Auth**: OAuth handlers, OS keyring for secure credential storage
+- **Database**: MCM SDK coordinate graph at `data/databases/coordinates.db`
+
 Read bootstrap/GOALS.md for the full roadmap, current gate, and domain breakdown.
 
 ---
@@ -141,6 +151,53 @@ Loop prevention — same error twice in a row = change approach:
 
 Session end is handled automatically by the MCM lifecycle protocol.
 You do not need to run session cleanup manually.
+
+---
+
+## IRIS Voice-Specific Architecture Rules
+
+### Frontend (Next.js)
+- **Tests**: `npm test` or `npx jest`
+- **Type check**: `npx tsc --noEmit`
+- **Lint**: `npm run lint`
+- **Component structure**: Use React Server Components where possible
+- **Styling**: Tailwind CSS v4 — use `@theme` and `@import "tailwindcss"`
+- **State**: React hooks, avoid global state for UI-only data
+
+### Backend (Python FastAPI)
+- **Tests**: `pytest` in backend/ or root tests/
+- **Type check**: `mypy` or rely on Pydantic models
+- **Async**: All I/O must be async — no blocking calls in endpoint handlers
+- **WebSockets**: Use FastAPI WebSocket for real-time audio streaming
+- **Auth**: OAuth via `auth_handlers/`, credentials in OS keyring only
+- **Audio**: Porcupine wake word detection, streaming via WebSocket
+
+### Desktop (Tauri/Rust)
+- **Build**: `cargo build` in src-tauri/
+- **Tests**: `cargo test` in src-tauri/
+- **Window**: Borderless widget, system tray integration
+- **Shortcuts**: Global shortcuts registered via Tauri API
+- **Bridge**: Frontend ↔ Rust via Tauri commands and events
+
+### Quality Check — Required Before Every Test Run
+Verify ALL of these before running tests:
+- [ ] No unnecessary work in hot paths — loops, I/O, DB calls as few as needed
+- [ ] Heavy imports are lazy — no ML model or GPU init at module level
+- [ ] Error handling complete — every exception path has an explicit outcome
+- [ ] Resources cleaned up — file handles, connections, subprocesses closed
+- [ ] No shared mutable state across sessions or concurrent requests
+- [ ] Memory footprint bounded — no unbounded caches or infinite queues
+- [ ] Async/sync boundary correct — blocking calls not in async hot paths
+- [ ] Logging structured — context identifier in every log line
+- [ ] Nothing in this file can crash and block a user response
+
+A passing test on unoptimized code is not done. Quality check is not optional.
+
+### Test Rules — Absolute
+Run the spec's test against your implementation.
+Never write new tests to match your code.
+Never modify existing tests to make them pass.
+The test is the requirement.
 
 ---
 
