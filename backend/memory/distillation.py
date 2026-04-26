@@ -80,14 +80,27 @@ class DistillationProcess:
         )
     
     def record_activity(self) -> None:
-        """Record user activity to reset idle timer."""
+        """Record user activity to reset idle timer.
+
+        Also touches the process-wide IdleTracker so all other subsystems
+        (retention, MCP health checks, watchdog) see the activity too.
+        """
         self._last_activity = time.time()
+        try:
+            from backend.core.idle_tracker import get_idle_tracker
+            get_idle_tracker().touch()
+        except Exception:
+            pass
         logger.debug("[DistillationProcess] Activity recorded")
-    
+
     @property
     def idle_minutes(self) -> float:
-        """Get current idle time in minutes."""
-        return (time.time() - self._last_activity) / 60.0
+        """Get current idle time in minutes (uses IdleTracker when available)."""
+        try:
+            from backend.core.idle_tracker import get_idle_tracker
+            return get_idle_tracker().idle_minutes()
+        except Exception:
+            return (time.time() - self._last_activity) / 60.0
     
     @property
     def hours_since_distillation(self) -> float:

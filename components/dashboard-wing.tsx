@@ -199,11 +199,13 @@ export function DashboardWing({
             damping: 25,
             mass: 0.8
           }}
-          style={{ 
+          style={{
             right: 252,
-            top: '50%',
+            top: '6vh',
             width: getSpotlightWidth(),
             height: '88vh',
+            maxHeight: 'calc(100vh - 24px)',
+            overflow: 'hidden',
             perspective: '800px',
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),

@@ -158,6 +158,14 @@ class IRISGateway:
                 pass
 
         try:
+            # Touch the idle tracker on every incoming message so background workers
+            # (distillation, retention, MCP health checks) know the user is active.
+            try:
+                from backend.core.idle_tracker import get_idle_tracker
+                get_idle_tracker().touch()
+            except Exception:
+                pass  # never block message processing on tracker failure
+
             # Validate message format
             if not isinstance(message, dict):
                 self._logger.error(

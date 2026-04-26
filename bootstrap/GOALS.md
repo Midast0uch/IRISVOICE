@@ -886,6 +886,78 @@ WHAT IS MISSING (build these):
 
 ---
 
+## Domain 16 — Backend Stability & Memory Optimization  ⚡ P0
+
+**Priority: P0** — Idle memory churn was crashing the widget before any user interaction.
+Background workers fired unconditionally at startup, accumulating RSS and causing Task Manager
+spikes at intervals. Gate 2 launch is blocked until idle is provably flat.
+
+Plan: `docs/plans/2026-04-25-iris-stability-and-memory.md`
+
+  [16.1] Orphan process cleanup — DONE (2026-04-25)
+    PyInstaller --onefile spawns parent stub + child Python. start-backend.py now skips
+    both os.getpid() AND os.getppid() when killing orphans. Tauri exit uses
+    taskkill /F /T /IM iris-backend* to kill entire process tree.
+    Landmark: orphan_cleanup_fix
+
+  [16.2] IdleTracker — DONE (2026-04-26)
+    New: backend/core/idle_tracker.py — process-wide singleton.
+    touch() called on every WS message (iris_gateway.py) and every HTTP request
+    (middleware in main.py, skips health-check polls).
+    DistillationProcess.idle_minutes now delegates to IdleTracker — record_activity()
+    was never called from production code before this fix.
+    MCP health check loop skips ping when user active (< 30s idle).
+    Landmark: idle_tracker
+
+  [16.3] Remove 30-second GGUF pre-warm scan — DONE (2026-04-26)
+    backend/main.py: deleted asyncio.ensure_future(_prewarm_model_cache()).
+    GGUF scan now fires lazily on first ModelsScreen open.
+    Eliminates the RSS spike visible at t=30s on every cold start.
+    Landmark: defer_gguf_prewarm
+
+  [16.4] Memory watchdog — DONE (2026-04-26)
+    New: backend/core/memory_watchdog.py
+    Soft cap 800MB → gc.collect() + Mycelium maintenance.
+    Hard cap 1400MB → also unload active local LLM.
+    Both caps configurable via IRIS_MEM_SOFT_MB / IRIS_MEM_HARD_MB env vars.
+    Watchdog task started in main.py lifespan, cancelled cleanly on shutdown.
+    Landmark: memory_watchdog
+
+  [16.5] Vision model swap LFM2.5-VL-1.6B → LFM2.5-VL-450M — DONE (2026-04-26)
+    Old 1.6B GGUF uninstalled (HF cache deleted via scripts/uninstall_old_vl.py).
+    New: LiquidAI/LFM2.5-VL-450M-GGUF (LFM2.5-VL-450M-Q4_0.gguf + mmproj-LFM2.5-VL-450m-Q8_0.gguf).
+    Model files downloaded to ~/models/LFM2.5-VL-450M/.
+    start_vl.sh updated; scripts/start_vl.ps1 added for Windows.
+    scripts/download_vl_model.py added for one-command download.
+    llama-server alias remains "lfm2.5-vl" — no backend code changes needed.
+    Landmark: vision_model_450m
+
+  [16.6] Wing overflow fix — DONE (2026-04-26)
+    chat-view.tsx and dashboard-wing.tsx: `top: '50%'` with no translateY placed
+    wings 258px below Tauri window bottom (WIN_H=680px). Fixed to `top: '6vh'`
+    + `overflow: 'hidden'` + `maxHeight: calc(100vh - 24px)`.
+    html/body already had `overflow: hidden !important; position: fixed;`.
+    Landmark: wing_overflow_fix
+
+  [16.7] DCPStatsPanel — DONE (2026-04-26)
+    New: components/dev/DCPStatsPanel.tsx — real-time DCP stats card grid.
+    Mounted in dark-glass-dashboard.tsx monitor tab, developer mode only.
+    WS event `dcp_pruned` forwarded as `iris:dcp_pruned` CustomEvent in useIRISWebSocket.ts.
+    Landmark: dcp_stats_panel
+
+  [16.8] Idle memory profiler — DONE (2026-04-26)
+    New: scripts/profile_backend_idle.py — records RSS/VMS/CPU% every 5s for 5 min.
+    Run before/after optimization passes to prove impact.
+    Output: backend/logs/idle_profile_<UTC>.csv
+
+  Graduate condition for Domain 16:
+    1. scripts/profile_backend_idle.py FINAL run shows flat RSS over 5 min
+    2. No process with CPU% > 1 while user is idle
+    3. Memory watchdog log shows no SOFT cap hits during a normal 30-min session
+    4. Tauri exits cleanly — Get-Process iris-backend* returns nothing after close
+
+---
+
 SESSION START CHECKLIST
 At the start of every session (Claude Code: fully automated via hooks):
 

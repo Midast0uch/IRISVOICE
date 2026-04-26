@@ -384,6 +384,41 @@ async def lifespan(app: FastAPI):
         app.state.ready = True
         logger.info("IRIS Backend startup completed successfully!")
 
+        # ── Memory watchdog ────────────────────────────────────────────────
+        # Graduated response to RSS growth: soft cap → GC + mycelium maint;
+        # hard cap → also unload active local LLM.
+        try:
+            from backend.core.memory_watchdog import watchdog_loop
+
+            async def _on_soft():
+                import gc as _gc
+                _gc.collect()
+                try:
+                    from backend.memory.interface import get_memory_interface
+                    mem = get_memory_interface()
+                    if mem and hasattr(mem, '_mycelium') and mem._mycelium:
+                        mem._mycelium.run_maintenance()
+                except Exception:
+                    pass
+
+            async def _on_hard():
+                await _on_soft()
+                try:
+                    from backend.agent.local_model_manager import get_local_model_manager
+                    mgr = get_local_model_manager()
+                    if hasattr(mgr, 'unload_active_model'):
+                        mgr.unload_active_model()
+                except Exception:
+                    pass
+
+            app.state.watchdog_task = asyncio.create_task(
+                watchdog_loop(on_soft=_on_soft, on_hard=_on_hard),
+                name="iris-memory-watchdog",
+            )
+            logger.info("  [Watchdog] Memory watchdog started")
+        except Exception as _wd_err:
+            logger.warning(f"  [Watchdog] Could not start watchdog (non-fatal): {_wd_err}")
+
         # Pre-warm the GGUF file metadata cache in the background (filesystem
         # scan only — no model weights loaded, no CUDA initialization).
         # This means the first ModelsScreen open returns instantly instead of
@@ -393,21 +428,11 @@ async def lifespan(app: FastAPI):
         # can trigger CUDA driver init (via torch or llama_cpp) which causes a
         # visible memory spike on startup before the user has done anything.
         # Hardware info is fetched lazily when the user first opens ModelsScreen.
-        async def _prewarm_model_cache() -> None:
-            # Delay 30 s so this I/O-heavy scan doesn't race with the Next.js
-            # dev-server compilation that peaks RAM immediately after startup.
-            await asyncio.sleep(30)
-            try:
-                from backend.agent.local_model_manager import get_local_model_manager
-                import asyncio as _asyncio
-                mgr = get_local_model_manager()
-                loop = _asyncio.get_event_loop()
-                await loop.run_in_executor(None, mgr.scan_models)
-                logger.info("  [LocalModel] GGUF metadata cache pre-warmed (filesystem scan only)")
-            except Exception as _pw_err:
-                logger.debug(f"  [LocalModel] Pre-warm skipped: {_pw_err}")
-
-        asyncio.ensure_future(_prewarm_model_cache())
+        #
+        # NOTE: The 30-second background GGUF scan was REMOVED (Domain 16 optimization).
+        # scan_models() now runs lazily on first ModelsScreen open via get_available_models().
+        # This eliminates the RSS spike at t=30s on every cold start.
+        logger.info("  [LocalModel] GGUF scan deferred to first ModelsScreen open (no startup pre-warm)")
 
     except Exception as e:
         app.state.ready = False
@@ -419,6 +444,13 @@ async def lifespan(app: FastAPI):
     
     logger.info("IRIS Backend shutting down...")
     try:
+        # Cancel memory watchdog first so it doesn't log spurious errors during teardown
+        if hasattr(app.state, "watchdog_task") and app.state.watchdog_task:
+            app.state.watchdog_task.cancel()
+            try:
+                await app.state.watchdog_task
+            except asyncio.CancelledError:
+                pass
         logger.info("  - Stopping session manager...")
         session_manager = get_session_manager()
         await session_manager.stop()
@@ -460,6 +492,28 @@ app.add_middleware(
 )
 
 logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
+
+
+# ── Idle tracker middleware ────────────────────────────────────────────────
+# Touch the idle tracker on every HTTP request so background workers
+# (distillation, memory maintenance) know the user is interacting.
+# Excludes health-check polls so they don't mask real idle periods.
+from backend.core.idle_tracker import get_idle_tracker as _get_idle_tracker
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
+from starlette.requests import Request as _Request
+
+class _IdleTrackerMiddleware(_BaseHTTPMiddleware):
+    _SKIP_PATHS = frozenset({"", "/", "/health", "/api/status"})
+
+    async def dispatch(self, request: _Request, call_next):
+        if request.url.path not in self._SKIP_PATHS:
+            try:
+                _get_idle_tracker().touch()
+            except Exception:
+                pass
+        return await call_next(request)
+
+app.add_middleware(_IdleTrackerMiddleware)
 
 
 # ============================================================================

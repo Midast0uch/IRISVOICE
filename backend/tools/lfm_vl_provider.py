@@ -1,7 +1,8 @@
 """
-LFM2.5-VL Vision Provider
-HTTP client wrapping llama-server on port 8081.
+LFM2.5-VL-450M Vision Provider
+HTTP client wrapping llama-server on port 8081 (--alias lfm2.5-vl).
 Provides synchronous screen analysis, UI element detection, OCR, and action suggestion.
+Model: LiquidAI/LFM2.5-VL-450M-GGUF (LFM2.5-VL-450M-Q4_0.gguf + mmproj-LFM2.5-VL-450m-Q8_0.gguf)
 """
 import base64
 import logging
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LFMVLConfig:
-    """Configuration for LFM2.5-VL vision provider."""
+    """Configuration for LFM2.5-VL-450M vision provider."""
     base_url: str = "http://localhost:8081/v1"
     temperature: float = 0.1
     min_p: float = 0.15
@@ -54,7 +55,7 @@ def _img_to_base64(img_bytes: bytes) -> str:
 
 class LFMVLProvider:
     """
-    Synchronous HTTP client for LFM2.5-VL vision model via llama-server.
+    Synchronous HTTP client for LFM2.5-VL-450M vision model via llama-server.
 
     Design principles:
     - No state held between calls

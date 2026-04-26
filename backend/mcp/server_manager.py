@@ -231,10 +231,22 @@ class ServerManager:
         logger.info(f"[ServerManager] Started health monitoring for {name}")
     
     async def _health_check_loop(self, name: str, interval: int):
-        """Health check loop for a server"""
+        """Health check loop for a server.
+
+        Skips the check when the user is actively interacting (idle_seconds < 30)
+        to avoid adding latency or log noise mid-conversation.
+        """
         while not self._shutdown_event.is_set():
             try:
                 await asyncio.sleep(interval)
+                # Only ping the MCP server when the system is idle
+                try:
+                    from backend.core.idle_tracker import get_idle_tracker
+                    if not get_idle_tracker().is_idle(threshold_s=30.0):
+                        logger.debug(f"[ServerManager] Skipping health check for {name} — user active")
+                        continue
+                except Exception:
+                    pass
                 await self._check_server_health(name)
             except asyncio.CancelledError:
                 logger.info(f"[ServerManager] Health check cancelled for {name}")

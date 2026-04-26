@@ -21,6 +21,7 @@ import { TerminalWidget } from './terminal/TerminalWidget'
 import { FloatingTerminalPanel } from './terminal/FloatingTerminalPanel'
 import { useTerminal } from '@/contexts/TerminalContext'
 import { useLauncherMode } from '@/hooks/useLauncherMode';
+import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
@@ -863,6 +864,12 @@ export function DarkGlassDashboard({
            <TerminalWidget />
          ) : (
          <div className="w-full h-full pl-12 pr-24 py-10 space-y-3">
+           {/* DCP Stats — developer mode only, shown at top of Monitor tab */}
+           {activeTab === 'monitor' && irisMode === 'developer' && (
+             <div className="mx-8 mb-2 rounded-lg border overflow-hidden" style={{ borderColor: `${glowColor}25`, background: 'rgba(255,255,255,0.015)' }}>
+               <DCPStatsPanel glowColor={glowColor} />
+             </div>
+           )}
            {activeSections.map((section: any) => {
              const isExpanded = expandedSections.has(section.id);
              const sectionFields = section.fields || [];

@@ -986,6 +986,13 @@ export function useIRISWebSocket(
         break
       }
 
+      case 'dcp_pruned': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:dcp_pruned', { detail: payload }))
+        }
+        break
+      }
+
       default: {
         // Only log unknown message types in development mode
         if (process.env.NODE_ENV !== 'production') {
