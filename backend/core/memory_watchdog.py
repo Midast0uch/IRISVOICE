@@ -33,7 +33,6 @@ logger = logging.getLogger("backend.memory.watchdog")
 
 SOFT_CAP_MB: int = int(os.getenv("IRIS_MEM_SOFT_MB", "800"))
 HARD_CAP_MB: int = int(os.getenv("IRIS_MEM_HARD_MB", "1400"))
-POLL_INTERVAL_S: float = 30.0  # check every 30 seconds
 
 # Minimum seconds between consecutive soft/hard actions (avoid spam)
 _SOFT_COOLDOWN_S: float = 120.0
@@ -44,7 +43,10 @@ async def watchdog_loop(
     on_soft: Optional[Callable[[], Awaitable[None]]] = None,
     on_hard: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> None:
-    """Long-running coroutine — run via asyncio.create_task()."""
+    """Long-running coroutine — run via asyncio.create_task().
+
+    Adaptive poll interval: poll more frequently when memory is high.
+    """
     try:
         import psutil
         proc = psutil.Process()
@@ -54,15 +56,16 @@ async def watchdog_loop(
 
     last_soft: float = 0.0
     last_hard: float = 0.0
+    next_sleep: float = 60.0  # Initial: infrequent polling
 
     logger.info(
         f"[Watchdog] Started — soft={SOFT_CAP_MB}MB  hard={HARD_CAP_MB}MB  "
-        f"poll={POLL_INTERVAL_S}s"
+        f"adaptive poll interval"
     )
 
     while True:
         try:
-            await asyncio.sleep(POLL_INTERVAL_S)
+            await asyncio.sleep(next_sleep)
 
             rss_mb = proc.memory_info().rss / 1_000_000
             now = time.monotonic()
@@ -86,6 +89,14 @@ async def watchdog_loop(
                 )
                 last_soft = now
                 await _run_soft_actions(on_soft)
+
+            # Compute adaptive next_sleep based on current memory usage
+            if rss_mb > HARD_CAP_MB:
+                next_sleep = 5.0
+            elif rss_mb > SOFT_CAP_MB * 0.5:
+                next_sleep = 15.0
+            else:
+                next_sleep = 60.0
 
         except asyncio.CancelledError:
             logger.info("[Watchdog] Cancelled — shutting down")

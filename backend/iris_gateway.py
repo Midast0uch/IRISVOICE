@@ -110,6 +110,12 @@ class IRISGateway:
         self._active_voice_client: dict = {}
         # Sessions currently in conversation mode (auto-relisten after TTS)
         self._conversation_sessions: set = set()
+        # Track last-seen timestamp for each session (for GC)
+        self._session_last_seen: dict[str, float] = {}
+        # Session GC task reference
+        self._session_gc_task: Optional[asyncio.Task] = None
+        # Track auto_research/background tasks
+        self._research_tasks: set[asyncio.Task] = set()
         # How long to wait for speech onset during relisten before returning to idle
         self._relisten_pre_speech_timeout: float = 8.0
         # Captured once the first async message is handled; used by sync callbacks
@@ -131,6 +137,32 @@ class IRISGateway:
         """
         self._main_loop = loop
         self._logger.info("[IRISGateway] Main event loop captured.")
+        # Start session GC task
+        if self._session_gc_task is None:
+            self._session_gc_task = asyncio.create_task(self._session_gc_loop())
+            self._logger.info("[IRISGateway] Session GC task started.")
+
+    def _touch_session(self, session_id: str) -> None:
+        """Update the last-seen timestamp for a session."""
+        self._session_last_seen[session_id] = time.monotonic()
+
+    async def _session_gc_loop(self) -> None:
+        """Background task to clean up stale sessions every 5 minutes."""
+        while True:
+            try:
+                await asyncio.sleep(300)  # 5 min
+                cutoff = time.monotonic() - 1800  # 30 min
+                stale = [sid for sid, t in self._session_last_seen.items() if t < cutoff]
+                for sid in stale:
+                    self._active_voice_client.pop(sid, None)
+                    self._conversation_sessions.discard(sid)
+                    self._session_last_seen.pop(sid, None)
+                if stale:
+                    self._logger.info(f"[Gateway] Session GC swept {len(stale)} stale sessions")
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                self._logger.warning(f"[Gateway] Session GC error: {e}")
 
     async def handle_message(self, client_id: str, message: dict, session_id: Optional[str] = None) -> None:
         """
@@ -198,6 +230,9 @@ class IRISGateway:
                 )
                 await self._send_error(client_id, "No active session")
                 return
+
+            # Touch session timestamp for GC tracking
+            self._touch_session(session_id)
 
             self._logger.info(
                 f"[Session: {session_id}] Processing message type: {msg_type}",
@@ -1295,7 +1330,7 @@ class IRISGateway:
         are ready, minimizing latency for the first spoken word.
 
         Args:
-            input_source: Either the full text to speak (str) or a queue.Queue 
+            input_source: Either the full text to speak (str) or a queue.Queue
                        that will receive sentences in real-time.
             session_id: Optional session ID to broadcast idle state to when finished.
         """
@@ -1310,9 +1345,10 @@ class IRISGateway:
             return
 
         # 1. Internal state
-        audio_queue: queue.Queue = queue.Queue(
+        audio_queue: asyncio.Queue = asyncio.Queue(
             maxsize=4)  # Buffer a few chunks
         interrupted = threading.Event()
+        loop = self._main_loop or asyncio.get_event_loop()
 
         # Dynamic chunking: synthesise first sentence immediately for instant
         # voice onset, then use larger chunks for stable continuous playback.
@@ -1335,7 +1371,8 @@ class IRISGateway:
                         if interrupted.is_set():
                             break
                         if audio_chunk is not None and len(audio_chunk) > 0:
-                            audio_queue.put(audio_chunk)
+                            asyncio.run_coroutine_threadsafe(
+                                audio_queue.put(audio_chunk), loop)
 
                 elif isinstance(input_source, queue.Queue):
                     # Streaming path: read from sentence queue
@@ -1349,7 +1386,8 @@ class IRISGateway:
                                 chunk = " ".join(_pending)
                                 for audio_chunk in tts.synthesize_stream(chunk):
                                     if audio_chunk is not None and len(audio_chunk) > 0:
-                                        audio_queue.put(audio_chunk)
+                                        asyncio.run_coroutine_threadsafe(
+                                            audio_queue.put(audio_chunk), loop)
                             break
 
                         _pending.append(item)
@@ -1363,7 +1401,8 @@ class IRISGateway:
                             chunk = " ".join(_pending)
                             for audio_chunk in tts.synthesize_stream(chunk):
                                 if audio_chunk is not None and len(audio_chunk) > 0:
-                                    audio_queue.put(audio_chunk)
+                                    asyncio.run_coroutine_threadsafe(
+                                        audio_queue.put(audio_chunk), loop)
                             _pending = []
                             _pending_words = 0
                             if is_first_chunk:
@@ -1372,7 +1411,8 @@ class IRISGateway:
             except Exception as exc:
                 self._logger.error(f"[Voice] TTS Producer error: {exc}")
             finally:
-                audio_queue.put(None)
+                asyncio.run_coroutine_threadsafe(
+                    audio_queue.put(None), loop)
 
         # 3. Suppress Porcupine while IRIS is speaking
         engine.set_tts_active(True)
@@ -1392,9 +1432,15 @@ class IRISGateway:
             _first_chunk = True
             while True:
                 _timeout = 90 if _first_chunk else 15
-                try:
-                    chunk = audio_queue.get(timeout=_timeout)
-                except queue.Empty:
+                _start = time.monotonic()
+                chunk = None
+                while time.monotonic() - _start < _timeout:
+                    try:
+                        chunk = audio_queue.get_nowait()
+                        break
+                    except asyncio.QueueEmpty:
+                        time.sleep(0.01)
+                if chunk is None:
                     self._logger.error(
                         f"[Voice] TTS audio queue timed out after {_timeout}s — forcing idle"
                     )
@@ -1409,7 +1455,7 @@ class IRISGateway:
                     while not audio_queue.empty():
                         try:
                             audio_queue.get_nowait()
-                        except queue.Empty:
+                        except asyncio.QueueEmpty:
                             break
                     break
 
@@ -4080,6 +4126,21 @@ class IRISGateway:
                 "type": "text_response",
                 "payload": {"text": f"Terminal error: {exc}", "sender": "assistant"},
             })
+
+    async def shutdown(self) -> None:
+        """Shutdown the gateway and cancel background tasks."""
+        if self._session_gc_task:
+            self._session_gc_task.cancel()
+            try:
+                await self._session_gc_task
+            except asyncio.CancelledError:
+                pass
+            self._logger.info("[IRISGateway] Session GC task cancelled.")
+        # Cancel any remaining research tasks
+        for task in list(self._research_tasks):
+            task.cancel()
+        if self._research_tasks:
+            self._logger.info(f"[IRISGateway] Cancelled {len(self._research_tasks)} research tasks.")
 
 
 # Global instance

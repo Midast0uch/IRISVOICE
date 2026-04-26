@@ -1077,7 +1077,7 @@ class LocalModelManager:
                     return False
 
             # ── Background thread reads stdout and pushes parsed events to queue ──
-            progress_queue: asyncio.Queue = asyncio.Queue()
+            progress_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
 
             def _read_stdout() -> None:
                 try:
@@ -1085,17 +1085,31 @@ class LocalModelManager:
                     if proc is None or proc.stdout is None:
                         return
                     for raw_line in proc.stdout:
-                        line = raw_line.rstrip()
-                        if not line:
-                            continue
-                        logger.debug(f"[llama-server] {line}")
-                        event = self._parse_load_progress(line)
-                        if event:
-                            loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+                        try:
+                            line = raw_line.rstrip()
+                            if not line:
+                                continue
+                            logger.debug(f"[llama-server] {line}")
+                            event = self._parse_load_progress(line)
+                            if event:
+                                try:
+                                    loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+                                except asyncio.QueueFull:
+                                    logger.debug("[LocalModelManager] progress queue full; dropping oldest")
+                                    try:
+                                        loop.call_soon_threadsafe(progress_queue.get_nowait)
+                                    except asyncio.QueueEmpty:
+                                        pass
+                                    loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+                        except Exception as exc:
+                            logger.error(f"[LocalModelManager] Error processing stdout line: {exc}")
                 except Exception as exc:
                     logger.debug(f"[LocalModelManager] stdout reader exited: {exc}")
                 finally:
-                    loop.call_soon_threadsafe(progress_queue.put_nowait, None)  # sentinel
+                    try:
+                        loop.call_soon_threadsafe(progress_queue.put_nowait, None)  # sentinel
+                    except Exception:
+                        pass
 
             reader = threading.Thread(target=_read_stdout, daemon=True, name="llm-stdout-reader")
             reader.start()

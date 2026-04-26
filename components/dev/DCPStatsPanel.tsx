@@ -19,6 +19,7 @@ interface DCPStats {
   totalErrorsPurged: number;
   totalWritesSuperseded: number;
   lastEvent: DCPEvent | null;
+  recentEvents: DCPEvent[];
 }
 
 const EMPTY: DCPStats = {
@@ -28,6 +29,7 @@ const EMPTY: DCPStats = {
   totalErrorsPurged: 0,
   totalWritesSuperseded: 0,
   lastEvent: null,
+  recentEvents: [],
 };
 
 interface DCPStatsPanelProps {
@@ -48,6 +50,8 @@ export function DCPStatsPanel({ glowColor = '#00d4aa' }: DCPStatsPanelProps) {
         totalErrorsPurged: prev.totalErrorsPurged + (d.errors_purged ?? 0),
         totalWritesSuperseded: prev.totalWritesSuperseded + (d.writes_superseded ?? 0),
         lastEvent: d,
+        // Cap recentEvents to last 50 entries: keep newest 50 by slicing
+        recentEvents: [...prev.recentEvents.slice(-49), d],
       }));
     };
     window.addEventListener('iris:dcp_pruned', handler);

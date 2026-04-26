@@ -64,6 +64,10 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
             conn.execute(f"PRAGMA kdf_iter={DEFAULT_KDF_ITERATIONS}")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA cache_size=-20000;")
+            conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("PRAGMA mmap_size=268435456;")
             conn.execute("SELECT count(*) FROM sqlite_master")
             logger.info(f"[db] Opened encrypted memory database: {db_path}")
             return conn
@@ -90,6 +94,10 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
         conn = sqlite3.connect(str(db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA cache_size=-20000;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA mmap_size=268435456;")
         conn.execute("SELECT count(*) FROM sqlite_master")
         logger.info(f"[db] Opened unencrypted (dev) memory database: {db_path}")
         return conn
@@ -442,6 +450,25 @@ def initialise_mycelium_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_bridges_remote
             ON mycelium_landmark_bridges(remote_instance_id);
     """)
+
+    # -------------------------------------------------------------------------
+    # Block 4 — Compound indexes for query optimization
+    # -------------------------------------------------------------------------
+    try:
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ep_outcome_score
+            ON episodes(outcome_type, outcome_score DESC);
+        """)
+    except Exception as e:
+        logger.warning(f"[db] Could not create idx_ep_outcome_score: {e}")
+
+    try:
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chunks_session_type_zone
+            ON context_chunks(session_id, chunk_type, zone);
+        """)
+    except Exception as e:
+        logger.warning(f"[db] Could not create idx_chunks_session_type_zone: {e}")
 
     # ── Swarm collaboration tables ────────────────────────────────────────
     conn.executescript("""

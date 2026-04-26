@@ -11,6 +11,7 @@ expose a method yet, Immortus degrades gracefully without crashing the kernel.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from typing import List, Optional, TYPE_CHECKING
@@ -47,7 +48,7 @@ class ImmortusBrain:
         self.router = router
         self.graph  = graph
 
-    def evaluate(
+    async def evaluate(
         self,
         plan,
         context_package,
@@ -76,7 +77,7 @@ class ImmortusBrain:
         objective_coords = self._extract_objective_coordinates(plan, context_package)
         temporal         = TemporalCoordinate.cold()
 
-        if self._graph_is_mature():
+        if await self._graph_is_mature():
             routes = self._find_routes(entry_coords, objective_coords, temporal, thread_id)
         else:
             routes = self._cold_start_routes(plan, context_package, temporal, thread_id)
@@ -146,7 +147,7 @@ class ImmortusBrain:
 
     # ── Graph helpers ─────────────────────────────────────────────────────
 
-    def _graph_is_mature(self) -> bool:
+    async def _graph_is_mature(self) -> bool:
         if self.graph is None:
             return False
         try:
@@ -154,9 +155,11 @@ class ImmortusBrain:
                 return bool(self.graph.is_mature())
             store = getattr(self.graph, "_store", None)
             if store and hasattr(store, "_conn"):
-                row = store._conn.execute(
-                    "SELECT COUNT(*) FROM mycelium_traversals"
-                ).fetchone()
+                row = await asyncio.to_thread(
+                    lambda: store._conn.execute(
+                        "SELECT COUNT(*) FROM mycelium_traversals"
+                    ).fetchone()
+                )
                 return int(row[0]) >= 20 if row else False
         except Exception:
             pass

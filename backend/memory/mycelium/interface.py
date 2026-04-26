@@ -480,6 +480,25 @@ class MyceliumInterface:
         if results:
             self._is_mature_cached = None
 
+    def ingest_statements(self, texts: List[str]) -> None:
+        """Batch-ingest multiple statements, invalidating maturity cache once.
+
+        Functionally equivalent to calling ingest_statement() for each text, but
+        defers the maturity-cache invalidation until the end of the batch so it
+        only happens once rather than N times.
+        """
+        any_results = False
+        for text in texts:
+            if not text:
+                continue
+            results = self._extractor.extract_from_statement(text)
+            for space_id, coords, confidence, label in results:
+                self._store.upsert_node(space_id, coords, label, confidence)
+            if results:
+                any_results = True
+        if any_results:
+            self._is_mature_cached = None
+
     def ingest_sessions(self, session_timestamps: List[float]) -> None:
         """Derive a chrono node from session timestamp history."""
         result = self._extractor.extract_from_sessions(session_timestamps)
@@ -718,7 +737,10 @@ class MyceliumInterface:
           3. Expand nodes (MapManager.run_expand)
           4. Landmark edge decay (LandmarkIndex.apply_landmark_decay)
           5. Profile render (ProfileRenderer.render_dirty_sections)
+          6. Topology maintenance
 
+        Sync — callers that need non-blocking execution should use
+        asyncio.to_thread(mycelium.run_maintenance).
         Sets _last_distillation_at to now.
         """
         logger.info("[interface] Running Mycelium maintenance pass")
