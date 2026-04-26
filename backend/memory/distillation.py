@@ -72,6 +72,11 @@ class DistillationProcess:
         # Mycelium maintenance counters (Req 13.8)
         self._mycelium_distillation_count: int = 0
         self._interrupt_requested: bool = False
+
+        # Candidate cache (P1-7)
+        self._candidate_cache: list | None = None
+        self._candidate_cache_ts: float = 0.0
+        self._candidate_cache_ttl: float = 30.0  # seconds
         
         logger.info(
             f"[DistillationProcess] Initialized "
@@ -108,34 +113,57 @@ class DistillationProcess:
         if self._last_distillation == 0:
             return float('inf')
         return (time.time() - self._last_distillation) / 3600.0
+
+    def _get_candidates(self) -> list | None:
+        """
+        Get recent candidates for distillation with caching.
+
+        Returns cached candidates if cache is fresh (< TTL),
+        otherwise fetches from episodic memory and caches.
+
+        Returns:
+            List of candidate episodes or None if none available
+        """
+        now = time.time()
+        if (self._candidate_cache is not None and
+            now - self._candidate_cache_ts < self._candidate_cache_ttl):
+            return self._candidate_cache
+
+        # Fetch fresh candidates
+        candidates = self.memory.episodic.get_recent_for_distillation(
+            hours=int(self.config.interval_hours),
+            min_episodes=self.config.min_episodes
+        )
+
+        # Update cache
+        self._candidate_cache = candidates
+        self._candidate_cache_ts = now
+
+        return candidates
     
     def _should_distill(self) -> bool:
         """
         Check if distillation should run.
-        
+
         Conditions:
         - System idle for >= threshold minutes
         - Hours since last distillation >= interval
         - Enough episodes to analyze
-        
+
         Returns:
             True if distillation should run
         """
         # Check idle time
         if self.idle_minutes < self.config.idle_threshold_minutes:
             return False
-        
+
         # Check interval
         if self.hours_since_distillation < self.config.interval_hours:
             return False
-        
+
         # Check episode count
-        recent = self.memory.episodic.get_recent_for_distillation(
-            hours=int(self.config.interval_hours),
-            min_episodes=self.config.min_episodes
-        )
-        
-        return recent is not None
+        candidates = self._get_candidates()
+        return candidates is not None
     
     async def start(self) -> None:
         """Start the background distillation loop."""
@@ -178,34 +206,34 @@ class DistillationProcess:
     async def _run_distillation(self) -> None:
         """
         Execute one distillation cycle.
-        
+
         SILENT FAILURE: All errors are caught and logged.
         """
         try:
             logger.info("[DistillationProcess] Starting distillation cycle")
-            
-            # Fetch recent episodes
-            episodes = self.memory.episodic.get_recent_for_distillation(
-                hours=int(self.config.interval_hours),
-                min_episodes=self.config.min_episodes
-            )
-            
+
+            # Fetch recent episodes (using cache)
+            episodes = self._get_candidates()
+
             if not episodes:
                 logger.debug("[DistillationProcess] No episodes to distill")
                 return
-            
+
             logger.info(f"[DistillationProcess] Distilling {len(episodes)} episodes")
-            
+
             # Extract patterns using model
             patterns = await self._extract_patterns(episodes)
-            
+
             if patterns:
                 # Store patterns in semantic memory
                 await self._store_patterns(patterns)
                 logger.info(f"[DistillationProcess] Stored {len(patterns)} patterns")
-            
+
             # Update timestamp
             self._last_distillation = time.time()
+
+            # Invalidate cache after successful distillation
+            self._candidate_cache = None
 
             # Trigger skill crystallisation
             await self._run_skill_crystallisation()
@@ -356,17 +384,18 @@ class DistillationProcess:
         try:
             self._interrupt_requested = False
 
-            # Step 1 — ingest episode text into coordinate graph
-            for ep in episodes:
-                if self._interrupt_requested:
-                    logger.debug("[DistillationProcess] Mycelium interrupted after ingest_statement")
-                    return
-                text = ep.get("task_summary", "") or ep.get("full_content", "")
-                if text:
-                    try:
-                        mycelium.ingest_statement(text)
-                    except Exception as _e:
-                        logger.debug("[DistillationProcess] ingest_statement failed: %s", _e)
+            # Step 1 — ingest episode text into coordinate graph (batched)
+            texts = [
+                ep.get("task_summary", "") or ep.get("full_content", "")
+                for ep in episodes
+            ]
+            if self._interrupt_requested:
+                logger.debug("[DistillationProcess] Mycelium interrupted before ingest_statements")
+                return
+            try:
+                mycelium.ingest_statements(texts)
+            except Exception as _e:
+                logger.debug("[DistillationProcess] ingest_statements failed: %s", _e)
 
             if self._interrupt_requested:
                 return
@@ -396,7 +425,7 @@ class DistillationProcess:
 
             # Step 4 — full maintenance pass
             try:
-                mycelium.run_maintenance()
+                await asyncio.to_thread(mycelium.run_maintenance)
             except Exception as _e:
                 logger.error("[DistillationProcess] run_maintenance failed: %s", _e)
 

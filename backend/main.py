@@ -419,6 +419,42 @@ async def lifespan(app: FastAPI):
         except Exception as _wd_err:
             logger.warning(f"  [Watchdog] Could not start watchdog (non-fatal): {_wd_err}")
 
+        # ── Status broadcast loop ──────────────────────────────────────────────
+        # Broadcast system status updates to all connected WebSocket clients
+        # at adaptive intervals (fast when active, slow when idle).
+        try:
+            async def _status_broadcast_loop():
+                from backend.api.status_snapshot import build_snapshot
+                from backend.core.idle_tracker import get_idle_tracker
+                last_payload: dict | None = None
+                while True:
+                    try:
+                        tracker = get_idle_tracker()
+                        # Fast interval (1s) when user is active, slow (30s) when idle
+                        interval = 1.0 if not tracker.is_idle(threshold_s=30.0) else 30.0
+                        await asyncio.sleep(interval)
+                        snap = await build_snapshot()
+                        # Only broadcast if changed
+                        if snap != last_payload:
+                            last_payload = snap
+                            ws_mgr = get_websocket_manager()
+                            await ws_mgr.broadcast({
+                                "type": "system_status",
+                                "payload": snap
+                            })
+                    except asyncio.CancelledError:
+                        return
+                    except Exception as e:
+                        logger.warning(f"[status_broadcast] error: {e}")
+
+            app.state.status_broadcast_task = asyncio.create_task(
+                _status_broadcast_loop(),
+                name="iris-status-broadcast",
+            )
+            logger.info("  [StatusBroadcast] System status broadcast loop started")
+        except Exception as _sb_err:
+            logger.warning(f"  [StatusBroadcast] Could not start status broadcast (non-fatal): {_sb_err}")
+
         # Pre-warm the GGUF file metadata cache in the background (filesystem
         # scan only — no model weights loaded, no CUDA initialization).
         # This means the first ModelsScreen open returns instantly instead of
@@ -444,7 +480,13 @@ async def lifespan(app: FastAPI):
     
     logger.info("IRIS Backend shutting down...")
     try:
-        # Cancel memory watchdog first so it doesn't log spurious errors during teardown
+        # Cancel status broadcast and memory watchdog first so they don't log spurious errors during teardown
+        if hasattr(app.state, "status_broadcast_task") and app.state.status_broadcast_task:
+            app.state.status_broadcast_task.cancel()
+            try:
+                await app.state.status_broadcast_task
+            except asyncio.CancelledError:
+                pass
         if hasattr(app.state, "watchdog_task") and app.state.watchdog_task:
             app.state.watchdog_task.cancel()
             try:
@@ -492,6 +534,10 @@ app.add_middleware(
 )
 
 logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
+
+# Register status snapshot router
+from backend.api.status_snapshot import router as status_snapshot_router
+app.include_router(status_snapshot_router)
 
 
 # ── Idle tracker middleware ────────────────────────────────────────────────

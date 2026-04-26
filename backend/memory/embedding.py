@@ -19,6 +19,7 @@ Never instantiate SentenceTransformer directly anywhere else.
 import hashlib
 import logging
 import math
+from collections import OrderedDict
 from threading import Lock
 from typing import List, Optional
 
@@ -95,6 +96,11 @@ class EmbeddingService:
     # don't re-attempt the import on every encode() call.
     _neural_unavailable: bool = False
 
+    def __init__(self) -> None:
+        """Initialize the embedding service with LRU cache."""
+        self._enc_cache: OrderedDict[str, List[float]] = OrderedDict()
+        self._enc_cache_max = 256
+
     def _load(self) -> None:
         """
         Lazily load the neural embedding model.
@@ -132,10 +138,34 @@ class EmbeddingService:
                 )
                 EmbeddingService._neural_unavailable = True
     
+    def _encode_uncached(self, text: str) -> List[float]:
+        """
+        Internal implementation of encode without caching.
+
+        Args:
+            text: The text to encode (assumed non-empty)
+
+        Returns:
+            List of 384 float values representing the embedding
+        """
+        self._load()
+
+        # Neural path
+        if self._model is not None:
+            try:
+                embedding = self._model.encode(text, convert_to_numpy=True)
+                return embedding.tolist()
+            except Exception as e:
+                logger.warning(f"[EmbeddingService] Neural encode failed ({e}), using fallback")
+
+        # Hash-projection fallback (always available)
+        return _hash_embed(text, self.EMBEDDING_DIM)
+
     def encode(self, text: str) -> List[float]:
         """
         Encode a single text into a 384-dimensional embedding vector.
 
+        Uses an LRU cache (max 256 entries) keyed on SHA1 hash of input text.
         Uses the neural model when available, otherwise falls back to
         hash-projection (_hash_embed).  Never raises — returns zero vector
         on empty input.
@@ -150,25 +180,26 @@ class EmbeddingService:
         if not text or not text.strip():
             return [0.0] * self.EMBEDDING_DIM
 
-        self._load()
+        # LRU cache lookup
+        key = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()
+        cached = self._enc_cache.get(key)
+        if cached is not None:
+            self._enc_cache.move_to_end(key)
+            return cached
 
-        # Neural path
-        if self._model is not None:
-            try:
-                embedding = self._model.encode(text, convert_to_numpy=True)
-                return embedding.tolist()
-            except Exception as e:
-                logger.warning(f"[EmbeddingService] Neural encode failed ({e}), using fallback")
-
-        # Hash-projection fallback (always available)
-        return _hash_embed(text, self.EMBEDDING_DIM)
+        # Encode and cache
+        vec = self._encode_uncached(text)
+        self._enc_cache[key] = vec
+        if len(self._enc_cache) > self._enc_cache_max:
+            self._enc_cache.popitem(last=False)
+        return vec
     
     def encode_batch(self, texts: List[str]) -> List[List[float]]:
         """
         Encode multiple texts into embedding vectors.
 
-        More efficient than repeated encode() calls when a neural model is
-        loaded.  Falls back to per-item hash-projection when unavailable.
+        Uses LRU cache for hits; batches misses through neural model when available.
+        Falls back to per-item hash-projection when unavailable.
 
         Args:
             texts: List of texts to encode
@@ -179,33 +210,60 @@ class EmbeddingService:
         if not texts:
             return []
 
+        # Check cache for hits; batch the misses
+        results: List[List[float]] = []
+        miss_indices: List[int] = []
+        miss_texts: List[str] = []
+
+        for i, t in enumerate(texts):
+            if not t or not t.strip():
+                results.append([0.0] * self.EMBEDDING_DIM)
+            else:
+                key = hashlib.sha1(t.encode("utf-8", "ignore")).hexdigest()
+                cached = self._enc_cache.get(key)
+                if cached is not None:
+                    self._enc_cache.move_to_end(key)
+                    results.append(cached)
+                else:
+                    results.append(None)  # placeholder
+                    miss_indices.append(i)
+                    miss_texts.append(t)
+
+        # If all cache hits, return early
+        if not miss_indices:
+            return results
+
         self._load()
 
-        # Neural batch path
+        # Neural batch path for misses
         if self._model is not None:
             try:
-                processed, empty_idx = [], set()
-                for i, t in enumerate(texts):
-                    if not t or not t.strip():
-                        processed.append("[empty]")
-                        empty_idx.add(i)
-                    else:
-                        processed.append(t)
                 embeddings = self._model.encode(
-                    processed,
+                    miss_texts,
                     convert_to_numpy=True,
-                    batch_size=min(len(processed), 32),
+                    batch_size=min(len(miss_texts), 32),
                 )
-                result = [emb.tolist() for emb in embeddings]
-                for i in empty_idx:
-                    result[i] = [0.0] * self.EMBEDDING_DIM
-                return result
+                miss_vecs = [emb.tolist() for emb in embeddings]
+                # Fill in misses and cache them
+                for idx, (miss_i, vec) in enumerate(zip(miss_indices, miss_vecs)):
+                    key = hashlib.sha1(miss_texts[idx].encode("utf-8", "ignore")).hexdigest()
+                    self._enc_cache[key] = vec
+                    if len(self._enc_cache) > self._enc_cache_max:
+                        self._enc_cache.popitem(last=False)
+                    results[miss_i] = vec
+                return results
             except Exception as e:
                 logger.warning(f"[EmbeddingService] Neural batch encode failed ({e}), using fallback")
 
-        # Hash-projection fallback
-        return [_hash_embed(t, self.EMBEDDING_DIM) if (t and t.strip()) else [0.0] * self.EMBEDDING_DIM
-                for t in texts]
+        # Hash-projection fallback for misses
+        miss_vecs = [_hash_embed(t, self.EMBEDDING_DIM) for t in miss_texts]
+        for miss_i, vec in zip(miss_indices, miss_vecs):
+            key = hashlib.sha1(miss_texts[miss_indices.index(miss_i)].encode("utf-8", "ignore")).hexdigest()
+            self._enc_cache[key] = vec
+            if len(self._enc_cache) > self._enc_cache_max:
+                self._enc_cache.popitem(last=False)
+            results[miss_i] = vec
+        return results
     
     @classmethod
     def is_available(cls) -> bool:

@@ -1221,15 +1221,19 @@ class AgentKernel:
         if chunk_prefix:
             # DB has relevant chunks: only keep a small recency window
             recent = history[-_RECENCY_TURNS:] if len(history) > _RECENCY_TURNS else list(history)
-            while recent and self._count_tokens(recent) > max(budget_for_history, 0):
-                recent.pop(0)
+            recent_tokens = self._count_tokens(recent)
+            while recent and recent_tokens > max(budget_for_history, 0):
+                removed_item = recent.pop(0)
+                recent_tokens -= len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
             while recent and recent[0].get("role") != "user":
                 recent.pop(0)
             history_block = recent
         else:
             # No chunks yet (first message / empty DB): full rolling window fallback
-            while history and self._count_tokens(history) > max(budget_for_history, 0):
-                history.pop(0)
+            history_tokens = self._count_tokens(history)
+            while history and history_tokens > max(budget_for_history, 0):
+                removed_item = history.pop(0)
+                history_tokens -= len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
             while history and history[0].get("role") != "user":
                 history.pop(0)
             history_block = history

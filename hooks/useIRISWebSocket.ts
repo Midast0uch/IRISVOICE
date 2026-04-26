@@ -993,6 +993,14 @@ export function useIRISWebSocket(
         break
       }
 
+      case 'system_status': {
+        // Broadcast system snapshot — replaces FE polling in iris-launcher
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:system_status', { detail: payload }))
+        }
+        break
+      }
+
       default: {
         // Only log unknown message types in development mode
         if (process.env.NODE_ENV !== 'production') {

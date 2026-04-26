@@ -105,10 +105,13 @@ class IntegrationLifecycleManager:
             "process_crash": [],
             "restart_exhausted": [],
         }
-        
+
         # Tasks for monitoring
         self._monitor_tasks: Dict[str, asyncio.Task] = {}
-        
+
+        # Track callback tasks for cleanup
+        self._callback_tasks: Set[asyncio.Task] = set()
+
         logger.info("IntegrationLifecycleManager initialized")
     
     def on(self, event: str, callback: Callable) -> None:
@@ -123,7 +126,15 @@ class IntegrationLifecycleManager:
         for callback in self._event_handlers.get(event, []):
             try:
                 if asyncio.iscoroutinefunction(callback):
-                    asyncio.create_task(callback(**kwargs))
+                    async def _safe_callback(cb, kw):
+                        try:
+                            await cb(**kw)
+                        except Exception as e:
+                            logger.error(f"[LifecycleManager] callback {cb} failed: {e}")
+
+                    task = asyncio.create_task(_safe_callback(callback, kwargs))
+                    self._callback_tasks.add(task)
+                    task.add_done_callback(self._callback_tasks.discard)
                 else:
                     callback(**kwargs)
             except Exception as e:
@@ -594,18 +605,22 @@ class IntegrationLifecycleManager:
     async def shutdown_all(self) -> None:
         """Disable all integrations. Called on app shutdown."""
         logger.info("Shutting down all integrations...")
-        
+
+        # Cancel pending callback tasks
+        for task in list(self._callback_tasks):
+            task.cancel()
+
         integration_ids = list(self._processes.keys())
-        
+
         # Disable all concurrently
         tasks = [
             self.disable(int_id, forget_credentials=False)
             for int_id in integration_ids
         ]
-        
+
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         logger.info("All integrations shut down")
     
     async def get_server_tools(self, integration_id: str) -> list:

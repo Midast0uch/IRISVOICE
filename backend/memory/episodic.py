@@ -3,12 +3,14 @@ Episodic Memory Store for IRIS.
 
 Stores task episodes with vector embeddings for similarity search.
 Uses SQLCipher for encryption and numpy for vector similarity calculation.
+Embeddings are stored as binary (struct.pack format) with transparent JSON fallback.
 """
 
 import json
 import logging
 import uuid
 import math
+import struct
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
@@ -16,6 +18,32 @@ from backend.memory.db import open_encrypted_memory, Connection
 from backend.memory.embedding import EmbeddingService
 
 logger = logging.getLogger(__name__)
+
+
+def _pack_embedding(vec: List[float]) -> bytes:
+    """Pack embedding vector as binary (little-endian 32-bit floats)."""
+    return struct.pack(f"<{len(vec)}f", *vec)
+
+
+def _unpack_embedding(blob: bytes) -> List[float]:
+    """
+    Unpack embedding from binary format.
+    Falls back to JSON for legacy rows (backward compatible).
+    Returns empty list on error.
+    """
+    if not blob:
+        return []
+    # JSON fallback for legacy rows
+    if blob[:1] in (b"[", b"{"):
+        try:
+            return json.loads(blob)
+        except Exception:
+            return []
+    # Binary format
+    try:
+        return list(struct.unpack(f"<{len(blob)//4}f", blob))
+    except Exception:
+        return []
 
 
 @dataclass
@@ -131,10 +159,10 @@ class EpisodicStore:
     def _find_duplicate(self, embedding: List[float]) -> Optional[Tuple[str, float]]:
         """
         Find if a similar episode already exists.
-        
+
         Args:
             embedding: The embedding to check
-            
+
         Returns:
             Tuple of (episode_id, similarity) if duplicate found, None otherwise
         """
@@ -146,26 +174,28 @@ class EpisodicStore:
                 ORDER BY timestamp DESC
                 LIMIT 100
             """).fetchall()
-            
+
             best_match = None
             best_similarity = 0.0
-            
+
             for row in rows:
                 try:
-                    stored_embedding = json.loads(row[1])
+                    stored_embedding = _unpack_embedding(row[1])
+                    if not stored_embedding:
+                        continue
                     similarity = self._cosine_similarity(embedding, stored_embedding)
-                    
+
                     if similarity > best_similarity:
                         best_similarity = similarity
                         best_match = (row[0], similarity)
-                        
+
                     if similarity >= self.DEDUP_THRESHOLD:
                         return (row[0], similarity)
                 except (json.JSONDecodeError, TypeError):
                     continue
-            
+
             return best_match if best_match and best_match[1] >= self.DEDUP_THRESHOLD else None
-            
+
         except Exception as e:
             logger.warning(f"[EpisodicStore] Error finding duplicate: {e}")
             return None
@@ -272,22 +302,22 @@ class EpisodicStore:
     def store(self, episode: Episode, score: float) -> str:
         """
         Persist an episode with its embedding.
-        
+
         Implements deduplication: if a similar episode already exists
         (cosine similarity >= DEDUP_THRESHOLD), it will be updated instead
         of creating a duplicate.
-        
+
         Args:
             episode: The episode to store
             score: Outcome score (0.0-1.0)
-        
+
         Returns:
             The ID of the stored episode (new or existing)
         """
         # Generate embedding for task summary
         embedding = self._embed.encode(episode.task_summary)
-        embedding_blob = json.dumps(embedding).encode()
-        
+        embedding_blob = _pack_embedding(embedding)
+
         # Check for duplicates
         duplicate = self._find_duplicate(embedding)
         if duplicate:
@@ -313,10 +343,10 @@ class EpisodicStore:
             self.db.commit()
             logger.debug(f"[EpisodicStore] Updated duplicate episode {episode_id[:8]}... (similarity: {similarity:.3f})")
             return episode_id
-        
+
         # No duplicate found - insert new episode
         episode_id = str(uuid.uuid4())
-        
+
         self.db.execute("""
             INSERT INTO episodes
             (id, session_id, task_summary, full_content, tool_sequence,
@@ -392,7 +422,9 @@ class EpisodicStore:
         scored_episodes = []
         for row in rows:
             try:
-                stored_embedding = json.loads(row[4])
+                stored_embedding = _unpack_embedding(row[4])
+                if not stored_embedding:
+                    continue
                 similarity = self._cosine_similarity(query_embedding, stored_embedding)
                 scored_episodes.append((similarity, {
                     "id": row[0],
@@ -457,7 +489,9 @@ class EpisodicStore:
         scored_failures = []
         for row in rows:
             try:
-                stored_embedding = json.loads(row[3])
+                stored_embedding = _unpack_embedding(row[3])
+                if not stored_embedding:
+                    continue
                 similarity = self._cosine_similarity(query_embedding, stored_embedding)
                 scored_failures.append((similarity, {
                     "task_summary": row[1],
@@ -532,6 +566,7 @@ class EpisodicStore:
         content is split into fixed-size chunks with overlap, each embedded and
         stored with zone classification matching PACMAN.md Dimension 1.
         Duplicates at >= _FRAG_DEDUP_THRESHOLD are silently skipped.
+        Uses batch insert (executemany) for efficiency.
 
         Args:
             content:    Raw text to fragment.
@@ -562,6 +597,8 @@ class EpisodicStore:
                 pos += step
 
         stored_ids: List[str] = []
+        batch_rows: List[Tuple] = []
+
         for chunk in chunks:
             chunk = chunk.strip()
             if len(chunk) < self._CHUNK_MIN_CHARS:
@@ -580,8 +617,8 @@ class EpisodicStore:
                 is_dup = False
                 for row in rows:
                     try:
-                        stored_emb = json.loads(row[1])
-                        if self._cosine_similarity(embedding, stored_emb) >= self._FRAG_DEDUP_THRESHOLD:
+                        stored_emb = _unpack_embedding(row[1])
+                        if stored_emb and self._cosine_similarity(embedding, stored_emb) >= self._FRAG_DEDUP_THRESHOLD:
                             is_dup = True
                             stored_ids.append(row[0])
                             break
@@ -593,18 +630,34 @@ class EpisodicStore:
                 pass  # dedup failure is non-fatal; store anyway
 
             chunk_id = str(uuid.uuid4())
+            embedding_blob = _pack_embedding(embedding)
+            batch_rows.append((chunk_id, session_id, chunk_type, _zone, chunk, embedding_blob))
+            stored_ids.append(chunk_id)
+
+        # Batch insert all non-duplicate chunks
+        if batch_rows:
             try:
-                self.db.execute(
-                    """INSERT INTO context_chunks
-                       (id, session_id, chunk_type, zone, content, embedding)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (chunk_id, session_id, chunk_type, _zone,
-                     chunk, json.dumps(embedding).encode()),
-                )
-                self.db.commit()
-                stored_ids.append(chunk_id)
+                with self.db:
+                    self.db.executemany(
+                        """INSERT INTO context_chunks
+                           (id, session_id, chunk_type, zone, content, embedding)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        batch_rows
+                    )
             except Exception as e:
-                logger.warning(f"[EpisodicStore] chunk store error: {e}")
+                logger.warning(f"[EpisodicStore] batch chunk store error: {e}")
+                # Fallback: store individually
+                for row in batch_rows:
+                    try:
+                        self.db.execute(
+                            """INSERT INTO context_chunks
+                               (id, session_id, chunk_type, zone, content, embedding)
+                               VALUES (?, ?, ?, ?, ?, ?)""",
+                            row
+                        )
+                        self.db.commit()
+                    except Exception as e2:
+                        logger.warning(f"[EpisodicStore] individual chunk store error: {e2}")
 
         logger.debug(
             f"[EpisodicStore] fragment_and_store: {len(stored_ids)} chunks "
@@ -683,7 +736,9 @@ class EpisodicStore:
         scored: List[Tuple[float, str, str]] = []  # (combined_score, content, id)
         for row in rows:
             try:
-                stored_emb = json.loads(row[2])
+                stored_emb = _unpack_embedding(row[2])
+                if not stored_emb:
+                    continue
                 sim = self._cosine_similarity(query_embedding, stored_emb)
                 if sim < min_similarity:
                     continue
