@@ -9,15 +9,19 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
 - **End-to-End Audio Processing**: LFM 2.5 audio model handles complete audio pipeline
 - **Voice Commands**: Natural language voice interaction with double-click activation
-- **Text-to-Speech**: High-quality speech synthesis with configurable voices
+- **Text-to-Speech**: F5-TTS (zero-shot voice cloning from TOMV2.wav, CPU) or Piper (fast built-in)
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
 
 ### 🤖 AI Agent System
-- **Dual-LLM Architecture**: lfm2-8b (reasoning) + lfm2.5-1.2b-instruct (execution)
-- **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer
-- **Model-Agnostic Design**: Works with Local, VPS, or OpenAI inference backends
-- **Flexible Inference Modes**: Choose between Local Models, VPS Gateway, or OpenAI API
-- **User-Configurable Models**: Select which models handle reasoning and tool execution
+- **Flexible Inference**: Any GGUF model via llama-server (ik_llama.cpp binary, preferred) or llama-cpp-python (port 8082) or OpenAI-compatible VPS — select in Settings
+- **Tool Execution**: LFM2.5-1.2B-Instruct handles structured tool calls; main LLM handles reasoning and conversation
+- **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer, token-budget enforcement, and mid-loop episodic retrieval (C.4)
+- **Mycelium v1.7**: 6-layer coordinate-graph memory — episodic events, semantic compression, landmarks, Pacman lifecycle, PiNs, and cross-project landmark bridges
+- **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — files, folders, images, URLs, decisions, fragments — persists across sessions and surfaces in the DER context package
+- **Cross-Project Landmark Bridging**: Maps a verified landmark to an equivalent pattern in another IRIS instance or project; bridges carry confidence scores and bridge types (equivalent / similar / inverse)
+- **Unlimited Effective Context**: 3-layer retrieval — raw history (trimmed) + episodic summaries (Layer 2) + Mycelium coordinate package (Layer 3, includes PiNs)
+- **Model-Agnostic Design**: Works with Local GGUF, VPS, or OpenAI inference backends
+- **Flexible Inference Modes**: Choose between Local Models (Models Browser), VPS Gateway, or OpenAI API
 - **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
@@ -85,10 +89,10 @@ git clone <repository-url>
 cd IRISVOICE
 ```
 
-### 2. Vision Model Setup (LFM2.5-VL)
+### 2. Vision Model Setup (LFM2.5-VL, optional)
 
 ```python
-# Download LFM2.5-VL GGUF files (one-time, ~1GB total)
+# Download LFM2.5-VL GGUF files (one-time, ~1GB total) — optional, only for vision features
 from huggingface_hub import hf_hub_download
 import os
 base = os.path.expanduser("~/models/LFM2.5-VL-1.6B/")
@@ -100,9 +104,6 @@ hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "mmproj-LFM2.5-VL-1.6B-Q4_0.gguf
 ```bash
 # Start vision server (Windows)
 start_vl.bat
-
-# Start vision server (macOS/Linux)
-bash start_vl.sh
 
 # Install vision dependencies
 pip install mss httpx pywinauto pyautogui pillow win32clipboard
@@ -126,8 +127,8 @@ pip install f5-tts
 # Set up environment variables
 # Create .env file with:
 # PICOVOICE_ACCESS_KEY=your_access_key_here
-# TELEGRAM_BOT_TOKEN=your_bot_token
-# TELEGRAM_CHAT_ID=your_chat_id
+# TELEGRAM_BOT_TOKEN=your_bot_token  (optional)
+# TELEGRAM_CHAT_ID=your_chat_id      (optional)
 ```
 
 ### 3. Frontend Setup
@@ -482,6 +483,17 @@ IRISVOICE/
 │   ├── iris_gateway.py  # Message router
 │   ├── state_manager.py # State persistence
 │   └── ws_manager.py    # WebSocket manager
+├── bootstrap/           # Coordinate-graph build memory (dev agents)
+│   ├── coordinates.py   # CoordinateStore — nodes, edges, landmarks, PiNs, bridges
+│   ├── coordinates.db   # SQLite WAL-mode persistent graph
+│   ├── session_start.py # Auto-loaded at every session start (hook)
+│   ├── agent_context.py # Work queue — claim/complete/poll
+│   ├── query_graph.py   # Navigation — file, routes, failures, summary
+│   ├── record_event.py  # Record edits, tests, notes, PiNs
+│   ├── pin.py           # PiN CLI — add, search, link, bridge, projects
+│   ├── mid_session_snapshot.py
+│   ├── update_coordinates.py
+│   └── GOALS.md         # Production roadmap + all gate specs
 ├── models/              # AI model files
 │   ├── LFM2.5-1.2B-Instruct/   # tool execution (optional)
 │   ├── LFM2.5-VL-1.6B/         # vision (optional)
@@ -556,6 +568,43 @@ npm test -- tests/wheelview.test.js
 npm test -- --coverage
 ```
 
+### Mycelium Layer — Architecture (v1.7)
+
+The Mycelium layer is IRIS's coordinate-graph memory system. It compresses episodic events into a navigable semantic map that feeds every DER loop iteration.
+
+**6 memory layers:**
+
+| Layer | What it stores | Lifecycle |
+|-------|----------------|-----------|
+| 1. Episodic events | Raw code events, edits, test runs | Decays unless reinforced |
+| 2. Semantic compression | `file_node` confidence + edge weights | Rises with reinforcement, decays with neglect |
+| 3. Landmarks | Verified, crystallised features | Permanent after 3 passing runs |
+| 4. Pacman context lifecycle | Zone membrane (trusted/tool chunks), age-weighted retrieval | `combined = similarity×0.80 + recency×0.20` |
+| 5. PiNs | Files, folders, images, URLs, decisions, fragments | Permanent flag available; auto-anchored on edit/decision |
+| 6. Landmark bridges | Cross-project / cross-instance equivalence map | Survives instance migrations |
+
+**PiNs — Primordial Information Nodes:**
+Named after mycological primordia (first growth points of a fungal network). A PiN anchors any knowledge artifact into the coordinate graph so it surfaces in the DER context package automatically.
+
+```bash
+# Add a PiN
+python bootstrap/pin.py --add "Architecture Decision: token budget" \
+  --type decision --content "chose token budget over cycle count..."
+
+# Search PiNs
+python bootstrap/pin.py --search "token budget"
+
+# Bridge a local landmark to a remote project equivalent
+python bootstrap/pin.py --bridge lm_g1_api_healthy \
+  --remote-name "health_gate_passed" --remote-project "other-iris-instance" --confidence 0.95
+
+# List bridges
+python bootstrap/pin.py --bridges
+```
+
+**MCP storage integration (Domain 12):**
+PiNs can be backed by external stores — Google Drive, Discord, Notion, GitHub — via the `backend/integrations/models.py` OAuthConfig layer. A PiN written locally can mirror to a Drive folder; a PiN read from Discord surfaces in the next DER context package.
+
 ### Mycelium Layer — Test Coverage
 
 The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a comprehensive, requirement-anchored test suite with **139 tests** across 12 test modules. All tests pass against `sqlite3` in-memory databases (no SQLCipher dependency required for testing).
@@ -621,6 +670,8 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[Agent Architecture](./docs/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
 - **[System Overview](./docs/SYSTEM_OVERVIEW.md)**: Complete system architecture
 - **[UI Architecture](./docs/UI_ARCHITECTURE.md)**: Frontend component structure
+- **[DER Loop + Mycelium v1.7](./docs/DER_LOOP_MYCELIUM.md)**: Full DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges
+- **[Mycelium Guide](./docs/Mycellium%20Guide.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
 
 ### API Documentation
 
@@ -707,19 +758,16 @@ lsof -i :8000  # macOS/Linux
 
 **Models not loading:**
 ```bash
-# Note: Models are NOT loaded automatically on startup (lazy loading)
+# Models are NOT loaded automatically on startup (lazy loading by design)
 # Select inference mode in Agent settings first
 
 # For Local Models mode:
-# Re-download models if needed
-python download_text_model.py
-python download_lfm_audio.py
-
-# Check available GPU RAM (need ~20GB for local models)
+# Open Settings → Models Browser → pick a GGUF model → click Load
+# GPU RAM needed depends on your chosen model (e.g. 8B Q4_K_M ≈ 5 GB VRAM)
 nvidia-smi
 
 # For VPS/OpenAI modes:
-# No local models needed - configure in Agent settings
+# No local models needed — configure endpoint in Agent settings
 ```
 
 **Wake word not detected:**
@@ -768,6 +816,6 @@ For issues and questions:
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: February 2026  
+**Version**: 4.5.0
+**Last Updated**: April 2026
 **Status**: Production Ready ✅
