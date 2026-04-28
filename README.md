@@ -13,8 +13,8 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
 
 ### 🤖 AI Agent System
-- **Flexible Inference**: Any GGUF model via llama-server (ik_llama.cpp binary, preferred) or llama-cpp-python (port 8082) or OpenAI-compatible VPS — select in Settings
-- **Tool Execution**: LFM2.5-1.2B-Instruct handles structured tool calls; main LLM handles reasoning and conversation
+- **Flexible Inference**: Brain model via ik_llama.cpp (port 8082) or llama-cpp-python, vision via upstream llama.cpp (port 8081), or remote OpenAI-compatible API — select in Settings
+- **Tool Execution**: Dedicated tool-calling model handles structured tool calls; main LLM handles reasoning and conversation
 - **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer, token-budget enforcement, and mid-loop episodic retrieval (C.4)
 - **Mycelium v1.7**: 6-layer coordinate-graph memory — episodic events, semantic compression, landmarks, Pacman lifecycle, PiNs, and cross-project landmark bridges
 - **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — files, folders, images, URLs, decisions, fragments — persists across sessions and surfaces in the DER context package
@@ -30,7 +30,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
 
 ### 👁 Vision Layer (LFM2.5-VL)
-- **LFM2.5-VL-1.6B**: Liquid AI's vision-language model running via `llama-server` on port 8081
+- **LFM2.5-VL-450M**: Liquid AI's vision-language model running via `llama-server` on port 8081
 - **VisionMCPServer**: 5 MCP tools — `vision.analyze_screen`, `vision.find_ui_element`, `vision.read_text`, `vision.suggest_next_action`, `vision.describe_live_frame`
 - **UniversalGUIOperator**: Controls any Windows application — UIA accessibility first, VL coordinate prediction second, PIL diff verification third
 - **Perception-Action-Verify Loop**: Every GUI action is preceded by VL perception and followed by result verification
@@ -89,23 +89,32 @@ git clone <repository-url>
 cd IRISVOICE
 ```
 
-### 2. Vision Model Setup (LFM2.5-VL, optional)
+### 2. Model Directory Setup (Unified)
 
-```python
-# Download LFM2.5-VL GGUF files (one-time, ~1GB total) — optional, only for vision features
-from huggingface_hub import hf_hub_download
-import os
-base = os.path.expanduser("~/models/LFM2.5-VL-1.6B/")
-os.makedirs(base, exist_ok=True)
-hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "LFM2.5-VL-1.6B-Q4_0.gguf", local_dir=base)
-hf_hub_download("LiquidAI/LFM2.5-VL-1.6B-GGUF", "mmproj-LFM2.5-VL-1.6B-Q4_0.gguf", local_dir=base)
+All GGUF models (brain + vision) live in one canonical directory:
+
+**WSL/Linux:**
+```bash
+# Create symlink to your Windows LM Studio models folder
+mkdir -p ~/.lmstudio
+ln -s /mnt/c/Users/midas/.lmstudio/models ~/.lmstudio/models
 ```
 
-```bash
-# Start vision server (Windows)
-start_vl.bat
+**Expected structure:**
+```
+~/.lmstudio/models/
+├── LiquidAI/
+│   └── LFM2.5-VL-450M-GGUF/
+│       ├── LFM2.5-VL-450M-*.gguf      # vision model weights
+│       └── mmproj-LFM2.5-VL-*.gguf    # vision projector
+└── (your brain models — any GGUF file...)
+```
 
-# Install vision dependencies
+**Vision auto-start:** The backend detects LFM2.5-VL in `~/.lmstudio/models` and spawns
+`llama-server` on port 8081 automatically on first vision tool use. No manual startup needed.
+
+```bash
+# Install vision dependencies (optional, only for desktop automation)
 pip install mss httpx pywinauto pyautogui pillow win32clipboard
 ```
 
@@ -288,15 +297,22 @@ npm run dev:tauri
 │  │  └────────────────┘      └────────────────┘         │  │
 │  └──────────────────────────────────────────────────────┘  │
 │         │                           │                       │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │              Dual Inference Servers                  │  │
+│  │  ┌──────────────────┐  ┌────────────────────────┐   │  │
+│  │  │ Brain (port 8082)│  │ Vision (port 8081)     │   │  │
+│  │  │ ik_llama.cpp     │  │ upstream llama.cpp     │   │  │
+│  │  │ (Kimi-K2 fork)   │  │ (LFM2-VL support)      │   │  │
+│  │  └──────────────────┘  └────────────────────────┘   │  │
+│  └──────────────────────────────────────────────────────┘  │
 │  ┌──────▼──────┐           ┌────────▼────────┐            │
 │  │  GGUF LLM   │           │  MCP Servers    │            │
 │  │  (user's    │           │  - Browser      │            │
-│  │   model,    │           │  - File Mgr     │            │
-│  │   port 8082)│           │  - System       │            │
-│  │             │           │  - App Launch   │            │
-│  │  LFM 2.5    │           │  - Vision       │            │
-│  │  (tool calls│           └─────────────────┘            │
-│  └─────────────┘                                           │
+│  │   model)    │           │  - File Mgr     │            │
+│  │             │           │  - System       │            │
+│  │  LFM 2.5    │           │  - App Launch   │            │
+│  │  (tool calls│           │  - Vision       │            │
+│  └─────────────┘           └─────────────────┘            │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │                   Voice Pipeline                     │  │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
@@ -328,17 +344,25 @@ npm run dev:tauri
 
 ### Model Architecture
 
-| Model | Role | Size | Notes |
-|-------|------|------|-------|
-| **Any GGUF model** | Reasoning & conversation | User's choice | Served via llama-server (ik_llama.cpp, preferred) or llama-cpp-python on port 8082; selected in Models Browser |
-| **lfm2.5-1.2b-instruct** | Tool execution | ~1.2 GB | Structured tool calls only; optional |
-| **LFM2.5-VL-1.6B** | Vision / GUI | ~1 GB | Optional; served via llama-server on port 8081 |
+| Model | Role | Port | Server | Notes |
+|-------|------|------|--------|-------|
+| **Any GGUF model** | Reasoning & conversation | 8082 | ik_llama.cpp or llama-cpp-python | Your choice; selected in Models Browser |
+| **Tool-calling model** | Tool execution | 8082 | Same as brain | Structured tool calls only; optional |
+| **LFM2.5-VL-450M** | Vision / GUI | 8081 | Upstream llama.cpp b8102+ | Auto-starts on first vision tool use |
+| **Remote API** | Reasoning & conversation | — | OpenAI-compatible | Any provider URL + API key; configured in Settings |
+
+**Model Directory (Unified):**
+All models live in one canonical location:
+- **WSL/Linux**: `~/.lmstudio/models/` (symlinked to `C:\Users\midas\.lmstudio\models` on WSL)
+- **Windows**: `C:\Users\midas\.lmstudio\models\`
+- Both brain (port 8082) and vision (port 8081) scan from this directory.
 
 **Communication Flow:**
-1. User input → GGUF LLM (your chosen model) analyzes and responds
-2. When tools needed → LFM2.5-1.2B-Instruct generates structured tool calls
-3. Tool Bridge → MCP Servers: Execute operations
-4. Results returned → LLM incorporates and responds
+1. User input → Provider selected in Settings (local GGUF / remote API / VPS)
+2. Brain model (port 8082) analyzes and responds
+3. When tools needed → Tool Bridge → MCP Servers execute operations
+4. When vision needed → Vision server (port 8081) auto-starts, processes screenshot
+5. Results returned → Brain incorporates and responds
 
 ## ⚙️ Configuration
 
@@ -353,8 +377,16 @@ BACKEND_PORT=8000
 # Picovoice (Wake Word)
 PICOVOICE_ACCESS_KEY=your_key_here
 
+# Inference Backend Selection
+# Options: "local" (GGUF via port 8082), "api" (OpenAI-compatible remote), "vps" (custom gateway)
+IRIS_INFERENCE_MODE=local
+
+# Remote API Configuration (when IRIS_INFERENCE_MODE=api)
+OPENAI_API_KEY=your_api_key_here
+OPENAI_BASE_URL=https://api.opencode.ai/zen/go/v1
+
 # Models
-MODEL_PATH=./models
+IRIS_MODELS_DIR=~/.lmstudio/models
 DEVICE=cuda  # or 'cpu'
 
 # Audio
@@ -372,9 +404,9 @@ LOG_DIR=backend/logs
 
 ```yaml
 models:
-  # Tool execution — LFM2.5-1.2B-Instruct handles structured tool calls
+  # Tool execution — dedicated model handles structured tool calls
   - id: "executor"
-    path: "./models/LFM2.5-1.2B-Instruct"
+    path: "./models/tool-calling-model"
     capabilities: ["tool_execution", "instruction_following"]
     constraints:
       device: "cpu"
@@ -483,20 +515,8 @@ IRISVOICE/
 │   ├── iris_gateway.py  # Message router
 │   ├── state_manager.py # State persistence
 │   └── ws_manager.py    # WebSocket manager
-├── bootstrap/           # Coordinate-graph build memory (dev agents)
-│   ├── coordinates.py   # CoordinateStore — nodes, edges, landmarks, PiNs, bridges
-│   ├── coordinates.db   # SQLite WAL-mode persistent graph
-│   ├── session_start.py # Auto-loaded at every session start (hook)
-│   ├── agent_context.py # Work queue — claim/complete/poll
-│   ├── query_graph.py   # Navigation — file, routes, failures, summary
-│   ├── record_event.py  # Record edits, tests, notes, PiNs
-│   ├── pin.py           # PiN CLI — add, search, link, bridge, projects
-│   ├── mid_session_snapshot.py
-│   ├── update_coordinates.py
-│   └── GOALS.md         # Production roadmap + all gate specs
-├── models/              # AI model files
-│   ├── LFM2.5-1.2B-Instruct/   # tool execution (optional)
-│   ├── LFM2.5-VL-1.6B/         # vision (optional)
+├── models/              # AI model files (symlinked to ~/.lmstudio/models)
+│   ├── LFM2.5-VL-450M/         # vision model (optional)
 │   └── wake_words/
 ├── tests/               # Test suites
 │   ├── integration/     # Integration tests
@@ -586,21 +606,7 @@ The Mycelium layer is IRIS's coordinate-graph memory system. It compresses episo
 **PiNs — Primordial Information Nodes:**
 Named after mycological primordia (first growth points of a fungal network). A PiN anchors any knowledge artifact into the coordinate graph so it surfaces in the DER context package automatically.
 
-```bash
-# Add a PiN
-python bootstrap/pin.py --add "Architecture Decision: token budget" \
-  --type decision --content "chose token budget over cycle count..."
-
-# Search PiNs
-python bootstrap/pin.py --search "token budget"
-
-# Bridge a local landmark to a remote project equivalent
-python bootstrap/pin.py --bridge lm_g1_api_healthy \
-  --remote-name "health_gate_passed" --remote-project "other-iris-instance" --confidence 0.95
-
-# List bridges
-python bootstrap/pin.py --bridges
-```
+PiNs are managed programmatically via the `backend/memory/mycelium/` API — add knowledge artifacts, search the graph, and bridge landmarks across projects.
 
 **MCP storage integration (Domain 12):**
 PiNs can be backed by external stores — Google Drive, Discord, Notion, GitHub — via the `backend/integrations/models.py` OAuthConfig layer. A PiN written locally can mirror to a Drive folder; a PiN read from Discord surfaces in the next DER context package.
@@ -658,43 +664,41 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 
 ### User Guides
 
-- **[Inference Mode Selection Guide](./docs/USER_GUIDE_INFERENCE_MODE.md)**: Choose between Local, VPS, or OpenAI inference
-- **[Dual-LLM Model Selection Guide](./docs/USER_GUIDE_MODEL_SELECTION.md)**: Configure reasoning and tool execution models
-- **[Wake Word Configuration Guide](./docs/USER_GUIDE_WAKE_WORDS.md)**: Set up custom wake words
-- **[Cleanup System Guide](./docs/USER_GUIDE_CLEANUP.md)**: Analyze and remove unused files
+- **[Inference Mode Selection Guide](./docs/guides/USER_GUIDE_INFERENCE_MODE.md)**: Choose between Local, VPS, or OpenAI inference
+- **[Dual-LLM Model Selection Guide](./docs/guides/USER_GUIDE_MODEL_SELECTION.md)**: Configure reasoning and tool execution models
+- **[Wake Word Configuration Guide](./docs/guides/USER_GUIDE_WAKE_WORDS.md)**: Set up custom wake words
+- **[Cleanup System Guide](./docs/guides/USER_GUIDE_CLEANUP.md)**: Analyze and remove unused files
 
 ### Developer Guides
 
-- **[Lazy Loading Architecture](./docs/DEVELOPER_LAZY_LOADING.md)**: Model loading/unloading implementation
-- **[Model-Agnostic Architecture](./docs/DEVELOPER_MODEL_AGNOSTIC.md)**: Agent capabilities across all inference modes
-- **[Agent Architecture](./docs/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
-- **[System Overview](./docs/SYSTEM_OVERVIEW.md)**: Complete system architecture
-- **[UI Architecture](./docs/UI_ARCHITECTURE.md)**: Frontend component structure
-- **[DER Loop + Mycelium v1.7](./docs/DER_LOOP_MYCELIUM.md)**: Full DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges
-- **[Mycelium Guide](./docs/Mycellium%20Guide.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
+- **[Lazy Loading Architecture](./docs/guides/DEVELOPER_LAZY_LOADING.md)**: Model loading/unloading implementation
+- **[Model-Agnostic Architecture](./docs/guides/DEVELOPER_MODEL_AGNOSTIC.md)**: Agent capabilities across all inference modes
 
-### API Documentation
+### Architecture Documentation
 
-- **[WebSocket Messages](./docs/api/websocket-messages.md)**: Complete WebSocket protocol reference
-- **[Backend Classes](./docs/api/backend-classes.md)**: Backend component documentation
-- **[Configuration Guide](./docs/api/configuration.md)**: Configuration options
-- **[Data Models](./docs/api/data-models.md)**: Data structure definitions
-- **[API Documentation](./API_DOCUMENTATION.md)**: Complete API reference
+- **[System Overview](./docs/architecture/SYSTEM_OVERVIEW.md)**: Complete system architecture
+- **[Agent Architecture](./docs/architecture/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
+- **[UI Architecture](./docs/architecture/UI_ARCHITECTURE.md)**: Frontend component structure
+- **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: Full DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges
+- **[Mycelium Kyudo Layer Guide](./docs/architecture/MYCELIUM_KYUDO_LAYER_GUIDE.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
+- **[Model-Agnostic Architecture Verification](./docs/architecture/MODEL_AGNOSTIC_ARCHITECTURE_VERIFICATION.md)**: Verification that agent capabilities remain identical across all inference backends
 
-### Operations Guides
+### Integration Documentation
 
-- **[Deployment Guide](./DEPLOYMENT_GUIDE.md)**: Production deployment instructions
-- **[Troubleshooting Guide](./TROUBLESHOOTING_GUIDE.md)**: Common issues and solutions
-- **[Performance Optimization](./PERFORMANCE_OPTIMIZATION_SUMMARY.md)**: Performance tuning guide
-- **[Feature Summary](./docs/FEATURE_SUMMARY.md)**: Recent features and improvements
+- **[Porcupine Integration Summary](./docs/integrations/PORCUPINE_INTEGRATION_SUMMARY.md)**: Wake word detection implementation
+- **[Wake Word UI Integration](./docs/integrations/WAKE_WORD_UI_INTEGRATION_SUMMARY.md)**: Wake word discovery and UI wiring
 
-### Component Documentation
+### Performance & Reference
 
-- **[Backend Core README](./backend/core/README.md)**: Core infrastructure documentation
-- **[Agent Personality](./backend/agent/README_PERSONALITY.md)**: Personality system guide
-- **[Model System](./backend/agent/README_MODEL_SYSTEM.md)**: Dual-LLM architecture
-- **[Audio Engine](./backend/voice/README_AUDIO_ENGINE.md)**: Voice pipeline documentation
-- **[Porcupine Setup](./backend/voice/README_PORCUPINE.md)**: Wake word configuration
+- **[Performance Optimization Summary](./docs/performance/PERFORMANCE_OPTIMIZATION_SUMMARY.md)**: Backend performance tuning — WebSocket batching, agent caching, TTS streaming
+- **[Benchmarks](./docs/reference/BENCHMARKS.md)**: Mycelium layer benchmark claims and validation setup
+
+### Specifications
+
+- **[IRIS Mycelium Layer Spec v1.6](./specs/IRIS_Mycelium_Layer_Spec_v1.6.md)**: Coordinate-graph memory system specification
+- **[IRIS Swarm PRD v9](./specs/IRIS_Swarm_PRD_v9.md)**: Multi-agent swarm coordination product requirements
+- **[Agent Loop Design](./specs/AGENT_LOOP_DESIGN.md)**: DER loop upgrade specification
+- **[CLI Crawler Spec](./specs/CLI_CRAWLER_SPEC.md)**: Web crawler CLI toolkit specification
 
 ### API Endpoints
 
@@ -737,7 +741,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - `cleanup_report` - Cleanup analysis result
 - `cleanup_result` - Cleanup execution result
 
-For complete message documentation, see [WebSocket Messages](./docs/api/websocket-messages.md).
+For complete message documentation, see the WebSocket section above and the backend OpenAPI docs at `/docs` when the server is running.
 
 ## 🔧 Troubleshooting
 
@@ -782,7 +786,7 @@ nvidia-smi
 3. Ensure correct WebSocket URL
 4. Check browser console for errors
 
-For more detailed troubleshooting, see [TROUBLESHOOTING_GUIDE.md](./TROUBLESHOOTING_GUIDE.md).
+For more detailed troubleshooting, see [TROUBLESHOOTING_GUIDE.md](./TROUBLESHOOTING_GUIDE.md) in the project root.
 
 ## 🤝 Contributing
 
@@ -811,7 +815,7 @@ MIT License - see LICENSE file for details
 
 For issues and questions:
 - Check the [Troubleshooting Guide](./TROUBLESHOOTING_GUIDE.md)
-- Review the [API Documentation](./API_DOCUMENTATION.md)
+- Review the API docs at `http://localhost:8000/docs` when the backend is running
 - Open an issue on GitHub
 
 ---

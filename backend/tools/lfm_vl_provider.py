@@ -1,12 +1,18 @@
 """
-LFM2.5-VL-450M Vision Provider
-HTTP client wrapping llama-server on port 8081 (--alias lfm2.5-vl).
+LFM2.5-VL Vision Provider
+HTTP client wrapping llama-server on port 8081.
 Provides synchronous screen analysis, UI element detection, OCR, and action suggestion.
-Model: LiquidAI/LFM2.5-VL-450M-GGUF (LFM2.5-VL-450M-Q4_0.gguf + mmproj-LFM2.5-VL-450m-Q8_0.gguf)
+
+Auto-start: If llama-server is not running on port 8081, the provider attempts to
+spawn it using the LFM2.5-VL-450M GGUF model found in ~/models/LFM2.5-VL-450M/.
 """
 import base64
 import logging
+import os
+import subprocess
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -14,13 +20,168 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LFMVLConfig:
-    """Configuration for LFM2.5-VL-450M vision provider."""
+    """Configuration for LFM2.5-VL vision provider."""
     base_url: str = "http://localhost:8081/v1"
     temperature: float = 0.1
     min_p: float = 0.15
     repetition_penalty: float = 1.05
     image_max_tokens: int = 128  # 64 for speed, 256 for detail
     timeout: float = 30.0
+
+
+def _find_vision_model() -> Optional[Tuple[str, str]]:
+    """
+    Find the LFM2.5-VL-450M GGUF model + mmproj files.
+    Searches the same directory LocalModelManager uses for brain models
+    (IRIS_MODELS_DIR env var → ~/.lmstudio/models → project root models/gguf).
+    This avoids duplicating models across different paths.
+    Returns (model_path, mmproj_path) or None if not found.
+    """
+    # Resolve project root from this file's location: backend/tools/ -> project root
+    project_root = Path(__file__).resolve().parents[2]
+
+    # Import LocalModelManager to reuse its MODELS_DIR resolution
+    try:
+        from backend.agent.local_model_manager import LocalModelManager
+        lm_models_dir = LocalModelManager.MODELS_DIR
+    except Exception:
+        lm_models_dir = None
+
+    search_dirs = [
+        # Dedicated vision subdir inside the shared models dir
+        lm_models_dir / "LFM2.5-VL-450M" if lm_models_dir else None,
+        # LM Studio nests models as author/repo-name/ — scan for it
+        lm_models_dir / "LiquidAI" / "LFM2.5-VL-450M-GGUF" if lm_models_dir else None,
+        # Fallback paths
+        project_root / "models" / "LFM2.5-VL-450M",
+        Path.home() / "models" / "LFM2.5-VL-450M",
+        Path.home() / ".iris" / "models" / "LFM2.5-VL-450M",
+    ]
+
+    for d in search_dirs:
+        if d is None or not d.exists():
+            continue
+        ggufs = list(d.glob("*.gguf"))
+        mmproj = list(d.glob("mmproj*.gguf"))
+        if ggufs and mmproj:
+            return str(ggufs[0]), str(mmproj[0])
+
+    # Last resort: recursive scan of the shared models dir for any dir
+    # containing both a .gguf and mmproj*.gguf (catches arbitrary nesting)
+    if lm_models_dir and lm_models_dir.exists():
+        for d in lm_models_dir.rglob("*/"):
+            ggufs = list(d.glob("*.gguf"))
+            mmproj = list(d.glob("mmproj*.gguf"))
+            if ggufs and mmproj:
+                # Verify it's actually the vision model by checking the stem
+                if any("LFM2.5-VL" in g.name for g in ggufs):
+                    return str(ggufs[0]), str(mmproj[0])
+
+    return None
+
+
+def _find_llama_server_binary() -> Optional[str]:
+    """
+    Find llama-server binary for the vision model.
+
+    Priority: upstream ggml-org/llama.cpp (supports LFM2/LFM2-VL)
+             → LocalModelManager discovery (ik_llama.cpp, PATH, etc.)
+             → basic PATH search
+
+    We prefer upstream llama.cpp for vision because ik_llama.cpp
+    (Kimi-K2 fork) does not support the LFM2 model architecture.
+    Brain models on port 8082 continue to use whatever binary
+    LocalModelManager resolves (ik_llama.cpp for Kimi-K2).
+    """
+    # 1. Prefer upstream llama.cpp which supports LFM2/LFM2-VL
+    upstream = Path.home() / "llama.cpp-upstream" / "llama-server"
+    if upstream.exists():
+        return str(upstream)
+
+    # 2. Reuse LocalModelManager discovery
+    try:
+        from backend.agent.local_model_manager import LocalModelManager
+        return LocalModelManager._find_llama_server_binary()
+    except Exception:
+        pass
+
+    # 3. Fallback: basic PATH search
+    import shutil
+    found = shutil.which("llama-server")
+    if found:
+        return found
+    return None
+
+
+def _ensure_vision_server_running(base_url: str = "http://localhost:8081") -> bool:
+    """
+    Check if llama-server is running. If not, try to spawn it.
+    Returns True if server is reachable (either already running or successfully started).
+    """
+    try:
+        import httpx
+        r = httpx.get(f"{base_url}/v1/models", timeout=2.0)
+        if r.status_code == 200:
+            return True
+    except Exception:
+        pass
+
+    # Not running — try to auto-start
+    logger.info("[LFMVLProvider] Vision server not running on port 8081. Attempting auto-start...")
+
+    model_files = _find_vision_model()
+    if not model_files:
+        logger.warning("[LFMVLProvider] Vision model not found. Run: python scripts/models/download_vision_model.py")
+        return False
+
+    binary = _find_llama_server_binary()
+    if not binary:
+        logger.warning("[LFMVLProvider] llama-server binary not found in PATH. Install llama.cpp or set PATH.")
+        return False
+
+    model_path, mmproj_path = model_files
+    cmd = [
+        binary,
+        "-m", model_path,
+        "--mmproj", mmproj_path,
+        "--port", "8081",
+        "--host", "127.0.0.1",
+        "-c", "4096",
+        "-np", "1",
+        "-n", "512",
+        "--no-warmup",  # Prevents crash with upstream llama.cpp on WSL
+    ]
+
+    # If using the upstream binary, it needs its shared libraries in LD_LIBRARY_PATH
+    env = os.environ.copy()
+    binary_path = Path(binary)
+    if "llama.cpp-upstream" in str(binary_path):
+        env["LD_LIBRARY_PATH"] = str(binary_path.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
+
+    logger.info(f"[LFMVLProvider] Spawning vision server: {' '.join(cmd)}")
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # Detach from parent
+            env=env,
+        )
+        # Wait up to 30s for server to be ready
+        for _ in range(60):
+            time.sleep(0.5)
+            try:
+                r = httpx.get(f"{base_url}/v1/models", timeout=1.0)
+                if r.status_code == 200:
+                    logger.info("[LFMVLProvider] Vision server ready.")
+                    return True
+            except Exception:
+                pass
+        logger.warning("[LFMVLProvider] Vision server did not become ready within 30s.")
+        return False
+    except Exception as e:
+        logger.warning(f"[LFMVLProvider] Failed to spawn vision server: {e}")
+        return False
 
 
 def screenshot_to_bytes(region: Optional[Tuple[int, int, int, int]] = None) -> bytes:
@@ -55,7 +216,7 @@ def _img_to_base64(img_bytes: bytes) -> str:
 
 class LFMVLProvider:
     """
-    Synchronous HTTP client for LFM2.5-VL-450M vision model via llama-server.
+    Synchronous HTTP client for LFM2.5-VL vision model via llama-server.
 
     Design principles:
     - No state held between calls
@@ -75,8 +236,12 @@ class LFMVLProvider:
     def _call(self, img_bytes: bytes, prompt: str, max_tokens: Optional[int] = None) -> str:
         """
         Send image + prompt to llama-server /v1/chat/completions.
+        Auto-starts the vision server if not already running.
         Returns model response text, or error string on any failure.
         """
+        # Ensure server is running before first call
+        _ensure_vision_server_running(self.config.base_url)
+
         try:
             import httpx
 

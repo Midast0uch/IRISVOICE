@@ -9,52 +9,86 @@ Build IRIS until it can run fully autonomously: receive tasks through its own in
 ---
 
 WHAT NEEDS WORK RIGHT NOW (quick read for session start)
+  Last updated: 2026-04-28
 
-  GATE STATUS: Gate 1 substantially done; Gate 2 (Launcher + Developer Mode) is next.
-    G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation.
-    TOP PRIORITY THIS SPRINT: Domain 15 (Linux Build + Launcher) + Domain 13 (Gate 2).
+  GATE STATUS: Gate 1 substantially done; Gate 2 ~60% complete.
+    G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation (manual test).
+    Gate 2 progress: [G2.1]✓ [G2.2]✓ [G2.3] [G2.4] [G2.5] [G2.6]
+
+  POST-REFACTOR VERIFICATION (2026-04-28):
+    A major cleanup merged iris-launcher into the main app, reorganised scripts/docs,
+    and unified model directories. The following must be verified end-to-end before
+    any feature is considered working:
+
+    [V1] IRIS_LOCAL inference — load LFM2.5-1.2B-Instruct via LocalModelManager
+         (port 8082, ik_llama.cpp), send chat, confirm reply streams.
+    [V2] IRIS_LOCAL vision — auto-start LFM2.5-VL-450M (port 8081, upstream llama.cpp),
+         verify screenshot analysis returns non-empty description.
+    [V3] Remote API inference — configure opencode.ai/zen/go/v1 + kimi-k2.6,
+         send chat, confirm reply streams from remote API.
+    [V4] Frontend-backend Settings sync — open Settings → Configure → Models,
+         select provider (local/api), enter credentials, confirm WS test_connection
+         returns success and model list populates.
+    [V5] Launcher mode gate — first run → /mode-select appears, pick Developer,
+         confirm DEV badge + terminal tab visible. Pick Personal, confirm clean.
+    [V6] Voice pipeline — wake word → STT → agent response → TTS (manual).
+    [V7] ModelsScreen scan — open Models tab, confirm GGUF list loads < 2s
+         (WSL-mounted models via ~/.lmstudio/models symlink).
+
+  BLOCKING AUTONOMY — what must be done before IRIS can build itself (in priority order):
+    ① G1.6 e2e: load a GGUF model, send a message, confirm reply streams from local GPU
+         Without this confirmed, the agent kernel is not verified to work at all.
+    ② [13.2] Git worktree isolation — agent must write to an isolated branch, NOT the live repo
+         Without this, any autonomous edit could corrupt the running codebase permanently.
+    ③ [13.5] Session-end diff review — diffs must reach DiffReviewPage before merge
+         Without this, no human review gate exists between agent edits and the live repo.
+    ④ [4.5] Self-improvement skill — agent must proactively codify repeated tool patterns
+         Without this, IRIS cannot grow its own skill set autonomously.
+    ⑤ [8.1] Clean install verified — the app must run without a dev environment
+         Without this, autonomy requires an external machine with all dev tools installed.
 
   DOMAINS WITH OPEN ITEMS:
     Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2][2.3] manual e2e not confirmed)
     Domain 3  — Vision          (DEVELOPING — [3.1][3.2] need 2 more passing runs each)
     Domain 4  — Skills          (PARTIAL — [4.4][4.5] not done)
     Domain 7  — Backend quality (PARTIAL — [7.5] logging not standardised)
-    Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
+    Domain 8  — Distribution    (PARTIAL — [8.1] Linux AppImage/deb untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run these next)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1-13.5] not done) ← GATE 2
-    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C done; [14.2][14.16][14.19][14.21] remain)
-    Domain 15 — Linux Build + Cross-Platform Launcher (ALL items not started — new)
+    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.2][13.3][13.5] remain) ← GATE 2
+    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — [14.2][14.16][14.19][14.21] remain)
+    Domain 15 — Linux Build (PARTIAL — [15.1][15.2][15.4] remain; [15.3]✓ [15.5]✓)
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
     Domain 5  — Mycelium stubs      ✓ all 4 items verified
     Domain 6  — Frontend quality    ✓ all 6 items verified
     Domain 10 — Performance/memory  ✓ all 10 items verified
+    Domain 16 — Backend stability   ✓ all 8 items verified
 
   PRIORITY ORDER FOR NEW SESSIONS:
-    1. Domain 15 — Linux Build + Cross-Platform Launcher ← TOP PRIORITY
-         Start with [15.3] mode-switch flow (no Linux hardware needed, works on Windows too)
-         Then [15.5] packaging decision, then [15.1] Linux Tauri build, then [15.2][15.4]
-    2. Domain 13 — Launcher + Developer Mode = GATE 2 (13.1→13.2→13.3→13.4→13.5)
-         D15 [15.3] and D13 [13.3] overlap heavily — do them together
-    3. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
-    4. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
-    5. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
-    6. Domain 2  — Voice pipeline (primary input modality)
-    7. Domain 12 — PiN + MCP storage integrations (after D11 verified)
-    8. Domain 4  — Skills library (self-extension)
-    9. Domain 7  — Backend reliability (logging standardisation)
-    9. Domain 8  — Distribution (MSI clean install)
-    10. Domain 9  — Advanced features (after everything else)
+    1. G1.6 e2e manual test — load GGUF, send message, confirm GPU inference streams
+         This unblocks ALL of Gate 2 verification and Domain 4 self-improvement.
+    2. Domain 13 [13.2] — Git worktree isolation (safe agent editing — GATE 2 blocker)
+    3. Domain 13 [13.3] — Mode capabilities gated in gateway + tab bar
+    4. Domain 13 [13.5] — Session-end diff review wiring (merge/discard modal)
+    5. Domain 13 [13.4] — Terminal tab e2e verification (already implemented)
+    6. Domain 4  [4.5]  — Self-improvement skill (IRIS builds its own skills)
+    7. Domain 8  [8.1]  — Clean install from AppImage/deb (no dev env)
+    8. Domain 14 remaining — [14.2][14.16][14.19][14.21]
+    9. Domain 11 — PiN + landmark bridge verification
+    10. Domain 3  — Vision (2 more passing runs each)
+    11. Domain 2  — Voice pipeline e2e
+    12. Domain 9  — Advanced features (after everything else)
 
 ---
 
 GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 verified)
 
   GATE 1 — DEVELOPER MODE (CURRENT GATE)
-  Goal: Frontend + backend running together. Load a 4B or 8B GGUF model from
-        C:\Users\midas\.lmstudio\models and chat with it through IRIS.
+  Goal: Frontend + backend running together. Load a GGUF model from the unified
+        model directory (~/.lmstudio/models, symlinked to C:\Users\midas\.lmstudio\models)
+        and chat with it through IRIS.
         Inference must be stable — no RAM spikes, other apps remain usable.
 
   Inference constraints:
@@ -124,11 +158,16 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
         The launcher must work before the terminal is built — it is the prerequisite.
 
   Gate 2 checklist (in order — do not skip ahead):
-    [G2.1] DONE — Launcher UI exists at C:\Users\midas\Desktop\dev\iris-launcher\
-           ModeSelectPage, AppContext, use-iris-mode, GitPage, DiffReviewPage all built.
-           /api/mode and /api/projects already in IRISVOICE backend.
-    [G2.2] Backend git + diff endpoints (Domain 13.1) — NOT DONE ← start here
-    [G2.3] Git worktree isolation — agent writes to isolated branch (Domain 13.2)
+    [G2.1] DONE — Launcher merged into IRISVOICE as /launcher/* Next.js routes (2026-04-27).
+           iris-launcher (separate Vite app) superseded. All pages ported:
+           overview, identity, projects, tailscale, github, git, diff, rebuild, mode-select.
+           LauncherContext, LauncherSidebar, launcher-api.ts, useLauncherMode.ts all wired.
+           Tauri: second window (label:"launcher") + tray icon + toggle_launcher command.
+           /api/mode and /api/projects already in backend.
+    [G2.2] DONE — Backend git + diff endpoints (Domain 13.1) built 2026-04-27.
+           GET/POST /api/git/status|log|commit|rollback + GET/POST /api/diff/pending|approve|reject.
+           Launcher GitPage and DiffReviewPage now functional when backend is running.
+    [G2.3] Git worktree isolation — agent writes to isolated branch (Domain 13.2) ← NEXT
     [G2.4] Developer mode capabilities gated in IRISVOICE (Domain 13.3)
     [G2.5] Terminal tab visible in developer mode only (Domain 13.4)
     [G2.6] Session-end diff review in Launcher DiffReviewPage (Domain 13.5)
@@ -337,18 +376,17 @@ interact naturally. This is the primary input modality.
   without any manual keyboard input.
   Regression test: python -m pytest backend/tests/test_domain2_voice.py -v (38 tests)
 
-  Inference backend note (2026-04-16):
-    LocalModelManager now loads GGUF weights in-process via
-    `from llama_cpp import Llama` — no more `python -m llama_cpp.server`
-    subprocess on port 8082. The old HTTP path hung reliably on Windows
-    with n_gpu_layers=-1 on Q3_K_S. InProcessOpenAIAdapter
-    (backend/agent/local_model_manager.py) duck-types the openai Python
-    client's chat.completions.create surface so the agent kernel calls the
-    same API it did against the subprocess. Set IRIS_INPROCESS_LLAMA=0 to
-    temporarily restore the subprocess path (scheduled for deletion after
-    V1–V3 verification passes). The research_rotorquant profile unlocks
-    128k ctx via the llama-cpp-turboquant fork (see docs/ROTORQUANT_BUILD.md)
-    — falls back to `performance` with a warning when the fork is absent.
+  Inference backend note (2026-04-28):
+    Dual-server architecture (brain vs vision use different llama.cpp builds):
+      - Brain (port 8082): LocalModelManager → ik_llama.cpp binary (Kimi-K2 fork)
+        In-process loading via `from llama_cpp import Llama` with
+        InProcessOpenAIAdapter. Set IRIS_INPROCESS_LLAMA=0 to restore subprocess.
+      - Vision (port 8081): LFMVLProvider → upstream ggml-org/llama.cpp b8102
+        (downloaded to ~/llama.cpp-upstream/). ik_llama.cpp lacks LFM2 arch support.
+        Auto-start adds --no-warmup + LD_LIBRARY_PATH for WSL compatibility.
+    Model directory: unified via ~/.lmstudio/models → /mnt/c/Users/midas/.lmstudio/models
+    symlink. Both brain and vision scan from the same canonical location.
+    GGUF scan: bulk-read 256KB buffer instead of byte-by-byte (fixes WSL 9P hang).
 
 ---
 
@@ -356,9 +394,10 @@ DOMAIN 3 — VISION SYSTEM (desktop perception)
 IRIS needs to see the screen to act as a desktop automation agent.
 
   [3.1] Verify LFM2.5-VL MCP server is operational
-    Status: DEVELOPING — 1/3 passes for vision_layer landmark (needs 2 more)
+    Status: DEVELOPING — auto-start verified (upstream llama-server on port 8081).
     Files: backend/tools/vision_mcp_server.py, backend/tools/lfm_vl_provider.py
     Test: python -m pytest backend/tests/test_vision_mcp.py -v
+    Note: start_vl.sh/start_vl.bat deleted — server auto-starts on first vision tool use.
     Fix: Get the test passing 2 more times to crystallize vision_layer as permanent.
     Landmark: vision_layer (needs 2 more passes to crystallize)
 
@@ -758,42 +797,37 @@ DOMAIN 13 — LAUNCHER: PERSONAL MODE / DEVELOPER MODE  [GATE 2]
 This domain IS Gate 2. Complete all open items to verify Gate 2.
 Launcher must work before the terminal — do [13.2]→[13.3]→[13.4]→[13.5] in order.
 
-LAUNCHER EXISTS — at C:\Users\midas\Desktop\dev\iris-launcher\
-  Separate Vite + React app (NOT inside IRISVOICE). Run with: cd iris-launcher && npm run dev
-  Already substantially built. Do NOT rewrite — extend what is there.
+LAUNCHER MERGED — iris-launcher (Vite app) superseded 2026-04-27.
+  Launcher now lives inside IRISVOICE at app/launcher/* (Next.js App Router).
+  Tauri: second window label="launcher" opens /launcher URL (1100×720, decorated).
+  Tray icon: left-click toggles launcher; right-click menu: Open Launcher / Show Widget / Quit.
+  Do NOT rebuild the standalone iris-launcher — it is archived at iris-launcher/ for reference only.
 
-WHAT IS ALREADY BUILT (do not re-do these):
-  ✅ ModeSelectPage.tsx     — Personal/Developer mode selection UI (full UI, animations)
-  ✅ AppContext.tsx          — mode persisted to localStorage as "iris-mode"
-  ✅ use-iris-mode.ts       — setMode() updates AppContext AND POSTs to /api/mode
-  ✅ App.tsx routing        — if no mode in localStorage → redirect to /mode-select
-  ✅ FirstRunPage.tsx       — Dilithium3 identity + seed phrase (UI built, flow works)
-  ✅ GitPage.tsx            — git status, commit all, rollback UI (wired to backend hooks)
-  ✅ DiffReviewPage.tsx     — approve/reject pending agent writes before commit
-  ✅ OverviewPage.tsx       — agent status dashboard
-  ✅ ProjectsPage.tsx       — project list (personal/developer per project)
-  ✅ use-iris-backend.ts    — React Query hooks for all backend API calls
-  ✅ iris-api.ts            — API client (commitAll, rollback, getPendingWrites,
-                               approveWrite, rejectWrite, getProjects, getMode, setMode)
-  ✅ /api/mode GET+POST     — already in IRISVOICE backend/main.py (lines 538, 573)
-  ✅ /api/projects GET+POST — already in IRISVOICE backend/main.py (lines 615, 644)
+WHAT IS BUILT (do not re-do these):
+  ✅ app/launcher/overview      — agent status dashboard (calls real /api/launcher/status)
+  ✅ app/launcher/mode-select   — Personal/Developer picker (POSTs /api/mode, redirects on first run)
+  ✅ app/launcher/identity      — Dilithium3 node identity + generate flow (crypto.randomUUID)
+  ✅ app/launcher/projects      — project list, activate/deactivate mode, mode reference
+  ✅ app/launcher/git           — git status, commit, rollback (calls real /api/git/*)
+  ✅ app/launcher/diff          — approve/reject pending writes (calls real /api/diff/*)
+  ✅ app/launcher/github        — full OAuth token flow → real GitHub API → repo picker → SSH keys
+  ✅ app/launcher/tailscale     — connect/disconnect UI → calls /api/tailscale/status
+  ✅ app/launcher/rebuild       — rebuild pipeline page
+  ✅ contexts/LauncherContext   — identity, mode, gitHubConnected in localStorage; isLoading guard
+  ✅ components/launcher/Sidebar — mode-aware nav (developer items hidden in personal mode)
+  ✅ hooks/useLauncherMode.ts   — reads /api/mode + listens for iris:mode_changed WS event
+  ✅ lib/launcher-api.ts        — API client for all launcher endpoints
+  ✅ src-tauri/src/main.rs      — focus_widget, toggle_launcher commands + tray menu
+  ✅ /api/mode GET+POST         — backend/main.py (broadcasts mode_changed WS event)
+  ✅ /api/projects GET+POST     — backend/main.py
+  ✅ /api/launcher/status       — backend/main.py
+  ✅ /api/git/status|log|commit|rollback — backend/main.py (2026-04-27)
+  ✅ /api/diff/pending|approve|reject    — backend/main.py (2026-04-27, in-memory queue)
 
-WHAT IS MISSING (build these):
+WHAT IS MISSING (build these in order):
 
-  [13.1] Backend git + diff API endpoints  ← START HERE
-    Status: NOT STARTED
-    The launcher GitPage and DiffReviewPage call these backend routes — none exist yet:
-      GET  /api/git/status   → branch, clean, lastCommit, uncommittedFiles
-      GET  /api/git/log      → commits list (hash, message, time)
-      POST /api/git/commit   → body: {message} → git add -A && git commit
-      POST /api/git/rollback → body: {target} → git reset --hard {target}
-      GET  /api/diff/pending → list of pending agent writes awaiting approval
-      POST /api/diff/approve → body: {id} → write approved file to disk
-      POST /api/diff/reject  → body: {id} → discard pending write
-    All operate on the ACTIVE project path (from /api/mode or /api/projects context).
-    Use subprocess to call git. Store pending writes in a dict (in-memory is fine for now).
-    File: IRISVOICE/backend/main.py (add routes) + IRISVOICE/backend/git_ops.py (logic)
-    Test: Start backend, open launcher GitPage — git status must load without error.
+  [13.1] Backend git + diff API endpoints
+    Status: DONE (2026-04-27) — all 7 endpoints built in backend/main.py.
     Landmark: launcher_git_api_wired
 
   [13.2] Developer mode — git worktree isolation
@@ -923,13 +957,14 @@ Plan: `docs/plans/2026-04-25-iris-stability-and-memory.md`
     Watchdog task started in main.py lifespan, cancelled cleanly on shutdown.
     Landmark: memory_watchdog
 
-  [16.5] Vision model swap LFM2.5-VL-1.6B → LFM2.5-VL-450M — DONE (2026-04-26)
-    Old 1.6B GGUF uninstalled (HF cache deleted via scripts/uninstall_old_vl.py).
-    New: LiquidAI/LFM2.5-VL-450M-GGUF (LFM2.5-VL-450M-Q4_0.gguf + mmproj-LFM2.5-VL-450m-Q8_0.gguf).
-    Model files downloaded to ~/models/LFM2.5-VL-450M/.
-    start_vl.sh updated; scripts/start_vl.ps1 added for Windows.
-    scripts/download_vl_model.py added for one-command download.
-    llama-server alias remains "lfm2.5-vl" — no backend code changes needed.
+  [16.5] Vision model swap LFM2.5-VL-1.6B → LFM2.5-VL-450M — DONE (2026-04-28)
+    Model: LiquidAI/LFM2.5-VL-450M-GGUF (LFM2.5-VL-450M-Q8_0.gguf + mmproj-LFM2.5-VL-450m-F32.gguf).
+    Located in C:\Users\midas\.lmstudio\models\LiquidAI\LFM2.5-VL-450M-GGUF,
+    symlinked to WSL as ~/.lmstudio/models.
+    Server: upstream ggml-org/llama.cpp b8102 (~/llama.cpp-upstream/llama-server)
+    because ik_llama.cpp (Kimi-K2 fork) lacks LFM2 architecture support.
+    Auto-start: backend/tools/lfm_vl_provider.py spawns on port 8081 with --no-warmup.
+    Deleted: start_vl.sh, start_vl.bat, download_vl_model.py (superseded by auto-start).
     Landmark: vision_model_450m
 
   [16.6] Wing overflow fix — DONE (2026-04-26)
@@ -1531,13 +1566,11 @@ selected mode — on both platforms.
     Landmark: linux_voice_verified
 
   [15.5] Single-app packaging — merge launcher into IRISVOICE (recommended)
-    Status: DECISION NEEDED — implement after Gate 2 [13.1-13.4] complete
-    Option A (recommended): Merge launcher as IRISVOICE startup route
-      - Tauri app starts → no mode in localStorage → show ModeSelectPage
-      - Same Tauri window, no IPC, no port conflicts, one installer on each platform
-      - iris-launcher components embedded in IRISVOICE/app/mode-select/
-    Option B: Two separate apps
-      - More complex install story, but cleaner separation
+    Status: DONE (2026-04-27) — Option A implemented.
+    iris-launcher Vite app superseded. Launcher lives in IRISVOICE at app/launcher/*.
+    Tauri has two windows: main (680×680 widget) + launcher (1100×720 decorated).
+    Tray icon toggles launcher. One installer, no port conflicts, no IPC.
+    Overview page redirects to mode-select on first launch (isLoading guard in LauncherContext).
     Landmark: packaging_decision_recorded
 
   Graduate condition:

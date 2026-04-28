@@ -664,69 +664,94 @@ class LocalModelManager:
         Read GGUF binary header to extract architecture, parameter count,
         context length, and quantization type.
 
-        GGUF format:
-          magic (4 bytes) + version (uint32) + tensor_count (uint64) +
-          metadata_kv_count (uint64) + kv pairs
+        Optimised for WSL / network mounts: reads the entire header block
+        into memory once, then parses from a buffer.  Avoids hundreds of
+        tiny 1-8 byte reads across the 9P boundary which hang on
+        Windows-mounted drives.
         """
         meta: Dict[str, Any] = {}
         GGUF_MAGIC = b"GGUF"
-        STRING_TYPE = 8
-        UINT32_TYPE = 4
-        UINT64_TYPE = 7
 
-        def read_str(f: io.RawIOBase) -> str:
-            length = struct.unpack("<Q", f.read(8))[0]
-            return f.read(length).decode("utf-8", errors="replace")
+        # Read just the fixed header first (24 bytes) to validate
+        with open(path, "rb") as f:
+            header = f.read(24)
+        if len(header) < 24 or header[:4] != GGUF_MAGIC:
+            return meta
 
-        def read_value(f: io.RawIOBase, vtype: int) -> Any:
-            if vtype == 4:    return struct.unpack("<I", f.read(4))[0]   # uint32
-            elif vtype == 5:  return struct.unpack("<i", f.read(4))[0]   # int32
-            elif vtype == 6:  return struct.unpack("<f", f.read(4))[0]   # float32
-            elif vtype == 7:  return struct.unpack("<Q", f.read(8))[0]   # uint64
-            elif vtype == 8:  return read_str(f)                          # string
-            elif vtype == 10: return struct.unpack("<q", f.read(8))[0]   # int64
-            elif vtype == 11: return struct.unpack("<d", f.read(8))[0]   # float64
-            elif vtype == 1:  return struct.unpack("<?", f.read(1))[0]   # bool
-            elif vtype == 2:  return struct.unpack("<B", f.read(1))[0]   # uint8
-            elif vtype == 3:  return struct.unpack("<H", f.read(2))[0]   # uint16
+        version = struct.unpack("<I", header[4:8])[0]
+        if version not in (1, 2, 3):
+            return meta
+
+        _tensor_count = struct.unpack("<Q", header[8:16])[0]
+        kv_count = struct.unpack("<Q", header[16:24])[0]
+
+        # Now read a reasonably-sized chunk that should contain all metadata
+        # Most GGUF files have < 32 KB of metadata.  We cap at 256 KB to be safe.
+        META_READ_SIZE = 262_144
+        with open(path, "rb") as f:
+            f.read(24)  # skip header we already parsed
+            buf = f.read(META_READ_SIZE)
+
+        pos = 0
+        buf_len = len(buf)
+
+        def _read(n: int) -> bytes:
+            nonlocal pos
+            end = pos + n
+            if end > buf_len:
+                raise EOFError()
+            data = buf[pos:end]
+            pos = end
+            return data
+
+        def read_str() -> str:
+            length = struct.unpack("<Q", _read(8))[0]
+            return _read(length).decode("utf-8", errors="replace")
+
+        def read_value(vtype: int) -> Any:
+            if vtype == 4:    return struct.unpack("<I", _read(4))[0]   # uint32
+            elif vtype == 5:  return struct.unpack("<i", _read(4))[0]   # int32
+            elif vtype == 6:  return struct.unpack("<f", _read(4))[0]   # float32
+            elif vtype == 7:  return struct.unpack("<Q", _read(8))[0]   # uint64
+            elif vtype == 8:  return read_str()                          # string
+            elif vtype == 10: return struct.unpack("<q", _read(8))[0]   # int64
+            elif vtype == 11: return struct.unpack("<d", _read(8))[0]   # float64
+            elif vtype == 1:  return struct.unpack("<?", _read(1))[0]   # bool
+            elif vtype == 2:  return struct.unpack("<B", _read(1))[0]   # uint8
+            elif vtype == 3:  return struct.unpack("<H", _read(2))[0]   # uint16
             elif vtype == 9:
-                # array: elem_type (uint32) + count (uint64) + elements
-                elem_type = struct.unpack("<I", f.read(4))[0]
-                count = struct.unpack("<Q", f.read(8))[0]
-                return [read_value(f, elem_type) for _ in range(min(count, 16))]
+                elem_type = struct.unpack("<I", _read(4))[0]
+                count = struct.unpack("<Q", _read(8))[0]
+                return [read_value(elem_type) for _ in range(min(count, 16))]
             else:
                 raise ValueError(f"Unknown GGUF value type: {vtype}")
 
-        with open(path, "rb") as f:
-            magic = f.read(4)
-            if magic != GGUF_MAGIC:
-                return meta
-            version = struct.unpack("<I", f.read(4))[0]
-            if version not in (1, 2, 3):
-                return meta
-            _tensor_count = struct.unpack("<Q", f.read(8))[0]
-            kv_count = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(min(kv_count, 256)):
+            try:
+                key = read_str()
+                vtype = struct.unpack("<I", _read(4))[0]
+                val = read_value(vtype)
+            except Exception:
+                break
 
-            arch = "unknown"
-            for _ in range(min(kv_count, 256)):
+            if key == "general.architecture" and isinstance(val, str):
+                meta["architecture"] = val
+            elif key == "general.parameter_count" and isinstance(val, int):
+                meta["params_b"] = round(val / 1e9, 1)
+            elif key == "general.size_label" and isinstance(val, str):
+                # e.g. "1.2B", "450M", "8B" — fallback when parameter_count is absent
                 try:
-                    key = read_str(f)
-                    vtype = struct.unpack("<I", f.read(4))[0]
-                    val = read_value(f, vtype)
-                except Exception:
-                    break
-
-                if key == "general.architecture" and isinstance(val, str):
-                    arch = val
-                    meta["architecture"] = val
-                elif key == "general.parameter_count" and isinstance(val, int):
-                    meta["params_b"] = round(val / 1e9, 1)
-                elif key == "general.quantization_version":
-                    pass  # not the quant name, skip
-                elif key.endswith(".context_length") and isinstance(val, int):
-                    meta["context_length"] = val
-                elif key == "general.name" and isinstance(val, str):
-                    meta["model_name"] = val
+                    val_stripped = val.strip().upper()
+                    if val_stripped.endswith("B"):
+                        meta["params_b"] = float(val_stripped[:-1])
+                    elif val_stripped.endswith("M"):
+                        meta["params_b"] = round(float(val_stripped[:-1]) / 1000, 1)
+                except ValueError:
+                    pass
+            elif key.endswith(".context_length") and isinstance(val, int):
+                meta["context_length"] = val
+            elif key == "general.name" and isinstance(val, str):
+                meta["model_name"] = val
 
         return meta
 
@@ -1077,7 +1102,7 @@ class LocalModelManager:
                     return False
 
             # ── Background thread reads stdout and pushes parsed events to queue ──
-            progress_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+            progress_queue: asyncio.Queue = asyncio.Queue()
 
             def _read_stdout() -> None:
                 try:
@@ -1085,31 +1110,17 @@ class LocalModelManager:
                     if proc is None or proc.stdout is None:
                         return
                     for raw_line in proc.stdout:
-                        try:
-                            line = raw_line.rstrip()
-                            if not line:
-                                continue
-                            logger.debug(f"[llama-server] {line}")
-                            event = self._parse_load_progress(line)
-                            if event:
-                                try:
-                                    loop.call_soon_threadsafe(progress_queue.put_nowait, event)
-                                except asyncio.QueueFull:
-                                    logger.debug("[LocalModelManager] progress queue full; dropping oldest")
-                                    try:
-                                        loop.call_soon_threadsafe(progress_queue.get_nowait)
-                                    except asyncio.QueueEmpty:
-                                        pass
-                                    loop.call_soon_threadsafe(progress_queue.put_nowait, event)
-                        except Exception as exc:
-                            logger.error(f"[LocalModelManager] Error processing stdout line: {exc}")
+                        line = raw_line.rstrip()
+                        if not line:
+                            continue
+                        logger.debug(f"[llama-server] {line}")
+                        event = self._parse_load_progress(line)
+                        if event:
+                            loop.call_soon_threadsafe(progress_queue.put_nowait, event)
                 except Exception as exc:
                     logger.debug(f"[LocalModelManager] stdout reader exited: {exc}")
                 finally:
-                    try:
-                        loop.call_soon_threadsafe(progress_queue.put_nowait, None)  # sentinel
-                    except Exception:
-                        pass
+                    loop.call_soon_threadsafe(progress_queue.put_nowait, None)  # sentinel
 
             reader = threading.Thread(target=_read_stdout, daemon=True, name="llm-stdout-reader")
             reader.start()

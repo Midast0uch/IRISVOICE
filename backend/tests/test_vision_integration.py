@@ -1,18 +1,18 @@
 """
 Vision integration tests — requires llama-server running with LFM2.5-VL on port 8081.
 
-START THE SERVER FIRST:
-  Windows: start_vl.bat
-  macOS/Linux: ./start_vl.sh
+The backend auto-starts the vision server on first use (lazy load).
+To start manually for testing:
+  python -c "from backend.tools.lfm_vl_provider import _ensure_vision_server_running; _ensure_vision_server_running()"
 
-Download models if needed (one-time):
+Download models if needed (one-time) — place in ~/.lmstudio/models/LiquidAI/LFM2.5-VL-450M-GGUF/:
   python -c "
   from huggingface_hub import hf_hub_download
   import os
-  base = os.path.expanduser('~/models/LFM2.5-VL-1.6B/')
+  base = os.path.expanduser('~/.lmstudio/models/LiquidAI/LFM2.5-VL-450M-GGUF/')
   os.makedirs(base, exist_ok=True)
-  hf_hub_download('LiquidAI/LFM2.5-VL-1.6B-GGUF','LFM2.5-VL-1.6B-Q4_0.gguf',local_dir=base)
-  hf_hub_download('LiquidAI/LFM2.5-VL-1.6B-GGUF','mmproj-LFM2.5-VL-1.6B-Q4_0.gguf',local_dir=base)
+  hf_hub_download('LiquidAI/LFM2.5-VL-450M-GGUF','LFM2.5-VL-450M-Q8_0.gguf',local_dir=base)
+  hf_hub_download('LiquidAI/LFM2.5-VL-450M-GGUF','mmproj-LFM2.5-VL-450m-F32.gguf',local_dir=base)
   "
 
 Run: python -m pytest backend/tests/test_vision_integration.py -v
@@ -35,7 +35,7 @@ def _server_running() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _server_running(),
-    reason="llama-server not running on port 8081 — start with start_vl.bat first"
+    reason="llama-server not running on port 8081 — vision server auto-starts on first use, or start manually via _ensure_vision_server_running()"
 )
 
 
@@ -46,7 +46,7 @@ def test_provider_health_check_true():
     provider = LFMVLProvider()
     assert provider.health_check() is True, (
         "health_check() returned False — llama-server is unreachable. "
-        "Make sure start_vl.bat is running."
+        "Vision server auto-starts on first use; ensure the model files are present."
     )
 
 
@@ -73,7 +73,7 @@ def test_analyze_screen_returns_non_empty_description():
     assert isinstance(result, str)
     assert len(result) > 10, (
         "analyze_screen returned blank or very short result. "
-        "CRITICAL: Check that mmproj-LFM2.5-VL-1.6B-Q4_0.gguf is loaded "
+        "CRITICAL: Check that mmproj file is loaded "
         f"(llama-server --mmproj flag). Got: {repr(result)}"
     )
 
@@ -131,7 +131,8 @@ async def test_vision_mcp_analyze_screen_with_live_server():
     assert isinstance(text, str)
     assert len(text) > 10, (
         "vision.analyze_screen returned blank with server running. "
-        "Check mmproj flag in start_vl.bat"
+        "Check mmproj file is loaded in llama-server."
+
     )
 
 
