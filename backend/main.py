@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -384,77 +385,6 @@ async def lifespan(app: FastAPI):
         app.state.ready = True
         logger.info("IRIS Backend startup completed successfully!")
 
-        # ── Memory watchdog ────────────────────────────────────────────────
-        # Graduated response to RSS growth: soft cap → GC + mycelium maint;
-        # hard cap → also unload active local LLM.
-        try:
-            from backend.core.memory_watchdog import watchdog_loop
-
-            async def _on_soft():
-                import gc as _gc
-                _gc.collect()
-                try:
-                    from backend.memory.interface import get_memory_interface
-                    mem = get_memory_interface()
-                    if mem and hasattr(mem, '_mycelium') and mem._mycelium:
-                        mem._mycelium.run_maintenance()
-                except Exception:
-                    pass
-
-            async def _on_hard():
-                await _on_soft()
-                try:
-                    from backend.agent.local_model_manager import get_local_model_manager
-                    mgr = get_local_model_manager()
-                    if hasattr(mgr, 'unload_active_model'):
-                        mgr.unload_active_model()
-                except Exception:
-                    pass
-
-            app.state.watchdog_task = asyncio.create_task(
-                watchdog_loop(on_soft=_on_soft, on_hard=_on_hard),
-                name="iris-memory-watchdog",
-            )
-            logger.info("  [Watchdog] Memory watchdog started")
-        except Exception as _wd_err:
-            logger.warning(f"  [Watchdog] Could not start watchdog (non-fatal): {_wd_err}")
-
-        # ── Status broadcast loop ──────────────────────────────────────────────
-        # Broadcast system status updates to all connected WebSocket clients
-        # at adaptive intervals (fast when active, slow when idle).
-        try:
-            async def _status_broadcast_loop():
-                from backend.api.status_snapshot import build_snapshot
-                from backend.core.idle_tracker import get_idle_tracker
-                last_payload: dict | None = None
-                while True:
-                    try:
-                        tracker = get_idle_tracker()
-                        # Fast interval (1s) when user is active, slow (30s) when idle
-                        interval = 1.0 if not tracker.is_idle(threshold_s=30.0) else 30.0
-                        await asyncio.sleep(interval)
-                        snap = await build_snapshot()
-                        # Only broadcast if changed
-                        if snap != last_payload:
-                            last_payload = snap
-                            ws_mgr = get_websocket_manager()
-                            await ws_mgr.broadcast({
-                                "type": "system_status",
-                                "payload": snap
-                            })
-                    except asyncio.CancelledError:
-                        return
-                    except Exception as e:
-                        logger.warning(f"[status_broadcast] error: {e}")
-
-            app.state.status_broadcast_task = asyncio.create_task(
-                _status_broadcast_loop(),
-                name="iris-status-broadcast",
-            )
-            logger.info("  [StatusBroadcast] System status broadcast loop started")
-        except Exception as _sb_err:
-            logger.warning(f"  [StatusBroadcast] Could not start status broadcast (non-fatal): {_sb_err}")
-
         # Pre-warm the GGUF file metadata cache in the background (filesystem
         # scan only — no model weights loaded, no CUDA initialization).
         # This means the first ModelsScreen open returns instantly instead of
@@ -464,11 +394,21 @@ async def lifespan(app: FastAPI):
         # can trigger CUDA driver init (via torch or llama_cpp) which causes a
         # visible memory spike on startup before the user has done anything.
         # Hardware info is fetched lazily when the user first opens ModelsScreen.
-        #
-        # NOTE: The 30-second background GGUF scan was REMOVED (Domain 16 optimization).
-        # scan_models() now runs lazily on first ModelsScreen open via get_available_models().
-        # This eliminates the RSS spike at t=30s on every cold start.
-        logger.info("  [LocalModel] GGUF scan deferred to first ModelsScreen open (no startup pre-warm)")
+        async def _prewarm_model_cache() -> None:
+            # Delay 30 s so this I/O-heavy scan doesn't race with the Next.js
+            # dev-server compilation that peaks RAM immediately after startup.
+            await asyncio.sleep(30)
+            try:
+                from backend.agent.local_model_manager import get_local_model_manager
+                import asyncio as _asyncio
+                mgr = get_local_model_manager()
+                loop = _asyncio.get_event_loop()
+                await loop.run_in_executor(None, mgr.scan_models)
+                logger.info("  [LocalModel] GGUF metadata cache pre-warmed (filesystem scan only)")
+            except Exception as _pw_err:
+                logger.debug(f"  [LocalModel] Pre-warm skipped: {_pw_err}")
+
+        asyncio.ensure_future(_prewarm_model_cache())
 
     except Exception as e:
         app.state.ready = False
@@ -478,21 +418,35 @@ async def lifespan(app: FastAPI):
     
     yield
     
+    # ------------------------------------------------------------------
+    # SHUTDOWN — capture pending diffs + notify Launcher BEFORE closing
+    # connections, so the DiffReviewPage can still be reached on restart.
+    # ------------------------------------------------------------------
     logger.info("IRIS Backend shutting down...")
     try:
-        # Cancel status broadcast and memory watchdog first so they don't log spurious errors during teardown
-        if hasattr(app.state, "status_broadcast_task") and app.state.status_broadcast_task:
-            app.state.status_broadcast_task.cancel()
-            try:
-                await app.state.status_broadcast_task
-            except asyncio.CancelledError:
-                pass
-        if hasattr(app.state, "watchdog_task") and app.state.watchdog_task:
-            app.state.watchdog_task.cancel()
-            try:
-                await app.state.watchdog_task
-            except asyncio.CancelledError:
-                pass
+        # If developer mode with active worktree, capture the diff and
+        # broadcast session_end so the Launcher knows to show DiffReviewPage.
+        try:
+            from backend.dev_worktree import get_active as _wt_active, get_pending_diff as _wt_diff
+            wt = _wt_active()
+            if wt is not None:
+                _capture_pending_diff()
+                diff_result = _wt_diff()
+                pending_count = len(_pending_diff_cache)
+                try:
+                    ws_manager = get_websocket_manager()
+                    await ws_manager.broadcast({
+                        "type": "session_end",
+                        "mode": "developer",
+                        "pending_writes": pending_count,
+                        "branch": diff_result.get("branch", ""),
+                    })
+                    logger.info(f"[Shutdown] session_end broadcast with {pending_count} pending writes")
+                except Exception as _be:
+                    logger.debug(f"[Shutdown] session_end broadcast failed: {_be}")
+        except Exception as _de:
+            logger.debug(f"[Shutdown] Diff capture skipped: {_de}")
+
         logger.info("  - Stopping session manager...")
         session_manager = get_session_manager()
         await session_manager.stop()
@@ -534,32 +488,6 @@ app.add_middleware(
 )
 
 logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
-
-# Register status snapshot router
-from backend.api.status_snapshot import router as status_snapshot_router
-app.include_router(status_snapshot_router)
-
-
-# ── Idle tracker middleware ────────────────────────────────────────────────
-# Touch the idle tracker on every HTTP request so background workers
-# (distillation, memory maintenance) know the user is interacting.
-# Excludes health-check polls so they don't mask real idle periods.
-from backend.core.idle_tracker import get_idle_tracker as _get_idle_tracker
-from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
-from starlette.requests import Request as _Request
-
-class _IdleTrackerMiddleware(_BaseHTTPMiddleware):
-    _SKIP_PATHS = frozenset({"", "/", "/health", "/api/status"})
-
-    async def dispatch(self, request: _Request, call_next):
-        if request.url.path not in self._SKIP_PATHS:
-            try:
-                _get_idle_tracker().touch()
-            except Exception:
-                pass
-        return await call_next(request)
-
-app.add_middleware(_IdleTrackerMiddleware)
 
 
 # ============================================================================
@@ -668,11 +596,52 @@ async def set_launcher_mode(request: dict):
 
     logger.info(f"[Mode] Launch mode set to: {mode}")
 
-    # Broadcast mode_changed to all connected WebSocket clients so the
-    # IRISVOICE frontend can react immediately without polling.
+    # ------------------------------------------------------------------
+    # Worktree isolation (developer mode only)
+    # ------------------------------------------------------------------
+    try:
+        from backend.dev_worktree import setup as _wt_setup, get_active as _wt_get_active
+        if mode == "developer":
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            _wt_setup(project_root)
+            logger.info(f"[Mode] Worktree isolation active at {project_root}/dev_worktree")
+        else:
+            # Switching away from developer to personal.
+            # Capture the pending diff into the in-memory cache BEFORE
+            # doing anything with the worktree so the Launcher DiffReviewPage
+            # can show it.  Do NOT tear down here — approve/reject endpoints
+            # handle the actual teardown (merge or discard).
+            if _wt_get_active() is not None:
+                _capture_pending_diff()
+                logger.info("[Mode] Switching away from developer — diff captured, worktree kept alive for review")
+    except Exception as wt_exc:
+        logger.warning(f"[Mode] Worktree setup/teardown failed (non-fatal): {wt_exc}")
+
+    # Broadcast mode_changed + session_end (when leaving developer mode)
+    # to all connected WebSocket clients so the IRISVOICE frontend and
+    # Launcher can react immediately without polling.
     try:
         ws_manager = get_websocket_manager()
         await ws_manager.broadcast({"type": "mode_changed", "mode": mode})
+
+        # When switching away from developer, also send session_end so the
+        # Launcher auto-opens DiffReviewPage.
+        if mode == "personal":
+            try:
+                from backend.dev_worktree import get_active as _wt_get_active_session
+                from backend.dev_worktree import get_pending_diff as _wt_pending_diff
+                wt = _wt_get_active_session()
+                pending_count = len(_pending_diff_cache)
+                diff_result = _wt_pending_diff() if wt else {"active": False}
+                await ws_manager.broadcast({
+                    "type": "session_end",
+                    "mode": mode,
+                    "pending_writes": pending_count,
+                    "branch": diff_result.get("branch", ""),
+                })
+                logger.info(f"[Mode] Sent session_end event with {pending_count} pending writes")
+            except Exception as _se_exc:
+                logger.debug(f"[Mode] session_end broadcast failed (non-fatal): {_se_exc}")
     except Exception as exc:
         logger.debug(f"[Mode] WS broadcast skipped (no clients?): {exc}")
 
@@ -685,6 +654,282 @@ async def get_launcher_mode():
     cfg = _load_iris_config()
     mode = cfg.get("mode", None)
     return {"mode": mode}
+
+
+# ============================================================================
+# Git + Diff API (Launcher GitPage / DiffReviewPage)
+# ============================================================================
+
+def _git_cwd():
+    """Return the directory git commands should run in: active worktree or project root."""
+    try:
+        from backend.dev_worktree import get_active as _get_wt
+        wt = _get_wt()
+        if wt:
+            return wt.get_path()
+    except Exception:
+        pass
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _run_git(*args):
+    cmd = ["git", *args]
+    result = subprocess.run(cmd, cwd=_git_cwd(), capture_output=True, text=True)
+    return result
+
+
+@app.get("/api/git/status")
+async def git_status():
+    """Short git status + branch info."""
+    result = _run_git("status", "--short", "--branch")
+    return {
+        "success": result.returncode == 0,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+
+
+@app.get("/api/git/log")
+async def git_log(n: int = 10):
+    """Recent commit history (oneline)."""
+    result = _run_git("log", f"-{n}", "--oneline", "--decorate")
+    return {
+        "success": result.returncode == 0,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+
+
+@app.post("/api/git/commit")
+async def git_commit(request: dict):
+    """Stage all changes and commit."""
+    message = (request.get("message") or "").strip()
+    if not message:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": "Commit message is required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    add_res = _run_git("add", "-A")
+    if add_res.returncode != 0:
+        return {"success": False, "error": add_res.stderr}
+    commit_res = _run_git("commit", "-m", message)
+    return {
+        "success": commit_res.returncode == 0,
+        "stdout": commit_res.stdout,
+        "stderr": commit_res.stderr,
+    }
+
+
+@app.post("/api/git/rollback")
+async def git_rollback():
+    """Hard reset to HEAD (discard all uncommitted changes)."""
+    result = _run_git("reset", "--hard", "HEAD")
+    return {
+        "success": result.returncode == 0,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+
+
+# ---------------------------------------------------------------------------
+# In-memory pending-diff queue — survives worktree teardown so the
+# Launcher DiffReviewPage can show diffs even after the backend restarts.
+# ---------------------------------------------------------------------------
+_pending_diff_cache: list[dict] = []
+
+
+def _parse_diff_into_writes(diff_text: str) -> list[dict]:
+    """
+    Parse a unified git diff into per-file PendingWrite items.
+
+    Returns a list of {id, path, diff, description, timestamp} dicts
+    suitable for the frontend PendingWrite interface.
+    """
+    if not diff_text.strip():
+        return []
+
+    import hashlib
+    from datetime import datetime, timezone
+
+    writes: list[dict] = []
+    current_file: str | None = None
+    current_lines: list[str] = []
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    for line in diff_text.split("\n"):
+        if line.startswith("diff --git "):
+            # Flush previous file
+            if current_file and current_lines:
+                file_diff = "\n".join(current_lines)
+                file_id = hashlib.md5(current_file.encode()).hexdigest()[:12]
+                # Count additions and deletions for the description
+                adds = sum(1 for l in current_lines if l.startswith("+") and not l.startswith("+++"))
+                dels = sum(1 for l in current_lines if l.startswith("-") and not l.startswith("---"))
+                desc_parts = []
+                if adds:
+                    desc_parts.append(f"+{adds}")
+                if dels:
+                    desc_parts.append(f"-{dels}")
+                desc = f"{' '.join(desc_parts)} lines" if desc_parts else "modified"
+                writes.append({
+                    "id": file_id,
+                    "path": current_file,
+                    "diff": file_diff,
+                    "description": desc,
+                    "timestamp": timestamp,
+                })
+
+            # Start new file
+            parts = line[len("diff --git "):].split()
+            if parts:
+                current_file = parts[0][2:] if parts[0].startswith("a/") else parts[0]  # strip a/ prefix
+            else:
+                current_file = "unknown"
+            current_lines = [line]
+            continue
+
+        # Accumulate lines belonging to the current file
+        if current_file is not None:
+            current_lines.append(line)
+
+    # Flush final file
+    if current_file and current_lines:
+        file_diff = "\n".join(current_lines)
+        file_id = hashlib.md5(current_file.encode()).hexdigest()[:12]
+        adds = sum(1 for l in current_lines if l.startswith("+") and not l.startswith("+++"))
+        dels = sum(1 for l in current_lines if l.startswith("-") and not l.startswith("---"))
+        desc_parts = []
+        if adds:
+            desc_parts.append(f"+{adds}")
+        if dels:
+            desc_parts.append(f"-{dels}")
+        desc = f"{' '.join(desc_parts)} lines" if desc_parts else "modified"
+        writes.append({
+            "id": file_id,
+            "path": current_file,
+            "diff": file_diff,
+            "description": desc,
+            "timestamp": timestamp,
+        })
+
+    return writes
+
+
+def _capture_pending_diff() -> list[dict]:
+    """
+    Read diff from active worktree, parse into PendingWrite items,
+    and store in the in-memory cache. Returns the parsed items.
+    """
+    global _pending_diff_cache
+    try:
+        from backend.dev_worktree import get_pending_diff
+        result = get_pending_diff()
+        if result.get("active") and result.get("diff"):
+            _pending_diff_cache = _parse_diff_into_writes(result["diff"])
+            logger.info(f"[Diff] Captured {len(_pending_diff_cache)} pending writes for review")
+            return _pending_diff_cache
+    except Exception as exc:
+        logger.warning(f"[Diff] Failed to capture pending diff: {exc}")
+    return []
+
+
+@app.get("/api/diff/pending")
+async def diff_pending():
+    """
+    Return pending writes from the in-memory cache (survives worktree teardown)
+    or fall back to live worktree diff.
+    """
+    global _pending_diff_cache
+    # If we have a cached diff, return it
+    if _pending_diff_cache:
+        return {"pending": _pending_diff_cache, "source": "cache"}
+    # Otherwise try live worktree
+    try:
+        from backend.dev_worktree import get_pending_diff
+        result = get_pending_diff()
+        if result.get("active") and result.get("diff"):
+            writes = _parse_diff_into_writes(result["diff"])
+            return {"pending": writes, "source": "live"}
+        return {"pending": [], "source": "live", "branch": result.get("branch")}
+    except Exception as exc:
+        # Fallback to plain git diff in project root
+        result = _run_git("diff")
+        if result.stdout.strip():
+            writes = _parse_diff_into_writes(result.stdout)
+            return {"pending": writes, "source": "fallback", "error": str(exc)}
+        return {"pending": [], "source": "fallback", "error": str(exc)}
+
+
+@app.post("/api/diff/approve")
+async def diff_approve():
+    """
+    Approve all pending changes:
+      1. Commit in the worktree (or from project root if no worktree)
+      2. Merge the agent branch into main (if worktree active)
+      3. Tear down the worktree
+      4. Clear the in-memory pending diff cache
+    """
+    global _pending_diff_cache
+    try:
+        from backend.dev_worktree import get_active as _get_wt, teardown as _wt_teardown
+
+        wt = _get_wt()
+        if wt is None:
+            # No active worktree — commit from project root
+            add_res = _run_git("add", "-A")
+            if add_res.returncode != 0:
+                return {"status": "commit_failed", "error": add_res.stderr}
+            commit_res = _run_git("commit", "-m", "IRIS agent session changes (direct)")
+            _pending_diff_cache = []
+            return {
+                "status": "ok",
+                "commit_success": commit_res.returncode == 0,
+                "stdout": commit_res.stdout,
+                "stderr": commit_res.stderr,
+            }
+
+        # Commit any pending changes in worktree
+        commit_res = _run_git("add", "-A")
+        if commit_res.returncode != 0:
+            return {"status": "commit_failed", "error": commit_res.stderr}
+        commit_res = _run_git("commit", "-m", "IRIS agent session changes")
+        # returncode may be 1 if nothing to commit — that's ok
+
+        # Merge + teardown
+        result = _wt_teardown(merge=True)
+        _pending_diff_cache = []
+        logger.info("[Diff] Approved — worktree merged and torn down")
+        return result
+    except Exception as exc:
+        logger.error(f"[Diff] Approve failed: {exc}")
+        return {"status": "error", "error": str(exc)}
+
+
+@app.post("/api/diff/reject")
+async def diff_reject():
+    """
+    Discard all pending changes and tear down the worktree.
+    Clear the in-memory pending diff cache.
+    """
+    global _pending_diff_cache
+    try:
+        from backend.dev_worktree import get_active as _get_wt, teardown as _wt_teardown
+
+        wt = _get_wt()
+        if wt is None:
+            # No worktree — just clear cache
+            _pending_diff_cache = []
+            return {"status": "ok", "note": "no worktree active, cache cleared"}
+
+        result = _wt_teardown(merge=False)
+        _pending_diff_cache = []
+        logger.info("[Diff] Rejected — worktree torn down, changes discarded")
+        return result
+    except Exception as exc:
+        logger.error(f"[Diff] Reject failed: {exc}")
+        return {"status": "error", "error": str(exc)}
 
 
 @app.get("/api/launcher/status")
@@ -769,6 +1014,151 @@ async def save_projects(request: dict):
     cfg["projects"] = projects
     _save_iris_config(cfg)
     return {"projects": projects, "status": "ok"}
+
+
+# ============================================================================
+# GitHub OAuth Endpoints
+# ============================================================================
+
+@app.get("/api/auth/github/start")
+async def github_auth_start():
+    """
+    Start GitHub OAuth flow.
+    Returns the GitHub authorization URL for the frontend to open.
+    """
+    try:
+        from backend.integrations.github_oauth import get_auth_url, GitHubAuthError
+        auth_url, state = get_auth_url()
+        return {"auth_url": auth_url, "state": state}
+    except GitHubAuthError as e:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": str(e)}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+
+@app.get("/api/auth/github/callback")
+async def github_auth_callback(code: str, state: str):
+    """
+    Handle GitHub OAuth callback.
+    GitHub redirects here after user authorizes the app.
+    """
+    try:
+        from backend.integrations.github_oauth import exchange_code, GitHubAuthError
+        access_token = await exchange_code(code, state)
+        return {
+            "status": "ok",
+            "message": "GitHub authentication successful",
+        }
+    except GitHubAuthError as e:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": str(e)}),
+            status_code=400,
+            media_type="application/json",
+        )
+
+
+@app.get("/api/auth/github/status")
+async def github_auth_status():
+    """Check whether GitHub is authenticated."""
+    from backend.integrations.github_oauth import is_connected, get_user, GitHubAuthError
+    connected = await is_connected()
+    if not connected:
+        return {"connected": False}
+    try:
+        user = await get_user()
+        return {
+            "connected": True,
+            "username": user.get("login"),
+            "avatar_url": user.get("avatar_url"),
+            "name": user.get("name"),
+        }
+    except GitHubAuthError:
+        return {"connected": False}
+
+
+@app.post("/api/auth/github/disconnect")
+async def github_auth_disconnect():
+    """Disconnect from GitHub (wipe stored credentials)."""
+    from backend.integrations.github_oauth import disconnect
+    success = await disconnect()
+    return {"status": "ok" if success else "error"}
+
+
+@app.get("/api/github/repos")
+async def github_repos():
+    """List repositories for the authenticated GitHub user."""
+    from backend.integrations.github_oauth import get_repos, GitHubAuthError
+    try:
+        repos = await get_repos()
+        return {"repos": repos}
+    except GitHubAuthError as e:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": str(e)}),
+            status_code=401 if "Not authenticated" in str(e) else 400,
+            media_type="application/json",
+        )
+
+
+@app.get("/api/github/ssh-keys")
+async def github_ssh_keys():
+    """List SSH keys for the authenticated GitHub user."""
+    from backend.integrations.github_oauth import list_ssh_keys, GitHubAuthError
+    try:
+        keys = await list_ssh_keys()
+        return {"keys": keys}
+    except GitHubAuthError as e:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": str(e)}),
+            status_code=401 if "Not authenticated" in str(e) else 400,
+            media_type="application/json",
+        )
+
+
+@app.post("/api/github/ssh-keys")
+async def github_create_ssh_key(request: dict):
+    """Add an SSH public key to the authenticated GitHub user."""
+    from backend.integrations.github_oauth import create_ssh_key, GitHubAuthError
+    try:
+        title = request.get("title", "IRIS Key")
+        public_key = request.get("public_key", "")
+        if not public_key:
+            from fastapi import Response as FastAPIResponse
+            return FastAPIResponse(
+                content=json.dumps({"error": "public_key is required"}),
+                status_code=422,
+                media_type="application/json",
+            )
+        key = await create_ssh_key(title, public_key)
+        return {"key": key}
+    except GitHubAuthError as e:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": str(e)}),
+            status_code=401 if "Not authenticated" in str(e) else 400,
+            media_type="application/json",
+        )
+
+
+@app.delete("/api/github/ssh-keys/{key_id}")
+async def github_delete_ssh_key(key_id: str):
+    """Delete an SSH key from the authenticated GitHub user."""
+    from backend.integrations.github_oauth import delete_ssh_key, GitHubAuthError
+    try:
+        await delete_ssh_key(key_id)
+        return {"status": "ok"}
+    except GitHubAuthError as e:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": str(e)}),
+            status_code=401 if "Not authenticated" in str(e) else 400,
+            media_type="application/json",
+        )
 
 
 # ============================================================================

@@ -993,6 +993,23 @@ export function useIRISWebSocket(
         break
       }
 
+      case 'session_end': {
+        // Backend is shutting down or session ending — signal Launcher
+        // to open DiffReviewPage.  Also write to localStorage so other
+        // windows (Tauri launcher window) can detect it.
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('iris:session_ended', JSON.stringify({
+              timestamp: Date.now(),
+              pending_writes: (payload as any)?.pending_writes ?? 0,
+              branch: (payload as any)?.branch ?? '',
+            }));
+          } catch { /* ignore quota errors */ }
+          window.dispatchEvent(new CustomEvent('iris:session_end', { detail: payload }))
+        }
+        break
+      }
+
       case 'system_status': {
         // Broadcast system snapshot — replaces FE polling in iris-launcher
         if (typeof window !== 'undefined') {

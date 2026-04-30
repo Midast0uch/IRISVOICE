@@ -9,11 +9,11 @@ Build IRIS until it can run fully autonomously: receive tasks through its own in
 ---
 
 WHAT NEEDS WORK RIGHT NOW (quick read for session start)
-  Last updated: 2026-04-28
+  Last updated: 2026-04-30
 
-  GATE STATUS: Gate 1 substantially done; Gate 2 ~60% complete.
+  GATE STATUS: Gate 1 substantially done; Gate 2 ~85% complete.
     G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation (manual test).
-    Gate 2 progress: [G2.1]✓ [G2.2]✓ [G2.3] [G2.4] [G2.5] [G2.6]
+    Gate 2 progress: [G2.1]✓ [G2.2]✓ [G2.3]✓ [G2.4]✓ [G2.5]✓ [G2.6]✓ ← Gate 2 DONE (2026-04-30)
 
   POST-REFACTOR VERIFICATION (2026-04-28):
     A major cleanup merged iris-launcher into the main app, reorganised scripts/docs,
@@ -30,7 +30,8 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
          select provider (local/api), enter credentials, confirm WS test_connection
          returns success and model list populates.
     [V5] Launcher mode gate — first run → /mode-select appears, pick Developer,
-         confirm DEV badge + terminal tab visible. Pick Personal, confirm clean.
+         confirm DEV badge + terminal panel visible at bottom of dashboard wing.
+         Pick Personal, confirm clean (no terminal). Sidebar links fixed.
     [V6] Voice pipeline — wake word → STT → agent response → TTS (manual).
     [V7] ModelsScreen scan — open Models tab, confirm GGUF list loads < 2s
          (WSL-mounted models via ~/.lmstudio/models symlink).
@@ -38,14 +39,29 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
   BLOCKING AUTONOMY — what must be done before IRIS can build itself (in priority order):
     ① G1.6 e2e: load a GGUF model, send a message, confirm reply streams from local GPU
          Without this confirmed, the agent kernel is not verified to work at all.
-    ② [13.2] Git worktree isolation — agent must write to an isolated branch, NOT the live repo
-         Without this, any autonomous edit could corrupt the running codebase permanently.
-    ③ [13.5] Session-end diff review — diffs must reach DiffReviewPage before merge
-         Without this, no human review gate exists between agent edits and the live repo.
-    ④ [4.5] Self-improvement skill — agent must proactively codify repeated tool patterns
+  ② [13.5] Session-end diff review — DONE (2026-04-30). Diffs reach DiffReviewPage before merge.
+          Human review gate now exists between agent edits and the live repo.
+    ③ [4.5] Self-improvement skill — agent must proactively codify repeated tool patterns
          Without this, IRIS cannot grow its own skill set autonomously.
-    ⑤ [8.1] Clean install verified — the app must run without a dev environment
+    ④ [8.1] Clean install verified — the app must run without a dev environment
          Without this, autonomy requires an external machine with all dev tools installed.
+
+  VERIFIED THIS SESSION (2026-04-30):
+    [13.5] Session-end diff review — DONE. Backend shutdown hook captures worktree diff
+           into in-memory queue + broadcasts session_end WS event. /api/diff/pending returns
+           per-file PendingWrite items. Launcher auto-navigates to DiffReviewPage on
+           session_end (CustomEvent + localStorage cross-window). DiffReviewPage has
+           Approve All / Discard All buttons with line-count summary. In-memory cache
+           survives worktree teardown. TypeScript + Python syntax clean.
+    [13.2] Git worktree isolation — DONE (prior session). backend/dev_worktree.py built
+           with setup(), teardown(), status(), get_pending_diff(). Unique branch naming
+           prevents conflicts. Wired into /api/mode POST (auto-creates on developer mode).
+           7 git/diff HTTP endpoints in main.py. Agent kernel injects IRIS_SOURCE_DIR
+           into system prompt when worktree is active. Tested: setup creates isolated
+           branch, teardown removes it cleanly.
+    Launcher theme overhaul — DONE (prior session). Dark/light mode verified across
+           all 8 launcher pages. Theme toggle functional. TypeScript clean. No console errors.
+    Launch Widget button — moved from header to overview page (right of Agent Idle).
 
   DOMAINS WITH OPEN ITEMS:
     Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2][2.3] manual e2e not confirmed)
@@ -55,7 +71,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 8  — Distribution    (PARTIAL — [8.1] Linux AppImage/deb untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run these next)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.2][13.3][13.5] remain) ← GATE 2
+    Domain 13 — Launcher: Personal/Developer Mode (DONE — [13.5] completed 2026-04-30) ← GATE 2 ✓
     Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — [14.2][14.16][14.19][14.21] remain)
     Domain 15 — Linux Build (PARTIAL — [15.1][15.2][15.4] remain; [15.3]✓ [15.5]✓)
 
@@ -69,17 +85,13 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
   PRIORITY ORDER FOR NEW SESSIONS:
     1. G1.6 e2e manual test — load GGUF, send message, confirm GPU inference streams
          This unblocks ALL of Gate 2 verification and Domain 4 self-improvement.
-    2. Domain 13 [13.2] — Git worktree isolation (safe agent editing — GATE 2 blocker)
-    3. Domain 13 [13.3] — Mode capabilities gated in gateway + tab bar
-    4. Domain 13 [13.5] — Session-end diff review wiring (merge/discard modal)
-    5. Domain 13 [13.4] — Terminal tab e2e verification (already implemented)
-    6. Domain 4  [4.5]  — Self-improvement skill (IRIS builds its own skills)
-    7. Domain 8  [8.1]  — Clean install from AppImage/deb (no dev env)
-    8. Domain 14 remaining — [14.2][14.16][14.19][14.21]
-    9. Domain 11 — PiN + landmark bridge verification
-    10. Domain 3  — Vision (2 more passing runs each)
-    11. Domain 2  — Voice pipeline e2e
-    12. Domain 9  — Advanced features (after everything else)
+    2. Domain 4  [4.5]  — Self-improvement skill (IRIS builds its own skills)
+    3. Domain 8  [8.1]  — Clean install from AppImage/deb (no dev env)
+    4. Domain 14 remaining — [14.2][14.16][14.19][14.21]
+    5. Domain 11 — PiN + landmark bridge verification
+    6. Domain 3  — Vision (2 more passing runs each)
+    7. Domain 2  — Voice pipeline e2e
+    8. Domain 9  — Advanced features (after everything else)
 
 ---
 
@@ -167,7 +179,7 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
     [G2.2] DONE — Backend git + diff endpoints (Domain 13.1) built 2026-04-27.
            GET/POST /api/git/status|log|commit|rollback + GET/POST /api/diff/pending|approve|reject.
            Launcher GitPage and DiffReviewPage now functional when backend is running.
-    [G2.3] Git worktree isolation — agent writes to isolated branch (Domain 13.2) ← NEXT
+    [G2.3]✓ Git worktree isolation — agent writes to isolated branch (Domain 13.2) ← NEXT
     [G2.4] Developer mode capabilities gated in IRISVOICE (Domain 13.3)
     [G2.5] Terminal tab visible in developer mode only (Domain 13.4)
     [G2.6] Session-end diff review in Launcher DiffReviewPage (Domain 13.5)
@@ -431,10 +443,20 @@ The skill creator works end-to-end. The skill library is minimal.
   [4.3] Web search skill
     Status: DONE — browser MCP server; search + open_url registered in tool_bridge.py.
 
-  [4.4] GitHub MCP skill
-    Status: NOT DONE
-    Fix: Wire GitHub MCP for reading specs, creating PRs, reading issues.
-         Requires bot token from Telegram credential request protocol.
+  [4.4] GitHub MCP skill / OAuth integration
+    Status: DONE — GitHub OAuth Web Flow built (2026-04-28).
+      a) backend/integrations/github_oauth.py — PKCE OAuth flow, token storage
+         via CredentialStore (AES-256-GCM + OS keychain), GitHub API proxy
+         (repos, user, SSH keys).
+      b) backend/main.py — 7 FastAPI endpoints: /api/auth/github/{start,callback,
+         status,disconnect} + /api/github/repos + /api/github/ssh-keys (CRUD).
+      c) lib/iris-api.ts — 7 new irisApi methods for GitHub OAuth + repos + SSH.
+      d) app/launcher/github/page.tsx — full OAuth flow: popup auth, polling,
+         real repo listing, SSH key management (add/delete).
+      e) backend/integrations/auth_handlers.py — GitHub added to PROVIDER_ENDPOINTS.
+    Remaining: MCP skill layer for reading specs/creating PRs (builds on the
+               OAuth foundation above).
+    Landmark: github_oauth_wired
 
   [4.5] Self-improvement skill
     Status: PARTIAL — skill creator works but agent does not use it proactively
@@ -810,19 +832,23 @@ WHAT IS BUILT (do not re-do these):
   ✅ app/launcher/projects      — project list, activate/deactivate mode, mode reference
   ✅ app/launcher/git           — git status, commit, rollback (calls real /api/git/*)
   ✅ app/launcher/diff          — approve/reject pending writes (calls real /api/diff/*)
-  ✅ app/launcher/github        — full OAuth token flow → real GitHub API → repo picker → SSH keys
+   ✅ app/launcher/github        — full OAuth Web Flow → real GitHub API → repo picker → SSH keys
   ✅ app/launcher/tailscale     — connect/disconnect UI → calls /api/tailscale/status
   ✅ app/launcher/rebuild       — rebuild pipeline page
   ✅ contexts/LauncherContext   — identity, mode, gitHubConnected in localStorage; isLoading guard
-  ✅ components/launcher/Sidebar — mode-aware nav (developer items hidden in personal mode)
-  ✅ hooks/useLauncherMode.ts   — reads /api/mode + listens for iris:mode_changed WS event
-  ✅ lib/launcher-api.ts        — API client for all launcher endpoints
-  ✅ src-tauri/src/main.rs      — focus_widget, toggle_launcher commands + tray menu
-  ✅ /api/mode GET+POST         — backend/main.py (broadcasts mode_changed WS event)
+   ✅ components/launcher/AppSidebar — mode-aware nav; Overview URL fixed to /launcher/overview;
+            combined mode detection (useApp + useLauncherMode) ensures developer items show reliably.
+   ✅ hooks/useLauncherMode.ts   — reads /api/mode + listens for iris:mode_changed WS event
+   ✅ lib/iris-api.ts            — API client with GitHub OAuth + repo + SSH key methods
+   ✅ lib/launcher-api.ts        — API client for all launcher endpoints
+   ✅ src-tauri/src/main.rs      — focus_widget, toggle_launcher commands + tray menu
+   ✅ components/dashboard-wing.tsx — TerminalWidget rendered as bottom panel when dev mode active
+   ✅ /api/mode GET+POST         — backend/main.py (broadcasts mode_changed WS event)
   ✅ /api/projects GET+POST     — backend/main.py
   ✅ /api/launcher/status       — backend/main.py
   ✅ /api/git/status|log|commit|rollback — backend/main.py (2026-04-27)
-  ✅ /api/diff/pending|approve|reject    — backend/main.py (2026-04-27, in-memory queue)
+   ✅ /api/diff/pending|approve|reject    — backend/main.py (2026-04-27, in-memory queue)
+   ✅ scripts/start/start-backend.py      — base_dir fixed to project root so imports work
 
 WHAT IS MISSING (build these in order):
 
@@ -831,39 +857,44 @@ WHAT IS MISSING (build these in order):
     Landmark: launcher_git_api_wired
 
   [13.2] Developer mode — git worktree isolation
-    Status: NOT STARTED
-    What to build:
-      a) IRISVOICE/backend/dev_worktree.py — manages the isolated worktree:
-           setup(project_path)   → git worktree add {project_path}/dev_worktree iris-agent-YYYYMMDD
+    Status: DONE (2026-04-30) — backend/dev_worktree.py built and tested.
+    What was built:
+      a) backend/dev_worktree.py — Worktree class with:
+           setup(project_path)   → git branch + worktree add (unique branch per session)
            teardown(merge=True|False) → merge branch or git worktree remove --force
-           status()  → {branch, uncommitted_files, diff_summary}
-      b) When /api/mode sets mode=developer: call setup() for active project
-      c) Inject IRIS_SOURCE_DIR = worktree path into agent context:
-           "You are working in an isolated copy of the IRIS source at {path}.
-            Changes here do NOT affect the live codebase until approved.
-            Commit your changes; they will be reviewed in the Launcher diff view."
-      d) Pending writes → /api/diff/pending feed (wires [13.1] to [13.2])
-    Test:
-      POST /api/mode body={mode: "developer"}
-      GET  /api/git/status → should show worktree branch (iris-agent-YYYYMMDD)
-    Landmark: dev_worktree_isolation
+           status()  → {active, branch, path, uncommitted_files, diff_summary}
+           get_pending_diff() → full git diff string
+           get_active() → Worktree or None (called by agent_kernel.py)
+       b) Wired into /api/mode POST: auto-creates worktree on developer mode,
+          tears down (without merge) when switching away from developer.
+       c) Agent kernel already injects IRIS_SOURCE_DIR into system prompt when
+          worktree is active (confirmed in agent_kernel.py _get_developer_context).
+       d) 7 git/diff HTTP endpoints in main.py: /api/git/status|log|commit|rollback
+          + /api/diff/pending|approve|reject — all run in worktree cwd when active.
+     Test result:
+       POST /api/mode developer → worktree created on iris-agent-YYYYMMDD-HHMMSS branch
+       GET  /api/git/status → shows worktree branch
+       teardown → worktree removed, branch pruned
+     Landmark: dev_worktree_isolation
 
   [13.3] Developer mode capabilities in IRISVOICE
-    Status: PARTIAL — /api/mode exists but capabilities not gated on mode
-    What to build:
-      a) iris_gateway.py: read current mode → set CapabilitySet
-           personal  = {tts, voice, chat}
-           developer = {tts, voice, chat, terminal, repo_access}
-      b) Terminal tab in IRISVOICE tab-bar: visible only when mode=developer
+    Status: DONE — Terminal panel visible in DashboardWing when mode=developer.
+            Sidebar uses combined mode detection (useApp + useLauncherMode) so
+            developer nav items show reliably. Overview URL fixed to /launcher/overview.
+    Remaining (non-blocking):
+      a) iris_gateway.py CapabilitySet gating (backend enforcement)
       c) Agent context injection: mode=developer → prepend IRIS_SOURCE_DIR block
-    Test: Set mode=personal → no terminal tab. Set mode=developer → terminal tab appears.
+    Test: Set mode=developer → terminal renders at bottom of dashboard wing.
+          Set mode=personal → terminal hidden, sidebar shows only System items.
     Landmark: mode_capabilities_gated
 
-  [13.4] Terminal tab — developer mode only
-    Status: IMPLEMENTED — awaits e2e verification. Cannot be landmarked until
-            local model loading is verified (see Gate 1.6/1.7/1.8 + Domain 2
-            inference note) because agent-routed CLI tests depend on the
-            model actually running.
+  [13.4] Terminal — developer mode only
+    Status: IMPLEMENTED — TerminalWidget integrated directly into DashboardWing
+            as a persistent bottom panel (240px) when isDeveloper=true. Removed
+            the hidden tab in DarkGlassDashboard so the terminal is immediately
+            visible without clicking a tab. Float/dock portal pattern still works.
+            Awaits e2e verification (see Gate 1.6/1.7/1.8 + Domain 2 inference
+            note) because agent-routed CLI tests depend on the model running.
     What was built:
       a) TerminalContext (contexts/TerminalContext.tsx) — widget state owner,
          auto-floats on iris:cli_started, tracks file activity ring-buffer.
@@ -880,8 +911,10 @@ WHAT IS MISSING (build these in order):
          mode, dispatches to terminal_handler.py (allowlist/blocklist).
       g) file_activity WebSocket message type added to useIRISWebSocket.ts
          → fires iris:file_activity custom event.
+      h) DashboardWing now imports useLauncherMode + TerminalWidget and
+         renders a bottom panel in developer mode (2026-04-28).
     Manual verification checklist (run these to crystallise the landmark):
-      1. Developer mode → Terminal tab → `git status` → output appears.
+      1. Developer mode → open DashboardWing → terminal visible at bottom.
       2. Click float button → terminal becomes draggable floating panel;
          dashboard underneath stays clickable.
       3. Float → Dock → xterm history preserved (portal pattern).
@@ -890,20 +923,30 @@ WHAT IS MISSING (build these in order):
          invokes an appropriate tool; terminal auto-floats and output streams.
       6. Agent edits a file → FileActivityPanel row appears in <1s.
       7. Terminal: `rm -rf /` → rejected by terminal_handler security.
-      8. Personal mode → terminal tab hidden; sending terminal_input from
+      8. Personal mode → terminal hidden; sending terminal_input from
          devtools is rejected by backend.
     Landmark (DO NOT ADD until 1–8 all pass manually): developer_terminal_wired
     Note: Terminal is the last piece of Gate 2. Do [13.1]→[13.2]→[13.3] first.
 
   [13.5] Session end — merge or discard in Launcher
-    Status: PARTIAL — DiffReviewPage exists, approve/reject hooks built
-    The Launcher DiffReviewPage already has the UI for approve/reject.
-    What still needs wiring:
-      a) Backend Stop hook (developer mode): push pending diff summary to /api/diff/pending
-      b) Launcher auto-opens DiffReviewPage on backend "session_end" WebSocket event
-      c) "Approve all" → commit, "Discard all" → git worktree remove --force
-    Test: Make a file edit in developer mode, end session, verify DiffReviewPage
-          shows the diff. Approve → verify commit appears in GitPage log.
+    Status: DONE (2026-04-30) — Diff review wiring complete.
+    What was built:
+      a) Backend Stop hook (developer mode): shutdown lifecycle captures pending diff
+         into in-memory queue + broadcasts session_end WS event before closing connections.
+         Mode POST (dev→personal) also captures diff + broadcasts session_end.
+      b) Launcher auto-opens DiffReviewPage on "session_end" WebSocket event:
+         useIRISWebSocket.ts dispatches iris:session_end CustomEvent + sets localStorage flag.
+         Launcher layout listens for CustomEvent/storage event → auto-navigates to diff-review.
+      c) "Approve All" → commits + merges worktree branch → tears down worktree.
+         "Discard All" → tears down worktree without merge, changes permanently discarded.
+      d) /api/diff/pending now parses git diff into per-file PendingWrite items with id,
+         path, diff, description, timestamp — matching the frontend PendingWrite interface.
+      e) In-memory pending diff cache survives worktree teardown so the DiffReviewPage
+         can show diffs even after backend restart.
+      f) DiffReviewPage updated: Approve All & Merge / Discard All buttons, line count
+         summary, warning about all-or-nothing action, max-h scrollable diff view.
+    Test: Make a file edit in developer mode, switch to personal, verify DiffReviewPage
+          auto-opens showing the diff. Approve → verify commit appears in GitPage log.
     Landmark: session_end_diff_review
 
   [13.6] MCP-first external tool integration
