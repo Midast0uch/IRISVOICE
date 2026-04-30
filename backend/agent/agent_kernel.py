@@ -180,6 +180,11 @@ class AgentKernel:
         self._swarm_coordinator = None
         self._context_control_handler = None
 
+        # User-configured inference behaviour — applied per-request
+        self._thinking_style: str = "balanced"    # concise | balanced | thorough
+        self._tool_mode: str = "auto"             # auto | ask_first | disabled
+        self._max_response_length: str = "medium" # short | medium | long
+
         # Launcher mode: "personal" (default) or "developer"
         # Developer mode injects PROJECT.md into every system prompt so the
         # local agent has full codebase context and can modify source files.
@@ -1221,19 +1226,15 @@ class AgentKernel:
         if chunk_prefix:
             # DB has relevant chunks: only keep a small recency window
             recent = history[-_RECENCY_TURNS:] if len(history) > _RECENCY_TURNS else list(history)
-            recent_tokens = self._count_tokens(recent)
-            while recent and recent_tokens > max(budget_for_history, 0):
-                removed_item = recent.pop(0)
-                recent_tokens -= len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
+            while recent and self._count_tokens(recent) > max(budget_for_history, 0):
+                recent.pop(0)
             while recent and recent[0].get("role") != "user":
                 recent.pop(0)
             history_block = recent
         else:
             # No chunks yet (first message / empty DB): full rolling window fallback
-            history_tokens = self._count_tokens(history)
-            while history and history_tokens > max(budget_for_history, 0):
-                removed_item = history.pop(0)
-                history_tokens -= len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
+            while history and self._count_tokens(history) > max(budget_for_history, 0):
+                history.pop(0)
             while history and history[0].get("role") != "user":
                 history.pop(0)
             history_block = history
@@ -1274,9 +1275,13 @@ class AgentKernel:
             if self._is_openai_compat():
                 client = self._get_lmstudio_client()
                 sel = self._selected_reasoning_model or "local-model"
-                # Only enable thinking for complex queries — skips 300-1000 extra tokens
-                # for simple conversational messages, cutting latency from ~30s → ~5s.
-                use_thinking = self._needs_thinking(text)
+                # Thinking depth is user-configurable; auto mode uses heuristic.
+                if self._thinking_style == "thorough":
+                    use_thinking = True
+                elif self._thinking_style == "concise":
+                    use_thinking = False
+                else:
+                    use_thinking = self._needs_thinking(text)
 
                 if chunk_callback:
                     # Streaming implementation
@@ -1541,7 +1546,7 @@ class AgentKernel:
             The model's final clean response string.
         """
         MAX_ITERATIONS = 8
-        tools = self._get_openai_tools()
+        tools = self._get_openai_tools() if self._tool_mode != "disabled" else []
 
         for iteration in range(MAX_ITERATIONS):
             logger.info(
@@ -3948,6 +3953,33 @@ If any tools failed, address those issues in your response.
             True if internet access is enabled, False otherwise
         """
         return self._internet_access_enabled
+
+    def set_thinking_style(self, style: str) -> None:
+        """concise → always off | balanced → auto-detect | thorough → always on"""
+        self._thinking_style = style
+        logger.info(f"[AgentKernel] Thinking style: {style}")
+
+    def set_tool_mode(self, mode: str) -> None:
+        """auto → normal tool use | ask_first → reserved | disabled → no tools passed"""
+        self._tool_mode = mode
+        logger.info(f"[AgentKernel] Tool mode: {mode}")
+
+    def set_max_response_length(self, length: str) -> None:
+        """short | medium | long — stored for system-prompt injection"""
+        self._max_response_length = length
+        logger.info(f"[AgentKernel] Max response length: {length}")
+
+    def set_memory_enabled(self, enabled: bool) -> None:
+        """Disable memory by clearing the interface; re-enable requires restart."""
+        if not enabled:
+            self._memory_interface = None
+        logger.info(f"[AgentKernel] Memory {'enabled' if enabled else 'disabled'}")
+
+    def set_context_window(self, size: int) -> None:
+        """Set max conversation messages kept in context."""
+        if self._conversation_memory is not None and hasattr(self._conversation_memory, "_max_messages"):
+            self._conversation_memory._max_messages = int(size)
+        logger.info(f"[AgentKernel] Context window: {size}")
 
     def set_swarm_enabled(self, enabled: bool) -> None:
         """

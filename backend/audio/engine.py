@@ -70,6 +70,11 @@ class AudioEngine:
         # (b) reduce CPU load so TTS synthesis threads aren't starved.
         self._tts_active: bool = False
 
+        # Mirrors WakeConfig.wake_word_enabled — updated by reinitialize_porcupine().
+        # Checked in the 31 Hz audio callback; kept as a plain bool to avoid a
+        # dict lookup on every frame.
+        self._wake_word_enabled: bool = True
+
         try:
             self._main_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -208,9 +213,18 @@ class AudioEngine:
 
     def reinitialize_porcupine(self) -> bool:
         """
-        Reinitialize Porcupine after user changes wake phrase in settings.
+        Reinitialize Porcupine after user changes wake phrase or enabled state.
         Called by WakeConfig.on_change_callback — registered in main.py.
+        Reads wake_word_enabled from WakeConfig so toggling the widget switch
+        actually stops/starts detection rather than just persisting the field.
         """
+        try:
+            from backend.agent.wake_config import get_wake_config
+            enabled = get_wake_config().config.get("wake_word_enabled", True)
+        except Exception:
+            enabled = True
+        self._wake_word_enabled = enabled
+
         if self._porcupine:
             try:
                 self._porcupine.cleanup()
@@ -218,7 +232,12 @@ class AudioEngine:
                 pass
             self._porcupine = None
             self._porcupine_initialized = False
-        return self.initialize_porcupine()   # reads fresh values from WakeConfig
+
+        if not enabled:
+            logger.info("[AudioEngine] Wake word disabled — Porcupine stopped")
+            return True
+
+        return self.initialize_porcupine()   # reads fresh phrase/sensitivity from WakeConfig
 
     def set_wake_word_callback(self, callback) -> None:
         """Set callback fired when wake word is detected. callback(wake_word_name: str) -> None"""
@@ -332,8 +351,8 @@ class AudioEngine:
         No longer streams every frame to lfm_audio_manager.
         """
         try:
-            # Wake word detection (only when Porcupine is initialized and TTS is not playing)
-            if self._porcupine_initialized and self._porcupine and not self._tts_active:
+            # Wake word detection — gated on user toggle, Porcupine state, and TTS
+            if self._wake_word_enabled and self._porcupine_initialized and self._porcupine and not self._tts_active:
                 # Convert float32 [-1,1] → int16 PCM for Porcupine.
                 # PERF: keep as numpy array — avoid .tolist() which allocates a Python
                 # int object per sample (512 objects × 31 frames/sec = ~16k allocs/sec).

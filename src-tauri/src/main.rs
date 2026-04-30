@@ -5,6 +5,15 @@ use tauri::{Emitter, Listener, Manager, PhysicalSize, RunEvent};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::CommandChild;
 
+#[tauri::command]
+fn open_widget(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn main() {
     // Shared handle so the exit handler can kill the sidecar
     let sidecar_child: Arc<Mutex<Option<CommandChild>>> = Arc::new(Mutex::new(None));
@@ -13,6 +22,7 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
+        .invoke_handler(tauri::generate_handler![open_widget])
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
 
@@ -84,12 +94,33 @@ fn main() {
                     window.emit("app-cleanup", ()).ok();
                 }
 
-                // Kill the backend sidecar so it doesn't linger after the UI closes
+                // Kill the backend sidecar so it doesn't linger after the UI closes.
+                //
+                // CRITICAL: PyInstaller --onefile binaries spawn a separate child
+                // Python process (~420 MB private memory). Tauri's CommandChild::kill()
+                // only signals the parent stub; the child becomes orphaned and keeps
+                // running forever, eating ~420 MB per orphan accumulating across runs.
+                //
+                // On Windows, taskkill /T /F kills the entire process tree by image
+                // name. On Unix, pkill -9 -f does the same job. We do this in addition
+                // to child.kill() to catch the orphan child.
                 if let Ok(mut guard) = sidecar_child_exit.lock() {
                     if let Some(child) = guard.take() {
                         println!("[Tauri] Stopping backend sidecar (pid={})", child.pid());
                         child.kill().ok();
                     }
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/T", "/IM", "iris-backend*"])
+                        .output();
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = std::process::Command::new("pkill")
+                        .args(["-9", "-f", "iris-backend"])
+                        .output();
                 }
 
                 api.prevent_exit();

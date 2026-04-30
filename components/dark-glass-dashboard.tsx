@@ -51,8 +51,7 @@ const MAIN_NODES_DATA = [
   { id: 'system', label: 'System', icon: Settings },
   { id: 'customize', label: 'Customize', icon: Palette },
   { id: 'monitor', label: 'Monitor', icon: BarChart3 },
-  // Domain 13.3 — terminal tab: only visible in developer mode
-  { id: 'terminal', label: 'Terminal', icon: Monitor, developerOnly: true },
+
 ];
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -860,9 +859,6 @@ export function DarkGlassDashboard({
   const renderContentZone = () => (
     <div className="flex-1 overflow-y-auto p-0">
        {!activeSubApp ? (
-         activeTab === 'terminal' ? (
-           <TerminalWidget />
-         ) : (
          <div className="w-full h-full pl-12 pr-24 py-10 space-y-3">
            {/* DCP Stats — developer mode only, shown at top of Monitor tab */}
            {activeTab === 'monitor' && irisMode === 'developer' && (
@@ -895,9 +891,8 @@ export function DarkGlassDashboard({
                </div>
              );
            })}
-         </div>
-         )
-       ) : activeSubApp === 'browser' ? (
+          </div>
+        ) : activeSubApp === 'browser' ? (
          <div className="w-full h-full p-4 md:px-10">
            <div className="w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
 
@@ -1030,7 +1025,7 @@ export function DarkGlassDashboard({
 
   return (
     <div className="w-full h-full min-h-0 overflow-hidden flex flex-col text-white relative" style={{ background: 'transparent' }}>
-      <div className="absolute inset-0 pointer-events-none opacity-20 bg-[url('/noise.png')] mix-blend-overlay z-0" />
+      <div className="absolute inset-0 pointer-events-none opacity-20 mix-blend-overlay z-0" style={{ backgroundImage: 'url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAACXBIWXMAAAsTAAALEwEAmpwYAAABaWlDQ1BEaXNwbGF5IFAzAAB4nHWQvUvDUBTFT6tS0DqIDh0cMolD1NIKdnFoKxRFMFQFq1OafgltfCQpUnETVyn4H1jBWXCwiFRwcXAQRAcR3Zw6KbhoeN6XVNoi3sfl/Ticc7lcwBtQGSv2AijplpFMxKS11Lrke4OHnlOqZrKooiwK/v276/PR9d5PiFlNu3YQ2U9cl84ul3aeAlN//V3Vn8maGv3f1EGNGRbgkYmVbYsJ3iUeMWgp4qrgvMvHgtMunzuelWSc+JZY0gpqhrhJLKc7H/6D+J5n2yfMLn0OKytTFEUSM6cINe4XNXkYgmNK8wbcypdXUjxXwER+INsDGB1jMAkybGEHKCsBDFAIr5aJwbXKdrbbMh3b7Ctij6jr0oIFoeLlnELj0oqLYiEo+EHnQj0DSo9QmZQwTnjYSHcWFH7Yq5qxB2pORSp29+sX9m3k0/2J+MhuP4g8CJv/9T9fCZo0zjscOAAAAABJRU5ErkJggg==)' }} />
       <div className="absolute inset-0 pointer-events-none z-10" style={{ boxShadow: `inset 0 0 60px ${glowColor}05` }} />
       <div className="flex-1 flex overflow-hidden relative z-20">
         {renderNavigationRail()}
@@ -1042,7 +1037,7 @@ export function DarkGlassDashboard({
         </div>
       </div>
       {renderActionBar()}
-      <FloatingTerminalPanel />
+      {irisMode === 'developer' && <FloatingTerminalPanel />}
     </div>
   );
 }

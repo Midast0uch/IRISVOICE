@@ -299,6 +299,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
                 InputField(id="reasoning_model", type=FieldType.DROPDOWN, label="Reasoning Model", options=[], value=""),
                 InputField(id="tool_model", type=FieldType.DROPDOWN, label="Tool Model", options=[], value=""),
                 InputField(id="api_key", type=FieldType.TEXT, label="API Key", placeholder="sk-...", value=""),
+                InputField(id="api_base_url", type=FieldType.TEXT, label="API Endpoint URL", placeholder="https://api.openai.com/v1", value=""),
                 InputField(id="vps_endpoint", type=FieldType.TEXT, label="VPS Endpoint", placeholder="http://vps.example.com", value=""),
             ]
         ),

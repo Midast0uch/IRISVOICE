@@ -159,152 +159,117 @@ async def lifespan(app: FastAPI):
         state_manager = get_state_manager()
         
         # ==========================================================================
-        # AUDIO ENGINE INITIALIZATION WITH COMPREHENSIVE DIAGNOSTIC LOGGING
+        # AUDIO SUBSYSTEM — lazy / on-demand start
+        #
+        # Audio is skipped at startup when:
+        #   1. IRIS_SKIP_AUDIO=1 environment variable is set, OR
+        #   2. iris_config.json has "voice_disabled": true, OR
+        #   3. Running inside WSL (no real audio hardware — Porcupine/PortAudio
+        #      would spin a callback loop against a virtual device burning CPU)
+        #
+        # Voice can be enabled at runtime via POST /api/audio/start.
+        # This eliminates the sustained CPU spike that occurs when the PortAudio
+        # stream polls at 31 Hz on a system with no real microphone.
         # ==========================================================================
-        logger.info("  - Initializing audio engine...")
-        start_time = datetime.now()
-        
-        # Step 1: Get AudioEngine instance via factory function
-        try:
-            audio_engine = get_audio_engine()
-            logger.info(f"    [+] [AUDIO ENGINE] Instance created successfully")
-        except Exception as e:
-            logger.error(f"    [x] [AUDIO ENGINE] Failed to create instance: {e}")
-            raise
-        
-        # Step 2: Log initialization progress with timestamps
-        elapsed = (datetime.now() - start_time).total_seconds()
-        logger.info(f"  - [AUDIO ENGINE] Instance created in {elapsed:.3f}s")
-        
+        def _is_wsl() -> bool:
+            try:
+                with open("/proc/version", "r") as _f:
+                    return "microsoft" in _f.read().lower()
+            except OSError:
+                return False
+
+        _early_cfg = _load_iris_config()
+        _skip_audio = (
+            os.environ.get("IRIS_SKIP_AUDIO", "").strip() == "1"
+            or bool(_early_cfg.get("voice_disabled", False))
+            or (_is_wsl() and os.environ.get("IRIS_FORCE_AUDIO", "").strip() != "1")
+        )
+
+        app.state.audio_engine = None
+        app.state.voice_handler = None
+        audio_engine = None
+        voice_handler = None
+
+        if _skip_audio:
+            _reason = (
+                "IRIS_SKIP_AUDIO=1" if os.environ.get("IRIS_SKIP_AUDIO") == "1"
+                else "voice_disabled in config" if _early_cfg.get("voice_disabled")
+                else "WSL detected (set IRIS_FORCE_AUDIO=1 to override)"
+            )
+            logger.info(f"  - [AUDIO SUBSYSTEM] Skipped at startup — {_reason}")
+            logger.info("    [~] Voice / wake word unavailable until POST /api/audio/start is called")
+        else:
+            logger.info("  - Initializing audio engine...")
+            start_time = datetime.now()
+            try:
+                audio_engine = get_audio_engine()
+                app.state.audio_engine = audio_engine
+            except Exception as e:
+                logger.error(f"    [x] [AUDIO ENGINE] Failed to create instance: {e}")
+                audio_engine = None
+
+            if audio_engine is not None:
+                try:
+                    from backend.audio.voice_command import VoiceCommandHandler
+                    voice_handler = VoiceCommandHandler(audio_engine)
+                    app.state.voice_handler = voice_handler
+                except Exception as e:
+                    logger.warning(f"    [~] [VOICE HANDLER] Failed (non-fatal): {e}")
+
+                try:
+                    _main_loop = asyncio.get_running_loop()
+                    audio_engine.set_wake_word_callback(
+                        lambda word: asyncio.run_coroutine_threadsafe(on_wake_word(word), _main_loop)
+                    )
+                except Exception as e:
+                    logger.warning(f"    [~] [WAKE WORD] Callback registration failed (non-fatal): {e}")
+
+                try:
+                    from backend.agent.wake_config import get_wake_config as _get_wake_cfg
+                    _wake_cfg = _get_wake_cfg()
+                    if not _wake_cfg.get_custom_model_path():
+                        from backend.voice.wake_word_discovery import WakeWordDiscovery
+                        _discovered = WakeWordDiscovery().scan_directory()
+                        if _discovered:
+                            _best = _discovered[0]
+                            _wake_cfg.config["custom_model_path"] = _best.path
+                            _wake_cfg.config["wake_phrase"] = _best.display_name.lower()
+                except Exception as e:
+                    logger.warning(f"    [~] [WAKE WORD] Discovery failed (non-fatal): {e}")
+
+                try:
+                    audio_engine.initialize_porcupine()
+                except Exception as e:
+                    logger.warning(f"    [~] [PORCUPINE] Init failed (non-fatal): {e}")
+
+                try:
+                    from backend.agent.wake_config import get_wake_config
+                    get_wake_config().register_change_callback(audio_engine.reinitialize_porcupine)
+                except Exception as e:
+                    logger.warning(f"    [~] [PORCUPINE] Live update callback failed (non-fatal): {e}")
+
+                if not audio_engine.start():
+                    logger.warning("    [x] [AUDIO ENGINE] Failed to start (mic may be unavailable)")
+                else:
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    logger.info(f"    [+] [AUDIO ENGINE] Started in {elapsed:.3f}s — wake word active")
+
         # ==========================================================================
-        # VOICE COMMAND HANDLER INITIALIZATION WITH DIAGNOSTIC LOGGING
-        # ==========================================================================
-        logger.info("  - Initializing voice command handler...")
-        start_time = datetime.now()
-        try:
-            from backend.audio.voice_command import VoiceCommandHandler, VoiceState
-            voice_handler = VoiceCommandHandler(audio_engine)
-            app.state.voice_handler = voice_handler
-            logger.info(f"    [+] [VOICE HANDLER] Created successfully")
-        except Exception as e:
-            logger.error(f"    [x] [VOICE HANDLER] Failed to create: {e}")
-            raise
-        
-        # faster-whisper / ctranslate2 warm-up is intentionally deferred.
-        # Importing ctranslate2 allocates ~400 MB RAM and initialises a CUDA
-        # context on GPU machines.  Running this at startup races with the
-        # Next.js dev-server compilation and has caused OOM crashes.
-        # Whisper loads lazily on the first voice command instead (~1-2 s).
-        logger.info("    [+] [VOICE HANDLER] faster-whisper will load on first voice command (deferred)")
-        
-        # ==========================================================================
-        # IRIS GATEWAY INITIALIZATION WITH DIAGNOSTIC LOGGING
+        # IRIS GATEWAY — always initialized (needed for chat, settings, WebSocket)
         # ==========================================================================
         logger.info("  - Initializing IRIS Gateway...")
-        start_time = datetime.now()
         try:
             from backend.iris_gateway import get_iris_gateway, IRISGateway
             iris_gateway = get_iris_gateway()
             app.state.iris_gateway = iris_gateway
-            logger.info(f"    [+] [IRIS GATEWAY] Instance created successfully")
+            iris_gateway.set_main_loop(asyncio.get_running_loop())
+            if voice_handler is not None:
+                iris_gateway.set_voice_handler(voice_handler)
+            logger.info("    [+] [IRIS GATEWAY] Ready")
         except Exception as e:
             logger.error(f"    [x] [IRIS GATEWAY] Failed to create: {e}")
             raise
-        
-        # Step 6: Capture the running event loop for background task dispatch
-        try:
-            import asyncio
-            iris_gateway.set_main_loop(asyncio.get_running_loop())
-            logger.info("    [+] [IRIS GATEWAY] Event loop captured")
-        except Exception as e:
-            logger.error(f"    [x] [IRIS GATEWAY] Failed to capture event loop: {e}")
-            raise
-        
-        # Step 7: Wire VoiceCommandHandler → iris_gateway for 4-pillar voice processing
-        try:
-            iris_gateway.set_voice_handler(voice_handler)
-            logger.info("    [+] [IRIS GATEWAY] Voice handler wired")
-        except Exception as e:
-            logger.error(f"    [x] [IRIS GATEWAY] Failed to wire voice handler: {e}")
-            raise
-        
-        # ==========================================================================
-        # WAKE WORD CALLBACK REGISTRATION WITH DIAGNOSTIC LOGGING
-        # ==========================================================================
-        logger.info("  - Registering wake word callback...")
-        try:
-            _main_loop = asyncio.get_running_loop()
-            audio_engine.set_wake_word_callback(
-                lambda word: asyncio.run_coroutine_threadsafe(
-                    on_wake_word(word),
-                    _main_loop
-                )
-            )
-            logger.info("    [+] [WAKE WORD] Callback registered")
-        except Exception as e:
-            logger.error(f"    [x] [WAKE WORD] Failed to register callback: {e}")
-            raise
-        
-        # ==========================================================================
-        # WAKE WORD MODEL DISCOVERY AND CONFIGURATION WITH DIAGNOSTIC LOGGING
-        # ==========================================================================
-        logger.info("  - Discovering wake word models...")
-        try:
-            from backend.agent.wake_config import get_wake_config as _get_wake_cfg
-            _wake_cfg = _get_wake_cfg()
-            if not _wake_cfg.get_custom_model_path():
-                from backend.voice.wake_word_discovery import WakeWordDiscovery
-                _discovered = WakeWordDiscovery().scan_directory()
-                if _discovered:
-                    _best = _discovered[0]
-                    _wake_cfg.config["custom_model_path"] = _best.path
-                    _wake_cfg.config["wake_phrase"] = _best.display_name.lower()
-                    logger.info(f"    [+] [WAKE WORD] Auto-configured: '{_best.display_name}' -> {_best.path}")
-                else:
-                    logger.warning("    [~] [WAKE WORD] No wake word models found")
-            else:
-                logger.debug(f"    - [WAKE WORD] Using custom config: {_wake_cfg.get_custom_model_path()}")
-        except Exception as e:
-            logger.warning(f"    [~] [WAKE WORD] Discovery failed (non-fatal): {e}")
-        
-        # ==========================================================================
-        # PORCUPINE WAKE WORD INITIALIZATION WITH DIAGNOSTIC LOGGING
-        # Wake word failure is NON-FATAL — app still works, just no wake word.
-        # A bad access key, missing model, or audio driver issue must never crash
-        # the entire backend. The agent kernel, chat, and TTS all work without it.
-        # ==========================================================================
-        logger.info("  - Initializing Porcupine...")
-        try:
-            audio_engine.initialize_porcupine()   # reads phrase + sensitivity from WakeConfig
-            logger.info("    [+] [PORCUPINE] Initialized with wake word config")
-        except Exception as e:
-            logger.warning(
-                f"    [~] [PORCUPINE] Wake word init failed (non-fatal — voice activation disabled): {e}"
-            )
-            # Do NOT raise — the app is fully usable without wake word detection.
 
-        # Step 8: Register live-update callback for dynamic wake word changes
-        try:
-            from backend.agent.wake_config import get_wake_config
-            get_wake_config().register_change_callback(audio_engine.reinitialize_porcupine)
-            logger.info("    [+] [PORCUPINE] Live wake-word updates registered")
-        except Exception as e:
-            logger.warning(f"    [~] [PORCUPINE] Wake-word update callback failed (non-fatal): {e}")
-        
-        # Step 9: Start the AudioEngine so Porcupine frame detection runs
-        start_time = datetime.now()
-        if not audio_engine.start():
-            elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(f"    [x] [AUDIO ENGINE] Failed to start in {elapsed:.3f}s (mic may be unavailable)")
-        else:
-            elapsed = (datetime.now() - start_time).total_seconds()
-            logger.info(f"    [+] [AUDIO ENGINE] Started successfully in {elapsed:.3f}s — Porcupine wake word detection active")
-        
-        # Step 10: Log overall audio subsystem initialization status
-        total_elapsed = (datetime.now() - start_time).total_seconds()
-        logger.info(f"  - [AUDIO SUBSYSTEM] Initialization complete in {total_elapsed:.3f}s")
-        logger.debug("  - Audio subsystem ready for wake word detection and voice processing")
-        
         # ==========================================================================
         # AGENT KERNEL INITIALIZATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
@@ -966,6 +931,92 @@ async def get_launcher_status():
     }
 
 
+# ============================================================================
+# Model Config API — launcher settings page reads/writes provider + credentials
+# ============================================================================
+
+@app.get("/api/model-config")
+async def get_model_config():
+    """Return current inference provider config for the launcher settings page."""
+    cfg = _load_iris_config()
+    kernel = getattr(app.state, "agent_kernel", None)
+    if kernel is not None:
+        provider = getattr(kernel, "_model_provider", cfg.get("model_provider", "uninitialized"))
+        api_key_raw = getattr(kernel, "_api_key", "")
+        api_base_url = getattr(kernel, "_api_base_url", cfg.get("api_base_url", "https://api.openai.com/v1"))
+    else:
+        provider = cfg.get("model_provider", "uninitialized")
+        api_key_raw = cfg.get("api_key", "")
+        api_base_url = cfg.get("api_base_url", "https://api.openai.com/v1")
+    return {
+        "model_provider": provider,
+        "api_key_set": bool(api_key_raw),
+        "api_base_url": api_base_url,
+    }
+
+
+@app.post("/api/model-config")
+async def set_model_config(request: dict):
+    """Apply inference provider config from the launcher settings page."""
+    provider = request.get("model_provider", "")
+    api_key = request.get("api_key", "")
+    api_base_url = request.get("api_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"
+
+    # Persist to iris_config.json (api_key intentionally omitted from disk for security)
+    cfg = _load_iris_config()
+    cfg["model_provider"] = provider
+    cfg["api_base_url"] = api_base_url
+    if api_key:
+        cfg["api_key"] = api_key
+    _save_iris_config(cfg)
+
+    # Apply to live kernel
+    kernel = getattr(app.state, "agent_kernel", None)
+    if kernel is not None:
+        try:
+            if provider == "api":
+                kernel.configure_api(api_key or getattr(kernel, "_api_key", ""), api_base_url)
+            elif provider == "iris_local":
+                mgr = getattr(app.state, "local_model_manager", None)
+                if mgr is not None:
+                    kernel.configure_inprocess_local(mgr)
+                else:
+                    kernel._model_provider = "iris_local"
+            elif provider == "lmstudio":
+                kernel.configure_lmstudio(api_base_url)
+            elif provider == "local":
+                kernel.configure_ollama(api_base_url or "http://localhost:11434")
+            logger.info(f"[ModelConfig] Provider set to {provider!r} via launcher settings")
+        except Exception as exc:
+            logger.warning(f"[ModelConfig] Failed to apply to kernel: {exc}")
+            return {"ok": False, "error": str(exc)}
+
+    return {"ok": True, "model_provider": provider}
+
+
+@app.post("/api/test-connection")
+async def test_connection_rest(request: dict):
+    """Lightweight connection test for the launcher settings page."""
+    api_key = request.get("api_key", "")
+    api_url = request.get("api_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"
+
+    # If no key provided, fall back to kernel's stored key
+    if not api_key:
+        kernel = getattr(app.state, "agent_kernel", None)
+        if kernel is not None:
+            api_key = getattr(kernel, "_api_key", "")
+
+    if not api_key:
+        return {"ok": False, "error": "API key is required"}
+
+    try:
+        from .utils.openai_connection_test import test_openai_connection
+        success, msg = await test_openai_connection(api_key, api_url)
+        return {"ok": success, "message": msg}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @app.get("/api/projects")
 async def get_projects():
     """
@@ -1014,6 +1065,66 @@ async def save_projects(request: dict):
     cfg["projects"] = projects
     _save_iris_config(cfg)
     return {"projects": projects, "status": "ok"}
+
+
+# ============================================================================
+# Audio Engine On-Demand Control
+# Allows the launcher to start/stop the audio pipeline without restarting the
+# backend — important on WSL where audio is skipped at startup by default.
+# ============================================================================
+
+@app.get("/api/audio/status")
+async def get_audio_status():
+    """Return current audio pipeline state."""
+    engine = getattr(app.state, "audio_engine", None)
+    cfg = _load_iris_config()
+    return {
+        "running": engine is not None and getattr(engine, "_is_running", False),
+        "available": engine is not None,
+        "voice_disabled": bool(cfg.get("voice_disabled", False)),
+    }
+
+
+@app.post("/api/audio/start")
+async def start_audio():
+    """Start the audio pipeline on-demand (e.g. when user enables voice mode)."""
+    engine = getattr(app.state, "audio_engine", None)
+    if engine is None:
+        # First-time init — create engine now
+        try:
+            engine = get_audio_engine()
+            app.state.audio_engine = engine
+        except Exception as exc:
+            return {"ok": False, "error": f"Audio engine unavailable: {exc}"}
+
+    if getattr(engine, "_is_running", False):
+        return {"ok": True, "message": "Already running"}
+
+    try:
+        ok = engine.start()
+        if ok:
+            cfg = _load_iris_config()
+            cfg["voice_disabled"] = False
+            _save_iris_config(cfg)
+        return {"ok": ok, "message": "Started" if ok else "Failed to start (check microphone)"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/audio/stop")
+async def stop_audio():
+    """Stop the audio pipeline to free CPU/mic when voice is not needed."""
+    engine = getattr(app.state, "audio_engine", None)
+    if engine is None or not getattr(engine, "_is_running", False):
+        return {"ok": True, "message": "Already stopped"}
+    try:
+        engine.stop()
+        cfg = _load_iris_config()
+        cfg["voice_disabled"] = True
+        _save_iris_config(cfg)
+        return {"ok": True, "message": "Stopped"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 # ============================================================================
