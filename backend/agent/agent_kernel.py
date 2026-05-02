@@ -24,6 +24,15 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+import os as _os
+
+def _recall_native_enabled() -> bool:
+    """
+    True unless IRIS_RECALL_NATIVE is explicitly set to 0/false/no.
+    Recall-native is the default path; the env var is a debug off-switch.
+    """
+    return _os.environ.get("IRIS_RECALL_NATIVE", "1").strip() not in ("0", "false", "no")
+
 # ── DER Loop constants (spec: agent_loop_requirements.md Gap 11) ───────────
 # Canonical values live in der_constants.py — re-exported here for spec
 # compliance so module-level code that imports from agent_kernel finds them.
@@ -303,6 +312,14 @@ class AgentKernel:
         # MCM Protocol Orchestrator — wired after set_memory_interface()
         self._mcm_orch = None
 
+        # Recall-native: decoder wired at set_memory_interface()
+        self._recall_decoder = None
+        # Active DER context refs — set/cleared per _execute_plan_der call
+        self._active_live_context = None
+        self._active_immortus_session = None
+        # Active RecallPhases instance — allows outcome feedback after episode storage
+        self._active_recall_phases = None
+
         # ── DER Loop components ────────────────────────────────────────────
         # DER_MAX_CYCLES / DER_MAX_VETO_PER_ITEM re-exported at module level
         # for spec compliance (Gap 11). Canonical values live in der_constants.
@@ -377,6 +394,18 @@ class AgentKernel:
         except Exception as _mcm_err:
             logger.warning(f"[AgentKernel] MCMOrchestrator unavailable: {_mcm_err}")
             self._mcm_orch = None
+
+        # Wire RecallDecoder now that memory is available
+        self._recall_decoder = None
+        try:
+            from backend.agent.recall_decoder import RecallDecoder
+            self._recall_decoder = RecallDecoder(
+                memory_interface=memory_interface,
+                session_id=self.session_id,
+            )
+            logger.info("[AgentKernel] RecallDecoder wired")
+        except Exception as _rd_err:
+            logger.debug("[AgentKernel] RecallDecoder unavailable: %s", _rd_err)
 
     def infer(
         self,
@@ -490,6 +519,15 @@ class AgentKernel:
             self._memory_interface.store_episode(episode)
             logger.debug(
                 f"[AgentKernel] Stored episode for task: {task_summary[:50]}...")
+
+            # Step 5: update outcome on any pending recall episode for this task
+            if _recall_native_enabled():
+                try:
+                    active_phases = getattr(self, "_active_recall_phases", None)
+                    if active_phases is not None:
+                        active_phases.update_recall_outcome(outcome_type)
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.warning(f"[AgentKernel] Failed to store episode: {e}")
@@ -873,6 +911,16 @@ class AgentKernel:
                 )
             else:
                 base = base + "\n\n--- DEVELOPER MODE ACTIVE ---\n" + worktree_block
+
+        # Recall grammar primer — always appended when the recall decoder is wired.
+        # Stable across turns (≤40 tokens) so it stays in the provider's prompt cache.
+        if self._recall_decoder is not None:
+            try:
+                from .recall_phases import RECALL_GRAMMAR_PRIMER
+                base = base + RECALL_GRAMMAR_PRIMER
+            except ImportError:
+                pass
+
         return base
 
     # ------------------------------------------------------------------
@@ -892,7 +940,51 @@ class AgentKernel:
         Only sequences of 2+ tools are considered (single-tool calls are noise).
         When a pattern reaches self._skill_trigger_threshold uses this session,
         the agent is prompted once to create a SKILL.md for it.
+
+        Also scans recall episodes (source_channel='recall') — 3+ identical recall
+        op patterns with successful outcomes trigger the same skill creation logic.
         """
+        # ── Recall episode pattern scan ───────────────────────────────────
+        if self._memory_interface is not None and hasattr(self._memory_interface, "episodic"):
+            try:
+                import json as _json
+                from collections import Counter as _Counter
+                db = getattr(self._memory_interface.episodic, "db", None)
+                if db is not None:
+                    rows = db.execute(
+                        "SELECT tool_sequence FROM episodes "
+                        "WHERE source_channel='recall' AND outcome_type='success' "
+                        "ORDER BY id DESC LIMIT 30"
+                    ).fetchall()
+                    pattern_counts: dict = _Counter()
+                    for (ts_raw,) in rows:
+                        try:
+                            ops = _json.loads(ts_raw) if isinstance(ts_raw, str) else (ts_raw or [])
+                            if ops and len(ops) >= 2:
+                                key = " → ".join(o.get("op", "") for o in ops if o.get("op"))
+                                if key:
+                                    pattern_counts[key] += 1
+                        except Exception:
+                            pass
+                    for rp_key, rp_count in pattern_counts.items():
+                        if rp_count >= 3 and rp_key not in self._prompted_skill_patterns:
+                            self._prompted_skill_patterns.add(rp_key)
+                            prompt = (
+                                f"Recall op sequence [{rp_key}] succeeded {rp_count} times across recent sessions. "
+                                "This persistent recall pattern is a strong candidate for a reusable skill. "
+                                "Please create a SKILL.md in backend/agent/skills/ that codifies this recall "
+                                "sequence so future sessions can invoke it by name."
+                            )
+                            logger.info(
+                                "[AgentKernel] Recall skill trigger: %s (count=%d)", rp_key, rp_count
+                            )
+                            if hasattr(self, "_pending_follow_ups"):
+                                self._pending_follow_ups.append(prompt)
+                            else:
+                                self._pending_follow_ups = [prompt]
+            except Exception:
+                pass
+
         if not tool_sequence or len(tool_sequence) < 2:
             return
 
@@ -1138,79 +1230,58 @@ class AgentKernel:
 
     def _assemble_direct_context(self, text: str, context: List[Dict]) -> List[Dict]:
         """
-        Build the message list for _respond_direct using all three memory layers
-        from the Context Engineering spec (CONTEXT_ENGINEERING.md §1–3):
+        Build the message list for _respond_direct.
 
-          Layer 1 — Mycelium coordinate graph  → already in system_prompt via
-                                                  _build_system_prompt()
-          Layer 2 — Episodic store             → injected here as memory block
-          Layer 3 — Working memory / history   → token-aware full context, NOT
-                                                  a hard-capped roll window
+        Recall-native mode (always active when recall_decoder is wired):
+          Layer 1 — NBL + recall grammar primer  → system prompt
+          Layer 3 — Working memory / history     → token-aware rolling window
+          Memory is reached on-demand via <recall .../> ops in Phase R.
 
-        The result is unlimited effective memory: the agent sees all context
-        that fits in the budget. When history exceeds the budget, the oldest
-        messages are trimmed — but episodic summaries from Mycelium still carry
-        the gist of older sessions forward (Layer 2).
-
-        Design rules (from spec):
-          • Never drop the current user turn
-          • First non-system message must be "user" (Qwen3 / most models)
-          • Episodic block is a system-adjacent user↔assistant exchange so it
-            doesn't break the alternating pattern
+        Fallback (no decoder / flag off):
+          Layer 2 — Episodic store  → pre-injected <memory> block
+          Layer 3 — DB-backed semantic chunks + rolling window
         """
         system_prompt = self._build_system_prompt()
 
-        # ── Layer 2: episodic injection ───────────────────────────────────
+        # ── Layer 2/3 pre-injection (fallback only — used when recall decoder not wired) ──
         episodic_prefix: List[Dict] = []
-        try:
-            if self._memory_interface is not None and hasattr(self._memory_interface, "episodic"):
-                ep_ctx = self._memory_interface.episodic.assemble_episodic_context(text)
-                if ep_ctx and ep_ctx.strip():
-                    # Inject as a pseudo-exchange so the message pattern stays
-                    # [system, user, assistant, user, assistant, …, user]
-                    episodic_prefix = [
-                        {"role": "user",      "content": f"<memory>\n{ep_ctx.strip()}\n</memory>"},
-                        {"role": "assistant", "content": "Understood — I have that context."},
-                    ]
-        except Exception:
-            pass  # episodic failure never blocks the response
+        chunk_prefix: List[Dict] = []
+        if not _recall_native_enabled() or self._recall_decoder is None:
+            try:
+                if self._memory_interface is not None and hasattr(self._memory_interface, "episodic"):
+                    ep_ctx = self._memory_interface.episodic.assemble_episodic_context(text)
+                    if ep_ctx and ep_ctx.strip():
+                        episodic_prefix = [
+                            {"role": "user",      "content": f"<memory>\n{ep_ctx.strip()}\n</memory>"},
+                            {"role": "assistant", "content": "Understood — I have that context."},
+                        ]
+            except Exception:
+                pass
+            try:
+                if (
+                    self._memory_interface is not None
+                    and hasattr(self._memory_interface, "episodic")
+                    and hasattr(self._memory_interface.episodic, "retrieve_context_chunks")
+                ):
+                    _chunks = self._memory_interface.episodic.retrieve_context_chunks(
+                        query=text,
+                        session_id=getattr(self, "session_id", None),
+                        limit=6,
+                        min_similarity=0.25,
+                    )
+                    if _chunks:
+                        chunk_text = "\n---\n".join(_chunks)
+                        chunk_prefix = [
+                            {"role": "user",      "content": f"<context_memory>\n{chunk_text}\n</context_memory>"},
+                            {"role": "assistant", "content": "Understood — I have those context fragments."},
+                        ]
+            except Exception:
+                pass
 
-        # ── Layer 3: Option B — DB-backed semantic context (Pacman retrieval) ──
-        # Instead of a blind rolling-window crop, we retrieve the most relevant
-        # conversation fragments stored by fragment_and_store().  Falls back to
-        # the plain rolling window when no chunks exist yet (first turn, fresh DB).
-        #
-        # Recency anchor: always keep the last _RECENCY_TURNS raw turns so the
-        # model can follow short-term conversational flow regardless of relevance.
         _RECENCY_TURNS = 4
-
         sys_tokens     = len(system_prompt) // self._CHARS_PER_TOKEN
         ep_tokens      = self._count_tokens(episodic_prefix)
         current_tokens = len(text) // self._CHARS_PER_TOKEN
-
-        # ── 3a: semantic chunk retrieval from DB ──────────────────────────
-        chunk_prefix: List[Dict] = []
-        try:
-            if (
-                self._memory_interface is not None
-                and hasattr(self._memory_interface, "episodic")
-                and hasattr(self._memory_interface.episodic, "retrieve_context_chunks")
-            ):
-                _chunks = self._memory_interface.episodic.retrieve_context_chunks(
-                    query=text,
-                    session_id=getattr(self, "session_id", None),
-                    limit=6,
-                    min_similarity=0.25,
-                )
-                if _chunks:
-                    chunk_text = "\n---\n".join(_chunks)
-                    # Inject as a pseudo-exchange so role alternation stays valid
-                    chunk_prefix = [
-                        {"role": "user",      "content": f"<context_memory>\n{chunk_text}\n</context_memory>"},
-                        {"role": "assistant", "content": "Understood — I have those context fragments."},
-                    ]
-        except Exception:
-            pass  # chunk retrieval failure never blocks the response
 
         chunk_tokens = self._count_tokens(chunk_prefix)
         budget_for_history = (
@@ -1258,6 +1329,178 @@ class AgentKernel:
 
         return messages
 
+    def _refresh_recall_nbl(self) -> None:
+        """Update the recall decoder's NBL fingerprint from the current brain state."""
+        if self._recall_decoder is None:
+            return
+        try:
+            myc = getattr(self._memory_interface, '_mycelium', None)
+            if myc is None:
+                return
+            from backend.memory.nbl import build_nbl
+            conn = getattr(myc._store, '_conn', None)
+            if conn is None:
+                return
+            nbl = build_nbl(conn, self.session_id)
+            self._recall_decoder.update_nbl(nbl)
+        except Exception:
+            pass
+
+    def _build_recall_infer_fn(self):
+        """
+        Build a provider-agnostic infer_fn for RecallPhases.
+        Returns None if no provider is configured.
+        """
+        from .recall_phases import make_openai_compat_infer
+
+        # OpenAI-compatible (LM Studio, DeepSeek, etc.)
+        if self._is_openai_compat():
+            client = self._get_lmstudio_client()
+            sel = self._selected_reasoning_model or "local-model"
+            return make_openai_compat_infer(client, sel)
+
+        # API provider (Anthropic, OpenAI, any base_url)
+        if self._is_api_provider():
+            try:
+                import openai as _openai
+                client = _openai.OpenAI(
+                    api_key=self._api_key,
+                    base_url=self._api_base_url or "https://api.openai.com/v1",
+                )
+                sel = self._selected_reasoning_model or "gpt-4o-mini"
+                return make_openai_compat_infer(client, sel)
+            except Exception:
+                pass
+
+        # Ollama
+        if self._selected_reasoning_model and ":" in (self._selected_reasoning_model or ""):
+            model = self._selected_reasoning_model
+            def _ollama_infer(messages, max_tokens=-1, temperature=0.6, stop=None, chunk_callback=None):
+                import requests as _req
+                import json as _json
+                # C4: always pass temperature — Ollama server default differs from 0.6
+                opts: dict = {"temperature": temperature}
+                if stop:
+                    opts["stop"] = stop
+                payload: dict = {"model": model, "messages": messages}
+                if opts:
+                    payload["options"] = opts
+
+                if chunk_callback:
+                    payload["stream"] = True
+                    full = ""
+                    with _req.post(
+                        "http://localhost:11434/api/chat",
+                        json=payload, stream=True, timeout=120
+                    ) as r:
+                        for line in r.iter_lines():
+                            if not line:
+                                continue
+                            try:
+                                data = _json.loads(line)
+                            except Exception:
+                                continue
+                            delta = data.get("message", {}).get("content", "")
+                            if delta:
+                                full += delta
+                                chunk_callback(delta)
+                            if data.get("done"):
+                                break
+                    return full
+                else:
+                    payload["stream"] = False
+                    r = _req.post("http://localhost:11434/api/chat", json=payload, timeout=60)
+                    if r.status_code == 200:
+                        return r.json().get("message", {}).get("content", "")
+                    return ""
+            return _ollama_infer
+
+        # Local in-process model
+        reasoning_model = None
+        if self._model_router and self._selected_reasoning_model:
+            reasoning_model = self._model_router.models.get(self._selected_reasoning_model)
+        if not reasoning_model and self._model_router:
+            reasoning_model = self._model_router.get_reasoning_model()
+        if reasoning_model:
+            def _local_infer(messages, max_tokens=-1, temperature=0.6, stop=None, chunk_callback=None):
+                # Flatten messages to a single prompt for the local generate() API
+                prompt = "\n".join(
+                    f"{m['role'].upper()}: {m.get('content','')}"
+                    for m in messages if m.get('content')
+                )
+                reply = reasoning_model.generate(prompt)
+                if chunk_callback and reply:
+                    chunk_callback(reply)
+                return reply
+            return _local_infer
+
+        return None
+
+    def _on_recall_spans(self, spans: list, task_text: str) -> None:
+        """
+        Feed resolved recall spans back into DER/Immortus feedback loops.
+        Called after Phase A when recall-native mode resolves one or more ops.
+        Never raises — all failures are logged and swallowed.
+        """
+        try:
+            # 1. Append recall event to working memory zone for audit/distillation
+            if self._memory_interface is not None:
+                summary_parts = [f"{s.op.op_type}:{s.status}:{s.confidence:.2f}" for s in spans]
+                self._memory_interface.append_to_session(
+                    session_id=self.session_id,
+                    content=f"[recall] {', '.join(summary_parts)}",
+                    zone="tool",
+                )
+        except Exception as e:
+            logger.debug("[AgentKernel] recall span logging failed: %s", e)
+
+        try:
+            # 2. Feed to TrailingDirector for gap analysis (low-confidence = gaps)
+            if self._trailing_director is not None and hasattr(self._trailing_director, "record_recall_event"):
+                for s in spans:
+                    if s.confidence < 0.3:
+                        self._trailing_director.record_recall_event(s.op.op_type, s.content)
+        except Exception as e:
+            logger.debug("[AgentKernel] trailing director recall feed failed: %s", e)
+
+        try:
+            # 3. Feed to LiveContextPackage if an active DER loop has one
+            live_ctx = getattr(self, "_active_live_context", None)
+            if live_ctx is not None and hasattr(live_ctx, "record_recall_event"):
+                for s in spans:
+                    live_ctx.record_recall_event(
+                        op_type=s.op.op_type,
+                        result_summary=s.content[:200],
+                        confidence=s.confidence,
+                        status=s.status,
+                    )
+        except Exception as e:
+            logger.debug("[AgentKernel] live_context recall feed failed: %s", e)
+
+        try:
+            # 4. Immortus pivot: if a <recall route/> span returned a higher-confidence
+            #    route than the current committed route, apply_pivot() mid-loop
+            immortus = getattr(self, "_active_immortus_session", None)
+            if immortus is not None and immortus.can_pivot():
+                for s in spans:
+                    if s.op.op_type == "route" and s.status == "ok" and s.confidence > 0:
+                        committed_score = immortus.committed_route.current_score(
+                            immortus.temporal_coord
+                        )
+                        # Check if any latent route beats the committed route by >10%
+                        best = immortus.best_latent()
+                        if best is not None:
+                            best_score = best.current_score(immortus.temporal_coord)
+                            if best_score > committed_score * 1.1:
+                                immortus.apply_pivot(best)
+                                logger.info(
+                                    "[AgentKernel] Immortus pivot triggered by recall route — "
+                                    "new route score=%.2f (was %.2f)",
+                                    best_score, committed_score,
+                                )
+        except Exception as e:
+            logger.debug("[AgentKernel] immortus pivot failed: %s", e)
+
     def _respond_direct(self, text: str, context: List[Dict], chunk_callback: Optional[Callable[[str], None]] = None) -> str:
         """
         Respond directly to the user without planning or tool execution.
@@ -1265,10 +1508,36 @@ class AgentKernel:
 
         Context uses all three memory layers (see CONTEXT_ENGINEERING.md):
           Layer 1: Mycelium coordinates → system prompt
-          Layer 2: Episodic store       → memory block prefix
+          Layer 2: Episodic store       → memory block prefix (or recall-native ops)
           Layer 3: Full history         → token-aware (not a hard roll window)
         """
         messages = self._assemble_direct_context(text, context)
+
+        # ── Recall-native mode: route through two-phase protocol ─────────────
+        # Active whenever the recall decoder is wired (set_memory_interface called).
+        # IRIS_RECALL_NATIVE=0 can still force-disable during debugging.
+        if self._recall_decoder is not None and _recall_native_enabled():
+            try:
+                # Refresh NBL fingerprint so cache reflects current brain state
+                self._refresh_recall_nbl()
+
+                infer_fn = self._build_recall_infer_fn()
+                if infer_fn is not None:
+                    from .recall_phases import RecallPhases
+                    phases = RecallPhases(
+                        infer_fn=infer_fn,
+                        decoder=self._recall_decoder,
+                        enabled=True,
+                        memory_interface=self._memory_interface,
+                        session_id=self.session_id,
+                    )
+                    self._active_recall_phases = phases
+                    answer, spans = phases.run(messages, chunk_callback=chunk_callback)
+                    if spans:
+                        self._on_recall_spans(spans, text)
+                    return answer
+            except Exception as _rp_err:
+                logger.warning("[AgentKernel] RecallPhases failed (%s) — falling back to standard path", _rp_err)
 
         try:
             # LM Studio (OpenAI-compatible)
@@ -2118,7 +2387,8 @@ class AgentKernel:
                 "[AgentKernel] Direct response path (no planning needed)")
             try:
                 _t_llm_start = time.perf_counter()
-                response = self._respond_direct(text, context)
+                # C5: forward chunk_callback so direct-path responses stream to the client
+                response = self._respond_direct(text, context, chunk_callback=chunk_callback)
                 _t_llm_end = time.perf_counter()
                 logger.info(
                     f"[Timing] LLM call (_respond_direct): {(_t_llm_end - _t_llm_start) * 1000:.0f} ms  |  "
@@ -2817,6 +3087,37 @@ Respond with a JSON object:
         except Exception:
             _live_ctx = None  # graceful no-op if import fails
 
+        # Expose to _on_recall_spans so recall events feed into this DER loop
+        self._active_live_context = _live_ctx
+
+        # ── Immortus activation ─────────────────────────────────────────────
+        # Wire ImmortusBrain for deep plans so recall route ops can pivot the
+        # committed execution path mid-loop.
+        _immortus_session = None
+        self._active_immortus_session = None
+        try:
+            from backend.agent.immortus.brain import ImmortusBrain
+            from backend.agent.immortus.router import SpeculativeRouter
+            _immortus_brain = ImmortusBrain(
+                router=SpeculativeRouter(),
+                graph=getattr(self._memory_interface, '_mycelium', None),
+            )
+            _immortus_session = _immortus_brain.evaluate(
+                plan=plan,
+                context_package=context_package,
+                session_id=_session,
+            )
+            if _immortus_session is not None:
+                self._active_immortus_session = _immortus_session
+                logger.info(
+                    "[AgentKernel] ImmortusBrain activated — thread=%s depth=%d routes=%d",
+                    _immortus_session.thread_id,
+                    _immortus_session.depth,
+                    len(_immortus_session.latent_routes) + 1,
+                )
+        except Exception as _imm_err:
+            logger.debug("[AgentKernel] ImmortusBrain unavailable: %s", _imm_err)
+
         # Reviewer — falls back to PASS on any failure (membrane, not gate)
         reviewer = self._reviewer
 
@@ -3144,6 +3445,10 @@ Respond with a JSON object:
                     pass
         except Exception:
             pass
+
+        # Clear active context refs so stale references don't persist past this DER loop
+        self._active_live_context = None
+        self._active_immortus_session = None
 
         if step_outputs:
             return "\n".join(o for o in step_outputs if o)

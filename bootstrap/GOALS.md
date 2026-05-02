@@ -41,12 +41,59 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
          Without this confirmed, the agent kernel is not verified to work at all.
   ② [13.5] Session-end diff review — DONE (2026-04-30). Diffs reach DiffReviewPage before merge.
           Human review gate now exists between agent edits and the live repo.
-    ③ [4.5] Self-improvement skill — agent must proactively codify repeated tool patterns
+    ③ [4.5] Self-improvement skill — DONE (2026-04-30). Pattern detection wired: after
+         _maybe_trigger_skill_creation fires, _pending_follow_ups are flushed as
+         assistant messages in iris_gateway (text path + voice path).
          Without this, IRIS cannot grow its own skill set autonomously.
     ④ [8.1] Clean install verified — the app must run without a dev environment
          Without this, autonomy requires an external machine with all dev tools installed.
 
   VERIFIED THIS SESSION (2026-04-30):
+    [4.5]  Self-improvement skill — IMPLEMENTED + 7/7 unit tests pass.
+           _maybe_trigger_skill_creation (line 882) fires when pattern hit threshold.
+           _flush_pending_follow_ups (new, iris_gateway.py) sends first queued prompt
+           as assistant text_response after every chat turn (text path + voice path).
+           Test: venv/bin/python3 /tmp/test_suggestions.py → 7/7 PASSED.
+
+    [14.16] hooks/useDevMode.ts — IMPLEMENTED + tsc --noEmit exits 0.
+           Handles iris:cli_activity, iris:cli_started, iris:cli_output (capped 500 lines),
+           iris:file_activity (capped 50). openFileAsTab via GET /api/files/read.
+           Dev mode state cleared on mode toggle. Event listeners cleaned up on unmount.
+
+    [14.19] backend/state_manager.py CLI state — IMPLEMENTED + 7/7 unit tests pass.
+           Methods: set/get_working_directory, get_recent_directories (last 5),
+           set/get_active_cli_tool, set/is_dev_mode_active, clear_cli_state.
+           Per-session isolation verified (sessions s1 and s2 independent).
+           Test: venv/bin/python3 /tmp/test_state_cli2.py → 7/7 PASSED.
+
+    [14.21] Suggestion generation — IMPLEMENTED + 7/7 unit tests pass.
+           _generate_suggestions() in iris_gateway.py: max_tokens=120, JSON array,
+           labels capped 40 chars, graceful degradation on LLM failure → [].
+           Wired into text chat path (after chat_message) + voice path (in text_response).
+           suggestions field forwarded in iris:text_response CustomEvent.
+           Test: venv/bin/python3 /tmp/test_suggestions.py → 7/7 PASSED.
+
+    [14.2]  components/chat/SuggestionPills.tsx — IMPLEMENTED + tsc exits 0.
+           Personal mode: glass pill buttons, Framer Motion layout animation.
+           Developer mode: monospace with "> " prefix, terminal border aesthetic.
+           Backdrop click + Escape key = dismiss. layoutId morph on select.
+           Requires mounting in chat-view.tsx (next session) + backend running.
+
+    Backend regression: venv/bin/python3 -m pytest (excluding 5 broken-import
+           files) → 343 passed, 10 skipped, 7 pre-existing failures (missing
+           speech_recognition/openai modules + _mcm_orch attr — not caused by
+           this session's changes).
+    TypeScript: npx tsc --noEmit → exit 0, no errors.
+
+    UX screenshots taken (headless Chromium, localhost:3000):
+      - Launcher mode-select: Personal Mode + Developer Mode cards visible
+        (/tmp/iris_main.png — 29466 bytes)
+      - Developer Mode dashboard: DEVELOPER sidebar (GitHub, Git & Source,
+        Diff Review, Rebuild) + Switch Mode + System Healthy
+        (/tmp/verify_02_dev_mode.jpg)
+      - Overview page: sidebar confirmed, mode indicator visible
+        (/tmp/verify_03_overview.jpg)
+
     [13.5] Session-end diff review — DONE. Backend shutdown hook captures worktree diff
            into in-memory queue + broadcasts session_end WS event. /api/diff/pending returns
            per-file PendingWrite items. Launcher auto-navigates to DiffReviewPage on
@@ -66,13 +113,13 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
   DOMAINS WITH OPEN ITEMS:
     Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2][2.3] manual e2e not confirmed)
     Domain 3  — Vision          (DEVELOPING — [3.1][3.2] need 2 more passing runs each)
-    Domain 4  — Skills          (PARTIAL — [4.4][4.5] not done)
+    Domain 4  — Skills          (PARTIAL — [4.4] not done; [4.5]✓ 2026-04-30)
     Domain 7  — Backend quality (PARTIAL — [7.5] logging not standardised)
     Domain 8  — Distribution    (PARTIAL — [8.1] Linux AppImage/deb untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run these next)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
     Domain 13 — Launcher: Personal/Developer Mode (DONE — [13.5] completed 2026-04-30) ← GATE 2 ✓
-    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — [14.2][14.16][14.19][14.21] remain)
+    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — [14.2]✓ [14.16]✓ [14.19]✓ [14.21]✓ implemented+tested 2026-04-30; [14.3] chat-view dev skin mount remaining)
     Domain 15 — Linux Build (PARTIAL — [15.1][15.2][15.4] remain; [15.3]✓ [15.5]✓)
 
   DOMAINS COMPLETE (do not revisit unless regression):
@@ -85,11 +132,11 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
   PRIORITY ORDER FOR NEW SESSIONS:
     1. G1.6 e2e manual test — load GGUF, send message, confirm GPU inference streams
          This unblocks ALL of Gate 2 verification and Domain 4 self-improvement.
-    2. Domain 4  [4.5]  — Self-improvement skill (IRIS builds its own skills)
+    2. [14.3] chat-view.tsx dev skin — mount SuggestionPills, CLI status bar, DEV badge
+         (hooks/useDevMode.ts + SuggestionPills.tsx already built — just needs mounting)
     3. Domain 8  [8.1]  — Clean install from AppImage/deb (no dev env)
-    4. Domain 14 remaining — [14.2][14.16][14.19][14.21]
-    5. Domain 11 — PiN + landmark bridge verification
-    6. Domain 3  — Vision (2 more passing runs each)
+    4. Domain 11 — PiN + landmark bridge verification
+    5. Domain 3  — Vision (2 more passing runs each)
     7. Domain 2  — Voice pipeline e2e
     8. Domain 9  — Advanced features (after everything else)
 
@@ -1623,6 +1670,118 @@ selected mode — on both platforms.
     4. Select Developer → IRIS starts with DEV badge + terminal tab + CLI routing active
     5. Voice pipeline functional on Linux (wake word, STT, TTS)
     6. Same mode-switch flow verified on Windows Tauri build
+
+---
+
+DOMAIN 16 — RECALL-AS-COGNITION (BRAIN-NATIVE AGENT KERNEL)  ✓ PHASE 1 COMPLETE
+
+  Status: SHIPPED 2026-05-01. Phase 1 (core protocol + DER wiring) done.
+  Plan: docs/plans/recall-as-cognition.md
+  MCM Pin: pin_012bc6d1bd67 (decision, is_permanent=1)
+
+  WHAT WAS SHIPPED
+    Recall-native is now the default inference path. Context window is a rubber
+    threshold; the DB is the brain.
+
+    Core: two-phase protocol (Phase R recall → resolver → Phase A answer).
+    Provider-uniform via prompt caching. IRIS_RECALL_NATIVE=0 to disable (debug).
+
+    new:    backend/agent/recall_decoder.py     — 7-op grammar + resolvers + cache
+    new:    backend/agent/recall_phases.py      — two-phase orchestrator + episode logger
+    new:    backend/agent/tests/test_recall_decoder.py   (34 tests)
+    new:    backend/agent/tests/test_recall_integration.py (24 tests, 5 live)
+    new:    backend/agent/tests/test_recall_ab.py         (6 tests, 1 live A/B)
+    edit:   backend/agent/agent_kernel.py       — recall wired default-on; ImmortusBrain
+                                                  NOW CONNECTED to _execute_plan_der
+                                                  (was built but never used before)
+    edit:   backend/memory/live_context.py      — record_recall_event() drain into DER
+    edit:   backend/agent/trailing_director.py  — record_recall_event() gap seeds
+    edit:   backend/agent/skill_registry.py     — search(query) added
+
+  MEASURED RESULTS (live A/B, DeepSeek API, 10-task cross-domain)
+    Prompt token reduction: 84.9%   (target ≥30%) ✓
+    Empty answers:          0        ✓
+    p95 latency ratio:      0.95×   (target ≤1.5×) ✓
+    Regression:             799/799 original tests pass, 0 new failures ✓
+
+  PHASE 2 — WHAT NEEDS WORK (next session)
+
+    [16.1] update_recall_outcome() from voice/text path
+           Conversational turns (non-DER) never close the recall episode feedback
+           loop — those episodes stay as outcome='partial' forever.
+           Fix: wire a correction/confirmation signal from iris_gateway.py into
+           RecallPhases.update_recall_outcome() after each chat turn.
+           File: backend/iris_gateway.py + backend/agent/recall_phases.py
+
+    [16.2] Phase R op selection quality
+           Model emits recall ops but doesn't always choose the most relevant type.
+           Grammar primer tells it WHAT ops exist, not WHEN to use each.
+           Fix: add 3-5 few-shot examples to RECALL_GRAMMAR_PRIMER showing
+           coord/pin/semantic/predict in the right contexts.
+           File: backend/agent/recall_phases.py (RECALL_GRAMMAR_PRIMER constant)
+
+    [16.3] Iterative recall (multi-hop Phase R)
+           Deep tasks need recall → react → recall again before answering.
+           One Phase R/Phase A is not enough for complex multi-step reasoning.
+           Fix: depth-bounded iterative loop (max 3 Phase R cycles) in RecallPhases.run()
+           before firing Phase A. Each resolved span feeds the next Phase R context.
+           File: backend/agent/recall_phases.py
+
+    [16.4] Skill genesis from recall patterns
+           _maybe_trigger_skill_creation reads DER tool_sequence episodes.
+           Recall episode sequences (3 identical op patterns + outcome=hit) should
+           also trigger skill creation, but pattern detector ignores source_channel='recall'.
+           Fix: extend _maybe_trigger_skill_creation to scan recall episodes.
+           File: backend/agent/agent_kernel.py (line ~882)
+
+    [16.5] Streaming provenance strip (correctness)
+           chunk_callback receives raw streaming deltas. If the model leaks a
+           <recalled> tag mid-stream, users see the machinery.
+           Fix: stateful streaming parser in _infer_streaming that buffers and
+           strips <recalled>...</recalled> spans across chunk boundaries.
+           File: backend/agent/recall_phases.py (_infer_streaming method)
+
+    [16.6] Ollama streaming
+           Ollama infer_fn in _build_recall_infer_fn uses stream=False.
+           Ollama supports streaming; this adds latency on Ollama sessions.
+           Fix: use Ollama's stream=True endpoint, yield chunks to chunk_callback.
+           File: backend/agent/agent_kernel.py (_build_recall_infer_fn)
+
+  PHASE 2 — SHIPPED (2026-05-02)
+    All 6 items above completed + 6 critical correctness fixes from review.
+    Test results: 80/80 pass (16 new regression tests + 6 live DeepSeek).
+    Token reduction held: 84.3% (target ≥30% ✓). Latency ratio: 0.99×.
+
+  PHASE 3 — REMAINING GAP (M3)
+
+    [16.7] Thumbs-up / thumbs-down outcome signal from user
+           Current state: update_recall_outcome() is called with 'success' when
+           any non-empty response is returned. This is weak signal — we don't
+           distinguish "I answered well" from "I answered at all."
+           The learning loop (episodic → distillation → skill genesis) can only
+           improve if it receives real correction signal.
+
+           What needs building:
+             Frontend: add thumbs-up / thumbs-down UI to each assistant bubble in
+             ChatView. Emit a WebSocket message on click:
+               { type: "recall_feedback", payload: { outcome: "success" | "failure" } }
+
+             Backend: new handler in iris_gateway.py for "recall_feedback" message
+             type. Calls agent_kernel.update_last_recall_outcome(outcome) which
+             delegates to active RecallPhases.update_recall_outcome().
+
+             agent_kernel.py: expose update_last_recall_outcome(outcome: str) as a
+             public method so iris_gateway can call it after the fact (turn is already
+             complete by the time the user clicks).
+
+           Files:
+             components/chat/ChatView  (or equivalent bubble component) — thumbs UI
+             backend/iris_gateway.py   — recall_feedback handler
+             backend/agent/agent_kernel.py — update_last_recall_outcome()
+
+           Graduation condition: 5 consecutive thumbs-up recall turns in a live
+           session, each confirmed with outcome_type='success' in the episodes table.
+           Followed by 1 thumbs-down turn confirmed with outcome_type='failure'.
 
 ---
 

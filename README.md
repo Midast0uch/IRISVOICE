@@ -16,6 +16,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Flexible Inference**: Brain model via ik_llama.cpp (port 8082) or llama-cpp-python, vision via upstream llama.cpp (port 8081), or remote OpenAI-compatible API — select in Settings
 - **Tool Execution**: Dedicated tool-calling model handles structured tool calls; main LLM handles reasoning and conversation
 - **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer, token-budget enforcement, and mid-loop episodic retrieval (C.4)
+- **Recall-as-Cognition**: Two-phase memory retrieval protocol — model emits structured `<recall/>` ops before answering, resolves them against the coordinate graph, then answers with real memory context. 84% prompt token reduction vs full-history injection. Provider-uniform via prompt caching. See [architecture doc](./docs/architecture/RECALL_AS_COGNITION.md)
 - **Mycelium v1.7**: 6-layer coordinate-graph memory — episodic events, semantic compression, landmarks, Pacman lifecycle, PiNs, and cross-project landmark bridges
 - **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — files, folders, images, URLs, decisions, fragments — persists across sessions and surfaces in the DER context package
 - **Cross-Project Landmark Bridging**: Maps a verified landmark to an equivalent pattern in another IRIS instance or project; bridges carry confidence scores and bridge types (equivalent / similar / inverse)
@@ -673,6 +674,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 
 - **[Lazy Loading Architecture](./docs/guides/DEVELOPER_LAZY_LOADING.md)**: Model loading/unloading implementation
 - **[Model-Agnostic Architecture](./docs/guides/DEVELOPER_MODEL_AGNOSTIC.md)**: Agent capabilities across all inference modes
+- **[Recall-as-Cognition Developer Guide](./docs/guides/DEVELOPER_RECALL_GUIDE.md)**: Extending recall ops, debugging, episode feedback loop, critical fix rationale, and skill genesis lifecycle
 
 ### Architecture Documentation
 
@@ -681,6 +683,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[UI Architecture](./docs/architecture/UI_ARCHITECTURE.md)**: Frontend component structure
 - **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: Full DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges
 - **[Mycelium Kyudo Layer Guide](./docs/architecture/MYCELIUM_KYUDO_LAYER_GUIDE.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
+- **[Recall-as-Cognition](./docs/architecture/RECALL_AS_COGNITION.md)**: Two-phase memory retrieval protocol — op grammar, iterative recall, streaming filter, episode feedback loop, skill genesis, and performance model
 - **[Model-Agnostic Architecture Verification](./docs/architecture/MODEL_AGNOSTIC_ARCHITECTURE_VERIFICATION.md)**: Verification that agent capabilities remain identical across all inference backends
 
 ### Integration Documentation

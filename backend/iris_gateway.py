@@ -1279,6 +1279,13 @@ class IRISGateway:
                     chunk_callback=chunk_callback,
                     from_voice=True,
                 )
+                # Close recall episode feedback loop for voice turns
+                try:
+                    _ap = getattr(agent_kernel, "_active_recall_phases", None)
+                    if _ap is not None:
+                        _ap.update_recall_outcome("success" if resp else "partial")
+                except Exception:
+                    pass
                 spoken = agent_kernel.prepare_spoken_text(resp, enriched)
                 return resp, spoken
 
@@ -1287,14 +1294,19 @@ class IRISGateway:
 
             # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
+            suggestions = await self._generate_suggestions(response or "", session_id, agent_kernel)
+            voice_payload: Dict[str, Any] = {
+                "text": response,
+                "sender": "assistant",
+                **({"thinking": thinking} if thinking else {}),
+            }
+            if suggestions:
+                voice_payload["suggestions"] = suggestions
             await self._ws_manager.send_to_client(client_id, {
                 "type": "text_response",
-                "payload": {
-                    "text": response,
-                    "sender": "assistant",
-                    **({"thinking": thinking} if thinking else {}),
-                }
+                "payload": voice_payload,
             })
+            await self._flush_pending_follow_ups(agent_kernel, client_id, session_id)
 
             # ── TTS: speak the response ─────────────────────────────────────
             if spoken.strip():
@@ -1405,6 +1417,93 @@ class IRISGateway:
         text = _RE_MULTI_SPACE.sub(" ", text)
         text = _RE_MULTI_NL.sub("\n", text)
         return text.strip()
+
+    async def _generate_suggestions(
+        self,
+        response_text: str,
+        session_id: str,
+        agent_kernel: Any,
+    ) -> List[Dict[str, str]]:
+        """
+        Generate 3 contextual follow-up suggestion pills via a short LLM call.
+        Returns [] on any failure so callers always get a valid list.
+        max_tokens=100 keeps latency under ~500ms on local models.
+        """
+        if not response_text or not response_text.strip():
+            return []
+        prompt = (
+            "Given this assistant response, suggest 3 short follow-up actions "
+            "the user might want. Output ONLY a JSON array with no extra text: "
+            '[{"id":"1","label":"short label","message":"full message to send"},'
+            '{"id":"2","label":"...","message":"..."},{"id":"3","label":"...","message":"..."}]. '
+            "Be specific and contextually relevant. Never repeat the last user message. "
+            "Each label must be under 40 characters.\n\n"
+            f"Assistant response:\n{response_text[:600]}"
+        )
+        try:
+            loop = asyncio.get_running_loop()
+
+            def _call_llm() -> str:
+                if not hasattr(agent_kernel, "_is_openai_compat") or not agent_kernel._is_openai_compat():
+                    return "[]"
+                client = agent_kernel._get_lmstudio_client()
+                sel = getattr(agent_kernel, "_selected_reasoning_model", None) or "local-model"
+                resp = client.chat.completions.create(
+                    model=sel,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=120,
+                    temperature=0.7,
+                    stream=False,
+                )
+                return resp.choices[0].message.content or "[]"
+
+            raw = await loop.run_in_executor(None, _call_llm)
+            import json as _json
+            # Strip markdown code fences if model wrapped the JSON
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            parsed = _json.loads(raw.strip())
+            if not isinstance(parsed, list):
+                return []
+            suggestions = []
+            for item in parsed[:3]:
+                if isinstance(item, dict) and "id" in item and "label" in item and "message" in item:
+                    suggestions.append({
+                        "id": str(item["id"]),
+                        "label": str(item["label"])[:40],
+                        "message": str(item["message"]),
+                    })
+            return suggestions
+        except Exception:
+            return []
+
+    async def _flush_pending_follow_ups(
+        self,
+        agent_kernel: Any,
+        client_id: str,
+        session_id: str,
+    ) -> None:
+        """
+        [4.5] Send queued proactive skill-creation prompts as assistant messages.
+        Consumed one at a time so the user sees each as its own bubble.
+        """
+        pending: List[str] = getattr(agent_kernel, "_pending_follow_ups", [])
+        if not pending:
+            return
+        follow_up = pending.pop(0)
+        try:
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "text_response",
+                "payload": {
+                    "text": follow_up,
+                    "sender": "assistant",
+                }
+            })
+        except Exception:
+            pass
 
     def _speak_response(self, input_source: Union[str, queue.Queue], session_id: str = None) -> None:
         """
@@ -1680,6 +1779,14 @@ class IRISGateway:
 
                 response = await loop.run_in_executor(None, _execute_agent)
 
+                # Close recall episode feedback loop for chat turns
+                try:
+                    _ap = getattr(agent_kernel, "_active_recall_phases", None)
+                    if _ap is not None:
+                        _ap.update_recall_outcome("success" if response else "partial")
+                except Exception:
+                    pass
+
                 _t_exec_end = _time.perf_counter()
                 _elapsed_ms = round((_t_exec_end - _t_exec_start) * 1000)
                 self._logger.info(
@@ -1708,17 +1815,38 @@ class IRISGateway:
                 except Exception:
                     pass  # never block the response
 
+                # Generate contextual suggestion pills [14.21] — short LLM call, ~500ms
+                suggestions = await self._generate_suggestions(response or "", session_id, agent_kernel)
+
                 # Send final complete message (updates the UI with the full text + metadata)
                 thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
+                payload: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": response,
+                    "thinking": thinking,
+                    "timestamp": datetime.now().isoformat(),
+                }
+                if suggestions:
+                    payload["suggestions"] = suggestions
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "chat_message",
-                    "payload": {
-                        "role": "assistant",
-                        "content": response,
-                        "thinking": thinking,
-                        "timestamp": datetime.now().isoformat()
-                    }
+                    "payload": payload,
                 })
+
+                # Also emit as text_response so useIRISWebSocket forwards suggestions
+                # to ChatView via iris:text_response CustomEvent
+                tr_payload: Dict[str, Any] = {"text": response, "sender": "assistant"}
+                if thinking:
+                    tr_payload["thinking"] = thinking
+                if suggestions:
+                    tr_payload["suggestions"] = suggestions
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "text_response",
+                    "payload": tr_payload,
+                })
+
+                # [4.5] Flush any queued skill-creation prompts (one per turn)
+                await self._flush_pending_follow_ups(agent_kernel, client_id, session_id)
 
                 # Clear ChatView typing indicator
                 await self._ws_manager.send_to_client(client_id, {
