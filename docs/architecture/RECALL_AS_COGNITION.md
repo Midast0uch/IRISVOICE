@@ -62,12 +62,18 @@ Empty result: emit <recall coord/> to probe, then decompose.
 | Op | When to use | Resolver |
 |---|---|---|
 | `<recall coord/>` | Project structure, file layout, topology navigation | Mycelium coordinate neighborhood |
-| `<recall pin query='X'/>` | Named decisions, permanent landmarks, stored facts | Semantic store categories |
+| `<recall pin="Title"/>` | Exact lookup of a named pin | PinStore (`get_by_title`) |
+| `<recall pin query='X'/>` | Ranked search over pins (markdown content + tags + file refs) | PinStore (`search`) |
+| `<recall pin file='X.md'/>` | All checkpoint pins for a file (mid-write recovery) | PinStore (`list_checkpoints_for_file`) |
+| `<recall pin tags='a,b'/>` | Pins matching any of the given tags | PinStore (tag-filtered search) |
 | `<recall semantic query='X'/>` | Concept questions, past context retrieval | Episodic chunk retrieval (vector search) |
 | `<recall similar target='X'/>` | Repeat a past task pattern, resonance ranking | Episodic similar-episode retrieval |
 | `<recall predict task='X'/>` | What comes next in a workflow | BehavioralPredictor next-step hints |
 | `<recall route depth=N/>` | Speculative path planning | Immortus SpeculativeRouter |
 | `<recall skill query='X'/>` | Invoke a registered action module | SkillsLoader + SkillRegistry |
+
+**Pin op details:** see [PIN_SYSTEM.md](./PIN_SYSTEM.md) for the full pin data model,
+auto-checkpoint heuristic, and tunable search weights.
 
 All ops are self-closing. Attributes may be quoted or unquoted; numeric values are coerced to int/float.
 

@@ -1783,6 +1783,58 @@ DOMAIN 16 — RECALL-AS-COGNITION (BRAIN-NATIVE AGENT KERNEL)  ✓ PHASE 1 COMPL
            session, each confirmed with outcome_type='success' in the episodes table.
            Followed by 1 thumbs-down turn confirmed with outcome_type='failure'.
 
+    [16.8] MCM DB browser UI panel  (deferred — gated on PinStore stability)
+           Personal + developer modes both get a dedicated dashboard panel that
+           exposes the entire MCM coordinate-graph database in human-readable form,
+           not just pins. Required so the user can audit what IRIS remembers and
+           why it makes the choices it does.
+
+           Surfaces (each tab is a searchable, filterable view):
+             - Pins        — markdown bodies rendered, by type/tag/file_ref, link graph
+             - Episodes    — recall + DER turns, outcome_type, op sequences
+             - Landmarks   — verified knowledge anchors with bridge counts
+             - NBL state   — current state vector decoded into human labels
+                            (pos 2 = warnings, pos 28 = context pressure, etc.)
+             - Coordinates — Mycelium nodes by space, Z-trajectory, confidence
+             - Skills      — registered SKILL.md modules + invocation count
+
+           Prerequisite: PinStore foundation [16.9] must be live and verified
+           before this panel is built. Until then the schema may shift and the UI
+           would have to be reworked.
+
+           Graduation condition: user can search "PKCE" in the panel and see all
+           pins, episodes, and landmarks that match — with one-click jump to the
+           source file or chat turn that created each entry.
+
+           Files:
+             components/dashboard/MCMPanel.tsx    — new panel component
+             components/dashboard/tabs/{Pins,Episodes,Landmarks,NBL,Coords,Skills}Tab.tsx
+             backend/iris_gateway.py              — handlers: mcm.search, mcm.list,
+                                                    mcm.get, mcm.subscribe (live updates)
+             backend/memory/mcm_browser.py        — read-only aggregator over MCM tables
+
+    [16.9] PiN system: full implementation  (foundation for [16.8])
+           Schema (mycelium_pins, mycelium_pin_links) already exists in db.py
+           but is not wired to recall, the agent, or any UI. This is the foundation
+           for the wiki/anchor mechanism the user asked for.
+
+           Status: SHIPPED 2026-05-03
+             - PinStore CRUD service against mycelium_pins table
+             - _resolve_pin() rewired to query the real pin table
+             - Agent tools: pin_add, pin_search, pin_link, pin_checkpoint
+             - Auto-checkpoint heuristics (file-write >2KB, context pressure >75%)
+             - Tunable search ranking weights via settings
+             - Markdown body preservation (no transformation on store/retrieve)
+             - Available in both personal and developer modes
+
+           Files:
+             backend/memory/pin_store.py
+             backend/agent/recall_decoder.py (_resolve_pin rewrite)
+             backend/agent/tools/pin_tools.py
+             backend/agent/agent_kernel.py (auto-checkpoint hooks)
+             docs/architecture/PIN_SYSTEM.md
+             docs/guides/DEVELOPER_PIN_GUIDE.md
+
 ---
 
 SESSION START CHECKLIST

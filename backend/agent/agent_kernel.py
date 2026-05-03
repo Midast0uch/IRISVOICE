@@ -312,8 +312,16 @@ class AgentKernel:
         # MCM Protocol Orchestrator — wired after set_memory_interface()
         self._mcm_orch = None
 
-        # Recall-native: decoder wired at set_memory_interface()
+        # Recall-native: decoder + pin store wired at set_memory_interface()
         self._recall_decoder = None
+        self._pin_store = None
+        # Auto-pin policy — adjustable from settings; defaults are conservative.
+        self._auto_pin_settings: Dict[str, Any] = {
+            "enabled": True,
+            "checkpoint_threshold_kb": 2.0,
+            # search weights forwarded to PinStore on wire-up; None = use defaults
+            "search_weights": None,
+        }
         # Active DER context refs — set/cleared per _execute_plan_der call
         self._active_live_context = None
         self._active_immortus_session = None
@@ -365,6 +373,26 @@ class AgentKernel:
         """Capture the running event loop so background threads can dispatch broadcasts."""
         self._broadcast_loop = loop
 
+    def set_auto_pin_settings(self, **fields: Any) -> None:
+        """
+        Tune the auto-pin policy and pin-search weights at runtime.
+
+        Accepted fields:
+          enabled (bool)                        — master toggle for auto-checkpointing
+          checkpoint_threshold_kb (float)       — write_file size that triggers checkpoint
+          search_weights (dict[str, float])     — override PinStore search weights
+                                                  keys: title, content, tags, file_refs, context_overlap
+
+        Settings are applied to the live PinStore immediately when present.
+        """
+        for k, v in fields.items():
+            if k in self._auto_pin_settings:
+                self._auto_pin_settings[k] = v
+        if self._pin_store is not None:
+            sw = self._auto_pin_settings.get("search_weights")
+            if isinstance(sw, dict):
+                self._pin_store._weights.update(sw)
+
     def set_memory_interface(self, memory_interface: Any) -> None:
         """
         Set the memory interface for the agent kernel.
@@ -395,15 +423,36 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] MCMOrchestrator unavailable: {_mcm_err}")
             self._mcm_orch = None
 
-        # Wire RecallDecoder now that memory is available
+        # Wire PinStore against the same DB connection used by the episodic store
+        self._pin_store = None
+        try:
+            from backend.memory.pin_store import PinStore
+            episodic = getattr(memory_interface, "episodic", None)
+            db_conn = getattr(episodic, "db", None) if episodic is not None else None
+            if db_conn is not None:
+                self._pin_store = PinStore(
+                    conn=db_conn,
+                    origin_id=self.session_id,
+                    search_weights=self._auto_pin_settings.get("search_weights"),
+                    on_write=lambda: self._recall_decoder.invalidate_cache()
+                        if self._recall_decoder is not None else None,
+                )
+                logger.info("[AgentKernel] PinStore wired")
+        except Exception as _ps_err:
+            logger.debug("[AgentKernel] PinStore unavailable: %s", _ps_err)
+            self._pin_store = None
+
+        # Wire RecallDecoder now that memory and pins are available
         self._recall_decoder = None
         try:
             from backend.agent.recall_decoder import RecallDecoder
             self._recall_decoder = RecallDecoder(
                 memory_interface=memory_interface,
                 session_id=self.session_id,
+                pin_store=self._pin_store,
             )
-            logger.info("[AgentKernel] RecallDecoder wired")
+            logger.info("[AgentKernel] RecallDecoder wired (pin_store=%s)",
+                        "present" if self._pin_store else "absent")
         except Exception as _rd_err:
             logger.debug("[AgentKernel] RecallDecoder unavailable: %s", _rd_err)
 

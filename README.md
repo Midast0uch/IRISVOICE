@@ -18,7 +18,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer, token-budget enforcement, and mid-loop episodic retrieval (C.4)
 - **Recall-as-Cognition**: Two-phase memory retrieval protocol — model emits structured `<recall/>` ops before answering, resolves them against the coordinate graph, then answers with real memory context. 84% prompt token reduction vs full-history injection. Provider-uniform via prompt caching. See [architecture doc](./docs/architecture/RECALL_AS_COGNITION.md)
 - **Mycelium v1.7**: 6-layer coordinate-graph memory — episodic events, semantic compression, landmarks, Pacman lifecycle, PiNs, and cross-project landmark bridges
-- **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — files, folders, images, URLs, decisions, fragments — persists across sessions and surfaces in the DER context package
+- **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — markdown notes, files, folders, images, URLs, decisions, fragments, mid-write checkpoints. Agent-callable (`pin_add`, `pin_search`, `pin_link`, `pin_checkpoint`) and surfaced via `<recall pin .../>`. Auto-checkpoints fire after large file writes so the agent can recover in-progress work on a future turn. Tunable search weights. Available in both modes. See [pin system doc](./docs/architecture/PIN_SYSTEM.md)
 - **Cross-Project Landmark Bridging**: Maps a verified landmark to an equivalent pattern in another IRIS instance or project; bridges carry confidence scores and bridge types (equivalent / similar / inverse)
 - **Unlimited Effective Context**: 3-layer retrieval — raw history (trimmed) + episodic summaries (Layer 2) + Mycelium coordinate package (Layer 3, includes PiNs)
 - **Model-Agnostic Design**: Works with Local GGUF, VPS, or OpenAI inference backends
@@ -675,6 +675,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[Lazy Loading Architecture](./docs/guides/DEVELOPER_LAZY_LOADING.md)**: Model loading/unloading implementation
 - **[Model-Agnostic Architecture](./docs/guides/DEVELOPER_MODEL_AGNOSTIC.md)**: Agent capabilities across all inference modes
 - **[Recall-as-Cognition Developer Guide](./docs/guides/DEVELOPER_RECALL_GUIDE.md)**: Extending recall ops, debugging, episode feedback loop, critical fix rationale, and skill genesis lifecycle
+- **[PiN Developer Guide](./docs/guides/DEVELOPER_PIN_GUIDE.md)**: Creating pins from agent or user, auto-checkpoint config, search weight tuning, debugging, wiki graph patterns
 
 ### Architecture Documentation
 
@@ -684,6 +685,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: Full DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges
 - **[Mycelium Kyudo Layer Guide](./docs/architecture/MYCELIUM_KYUDO_LAYER_GUIDE.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
 - **[Recall-as-Cognition](./docs/architecture/RECALL_AS_COGNITION.md)**: Two-phase memory retrieval protocol — op grammar, iterative recall, streaming filter, episode feedback loop, skill genesis, and performance model
+- **[PiN System](./docs/architecture/PIN_SYSTEM.md)**: Primordial Information Nodes — pin data model, recall ops (`pin="title"`, `pin query="text"`, `pin file="X.md"`, `pin tags="a,b"`), auto-checkpoint heuristic, wiki link graph, tunable search weights
 - **[Model-Agnostic Architecture Verification](./docs/architecture/MODEL_AGNOSTIC_ARCHITECTURE_VERIFICATION.md)**: Verification that agent capabilities remain identical across all inference backends
 
 ### Integration Documentation

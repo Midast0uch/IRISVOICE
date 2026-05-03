@@ -704,6 +704,12 @@ class AgentToolBridge:
                 server_name, mcp_tool_name = mcp_tools[tool_name]
                 result = await self.execute_mcp_tool(server_name, mcp_tool_name, params, session_id)
 
+                # Auto-pin checkpoint after large file writes — gives the agent
+                # a recovery anchor it can recall on a future turn even if context
+                # is pruned. Threshold is configurable via settings (default 2KB).
+                if tool_name == "write_file" and result.get("success"):
+                    await self._maybe_auto_checkpoint(params, session_id, result)
+
                 # After agent creates a skill, broadcast to the frontend so UI updates immediately.
                 # MUST use run_coroutine_threadsafe — this runs in a background thread, not the event loop.
                 # ensure_future() would raise RuntimeError here and be swallowed silently.
@@ -738,6 +744,12 @@ class AgentToolBridge:
 
             if tool_name == "run_research":
                 return await self._execute_research_tool(params, session_id)
+
+            # Pin / memory-anchor tools — routed to the per-session PinStore
+            pin_tools = {"pin_add", "pin_search", "pin_link", "pin_checkpoint",
+                         "pin_get", "pin_list"}
+            if tool_name in pin_tools:
+                return await self._execute_pin_tool(tool_name, params, session_id)
 
             error_result = {"error": f"Unknown tool: {tool_name}"}
 
@@ -909,6 +921,140 @@ class AgentToolBridge:
                 return {"success": False, "error": str(exc)}
 
         return {"error": f"Unknown dev tool: {tool_name}"}
+
+    async def _maybe_auto_checkpoint(self, params: Dict, session_id: str, result: Dict) -> None:
+        """
+        Auto-create a checkpoint pin after a successful write_file when content
+        size exceeds the configured threshold. Silently no-ops if PinStore is
+        unavailable or auto-pinning is disabled.
+        """
+        try:
+            from backend.agent.agent_kernel import _agent_kernel_instances
+            kernel = _agent_kernel_instances.get(session_id) \
+                or _agent_kernel_instances.get("default")
+            if kernel is None:
+                return
+            store = getattr(kernel, "_pin_store", None)
+            if store is None:
+                return
+
+            settings = getattr(kernel, "_auto_pin_settings", None) or {}
+            if not settings.get("enabled", True):
+                return
+            threshold_kb = float(settings.get("checkpoint_threshold_kb", 2.0))
+
+            file_path = str(params.get("path", "")).strip()
+            content = str(params.get("content", "") or "")
+            size_kb = len(content.encode("utf-8")) / 1024.0
+            if not file_path or size_kb < threshold_kb:
+                return
+
+            # Summary: first non-empty line capped at 160 chars + size hint
+            first_line = next(
+                (ln.strip() for ln in content.splitlines() if ln.strip()),
+                "(no content preview)",
+            )[:160]
+            summary = (
+                f"Auto-checkpoint after write to `{file_path}` ({size_kb:.1f}KB).\n\n"
+                f"Lead line: `{first_line}`"
+            )
+            store.checkpoint(
+                file_path=file_path,
+                offset=len(content),
+                summary_md=summary,
+                content_snapshot=content,  # PinStore truncates to 2KB tail
+            )
+            logger.debug(
+                "[ToolBridge] auto-checkpointed %s (%.1fKB) for session %s",
+                file_path, size_kb, session_id,
+            )
+        except Exception as exc:
+            # Auto-pinning must never block a successful write
+            logger.debug(f"[ToolBridge] auto-checkpoint failed (non-fatal): {exc}")
+
+    async def _execute_pin_tool(self, tool_name: str, params: Dict, session_id: str) -> Dict:
+        """
+        Execute a pin/memory-anchor tool against the session's PinStore.
+
+        Tools: pin_add, pin_search, pin_link, pin_checkpoint, pin_get, pin_list.
+        Each one is a thin wrapper around the corresponding PinStore method,
+        with field whitelisting so the agent cannot inject arbitrary columns.
+        """
+        try:
+            from backend.agent.agent_kernel import _agent_kernel_instances
+            kernel = _agent_kernel_instances.get(session_id)
+            if kernel is None:
+                # Fall back to default kernel if session-specific one is absent
+                kernel = _agent_kernel_instances.get("default")
+            store = getattr(kernel, "_pin_store", None) if kernel is not None else None
+            if store is None:
+                return {"success": False, "error": "PinStore not available — memory interface not wired"}
+
+            if tool_name == "pin_add":
+                pin_id = store.add(
+                    title=str(params.get("title", "")).strip() or "untitled",
+                    content=str(params.get("content", "")),
+                    pin_type=str(params.get("pin_type", "note")),
+                    tags=list(params.get("tags", [])),
+                    file_refs=list(params.get("file_refs", [])),
+                    image_refs=list(params.get("image_refs", [])),
+                    url_refs=list(params.get("url_refs", [])),
+                    project_id=params.get("project_id"),
+                    is_permanent=bool(params.get("is_permanent", False)),
+                )
+                return {"success": True, "pin_id": pin_id}
+
+            if tool_name == "pin_search":
+                results = store.search(
+                    query=str(params.get("query", "")),
+                    limit=int(params.get("limit", 10)),
+                    types=params.get("types"),
+                    project_id=params.get("project_id"),
+                )
+                return {
+                    "success": True,
+                    "results": [
+                        {"pin": p.to_dict(), "score": s} for p, s in results
+                    ],
+                }
+
+            if tool_name == "pin_link":
+                link_id = store.link(
+                    source_id=str(params.get("source_id", "")),
+                    target_id=str(params.get("target_id", "")),
+                    relationship=str(params.get("relationship", "related_to")),
+                    source_type=str(params.get("source_type", "pin")),
+                    target_type=str(params.get("target_type", "pin")),
+                    weight=float(params.get("weight", 1.0)),
+                )
+                return {"success": True, "link_id": link_id}
+
+            if tool_name == "pin_checkpoint":
+                pin_id = store.checkpoint(
+                    file_path=str(params.get("file_path", "")),
+                    offset=int(params.get("offset", 0)),
+                    summary_md=str(params.get("summary_md", params.get("summary", ""))),
+                    content_snapshot=params.get("content_snapshot"),
+                    project_id=params.get("project_id"),
+                )
+                return {"success": True, "pin_id": pin_id}
+
+            if tool_name == "pin_get":
+                pin = store.get(str(params.get("pin_id", "")))
+                return {"success": True, "pin": pin.to_dict() if pin else None}
+
+            if tool_name == "pin_list":
+                pins = store.list(
+                    project_id=params.get("project_id"),
+                    pin_type=params.get("pin_type"),
+                    limit=int(params.get("limit", 50)),
+                )
+                return {"success": True, "pins": [p.to_dict() for p in pins]}
+
+            return {"success": False, "error": f"Unknown pin tool: {tool_name}"}
+        except Exception as exc:
+            logger.warning(f"[ToolBridge] pin tool {tool_name} failed: {exc}")
+            return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
 
     async def _execute_research_tool(self, params: Dict, session_id: str) -> Dict:
         """Handle the run_research agent tool — delegates to AutoResearchRunner."""
