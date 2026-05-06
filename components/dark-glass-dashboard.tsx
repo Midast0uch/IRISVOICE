@@ -300,8 +300,8 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
 
   if (field.type === 'toggle') {
     return (
-      <div className="flex items-center justify-between py-1.5 px-1">
-        <span className="text-[11px] font-medium tracking-wide text-white/60">{field.label}</span>
+      <div className="flex items-center justify-between py-1.5 px-1 gap-2">
+        <span className="text-[11px] font-medium text-white/60 flex-1 min-w-0 leading-tight">{field.label}</span>
         <button
           onClick={() => setValue(!value)}
           className="relative w-8 h-4 rounded-full transition-colors"
@@ -324,15 +324,15 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     if (sectionId === 'wake' && field.id === 'wake_word') options = wakeWords && wakeWords.length > 0 ? wakeWords : (field.options || []);
     
     return (
-      <div className="flex items-center justify-between py-2 gap-6 group/field px-1">
-        <span className="text-[11px] font-semibold tracking-wide text-white/50 group-hover/field:text-white/80 transition-colors truncate">{field.label}</span>
-        <div className="flex-1 max-w-[320px]">
+      <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
+        <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">{field.label}</span>
+        <div className="w-[140px] flex-shrink-0">
           <CustomDropdown
             value={value}
             options={options}
             onChange={setValue}
             glowColor={glowColor}
-            className="text-[10px] py-1 px-3 h-8 w-full"
+            className="text-[10px] py-1 px-2 h-7 w-full"
           />
         </div>
       </div>
@@ -352,6 +352,28 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
         <div className="relative h-1 bg-white/5 rounded-full cursor-pointer" onClick={handleSliderClick}>
           <div className="absolute left-0 top-0 h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: glowColor }} />
         </div>
+      </div>
+    );
+  }
+
+  if (field.type === 'text') {
+    const isSecret = field.id.toLowerCase().includes('key') || field.id.toLowerCase().includes('secret') || field.id.toLowerCase().includes('password');
+    return (
+      <div className="py-1.5 px-1 col-span-full">
+        <label className="text-[10px] font-medium tracking-wide text-white/50 block mb-1">{field.label}</label>
+        <input
+          type={isSecret ? 'password' : 'text'}
+          value={String(value ?? '')}
+          placeholder={field.placeholder || field.label}
+          onChange={(e) => setValue(e.target.value)}
+          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white/90 placeholder:text-white/25 outline-none transition-all focus:border-white/25 focus:bg-white/8"
+          style={{ fontFamily: field.id.includes('url') || field.id.includes('endpoint') || field.id.includes('key') ? "'JetBrains Mono', monospace" : 'inherit' }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = glowColor + '60'; }}
+          onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
+        />
+        {errorMessage && (
+          <p className="text-[9px] text-red-400 mt-1">{errorMessage}</p>
+        )}
       </div>
     );
   }
@@ -908,17 +930,17 @@ export function DarkGlassDashboard({
              const sectionFields = section.fields || [];
              return (
                <div key={section.id} className="group/section overflow-hidden rounded-lg border transition-all" style={{ borderColor: isExpanded ? `${glowColor}30` : 'rgba(255,255,255,0.04)', backgroundColor: isExpanded ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.01)' }}>
-                 <button onClick={() => toggleSection(section.id)} className="w-full h-11 px-5 flex items-center justify-between transition-all hover:bg-white/[0.04] relative group/btn">
-                   <div className="flex items-center gap-3">
-                     <section.icon size={14} style={{ color: isExpanded ? glowColor : 'white' }} />
-                     <span className="text-[10px] font-black tracking-[0.2em] text-white/60 group-hover/btn:text-white uppercase">{section.label}</span>
+                 <button onClick={() => toggleSection(section.id)} className="w-full h-11 px-4 flex items-center justify-between transition-all hover:bg-white/[0.04] relative group/btn">
+                   <div className="flex items-center gap-2 min-w-0">
+                     <section.icon size={13} className="flex-shrink-0" style={{ color: isExpanded ? glowColor : 'white' }} />
+                     <span className="text-[11px] font-bold tracking-wide text-white/70 group-hover/btn:text-white uppercase whitespace-nowrap">{section.label}</span>
                    </div>
-                   <ChevronDown size={14} style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }} className="text-white/30" />
+                   <ChevronDown size={13} className="flex-shrink-0 ml-2 text-white/30" style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }} />
                    <div className="absolute bottom-0 left-0 right-0 h-[2px] opacity-0 group-hover/section:opacity-100 transition-all" style={{ background: `linear-gradient(90deg, transparent, ${glowColor}, transparent)` }} />
                  </button>
                  {isExpanded && (
-                   <div className="px-8 pb-8 pt-2">
-                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-12 gap-y-2">
+                   <div className="px-4 pb-4 pt-2">
+                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-1">
                        {sectionFields.map((field: any) => (
                          <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} />
                        ))}
