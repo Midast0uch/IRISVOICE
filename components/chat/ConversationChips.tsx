@@ -10,7 +10,7 @@ interface ConversationChipsProps {
   chips: ConversationChip[]
   glowColor: string
   onChipClick: (messageId: string) => void
-  containerRef?: React.RefObject<HTMLElement>
+  containerRef?: React.RefObject<HTMLElement | null>
 }
 
 // Individual chip row — scales up when scrolled to center of the list
@@ -133,34 +133,13 @@ export function ConversationChips({
   // Panel anchored to trigger via viewport coords — escapes any CSS transform
   const tr = triggerRectRef.current
   const cr = containerRectRef.current
-  const panelRight = tr ? window.innerWidth - tr.right : 0
+  const panelRight = tr ? window.innerWidth - tr.right + 48 : 0
   const panelBottom = tr ? window.innerHeight - tr.top + 8 : 0
 
   const overlay = (
     <AnimatePresence>
       {isOpen && (
         <>
-          {/* Scrim — constrained to chat panel bounds via containerRectRef */}
-          <motion.div
-            key="scrim"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            style={{
-              position: 'fixed',
-              top: cr?.top ?? 0,
-              left: cr?.left ?? 0,
-              width: cr?.width ?? '100vw',
-              height: cr?.height ?? '100vh',
-              zIndex: 9040,
-              pointerEvents: 'none',
-              backdropFilter: 'blur(10px)',
-              WebkitBackdropFilter: 'blur(10px)',
-              background: 'rgba(4,4,10,0.72)',
-            }}
-          />
-
           {/* Panel — fixed at captured trigger coords */}
           <motion.div
             ref={panelRef}
@@ -178,19 +157,17 @@ export function ConversationChips({
               transformOrigin: 'bottom right',
             }}
           >
-            {/* Blur layer — no overflow:hidden so backdrop-filter renders */}
             <div
               style={{
-                backdropFilter: 'blur(20px) saturate(1.6)',
-                WebkitBackdropFilter: 'blur(20px) saturate(1.6)',
-                background: `linear-gradient(160deg, rgba(16,16,28,0.96) 0%, rgba(10,10,18,0.93) 60%, ${glowColor}0d 100%)`,
-                border: `1px solid ${glowColor}40`,
-                boxShadow: `0 -8px 40px rgba(0,0,0,0.7), 0 0 0 0.5px ${glowColor}25, inset 0 1px 0 ${glowColor}20`,
-                borderRadius: 0,
+                backdropFilter: 'blur(8px)',
+                WebkitBackdropFilter: 'blur(8px)',
+                background: `linear-gradient(160deg, rgba(14,14,24,0.96) 0%, rgba(8,8,16,0.95) 60%, ${glowColor}0a 100%)`,
+                border: `1px solid ${glowColor}35`,
+                boxShadow: `0 -4px 20px rgba(0,0,0,0.6), 0 0 0 0.5px ${glowColor}20`,
+                borderRadius: '6px',
               }}
             >
-              {/* Clipping wrapper separate from blur element */}
-              <div className="overflow-hidden relative">
+              <div className="overflow-hidden relative" style={{ borderRadius: '6px' }}>
                 {/* Top fade */}
                 <div
                   className="absolute top-0 left-0 right-0 h-5 pointer-events-none z-10"
@@ -227,22 +204,18 @@ export function ConversationChips({
       <motion.button
         ref={triggerRef}
         onClick={handleToggle}
-        className="flex items-center gap-2 px-3 py-2 mb-1 transition-all duration-150 flex-shrink-0"
+        className="flex items-center gap-1.5 px-2.5 py-1.5 transition-all duration-150 flex-shrink-0 rounded"
         style={{
-          color: isOpen ? glowColor : `${glowColor}70`,
-          background: isOpen ? `${glowColor}14` : `${glowColor}08`,
-          border: `1px solid ${isOpen ? `${glowColor}55` : `${glowColor}25`}`,
-          borderRadius: 0,
+          color: isOpen ? glowColor : 'rgba(255,255,255,0.75)',
+          background: isOpen ? `${glowColor}15` : 'rgba(255,255,255,0.07)',
+          border: `1px solid ${isOpen ? `${glowColor}50` : 'rgba(255,255,255,0.18)'}`,
         }}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         title={`Conversation history (${chips.length})`}
       >
-        <AlignJustify size={16} style={{ color: isOpen ? glowColor : `${glowColor}80` }} />
-        <span
-          className="text-[11px] font-mono leading-none"
-          style={{ color: isOpen ? glowColor : `${glowColor}70` }}
-        >
+        <AlignJustify size={14} />
+        <span className="text-[11px] font-mono leading-none">
           {chips.length}
         </span>
       </motion.button>

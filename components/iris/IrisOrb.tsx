@@ -535,8 +535,6 @@ export function IrisOrb({
         style={{
           // Phase 132: Static Structural Body (Never changes background/filter/shadow)
           background: `linear-gradient(135deg, rgba(30, 32, 40, 0.7) 0%, color-mix(in srgb, ${glowColor}, transparent 75%) 100%)`,
-          backdropFilter: "blur(12px)",
-          WebkitBackdropFilter: "blur(12px)",
           boxShadow: "0 10px 30px rgba(0,0,0,0.5), inset 0 2px 4px rgba(255,255,255,0.2)",
           zIndex: 3
         }}

@@ -1,5 +1,64 @@
 # IRIS Changelog
 
+## [4.6.0] — UI Restoration — 2026-05-06
+
+### fix(ui): restore original wing/dashboard design from swarm-collaboration
+
+Full visual restoration of the chat and dashboard wings to match the original
+swarm-collaboration reference design, plus a set of polish fixes.
+
+#### `components/chat-view.tsx`
+- Header icons (Bell, History, X, BarChart3) raised from `fontColor}60` (38%
+  opacity) to `rgba(255,255,255,0.75)` — clearly visible white, brand-color
+  active states match chat-view's original pattern
+- IrisApertureIcon restored as centered `absolute top-0 -translate-y-1/2`
+  button in the header — embedded-jewel effect on the top border, white idle /
+  glowColor active
+- Wing background changed to `rgba(10,11,22,0.97)` → `rgba(6,7,14,0.99)` —
+  deep near-black with a precise blue tint matching original screenshots
+- `backdropFilter` removed from glass panel (Tauri widget — no desktop blur)
+- `chatOuterRef` added for ConversationChips scrim positioning
+- Send button always shown in `glowColor`, opacity 40% disabled (was invisible)
+
+#### `components/dashboard-wing.tsx`
+- Removed extra "Dashboard" header bar that was adding 48px and pushing
+  sections down (restored to DarkGlassDashboard filling full height)
+- IrisApertureIcon repositioned as absolute on the glass panel (full panel
+  width centering — not offset by sidebar) at `top-0 -translate-y-1/2`
+- `backdropFilter` removed from glass panel
+- `isNotificationsOpen` and `isChatOpen` props threaded through to
+  DarkGlassDashboard for icon active-state glow
+
+#### `components/dark-glass-dashboard.tsx`
+- Header icons (Bell, MessageSquare, X) raised to `rgba(255,255,255,0.75)`
+  with explicit hover `0.95` — mirrors chat-view header
+- Bell glows `glowColor` when `isNotificationsOpen`; MessageSquare glows when
+  `isChatOpen` — driven by props from DashboardWing
+- IrisApertureIcon import added (unused in header; button lives in wing)
+- Action bar: hardcoded `12MS` replaced with `WS LIVE` / `OFFLINE` derived
+  from `voiceState === 'error'`; model name and voice-state text were already
+  dynamic
+- Content zone padding reduced from `pl-12 pr-24 py-10 mx-8` to
+  `pl-3 pr-3 py-4` (removed extra margins that were starving section width)
+- Header padding reduced from `pl-12 pr-24` to `pl-4 pr-4`
+
+#### `components/chat/ConversationChips.tsx`
+- Trigger button: styling changed to clearly visible white `rgba(255,255,255,0.75)`
+  with white border — was near-invisible with colored transparent background
+- Dropdown panel: `backdropFilter` replaced with `blur(8px)` (subtle, no
+  bleed); border-radius added (`6px`); panel offset 48px left so it sits
+  inside chat-view rather than hugging the right edge
+- Scrim removed (fixed portal elements cannot follow 3D CSS transforms)
+
+#### `components/iris/IrisOrb.tsx`
+- `backdropFilter: blur(12px)` removed from orb glass body (Tauri transparent
+  window — would blur desktop wallpaper through the orb)
+
+#### `components/backdrop-blur.tsx`
+- `backdropFilter: blur(20px) saturate(180%)` removed — same reason
+
+---
+
 ## [4.5.2] — IRISVOICEv4.5 — 2026-04-16
 
 ### feat: in-process local inference — eliminate port-8082 subprocess hang

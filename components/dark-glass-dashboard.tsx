@@ -22,6 +22,7 @@ import { FloatingTerminalPanel } from './terminal/FloatingTerminalPanel'
 import { useTerminal } from '@/contexts/TerminalContext'
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
+import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
@@ -35,6 +36,8 @@ interface DarkGlassDashboardProps {
   onClose?: () => void;
   onNotificationsClick?: () => void;
   unreadCount?: number;
+  isNotificationsOpen?: boolean;
+  isChatOpen?: boolean;
   spotlightState?: any; // From @/hooks/useUILayoutState
   uiState?: any;        // From @/hooks/useUILayoutState
   onOpenChat?: () => void;
@@ -367,6 +370,8 @@ export function DarkGlassDashboard({
   onClose,
   onNotificationsClick,
   unreadCount = 0,
+  isNotificationsOpen = false,
+  isChatOpen = false,
   spotlightState,
   uiState,
   onOpenChat,
@@ -782,10 +787,10 @@ export function DarkGlassDashboard({
   );
 
   const renderHeader = () => (
-    <div className="flex h-12 items-center justify-between pl-12 pr-24 border-b shrink-0 z-30" style={{ borderColor: 'rgba(255,255,255,0.05)', backgroundColor: 'transparent' }}>
-      <div className="flex items-center gap-3">
+    <div className="flex h-12 items-center justify-between pl-4 pr-4 border-b shrink-0 z-30" style={{ borderColor: 'rgba(255,255,255,0.05)', backgroundColor: 'transparent' }}>
+      <div className="flex items-center gap-3 flex-1">
         {(activeSubApp === 'browser' || activeSubApp === 'marketplace' || activeSubApp === 'models' || activeSubApp === 'inference_console') && isSidebarHidden && (
-          <button 
+          <button
             onClick={() => setIsSidebarHidden(false)}
             className="p-2 -ml-2 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-colors"
             title="Show Sidebar"
@@ -797,32 +802,58 @@ export function DarkGlassDashboard({
           {activeSubApp ? CATEGORY_LABELS[activeSubApp] : `${CATEGORY_LABELS[activeTab] || 'SYSTEM'} HUD`}
         </span>
       </div>
-      
-      <div className="flex items-center gap-6">
-        <div className="flex items-center gap-0.5">
-          {(spotlightState === 'dashboardSpotlight' || uiState === 'dashboard_open') && onOpenChat && (
-            <button onClick={onOpenChat} className="p-2 rounded-lg transition-all group/icon" style={{ color: 'rgba(255,255,255,0.3)' }} title="Open Chat">
-              <MessageSquare size={16} className="group-hover/icon:text-white transition-colors" />
-            </button>
-          )}
-          <button onClick={onNotificationsClick} className="p-2 rounded-lg transition-all relative group/icon" style={{ color: unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.3)' }}>
-            <Bell size={16} className="group-hover/icon:text-white transition-colors" />
-            {unreadCount > 0 && <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full" style={{ backgroundColor: glowColor }} />}
+
+      <div className="flex items-center gap-0.5 flex-1 justify-end">
+        {(spotlightState === 'dashboardSpotlight' || uiState === 'dashboard_open') && onOpenChat && (
+          <button
+            onClick={onOpenChat}
+            className="p-2 rounded-lg transition-all duration-150"
+            style={{
+              color: isChatOpen ? glowColor : 'rgba(255,255,255,0.75)',
+              backgroundColor: isChatOpen ? `${glowColor}15` : 'transparent',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = glowColor; e.currentTarget.style.backgroundColor = isChatOpen ? `${glowColor}15` : 'rgba(255,255,255,0.05)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = isChatOpen ? glowColor : 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = isChatOpen ? `${glowColor}15` : 'transparent'; }}
+            title="Open Chat"
+          >
+            <MessageSquare size={16} />
           </button>
-          <button onClick={onClose} className="p-2 rounded-lg transition-all group/icon" style={{ color: 'rgba(255,255,255,0.3)' }}>
-            <X size={16} className="group-hover/icon:text-white transition-colors" />
-          </button>
-        </div>
+        )}
+        <button
+          onClick={onNotificationsClick}
+          className="p-2 rounded-lg transition-all duration-150 relative"
+          style={{
+            color: isNotificationsOpen || unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)',
+            backgroundColor: isNotificationsOpen ? `${glowColor}15` : 'transparent',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = glowColor; e.currentTarget.style.backgroundColor = isNotificationsOpen ? `${glowColor}15` : 'rgba(255,255,255,0.05)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = isNotificationsOpen || unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = isNotificationsOpen ? `${glowColor}15` : 'transparent'; }}
+        >
+          <Bell size={16} />
+          {unreadCount > 0 && <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full" style={{ backgroundColor: glowColor }} />}
+        </button>
+        <button
+          onClick={onClose}
+          className="p-2 rounded-lg transition-all duration-150"
+          style={{ color: 'rgba(255,255,255,0.75)' }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+          title="Close Dashboard"
+        >
+          <X size={16} />
+        </button>
       </div>
     </div>
   );
 
   const renderActionBar = () => (
-    <div className="flex items-center justify-between pl-12 pr-0 h-16 border-t bg-black/60 shrink-0 z-40" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+    <div className="flex items-center justify-between pl-4 pr-4 h-16 border-t bg-black/60 shrink-0 z-40" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
       <div className="flex items-center gap-6">
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
-          <Wifi className="w-3 h-3" style={{ color: glowColor }} />
-          <span className="text-[9px] font-medium tracking-wide text-white/80">12MS</span>
+          <Wifi className="w-3 h-3" style={{ color: voiceState === 'error' ? '#ef4444' : glowColor }} />
+          <span className="text-[9px] font-medium tracking-wide text-white/80">
+            {voiceState === 'error' ? 'OFFLINE' : 'WS LIVE'}
+          </span>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
           <Brain className="w-3 h-3" style={{ color: glowColor }} />
@@ -832,10 +863,16 @@ export function DarkGlassDashboard({
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
           <Activity className="w-3 h-3" style={{ color: glowColor }} />
-          <span className="text-[9px] font-medium tracking-wide text-white/80">{voiceState === 'listening' ? 'CONNECTED' : 'SYSTEM IDLE'}</span>
+          <span className="text-[9px] font-medium tracking-wide text-white/80">
+            {voiceState === 'listening' ? 'LISTENING'
+              : voiceState === 'processing_conversation' || voiceState === 'processing_tool' ? 'PROCESSING'
+              : voiceState === 'speaking' ? 'SPEAKING'
+              : voiceState === 'error' ? 'ERROR'
+              : 'SYSTEM IDLE'}
+          </span>
         </div>
       </div>
-      <div className="flex items-center gap-4 ml-auto" style={{ marginRight: '52px' }}>
+      <div className="flex items-center gap-4 ml-auto">
         <button 
           onClick={handleApplySettings} 
           disabled={isApplying} 
@@ -859,10 +896,10 @@ export function DarkGlassDashboard({
   const renderContentZone = () => (
     <div className="flex-1 overflow-y-auto p-0">
        {!activeSubApp ? (
-         <div className="w-full h-full pl-12 pr-24 py-10 space-y-3">
+         <div className="w-full h-full pl-3 pr-3 py-4 space-y-2">
            {/* DCP Stats — developer mode only, shown at top of Monitor tab */}
            {activeTab === 'monitor' && irisMode === 'developer' && (
-             <div className="mx-8 mb-2 rounded-lg border overflow-hidden" style={{ borderColor: `${glowColor}25`, background: 'rgba(255,255,255,0.015)' }}>
+             <div className="mb-2 rounded-lg border overflow-hidden" style={{ borderColor: `${glowColor}25`, background: 'rgba(255,255,255,0.015)' }}>
                <DCPStatsPanel glowColor={glowColor} />
              </div>
            )}
@@ -870,7 +907,7 @@ export function DarkGlassDashboard({
              const isExpanded = expandedSections.has(section.id);
              const sectionFields = section.fields || [];
              return (
-               <div key={section.id} className="group/section overflow-hidden rounded-lg border transition-all mx-8" style={{ borderColor: isExpanded ? `${glowColor}30` : 'rgba(255,255,255,0.04)', backgroundColor: isExpanded ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.01)' }}>
+               <div key={section.id} className="group/section overflow-hidden rounded-lg border transition-all" style={{ borderColor: isExpanded ? `${glowColor}30` : 'rgba(255,255,255,0.04)', backgroundColor: isExpanded ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.01)' }}>
                  <button onClick={() => toggleSection(section.id)} className="w-full h-11 px-5 flex items-center justify-between transition-all hover:bg-white/[0.04] relative group/btn">
                    <div className="flex items-center gap-3">
                      <section.icon size={14} style={{ color: isExpanded ? glowColor : 'white' }} />

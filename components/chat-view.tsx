@@ -11,7 +11,8 @@ import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
 import { SpotlightState, SpotlightStateType } from "@/hooks/useUILayoutState";
 import { useLauncherMode } from "@/hooks/useLauncherMode";
 import { ConversationChips } from "@/components/chat/ConversationChips";
-import type { ConversationChip } from "@/types/iris";
+import { SuggestionPills } from "@/components/chat/SuggestionPills";
+import type { ConversationChip, Suggestion } from "@/types/iris";
 
 // Notification types for the universal notification system
 interface Notification {
@@ -211,6 +212,7 @@ export function ChatWing({
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const chatPanelRef = useRef<HTMLDivElement>(null)
+  const chatOuterRef = useRef<HTMLDivElement>(null)
   const { lastTextResponse, voiceState, isChatTyping, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
   
   // Notification system state
@@ -242,6 +244,9 @@ export function ChatWing({
   // Conversation chips — input focus state (chips slide away on focus)
   const { isDeveloper } = useLauncherMode()
   const [isInputFocused, setIsInputFocused] = useState(false)
+
+  // Suggestion pills — populated from text_response WS payload, cleared on send or dismiss
+  const [currentSuggestions, setCurrentSuggestions] = useState<Suggestion[]>([])
 
   // Derive isTyping: use isChatTyping for text messages (won't animate the orb),
   // and voiceState for voice pipeline processing/tool states.
@@ -420,6 +425,18 @@ export function ChatWing({
     }
   }, [fieldErrors, activeConversationId])
 
+  // Populate suggestion pills from iris:text_response CustomEvent (assistant replies only)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ text: string; sender?: string; suggestions?: Suggestion[] }>).detail
+      if (detail?.sender === 'assistant' && Array.isArray(detail.suggestions) && detail.suggestions.length > 0) {
+        setCurrentSuggestions(detail.suggestions)
+      }
+    }
+    window.addEventListener('iris:text_response', handler)
+    return () => window.removeEventListener('iris:text_response', handler)
+  }, [])
+
   // Handle TTS word highlighting simulation (fallback when backend doesn't provide tts_word events).
   // PERF: word index lives in ttsWordIndex state — a single number — so each 200 ms tick does
   // NOT remap all conversations or trigger a localStorage write.  messages is NOT in deps;
@@ -472,7 +489,8 @@ export function ChatWing({
     }
 
     setInputText("")
-    setJustSent(true);
+    setJustSent(true)
+    setCurrentSuggestions([])
     setTimeout(() => setJustSent(false), 300);
 
     // Add to active conversation or create new one
@@ -903,9 +921,9 @@ ${message.text}`;
   };
 
   const getSpotlightTransform = () => {
-    if (isInChatSpotlight) return 'translateY(-50%) rotateY(0deg) rotateX(0deg)';
-    if (isInDashboardSpotlight) return 'translateY(-50%) rotateY(15deg) rotateX(2deg)';
-    return 'translateY(-50%) rotateY(15deg) rotateX(2deg)';
+    if (isInChatSpotlight) return 'rotateY(0deg) rotateX(0deg)';
+    if (isInDashboardSpotlight) return 'rotateY(15deg) rotateX(2deg)';
+    return 'rotateY(15deg) rotateX(2deg)';
   };
 
   const getSpotlightOpacity = () => {
@@ -933,12 +951,13 @@ ${message.text}`;
     <AnimatePresence>
       {isOpen && (
         <motion.div
+          ref={chatOuterRef}
           className="fixed"
           initial={{ x: -120, opacity: 0, scale: 0.95 }}
-          animate={{ 
-            x: 0, 
-            opacity: getSpotlightOpacity(), 
-            scale: 1 
+          animate={{
+            x: 0,
+            opacity: getSpotlightOpacity(),
+            scale: 1
           }}
           exit={{ x: -120, opacity: 0, scale: 0.95 }}
           transition={{ 
@@ -976,7 +995,7 @@ ${message.text}`;
             style={{
               transformOrigin: 'left center',
               transformStyle: 'preserve-3d',
-              background: 'linear-gradient(135deg, rgba(10,10,20,0.95) 0%, rgba(5,5,10,0.98) 100%)',
+              background: 'linear-gradient(135deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%)',
               boxShadow: `
                 inset 0 1px 1px rgba(255,255,255,0.05),
                 inset 0 -1px 1px rgba(0,0,0,0.5),
@@ -1060,16 +1079,16 @@ ${message.text}`;
                     closeDropdowns();
                   }}
                   className="p-1.5 rounded-lg transition-all duration-150"
-                  style={{ 
-                    color: isDashboardOpen ? glowColor : `${fontColor}60`,
+                  style={{
+                    color: isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)',
                     backgroundColor: isDashboardOpen ? `${glowColor}15` : 'transparent'
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.color = glowColor;
+                    e.currentTarget.style.color = isDashboardOpen ? glowColor : 'rgba(255,255,255,0.95)';
                     e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.color = isDashboardOpen ? glowColor : `${fontColor}60`;
+                    e.currentTarget.style.color = isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)';
                     e.currentTarget.style.backgroundColor = isDashboardOpen ? `${glowColor}15` : 'transparent';
                   }}
                   title={isDashboardOpen ? "Close Dashboard" : "Open Dashboard"}
@@ -1078,60 +1097,57 @@ ${message.text}`;
                 </button>
               </div>
 
-              {/* Center section: Spotlight Iris Aperture Button - positioned at top edge */}
-              <div className="flex items-start justify-center absolute left-1/2 -translate-x-1/2" style={{ top: '-16px' }}>
-                {onSpotlightToggle && (
+              {/* Center: Spotlight Iris Aperture Button — embedded on top border line */}
+              {onSpotlightToggle && (
+                <div className="absolute left-1/2 -translate-x-1/2 top-0 -translate-y-1/2 z-40">
                   <button
                     onClick={() => {
                       onSpotlightToggle();
                       closeDropdowns();
                     }}
-                    className="p-3 rounded-full transition-all duration-150 border shadow-lg"
-                    style={{ 
-                      color: isInChatSpotlight ? glowColor : `${fontColor}60`,
-                      backgroundColor: isInChatSpotlight ? `${glowColor}20` : 'rgba(10,10,20,0.95)',
-                      borderColor: `${glowColor}30`,
-                      boxShadow: `0 -2px 10px rgba(0,0,0,0.5), 0 0 20px ${isInChatSpotlight ? glowColor : 'transparent'}40`,
-                      backdropFilter: 'blur(10px)'
+                    className="p-1.5 rounded-full transition-all duration-150 border"
+                    style={{
+                      color: isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)',
+                      backgroundColor: isInChatSpotlight ? `${glowColor}20` : 'transparent',
+                      borderColor: isInChatSpotlight ? `${glowColor}50` : 'rgba(255,255,255,0.2)',
+                      boxShadow: isInChatSpotlight ? `0 0 8px ${glowColor}40` : 'none',
                     }}
                     onMouseEnter={(e) => {
-                      if (!isInChatSpotlight) e.currentTarget.style.color = `${fontColor}90`;
-                      e.currentTarget.style.backgroundColor = 'rgba(20,20,35,0.98)';
-                      e.currentTarget.style.borderColor = `${glowColor}60`;
+                      e.currentTarget.style.color = glowColor;
+                      e.currentTarget.style.borderColor = `${glowColor}50`;
                     }}
                     onMouseLeave={(e) => {
-                      if (!isInChatSpotlight) e.currentTarget.style.color = `${fontColor}60`;
-                      e.currentTarget.style.backgroundColor = isInChatSpotlight ? `${glowColor}20` : 'rgba(10,10,20,0.95)';
-                      e.currentTarget.style.borderColor = `${glowColor}30`;
+                      e.currentTarget.style.color = isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)';
+                      e.currentTarget.style.borderColor = isInChatSpotlight ? `${glowColor}50` : 'rgba(255,255,255,0.2)';
                     }}
                     title={isInChatSpotlight ? "Restore balanced view" : "Maximize chat"}
                   >
-                    <IrisApertureIcon 
-                      isActive={isInChatSpotlight} 
-                      glowColor={glowColor} 
+                    <IrisApertureIcon
+                      isActive={isInChatSpotlight}
+                      glowColor={glowColor}
                       fontColor={fontColor}
-                      size={20}
+                      size={14}
                     />
                   </button>
-                )}
-              </div>
-              
+                </div>
+              )}
+
               {/* Right section: Notifications + History + Close */}
               <div className="flex items-center gap-0.5 flex-1 justify-end">
                 {/* Notifications */}
                 <button
                   onClick={() => showNotifications ? closeDropdowns() : openNotifications()}
                   className="p-2 rounded-lg transition-all duration-150 relative"
-                  style={{ 
-                    color: showNotifications ? glowColor : unreadCount > 0 ? glowColor : `${fontColor}60`,
+                  style={{
+                    color: showNotifications ? glowColor : unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)',
                     backgroundColor: showNotifications ? `${glowColor}15` : 'transparent'
                   }}
                   onMouseEnter={(e) => {
-                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : `${fontColor}90`;
+                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.95)';
                     e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
                   }}
                   onMouseLeave={(e) => {
-                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : `${fontColor}60`;
+                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)';
                     e.currentTarget.style.backgroundColor = 'transparent';
                   }}
                   title="Notifications"
@@ -1146,28 +1162,28 @@ ${message.text}`;
                     />
                   )}
                 </button>
-                
+
                 {/* History */}
                 <button
                   onClick={() => showHistory ? closeDropdowns() : openHistory()}
                   className="p-2 rounded-lg transition-all duration-150"
-                  style={{ 
-                    color: showHistory ? glowColor : `${fontColor}60`,
+                  style={{
+                    color: showHistory ? glowColor : 'rgba(255,255,255,0.75)',
                     backgroundColor: showHistory ? `${glowColor}15` : 'transparent'
                   }}
                   onMouseEnter={(e) => {
-                    if (!showHistory) e.currentTarget.style.color = `${fontColor}90`;
+                    if (!showHistory) e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
                     e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
                   }}
                   onMouseLeave={(e) => {
-                    if (!showHistory) e.currentTarget.style.color = `${fontColor}60`;
+                    if (!showHistory) e.currentTarget.style.color = 'rgba(255,255,255,0.75)';
                     e.currentTarget.style.backgroundColor = 'transparent';
                   }}
                   title="Conversation History"
                 >
                   <History size={16} />
                 </button>
-                
+
                 {/* Close */}
                 <button
                   onClick={() => {
@@ -1175,13 +1191,13 @@ ${message.text}`;
                     closeDropdowns();
                   }}
                   className="p-2 rounded-lg transition-all duration-150"
-                  style={{ color: `${fontColor}60` }}
+                  style={{ color: 'rgba(255,255,255,0.75)' }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.color = `${fontColor}90`;
+                    e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
                     e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.color = `${fontColor}60`;
+                    e.currentTarget.style.color = 'rgba(255,255,255,0.75)';
                     e.currentTarget.style.backgroundColor = 'transparent';
                   }}
                   title="Close Chat"
@@ -2084,15 +2100,52 @@ ${message.text}`;
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
-              {/* Chips trigger — sits above the border-t, right side */}
+              {/* Chips — floats above border-t at right edge */}
               <div className="absolute right-3 top-0 -translate-y-full pb-2 z-40">
                 <ConversationChips
                   chips={conversationChips}
                   glowColor={glowColor}
                   onChipClick={handleChipClick}
-                  containerRef={chatPanelRef}
+                  containerRef={messagesContainerRef}
                 />
               </div>
+
+              {/* Suggestion pills — float left side above input, fade out on new user message */}
+              <div className="absolute left-0 right-0 top-0 -translate-y-full z-30">
+                <SuggestionPills
+                  suggestions={currentSuggestions}
+                  onSelect={s => {
+                    if (!s.message) return
+                    setCurrentSuggestions([])
+                    // Add as a user message and send via WS — same flow as handleSendMessage
+                    const userMsg = {
+                      id: Date.now().toString(),
+                      text: s.message,
+                      sender: 'user' as const,
+                      timestamp: new Date(),
+                    }
+                    setConversations(prev =>
+                      activeConversationId
+                        ? prev.map(c => c.id === activeConversationId
+                            ? { ...c, messages: [...c.messages, userMsg], lastMessagePreview: s.message.substring(0, 60), timestamp: new Date() }
+                            : c)
+                        : (() => {
+                            const newId = Date.now().toString()
+                            activeConversationIdRef.current = newId
+                            setActiveConversationId(newId)
+                            return [...prev, { id: newId, title: `Conversation ${prev.length + 1}`, preview: s.message.substring(0, 60), messages: [userMsg], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
+                          })()
+                    )
+                    const msgType = isCrawlerQuery(s.message) ? 'crawler_query' : 'text_message'
+                    sendMessage?.(msgType, msgType === 'crawler_query' ? { query: s.message } : { text: s.message })
+                  }}
+                  onDismiss={() => setCurrentSuggestions([])}
+                  mode={isDeveloper ? 'developer' : 'personal'}
+                  glowColor={glowColor}
+                  fontColor={fontColor}
+                />
+              </div>
+
               {/* Drag overlay with smile/file icon */}
               <AnimatePresence>
                 {isDraggingFile && (
@@ -2166,9 +2219,9 @@ ${message.text}`;
                   <motion.button
                     onClick={handleSendMessage}
                     disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
-                    className="p-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                    className="p-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
                     style={{
-                      color: inputText.trim() ? glowColor : `${fontColor}40`,
+                      color: glowColor,
                     }}
                     whileHover={inputText.trim() ? { scale: 1.1 } : {}}
                     whileTap={inputText.trim() ? { scale: 0.9 } : {}}
@@ -2177,14 +2230,6 @@ ${message.text}`;
                     <Send size={18} />
                   </motion.button>
 
-                  {/* Liquid Metal Divider - between buttons */}
-                  <div 
-                    className="w-px h-8 opacity-30"
-                    style={{
-                      background: `linear-gradient(to bottom, transparent, ${glowColor}, transparent)`,
-                    }}
-                  />
-                  
                   {/* Hidden file input */}
                   <input
                     ref={fileInputRef}

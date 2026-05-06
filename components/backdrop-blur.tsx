@@ -44,8 +44,6 @@ export const BackdropBlur = React.memo(function BackdropBlur({ uiState }: Backdr
             zIndex: 5,
             pointerEvents: "none",
             background: "transparent",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)", // Safari support
           }}
           aria-hidden="true"
         />

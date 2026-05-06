@@ -9,6 +9,8 @@ import { useBrandColor } from "@/contexts/BrandColorContext"
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket"
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon"
 import { SpotlightState, UILayoutState } from "@/hooks/useUILayoutState"
+import { useLauncherMode } from "@/hooks/useLauncherMode"
+import { TerminalWidget } from "./terminal/TerminalWidget"
 
 // Notification types for the universal notification system
 interface Notification {
@@ -76,17 +78,18 @@ export function DashboardWing({
 }: DashboardWingProps) {
   const { voiceState } = useNavigation()
   const { getThemeConfig } = useBrandColor()
-  
+  const { isDeveloper } = useLauncherMode()
+
   // Notification system state (mirrors ChatWing)
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-  
+
   // Get theme colors from BrandColorContext for real-time updates
   const brandTheme = getThemeConfig()
   const glowColor = brandTheme.glow.color || "#00d4ff"
   const fontColor = brandTheme.text.primary || "#ffffff"
-  
+
   // Global error state
   const globalError = voiceState === 'error';
 
@@ -104,10 +107,10 @@ export function DashboardWing({
   };
 
   const getSpotlightTransform = () => {
-    if (isInDashboardSpotlight) return 'translateY(-50%) rotateY(0deg) rotateX(0deg)'; // Flat when spotlighted
-    if (isSolo) return 'translateY(-50%) rotateY(-15deg) rotateX(2deg)'; // Solo balanced: angled
-    if (isInChatSpotlight) return 'translateY(-50%) rotateY(-15deg) rotateX(2deg)';
-    return 'translateY(-50%) rotateY(-15deg) rotateX(2deg)';
+    if (isInDashboardSpotlight) return 'rotateY(0deg) rotateX(0deg)'; // Flat when spotlighted
+    if (isSolo) return 'rotateY(-15deg) rotateX(2deg)'; // Solo balanced: angled
+    if (isInChatSpotlight) return 'rotateY(-15deg) rotateX(2deg)';
+    return 'rotateY(-15deg) rotateX(2deg)';
   };
 
   const getSpotlightOpacity = () => {
@@ -227,8 +230,7 @@ export function DashboardWing({
             style={{
               transformOrigin: 'right center',
               transformStyle: 'preserve-3d',
-              background: 'linear-gradient(225deg, rgba(10,10,20,0.95) 0%, rgba(5,5,10,0.98) 100%)',
-              backdropFilter: 'blur(40px)',
+              background: 'linear-gradient(225deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%)',
               boxShadow: `
                 inset 0 1px 1px rgba(255,255,255,0.05),
                 inset 0 -1px 1px rgba(0,0,0,0.5),
@@ -268,53 +270,67 @@ export function DashboardWing({
               }}
             />
 
-            {/* Spotlight Iris Aperture Button - TOP CENTER (Mirroring ChatView) */}
-            <div className="flex items-start justify-center absolute left-1/2 -translate-x-1/2 z-50" style={{ top: '-16px' }}>
-              <button
-                onClick={onSpotlightToggle}
-                className="p-3 rounded-full transition-all duration-150 border shadow-lg"
-                style={{ 
-                  color: isInDashboardSpotlight ? glowColor : 'rgba(255,255,255,0.4)',
-                  backgroundColor: isInDashboardSpotlight ? `${glowColor}25` : 'rgba(10,10,20,0.98)',
-                  borderColor: `${glowColor}30`,
-                  boxShadow: `0 -2px 10px rgba(0,0,0,0.5), 0 0 20px ${isInDashboardSpotlight ? glowColor : 'transparent'}40`,
-                  backdropFilter: 'blur(10px)'
-                }}
-                onMouseEnter={(e) => {
-                  if (!isInDashboardSpotlight) e.currentTarget.style.color = 'white';
-                  e.currentTarget.style.backgroundColor = 'rgba(20,20,35,0.98)';
-                  e.currentTarget.style.borderColor = `${glowColor}60`;
-                }}
-                onMouseLeave={(e) => {
-                  if (!isInDashboardSpotlight) e.currentTarget.style.color = 'rgba(255,255,255,0.4)';
-                  e.currentTarget.style.backgroundColor = isInDashboardSpotlight ? `${glowColor}25` : 'rgba(10,10,20,0.98)';
-                  e.currentTarget.style.borderColor = `${glowColor}30`;
-                }}
-                title={isInDashboardSpotlight ? "Restore balanced view" : "Maximize dashboard"}
-              >
-                <IrisApertureIcon 
-                  isActive={isInDashboardSpotlight} 
-                  glowColor={glowColor} 
-                  fontColor={fontColor}
-                  size={20}
-                />
-              </button>
-            </div>
-            
+
+            {/* IrisApertureIcon — centered on full panel width, embedded on top border */}
+            {onSpotlightToggle && (
+              <div className="absolute left-1/2 -translate-x-1/2 top-0 -translate-y-1/2 z-50">
+                <button
+                  onClick={onSpotlightToggle}
+                  className="p-1.5 rounded-full transition-all duration-150 border"
+                  style={{
+                    color: isInDashboardSpotlight ? glowColor : 'rgba(255,255,255,0.75)',
+                    backgroundColor: isInDashboardSpotlight ? `${glowColor}20` : 'transparent',
+                    borderColor: isInDashboardSpotlight ? `${glowColor}60` : 'rgba(255,255,255,0.25)',
+                    boxShadow: isInDashboardSpotlight ? `0 0 10px ${glowColor}50` : 'none',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = glowColor;
+                    e.currentTarget.style.borderColor = `${glowColor}60`;
+                    e.currentTarget.style.boxShadow = `0 0 8px ${glowColor}40`;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = isInDashboardSpotlight ? glowColor : 'rgba(255,255,255,0.75)';
+                    e.currentTarget.style.borderColor = isInDashboardSpotlight ? `${glowColor}60` : 'rgba(255,255,255,0.25)';
+                    e.currentTarget.style.boxShadow = isInDashboardSpotlight ? `0 0 10px ${glowColor}50` : 'none';
+                  }}
+                  title={isInDashboardSpotlight ? "Restore balanced view" : "Maximize dashboard"}
+                >
+                  <IrisApertureIcon
+                    isActive={isInDashboardSpotlight}
+                    glowColor={glowColor}
+                    fontColor={fontColor}
+                    size={14}
+                  />
+                </button>
+              </div>
+            )}
+
             {/* Dashboard Content - Fully delegated to DarkGlassDashboard */}
-            <div className="flex-1 overflow-hidden relative z-10">
-              <DarkGlassDashboard
-                fieldValues={fieldValues}
-                updateField={updateField}
-                onClose={onClose}
-                unreadCount={unreadCount}
-                onNotificationsClick={() => setShowNotifications(true)}
-                spotlightState={spotlightState}
-                uiState={uiState}
-                onOpenChat={onOpenChat}
-                initialSubApp={initialSubApp}
-                onRequestSpotlight={onSpotlightToggle}
-              />
+            <div className="flex-1 overflow-hidden relative z-10 flex flex-col">
+              <div className="flex-1 overflow-hidden">
+                <DarkGlassDashboard
+                  fieldValues={fieldValues}
+                  updateField={updateField}
+                  onClose={onClose}
+                  unreadCount={unreadCount}
+                  onNotificationsClick={() => setShowNotifications(true)}
+                  isNotificationsOpen={showNotifications}
+                  isChatOpen={isChatOpen}
+                  spotlightState={spotlightState}
+                  uiState={uiState}
+                  onOpenChat={onOpenChat}
+                  initialSubApp={initialSubApp}
+                  onRequestSpotlight={onSpotlightToggle}
+                />
+              </div>
+              {isDeveloper && (
+                <div
+                  className="h-[240px] border-t flex flex-col"
+                  style={{ borderColor: `${glowColor}20` }}
+                >
+                  <TerminalWidget />
+                </div>
+              )}
             </div>
           </motion.div>
         </motion.div>
