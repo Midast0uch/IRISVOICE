@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\quantizer_mxfp4.py
-# hypothesis_version: 6.151.9
-
-[2880, '3.4.0', '3.5.0', 'GptOssConfig', 'PreTrainedModel', '_blocks', '_scales', 'base_model_ep_plan', 'base_model_tp_plan', 'cpu', 'device_map', 'disk', 'down_proj', 'down_proj_bias', 'gate_up_proj', 'gate_up_proj_bias', 'grouped_gemm', 'hidden_size', 'num_local_experts']

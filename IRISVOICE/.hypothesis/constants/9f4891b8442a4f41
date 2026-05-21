@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\scipy\_lib\array_api_compat\numpy\_aliases.py
-# hypothesis_version: 6.151.9
-
-['2', 'Any', 'acos', 'acosh', 'asarray', 'asin', 'asinh', 'astype', 'atan', 'atan2', 'atanh', 'bitwise_invert', 'bitwise_left_shift', 'bitwise_right_shift', 'bool', 'ceil', 'concat', 'count_nonzero', 'floor', 'isdtype', 'pow', 'take_along_axis', 'trunc', 'unstack', 'vecdot']

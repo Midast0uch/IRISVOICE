@@ -4,12 +4,25 @@ You are working on **IRIS Voice**, a voice-controlled desktop assistant with Nex
 
 ## Project Context
 
+## Auto-Recording
+
+You no longer need to manually call record_edit, record_create, or record_test.
+The proxy automatically records these events when you:
+
+- edit_file on an existing file -> auto-recorded as file_edit
+- write_file to a new path -> auto-recorded as file_create
+- run_command with a test command -> auto-recorded as test_run
+
+If you call the old tools explicitly, they still work for backwards compatibility.
+
+
 - **Frontend**: Next.js 15, React, Tailwind CSS v4, Tauri API
 - **Backend**: Python FastAPI, WebSockets, async architecture
 - **Desktop**: Tauri (Rust) — borderless widget, system tray, global shortcuts
 - **Audio**: Porcupine wake word, WebRTC/STT pipeline, WebSocket streaming
 - **Auth**: OAuth handlers, OS keyring for secure credential storage
-- **Database**: MCM SDK coordinate graph at `data/databases/coordinates.db`
+- **Database**: MCM SDK coordinate graph at `bootstrap/coordinates.db`
+- **Memory**: MCM-EML-SDK2.0 — proxy_core.py with auto-recording
 
 ## NBL Position Map (1-30)
 
@@ -29,7 +42,6 @@ Your NBL state is a fixed 30-integer vector (000-999). Decode positions to know 
 | 18-24 | Coordinates (domain→toolpath) | <100 = weak, >700 = strong |
 | 25 | Reasoning mode | 2 = event tracking active |
 | 26 | Warning severity | >0 = degraded |
-| 27 | Unverified edits | >0 → run tests, record_test() |
 | 28 | Context pressure | >800 → prune or compress |
 | 29 | Maturity | 2 = mature session |
 | 30 | Tool success % | <50 = failing tools, pause |
@@ -38,7 +50,6 @@ Your NBL state is a fixed 30-integer vector (000-999). Decode positions to know 
 - Pos 2 > 0 → health_check()
 - Pos 5 > 20 → compress()
 - Pos 15 > 0 → claim_work()
-- Pos 27 > 0 → record_test() for unverified edits
 - Pos 28 > 800 → compress() or prune
 - Pos 30 < 50 → stop and diagnose
 
@@ -49,8 +60,6 @@ Your NBL state is a fixed 30-integer vector (000-999). Decode positions to know 
 3. **read file ONCE** → Extract what you need. Do NOT re-read.
 4. **edit** → Make the change. Keep it minimal.
 5. **verify** → Run relevant tests (see stack-specific commands below).
-6. **record_edit(file)** → Track the change.
-7. **record_test(file, 'pass')** → Confirm verification.
 8. **pin_add(title, 'decision')** → Anchor the outcome.
 9. **mcm_compress()** → Save checkpoint when task is done.
 
@@ -73,7 +82,6 @@ Your NBL state is a fixed 30-integer vector (000-999). Decode positions to know 
 - **pin_search(query)**: Before editing, search for past decisions about this topic.
 - **mcm_recall(query)**: After compression, recover what you were doing.
 - **health_check()**: If you see warnings in NBL, run this first.
-- **record_create(file)**: After creating a new file (not write — that's auto-recorded).
 
 ## Cross-Session Resume
 
@@ -133,16 +141,12 @@ Git commits are auto-recorded by the MCM plugin on every prompt.
 You only need to manually record events that are NOT part of a commit:
 
   # After editing a file (if not yet committed):
-  record_edit(file_path)
 
   # After creating a file:
-  record_create(file_path)
 
   # After a test passes:
-  record_test(test_file, test_name, outcome='pass', covers=['src/foo.py'])
 
   # After a test fails but reveals something important:
-  record_test(test_file, test_name, outcome='fail', description='what the failure revealed')
 
   # After an architectural decision:
   pin_add(title='Decision: chose X over Y', pin_type='decision', content='why')
@@ -196,7 +200,7 @@ The three layers should all be present:
 
 ## Critical Rules
 
-- **Never delete coordinates.db** — that's your memory.
+- **Never delete bootstrap/coordinates.db** — that's your memory.
 - **Verify before recording** — syntax, quality, tests.
 - **Trust the system** — re-reading wastes tokens. The DB is accurate.
 
@@ -205,7 +209,6 @@ The three layers should all be present:
 - Production roadmap: `bootstrap/GOALS.md`
 - Graph queries: `get_session()` or `navigate(file)`
 - Work queue: `claim_work()` / `get_session()`
-- Event recording: `record_edit()`, `record_test()`, `record_create()`
 - Session update: handled automatically by SDK lifecycle
 - PiN: `pin_add()`, `pin_search()`, `pin_list()`
 - Landmark bridges: `pin_link()`

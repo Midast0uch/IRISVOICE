@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\commands\menu\keymap.py
-# hypothesis_version: 6.151.9
-
-[b'\x00', b'\x00H', b'\x00K', b'\x00M', b'\x00P', b'\xe0', b'\xe0H', b'\xe0K', b'\xe0M', b'\xe0P', 126, 'arrow_begin', 'arrow_end', 'delete', 'down', 'esc', 'insert', 'interrupt', 'left', 'mbcs', 'mod_int', 'newline', 'nt', 'pg_down', 'pg_up', 'posix', 'right', 'tab', 'undefined', 'up', 'win32']

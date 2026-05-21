@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\video\mvit.py
-# hypothesis_version: 6.151.9
-
-[0.0, 1e-06, 0.02, 0.2, 0.225, 0.45, 0.5, 1.0, 64.224, 70.599, 78.477, 80.757, 93.582, 94.665, 131.884, 139.764, 192, 224, 256, 384, 400, 768, 34537744, 36610672, 'Kinetics-400', 'MViT', 'MViT_V1_B_Weights', 'MViT_V2_S_Weights', '_add_rel_pos', '_add_shortcut', '_docs', '_file_size', '_metrics', '_ops', '_squeeze', '_unsqueeze', 'acc@1', 'acc@5', 'bythwc,hkc->bythwk', 'bythwc,wkc->bythwk', 'categories', 'input_channels', 'kernel_kv', 'kernel_q', 'linear', 'min_size', 'min_temporal_size', 'mvit_v1_b', 'mvit_v2_s', 'num_classes', 'num_heads', 'num_params', 'output_channels', 'pretrained', 'proj_after_attn', 'recipe', 'rel_pos_embed', 'residual_pool', 'row', 'spatial_size', 'stride_kv', 'stride_q', 'temporal_size']

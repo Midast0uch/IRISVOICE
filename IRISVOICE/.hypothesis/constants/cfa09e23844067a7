@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\mask_rcnn.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.05, 0.25, 0.3, 0.5, 0.7, 34.6, 37.9, 41.8, 47.4, 134.38, 169.84, 177.219, 333.577, 100, 256, 512, 800, 1000, 1024, 1333, 2000, 44401393, 46359409, '0', '1', '2', '3', 'COCO-val2017', 'MaskRCNN', '_docs', '_file_size', '_metrics', '_ops', 'bias', 'box_map', 'categories', 'conv5_mask', 'fan_out', 'mask_fcn_logits', 'mask_map', 'min_size', 'num_classes', 'num_params', 'pretrained', 'pretrained_backbone', 'recipe', 'relu', 'version', 'weight']

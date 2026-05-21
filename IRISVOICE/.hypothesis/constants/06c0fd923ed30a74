@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\utils\offload.py
-# hypothesis_version: 6.151.9
-
-['.', 'bfloat16', 'cpu', 'dtype', 'index.json', 'int16', 'pt', 'r', 'safetensors_file', 'shape', 'torch.bfloat16', 'utf-8', 'w', 'w+', 'weight_name']

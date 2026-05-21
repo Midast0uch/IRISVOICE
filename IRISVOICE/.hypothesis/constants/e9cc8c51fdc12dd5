@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\pcam.py
-# hypothesis_version: 6.151.9
-
-['.gz', 'RGB', 'images', 'pcam', 'split', 'targets', 'test', 'train', 'val', 'x', 'y']

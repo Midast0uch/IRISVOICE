@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\io\_video_opt.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.25, 'audio_duration', 'audio_fps', 'audio_sample_rate', 'audio_timebase', 'denominator', 'has_audio', 'has_video', 'ignore', 'inf', 'numerator', 'pts', 'sec', 'video_duration', 'video_fps', 'video_reader', 'video_timebase']

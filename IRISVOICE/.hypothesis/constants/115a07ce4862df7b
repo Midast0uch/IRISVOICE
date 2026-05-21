@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\fgvc_aircraft.py
-# hypothesis_version: 6.151.9
-
-['annotation_level', 'data', 'families.txt', 'family', 'fgvc-aircraft-2013b', 'images', 'manufacturer', 'manufacturers.txt', 'split', 'test', 'train', 'trainval', 'val', 'variant', 'variants.txt']

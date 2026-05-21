@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_higher_order_ops\invoke_subgraph.py
-# hypothesis_version: 6.151.9
-
-['_boxed_call', 'auto_functionalized_', 'call_function', 'eager', 'identifier', 'invoke_subgraph', 'output', 'repeated_subgraph', 'requires_grad', 'subgraph', 'val']

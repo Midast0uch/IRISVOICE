@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_inductor\runtime\cache_dir_utils.py
-# hypothesis_version: 6.151.9
-
-['/var/tmp', 'TRITON_CACHE_DIR', '[\\\\/:*?"<>|]', '_', 'torchinductor_', 'triton']

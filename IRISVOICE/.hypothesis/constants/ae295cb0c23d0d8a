@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\transforms\_functional_tensor.py
-# hypothesis_version: 6.151.9
-
-[-0.5, 0.0, 0.0001, 0.001, 0.114, 0.2989, 0.5, 0.587, 1.0, 2.0, 4.0, 5.0, 6.0, 127, 255, 256, 32767, 65535, 2147483647, 9223372036854775807, 'bicubic', 'bilinear', 'constant', 'edge', 'floor', 'ij', 'nearest', 'reflect', 'replicate', 'symmetric', 'zeros']

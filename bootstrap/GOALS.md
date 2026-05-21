@@ -10,49 +10,58 @@ Build IRIS until it can run fully autonomously: receive tasks through its own in
 
 WHAT NEEDS WORK RIGHT NOW (quick read for session start)
 
-  GATE STATUS: Gate 1 substantially done; Gate 2 (Launcher + Developer Mode) is next.
-    G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation.
-    TOP PRIORITY THIS SPRINT: Domain 15 (Linux Build + Launcher) + Domain 13 (Gate 2).
+  GATE STATUS: Gate 1 structurally verified; Gate 2 (Launcher + Developer Mode) is next.
+    G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation — BLOCKING.
+    Domain 16 (Backend Stability) fully complete — idle memory flat, watchdog active.
+    NEW NORTH STAR: Domain 17 — Self-Coding Agent (agent inside IRIS).
+    Complete G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
 
   DOMAINS WITH OPEN ITEMS:
     Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2][2.3] manual e2e not confirmed)
     Domain 3  — Vision          (DEVELOPING — [3.1][3.2] need 2 more passing runs each)
-    Domain 4  — Skills          (PARTIAL — [4.4][4.5] not done)
+    Domain 4  — Skills          (PARTIAL — [4.4] GitHub MCP not wired; [4.5] self-improvement not proactive)
     Domain 7  — Backend quality (PARTIAL — [7.5] logging not standardised)
     Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
-    Domain 11 — PiN verification (ALL 5 items not started — run these next)
+    Domain 11 — PiN verification (ALL 5 items not started — run alongside G1.6-G1.8)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1-13.5] not done) ← GATE 2
-    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C done; [14.2][14.16][14.19][14.21] remain)
-    Domain 15 — Linux Build + Cross-Platform Launcher (ALL items not started — new)
+    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1-13.3] NOT STARTED, [13.4] IMPLEMENTED awaits e2e) ← GATE 2
+    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C/E done; [14.2][14.16][14.19][14.21] remain)
+    Domain 15 — Linux Build + Cross-Platform Launcher (PARTIAL — tauri.conf.json targets set; needs Linux build machine)
+    Domain 17 — Self-Coding Agent (NEW — ALL items not started) ← NEW NORTH STAR
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
     Domain 5  — Mycelium stubs      ✓ all 4 items verified
     Domain 6  — Frontend quality    ✓ all 6 items verified
     Domain 10 — Performance/memory  ✓ all 10 items verified
+    Domain 16 — Backend stability   ✓ all 8 items verified — memory watchdog, idle tracker, wing fix, DCP panel
 
   PRIORITY ORDER FOR NEW SESSIONS:
-    1. Domain 15 — Linux Build + Cross-Platform Launcher ← TOP PRIORITY
-         Start with [15.3] mode-switch flow (no Linux hardware needed, works on Windows too)
-         Then [15.5] packaging decision, then [15.1] Linux Tauri build, then [15.2][15.4]
-    2. Domain 13 — Launcher + Developer Mode = GATE 2 (13.1→13.2→13.3→13.4→13.5)
-         D15 [15.3] and D13 [13.3] overlap heavily — do them together
+    0. VERIFY G1.6, G1.7, G1.8 — these block every downstream dependency
+         Load Qwen3.5-9B through ModelsScreen, send a chat, confirm in-process inference
+         streams at ≥40 tok/s with no orphaned processes. Then confirm tool calling
+         works with iris_local model (create a skill, recall it same session).
+    1. Domain 17 — Self-Coding Agent ← NEW NORTH STAR
+         Build the agent-in-IRIS loop first (see Domain 17 spec below).
+         This is the new strategic goal: IRIS writing its own remaining code.
+    2. Domain 13 — Gate 2: Launcher + Developer Mode (13.1→13.2→13.3→13.5)
     3. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
     4. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
     5. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
-    6. Domain 2  — Voice pipeline (primary input modality)
+    6. Domain 2  — Voice pipeline (primary input modality — manual e2e)
     7. Domain 12 — PiN + MCP storage integrations (after D11 verified)
     8. Domain 4  — Skills library (self-extension)
     9. Domain 7  — Backend reliability (logging standardisation)
-    9. Domain 8  — Distribution (MSI clean install)
-    10. Domain 9  — Advanced features (after everything else)
+    10. Domain 15 — Linux Build (blocked on Linux machine or CI)
+    11. Domain 8  — Distribution (MSI clean install)
+    12. Domain 9  — Advanced features (after everything else)
 
 ---
 
 GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 verified)
 
   GATE 1 — DEVELOPER MODE (CURRENT GATE)
+  ↓ Verify G1.1–G1.8 → proceed to Gate 2 → then Domain 17 (Self-Coding Agent)
   Goal: Frontend + backend running together. Load a 4B or 8B GGUF model from
         C:\Users\midas\.lmstudio\models and chat with it through IRIS.
         Inference must be stable — no RAM spikes, other apps remain usable.
@@ -172,10 +181,15 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
     4. In terminal: run a git command → output streams, worktree stays isolated
     5. End session → merge/discard modal appears with diff summary
 
-  GATE 3 — AGENT KERNEL UPGRADE (spec pending — provided after Gate 2 verified)
-  Goal: Agent kernel handles deep multi-step tasks with no loss of direction
-        or context. Full DER loop enforcement with token budgets and
-        TrailingDirector wired. Spec to be given once Gate 2 is confirmed.
+  After Gate 2: proceed to Domain 17 (Self-Coding Agent) — the new strategic goal.
+  Gate 3 (Agent Kernel Upgrade) is subsumed by Domain 17, since self-coding requires
+  the strongest possible DER loop with real-time tool evaluation.
+
+  GATE 3 — SELF-CODING AGENT (Domain 17)
+  Goal: IRIS uses its own agent kernel, file editing tools, and DER loop to
+        write, test, and commit its own remaining features without external
+        AI assistance. See Domain 17 (added in this file) for full spec.
+        Domain 17 IS Gate 3. Gate 4 is its graduate condition.
 
   GATE 4 — MEMORY VISUALIZATION (spec pending — provided after Gate 3 verified)
   Goal: Dashboard becomes a visual Mycelium memory decoder. Users can see and
@@ -373,6 +387,22 @@ IRIS needs to see the screen to act as a desktop automation agent.
     Status: DONE — VisionMCPServer registered; all 5 vision.* tools dispatched.
             16/16 test_vision_mcp.py pass.
     Landmark: vision_wired_to_der
+
+  [3.4] SPATIAL LANGUAGE PHASE3: 3D Physics-Evolved Scalar Field Vision Pipeline (Future Experimental Milestone)
+    Status: PROPOSED (Awaiting Experimental Validation)
+    Goal: Fuses spatial NBL coordinate distribution into a 3D isotropic scalar field ψ(x,y,z,t) governed by the wave equation:
+          ∂²ψ/∂t² = c²∇²ψ - γ(∂ψ/∂t) + F_data + F_topo
+          To ensure physical stability, the field engine must enforce the Courant-Friedrichs-Lewy (CFL) condition:
+          dt ≤ dx / (c · √3)
+          Projections are rendered via Maximum Intensity Projection (MIP):
+          MIP[x,y] = max_z |ψ(x,y,z)|
+          and depth-colored RGB composites (Blue = low z, Green = mid z, Red = high z) to present full 3D spatial properties natively to any standard vision model.
+          Particles are driven by Acoustic Radiation Force (ARF):
+          F_ARF = -∇(ψ²) = -2ψ·∇ψ
+          clustering them into orbit pathways and self-organizing torus vortex loops under a quasiperiodic topological kick:
+          F_topo = A_topo · osc(t) · ∇ψ / |∇ψ|
+          using three incommensurate frequencies (1.0, 1.6180339887, 1.4142135623) to represent stable landmarks as visual knots.
+          *Note: Hold off implementation until experimental validation data confirms zero-shot structure recovery.*
 
   Graduate condition: Agent can describe what is on screen when asked, and can
   click a UI element identified by vision — verified with paint_iris_demo passing.
@@ -886,13 +916,9 @@ WHAT IS MISSING (build these):
 
 ---
 
-## Domain 16 — Backend Stability & Memory Optimization  ⚡ P0
+## Domain 16 — Backend Stability & Memory Optimization ✓ COMPLETE
 
-**Priority: P0** — Idle memory churn was crashing the widget before any user interaction.
-Background workers fired unconditionally at startup, accumulating RSS and causing Task Manager
-spikes at intervals. Gate 2 launch is blocked until idle is provably flat.
-
-Plan: `docs/plans/2026-04-25-iris-stability-and-memory.md`
+All 8 items verified and operational. Do not re-open unless a regression is observed.
 
   [16.1] Orphan process cleanup — DONE (2026-04-25)
     PyInstaller --onefile spawns parent stub + child Python. start-backend.py now skips
@@ -950,11 +976,152 @@ Plan: `docs/plans/2026-04-25-iris-stability-and-memory.md`
     Run before/after optimization passes to prove impact.
     Output: backend/logs/idle_profile_<UTC>.csv
 
-  Graduate condition for Domain 16:
-    1. scripts/profile_backend_idle.py FINAL run shows flat RSS over 5 min
-    2. No process with CPU% > 1 while user is idle
-    3. Memory watchdog log shows no SOFT cap hits during a normal 30-min session
-    4. Tauri exits cleanly — Get-Process iris-backend* returns nothing after close
+  Graduate condition — MET:
+    1. scripts/profile_backend_idle.py FINAL run shows flat RSS over 5 min ✓
+    2. No process with CPU% > 1 while user is idle ✓
+    3. Memory watchdog log shows no SOFT cap hits during a normal 30-min session ✓
+    4. Tauri exits cleanly — Get-Process iris-backend* returns nothing after close ✓
+
+---
+
+## Domain 17 — Self-Coding Agent (Agent Inside IRIS)  ⭐ NEW NORTH STAR
+
+**Priority: #1** — The strategic goal. IRIS must be able to use its own agent kernel,
+file editing tools, and DER loop to write, test, and commit its own remaining features
+without relying on an external AI assistant (Claude Code, Copilot, etc.).
+
+**Why this exists**: Every domain below Domain 17 will be built by IRIS itself — not
+by an external AI. This is the completion condition: IRIS ships itself.
+
+**Prerequisites** (Gate 1 + Gate 2 must be structurally in place):
+  ○ Gate 1.6 verified — in-process local inference confirmed (model loads,
+    chat sends, reply streams at ≥40 tok/s)
+  ○ Gate 1.8 verified — tool calling works with iris_local model
+    (skills created and recalled within the same session)
+  ○ Gate 2 terminal — agent has CLI access for git, test, build commands
+    (developer mode terminal tab, worktree isolation)
+  ○ DER loop operational — agent can plan, execute tools, evaluate results
+
+**Architecture**:
+  The existing AgentKernel + DER loop + tool_bridge already support self-coding.
+  What is missing is the specific MCP tooling and agent prompt structure that
+  makes IRIS treat its own source as a work product — not just a conversational topic.
+
+  Flow:
+    1. User gives high-level task → DER loop plans subtasks
+    2. IRIS reads its own source (file_manager MCP: read_file, list_directory)
+    3. IRIS edits its own source (file_manager MCP: write_file, edit_file)
+    4. IRIS runs tests (dev_cli → npm test, pytest)
+    5. IRIS commits changes (dev_cli → git commit via GitPage hooks)
+    6. IRIS reports what it changed and why
+
+**Prompt injection**:
+  When self-coding mode is active, the agent system prompt includes:
+    "You are writing code for yourself — your own source repository.
+     The code you write is your own future self.
+     Follow the coding standards already established in the codebase.
+     Do NOT add docstrings or comments that explain what the code does
+     unless the existing codebase uses that style.
+     Each edit must be the minimum change needed."
+
+  [17.1] Self-coding mode trigger
+    Status: NOT STARTED
+    What to build:
+      a) `/api/mode` extended with mode=`self-coding` (or `developer` extends to self-coding)
+      b) On self-coding mode: inject the "you are writing your own code" prompt
+      c) Gate file_manager MCP to the repo root (one level up permission)
+      d) Enable git commit/push through the dev_cli tool
+    Test: Set mode=self-coding. Send "add a /healthz endpoint to main.py".
+          Verify IRIS reads main.py, writes the edit, and the /healthz endpoint
+          returns 200 when tested.
+    Landmark: self_coding_mode_wired
+
+  [17.2] Self-coding prompt layer
+    Status: NOT STARTED
+    What to build:
+      a) backend/agent/prompts/self_coding.py — the prompt layer injected when
+         mode=self-coding or mode=developer with self-coding enabled
+      b) Key prompt sections:
+         - "You are writing code for your own source repo" (top-level)
+         - Code quality constraints (no unnecessary work, bounded memory, etc.)
+         - Git workflow: read → edit → test → commit → report
+         - When in doubt: read first, ask for clarification second, edit last
+      c) Prompt injection point: agent_kernel.py `_build_system_prompt()` or
+         equivalent — check mode and prepend self-coding block
+    Test: Switch to self-coding mode, inspect the DER loop system prompt,
+          verify the self-coding block is present (test via string assertion).
+    Landmark: self_coding_prompt_loaded
+
+  [17.3] Self-coding tool chain
+    Status: NOT STARTED
+    What to build:
+      a) Verify file_manager MCP tools are available in self-coding mode:
+         read_file, write_file, edit_file, list_directory, create_directory,
+         delete_file, search_files
+      b) Add a new MCP tool if needed: `run_test` — wraps `pytest` or `npm test`
+         and returns pass/fail + output
+      c) Add `git_commit` tool: git add -A && git commit -m "message"
+         (links to the existing GitPage workflow, uses same underlying git)
+      d) Add `git_push` tool: pushes current branch (developer mode only,
+         requires user confirmation for main/master)
+      e) All tools must be gated on developer or self-coding mode
+    Test: In self-coding mode, call each tool and verify it works.
+          Locked in personal mode: all self-coding tools return 403.
+    Landmark: self_coding_tool_chain
+
+  [17.4] Test-evaluate loop for self-coding
+    Status: NOT STARTED
+    What to build:
+      a) After every file edit during self-coding, DER loop automatically runs
+         the affected test suite (or nearest test file)
+      b) On test failure: DER loop reads the test output, plans a fix, re-edits,
+         re-runs, retry up to 3 times
+      c) On 3 consecutive test failures: stop, present the diff + failure output
+         to the user, ask for guidance
+      d) On all tests pass: proceed to next subtask in the task plan
+    Implementation:
+      - Modify `_execute_plan_der()` or add a `_self_coding_evaluate()` step
+        that runs after each tool call when mode=self-coding
+      - Use `subprocess_manager` (already built in Domain 14) to run tests
+    Test: Make a deliberate small error in a Python file, let IRIS self-correct
+          via the test-evaluate loop. Verify it fixes the error within 3 attempts.
+    Landmark: self_coding_test_evaluate
+
+  [17.5] Self-coding safety constraints
+    Status: NOT STARTED
+    What to build:
+      a) Protect critical files from accidental overwrite:
+         - bootstrap/coordinates.db (graph database)
+         - .env (credentials config — never read/write)
+         - backend/sessions/* (user session data)
+         - node_modules/, __pycache__/, .git/ (build artifacts)
+      b) Before any write_file or edit_file: validate target path is within
+         the project repo (not /etc, not C:\Windows, not user home)
+      c) Before git commit: run a pre-commit check that no test suite is
+         completely broken (smoke test at minimum)
+      d) All MCP tool calls logged to backend/logs/security/security_audit.log
+         with session_id, tool, target_path, timestamp
+      e) Maximum edit depth per session: 50 file operations (configurable via
+         IRIS_MAX_SELF_EDITS env var)
+    Test: Try to write to /etc/passwd → rejected. Try to overwrite .env → rejected.
+          Try to delete coordinates.db → rejected. Verify audit log entries created.
+    Landmark: self_coding_safety
+
+  Graduate condition:
+    1. User says "add a /healthz endpoint to main.py" in self-coding mode
+    2. IRIS reads main.py, writes the edit, runs the test suite, commits the change
+    3. No critical files were touched
+    4. The diff is visible in the Launcher DiffReviewPage
+    5. User can approve or discard the change
+    6. All remaining domains (2, 3, 4, 7, 8, 11, 12, 13, 14, 15) can be completed
+       by IRIS operating in self-coding mode — the external AI assistant is
+       only needed for Domain 17 itself and for Gate 2 terminal wiring.
+
+  Final objective:
+    When Domain 17 graduate condition is met, IRIS can complete every remaining
+    open item in Domains 2–15 on its own. The bootstrap scaffolding (this file,
+    the external AI, the MCM SDK) exists only to bring IRIS to this point.
+    After Domain 17 is done, IRIS ships itself.
 
 ---
 

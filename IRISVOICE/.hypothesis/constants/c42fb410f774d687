@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_functorch\_aot_autograd\runtime_wrappers.py
-# hypothesis_version: 6.151.9
-
-['__annotations__', '__doc__', '__type_params__', '_boxed_call', 'backward', 'bw_donated_idxs', 'cpu', 'fw_metadata', 'saved_context', 'val']

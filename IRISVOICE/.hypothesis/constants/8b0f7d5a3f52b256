@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\model\lfm2_audio.py
-# hypothesis_version: 6.151.9
-
-[1e-05, 1.0, 128, 130, 2048, '(C D) -> C D', 'audio_loss_weights', 'codebook_offsets', 'config.json', 'cuda', 'depthformer', 'encoder', 'flash_attention_2', 'flash_attn', 'inf', 'lfm', 'linear', 'log', 'sdpa']

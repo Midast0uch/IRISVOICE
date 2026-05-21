@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_inductor\standalone_compile.py
-# hypothesis_version: 6.151.9
-
-['AOTCompiledArtifact', 'aotautograd', 'binary', 'example_value', 'from_example_inputs', 'from_graph', 'from_tracing_context', 'output', 'rb', 'serialize', 'unpacked', 'utf-8']

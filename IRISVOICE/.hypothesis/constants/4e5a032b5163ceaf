@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\export\_remove_effect_tokens_pass.py
-# hypothesis_version: 6.151.9
-
-['get_attr', 'has_with_effects', 'output', 'placeholder', 'unbacked_bindings', 'val']

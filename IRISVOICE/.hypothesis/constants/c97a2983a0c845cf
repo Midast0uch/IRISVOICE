@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\maxvit.py
-# hypothesis_version: 6.151.9
-
-[-0.5, 0.0, 0.001, 0.01, 0.02, 0.2, 0.25, 5.558, 83.7, 96.722, 118.769, 128, 224, 256, 512, 1000, 30919624, 'ImageNet-1K', 'MBconv', 'MaxVit', 'MaxVit_T_Weights', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'conv_a', 'conv_b', 'conv_c', 'grid', 'grid_attention', 'ij', 'input_size', 'maxvit_t', 'min_size', 'num_classes', 'num_params', 'pre_norm', 'pretrained', 'recipe', 'row', 'squeeze_excitation', 'window', 'window_attention']

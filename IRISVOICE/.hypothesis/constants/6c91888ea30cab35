@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\inception.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.001, 0.01, 0.1, 0.224, 0.225, 0.229, 0.406, 0.456, 0.485, 0.5, 5.713, 77.294, 93.45, 103.903, 128, 160, 192, 256, 288, 299, 320, 342, 384, 448, 768, 1000, 1280, 2048, 27161264, 'ImageNet-1K', 'Inception3', 'InceptionOutputs', 'Inception_V3_Weights', '_InceptionOutputs', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'aux_logits', 'categories', 'inception_v3', 'init_weights', 'logits', 'min_size', 'num_classes', 'num_params', 'pretrained', 'recipe', 'stddev', 'transform_input']

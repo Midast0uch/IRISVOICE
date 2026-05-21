@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\variables\torch.py
-# hypothesis_version: 6.151.9
-
-['.', 'Parameter', 'PyCodegen', 'VariableTracker', '[^a-zA-Z0-9_]+', '_', '__', '__module__', '__objclass__', '__torch_function__', '_check_message', '_input_spec', 'add', 'backends', 'batch_size', 'call_function', 'cond', 'data', 'detach', 'device', 'div', 'dtype', 'example_value', 'fill_', 'fma', 'get_attr', 'has', 'key', 'level', 'lower', 'math', 'message', 'mul', 'numel', 'out', 'overloads', 'placeholder', 'placements', 'prim ', 'process', 'randomness', 'requires_grad', 'set_priority', 'shape', 'size', 'sqrt', 'stride', 'sub', 'torch', 'torch.nn', 'value']

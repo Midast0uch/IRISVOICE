@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\quantizer_fp_quant.py
-# hypothesis_version: 6.151.9
-
-['.dqweight', '.qweight', 'PreTrainedModel', 'cpu', 'disk', 'dqweight', 'qweight', 'torch.dtype', 'weight']

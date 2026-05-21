@@ -1,7 +1,6 @@
 {
   "pythonVersion": "3.13",
   "pythonPlatform": "Windows",
-  "pythonPath": "C:/Python313/python.exe",
   "venvPath": "C:/Python313",
   "include": [
     "backend"
@@ -27,7 +26,6 @@
   "reportAttributeAccessIssue": "none",
   "reportReturnType": "warning",
   "reportArgumentType": "none",
-  "reportAssignmentIssue": "none",
   "useLibraryCodeForTypes": true,
   "autoImportCompletions": true
 }

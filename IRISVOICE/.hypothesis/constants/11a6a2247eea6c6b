@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\image_classification.py
-# hypothesis_version: 6.151.9
-
-[1.0, 'Image.Image', 'function_to_apply', 'images', 'label', 'logits', 'none', 'pt', 'score', 'sigmoid', 'softmax', 'timeout', 'top_k', 'vision']

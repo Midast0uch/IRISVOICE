@@ -51,6 +51,15 @@ logger.info("  - Importing session-aware managers...")
 from backend.sessions import get_session_manager
 from backend.state_manager import get_state_manager
 from backend.ws_manager import get_websocket_manager
+from backend.git_ops import (
+    get_git_status,
+    get_git_log,
+    commit_all,
+    rollback,
+    get_pending_writes,
+    approve_write,
+    reject_write,
+)
 
 logger.info("  - Importing models...")
 from backend.models import (
@@ -769,6 +778,79 @@ async def save_projects(request: dict):
     cfg["projects"] = projects
     _save_iris_config(cfg)
     return {"projects": projects, "status": "ok"}
+
+
+# ============================================================================
+# Git + Diff API (Domain 13.1 — iris-launcher developer mode)
+# ============================================================================
+
+@app.get("/api/git/status")
+async def api_git_status():
+    """Returns git status for the active project."""
+    return get_git_status()
+
+
+@app.get("/api/git/log")
+async def api_git_log(limit: int = 20):
+    """Returns recent commits."""
+    return get_git_log(limit=limit)
+
+
+@app.post("/api/git/commit")
+async def api_git_commit(request: dict):
+    """Stage all changes and commit."""
+    message = request.get("message", "").strip()
+    if not message:
+        message = "user: manual commit from iris-launcher"
+    return commit_all(message)
+
+
+@app.post("/api/git/rollback")
+async def api_git_rollback(request: dict):
+    """Hard reset to target commit."""
+    target = request.get("target", "").strip()
+    if not target:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": "target commit hash required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return rollback(target)
+
+
+@app.get("/api/diff/pending")
+async def api_diff_pending():
+    """Returns pending agent writes awaiting diff review."""
+    return get_pending_writes()
+
+
+@app.post("/api/diff/approve")
+async def api_diff_approve(request: dict):
+    """Approve a pending write — apply to disk and commit."""
+    write_id = request.get("id", "").strip()
+    if not write_id:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": "write id required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return approve_write(write_id)
+
+
+@app.post("/api/diff/reject")
+async def api_diff_reject(request: dict):
+    """Reject a pending write — discard without applying."""
+    write_id = request.get("id", "").strip()
+    if not write_id:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": "write id required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return reject_write(write_id)
 
 
 # ============================================================================

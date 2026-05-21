@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\variables\iter.py
-# hypothesis_version: 6.151.9
-
-[100, 1024, 'BUILD_MAP', 'ConstantVariable', 'PyCodegen', 'VariableTracker', '__add__', '__iter__', '__next__', 'builtins', 'count', 'filter', 'index', 'key', 'map', 'repeat', 'strict', 'zip']

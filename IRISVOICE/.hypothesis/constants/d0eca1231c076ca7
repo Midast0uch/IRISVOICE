@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\ao\quantization\stubs.py
-# hypothesis_version: 6.151.9
-
-['DeQuantStub', 'QuantStub', 'QuantWrapper', 'dequant', 'module', 'qconfig', 'quant']

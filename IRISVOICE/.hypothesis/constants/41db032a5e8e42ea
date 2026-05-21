@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\integrations\peft.py
-# hypothesis_version: 6.151.9
-
-[128, ', ', '.', '.down_proj', '.safetensors', '0.18.0', 'LoadStateDictConfig', '_adapter_model_path', '_commit_hash', '_hotswap_enabled', '_swapped_in_out', 'adapter_model.bin', 'auto', 'balanced_low_0', 'base_layer', 'cache_dir', 'check_compiled', 'commit_hash', 'config', 'default', 'down_proj', 'error', 'force_download', 'gate', 'gate.weight', 'gate_proj', 'gate_up_proj', 'ignore', 'inference_mode', 'local_files_only', 'lora_A', 'lora_B', 'mixtral', 'model.', 'model_type', 'name_or_path', 'offload_index', 'peft_config', 'peft_type', 'proxies', 'qwen2_moe', 'r', 'rank_pattern', 'revision', 'sequential', 'subfolder', 'target_rank', 'token', 'torch.Tensor', 'up_proj', 'utf-8', 'w1', 'w2', 'w3', 'warn']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\video\resnet.py
-# hypothesis_version: 6.151.9
-
-[0.01, 40.519, 40.697, 43.343, 44.672, 63.2, 63.96, 67.463, 83.479, 84.13, 86.175, 120.318, 127.359, 112, 128, 171, 256, 400, 512, 11695440, 31505325, 33371472, 'Kinetics-400', 'MC3_18_Weights', 'R2Plus1D_18_Weights', 'R3D_18_Weights', 'VideoResNet', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'fan_out', 'mc3_18', 'min_size', 'num_classes', 'num_params', 'pretrained', 'r2plus1d_18', 'r3d_18', 'recipe', 'relu']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\utils\environment.py
-# hypothesis_version: 6.151.9
-
-[',', '.', '0', '1', '550.40.07', ';', '<', '>', 'ACCELERATE_', 'LOCAL_RANK', 'LOCAL_WORLD_SIZE', 'MPI_LOCALNRANKS', 'MPI_LOCALRANKID', 'MULTI_GPU', 'MULTI_HPU', 'MULTI_MLU', 'MULTI_MUSA', 'MULTI_NPU', 'MULTI_SDAA', 'MULTI_XPU', 'MV2_COMM_WORLD_RANK', 'MV2_COMM_WORLD_SIZE', 'OMPI_COMM_WORLD_RANK', 'OMPI_COMM_WORLD_SIZE', 'PMI_RANK', 'PMI_SIZE', 'RANK', 'RTX 40', 'WORLD_SIZE', 'Windows', 'cuda', 'f', 'false', 'help', 'hpu', 'local_rank', 'local_world_size', 'mlu', 'musa', 'n', 'no', 'npu', 'nvidia-smi', 'off', 'on', 'rank', 'sdaa', 't', 'test', 'true', 'world_size', 'xpu', 'y', 'yes']

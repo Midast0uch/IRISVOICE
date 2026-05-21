@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\models\wav2letter.py
-# hypothesis_version: 6.151.9
-
-[160, 250, 2000, 'Wav2Letter', 'mfcc', 'power_spectrum', 'waveform']

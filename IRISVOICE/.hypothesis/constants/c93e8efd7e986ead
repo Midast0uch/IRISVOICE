@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\commands\config\sagemaker.py
-# hypothesis_version: 6.151.9
-
-['*', '2012-10-17', '? [ml.p3.2xlarge]:', 'AWS Access Key ID: ', 'AWS Profile', 'AWS_ACCESS_KEY_ID', 'AWS_DEFAULT_REGION', 'AWS_PROFILE', 'Action', 'Allow', 'Arn', 'Data parallelism', 'Effect', 'Principal', 'Resource', 'Role', 'Service', 'Statement', 'Version', 'backend', 'bf16', 'default', 'dynamo_', 'ecr:BatchGetImage', 'fp16', 'fp8', 'iam', 'logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:GetLogEvents', 'logs:PutLogEvents', 'ml.p3.2xlarge', 'mode', 'no', 's3:CreateBucket', 's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject', 'sagemaker:*', 'sts:AssumeRole', 'us-east-1', 'use_dynamic', 'use_fullgraph']

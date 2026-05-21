@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\scipy\interpolate\interpolate.py
-# hypothesis_version: 6.151.9
-
-['BPoly', 'BSpline', 'NdPPoly', 'PPoly', 'RectBivariateSpline', '_interpolate', '_rgi', 'fitpack2', 'interp1d', 'interp2d', 'interpn', 'interpolate', 'lagrange', 'make_interp_spline']

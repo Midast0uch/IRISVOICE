@@ -218,6 +218,7 @@
     "test:bug-condition": "node tests/bug-condition-navigation-level3.test.js",
     "tauri": "tauri",
     "dev:backend": "python start-backend.py",
+    "dev:launcher": "cd iris-launcher && npm run dev",
     "dev:tauri": "npx tauri dev",
     "dev:tauri:nowatch": "npx tauri dev -- --no-watch"
   },

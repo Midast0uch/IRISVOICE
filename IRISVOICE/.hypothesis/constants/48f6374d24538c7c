@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\video\swin_transformer.py
-# hypothesis_version: 6.151.9
-
-[-100.0, -0.5, 0.0, 1e-05, 0.02, 0.1, 0.224, 0.225, 0.229, 0.406, 0.456, 0.485, 4.0, 43.882, 77.715, 79.427, 79.521, 81.643, 82.841, 93.519, 94.158, 94.386, 95.574, 121.543, 140.667, 218.288, 364.134, 128, 224, 256, 400, 28158070, 49816678, 88048984, 'Kinetics-400', 'Swin3D_B_Weights', 'Swin3D_S_Weights', 'Swin3D_T_Weights', 'SwinTransformer3d', '_compute_pad_size_3d', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'ij', 'min_size', 'min_temporal_size', 'num_classes', 'num_params', 'pretrained', 'recipe', 'swin3d_b', 'swin3d_s', 'swin3d_t']

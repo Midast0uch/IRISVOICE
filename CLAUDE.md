@@ -1,6 +1,7 @@
 CLAUDE.md
 Primary instructions for Claude Code.
-MCM SDK keeps the coordinate graph current automatically — no manual DB updates needed.
+MCM-EML-SDK2.0 keeps the coordinate graph current automatically — no manual DB updates needed.
+Uses proxy_core.py with auto-recording (no manual record_edit/record_create/record_test).
 
 ---
 
@@ -13,7 +14,8 @@ You are working on **IRIS Voice**, a voice-controlled desktop assistant.
 - **Desktop**: Tauri (Rust) — borderless widget, system tray, global shortcuts
 - **Audio**: Porcupine wake word, WebRTC/STT pipeline, WebSocket streaming
 - **Auth**: OAuth handlers, OS keyring for secure credential storage
-- **Database**: MCM SDK coordinate graph at `data/databases/coordinates.db`
+- **Database**: MCM SDK coordinate graph at `bootstrap/coordinates.db`
+- **Memory**: MCM-EML-SDK2.0 — proxy_core.py with auto-recording
 
 Read bootstrap/GOALS.md for the full roadmap, current gate, and domain breakdown.
 
@@ -67,7 +69,6 @@ The graph is a navigation instrument with three layers:
 
 HOW TO BUILD ANYTHING
 READ spec -> NAVIGATE graph -> READ file -> BUILD -> QUALITY CHECK -> RUN spec test
-  PASS -> record_test(file, 'pass') + pin_add(title, 'decision')
   FAIL -> fix code, return to QUALITY CHECK. The test does not change.
 
 THE QUALITY CHECK — REQUIRED BEFORE EVERY TEST RUN
@@ -108,16 +109,12 @@ Git commits are auto-recorded by the MCM plugin on every prompt.
 You only need to manually record events that are NOT part of a commit:
 
   # After editing a file (if not yet committed):
-  record_edit(file_path)
 
   # After creating a file:
-  record_create(file_path)
 
   # After a test passes:
-  record_test(test_file, test_name, outcome='pass', covers=['src/foo.py'])
 
   # After a test fails but reveals something important:
-  record_test(test_file, test_name, outcome='fail', description='what the failure revealed')
 
   # After an architectural decision:
   pin_add(title='Decision: chose X over Y', pin_type='decision', content='why')
@@ -155,6 +152,18 @@ You do not need to run session cleanup manually.
 ---
 
 ## IRIS Voice-Specific Architecture Rules
+
+## Auto-Recording
+
+You no longer need to manually call record_edit, record_create, or record_test.
+The proxy automatically records these events when you:
+
+- edit_file on an existing file -> auto-recorded as file_edit
+- write_file to a new path -> auto-recorded as file_create
+- run_command with a test command -> auto-recorded as test_run
+
+If you call the old tools explicitly, they still work for backwards compatibility.
+
 
 ### Frontend (Next.js)
 - **Tests**: `npm test` or `npx jest`
@@ -226,7 +235,7 @@ The three layers should all be present:
   LANDMARK:  permanent landmarks for every verified feature
 
 When the project reaches its completion condition (defined in GOALS.md),
-data/databases/coordinates.db transfers to the application's runtime memory store.
+bootstrap/coordinates.db transfers to the application's runtime memory store.
 Same schema. No migration. The build memory becomes the app memory.
 
 ---
@@ -235,7 +244,6 @@ SPEC / DOMAIN QUICK REFERENCE
 Production roadmap:     bootstrap/GOALS.md
 Graph queries:          get_session() or navigate(file)
 Work queue:             claim_work() / get_session()
-Event recording:        record_edit(), record_test(), record_create()
 Session update:         handled automatically by SDK lifecycle
 PiN (Primordial Info Nodes): pin_add(), pin_search(), pin_list()
 Landmark bridges:            pin_link()

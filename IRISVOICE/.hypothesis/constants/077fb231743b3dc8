@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\polys\ring_series.py
-# hypothesis_version: 6.151.9
-
-['0**0 expression', '0**0 is undefined', '_x', 'atan', 'cos', 'cosh', 'cot', 'exp', 'log', 'rs_atan', 'rs_cos', 'rs_cosh', 'rs_exp', 'rs_log', 'rs_sin', 'rs_sinh', 'rs_tan', 'rs_tanh', 'sin', 'sinh', 'tan', 'tanh']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\audio_classification.py
-# hypothesis_version: 6.151.9
-
-['-ac', '-ar', '-f', '-hide_banner', '-i', '-loglevel', '1', 'Malformed soundfile', 'array', 'f32le', 'ffmpeg', 'function_to_apply', 'http://', 'https://', 'label', 'none', 'path', 'pipe:0', 'pipe:1', 'pt', 'quiet', 'raw', 'rb', 'sampling_rate', 'score', 'sigmoid', 'softmax', 'top_k']

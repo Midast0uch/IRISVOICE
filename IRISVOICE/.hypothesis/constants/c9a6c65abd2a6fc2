@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\question_answering.py
-# hypothesis_version: 6.151.9
-
-[-10000.0, 0.0, 128, 384, 1000000, 'PreTrainedModel', 'align_to_words', 'answer', 'attention_mask', 'context', 'do_not_pad', 'doc_stride', 'encoding', 'end', 'end_logits', 'example', 'input_ids', 'is_last', 'left', 'max_answer_len', 'max_question_len', 'max_seq_len', 'only_first', 'only_second', 'p_mask', 'padding', 'question', 'question,context', 'right', 'score', 'start', 'start_logits', 'token_to_orig_map', 'token_type_ids', 'tokenizers.Encoding', 'top_k', 'use_cache']

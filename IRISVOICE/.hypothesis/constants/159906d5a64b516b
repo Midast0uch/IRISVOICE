@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\core_model_loading.py
-# hypothesis_version: 6.151.9
-
-['$', '*', ', ', '.', '.*', '.*.', '.0.', 'Loading weights', 'Materializing param', '\\(.+?\\)', '\\(\\?.+\\)', '\\..*\\.', '\\1', '^', '_weight_conversions', 'cpu', 'dim', 'disk', 'full_layer_name', 'model', 'num_attention_heads', 'operations', 'source_patterns', 'target_patterns', '|']

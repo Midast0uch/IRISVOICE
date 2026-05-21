@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\mtia\__init__.py
-# hypothesis_version: 6.151.9
-
-['MTIAGraph', '_mtia_exchangeDevice', 'all', 'current_device', 'current_stream', 'default_stream', 'device', 'device_count', 'empty_cache', 'get_rng_state', 'graph', 'graph_pool_handle', 'init', 'is_available', 'is_bf16_supported', 'is_initialized', 'is_initializing', 'max_memory_allocated', 'memory_allocated', 'memory_stats', 'mtia', 'python', 'set_device', 'set_rng_state', 'set_stream', 'snapshot', 'stream', 'synchronize', 'torch.mtia.Stream']

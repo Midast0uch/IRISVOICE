@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\transforms\_presets.py
-# hypothesis_version: 6.151.9
-
-[0.216989, 0.22145, 0.224, 0.225, 0.22803, 0.229, 0.37645, 0.394666, 0.406, 0.43216, 0.456, 0.485, 0.5, 256, '\n)', '(', '()', 'ImageClassification', 'ObjectDetection', 'OpticalFlow', 'SemanticSegmentation', 'VideoClassification']
