@@ -110,6 +110,12 @@ class IRISGateway:
         self._active_voice_client: dict = {}
         # Sessions currently in conversation mode (auto-relisten after TTS)
         self._conversation_sessions: set = set()
+        # Track last-seen timestamp for each session (for GC)
+        self._session_last_seen: dict[str, float] = {}
+        # Session GC task reference
+        self._session_gc_task: Optional[asyncio.Task] = None
+        # Track auto_research/background tasks
+        self._research_tasks: set[asyncio.Task] = set()
         # How long to wait for speech onset during relisten before returning to idle
         self._relisten_pre_speech_timeout: float = 8.0
         # Captured once the first async message is handled; used by sync callbacks
@@ -131,6 +137,32 @@ class IRISGateway:
         """
         self._main_loop = loop
         self._logger.info("[IRISGateway] Main event loop captured.")
+        # Start session GC task
+        if self._session_gc_task is None:
+            self._session_gc_task = asyncio.create_task(self._session_gc_loop())
+            self._logger.info("[IRISGateway] Session GC task started.")
+
+    def _touch_session(self, session_id: str) -> None:
+        """Update the last-seen timestamp for a session."""
+        self._session_last_seen[session_id] = time.monotonic()
+
+    async def _session_gc_loop(self) -> None:
+        """Background task to clean up stale sessions every 5 minutes."""
+        while True:
+            try:
+                await asyncio.sleep(300)  # 5 min
+                cutoff = time.monotonic() - 1800  # 30 min
+                stale = [sid for sid, t in self._session_last_seen.items() if t < cutoff]
+                for sid in stale:
+                    self._active_voice_client.pop(sid, None)
+                    self._conversation_sessions.discard(sid)
+                    self._session_last_seen.pop(sid, None)
+                if stale:
+                    self._logger.info(f"[Gateway] Session GC swept {len(stale)} stale sessions")
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                self._logger.warning(f"[Gateway] Session GC error: {e}")
 
     async def handle_message(self, client_id: str, message: dict, session_id: Optional[str] = None) -> None:
         """
@@ -158,6 +190,14 @@ class IRISGateway:
                 pass
 
         try:
+            # Touch the idle tracker on every incoming message so background workers
+            # (distillation, retention, MCP health checks) know the user is active.
+            try:
+                from backend.core.idle_tracker import get_idle_tracker
+                get_idle_tracker().touch()
+            except Exception:
+                pass  # never block message processing on tracker failure
+
             # Validate message format
             if not isinstance(message, dict):
                 self._logger.error(
@@ -190,6 +230,9 @@ class IRISGateway:
                 )
                 await self._send_error(client_id, "No active session")
                 return
+
+            # Touch session timestamp for GC tracking
+            self._touch_session(session_id)
 
             self._logger.info(
                 f"[Session: {session_id}] Processing message type: {msg_type}",
@@ -602,38 +645,21 @@ class IRISGateway:
 
                     wake_enabled = values.get("wake_word_enabled")
                     if wake_enabled is not None:
-                        config_updates["wake_word_enabled"] = bool(wake_enabled)
+                        config_updates["wake_word_enabled"] = bool(
+                            wake_enabled)
 
                     if config_updates:
-                        # Persist + fire change callbacks → reinitialize_porcupine reads
-                        # wake_word_enabled and stops/starts detection accordingly
                         wake_config.update_config(**config_updates)
                         self._logger.info(
                             f"[Session: {session_id}] Wake config applied on confirm: {config_updates}",
-                            extra={"session_id": session_id, "client_id": client_id}
+                            extra={"session_id": session_id,
+                                   "client_id": client_id}
                         )
-
-                    # If the enabled toggle changed, also start/stop the PortAudio stream
-                    # so the mic is released when voice is off (eliminates CPU idle cost)
-                    if wake_enabled is not None:
-                        try:
-                            from backend.audio import get_audio_engine
-                            engine = get_audio_engine()
-                            if bool(wake_enabled):
-                                if not getattr(engine, "_is_running", False):
-                                    engine.start()
-                                    self._logger.info(f"[Session: {session_id}] Audio pipeline started (wake word enabled)")
-                            else:
-                                if getattr(engine, "_is_running", False):
-                                    engine.stop()
-                                    self._logger.info(f"[Session: {session_id}] Audio pipeline stopped (wake word disabled)")
-                        except Exception as ae:
-                            self._logger.warning(f"[Session: {session_id}] Audio toggle failed (non-fatal): {ae}")
-
                 except Exception as wc_e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying wake config on confirm: {wc_e}",
-                        extra={"session_id": session_id, "client_id": client_id}
+                        extra={"session_id": session_id,
+                               "client_id": client_id}
                     )
 
             # Apply TTS configuration when speech section is confirmed
@@ -708,22 +734,6 @@ class IRISGateway:
                             self._logger.info(
                                 f"[Session: {session_id}] Swarm {'enabled' if swarm_on else 'disabled'}"
                             )
-
-                    # Thinking style — was stored-only, now wired to kernel
-                    _effort_to_style = {"fast": "concise", "balanced": "balanced", "accurate": "thorough"}
-                    if "agent_thinking_style" in values:
-                        kernel.set_thinking_style(values["agent_thinking_style"])
-                    if "reasoning_effort" in values:
-                        kernel.set_thinking_style(_effort_to_style.get(values["reasoning_effort"], "balanced"))
-
-                    # Tool mode — was stored-only, now gates tool list per request
-                    if "tool_mode" in values:
-                        kernel.set_tool_mode(values["tool_mode"])
-
-                    # Response length preference
-                    if "max_response_length" in values:
-                        kernel.set_max_response_length(values["max_response_length"])
-
                 except Exception as e:
                     self._logger.error(f"[Session: {session_id}] Error applying inference_mode: {e}", exc_info=True)
 
@@ -838,18 +848,6 @@ class IRISGateway:
                     # new provider immediately.
                     if "model_provider" in values:
                         await self._handle_get_available_models(session_id, client_id, {})
-
-                    # Inference behaviour fields (also appear in model_selection card)
-                    _effort_map = {"fast": "concise", "balanced": "balanced", "accurate": "thorough"}
-                    if "agent_thinking_style" in values:
-                        kernel.set_thinking_style(values["agent_thinking_style"])
-                    if "reasoning_effort" in values:
-                        kernel.set_thinking_style(_effort_map.get(values["reasoning_effort"], "balanced"))
-                    if "tool_mode" in values:
-                        kernel.set_tool_mode(values["tool_mode"])
-                    if "max_response_length" in values:
-                        kernel.set_max_response_length(values["max_response_length"])
-
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying model selection on confirm: {e}",
@@ -875,21 +873,9 @@ class IRISGateway:
                             extra={"session_id": session_id,
                                    "client_id": client_id}
                         )
-                    # Input volume (0-100 slider → 0.0-1.0 gain)
-                    vol = values.get("input_volume")
-                    if vol is not None:
-                        engine.update_config(input_volume=float(vol) / 100.0)
-                    # VAD toggle
-                    vad = values.get("vad")
-                    if vad is not None:
-                        engine.update_config(vad_enabled=bool(vad))
-                    # Noise gate toggle
-                    noise_gate = values.get("noise_gate")
-                    if noise_gate is not None:
-                        engine.update_config(noise_gate_enabled=bool(noise_gate))
                 except Exception as e:
                     self._logger.error(
-                        f"[Session: {session_id}] Error applying input settings on confirm: {e}",
+                        f"[Session: {session_id}] Error applying input device on confirm: {e}",
                         extra={"session_id": session_id,
                                "client_id": client_id}
                     )
@@ -911,81 +897,12 @@ class IRISGateway:
                             extra={"session_id": session_id,
                                    "client_id": client_id}
                         )
-                    # Output volume (0-100 slider → 0.0-1.0 gain)
-                    out_vol = values.get("output_volume")
-                    if out_vol is not None:
-                        engine.update_config(output_volume=float(out_vol) / 100.0)
-                    # Latency compensation (ms)
-                    latency = values.get("latency_compensation")
-                    if latency is not None:
-                        engine.update_config(latency_ms=int(latency))
                 except Exception as e:
                     self._logger.error(
-                        f"[Session: {session_id}] Error applying output settings on confirm: {e}",
+                        f"[Session: {session_id}] Error applying output device on confirm: {e}",
                         extra={"session_id": session_id,
                                "client_id": client_id}
                     )
-
-            # Identity/persona settings — wires agent_name, persona, knowledge, response_length
-            elif section_id == "identity" and values:
-                try:
-                    from .agent.agent_kernel import get_agent_kernel
-                    kernel = get_agent_kernel(session_id)
-                    _tone_map = {
-                        "Professional": "professional", "Friendly": "friendly",
-                        "Concise": "concise", "Creative": "creative", "Technical": "technical",
-                    }
-                    _know_map = {
-                        "General": "general", "Coding": "technical", "Writing": "creative",
-                        "Research": "analytical", "Conversation": "general",
-                    }
-                    _verb_map = {
-                        "Brief": "concise", "Balanced": "balanced",
-                        "Detailed": "detailed", "Comprehensive": "comprehensive",
-                    }
-                    personality_config = {}
-                    if values.get("agent_name"):
-                        personality_config["assistant_name"] = values["agent_name"]
-                    if values.get("persona"):
-                        personality_config["tone"] = _tone_map.get(values["persona"], "friendly")
-                    if values.get("knowledge"):
-                        personality_config["knowledge"] = _know_map.get(values["knowledge"], "general")
-                    if values.get("response_length"):
-                        personality_config["verbosity"] = _verb_map.get(values["response_length"], "balanced")
-                    if personality_config:
-                        kernel.update_personality(personality_config)
-                        self._logger.info(f"[Session: {session_id}] Identity applied: {personality_config}")
-                except Exception as e:
-                    self._logger.warning(f"[Session: {session_id}] Identity config failed (non-fatal): {e}")
-
-            # Memory settings — wires memory_enabled toggle and context_window slider
-            elif section_id == "memory" and values:
-                try:
-                    from .agent.agent_kernel import get_agent_kernel
-                    kernel = get_agent_kernel(session_id)
-                    if "memory_enabled" in values:
-                        kernel.set_memory_enabled(bool(values["memory_enabled"]))
-                    if "context_window" in values:
-                        kernel.set_context_window(int(values["context_window"]))
-                    self._logger.info(f"[Session: {session_id}] Memory settings applied")
-                except Exception as e:
-                    self._logger.warning(f"[Session: {session_id}] Memory config failed (non-fatal): {e}")
-
-            # Vision settings — routes to the existing set_vision_enabled handler
-            elif section_id == "vision" and values:
-                try:
-                    if "vision_enabled" in values:
-                        await self._handle_set_vision_enabled(session_id, client_id, {
-                            "payload": {"enabled": bool(values["vision_enabled"])}
-                        })
-                    if "screen_context" in values:
-                        from .agent.agent_kernel import get_agent_kernel
-                        kernel = get_agent_kernel(session_id)
-                        if hasattr(kernel, "set_screen_context_enabled"):
-                            kernel.set_screen_context_enabled(bool(values["screen_context"]))
-                    self._logger.info(f"[Session: {session_id}] Vision settings applied")
-                except Exception as e:
-                    self._logger.warning(f"[Session: {session_id}] Vision config failed (non-fatal): {e}")
 
             # Get current category
             state = await self._state_manager.get_state(session_id)
@@ -1279,13 +1196,6 @@ class IRISGateway:
                     chunk_callback=chunk_callback,
                     from_voice=True,
                 )
-                # Close recall episode feedback loop for voice turns
-                try:
-                    _ap = getattr(agent_kernel, "_active_recall_phases", None)
-                    if _ap is not None:
-                        _ap.update_recall_outcome("success" if resp else "partial")
-                except Exception:
-                    pass
                 spoken = agent_kernel.prepare_spoken_text(resp, enriched)
                 return resp, spoken
 
@@ -1294,19 +1204,14 @@ class IRISGateway:
 
             # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
-            suggestions = await self._generate_suggestions(response or "", session_id, agent_kernel)
-            voice_payload: Dict[str, Any] = {
-                "text": response,
-                "sender": "assistant",
-                **({"thinking": thinking} if thinking else {}),
-            }
-            if suggestions:
-                voice_payload["suggestions"] = suggestions
             await self._ws_manager.send_to_client(client_id, {
                 "type": "text_response",
-                "payload": voice_payload,
+                "payload": {
+                    "text": response,
+                    "sender": "assistant",
+                    **({"thinking": thinking} if thinking else {}),
+                }
             })
-            await self._flush_pending_follow_ups(agent_kernel, client_id, session_id)
 
             # ── TTS: speak the response ─────────────────────────────────────
             if spoken.strip():
@@ -1418,93 +1323,6 @@ class IRISGateway:
         text = _RE_MULTI_NL.sub("\n", text)
         return text.strip()
 
-    async def _generate_suggestions(
-        self,
-        response_text: str,
-        session_id: str,
-        agent_kernel: Any,
-    ) -> List[Dict[str, str]]:
-        """
-        Generate 3 contextual follow-up suggestion pills via a short LLM call.
-        Returns [] on any failure so callers always get a valid list.
-        max_tokens=100 keeps latency under ~500ms on local models.
-        """
-        if not response_text or not response_text.strip():
-            return []
-        prompt = (
-            "Given this assistant response, suggest 3 short follow-up actions "
-            "the user might want. Output ONLY a JSON array with no extra text: "
-            '[{"id":"1","label":"short label","message":"full message to send"},'
-            '{"id":"2","label":"...","message":"..."},{"id":"3","label":"...","message":"..."}]. '
-            "Be specific and contextually relevant. Never repeat the last user message. "
-            "Each label must be under 40 characters.\n\n"
-            f"Assistant response:\n{response_text[:600]}"
-        )
-        try:
-            loop = asyncio.get_running_loop()
-
-            def _call_llm() -> str:
-                if not hasattr(agent_kernel, "_is_openai_compat") or not agent_kernel._is_openai_compat():
-                    return "[]"
-                client = agent_kernel._get_lmstudio_client()
-                sel = getattr(agent_kernel, "_selected_reasoning_model", None) or "local-model"
-                resp = client.chat.completions.create(
-                    model=sel,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=120,
-                    temperature=0.7,
-                    stream=False,
-                )
-                return resp.choices[0].message.content or "[]"
-
-            raw = await loop.run_in_executor(None, _call_llm)
-            import json as _json
-            # Strip markdown code fences if model wrapped the JSON
-            raw = raw.strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            parsed = _json.loads(raw.strip())
-            if not isinstance(parsed, list):
-                return []
-            suggestions = []
-            for item in parsed[:3]:
-                if isinstance(item, dict) and "id" in item and "label" in item and "message" in item:
-                    suggestions.append({
-                        "id": str(item["id"]),
-                        "label": str(item["label"])[:40],
-                        "message": str(item["message"]),
-                    })
-            return suggestions
-        except Exception:
-            return []
-
-    async def _flush_pending_follow_ups(
-        self,
-        agent_kernel: Any,
-        client_id: str,
-        session_id: str,
-    ) -> None:
-        """
-        [4.5] Send queued proactive skill-creation prompts as assistant messages.
-        Consumed one at a time so the user sees each as its own bubble.
-        """
-        pending: List[str] = getattr(agent_kernel, "_pending_follow_ups", [])
-        if not pending:
-            return
-        follow_up = pending.pop(0)
-        try:
-            await self._ws_manager.send_to_client(client_id, {
-                "type": "text_response",
-                "payload": {
-                    "text": follow_up,
-                    "sender": "assistant",
-                }
-            })
-        except Exception:
-            pass
-
     def _speak_response(self, input_source: Union[str, queue.Queue], session_id: str = None) -> None:
         """
         Synthesise and play text through the configured TTS engine.
@@ -1512,7 +1330,7 @@ class IRISGateway:
         are ready, minimizing latency for the first spoken word.
 
         Args:
-            input_source: Either the full text to speak (str) or a queue.Queue 
+            input_source: Either the full text to speak (str) or a queue.Queue
                        that will receive sentences in real-time.
             session_id: Optional session ID to broadcast idle state to when finished.
         """
@@ -1527,9 +1345,10 @@ class IRISGateway:
             return
 
         # 1. Internal state
-        audio_queue: queue.Queue = queue.Queue(
+        audio_queue: asyncio.Queue = asyncio.Queue(
             maxsize=4)  # Buffer a few chunks
         interrupted = threading.Event()
+        loop = self._main_loop or asyncio.get_event_loop()
 
         # Dynamic chunking: synthesise first sentence immediately for instant
         # voice onset, then use larger chunks for stable continuous playback.
@@ -1552,7 +1371,8 @@ class IRISGateway:
                         if interrupted.is_set():
                             break
                         if audio_chunk is not None and len(audio_chunk) > 0:
-                            audio_queue.put(audio_chunk)
+                            asyncio.run_coroutine_threadsafe(
+                                audio_queue.put(audio_chunk), loop)
 
                 elif isinstance(input_source, queue.Queue):
                     # Streaming path: read from sentence queue
@@ -1566,7 +1386,8 @@ class IRISGateway:
                                 chunk = " ".join(_pending)
                                 for audio_chunk in tts.synthesize_stream(chunk):
                                     if audio_chunk is not None and len(audio_chunk) > 0:
-                                        audio_queue.put(audio_chunk)
+                                        asyncio.run_coroutine_threadsafe(
+                                            audio_queue.put(audio_chunk), loop)
                             break
 
                         _pending.append(item)
@@ -1580,7 +1401,8 @@ class IRISGateway:
                             chunk = " ".join(_pending)
                             for audio_chunk in tts.synthesize_stream(chunk):
                                 if audio_chunk is not None and len(audio_chunk) > 0:
-                                    audio_queue.put(audio_chunk)
+                                    asyncio.run_coroutine_threadsafe(
+                                        audio_queue.put(audio_chunk), loop)
                             _pending = []
                             _pending_words = 0
                             if is_first_chunk:
@@ -1589,7 +1411,8 @@ class IRISGateway:
             except Exception as exc:
                 self._logger.error(f"[Voice] TTS Producer error: {exc}")
             finally:
-                audio_queue.put(None)
+                asyncio.run_coroutine_threadsafe(
+                    audio_queue.put(None), loop)
 
         # 3. Suppress Porcupine while IRIS is speaking
         engine.set_tts_active(True)
@@ -1609,9 +1432,15 @@ class IRISGateway:
             _first_chunk = True
             while True:
                 _timeout = 90 if _first_chunk else 15
-                try:
-                    chunk = audio_queue.get(timeout=_timeout)
-                except queue.Empty:
+                _start = time.monotonic()
+                chunk = None
+                while time.monotonic() - _start < _timeout:
+                    try:
+                        chunk = audio_queue.get_nowait()
+                        break
+                    except asyncio.QueueEmpty:
+                        time.sleep(0.01)
+                if chunk is None:
                     self._logger.error(
                         f"[Voice] TTS audio queue timed out after {_timeout}s — forcing idle"
                     )
@@ -1626,7 +1455,7 @@ class IRISGateway:
                     while not audio_queue.empty():
                         try:
                             audio_queue.get_nowait()
-                        except queue.Empty:
+                        except asyncio.QueueEmpty:
                             break
                     break
 
@@ -1779,14 +1608,6 @@ class IRISGateway:
 
                 response = await loop.run_in_executor(None, _execute_agent)
 
-                # Close recall episode feedback loop for chat turns
-                try:
-                    _ap = getattr(agent_kernel, "_active_recall_phases", None)
-                    if _ap is not None:
-                        _ap.update_recall_outcome("success" if response else "partial")
-                except Exception:
-                    pass
-
                 _t_exec_end = _time.perf_counter()
                 _elapsed_ms = round((_t_exec_end - _t_exec_start) * 1000)
                 self._logger.info(
@@ -1815,38 +1636,17 @@ class IRISGateway:
                 except Exception:
                     pass  # never block the response
 
-                # Generate contextual suggestion pills [14.21] — short LLM call, ~500ms
-                suggestions = await self._generate_suggestions(response or "", session_id, agent_kernel)
-
                 # Send final complete message (updates the UI with the full text + metadata)
                 thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
-                payload: Dict[str, Any] = {
-                    "role": "assistant",
-                    "content": response,
-                    "thinking": thinking,
-                    "timestamp": datetime.now().isoformat(),
-                }
-                if suggestions:
-                    payload["suggestions"] = suggestions
                 await self._ws_manager.send_to_client(client_id, {
                     "type": "chat_message",
-                    "payload": payload,
+                    "payload": {
+                        "role": "assistant",
+                        "content": response,
+                        "thinking": thinking,
+                        "timestamp": datetime.now().isoformat()
+                    }
                 })
-
-                # Also emit as text_response so useIRISWebSocket forwards suggestions
-                # to ChatView via iris:text_response CustomEvent
-                tr_payload: Dict[str, Any] = {"text": response, "sender": "assistant"}
-                if thinking:
-                    tr_payload["thinking"] = thinking
-                if suggestions:
-                    tr_payload["suggestions"] = suggestions
-                await self._ws_manager.send_to_client(client_id, {
-                    "type": "text_response",
-                    "payload": tr_payload,
-                })
-
-                # [4.5] Flush any queued skill-creation prompts (one per turn)
-                await self._flush_pending_follow_ups(agent_kernel, client_id, session_id)
 
                 # Clear ChatView typing indicator
                 await self._ws_manager.send_to_client(client_id, {
@@ -1973,9 +1773,11 @@ class IRISGateway:
                 #   "Local Models" / "local"  → "local"   (Ollama)
                 #   "VPS Gateway"  / "vps"    → "vps"
                 #   "OpenAI API"   / "api"    → "api"
+                payload = message.get("payload", {})
                 _raw_mode = (
-                    session_state.get_field_value("inference_mode", "inference_mode", "lmstudio")
-                    or session_state.get_field_value("model_selection", "model_provider", "lmstudio")
+                    payload.get("model_provider")
+                    or session_state.get_field_value("model_selection", "model_provider", "")
+                    or session_state.get_field_value("inference_mode", "inference_mode", "lmstudio")
                     or "lmstudio"
                 )
                 _mode_map = {
@@ -2539,7 +2341,8 @@ class IRISGateway:
 
                 # Test the connection
                 from .utils.openai_connection_test import test_openai_connection
-                success, message = await test_openai_connection(api_key, api_url)
+                _conn_result = await test_openai_connection(api_key, api_url)
+                success, _conn_msg = _conn_result
 
                 # Send result to client
                 await self._ws_manager.send_to_client(client_id, {
@@ -2547,7 +2350,7 @@ class IRISGateway:
                     "payload": {
                         "connection_type": "openai",
                         "success": success,
-                        "message": message,
+                        "message": _conn_msg,
                         "tested_url": api_url
                     }
                 })
@@ -3192,7 +2995,7 @@ class IRISGateway:
                 "status": "enabled" if available else "error",
                 "vram_usage_mb": None,
                 "load_progress_percent": None,
-                "error_message": None if available else "Vision server not running on port 8081. Ensure llama.cpp is installed and LFM2.5-VL-450M model is downloaded.",
+                "error_message": None if available else "Vision server not running on port 8081. Start start_vl.bat first.",
                 "model_name": "lfm2.5-vl",
                 "quantization_enabled": False,
                 "is_available": available
@@ -4326,6 +4129,21 @@ class IRISGateway:
                 "type": "text_response",
                 "payload": {"text": f"Terminal error: {exc}", "sender": "assistant"},
             })
+
+    async def shutdown(self) -> None:
+        """Shutdown the gateway and cancel background tasks."""
+        if self._session_gc_task:
+            self._session_gc_task.cancel()
+            try:
+                await self._session_gc_task
+            except asyncio.CancelledError:
+                pass
+            self._logger.info("[IRISGateway] Session GC task cancelled.")
+        # Cancel any remaining research tasks
+        for task in list(self._research_tasks):
+            task.cancel()
+        if self._research_tasks:
+            self._logger.info(f"[IRISGateway] Cancelled {len(self._research_tasks)} research tasks.")
 
 
 # Global instance

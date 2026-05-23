@@ -80,20 +80,22 @@ def signal_handler(signum, frame):
 
 async def run_server():
     """Run the uvicorn server asynchronously"""
+    host = os.environ.get("IRIS_BACKEND_HOST", "0.0.0.0")
     config = uvicorn.Config(
         "backend.main:app",
-        host="127.0.0.1",
+        host=host,
         port=8000,
         reload=False,  # Disabled for Windows compatibility
         log_level="info"
     )
     server = uvicorn.Server(config)
-    
+
     # Setup signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    print("Starting uvicorn server...")
+
+    print(f"Starting uvicorn server on http://{host}:8000")
+    print(f"  (If tailscale is active, your phone can reach this at http://<machine>.<tailnet>.ts.net:8000)")
     await server.serve()
 
 def main():

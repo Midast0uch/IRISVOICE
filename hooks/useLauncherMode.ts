@@ -40,8 +40,8 @@ export function useLauncherMode(): {
           setMode((data.mode as LauncherMode) ?? null)
         }
       } catch {
-        // Backend not reachable or no mode set — default to personal
-        if (!cancelled) setMode("personal")
+        // Backend not reachable or no mode set — default to developer for workspace testing
+        if (!cancelled) setMode("developer")
       } finally {
         if (!cancelled) setIsLoading(false)
       }

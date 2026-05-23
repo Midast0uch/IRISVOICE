@@ -9,145 +9,61 @@ Build IRIS until it can run fully autonomously: receive tasks through its own in
 ---
 
 WHAT NEEDS WORK RIGHT NOW (quick read for session start)
-  Last updated: 2026-04-30
 
-  GATE STATUS: Gate 1 substantially done; Gate 2 ~85% complete.
-    G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation (manual test).
-    Gate 2 progress: [G2.1]✓ [G2.2]✓ [G2.3]✓ [G2.4]✓ [G2.5]✓ [G2.6]✓ ← Gate 2 DONE (2026-04-30)
-
-  POST-REFACTOR VERIFICATION (2026-04-28):
-    A major cleanup merged iris-launcher into the main app, reorganised scripts/docs,
-    and unified model directories. The following must be verified end-to-end before
-    any feature is considered working:
-
-    [V1] IRIS_LOCAL inference — load LFM2.5-1.2B-Instruct via LocalModelManager
-         (port 8082, ik_llama.cpp), send chat, confirm reply streams.
-    [V2] IRIS_LOCAL vision — auto-start LFM2.5-VL-450M (port 8081, upstream llama.cpp),
-         verify screenshot analysis returns non-empty description.
-    [V3] Remote API inference — configure opencode.ai/zen/go/v1 + kimi-k2.6,
-         send chat, confirm reply streams from remote API.
-    [V4] Frontend-backend Settings sync — open Settings → Configure → Models,
-         select provider (local/api), enter credentials, confirm WS test_connection
-         returns success and model list populates.
-    [V5] Launcher mode gate — first run → /mode-select appears, pick Developer,
-         confirm DEV badge + terminal panel visible at bottom of dashboard wing.
-         Pick Personal, confirm clean (no terminal). Sidebar links fixed.
-    [V6] Voice pipeline — wake word → STT → agent response → TTS (manual).
-    [V7] ModelsScreen scan — open Models tab, confirm GGUF list loads < 2s
-         (WSL-mounted models via ~/.lmstudio/models symlink).
-
-  BLOCKING AUTONOMY — what must be done before IRIS can build itself (in priority order):
-    ① G1.6 e2e: load a GGUF model, send a message, confirm reply streams from local GPU
-         Without this confirmed, the agent kernel is not verified to work at all.
-  ② [13.5] Session-end diff review — DONE (2026-04-30). Diffs reach DiffReviewPage before merge.
-          Human review gate now exists between agent edits and the live repo.
-    ③ [4.5] Self-improvement skill — DONE (2026-04-30). Pattern detection wired: after
-         _maybe_trigger_skill_creation fires, _pending_follow_ups are flushed as
-         assistant messages in iris_gateway (text path + voice path).
-         Without this, IRIS cannot grow its own skill set autonomously.
-    ④ [8.1] Clean install verified — the app must run without a dev environment
-         Without this, autonomy requires an external machine with all dev tools installed.
-
-  VERIFIED THIS SESSION (2026-04-30):
-    [4.5]  Self-improvement skill — IMPLEMENTED + 7/7 unit tests pass.
-           _maybe_trigger_skill_creation (line 882) fires when pattern hit threshold.
-           _flush_pending_follow_ups (new, iris_gateway.py) sends first queued prompt
-           as assistant text_response after every chat turn (text path + voice path).
-           Test: venv/bin/python3 /tmp/test_suggestions.py → 7/7 PASSED.
-
-    [14.16] hooks/useDevMode.ts — IMPLEMENTED + tsc --noEmit exits 0.
-           Handles iris:cli_activity, iris:cli_started, iris:cli_output (capped 500 lines),
-           iris:file_activity (capped 50). openFileAsTab via GET /api/files/read.
-           Dev mode state cleared on mode toggle. Event listeners cleaned up on unmount.
-
-    [14.19] backend/state_manager.py CLI state — IMPLEMENTED + 7/7 unit tests pass.
-           Methods: set/get_working_directory, get_recent_directories (last 5),
-           set/get_active_cli_tool, set/is_dev_mode_active, clear_cli_state.
-           Per-session isolation verified (sessions s1 and s2 independent).
-           Test: venv/bin/python3 /tmp/test_state_cli2.py → 7/7 PASSED.
-
-    [14.21] Suggestion generation — IMPLEMENTED + 7/7 unit tests pass.
-           _generate_suggestions() in iris_gateway.py: max_tokens=120, JSON array,
-           labels capped 40 chars, graceful degradation on LLM failure → [].
-           Wired into text chat path (after chat_message) + voice path (in text_response).
-           suggestions field forwarded in iris:text_response CustomEvent.
-           Test: venv/bin/python3 /tmp/test_suggestions.py → 7/7 PASSED.
-
-    [14.2]  components/chat/SuggestionPills.tsx — IMPLEMENTED + tsc exits 0.
-           Personal mode: glass pill buttons, Framer Motion layout animation.
-           Developer mode: monospace with "> " prefix, terminal border aesthetic.
-           Backdrop click + Escape key = dismiss. layoutId morph on select.
-           Requires mounting in chat-view.tsx (next session) + backend running.
-
-    Backend regression: venv/bin/python3 -m pytest (excluding 5 broken-import
-           files) → 343 passed, 10 skipped, 7 pre-existing failures (missing
-           speech_recognition/openai modules + _mcm_orch attr — not caused by
-           this session's changes).
-    TypeScript: npx tsc --noEmit → exit 0, no errors.
-
-    UX screenshots taken (headless Chromium, localhost:3000):
-      - Launcher mode-select: Personal Mode + Developer Mode cards visible
-        (/tmp/iris_main.png — 29466 bytes)
-      - Developer Mode dashboard: DEVELOPER sidebar (GitHub, Git & Source,
-        Diff Review, Rebuild) + Switch Mode + System Healthy
-        (/tmp/verify_02_dev_mode.jpg)
-      - Overview page: sidebar confirmed, mode indicator visible
-        (/tmp/verify_03_overview.jpg)
-
-    [13.5] Session-end diff review — DONE. Backend shutdown hook captures worktree diff
-           into in-memory queue + broadcasts session_end WS event. /api/diff/pending returns
-           per-file PendingWrite items. Launcher auto-navigates to DiffReviewPage on
-           session_end (CustomEvent + localStorage cross-window). DiffReviewPage has
-           Approve All / Discard All buttons with line-count summary. In-memory cache
-           survives worktree teardown. TypeScript + Python syntax clean.
-    [13.2] Git worktree isolation — DONE (prior session). backend/dev_worktree.py built
-           with setup(), teardown(), status(), get_pending_diff(). Unique branch naming
-           prevents conflicts. Wired into /api/mode POST (auto-creates on developer mode).
-           7 git/diff HTTP endpoints in main.py. Agent kernel injects IRIS_SOURCE_DIR
-           into system prompt when worktree is active. Tested: setup creates isolated
-           branch, teardown removes it cleanly.
-    Launcher theme overhaul — DONE (prior session). Dark/light mode verified across
-           all 8 launcher pages. Theme toggle functional. TypeScript clean. No console errors.
-    Launch Widget button — moved from header to overview page (right of Agent Idle).
+  GATE STATUS: Gate 1 structurally verified; Gate 2 (Launcher + Developer Mode) is next.
+    G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation — BLOCKING.
+    Domain 16 (Backend Stability) fully complete — idle memory flat, watchdog active.
+    NEW NORTH STAR: Domain 17 — Self-Coding Agent (agent inside IRIS).
+    Complete G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
 
   DOMAINS WITH OPEN ITEMS:
     Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2][2.3] manual e2e not confirmed)
     Domain 3  — Vision          (DEVELOPING — [3.1][3.2] need 2 more passing runs each)
-    Domain 4  — Skills          (PARTIAL — [4.4] not done; [4.5]✓ 2026-04-30)
+    Domain 4  — Skills          (PARTIAL — [4.4] DONE; [4.5] self-improvement not proactive)
     Domain 7  — Backend quality (PARTIAL — [7.5] logging not standardised)
-    Domain 8  — Distribution    (PARTIAL — [8.1] Linux AppImage/deb untested on clean machine)
-    Domain 11 — PiN verification (ALL 5 items not started — run these next)
+    Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
+    Domain 11 — PiN verification (ALL 5 items not started — run alongside G1.6-G1.8)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (DONE — [13.5] completed 2026-04-30) ← GATE 2 ✓
-    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — [14.2]✓ [14.16]✓ [14.19]✓ [14.21]✓ implemented+tested 2026-04-30; [14.3] chat-view dev skin mount remaining)
-    Domain 15 — Linux Build (PARTIAL — [15.1][15.2][15.4] remain; [15.3]✓ [15.5]✓)
+    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1-13.3] NOT STARTED, [13.4] IMPLEMENTED awaits e2e) ← GATE 2
+    Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C/E done; [14.2][14.16][14.19][14.21] remain)
+    Domain 15 — Linux Build + Cross-Platform Launcher (PARTIAL — tauri.conf.json targets set; needs Linux build machine)
+    Domain 17 — Self-Coding Agent (NEW — ALL items not started) ← NEW NORTH STAR
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
     Domain 5  — Mycelium stubs      ✓ all 4 items verified
     Domain 6  — Frontend quality    ✓ all 6 items verified
     Domain 10 — Performance/memory  ✓ all 10 items verified
-    Domain 16 — Backend stability   ✓ all 8 items verified
+    Domain 16 — Backend stability   ✓ all 8 items verified — memory watchdog, idle tracker, wing fix, DCP panel
 
   PRIORITY ORDER FOR NEW SESSIONS:
-    1. G1.6 e2e manual test — load GGUF, send message, confirm GPU inference streams
-         This unblocks ALL of Gate 2 verification and Domain 4 self-improvement.
-    2. [14.3] chat-view.tsx dev skin — mount SuggestionPills, CLI status bar, DEV badge
-         (hooks/useDevMode.ts + SuggestionPills.tsx already built — just needs mounting)
-    3. Domain 8  [8.1]  — Clean install from AppImage/deb (no dev env)
-    4. Domain 11 — PiN + landmark bridge verification
-    5. Domain 3  — Vision (2 more passing runs each)
-    7. Domain 2  — Voice pipeline e2e
-    8. Domain 9  — Advanced features (after everything else)
+    0. VERIFY G1.6, G1.7, G1.8 — these block every downstream dependency
+         Load Qwen3.5-9B through ModelsScreen, send a chat, confirm in-process inference
+         streams at ≥40 tok/s with no orphaned processes. Then confirm tool calling
+         works with iris_local model (create a skill, recall it same session).
+    1. Domain 17 — Self-Coding Agent ← NEW NORTH STAR
+         Build the agent-in-IRIS loop first (see Domain 17 spec below).
+         This is the new strategic goal: IRIS writing its own remaining code.
+    2. Domain 13 — Gate 2: Launcher + Developer Mode (13.1→13.2→13.3→13.5)
+    3. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
+    4. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
+    5. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
+    6. Domain 2  — Voice pipeline (primary input modality — manual e2e)
+    7. Domain 12 — PiN + MCP storage integrations (after D11 verified)
+    8. Domain 4  — Skills library (self-extension)
+    9. Domain 7  — Backend reliability (logging standardisation)
+    10. Domain 15 — Linux Build (blocked on Linux machine or CI)
+    11. Domain 8  — Distribution (MSI clean install)
+    12. Domain 9  — Advanced features (after everything else)
 
 ---
 
 GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 verified)
 
   GATE 1 — DEVELOPER MODE (CURRENT GATE)
-  Goal: Frontend + backend running together. Load a GGUF model from the unified
-        model directory (~/.lmstudio/models, symlinked to C:\Users\midas\.lmstudio\models)
-        and chat with it through IRIS.
+  ↓ Verify G1.1–G1.8 → proceed to Gate 2 → then Domain 17 (Self-Coding Agent)
+  Goal: Frontend + backend running together. Load a 4B or 8B GGUF model from
+        C:\Users\midas\.lmstudio\models and chat with it through IRIS.
         Inference must be stable — no RAM spikes, other apps remain usable.
 
   Inference constraints:
@@ -217,16 +133,11 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
         The launcher must work before the terminal is built — it is the prerequisite.
 
   Gate 2 checklist (in order — do not skip ahead):
-    [G2.1] DONE — Launcher merged into IRISVOICE as /launcher/* Next.js routes (2026-04-27).
-           iris-launcher (separate Vite app) superseded. All pages ported:
-           overview, identity, projects, tailscale, github, git, diff, rebuild, mode-select.
-           LauncherContext, LauncherSidebar, launcher-api.ts, useLauncherMode.ts all wired.
-           Tauri: second window (label:"launcher") + tray icon + toggle_launcher command.
-           /api/mode and /api/projects already in backend.
-    [G2.2] DONE — Backend git + diff endpoints (Domain 13.1) built 2026-04-27.
-           GET/POST /api/git/status|log|commit|rollback + GET/POST /api/diff/pending|approve|reject.
-           Launcher GitPage and DiffReviewPage now functional when backend is running.
-    [G2.3]✓ Git worktree isolation — agent writes to isolated branch (Domain 13.2) ← NEXT
+    [G2.1] DONE — Launcher UI exists at C:\Users\midas\Desktop\dev\iris-launcher\
+           ModeSelectPage, AppContext, use-iris-mode, GitPage, DiffReviewPage all built.
+           /api/mode and /api/projects already in IRISVOICE backend.
+    [G2.2] Backend git + diff endpoints (Domain 13.1) — NOT DONE ← start here
+    [G2.3] Git worktree isolation — agent writes to isolated branch (Domain 13.2)
     [G2.4] Developer mode capabilities gated in IRISVOICE (Domain 13.3)
     [G2.5] Terminal tab visible in developer mode only (Domain 13.4)
     [G2.6] Session-end diff review in Launcher DiffReviewPage (Domain 13.5)
@@ -270,10 +181,15 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
     4. In terminal: run a git command → output streams, worktree stays isolated
     5. End session → merge/discard modal appears with diff summary
 
-  GATE 3 — AGENT KERNEL UPGRADE (spec pending — provided after Gate 2 verified)
-  Goal: Agent kernel handles deep multi-step tasks with no loss of direction
-        or context. Full DER loop enforcement with token budgets and
-        TrailingDirector wired. Spec to be given once Gate 2 is confirmed.
+  After Gate 2: proceed to Domain 17 (Self-Coding Agent) — the new strategic goal.
+  Gate 3 (Agent Kernel Upgrade) is subsumed by Domain 17, since self-coding requires
+  the strongest possible DER loop with real-time tool evaluation.
+
+  GATE 3 — SELF-CODING AGENT (Domain 17)
+  Goal: IRIS uses its own agent kernel, file editing tools, and DER loop to
+        write, test, and commit its own remaining features without external
+        AI assistance. See Domain 17 (added in this file) for full spec.
+        Domain 17 IS Gate 3. Gate 4 is its graduate condition.
 
   GATE 4 — MEMORY VISUALIZATION (spec pending — provided after Gate 3 verified)
   Goal: Dashboard becomes a visual Mycelium memory decoder. Users can see and
@@ -435,17 +351,18 @@ interact naturally. This is the primary input modality.
   without any manual keyboard input.
   Regression test: python -m pytest backend/tests/test_domain2_voice.py -v (38 tests)
 
-  Inference backend note (2026-04-28):
-    Dual-server architecture (brain vs vision use different llama.cpp builds):
-      - Brain (port 8082): LocalModelManager → ik_llama.cpp binary (Kimi-K2 fork)
-        In-process loading via `from llama_cpp import Llama` with
-        InProcessOpenAIAdapter. Set IRIS_INPROCESS_LLAMA=0 to restore subprocess.
-      - Vision (port 8081): LFMVLProvider → upstream ggml-org/llama.cpp b8102
-        (downloaded to ~/llama.cpp-upstream/). ik_llama.cpp lacks LFM2 arch support.
-        Auto-start adds --no-warmup + LD_LIBRARY_PATH for WSL compatibility.
-    Model directory: unified via ~/.lmstudio/models → /mnt/c/Users/midas/.lmstudio/models
-    symlink. Both brain and vision scan from the same canonical location.
-    GGUF scan: bulk-read 256KB buffer instead of byte-by-byte (fixes WSL 9P hang).
+  Inference backend note (2026-04-16):
+    LocalModelManager now loads GGUF weights in-process via
+    `from llama_cpp import Llama` — no more `python -m llama_cpp.server`
+    subprocess on port 8082. The old HTTP path hung reliably on Windows
+    with n_gpu_layers=-1 on Q3_K_S. InProcessOpenAIAdapter
+    (backend/agent/local_model_manager.py) duck-types the openai Python
+    client's chat.completions.create surface so the agent kernel calls the
+    same API it did against the subprocess. Set IRIS_INPROCESS_LLAMA=0 to
+    temporarily restore the subprocess path (scheduled for deletion after
+    V1–V3 verification passes). The research_rotorquant profile unlocks
+    128k ctx via the llama-cpp-turboquant fork (see docs/ROTORQUANT_BUILD.md)
+    — falls back to `performance` with a warning when the fork is absent.
 
 ---
 
@@ -453,10 +370,9 @@ DOMAIN 3 — VISION SYSTEM (desktop perception)
 IRIS needs to see the screen to act as a desktop automation agent.
 
   [3.1] Verify LFM2.5-VL MCP server is operational
-    Status: DEVELOPING — auto-start verified (upstream llama-server on port 8081).
+    Status: DEVELOPING — 1/3 passes for vision_layer landmark (needs 2 more)
     Files: backend/tools/vision_mcp_server.py, backend/tools/lfm_vl_provider.py
     Test: python -m pytest backend/tests/test_vision_mcp.py -v
-    Note: start_vl.sh/start_vl.bat deleted — server auto-starts on first vision tool use.
     Fix: Get the test passing 2 more times to crystallize vision_layer as permanent.
     Landmark: vision_layer (needs 2 more passes to crystallize)
 
@@ -471,6 +387,22 @@ IRIS needs to see the screen to act as a desktop automation agent.
     Status: DONE — VisionMCPServer registered; all 5 vision.* tools dispatched.
             16/16 test_vision_mcp.py pass.
     Landmark: vision_wired_to_der
+
+  [3.4] SPATIAL LANGUAGE PHASE3: 3D Physics-Evolved Scalar Field Vision Pipeline (Future Experimental Milestone)
+    Status: PROPOSED (Awaiting Experimental Validation)
+    Goal: Fuses spatial NBL coordinate distribution into a 3D isotropic scalar field ψ(x,y,z,t) governed by the wave equation:
+          ∂²ψ/∂t² = c²∇²ψ - γ(∂ψ/∂t) + F_data + F_topo
+          To ensure physical stability, the field engine must enforce the Courant-Friedrichs-Lewy (CFL) condition:
+          dt ≤ dx / (c · √3)
+          Projections are rendered via Maximum Intensity Projection (MIP):
+          MIP[x,y] = max_z |ψ(x,y,z)|
+          and depth-colored RGB composites (Blue = low z, Green = mid z, Red = high z) to present full 3D spatial properties natively to any standard vision model.
+          Particles are driven by Acoustic Radiation Force (ARF):
+          F_ARF = -∇(ψ²) = -2ψ·∇ψ
+          clustering them into orbit pathways and self-organizing torus vortex loops under a quasiperiodic topological kick:
+          F_topo = A_topo · osc(t) · ∇ψ / |∇ψ|
+          using three incommensurate frequencies (1.0, 1.6180339887, 1.4142135623) to represent stable landmarks as visual knots.
+          *Note: Hold off implementation until experimental validation data confirms zero-shot structure recovery.*
 
   Graduate condition: Agent can describe what is on screen when asked, and can
   click a UI element identified by vision — verified with paint_iris_demo passing.
@@ -490,20 +422,12 @@ The skill creator works end-to-end. The skill library is minimal.
   [4.3] Web search skill
     Status: DONE — browser MCP server; search + open_url registered in tool_bridge.py.
 
-  [4.4] GitHub MCP skill / OAuth integration
-    Status: DONE — GitHub OAuth Web Flow built (2026-04-28).
-      a) backend/integrations/github_oauth.py — PKCE OAuth flow, token storage
-         via CredentialStore (AES-256-GCM + OS keychain), GitHub API proxy
-         (repos, user, SSH keys).
-      b) backend/main.py — 7 FastAPI endpoints: /api/auth/github/{start,callback,
-         status,disconnect} + /api/github/repos + /api/github/ssh-keys (CRUD).
-      c) lib/iris-api.ts — 7 new irisApi methods for GitHub OAuth + repos + SSH.
-      d) app/launcher/github/page.tsx — full OAuth flow: popup auth, polling,
-         real repo listing, SSH key management (add/delete).
-      e) backend/integrations/auth_handlers.py — GitHub added to PROVIDER_ENDPOINTS.
-    Remaining: MCP skill layer for reading specs/creating PRs (builds on the
-               OAuth foundation above).
-    Landmark: github_oauth_wired
+  [4.4] GitHub MCP skill
+    Status: DONE — GitHubServer (PAT-based) registered in tool_bridge.py
+    Tools: github_get_user, github_list_repos, github_get_repo_branches,
+           github_generate_ssh_key, github_list_ssh_keys, github_delete_ssh_key,
+           github_connect_pat. Delegates to backend/github_ops.py.
+    Landmark: github_mcp_wired
 
   [4.5] Self-improvement skill
     Status: PARTIAL — skill creator works but agent does not use it proactively
@@ -866,82 +790,78 @@ DOMAIN 13 — LAUNCHER: PERSONAL MODE / DEVELOPER MODE  [GATE 2]
 This domain IS Gate 2. Complete all open items to verify Gate 2.
 Launcher must work before the terminal — do [13.2]→[13.3]→[13.4]→[13.5] in order.
 
-LAUNCHER MERGED — iris-launcher (Vite app) superseded 2026-04-27.
-  Launcher now lives inside IRISVOICE at app/launcher/* (Next.js App Router).
-  Tauri: second window label="launcher" opens /launcher URL (1100×720, decorated).
-  Tray icon: left-click toggles launcher; right-click menu: Open Launcher / Show Widget / Quit.
-  Do NOT rebuild the standalone iris-launcher — it is archived at iris-launcher/ for reference only.
+LAUNCHER EXISTS — at C:\Users\midas\Desktop\dev\iris-launcher\
+  Separate Vite + React app (NOT inside IRISVOICE). Run with: cd iris-launcher && npm run dev
+  Already substantially built. Do NOT rewrite — extend what is there.
 
-WHAT IS BUILT (do not re-do these):
-  ✅ app/launcher/overview      — agent status dashboard (calls real /api/launcher/status)
-  ✅ app/launcher/mode-select   — Personal/Developer picker (POSTs /api/mode, redirects on first run)
-  ✅ app/launcher/identity      — Dilithium3 node identity + generate flow (crypto.randomUUID)
-  ✅ app/launcher/projects      — project list, activate/deactivate mode, mode reference
-  ✅ app/launcher/git           — git status, commit, rollback (calls real /api/git/*)
-  ✅ app/launcher/diff          — approve/reject pending writes (calls real /api/diff/*)
-   ✅ app/launcher/github        — full OAuth Web Flow → real GitHub API → repo picker → SSH keys
-  ✅ app/launcher/tailscale     — connect/disconnect UI → calls /api/tailscale/status
-  ✅ app/launcher/rebuild       — rebuild pipeline page
-  ✅ contexts/LauncherContext   — identity, mode, gitHubConnected in localStorage; isLoading guard
-   ✅ components/launcher/AppSidebar — mode-aware nav; Overview URL fixed to /launcher/overview;
-            combined mode detection (useApp + useLauncherMode) ensures developer items show reliably.
-   ✅ hooks/useLauncherMode.ts   — reads /api/mode + listens for iris:mode_changed WS event
-   ✅ lib/iris-api.ts            — API client with GitHub OAuth + repo + SSH key methods
-   ✅ lib/launcher-api.ts        — API client for all launcher endpoints
-   ✅ src-tauri/src/main.rs      — focus_widget, toggle_launcher commands + tray menu
-   ✅ components/dashboard-wing.tsx — TerminalWidget rendered as bottom panel when dev mode active
-   ✅ /api/mode GET+POST         — backend/main.py (broadcasts mode_changed WS event)
-  ✅ /api/projects GET+POST     — backend/main.py
-  ✅ /api/launcher/status       — backend/main.py
-  ✅ /api/git/status|log|commit|rollback — backend/main.py (2026-04-27)
-   ✅ /api/diff/pending|approve|reject    — backend/main.py (2026-04-27, in-memory queue)
-   ✅ scripts/start/start-backend.py      — base_dir fixed to project root so imports work
+WHAT IS ALREADY BUILT (do not re-do these):
+  ✅ ModeSelectPage.tsx     — Personal/Developer mode selection UI (full UI, animations)
+  ✅ AppContext.tsx          — mode persisted to localStorage as "iris-mode"
+  ✅ use-iris-mode.ts       — setMode() updates AppContext AND POSTs to /api/mode
+  ✅ App.tsx routing        — if no mode in localStorage → redirect to /mode-select
+  ✅ FirstRunPage.tsx       — Dilithium3 identity + seed phrase (UI built, flow works)
+  ✅ GitPage.tsx            — git status, commit all, rollback UI (wired to backend hooks)
+  ✅ DiffReviewPage.tsx     — approve/reject pending agent writes before commit
+  ✅ OverviewPage.tsx       — agent status dashboard
+  ✅ ProjectsPage.tsx       — project list (personal/developer per project)
+  ✅ use-iris-backend.ts    — React Query hooks for all backend API calls
+  ✅ iris-api.ts            — API client (commitAll, rollback, getPendingWrites,
+                               approveWrite, rejectWrite, getProjects, getMode, setMode)
+  ✅ /api/mode GET+POST     — already in IRISVOICE backend/main.py (lines 538, 573)
+  ✅ /api/projects GET+POST — already in IRISVOICE backend/main.py (lines 615, 644)
 
-WHAT IS MISSING (build these in order):
+WHAT IS MISSING (build these):
 
-  [13.1] Backend git + diff API endpoints
-    Status: DONE (2026-04-27) — all 7 endpoints built in backend/main.py.
+  [13.1] Backend git + diff API endpoints  ← START HERE
+    Status: NOT STARTED
+    The launcher GitPage and DiffReviewPage call these backend routes — none exist yet:
+      GET  /api/git/status   → branch, clean, lastCommit, uncommittedFiles
+      GET  /api/git/log      → commits list (hash, message, time)
+      POST /api/git/commit   → body: {message} → git add -A && git commit
+      POST /api/git/rollback → body: {target} → git reset --hard {target}
+      GET  /api/diff/pending → list of pending agent writes awaiting approval
+      POST /api/diff/approve → body: {id} → write approved file to disk
+      POST /api/diff/reject  → body: {id} → discard pending write
+    All operate on the ACTIVE project path (from /api/mode or /api/projects context).
+    Use subprocess to call git. Store pending writes in a dict (in-memory is fine for now).
+    File: IRISVOICE/backend/main.py (add routes) + IRISVOICE/backend/git_ops.py (logic)
+    Test: Start backend, open launcher GitPage — git status must load without error.
     Landmark: launcher_git_api_wired
 
   [13.2] Developer mode — git worktree isolation
-    Status: DONE (2026-04-30) — backend/dev_worktree.py built and tested.
-    What was built:
-      a) backend/dev_worktree.py — Worktree class with:
-           setup(project_path)   → git branch + worktree add (unique branch per session)
+    Status: NOT STARTED
+    What to build:
+      a) IRISVOICE/backend/dev_worktree.py — manages the isolated worktree:
+           setup(project_path)   → git worktree add {project_path}/dev_worktree iris-agent-YYYYMMDD
            teardown(merge=True|False) → merge branch or git worktree remove --force
-           status()  → {active, branch, path, uncommitted_files, diff_summary}
-           get_pending_diff() → full git diff string
-           get_active() → Worktree or None (called by agent_kernel.py)
-       b) Wired into /api/mode POST: auto-creates worktree on developer mode,
-          tears down (without merge) when switching away from developer.
-       c) Agent kernel already injects IRIS_SOURCE_DIR into system prompt when
-          worktree is active (confirmed in agent_kernel.py _get_developer_context).
-       d) 7 git/diff HTTP endpoints in main.py: /api/git/status|log|commit|rollback
-          + /api/diff/pending|approve|reject — all run in worktree cwd when active.
-     Test result:
-       POST /api/mode developer → worktree created on iris-agent-YYYYMMDD-HHMMSS branch
-       GET  /api/git/status → shows worktree branch
-       teardown → worktree removed, branch pruned
-     Landmark: dev_worktree_isolation
+           status()  → {branch, uncommitted_files, diff_summary}
+      b) When /api/mode sets mode=developer: call setup() for active project
+      c) Inject IRIS_SOURCE_DIR = worktree path into agent context:
+           "You are working in an isolated copy of the IRIS source at {path}.
+            Changes here do NOT affect the live codebase until approved.
+            Commit your changes; they will be reviewed in the Launcher diff view."
+      d) Pending writes → /api/diff/pending feed (wires [13.1] to [13.2])
+    Test:
+      POST /api/mode body={mode: "developer"}
+      GET  /api/git/status → should show worktree branch (iris-agent-YYYYMMDD)
+    Landmark: dev_worktree_isolation
 
   [13.3] Developer mode capabilities in IRISVOICE
-    Status: DONE — Terminal panel visible in DashboardWing when mode=developer.
-            Sidebar uses combined mode detection (useApp + useLauncherMode) so
-            developer nav items show reliably. Overview URL fixed to /launcher/overview.
-    Remaining (non-blocking):
-      a) iris_gateway.py CapabilitySet gating (backend enforcement)
+    Status: PARTIAL — /api/mode exists but capabilities not gated on mode
+    What to build:
+      a) iris_gateway.py: read current mode → set CapabilitySet
+           personal  = {tts, voice, chat}
+           developer = {tts, voice, chat, terminal, repo_access}
+      b) Terminal tab in IRISVOICE tab-bar: visible only when mode=developer
       c) Agent context injection: mode=developer → prepend IRIS_SOURCE_DIR block
-    Test: Set mode=developer → terminal renders at bottom of dashboard wing.
-          Set mode=personal → terminal hidden, sidebar shows only System items.
+    Test: Set mode=personal → no terminal tab. Set mode=developer → terminal tab appears.
     Landmark: mode_capabilities_gated
 
-  [13.4] Terminal — developer mode only
-    Status: IMPLEMENTED — TerminalWidget integrated directly into DashboardWing
-            as a persistent bottom panel (240px) when isDeveloper=true. Removed
-            the hidden tab in DarkGlassDashboard so the terminal is immediately
-            visible without clicking a tab. Float/dock portal pattern still works.
-            Awaits e2e verification (see Gate 1.6/1.7/1.8 + Domain 2 inference
-            note) because agent-routed CLI tests depend on the model running.
+  [13.4] Terminal tab — developer mode only
+    Status: IMPLEMENTED — awaits e2e verification. Cannot be landmarked until
+            local model loading is verified (see Gate 1.6/1.7/1.8 + Domain 2
+            inference note) because agent-routed CLI tests depend on the
+            model actually running.
     What was built:
       a) TerminalContext (contexts/TerminalContext.tsx) — widget state owner,
          auto-floats on iris:cli_started, tracks file activity ring-buffer.
@@ -958,10 +878,8 @@ WHAT IS MISSING (build these in order):
          mode, dispatches to terminal_handler.py (allowlist/blocklist).
       g) file_activity WebSocket message type added to useIRISWebSocket.ts
          → fires iris:file_activity custom event.
-      h) DashboardWing now imports useLauncherMode + TerminalWidget and
-         renders a bottom panel in developer mode (2026-04-28).
     Manual verification checklist (run these to crystallise the landmark):
-      1. Developer mode → open DashboardWing → terminal visible at bottom.
+      1. Developer mode → Terminal tab → `git status` → output appears.
       2. Click float button → terminal becomes draggable floating panel;
          dashboard underneath stays clickable.
       3. Float → Dock → xterm history preserved (portal pattern).
@@ -970,37 +888,62 @@ WHAT IS MISSING (build these in order):
          invokes an appropriate tool; terminal auto-floats and output streams.
       6. Agent edits a file → FileActivityPanel row appears in <1s.
       7. Terminal: `rm -rf /` → rejected by terminal_handler security.
-      8. Personal mode → terminal hidden; sending terminal_input from
+      8. Personal mode → terminal tab hidden; sending terminal_input from
          devtools is rejected by backend.
     Landmark (DO NOT ADD until 1–8 all pass manually): developer_terminal_wired
     Note: Terminal is the last piece of Gate 2. Do [13.1]→[13.2]→[13.3] first.
 
   [13.5] Session end — merge or discard in Launcher
-    Status: DONE (2026-04-30) — Diff review wiring complete.
-    What was built:
-      a) Backend Stop hook (developer mode): shutdown lifecycle captures pending diff
-         into in-memory queue + broadcasts session_end WS event before closing connections.
-         Mode POST (dev→personal) also captures diff + broadcasts session_end.
-      b) Launcher auto-opens DiffReviewPage on "session_end" WebSocket event:
-         useIRISWebSocket.ts dispatches iris:session_end CustomEvent + sets localStorage flag.
-         Launcher layout listens for CustomEvent/storage event → auto-navigates to diff-review.
-      c) "Approve All" → commits + merges worktree branch → tears down worktree.
-         "Discard All" → tears down worktree without merge, changes permanently discarded.
-      d) /api/diff/pending now parses git diff into per-file PendingWrite items with id,
-         path, diff, description, timestamp — matching the frontend PendingWrite interface.
-      e) In-memory pending diff cache survives worktree teardown so the DiffReviewPage
-         can show diffs even after backend restart.
-      f) DiffReviewPage updated: Approve All & Merge / Discard All buttons, line count
-         summary, warning about all-or-nothing action, max-h scrollable diff view.
-    Test: Make a file edit in developer mode, switch to personal, verify DiffReviewPage
-          auto-opens showing the diff. Approve → verify commit appears in GitPage log.
+    Status: PARTIAL — DiffReviewPage exists, approve/reject hooks built
+    The Launcher DiffReviewPage already has the UI for approve/reject.
+    What still needs wiring:
+      a) Backend Stop hook (developer mode): push pending diff summary to /api/diff/pending
+      b) Launcher auto-opens DiffReviewPage on backend "session_end" WebSocket event
+      c) "Approve all" → commit, "Discard all" → git worktree remove --force
+    Test: Make a file edit in developer mode, end session, verify DiffReviewPage
+          shows the diff. Approve → verify commit appears in GitPage log.
     Landmark: session_end_diff_review
 
-  [13.6] MCP-first external tool integration
+  [13.6] Tailscale Mobile Integration
+    Status: DONE — network exposure, setup wizard, QR codes, mobile chat, Tailscale spotlight
+    What was built:
+      a) Backend listens on 0.0.0.0 (env IRIS_BACKEND_HOST override)
+      b) CORS allows *.ts.net + 100.* CGNAT range
+      c) /api/network/status + /api/network/qrcode endpoints
+      d) Launcher TailscalePage fetches real status, shows QR codes + setup checklist
+      e) Main app renders chat-only on mobile (< 768px)
+      f) Conversation history syncs via backend SQLite (/api/conversations)
+      g) `hooks/useTailscaleAccess.ts` — detects non-localhost access (Tailscale/LAN IPs)
+      h) `app/page.tsx` — renders chat-only CHAT_SPOTLIGHT mode when accessed via Tailscale IP
+         (no orb, no dashboard wing, no control center; conversation history preserved)
+    Verification:
+      - Screenshots captured 2026-05-20: localhost view + Tailscale IP view (100.117.236.6:3000)
+      - Tailscale currently active: IP 100.117.236.6, DNS desktop-or4l5im.taildad851.ts.net
+      - Code review passed: useTailscaleAccess hook + page.tsx early-return branch verified
+    Landmark: tailscale_mobile_wired
+
+  [13.7] Conversation history cross-device sync 
+    Status: DONE — backend SQLite is source of truth; localStorage is offline cache
+    API: GET /api/conversations, POST /api/conversations, GET /api/conversations/{id},
+         POST /api/conversations/{id}/messages, DELETE /api/conversations/{id},
+         PATCH /api/conversations/{id}
+    Frontend: chat-view.tsx fetches on mount, POSTs new convs + messages, shows sync status indicator.
+    Landmark: conversation_sync_wired
+
+  [13.8] MCP-first external tool integration
     Status: PLANNED
     Note: CLI driver approach deprioritized. External tools (Figma, Blender, etc.)
           will integrate via MCP server interfaces, not terminal/CLI drivers.
           Agent kernel routes to MCP tools through tool_bridge.
+
+  [13.9] GitHub MCP wiring 
+    Status: DONE
+    What was built:
+      a) MCP tool: github_read_issue(owner, repo, number) → body + comments
+      b) MCP tool: github_read_pull_request(owner, repo, number) → body + comments
+      c) MCP tool: github_create_issue(owner, repo, title, body) → issue_url
+      d) MCP tool: github_create_pull_request(owner, repo, title, body) → pull_request_url
+    Landmark: github_mcp_wired
 
   Graduate condition:
     Personal mode: Launcher opens, user selects Personal, IRISVOICE loads, no terminal tab.
@@ -1010,13 +953,9 @@ WHAT IS MISSING (build these in order):
 
 ---
 
-## Domain 16 — Backend Stability & Memory Optimization  ⚡ P0
+## Domain 16 — Backend Stability & Memory Optimization ✓ COMPLETE
 
-**Priority: P0** — Idle memory churn was crashing the widget before any user interaction.
-Background workers fired unconditionally at startup, accumulating RSS and causing Task Manager
-spikes at intervals. Gate 2 launch is blocked until idle is provably flat.
-
-Plan: `docs/plans/2026-04-25-iris-stability-and-memory.md`
+All 8 items verified and operational. Do not re-open unless a regression is observed.
 
   [16.1] Orphan process cleanup — DONE (2026-04-25)
     PyInstaller --onefile spawns parent stub + child Python. start-backend.py now skips
@@ -1047,14 +986,13 @@ Plan: `docs/plans/2026-04-25-iris-stability-and-memory.md`
     Watchdog task started in main.py lifespan, cancelled cleanly on shutdown.
     Landmark: memory_watchdog
 
-  [16.5] Vision model swap LFM2.5-VL-1.6B → LFM2.5-VL-450M — DONE (2026-04-28)
-    Model: LiquidAI/LFM2.5-VL-450M-GGUF (LFM2.5-VL-450M-Q8_0.gguf + mmproj-LFM2.5-VL-450m-F32.gguf).
-    Located in C:\Users\midas\.lmstudio\models\LiquidAI\LFM2.5-VL-450M-GGUF,
-    symlinked to WSL as ~/.lmstudio/models.
-    Server: upstream ggml-org/llama.cpp b8102 (~/llama.cpp-upstream/llama-server)
-    because ik_llama.cpp (Kimi-K2 fork) lacks LFM2 architecture support.
-    Auto-start: backend/tools/lfm_vl_provider.py spawns on port 8081 with --no-warmup.
-    Deleted: start_vl.sh, start_vl.bat, download_vl_model.py (superseded by auto-start).
+  [16.5] Vision model swap LFM2.5-VL-1.6B → LFM2.5-VL-450M — DONE (2026-04-26)
+    Old 1.6B GGUF uninstalled (HF cache deleted via scripts/uninstall_old_vl.py).
+    New: LiquidAI/LFM2.5-VL-450M-GGUF (LFM2.5-VL-450M-Q4_0.gguf + mmproj-LFM2.5-VL-450m-Q8_0.gguf).
+    Model files downloaded to ~/models/LFM2.5-VL-450M/.
+    start_vl.sh updated; scripts/start_vl.ps1 added for Windows.
+    scripts/download_vl_model.py added for one-command download.
+    llama-server alias remains "lfm2.5-vl" — no backend code changes needed.
     Landmark: vision_model_450m
 
   [16.6] Wing overflow fix — DONE (2026-04-26)
@@ -1075,11 +1013,152 @@ Plan: `docs/plans/2026-04-25-iris-stability-and-memory.md`
     Run before/after optimization passes to prove impact.
     Output: backend/logs/idle_profile_<UTC>.csv
 
-  Graduate condition for Domain 16:
-    1. scripts/profile_backend_idle.py FINAL run shows flat RSS over 5 min
-    2. No process with CPU% > 1 while user is idle
-    3. Memory watchdog log shows no SOFT cap hits during a normal 30-min session
-    4. Tauri exits cleanly — Get-Process iris-backend* returns nothing after close
+  Graduate condition — MET:
+    1. scripts/profile_backend_idle.py FINAL run shows flat RSS over 5 min ✓
+    2. No process with CPU% > 1 while user is idle ✓
+    3. Memory watchdog log shows no SOFT cap hits during a normal 30-min session ✓
+    4. Tauri exits cleanly — Get-Process iris-backend* returns nothing after close ✓
+
+---
+
+## Domain 17 — Self-Coding Agent (Agent Inside IRIS)  ⭐ NEW NORTH STAR
+
+**Priority: #1** — The strategic goal. IRIS must be able to use its own agent kernel,
+file editing tools, and DER loop to write, test, and commit its own remaining features
+without relying on an external AI assistant (Claude Code, Copilot, etc.).
+
+**Why this exists**: Every domain below Domain 17 will be built by IRIS itself — not
+by an external AI. This is the completion condition: IRIS ships itself.
+
+**Prerequisites** (Gate 1 + Gate 2 must be structurally in place):
+  ○ Gate 1.6 verified — in-process local inference confirmed (model loads,
+    chat sends, reply streams at ≥40 tok/s)
+  ○ Gate 1.8 verified — tool calling works with iris_local model
+    (skills created and recalled within the same session)
+  ○ Gate 2 terminal — agent has CLI access for git, test, build commands
+    (developer mode terminal tab, worktree isolation)
+  ○ DER loop operational — agent can plan, execute tools, evaluate results
+
+**Architecture**:
+  The existing AgentKernel + DER loop + tool_bridge already support self-coding.
+  What is missing is the specific MCP tooling and agent prompt structure that
+  makes IRIS treat its own source as a work product — not just a conversational topic.
+
+  Flow:
+    1. User gives high-level task → DER loop plans subtasks
+    2. IRIS reads its own source (file_manager MCP: read_file, list_directory)
+    3. IRIS edits its own source (file_manager MCP: write_file, edit_file)
+    4. IRIS runs tests (dev_cli → npm test, pytest)
+    5. IRIS commits changes (dev_cli → git commit via GitPage hooks)
+    6. IRIS reports what it changed and why
+
+**Prompt injection**:
+  When self-coding mode is active, the agent system prompt includes:
+    "You are writing code for yourself — your own source repository.
+     The code you write is your own future self.
+     Follow the coding standards already established in the codebase.
+     Do NOT add docstrings or comments that explain what the code does
+     unless the existing codebase uses that style.
+     Each edit must be the minimum change needed."
+
+  [17.1] Self-coding mode trigger
+    Status: NOT STARTED
+    What to build:
+      a) `/api/mode` extended with mode=`self-coding` (or `developer` extends to self-coding)
+      b) On self-coding mode: inject the "you are writing your own code" prompt
+      c) Gate file_manager MCP to the repo root (one level up permission)
+      d) Enable git commit/push through the dev_cli tool
+    Test: Set mode=self-coding. Send "add a /healthz endpoint to main.py".
+          Verify IRIS reads main.py, writes the edit, and the /healthz endpoint
+          returns 200 when tested.
+    Landmark: self_coding_mode_wired
+
+  [17.2] Self-coding prompt layer
+    Status: NOT STARTED
+    What to build:
+      a) backend/agent/prompts/self_coding.py — the prompt layer injected when
+         mode=self-coding or mode=developer with self-coding enabled
+      b) Key prompt sections:
+         - "You are writing code for your own source repo" (top-level)
+         - Code quality constraints (no unnecessary work, bounded memory, etc.)
+         - Git workflow: read → edit → test → commit → report
+         - When in doubt: read first, ask for clarification second, edit last
+      c) Prompt injection point: agent_kernel.py `_build_system_prompt()` or
+         equivalent — check mode and prepend self-coding block
+    Test: Switch to self-coding mode, inspect the DER loop system prompt,
+          verify the self-coding block is present (test via string assertion).
+    Landmark: self_coding_prompt_loaded
+
+  [17.3] Self-coding tool chain
+    Status: NOT STARTED
+    What to build:
+      a) Verify file_manager MCP tools are available in self-coding mode:
+         read_file, write_file, edit_file, list_directory, create_directory,
+         delete_file, search_files
+      b) Add a new MCP tool if needed: `run_test` — wraps `pytest` or `npm test`
+         and returns pass/fail + output
+      c) Add `git_commit` tool: git add -A && git commit -m "message"
+         (links to the existing GitPage workflow, uses same underlying git)
+      d) Add `git_push` tool: pushes current branch (developer mode only,
+         requires user confirmation for main/master)
+      e) All tools must be gated on developer or self-coding mode
+    Test: In self-coding mode, call each tool and verify it works.
+          Locked in personal mode: all self-coding tools return 403.
+    Landmark: self_coding_tool_chain
+
+  [17.4] Test-evaluate loop for self-coding
+    Status: NOT STARTED
+    What to build:
+      a) After every file edit during self-coding, DER loop automatically runs
+         the affected test suite (or nearest test file)
+      b) On test failure: DER loop reads the test output, plans a fix, re-edits,
+         re-runs, retry up to 3 times
+      c) On 3 consecutive test failures: stop, present the diff + failure output
+         to the user, ask for guidance
+      d) On all tests pass: proceed to next subtask in the task plan
+    Implementation:
+      - Modify `_execute_plan_der()` or add a `_self_coding_evaluate()` step
+        that runs after each tool call when mode=self-coding
+      - Use `subprocess_manager` (already built in Domain 14) to run tests
+    Test: Make a deliberate small error in a Python file, let IRIS self-correct
+          via the test-evaluate loop. Verify it fixes the error within 3 attempts.
+    Landmark: self_coding_test_evaluate
+
+  [17.5] Self-coding safety constraints
+    Status: NOT STARTED
+    What to build:
+      a) Protect critical files from accidental overwrite:
+         - bootstrap/coordinates.db (graph database)
+         - .env (credentials config — never read/write)
+         - backend/sessions/* (user session data)
+         - node_modules/, __pycache__/, .git/ (build artifacts)
+      b) Before any write_file or edit_file: validate target path is within
+         the project repo (not /etc, not C:\Windows, not user home)
+      c) Before git commit: run a pre-commit check that no test suite is
+         completely broken (smoke test at minimum)
+      d) All MCP tool calls logged to backend/logs/security/security_audit.log
+         with session_id, tool, target_path, timestamp
+      e) Maximum edit depth per session: 50 file operations (configurable via
+         IRIS_MAX_SELF_EDITS env var)
+    Test: Try to write to /etc/passwd → rejected. Try to overwrite .env → rejected.
+          Try to delete coordinates.db → rejected. Verify audit log entries created.
+    Landmark: self_coding_safety
+
+  Graduate condition:
+    1. User says "add a /healthz endpoint to main.py" in self-coding mode
+    2. IRIS reads main.py, writes the edit, runs the test suite, commits the change
+    3. No critical files were touched
+    4. The diff is visible in the Launcher DiffReviewPage
+    5. User can approve or discard the change
+    6. All remaining domains (2, 3, 4, 7, 8, 11, 12, 13, 14, 15) can be completed
+       by IRIS operating in self-coding mode — the external AI assistant is
+       only needed for Domain 17 itself and for Gate 2 terminal wiring.
+
+  Final objective:
+    When Domain 17 graduate condition is met, IRIS can complete every remaining
+    open item in Domains 2–15 on its own. The bootstrap scaffolding (this file,
+    the external AI, the MCM SDK) exists only to bring IRIS to this point.
+    After Domain 17 is done, IRIS ships itself.
 
 ---
 
@@ -1656,11 +1735,13 @@ selected mode — on both platforms.
     Landmark: linux_voice_verified
 
   [15.5] Single-app packaging — merge launcher into IRISVOICE (recommended)
-    Status: DONE (2026-04-27) — Option A implemented.
-    iris-launcher Vite app superseded. Launcher lives in IRISVOICE at app/launcher/*.
-    Tauri has two windows: main (680×680 widget) + launcher (1100×720 decorated).
-    Tray icon toggles launcher. One installer, no port conflicts, no IPC.
-    Overview page redirects to mode-select on first launch (isLoading guard in LauncherContext).
+    Status: DECISION NEEDED — implement after Gate 2 [13.1-13.4] complete
+    Option A (recommended): Merge launcher as IRISVOICE startup route
+      - Tauri app starts → no mode in localStorage → show ModeSelectPage
+      - Same Tauri window, no IPC, no port conflicts, one installer on each platform
+      - iris-launcher components embedded in IRISVOICE/app/mode-select/
+    Option B: Two separate apps
+      - More complex install story, but cleaner separation
     Landmark: packaging_decision_recorded
 
   Graduate condition:
@@ -1670,170 +1751,6 @@ selected mode — on both platforms.
     4. Select Developer → IRIS starts with DEV badge + terminal tab + CLI routing active
     5. Voice pipeline functional on Linux (wake word, STT, TTS)
     6. Same mode-switch flow verified on Windows Tauri build
-
----
-
-DOMAIN 16 — RECALL-AS-COGNITION (BRAIN-NATIVE AGENT KERNEL)  ✓ PHASE 1 COMPLETE
-
-  Status: SHIPPED 2026-05-01. Phase 1 (core protocol + DER wiring) done.
-  Plan: docs/plans/recall-as-cognition.md
-  MCM Pin: pin_012bc6d1bd67 (decision, is_permanent=1)
-
-  WHAT WAS SHIPPED
-    Recall-native is now the default inference path. Context window is a rubber
-    threshold; the DB is the brain.
-
-    Core: two-phase protocol (Phase R recall → resolver → Phase A answer).
-    Provider-uniform via prompt caching. IRIS_RECALL_NATIVE=0 to disable (debug).
-
-    new:    backend/agent/recall_decoder.py     — 7-op grammar + resolvers + cache
-    new:    backend/agent/recall_phases.py      — two-phase orchestrator + episode logger
-    new:    backend/agent/tests/test_recall_decoder.py   (34 tests)
-    new:    backend/agent/tests/test_recall_integration.py (24 tests, 5 live)
-    new:    backend/agent/tests/test_recall_ab.py         (6 tests, 1 live A/B)
-    edit:   backend/agent/agent_kernel.py       — recall wired default-on; ImmortusBrain
-                                                  NOW CONNECTED to _execute_plan_der
-                                                  (was built but never used before)
-    edit:   backend/memory/live_context.py      — record_recall_event() drain into DER
-    edit:   backend/agent/trailing_director.py  — record_recall_event() gap seeds
-    edit:   backend/agent/skill_registry.py     — search(query) added
-
-  MEASURED RESULTS (live A/B, DeepSeek API, 10-task cross-domain)
-    Prompt token reduction: 84.9%   (target ≥30%) ✓
-    Empty answers:          0        ✓
-    p95 latency ratio:      0.95×   (target ≤1.5×) ✓
-    Regression:             799/799 original tests pass, 0 new failures ✓
-
-  PHASE 2 — WHAT NEEDS WORK (next session)
-
-    [16.1] update_recall_outcome() from voice/text path
-           Conversational turns (non-DER) never close the recall episode feedback
-           loop — those episodes stay as outcome='partial' forever.
-           Fix: wire a correction/confirmation signal from iris_gateway.py into
-           RecallPhases.update_recall_outcome() after each chat turn.
-           File: backend/iris_gateway.py + backend/agent/recall_phases.py
-
-    [16.2] Phase R op selection quality
-           Model emits recall ops but doesn't always choose the most relevant type.
-           Grammar primer tells it WHAT ops exist, not WHEN to use each.
-           Fix: add 3-5 few-shot examples to RECALL_GRAMMAR_PRIMER showing
-           coord/pin/semantic/predict in the right contexts.
-           File: backend/agent/recall_phases.py (RECALL_GRAMMAR_PRIMER constant)
-
-    [16.3] Iterative recall (multi-hop Phase R)
-           Deep tasks need recall → react → recall again before answering.
-           One Phase R/Phase A is not enough for complex multi-step reasoning.
-           Fix: depth-bounded iterative loop (max 3 Phase R cycles) in RecallPhases.run()
-           before firing Phase A. Each resolved span feeds the next Phase R context.
-           File: backend/agent/recall_phases.py
-
-    [16.4] Skill genesis from recall patterns
-           _maybe_trigger_skill_creation reads DER tool_sequence episodes.
-           Recall episode sequences (3 identical op patterns + outcome=hit) should
-           also trigger skill creation, but pattern detector ignores source_channel='recall'.
-           Fix: extend _maybe_trigger_skill_creation to scan recall episodes.
-           File: backend/agent/agent_kernel.py (line ~882)
-
-    [16.5] Streaming provenance strip (correctness)
-           chunk_callback receives raw streaming deltas. If the model leaks a
-           <recalled> tag mid-stream, users see the machinery.
-           Fix: stateful streaming parser in _infer_streaming that buffers and
-           strips <recalled>...</recalled> spans across chunk boundaries.
-           File: backend/agent/recall_phases.py (_infer_streaming method)
-
-    [16.6] Ollama streaming
-           Ollama infer_fn in _build_recall_infer_fn uses stream=False.
-           Ollama supports streaming; this adds latency on Ollama sessions.
-           Fix: use Ollama's stream=True endpoint, yield chunks to chunk_callback.
-           File: backend/agent/agent_kernel.py (_build_recall_infer_fn)
-
-  PHASE 2 — SHIPPED (2026-05-02)
-    All 6 items above completed + 6 critical correctness fixes from review.
-    Test results: 80/80 pass (16 new regression tests + 6 live DeepSeek).
-    Token reduction held: 84.3% (target ≥30% ✓). Latency ratio: 0.99×.
-
-  PHASE 3 — REMAINING GAP (M3)
-
-    [16.7] Thumbs-up / thumbs-down outcome signal from user
-           Current state: update_recall_outcome() is called with 'success' when
-           any non-empty response is returned. This is weak signal — we don't
-           distinguish "I answered well" from "I answered at all."
-           The learning loop (episodic → distillation → skill genesis) can only
-           improve if it receives real correction signal.
-
-           What needs building:
-             Frontend: add thumbs-up / thumbs-down UI to each assistant bubble in
-             ChatView. Emit a WebSocket message on click:
-               { type: "recall_feedback", payload: { outcome: "success" | "failure" } }
-
-             Backend: new handler in iris_gateway.py for "recall_feedback" message
-             type. Calls agent_kernel.update_last_recall_outcome(outcome) which
-             delegates to active RecallPhases.update_recall_outcome().
-
-             agent_kernel.py: expose update_last_recall_outcome(outcome: str) as a
-             public method so iris_gateway can call it after the fact (turn is already
-             complete by the time the user clicks).
-
-           Files:
-             components/chat/ChatView  (or equivalent bubble component) — thumbs UI
-             backend/iris_gateway.py   — recall_feedback handler
-             backend/agent/agent_kernel.py — update_last_recall_outcome()
-
-           Graduation condition: 5 consecutive thumbs-up recall turns in a live
-           session, each confirmed with outcome_type='success' in the episodes table.
-           Followed by 1 thumbs-down turn confirmed with outcome_type='failure'.
-
-    [16.8] MCM DB browser UI panel  (deferred — gated on PinStore stability)
-           Personal + developer modes both get a dedicated dashboard panel that
-           exposes the entire MCM coordinate-graph database in human-readable form,
-           not just pins. Required so the user can audit what IRIS remembers and
-           why it makes the choices it does.
-
-           Surfaces (each tab is a searchable, filterable view):
-             - Pins        — markdown bodies rendered, by type/tag/file_ref, link graph
-             - Episodes    — recall + DER turns, outcome_type, op sequences
-             - Landmarks   — verified knowledge anchors with bridge counts
-             - NBL state   — current state vector decoded into human labels
-                            (pos 2 = warnings, pos 28 = context pressure, etc.)
-             - Coordinates — Mycelium nodes by space, Z-trajectory, confidence
-             - Skills      — registered SKILL.md modules + invocation count
-
-           Prerequisite: PinStore foundation [16.9] must be live and verified
-           before this panel is built. Until then the schema may shift and the UI
-           would have to be reworked.
-
-           Graduation condition: user can search "PKCE" in the panel and see all
-           pins, episodes, and landmarks that match — with one-click jump to the
-           source file or chat turn that created each entry.
-
-           Files:
-             components/dashboard/MCMPanel.tsx    — new panel component
-             components/dashboard/tabs/{Pins,Episodes,Landmarks,NBL,Coords,Skills}Tab.tsx
-             backend/iris_gateway.py              — handlers: mcm.search, mcm.list,
-                                                    mcm.get, mcm.subscribe (live updates)
-             backend/memory/mcm_browser.py        — read-only aggregator over MCM tables
-
-    [16.9] PiN system: full implementation  (foundation for [16.8])
-           Schema (mycelium_pins, mycelium_pin_links) already exists in db.py
-           but is not wired to recall, the agent, or any UI. This is the foundation
-           for the wiki/anchor mechanism the user asked for.
-
-           Status: SHIPPED 2026-05-03
-             - PinStore CRUD service against mycelium_pins table
-             - _resolve_pin() rewired to query the real pin table
-             - Agent tools: pin_add, pin_search, pin_link, pin_checkpoint
-             - Auto-checkpoint heuristics (file-write >2KB, context pressure >75%)
-             - Tunable search ranking weights via settings
-             - Markdown body preservation (no transformation on store/retrieve)
-             - Available in both personal and developer modes
-
-           Files:
-             backend/memory/pin_store.py
-             backend/agent/recall_decoder.py (_resolve_pin rewrite)
-             backend/agent/tools/pin_tools.py
-             backend/agent/agent_kernel.py (auto-checkpoint hooks)
-             docs/architecture/PIN_SYSTEM.md
-             docs/guides/DEVELOPER_PIN_GUIDE.md
 
 ---
 

@@ -60,6 +60,9 @@ pydantic-settings>=2.0.0 # required by llama_cpp.server
 starlette-context>=0.3.6 # required by llama_cpp.server
 huggingface-hub>=0.20.0  # Model download from HuggingFace Hub
 
+# Network & QR Code (Tailscale Mobile Integration)
+qrcode[pil]>=7.4.0       # QR code generation for phone pairing
+
 # Developer Mode & Web Crawler (Domain 14)
 # Install order: pip install crawl4ai && python -m playwright install chromium
 watchdog>=4.0.0          # File system events for CLI dev mode file activity panel

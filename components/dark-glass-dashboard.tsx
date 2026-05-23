@@ -17,9 +17,6 @@ import { InferenceConsolePanel } from './dashboard/InferenceConsolePanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { ModelsScreen } from './models/ModelsScreen';
-import { TerminalWidget } from './terminal/TerminalWidget'
-import { FloatingTerminalPanel } from './terminal/FloatingTerminalPanel'
-import { useTerminal } from '@/contexts/TerminalContext'
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
@@ -404,7 +401,6 @@ export function DarkGlassDashboard({
   // Fetches persisted mode from backend on mount; listens for real-time WS events.
   // useLauncherMode fetches /api/mode so this works even when iris-launcher ran before IRISVOICE loaded.
   const { mode: irisMode } = useLauncherMode();
-  const { isFloating: terminalIsFloating } = useTerminal();
 
   // Persist active tab so the app restores to the last used panel on reopen
   const [activeTab, setActiveTab] = useState<string>(() => {
@@ -1096,7 +1092,6 @@ export function DarkGlassDashboard({
         </div>
       </div>
       {renderActionBar()}
-      {irisMode === 'developer' && <FloatingTerminalPanel />}
     </div>
   );
 }

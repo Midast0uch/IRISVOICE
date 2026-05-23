@@ -13,6 +13,7 @@ from .builtin_servers import (
     FileManagerServer
 )
 from .gui_automation_server import GUIAutomationServer
+from .github_server import GitHubServer
 
 __all__ = [
     "MCPClient",
@@ -27,4 +28,5 @@ __all__ = [
     "SystemServer",
     "FileManagerServer",
     "GUIAutomationServer",
+    "GitHubServer",
 ]

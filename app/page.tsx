@@ -14,7 +14,8 @@ import { BackdropBlur } from "@/components/backdrop-blur"
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const DashboardWing = lazy(() => import("@/components/dashboard-wing") as any)
 import { isTauri } from "@/hooks/useDeepLink"
-import { SetupWizard, useFirstRunCheck } from "@/components/setup/SetupWizard"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { useTailscaleAccess } from "@/hooks/useTailscaleAccess"
 
 // Lazy load heavy components for faster initial page load
 // Note: Using 'any' here due to TypeScript/React.lazy() compatibility issues with Next.js 16/React 19
@@ -28,9 +29,6 @@ export default function Home() {
   const { state, handleExpandToMain, handleGoBack, handleCollapseToIdle, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand } = useNavigation()
   const { getThemeConfig } = useBrandColor()
 
-  // First-run wizard — shows once when no model is configured
-  const { showWizard, dismissWizard } = useFirstRunCheck()
-  
   // Initialize UI layout state machine
   const {
     state: uiLayoutState,
@@ -107,6 +105,12 @@ export default function Home() {
   // Phase 124: Single source of truth for expansion to prevent stuck states
   const isExpanded = state.level > 1
 
+  // Mobile breakpoint: show only chat on phone
+  const isMobile = useIsMobile()
+
+  // Tailscale/mobile network access: show only chat in spotlight
+  const isTailscaleAccess = useTailscaleAccess()
+
   // In Tauri the window dynamically expands to fit wings. The orb must stay
   // centered in the fixed 680px "home" column (to the right of the chat panel).
   // In browser mode the viewport is already wide enough so no offset is needed.
@@ -165,11 +169,52 @@ export default function Home() {
     handleGoBack()
   }
 
+  // Mobile: simplified full-screen chat
+  if (isMobile) {
+    return (
+      <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden">
+        <Suspense fallback={null}>
+          <LazyChatWing
+            isOpen={true}
+            onClose={() => {}}
+            onDashboardClick={openDashboard}
+            onDashboardClose={closeChat}
+            sendMessage={sendMessage}
+            spotlightState={spotlightState}
+            onSpotlightToggle={toggleChatSpotlight}
+            isDashboardOpen={false}
+            uiState={uiLayoutState}
+            onOpenBrowserUrl={browseTo}
+          />
+        </Suspense>
+      </main>
+    )
+  }
+
+  // Tailscale/mobile network: chat-only spotlight, no orb/control center
+  if (isTailscaleAccess) {
+    return (
+      <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden">
+        <Suspense fallback={null}>
+          <LazyChatWing
+            isOpen={true}
+            onClose={() => {}}
+            onDashboardClick={openDashboard}
+            onDashboardClose={closeChat}
+            sendMessage={sendMessage}
+            spotlightState={SpotlightState.CHAT_SPOTLIGHT}
+            onSpotlightToggle={toggleChatSpotlight}
+            isDashboardOpen={false}
+            uiState={uiLayoutState}
+            onOpenBrowserUrl={browseTo}
+          />
+        </Suspense>
+      </main>
+    )
+  }
+
   return (
     <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ perspective: '1200px' }}>
-      {/* First-run setup wizard — shown once when no model is configured */}
-      {showWizard && <SetupWizard onComplete={dismissWizard} />}
-
       {/* Backdrop Blur - renders when wings are open */}
       <BackdropBlur uiState={uiLayoutState} />
       

@@ -1,5 +1,64 @@
 # IRIS Changelog
 
+## [Unreleased] — Developer Workspace Integration — 2026-05-22
+
+### plan(workspace): IDE-lite modular workspace for developer mode
+
+Comprehensive plan for integrating a full IDE-lite workspace into
+`chat-view.tsx` (developer mode only), replacing the static messages area
+with tabs, kanban sections, cards, terminal, archive dock, mind maps,
+and floating panels.
+
+#### Architecture
+- **Vertical layout:** Tab Bar → Terminal Section → Archive Dock → Kanban Canvas
+- **Terminal:** Standalone expandable/collapsible section (not a card)
+- **Archive Dock:** macOS-style icon row with hover magnification (1×→1.6×),
+  ripple effect on neighbors, drag-lock during DnD
+- **Kanban Sections:** Resizable columns (200px–50%) with per-section undo/redo
+- **Cards:** Maximized / Minimized / Archived states; folder tabs explode
+  into multiple file-preview cards
+- **Mind Map:** Hierarchical tree layout (H1 root → H2 parents → H3 children)
+  with color inheritance and manual link override
+- **Focus Mode:** Collapses Terminal to `$` strip, Archive Dock to 6px bar,
+  tabs to colored dots; canvas expands to fill freed space
+- **Floating Panels:** Tier 1 `position: fixed` portals; pop-out, drag,
+  close-to-archive, re-dock
+
+#### Tech Stack Decisions
+- `@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities` — drag-and-drop
+- `zustand` + `zundo` — state management with undo/redo middleware
+- `prism-react-renderer` — syntax highlighting for code preview
+- Custom SVG/Canvas — mind map visualization (no external graph library)
+
+#### Xur Loading Indicator
+- Parametric 9-petal rose-curve animation (68 trailing particles)
+- Replaces all existing loading spinners in both developer and personal modes
+- `currentColor` adapts to light/dark themes automatically
+- Integration points: input bar (20px), message bubbles (16px),
+  workspace toolbar (32px), full-screen overlay (120px)
+
+#### State Management
+- `stores/workspaceStore.ts` — Zustand store with `zundo` middleware
+- Per-section undo capped at 20 actions; global undo capped at 50
+- Snapshot button for permanent checkpoints
+- Auto-save to backend keyed by `conversationId`
+
+#### Verification Protocol
+- 48 test steps across 4 phases with 12 screenshot checkpoints
+- Phase-gated: no agent/user may proceed until 100% verification passed
+- Pre-implementation risk mitigation: 7 checklist items before writing code
+
+#### Files Affected (planned)
+- **Create:** `stores/workspaceStore.ts`, `components/workspace/*.tsx` (8 files),
+  `components/Xur.tsx`
+- **Edit:** `components/chat-view.tsx`, `components/terminal/TerminalWidget.tsx`,
+  `components/dark-glass-dashboard.tsx`
+- **Delete:** `components/FloatingTerminalPanel.tsx` (superseded)
+- **Backend:** `POST /api/workspace/save`, `GET /api/workspace/{conversationId}`,
+  `WS /ws/files`
+
+---
+
 ## [4.6.0] — UI Restoration — 2026-05-06
 
 ### fix(ui): restore original wing/dashboard design from swarm-collaboration

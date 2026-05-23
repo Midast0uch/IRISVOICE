@@ -1,22 +1,15 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { createPortal } from 'react-dom'
 import { useBrandColor } from '@/contexts/BrandColorContext'
 import { useTerminal } from '@/contexts/TerminalContext'
-import { TerminalHeaderBar } from './TerminalHeaderBar'
-import { FileActivityPanel } from './FileActivityPanel'
-
-// Portal target IDs — FloatingTerminalPanel provides the floating target
-export const TERMINAL_DOCKED_ID = 'iris-terminal-docked'
-export const TERMINAL_FLOATING_ID = 'iris-terminal-floating'
 
 const ACCENT_FALLBACK = '#60a5fa'
 
 export function TerminalWidget() {
   const { getThemeConfig } = useBrandColor()
   const glowColor = getThemeConfig().glow?.color || ACCENT_FALLBACK
-  const { isFloating, setIsFloating, sendMessage } = useTerminal()
+  const { sendMessage } = useTerminal()
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const termRef = useRef<any>(null)
@@ -24,39 +17,16 @@ export function TerminalWidget() {
   const fitAddonRef = useRef<any>(null)
   const lineBufferRef = useRef<string>('')
   const sendRef = useRef(sendMessage)
-  const xtermContainerRef = useRef<HTMLDivElement | null>(null)
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
   const [workdir, setWorkdir] = useState<string>('')
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => { sendRef.current = sendMessage }, [sendMessage])
 
-  // Resolve portal target when floating state changes
-  useEffect(() => {
-    const targetId = isFloating ? TERMINAL_FLOATING_ID : TERMINAL_DOCKED_ID
-    const timer = setTimeout(() => {
-      const el = document.getElementById(targetId)
-      setPortalTarget(el)
-    }, 50)
-    return () => clearTimeout(timer)
-  }, [isFloating])
-
-  // Re-fit xterm when portal target changes
-  useEffect(() => {
-    if (fitAddonRef.current && portalTarget) {
-      const timer = setTimeout(() => {
-        try { fitAddonRef.current.fit() } catch { /* ignore */ }
-      }, 100)
-      return () => clearTimeout(timer)
-    }
-  }, [portalTarget])
-
   // Initialize xterm once
   useEffect(() => {
-    const container = document.createElement('div')
-    container.className = 'flex-1 overflow-hidden'
-    container.style.cssText = `padding: 12px 16px; min-height: 0; box-shadow: inset 0 0 40px ${glowColor}08;`
-    xtermContainerRef.current = container
+    if (!containerRef.current) return
+    const container = containerRef.current
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let term: any
@@ -199,7 +169,6 @@ export function TerminalWidget() {
       term?.dispose()
       termRef.current = null
       fitAddonRef.current = null
-      xtermContainerRef.current = null
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -210,49 +179,13 @@ export function TerminalWidget() {
     }
   }, [])
 
-  // Portal: attach xterm container div to the active target
-  const xtermPortal = mounted && portalTarget && xtermContainerRef.current
-    ? createPortal(
-        <div ref={(el) => {
-          if (el && xtermContainerRef.current && !el.contains(xtermContainerRef.current)) {
-            el.appendChild(xtermContainerRef.current)
-          }
-        }}
-          className="flex-1 min-h-0 overflow-hidden"
-        />,
-        portalTarget
-      )
-    : null
-
   return (
-    <>
-      {/* Docked view */}
-      {!isFloating && (
-        <div className="w-full h-full flex flex-col" style={{ minHeight: 0 }}>
-          <TerminalHeaderBar workdir={workdir} onClear={handleClear} />
-          <div className="flex-1 flex min-h-0">
-            <div id={TERMINAL_DOCKED_ID} className="flex-1 flex flex-col min-h-0 min-w-0" />
-            <FileActivityPanel />
-          </div>
-        </div>
-      )}
-
-      {/* Floating placeholder in docked slot */}
-      {isFloating && (
-        <div className="w-full h-full flex items-center justify-center">
-          <div className="text-center">
-            <p className="text-xs text-white/40 mb-2">Terminal is floating</p>
-            <button
-              onClick={() => setIsFloating(false)}
-              className="text-xs px-3 py-1 rounded border border-white/20 text-white/60 hover:bg-white/10 transition-colors"
-            >
-              Dock
-            </button>
-          </div>
-        </div>
-      )}
-
-      {xtermPortal}
-    </>
+    <div
+      ref={containerRef}
+      className="w-full h-full flex flex-col"
+      style={{ minHeight: 0, padding: '12px 16px' }}
+    />
   )
 }
+
+export default TerminalWidget

@@ -253,6 +253,63 @@ class SessionManager:
             except Exception:
                 pass
 
+            # Session-end diff review: scan for uncommitted agent edits
+            try:
+                from backend.git_ops import (
+                    _find_git_root, _get_project_root, _get_worktree_path,
+                    queue_write, _run_git
+                )
+                import os
+                root = _find_git_root(_get_project_root())
+                # Check worktree first (if isolation is active)
+                wt_path = _get_worktree_path(root)
+                if os.path.isdir(wt_path):
+                    rc, status_out, _ = _run_git(["status", "--porcelain"], cwd=wt_path)
+                    source_path = wt_path
+                else:
+                    rc, status_out, _ = _run_git(["status", "--porcelain"], cwd=root)
+                    source_path = root
+                if rc == 0 and status_out.strip():
+                    for line in status_out.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        file_name = line[3:].strip()
+                        if not file_name:
+                            continue
+                        # Skip git internals and worktree metadata
+                        if file_name.startswith(".") or file_name in ("HEAD", "ORIG_HEAD", "commondir", "gitdir", "index", "logs"):
+                            continue
+                        diff_out = ""
+                        if line.startswith("?"):
+                            # Untracked file — show as new file diff
+                            file_path = os.path.join(source_path, file_name)
+                            if os.path.isfile(file_path):
+                                try:
+                                    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                                        content = f.read()
+                                    diff_out = f"+ New file: {file_name}\n\n{content[:1000]}"
+                                except Exception:
+                                    diff_out = f"+ New file: {file_name}"
+                        else:
+                            # Modified/staged file — get git diff
+                            rc_diff, diff_text, _ = _run_git(
+                                ["diff", "--", file_name], cwd=source_path
+                            )
+                            if rc_diff == 0:
+                                diff_out = diff_text
+                        if diff_out.strip():
+                            queue_write(
+                                path=file_name,
+                                diff=diff_out[:2000],
+                                description=f"Session-end auto-capture: {file_name}",
+                            )
+                            logger.info(
+                                f"[SessionManager] Queued diff review for {file_name}"
+                            )
+            except Exception as e:
+                logger.debug(f"[SessionManager] Diff review scan error: {e}")
+
             # Remove all client associations for this session
             clients_to_remove = [
                 client_id for client_id, sid in self.client_to_session.items()
