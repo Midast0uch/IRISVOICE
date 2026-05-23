@@ -83,7 +83,14 @@ export function TerminalWidget() {
       fitAddonRef.current = fitAddon
 
       term.writeln('\x1b[2m\u250C\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\x1b[0m')
-      term.writeln(`\x1b[2m\u2502\x1b[0m  \x1b[1m\x1b[38;2;96;165;250mIRIS Developer Terminal\x1b[0m                \x1b[2m\u2502\x1b[0m`)
+      // Convert hex glowColor to RGB for ANSI
+      const hexToRgb = (hex: string) => ({
+        r: parseInt(hex.slice(1, 3), 16),
+        g: parseInt(hex.slice(3, 5), 16),
+        b: parseInt(hex.slice(5, 7), 16),
+      })
+      const { r, g, b } = hexToRgb(glowColor)
+      term.writeln(`\x1b[2m\u2502\x1b[0m  \x1b[1m\x1b[38;2;${r};${g};${b}mIRIS Developer Terminal\x1b[0m                \x1b[2m\u2502\x1b[0m`)
       term.writeln('\x1b[2m\u2502  Direct shell access \u2022 Security filtered  \u2502\x1b[0m')
       term.writeln('\x1b[2m\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\x1b[0m')
       term.writeln('')

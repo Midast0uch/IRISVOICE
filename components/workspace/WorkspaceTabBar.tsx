@@ -3,6 +3,7 @@
 import React from 'react'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { useBrandColor } from '@/contexts/BrandColorContext'
 import { FileText, Folder, MessageSquare, ScrollText, Terminal, Plus } from 'lucide-react'
 
 const TAB_TYPE_ICONS: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
@@ -21,24 +22,23 @@ const TAB_TYPE_COLORS: Record<string, string> = {
   terminal: '#f87171',
 }
 
-function TabItem({ tab, isActive }: { tab: ReturnType<typeof useWorkspaceStore.getState>['tabs'][number]; isActive: boolean }) {
+function TabItem({ tab, isActive, glowColor }: { tab: ReturnType<typeof useWorkspaceStore.getState>['tabs'][number]; isActive: boolean; glowColor: string }) {
   const { attributes, listeners, setNodeRef: dragRef, transform, isDragging } = useDraggable({
     id: tab.id,
     data: { type: 'tab', tab },
   })
 
-  const { setNodeRef: dropRef, isOver } = useDroppable({
+  const { setNodeRef: dropRef } = useDroppable({
     id: tab.id,
     data: { type: 'tab', tab },
   })
 
   const Icon = TAB_TYPE_ICONS[tab.type] || FileText
-  const color = TAB_TYPE_COLORS[tab.type] || '#60a5fa'
+  const color = TAB_TYPE_COLORS[tab.type] || glowColor
 
   const style: React.CSSProperties = {
     transform: transform ? `translate(${transform.x}px, ${transform.y}px)` : undefined,
     opacity: isDragging ? 0.4 : 1,
-    borderBottom: isActive ? `2px solid ${color}` : '2px solid transparent',
   }
 
   return (
@@ -47,14 +47,33 @@ function TabItem({ tab, isActive }: { tab: ReturnType<typeof useWorkspaceStore.g
         ref={dragRef}
         {...listeners}
         {...attributes}
-        className={`
-          flex items-center gap-1.5 px-3 py-1.5 text-[11px] whitespace-nowrap
-          transition-colors hover:bg-white/5
-          ${isActive ? 'text-white' : 'text-white/40'}
-        `}
+        className="relative flex items-center gap-1.5 px-3 py-2 text-[11px] whitespace-nowrap transition-all duration-150 rounded-t"
+        style={{
+          color: isActive ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.35)',
+          background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
+        }}
+        onMouseEnter={(e) => {
+          if (!isActive) {
+            e.currentTarget.style.color = 'rgba(255,255,255,0.7)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.03)'
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (!isActive) {
+            e.currentTarget.style.color = 'rgba(255,255,255,0.35)'
+            e.currentTarget.style.background = 'transparent'
+          }
+        }}
       >
+        {/* Active indicator bar */}
+        {isActive && (
+          <span
+            className="absolute bottom-0 left-1.5 right-1.5 h-[2px] rounded-full"
+            style={{ background: color }}
+          />
+        )}
         <span style={{ color }}><Icon size={12} /></span>
-        <span>{tab.label}</span>
+        <span className="font-medium">{tab.label}</span>
       </button>
     </div>
   )
@@ -62,40 +81,51 @@ function TabItem({ tab, isActive }: { tab: ReturnType<typeof useWorkspaceStore.g
 
 export function WorkspaceTabBar() {
   const { tabs, activeTabId, setActiveTab, addTab } = useWorkspaceStore()
+  const { getThemeConfig } = useBrandColor()
+  const glowColor = getThemeConfig().glow?.color || '#60a5fa'
 
   function handleAddTab() {
     const id = `tab-${Date.now()}`
-    addTab({ id, label: `File ${tabs.length + 1}`, type: 'file' })
-  }
-
-  if (tabs.length === 0) {
-    return (
-      <div className="shrink-0 flex items-center px-4 py-2 border-b border-white/5">
-        <span className="text-[10px] text-white/20 italic">No tabs open</span>
-        <button
-          onClick={handleAddTab}
-          title="Add tab"
-          className="ml-auto p-1 rounded text-white/30 hover:text-white/70 hover:bg-white/5 transition-colors"
-        >
-          <Plus size={12} />
-        </button>
-      </div>
-    )
+    const n = tabs.length + 1
+    addTab({ id, label: `File ${n}`, type: 'file', path: `/untitled-${n}.txt`, icon: 'file', isVirtual: true })
   }
 
   return (
-    <div className="shrink-0 flex items-center border-b border-white/5 overflow-x-auto">
+    <div
+      className="shrink-0 flex items-center overflow-x-auto"
+      style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%)',
+        borderBottom: `1px solid ${glowColor}15`,
+      }}
+    >
+      {tabs.length === 0 && (
+        <span className="px-3 py-2 text-[10px] text-white/20 italic">No tabs open</span>
+      )}
       {tabs.map((tab) => (
         <div key={tab.id} onClick={() => setActiveTab(tab.id)}>
-          <TabItem tab={tab} isActive={tab.id === activeTabId} />
+          <TabItem tab={tab} isActive={tab.id === activeTabId} glowColor={glowColor} />
         </div>
       ))}
       <button
         onClick={handleAddTab}
         title="Add tab"
-        className="flex-shrink-0 p-2 text-white/30 hover:text-white/70 hover:bg-white/5 transition-colors"
+        className="flex-shrink-0 ml-1 p-1.5 rounded-md text-[10px] font-medium transition-all duration-150 flex items-center gap-1"
+        style={{
+          color: `${glowColor}90`,
+          background: `${glowColor}10`,
+          border: `1px solid ${glowColor}20`,
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = `${glowColor}20`
+          e.currentTarget.style.color = glowColor
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = `${glowColor}10`
+          e.currentTarget.style.color = `${glowColor}90`
+        }}
       >
         <Plus size={12} />
+        <span>New</span>
       </button>
     </div>
   )

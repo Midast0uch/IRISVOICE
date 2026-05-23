@@ -2,42 +2,72 @@
 
 import { useState } from 'react'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
-import { ArchiveRestore, Package } from 'lucide-react'
+import { useBrandColor } from '@/contexts/BrandColorContext'
+import { RotateCcw } from 'lucide-react'
 
 export function ArchiveDock() {
   const { archived, unarchiveCard } = useWorkspaceStore()
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const { getThemeConfig } = useBrandColor()
+  const glowColor = getThemeConfig().glow?.color || '#60a5fa'
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
 
   if (archived.length === 0) {
     return (
-      <div className="shrink-0 flex items-center justify-center py-1 border-b border-white/5">
-        <span className="text-[9px] text-white/15 italic">Archive empty</span>
+      <div
+        className="shrink-0 flex items-center justify-center py-2"
+        style={{
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.015) 0%, transparent 100%)',
+          borderBottom: `1px solid ${glowColor}10`,
+        }}
+      >
+        <span className="text-[9px] text-white/20 italic">Archive empty</span>
       </div>
     )
   }
 
   return (
-    <div className="shrink-0 flex items-center gap-1 px-3 py-1 border-b border-white/5 overflow-x-auto">
-      {archived.map((item, index) => {
-        const isHovered = hoveredIndex === index
-        const scale = isHovered ? 1.6 : hoveredIndex !== null ? 0.9 : 1.0
+    <div
+      className="shrink-0 flex items-center gap-2 px-3 py-2 overflow-x-auto"
+      style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%)',
+        borderBottom: `1px solid ${glowColor}10`,
+      }}
+    >
+      <span className="text-[9px] font-medium tracking-wide uppercase mr-1" style={{ color: `${glowColor}60` }}>
+        Archive
+      </span>
+      {archived.map((item) => {
+        const isHovered = hoveredId === item.cardId
+        const tabLabel = item.tabId.slice(0, 12)
 
         return (
           <button
             key={item.cardId}
             onClick={() => unarchiveCard(item.cardId)}
-            onMouseEnter={() => setHoveredIndex(index)}
-            onMouseLeave={() => setHoveredIndex(null)}
-            className="flex flex-col items-center gap-0.5 p-1 rounded hover:bg-white/5 transition-all"
+            onMouseEnter={() => setHoveredId(item.cardId)}
+            onMouseLeave={() => setHoveredId(null)}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md transition-all duration-150"
             style={{
-              transform: `scale(${scale})`,
-              transformOrigin: 'bottom center',
+              background: isHovered ? `${glowColor}15` : 'rgba(255,255,255,0.03)',
+              border: isHovered ? `1px solid ${glowColor}30` : '1px solid rgba(255,255,255,0.06)',
             }}
-            title={`Unarchive: ${item.tabId}`}
+            title={`Restore: ${item.tabId}`}
           >
-            <Package size={isHovered ? 20 : 14} className="text-white/30 transition-all" />
-            <span className="text-[8px] text-white/30 truncate max-w-[48px]">
-              {item.cardId.slice(0, 6)}
+            <RotateCcw
+              size={11}
+              style={{
+                color: isHovered ? glowColor : 'rgba(255,255,255,0.35)',
+                transition: 'color 0.15s',
+              }}
+            />
+            <span
+              className="text-[9px] truncate max-w-[80px]"
+              style={{
+                color: isHovered ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.45)',
+                transition: 'color 0.15s',
+              }}
+            >
+              {tabLabel}
             </span>
           </button>
         )
