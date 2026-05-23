@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { temporal } from 'zundo'
 
 export type TabType = 'file' | 'folder' | 'conversation' | 'document' | 'terminal'
 
@@ -46,6 +47,17 @@ export interface WorkspaceState {
   isFocusMode: boolean
 }
 
+interface TemporalApi {
+  pastStates: Partial<WorkspaceStore>[]
+  futureStates: Partial<WorkspaceStore>[]
+  undo: (steps?: number) => void
+  redo: (steps?: number) => void
+  clear: () => void
+  isTracking: boolean
+  pause: () => void
+  resume: () => void
+}
+
 interface WorkspaceStore extends WorkspaceState {
   // Tab actions
   addTab: (tab: WorkspaceTab) => void
@@ -72,74 +84,85 @@ interface WorkspaceStore extends WorkspaceState {
 
   // Focus mode
   toggleFocusMode: () => void
+
+  // Snapshot
+  takeSnapshot: () => void
+  restoreSnapshot: () => void
+  snapshot: WorkspaceState | null
+
+  // Undo/redo (added by zundo)
+  temporal?: TemporalApi
 }
 
-export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
-  tabs: [],
-  sections: [],
-  archived: [],
-  activeTabId: null,
-  isTerminalExpanded: true,
-  isFocusMode: false,
+export const useWorkspaceStore = create<WorkspaceStore>()(
+  temporal(
+    (set, get) => ({
+      tabs: [],
+      sections: [],
+      archived: [],
+      activeTabId: null,
+      isTerminalExpanded: true,
+      isFocusMode: false,
+      snapshot: null,
 
-  addTab: (tab) =>
-    set((state) => ({
+  addTab: (tab: WorkspaceTab) =>
+    set((state: WorkspaceStore) => ({
       tabs: [...state.tabs, tab],
       activeTabId: tab.id,
     })),
 
-  removeTab: (tabId) =>
-    set((state) => ({
-      tabs: state.tabs.filter((t) => t.id !== tabId),
+  removeTab: (tabId: string) =>
+    set((state: WorkspaceStore) => ({
+      tabs: state.tabs.filter((t: WorkspaceTab) => t.id !== tabId),
       activeTabId: state.activeTabId === tabId ? null : state.activeTabId,
     })),
 
-  setActiveTab: (tabId) => set({ activeTabId: tabId }),
+  setActiveTab: (tabId: string | null) => set({ activeTabId: tabId }),
 
-  addSection: (section) =>
-    set((state) => ({
+  addSection: (section: KanbanSection) =>
+    set((state: WorkspaceStore) => ({
       sections: [...state.sections, section],
     })),
 
-  removeSection: (sectionId) =>
-    set((state) => ({
-      sections: state.sections.filter((s) => s.id !== sectionId),
+  removeSection: (sectionId: string) =>
+    set((state: WorkspaceStore) => ({
+      sections: state.sections.filter((s: KanbanSection) => s.id !== sectionId),
       archived: state.archived.filter(
-        (a) => a.originalSectionId !== sectionId
+        (a: ArchiveDockItem) => a.originalSectionId !== sectionId
       ),
     })),
 
-  updateSectionWidth: (sectionId, width) =>
-    set((state) => ({
-      sections: state.sections.map((s) =>
+  updateSectionWidth: (sectionId: string, width: number) =>
+    set((state: WorkspaceStore) => ({
+      sections: state.sections.map((s: KanbanSection) =>
         s.id === sectionId ? { ...s, width: Math.max(200, Math.min(width, 800)) } : s
       ),
     })),
 
-  toggleSectionCollapse: (sectionId) =>
-    set((state) => ({
-      sections: state.sections.map((s) =>
+  toggleSectionCollapse: (sectionId: string) =>
+    set((state: WorkspaceStore) => ({
+      sections: state.sections.map((s: KanbanSection) =>
         s.id === sectionId ? { ...s, isCollapsed: !s.isCollapsed } : s
       ),
     })),
 
-  addCard: (card) =>
-    set((state) => ({
-      sections: state.sections.map((s) =>
+  addCard: (card: KanbanCard) =>
+    set((state: WorkspaceStore) => ({
+      sections: state.sections.map((s: KanbanSection) =>
         s.id === card.sectionId ? { ...s, cards: [...s.cards, card] } : s
       ),
     })),
 
-  moveCard: (cardId, targetSectionId) =>
-    set((state) => {
+  moveCard: (cardId: string, targetSectionId: string) =>
+    set((state: WorkspaceStore) => {
       const card = state.sections
-        .flatMap((s) => s.cards)
-        .find((c) => c.id === cardId)
+        .flatMap((s: KanbanSection) => s.cards)
+        .find((c: KanbanCard) => c.id === cardId)
       if (!card) return state
       return {
-        sections: state.sections.map((s) => {
+        sections: state.sections.map((s: KanbanSection) => {
           if (s.id === card.sectionId) {
-            return { ...s, cards: s.cards.filter((c) => c.id !== cardId) }
+            return { ...s, cards: s.cards.filter((c: KanbanCard) => c.id !== cardId) }
           }
           if (s.id === targetSectionId) {
             return { ...s, cards: [...s.cards, { ...card, sectionId: targetSectionId }] }
@@ -149,26 +172,26 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       }
     }),
 
-  updateCardState: (cardId, newState) =>
-    set((state) => ({
-      sections: state.sections.map((s) => ({
+  updateCardState: (cardId: string, newState: CardState) =>
+    set((state: WorkspaceStore) => ({
+      sections: state.sections.map((s: KanbanSection) => ({
         ...s,
-        cards: s.cards.map((c) =>
+        cards: s.cards.map((c: KanbanCard) =>
           c.id === cardId ? { ...c, state: newState } : c
         ),
       })),
     })),
 
-  archiveCard: (cardId) =>
-    set((state) => {
+  archiveCard: (cardId: string) =>
+    set((state: WorkspaceStore) => {
       const card = state.sections
-        .flatMap((s) => s.cards)
-        .find((c) => c.id === cardId)
+        .flatMap((s: KanbanSection) => s.cards)
+        .find((c: KanbanCard) => c.id === cardId)
       if (!card) return state
       return {
-        sections: state.sections.map((s) => ({
+        sections: state.sections.map((s: KanbanSection) => ({
           ...s,
-          cards: s.cards.filter((c) => c.id !== cardId),
+          cards: s.cards.filter((c: KanbanCard) => c.id !== cardId),
         })),
         archived: [
           ...state.archived,
@@ -181,19 +204,19 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       }
     }),
 
-  unarchiveCard: (cardId) =>
-    set((state) => {
-      const archiveItem = state.archived.find((a) => a.cardId === cardId)
+  unarchiveCard: (cardId: string) =>
+    set((state: WorkspaceStore) => {
+      const archiveItem = state.archived.find((a: ArchiveDockItem) => a.cardId === cardId)
       if (!archiveItem) return state
-      const tab = state.tabs.find((t) => t.id === archiveItem.tabId)
+      const tab = state.tabs.find((t: WorkspaceTab) => t.id === archiveItem.tabId)
       const section = state.sections.find(
-        (s) => s.id === archiveItem.originalSectionId
+        (s: KanbanSection) => s.id === archiveItem.originalSectionId
       )
       const targetSectionId = section ? section.id : state.sections[0]?.id
       if (!targetSectionId) return state
       return {
-        archived: state.archived.filter((a) => a.cardId !== cardId),
-        sections: state.sections.map((s) =>
+        archived: state.archived.filter((a: ArchiveDockItem) => a.cardId !== cardId),
+        sections: state.sections.map((s: KanbanSection) =>
           s.id === targetSectionId
             ? {
                 ...s,
@@ -214,20 +237,65 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       }
     }),
 
-  removeCard: (cardId) =>
-    set((state) => ({
-      sections: state.sections.map((s) => ({
+  removeCard: (cardId: string) =>
+    set((state: WorkspaceStore) => ({
+      sections: state.sections.map((s: KanbanSection) => ({
         ...s,
-        cards: s.cards.filter((c) => c.id !== cardId),
+        cards: s.cards.filter((c: KanbanCard) => c.id !== cardId),
       })),
-      archived: state.archived.filter((a) => a.cardId !== cardId),
+      archived: state.archived.filter((a: ArchiveDockItem) => a.cardId !== cardId),
     })),
 
   toggleTerminal: () =>
-    set((state) => ({ isTerminalExpanded: !state.isTerminalExpanded })),
+    set((state: WorkspaceStore) => ({ isTerminalExpanded: !state.isTerminalExpanded })),
 
-  setTerminalExpanded: (expanded) => set({ isTerminalExpanded: expanded }),
+  setTerminalExpanded: (expanded: boolean) => set({ isTerminalExpanded: expanded }),
 
   toggleFocusMode: () =>
-    set((state) => ({ isFocusMode: !state.isFocusMode })),
-}))
+    set((state: WorkspaceStore) => ({ isFocusMode: !state.isFocusMode })),
+
+  takeSnapshot: () => {
+    const state = get()
+    set({ snapshot: { ...state, snapshot: null } as WorkspaceState })
+  },
+
+  restoreSnapshot: () => {
+    const state = get()
+    if (state.snapshot) {
+      set({ ...state.snapshot, snapshot: state.snapshot })
+    }
+  },
+}),
+  {
+    limit: 50,
+    partialize: (state: WorkspaceStore) => ({
+      tabs: state.tabs,
+      sections: state.sections,
+      archived: state.archived,
+      activeTabId: state.activeTabId,
+      isTerminalExpanded: state.isTerminalExpanded,
+      isFocusMode: state.isFocusMode,
+    }),
+  }
+))
+
+// ── Temporal hooks for undo/redo ───────────────────────────────────────────
+export function useTemporalStore() {
+  return useWorkspaceStore((state: WorkspaceStore) => state.temporal!)
+}
+
+export function useCanUndo() {
+  return useWorkspaceStore((state: WorkspaceStore) => (state.temporal?.pastStates.length ?? 0) > 0)
+}
+
+export function useCanRedo() {
+  return useWorkspaceStore((state: WorkspaceStore) => (state.temporal?.futureStates.length ?? 0) > 0)
+}
+
+export function useUndoCount() {
+  return useWorkspaceStore((state: WorkspaceStore) => state.temporal?.pastStates.length ?? 0)
+}
+
+export function useRedoCount() {
+  return useWorkspaceStore((state: WorkspaceStore) => state.temporal?.futureStates.length ?? 0)
+}
