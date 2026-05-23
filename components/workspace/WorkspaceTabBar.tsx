@@ -53,7 +53,7 @@ function TabItem({ tab, isActive }: { tab: ReturnType<typeof useWorkspaceStore.g
           ${isActive ? 'text-white' : 'text-white/40'}
         `}
       >
-        <Icon size={12} style={{ color }} />
+        <span style={{ color }}><Icon size={12} /></span>
         <span>{tab.label}</span>
       </button>
     </div>
