@@ -1,8 +1,8 @@
 'use client'
 
 import React, { lazy, Suspense } from 'react'
-import { DndContext, DragEndEvent } from '@dnd-kit/core'
-import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { DndContext, DragEndEvent, DragStartEvent } from '@dnd-kit/core'
+import { useWorkspaceStore, WorkspaceTab } from '@/stores/workspaceStore'
 import { WorkspaceTabBar } from './WorkspaceTabBar'
 import { KanbanCanvas } from './KanbanCanvas'
 import { ArchiveDock } from './ArchiveDock'
@@ -48,8 +48,8 @@ export function DeveloperWorkspace() {
       return
     }
 
-    const oldIndex = tabs.findIndex((t) => t.id === active.id)
-    const newIndex = tabs.findIndex((t) => t.id === over.id)
+    const oldIndex = tabs.findIndex((t: WorkspaceTab) => t.id === active.id)
+    const newIndex = tabs.findIndex((t: WorkspaceTab) => t.id === over.id)
 
     if (oldIndex !== -1 && newIndex !== -1) {
       const newTabs = [...tabs]
@@ -63,7 +63,7 @@ export function DeveloperWorkspace() {
 
   return (
     <DndContext
-      onDragStart={(e) => setDraggedTabId(e.active.id as string)}
+      onDragStart={(e: DragStartEvent) => setDraggedTabId(e.active.id as string)}
       onDragEnd={handleDragEnd}
     >
       <div className="flex flex-col h-full w-full" style={{ background: 'rgba(6,7,14,0.99)' }}>

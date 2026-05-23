@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useDroppable } from '@dnd-kit/core'
-import { useWorkspaceStore } from '@/stores/workspaceStore'
+import { useWorkspaceStore, KanbanCard as KanbanCardType } from '@/stores/workspaceStore'
 import { KanbanCard } from './KanbanCard'
 import { ChevronLeft, ChevronRight, GripVertical } from 'lucide-react'
 
@@ -69,7 +69,7 @@ export function KanbanSection({ section }: { section: ReturnType<typeof useWorks
           {section.cards.length === 0 ? (
             <span className="text-[9px] text-white/15 italic text-center mt-4">Drop cards here</span>
           ) : (
-            section.cards.map((card) => <KanbanCard key={card.id} card={card} />)
+            section.cards.map((card: KanbanCardType) => <KanbanCard key={card.id} card={card} />)
           )}
         </div>
       )}

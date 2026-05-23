@@ -16,7 +16,6 @@ import { LogsPanel } from './dashboard/LogsPanel';
 import { InferenceConsolePanel } from './dashboard/InferenceConsolePanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
-import { ModelsScreen } from './models/ModelsScreen';
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
