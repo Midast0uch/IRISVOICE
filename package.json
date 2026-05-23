@@ -229,6 +229,7 @@
     "dev:tauri:nowatch": "npx tauri dev -- --no-watch"
   },
   "optionalDependencies": {
+    "@tailwindcss/oxide-win32-x64-msvc": "^4.2.4",
     "lightningcss-win32-x64-msvc": "^1.32.0"
   },
   "keywords": [],
