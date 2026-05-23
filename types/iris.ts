@@ -156,3 +156,10 @@ export interface FileActivityMsg {
   path: string
   change: FileChangeType
 }
+
+// ── Suggestion Pills ──────────────────────────────────────────────────────────
+export interface Suggestion {
+  message: string
+  label?: string
+  icon?: string
+}

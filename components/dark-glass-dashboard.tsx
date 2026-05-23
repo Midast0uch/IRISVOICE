@@ -1067,10 +1067,6 @@ export function DarkGlassDashboard({
          <LogsPanel key="logs" glowColor={glowColor} fontColor="white" />
        ) : activeSubApp === 'marketplace' ? (
          <MarketplaceScreen key="marketplace" glowColor={glowColor} fontColor="white" />
-       ) : activeSubApp === 'models' ? (
-         <ModelsScreen key="models" glowColor={glowColor} fontColor="white"
-           sendMessage={sendMessage}
-           onClose={() => { setActiveSubApp(null); setIsSidebarHidden(false); }} />
        ) : activeSubApp === 'inference_console' ? (
          <InferenceConsolePanel key="inference_console" glowColor={glowColor} fontColor="white" />
        ) : null}

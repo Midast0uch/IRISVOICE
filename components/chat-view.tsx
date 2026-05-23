@@ -2127,7 +2127,7 @@ ${message.text}`;
               <div className="absolute left-0 right-0 top-0 -translate-y-full z-30">
                 <SuggestionPills
                   suggestions={currentSuggestions}
-                  onSelect={s => {
+                  onSelect={(s: Suggestion) => {
                     if (!s.message) return
                     setCurrentSuggestions([])
                     // Add as a user message and send via WS — same flow as handleSendMessage
