@@ -3,7 +3,7 @@
 import React from 'react'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
-import { FileText, Folder, MessageSquare, ScrollText, Terminal } from 'lucide-react'
+import { FileText, Folder, MessageSquare, ScrollText, Terminal, Plus } from 'lucide-react'
 
 const TAB_TYPE_ICONS: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
   file: FileText,
@@ -61,12 +61,24 @@ function TabItem({ tab, isActive }: { tab: ReturnType<typeof useWorkspaceStore.g
 }
 
 export function WorkspaceTabBar() {
-  const { tabs, activeTabId, setActiveTab } = useWorkspaceStore()
+  const { tabs, activeTabId, setActiveTab, addTab } = useWorkspaceStore()
+
+  function handleAddTab() {
+    const id = `tab-${Date.now()}`
+    addTab({ id, label: `File ${tabs.length + 1}`, type: 'file' })
+  }
 
   if (tabs.length === 0) {
     return (
       <div className="shrink-0 flex items-center px-4 py-2 border-b border-white/5">
         <span className="text-[10px] text-white/20 italic">No tabs open</span>
+        <button
+          onClick={handleAddTab}
+          title="Add tab"
+          className="ml-auto p-1 rounded text-white/30 hover:text-white/70 hover:bg-white/5 transition-colors"
+        >
+          <Plus size={12} />
+        </button>
       </div>
     )
   }
@@ -78,6 +90,13 @@ export function WorkspaceTabBar() {
           <TabItem tab={tab} isActive={tab.id === activeTabId} />
         </div>
       ))}
+      <button
+        onClick={handleAddTab}
+        title="Add tab"
+        className="flex-shrink-0 p-2 text-white/30 hover:text-white/70 hover:bg-white/5 transition-colors"
+      >
+        <Plus size={12} />
+      </button>
     </div>
   )
 }
