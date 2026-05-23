@@ -2,6 +2,37 @@
 
 ## [Unreleased] — Developer Workspace Integration — 2026-05-22
 
+### Phase 1 — COMPLETED ✅ — 2026-05-23
+
+**Status:** All workspace files recreated, TypeScript-verified, committed to `fix/ui-restoration-wings`.
+
+**Files Created:**
+- `stores/workspaceStore.ts` — Zustand store with tabs, sections, cards, archive, terminal, focus mode
+- `components/workspace/DeveloperWorkspace.tsx` — Root DndContext layout with lazy-loaded TerminalWidget
+- `components/workspace/WorkspaceTabBar.tsx` — Draggable color-coded tabs with type icons
+- `components/workspace/KanbanCanvas.tsx` — Droppable canvas container
+- `components/workspace/KanbanSection.tsx` — Resizable columns (200px–800px), collapsible, drag handles
+- `components/workspace/KanbanCard.tsx` — Cards with maximize/minimize/archive/close actions
+- `components/workspace/ArchiveDock.tsx` — macOS-style dock with hover magnification
+- `components/workspace/WorkspaceToolbar.tsx` — Focus mode toggle
+
+**Files Modified:**
+- `components/terminal/TerminalWidget.tsx` — Inline rendering (no portal), default export for React.lazy
+- `components/dark-glass-dashboard.tsx` — Terminal tab and floating panel removed
+- `components/chat-view.tsx` — Conditionally renders DeveloperWorkspace in developer mode with Suspense
+- `hooks/useLauncherMode.ts` — Defaults to developer mode when backend unreachable (testing)
+
+**Verification:**
+- `npx tsc --noEmit` on workspace files: **0 errors**
+- Dev server starts successfully on `localhost:3000`
+- All compilation errors are pre-existing (missing `useTailscaleAccess`, etc.)
+
+**Notes:**
+- Node_modules were corrupted by Windows `nul` file bug; fixed by removing `nul` and reinstalling native binaries (lightningcss, next/swc)
+- `.gitignore` updated to exclude `bootstrap/*.db*` and `nul` file
+
+---
+
 ### plan(workspace): IDE-lite modular workspace for developer mode
 
 Comprehensive plan for integrating a full IDE-lite workspace into
