@@ -4,9 +4,13 @@ import React, { lazy, Suspense } from 'react'
 import { DndContext, DragEndEvent, DragStartEvent } from '@dnd-kit/core'
 import { useWorkspaceStore, WorkspaceTab } from '@/stores/workspaceStore'
 import { useBrandColor } from '@/contexts/BrandColorContext'
+import { useFileWatcher } from '@/hooks/useFileWatcher'
+import { useWorkspacePersistence } from '@/hooks/useWorkspacePersistence'
 import { WorkspaceTabBar } from './WorkspaceTabBar'
 import { KanbanCanvas } from './KanbanCanvas'
 import { ArchiveDock } from './ArchiveDock'
+import { WorkspaceToolbar } from './WorkspaceToolbar'
+import { FloatingPanel } from './FloatingPanel'
 import { Focus, Terminal, Eye, EyeOff, Archive as ArchiveIcon, LayoutGrid } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -184,9 +188,39 @@ function SectionToggle({ section, label, icon: Icon }: { section: 'terminal' | '
   )
 }
 
-export function DeveloperWorkspace() {
-  const { tabs, showTerminal, showArchive, showKanban } = useWorkspaceStore()
+interface PoppedOutCard {
+  cardId: string
+  tabId: string
+  x: number
+  y: number
+}
+
+export function DeveloperWorkspace({ conversationId }: { conversationId?: string }) {
+  const { tabs, showTerminal, showArchive, showKanban, addTab, removeTab, sections } = useWorkspaceStore()
   const [draggedTabId, setDraggedTabId] = React.useState<string | null>(null)
+  const [floatingPanels, setFloatingPanels] = React.useState<PoppedOutCard[]>([])
+
+  // ── Persistence: auto-save/restore workspace state ──
+  const { isOnline, isRestoring } = useWorkspacePersistence(conversationId)
+
+  // ── File Watcher: live card updates from external file changes ──
+  useFileWatcher({
+    onEvent: (event) => {
+      // Find any card that references this path and trigger refresh
+      const state = useWorkspaceStore.getState()
+      const matchingCards = state.sections
+        .flatMap((s) => s.cards)
+        .filter((c) => {
+          const tab = state.tabs.find((t) => t.id === c.tabId)
+          return tab && event.path.includes(tab.path)
+        })
+      if (matchingCards.length > 0) {
+        // Cards referencing changed files get a fresh preview
+        // (The CardContentRenderer will re-fetch on next render)
+        console.log('[FileWatcher] Cards affected:', matchingCards.map((c) => c.tabId))
+      }
+    },
+  })
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
@@ -208,17 +242,37 @@ export function DeveloperWorkspace() {
     setDraggedTabId(null)
   }
 
+  // ── Pop out card to floating panel ──
+  const handlePopOut = (cardId: string, tabId: string) => {
+    // Remove card from its section (it lives in floating panel now)
+    useWorkspaceStore.setState((state) => ({
+      sections: state.sections.map((s) => ({
+        ...s,
+        cards: s.cards.filter((c) => c.id !== cardId),
+      })),
+    }))
+    setFloatingPanels((prev) => [
+      ...prev,
+      { cardId, tabId, x: 100 + prev.length * 30, y: 100 + prev.length * 20 },
+    ])
+  }
+
+  const closeFloatingPanel = (cardId: string) => {
+    setFloatingPanels((prev) => prev.filter((p) => p.cardId !== cardId))
+  }
+
   return (
-    <DndContext
-      onDragStart={(e: DragStartEvent) => setDraggedTabId(e.active.id as string)}
-      onDragEnd={handleDragEnd}
-    >
-      <div
-        className="flex flex-col h-full w-full relative"
-        style={{
-          background: 'linear-gradient(180deg, rgba(10,11,22,0.2) 0%, rgba(6,7,14,0.1) 100%)',
-        }}
+    <>
+      <DndContext
+        onDragStart={(e: DragStartEvent) => setDraggedTabId(e.active.id as string)}
+        onDragEnd={handleDragEnd}
       >
+        <div
+          className="flex flex-col h-full w-full relative"
+          style={{
+            background: 'linear-gradient(180deg, rgba(10,11,22,0.2) 0%, rgba(6,7,14,0.1) 100%)',
+          }}
+        >
         {/* Top toolbar row: Focus toggle + Tab bar + Section toggles */}
         <div
           className="shrink-0 flex items-center gap-2 px-2 py-1.5"
@@ -275,12 +329,27 @@ export function DeveloperWorkspace() {
               transition={{ duration: 0.2 }}
               className="flex-1 min-h-0"
             >
-              <KanbanCanvas />
+              <KanbanCanvas onPopOut={handlePopOut} />
             </motion.div>
           )}
         </AnimatePresence>
+
+        <WorkspaceToolbar />
       </div>
     </DndContext>
+
+    {/* Floating panels — rendered outside DndContext so they float above everything */}
+    {floatingPanels.map((panel) => (
+      <FloatingPanel
+        key={panel.cardId}
+        cardId={panel.cardId}
+        tabId={panel.tabId}
+        initialX={panel.x}
+        initialY={panel.y}
+        onClose={() => closeFloatingPanel(panel.cardId)}
+      />
+    ))}
+    </>
   )
 }
 

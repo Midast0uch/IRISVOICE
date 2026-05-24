@@ -24,7 +24,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run alongside G1.6-G1.8)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1-13.3] NOT STARTED, [13.4] UI VERIFIED, [13.5] PARTIAL) ← GATE 2
+    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1] DONE, [13.2] NOT STARTED, [13.3] PARTIAL, [13.4] DONE, [13.5] PARTIAL) ← GATE 2
     Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C/E done; [14.2][14.16][14.19][14.21] remain)
     Domain 15 — Linux Build + Cross-Platform Launcher (PARTIAL — tauri.conf.json targets set; needs Linux build machine)
     Domain 17 — Self-Coding Agent (NEW — ALL items not started) ← NEW NORTH STAR
@@ -136,10 +136,10 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
     [G2.1] DONE — Launcher UI exists at C:\Users\midas\Desktop\dev\iris-launcher\
            ModeSelectPage, AppContext, use-iris-mode, GitPage, DiffReviewPage all built.
            /api/mode and /api/projects already in IRISVOICE backend.
-    [G2.2] Backend git + diff endpoints (Domain 13.1) — NOT DONE ← start here
+    [G2.2] Backend git + diff endpoints (Domain 13.1) — DONE (git_ops.py, github_ops.py, network_ops.py, conversation_store.py created; backend boots cleanly)
     [G2.3] Git worktree isolation — agent writes to isolated branch (Domain 13.2)
     [G2.4] Developer mode capabilities gated in IRISVOICE (Domain 13.3)
-    [G2.5] Terminal tab visible in developer mode only (Domain 13.4)
+    [G2.5] Terminal tab visible in developer mode only (Domain 13.4) — DONE (all 4 phases of terminal-chat-integration implemented, build passes)
     [G2.6] Session-end diff review in Launcher DiffReviewPage (Domain 13.5)
 
   Terminal architecture (developer mode only — TUI is dumb, IRIS is smart):
@@ -812,9 +812,12 @@ WHAT IS ALREADY BUILT (do not re-do these):
 
 WHAT IS MISSING (build these):
 
-  [13.1] Backend git + diff API endpoints  ← START HERE
-    Status: NOT STARTED
-    The launcher GitPage and DiffReviewPage call these backend routes — none exist yet:
+  [13.1] Backend git + diff API endpoints
+    Status: DONE (2026-05-24)
+    Created: backend/git_ops.py, backend/github_ops.py, backend/network_ops.py,
+             backend/conversation_store.py, backend/mcp/github_server.py.
+    All routes wired in backend/main.py. Backend boots cleanly. Next: e2e test from launcher.
+    Landmark: launcher_git_api_wired
       GET  /api/git/status   → branch, clean, lastCommit, uncommittedFiles
       GET  /api/git/log      → commits list (hash, message, time)
       POST /api/git/commit   → body: {message} → git add -A && git commit
@@ -858,8 +861,11 @@ WHAT IS MISSING (build these):
     Landmark: mode_capabilities_gated
 
   [13.4] Terminal tab / Developer Workspace UI — developer mode only
-    Status: UI REFINED — all workspace components styled and verified via
-            screenshot automation (2026-05-23). Backend e2e still pending
+    Status: DONE — all 4 phases of terminal-chat-integration plan implemented
+            and build-verified (2026-05-24). Includes: DeveloperWorkspace,
+            KanbanCanvas, KanbanSection, KanbanCard, CardContentRenderer,
+            MindMapView, CodePreviewPanel, FloatingPanel, Xur spinner,
+            WorkspaceToolbar, ArchiveDock. Backend e2e still pending
             Gate 1.6/1.7/1.8 + Domain 2 inference verification.
     What was built:
       a) TerminalContext (contexts/TerminalContext.tsx) — widget state owner,

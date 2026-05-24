@@ -38,6 +38,15 @@ const nextConfig = {
     removeConsole: { exclude: ['error'] },
   },
 
+  async rewrites() {
+    return [
+      {
+        source: '/api/:path*',
+        destination: 'http://localhost:8000/api/:path*',
+      },
+    ];
+  },
+
   // ===========================================================================
   // Webpack exclusions — applies to `next build` (production) only.
   //

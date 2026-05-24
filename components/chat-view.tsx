@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink } from 'lucide-react';
+import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
 import { useBrandColor } from "@/contexts/BrandColorContext";
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
@@ -1450,7 +1451,7 @@ ${message.text}`;
                   <span className="text-xs text-white/20">Loading workspace...</span>
                 </div>
               }>
-                <DeveloperWorkspace />
+                <DeveloperWorkspace conversationId={activeConversationId || undefined} />
               </Suspense>
             ) : (
             <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-3 py-3 relative z-10">
@@ -2225,6 +2226,13 @@ ${message.text}`;
                     onChipClick={handleChipClick}
                     containerRef={messagesContainerRef}
                   />
+
+                  {/* Xur thinking spinner */}
+                  {isTyping && (
+                    <div className="flex items-center justify-center" style={{ color: glowColor }}>
+                      <Xur size={20} />
+                    </div>
+                  )}
 
                   {/* Send button */}
                   <motion.button

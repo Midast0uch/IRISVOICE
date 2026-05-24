@@ -5,7 +5,11 @@ import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useBrandColor } from '@/contexts/BrandColorContext'
 import { KanbanSection } from './KanbanSection'
 
-export function KanbanCanvas() {
+interface KanbanCanvasProps {
+  onPopOut?: (cardId: string, tabId: string) => void
+}
+
+export function KanbanCanvas({ onPopOut }: KanbanCanvasProps) {
   const { sections, kanbanCompact } = useWorkspaceStore()
   const { getThemeConfig } = useBrandColor()
   const glowColor = getThemeConfig().glow?.color || '#60a5fa'
@@ -34,7 +38,7 @@ export function KanbanCanvas() {
       }}
     >
       {sections.map((section) => (
-        <KanbanSection key={section.id} section={section} glowColor={glowColor} compact={kanbanCompact} />
+        <KanbanSection key={section.id} section={section} glowColor={glowColor} compact={kanbanCompact} onPopOut={onPopOut} />
       ))}
     </div>
   )

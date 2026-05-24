@@ -6,7 +6,14 @@ import { useWorkspaceStore, KanbanCard as KanbanCardType } from '@/stores/worksp
 import { KanbanCard } from './KanbanCard'
 import { ChevronLeft, ChevronRight, GripVertical, X } from 'lucide-react'
 
-export function KanbanSection({ section, glowColor, compact = false }: { section: ReturnType<typeof useWorkspaceStore.getState>['sections'][number]; glowColor: string; compact?: boolean }) {
+interface KanbanSectionProps {
+  section: ReturnType<typeof useWorkspaceStore.getState>['sections'][number]
+  glowColor: string
+  compact?: boolean
+  onPopOut?: (cardId: string, tabId: string) => void
+}
+
+export function KanbanSection({ section, glowColor, compact = false, onPopOut }: KanbanSectionProps) {
   const { updateSectionWidth, toggleSectionCollapse, removeSection } = useWorkspaceStore()
   const [isResizing, setIsResizing] = useState(false)
   const { setNodeRef, isOver } = useDroppable({ id: section.id })
@@ -105,7 +112,9 @@ export function KanbanSection({ section, glowColor, compact = false }: { section
               <span className="text-[9px] text-white/15 italic">Drop cards here</span>
             </div>
           ) : (
-            section.cards.map((card: KanbanCardType) => <KanbanCard key={card.id} card={card} glowColor={glowColor} />)
+            section.cards.map((card: KanbanCardType) => (
+              <KanbanCard key={card.id} card={card} glowColor={glowColor} onPopOut={onPopOut} />
+            ))
           )}
         </div>
       )}

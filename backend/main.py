@@ -819,6 +819,89 @@ async def save_projects(request: dict):
 
 
 # ============================================================================
+# Workspace Persistence API (Phase 2 — Developer Workspace)
+# ============================================================================
+
+_WORKSPACE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "workspaces"
+)
+
+
+def _workspace_path(conversation_id: str) -> str:
+    """Return the filesystem path for a conversation's workspace state."""
+    safe_id = conversation_id.replace("/", "_").replace("\\", "_")
+    return os.path.join(_WORKSPACE_DIR, f"{safe_id}.json")
+
+
+@app.post("/api/workspace/save")
+async def api_workspace_save(request: dict):
+    """
+    Save workspace state keyed by conversation ID.
+
+    Body: { "conversationId": string, "state": WorkspaceState }
+    """
+    conversation_id = request.get("conversationId", "").strip()
+    state = request.get("state")
+    if not conversation_id:
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": "conversationId required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    if not isinstance(state, dict):
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": "state must be an object"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    try:
+        os.makedirs(_WORKSPACE_DIR, exist_ok=True)
+        path = _workspace_path(conversation_id)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        return {"status": "ok", "conversationId": conversation_id}
+    except Exception as exc:
+        logger.error(f"[Workspace] Failed to save workspace for {conversation_id}: {exc}")
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": str(exc)}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+
+@app.get("/api/workspace/{conversation_id}")
+async def api_workspace_get(conversation_id: str):
+    """
+    Restore workspace state for a given conversation ID.
+    Returns 404 if no saved state exists.
+    """
+    path = _workspace_path(conversation_id)
+    if not os.path.exists(path):
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": "not found"}),
+            status_code=404,
+            media_type="application/json",
+        )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        return {"status": "ok", "conversationId": conversation_id, "state": state}
+    except Exception as exc:
+        logger.error(f"[Workspace] Failed to load workspace for {conversation_id}: {exc}")
+        from fastapi import Response as FastAPIResponse
+        return FastAPIResponse(
+            content=json.dumps({"error": str(exc)}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+
+# ============================================================================
 # Git + Diff API (Domain 13.1 — iris-launcher developer mode)
 # ============================================================================
 
