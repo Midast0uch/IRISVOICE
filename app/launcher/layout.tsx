@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AppProvider } from "@/contexts/LauncherContext";
+import { LauncherProvider as AppProvider } from "@/contexts/LauncherContext";
 import { AppSidebar } from "@/components/launcher/AppSidebar";
 import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/sidebar";
 // Theme toggle is in the launcher header for switching dark/light mode

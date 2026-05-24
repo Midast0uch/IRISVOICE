@@ -28,6 +28,11 @@ export function useWorkspacePersistence(conversationId?: string) {
         activeTabId: parsed.activeTabId ?? null,
         isTerminalExpanded: parsed.isTerminalExpanded ?? true,
         isFocusMode: parsed.isFocusMode ?? false,
+        focusPreset: parsed.focusPreset ?? 'full',
+        showTerminal: parsed.showTerminal ?? true,
+        showArchive: parsed.showArchive ?? true,
+        showKanban: parsed.showKanban ?? true,
+        kanbanCompact: parsed.kanbanCompact ?? false,
       }, false) // false = don't notify subscribers yet
     } catch {
       // Invalid persisted state, ignore
@@ -46,6 +51,11 @@ export function useWorkspacePersistence(conversationId?: string) {
         activeTabId: state.activeTabId,
         isTerminalExpanded: state.isTerminalExpanded,
         isFocusMode: state.isFocusMode,
+        focusPreset: state.focusPreset,
+        showTerminal: state.showTerminal,
+        showArchive: state.showArchive,
+        showKanban: state.showKanban,
+        kanbanCompact: state.kanbanCompact,
       }
       const json = JSON.stringify(payload)
       if (json !== lastSavedRef.current) {

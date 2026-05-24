@@ -2,17 +2,29 @@
 
 import React from "react"
 import Link from "next/link"
+import { usePathname } from "next/navigation"
 
-export function NavLink({ href, icon, label, active }: { href: string; icon: React.ReactNode; label: string; active?: boolean }) {
+interface NavLinkProps {
+  to: string
+  end?: boolean
+  className?: string
+  activeClassName?: string
+  "aria-label"?: string
+  children?: React.ReactNode
+}
+
+export function NavLink({ to, end, className, activeClassName, "aria-label": ariaLabel, children }: NavLinkProps) {
+  const pathname = usePathname()
+  const isActive = end ? pathname === to : pathname?.startsWith(to) || false
+  const mergedClassName = `${className || ""} ${isActive ? activeClassName || "" : ""}`
+
   return (
     <Link
-      href={href}
-      className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
-        active ? "bg-white/10 text-white" : "text-white/60 hover:text-white hover:bg-white/5"
-      }`}
+      href={to}
+      className={mergedClassName}
+      aria-label={ariaLabel}
     >
-      {icon}
-      <span>{label}</span>
+      {children}
     </Link>
   )
 }

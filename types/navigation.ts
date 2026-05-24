@@ -7,6 +7,7 @@ export interface FieldConfig {
   type: FieldType
   label: string
   defaultValue?: FieldValue
+  description?: string
   // text field props
   placeholder?: string
   // slider props
