@@ -704,6 +704,27 @@ async def set_launcher_mode(request: dict):
     # Persist to disk so the mode survives restarts
     cfg = _load_iris_config()
     cfg["mode"] = mode
+
+    # Manage developer worktree isolation
+    wt_info = None
+    try:
+        from backend import dev_worktree
+        if mode == "developer":
+            wt_info = dev_worktree.setup()
+            if wt_info.get("status") == "ok":
+                cfg["worktree_path"] = wt_info.get("worktree_path")
+                cfg["worktree_branch"] = wt_info.get("branch")
+                logger.info(f"[Mode] Worktree ready at {wt_info.get('worktree_path')}")
+            else:
+                logger.warning(f"[Mode] Worktree setup failed: {wt_info.get('error')}")
+        elif mode == "personal":
+            teardown = dev_worktree.teardown(merge=False)
+            cfg.pop("worktree_path", None)
+            cfg.pop("worktree_branch", None)
+            logger.info(f"[Mode] Worktree teardown: {teardown.get('status')}")
+    except Exception as exc:
+        logger.warning(f"[Mode] Worktree management error: {exc}")
+
     _save_iris_config(cfg)
 
     # Apply to live agent kernel if running
@@ -732,6 +753,13 @@ async def get_launcher_mode():
     cfg = _load_iris_config()
     mode = cfg.get("mode", None)
     return {"mode": mode}
+
+
+@app.get("/api/worktree/status")
+async def get_worktree_status():
+    """Returns developer worktree isolation status."""
+    from backend import dev_worktree
+    return dev_worktree.status()
 
 
 @app.get("/api/launcher/status")
