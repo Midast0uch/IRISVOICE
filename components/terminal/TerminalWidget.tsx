@@ -48,7 +48,7 @@ export function TerminalWidget() {
         cursorBlink: true,
         cursorStyle: 'bar',
         theme: {
-          background: 'transparent',
+          background: '#0b0c1a',
           foreground: '#e2e8f0',
           cursor: glowColor,
           selectionBackground: `${glowColor}40`,
@@ -190,7 +190,11 @@ export function TerminalWidget() {
     <div
       ref={containerRef}
       className="w-full h-full flex flex-col"
-      style={{ minHeight: 0, padding: '12px 16px' }}
+      style={{
+        minHeight: 0,
+        padding: '12px 16px',
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.015) 0%, transparent 50%, rgba(0,0,0,0.15) 100%)',
+      }}
     />
   )
 }

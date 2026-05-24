@@ -38,6 +38,8 @@ export interface ArchiveDockItem {
   originalSectionId: string
 }
 
+export type FocusPreset = 'full' | 'work' | 'chat' | 'zen'
+
 export interface WorkspaceState {
   tabs: WorkspaceTab[]
   sections: KanbanSection[]
@@ -45,6 +47,11 @@ export interface WorkspaceState {
   activeTabId: string | null
   isTerminalExpanded: boolean
   isFocusMode: boolean
+  focusPreset: FocusPreset
+  showTerminal: boolean
+  showArchive: boolean
+  showKanban: boolean
+  kanbanCompact: boolean
 }
 
 interface TemporalApi {
@@ -84,6 +91,11 @@ interface WorkspaceStore extends WorkspaceState {
 
   // Focus mode
   toggleFocusMode: () => void
+  setFocusPreset: (preset: FocusPreset) => void
+
+  // Section visibility
+  toggleSectionVisible: (section: 'terminal' | 'archive' | 'kanban') => void
+  toggleKanbanCompact: () => void
 
   // Snapshot
   takeSnapshot: () => void
@@ -103,6 +115,11 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       activeTabId: null,
       isTerminalExpanded: true,
       isFocusMode: false,
+      focusPreset: 'full',
+      showTerminal: true,
+      showArchive: true,
+      showKanban: true,
+      kanbanCompact: false,
       snapshot: null,
 
   addTab: (tab: WorkspaceTab) =>
@@ -252,7 +269,38 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
   setTerminalExpanded: (expanded: boolean) => set({ isTerminalExpanded: expanded }),
 
   toggleFocusMode: () =>
-    set((state: WorkspaceStore) => ({ isFocusMode: !state.isFocusMode })),
+    set((state: WorkspaceStore) => {
+      const presets: FocusPreset[] = ['full', 'work', 'chat', 'zen']
+      const idx = presets.indexOf(state.focusPreset)
+      const next = presets[(idx + 1) % presets.length]
+      const configs: Record<FocusPreset, Partial<WorkspaceStore>> = {
+        full: { showTerminal: true, showArchive: true, showKanban: true, kanbanCompact: false, isTerminalExpanded: true },
+        work: { showTerminal: true, showArchive: false, showKanban: true, kanbanCompact: false, isTerminalExpanded: true },
+        chat: { showTerminal: false, showArchive: false, showKanban: true, kanbanCompact: true, isTerminalExpanded: false },
+        zen: { showTerminal: false, showArchive: false, showKanban: false, kanbanCompact: false, isTerminalExpanded: false },
+      }
+      return { focusPreset: next, isFocusMode: true, ...configs[next] }
+    }),
+
+  setFocusPreset: (preset: FocusPreset) =>
+    set((state: WorkspaceStore) => {
+      const configs: Record<FocusPreset, Partial<WorkspaceStore>> = {
+        full: { showTerminal: true, showArchive: true, showKanban: true, kanbanCompact: false, isTerminalExpanded: true },
+        work: { showTerminal: true, showArchive: false, showKanban: true, kanbanCompact: false, isTerminalExpanded: true },
+        chat: { showTerminal: false, showArchive: false, showKanban: true, kanbanCompact: true, isTerminalExpanded: false },
+        zen: { showTerminal: false, showArchive: false, showKanban: false, kanbanCompact: false, isTerminalExpanded: false },
+      }
+      return { focusPreset: preset, isFocusMode: true, ...configs[preset] }
+    }),
+
+  toggleSectionVisible: (section: 'terminal' | 'archive' | 'kanban') =>
+    set((state: WorkspaceStore) => {
+      const key = section === 'terminal' ? 'showTerminal' : section === 'archive' ? 'showArchive' : 'showKanban'
+      return { [key]: !state[key as keyof WorkspaceStore] } as Partial<WorkspaceStore>
+    }),
+
+  toggleKanbanCompact: () =>
+    set((state: WorkspaceStore) => ({ kanbanCompact: !state.kanbanCompact })),
 
   takeSnapshot: () => {
     const state = get()
@@ -275,6 +323,11 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       activeTabId: state.activeTabId,
       isTerminalExpanded: state.isTerminalExpanded,
       isFocusMode: state.isFocusMode,
+      focusPreset: state.focusPreset,
+      showTerminal: state.showTerminal,
+      showArchive: state.showArchive,
+      showKanban: state.showKanban,
+      kanbanCompact: state.kanbanCompact,
     }),
   }
 ))

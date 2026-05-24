@@ -2113,16 +2113,6 @@ ${message.text}`;
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
-              {/* Chips — floats above border-t at right edge */}
-              <div className="absolute right-3 top-0 -translate-y-full pb-2 z-40">
-                <ConversationChips
-                  chips={conversationChips}
-                  glowColor={glowColor}
-                  onChipClick={handleChipClick}
-                  containerRef={messagesContainerRef}
-                />
-              </div>
-
               {/* Suggestion pills — float left side above input, fade out on new user message */}
               <div className="absolute left-0 right-0 top-0 -translate-y-full z-30">
                 <SuggestionPills
@@ -2228,6 +2218,14 @@ ${message.text}`;
 
                 {/* Compact Action Group */}
                 <div className="flex items-center gap-2 mb-2">
+                  {/* Conversation chips */}
+                  <ConversationChips
+                    chips={conversationChips}
+                    glowColor={glowColor}
+                    onChipClick={handleChipClick}
+                    containerRef={messagesContainerRef}
+                  />
+
                   {/* Send button */}
                   <motion.button
                     onClick={handleSendMessage}

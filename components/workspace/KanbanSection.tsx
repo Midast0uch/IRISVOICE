@@ -6,7 +6,7 @@ import { useWorkspaceStore, KanbanCard as KanbanCardType } from '@/stores/worksp
 import { KanbanCard } from './KanbanCard'
 import { ChevronLeft, ChevronRight, GripVertical, X } from 'lucide-react'
 
-export function KanbanSection({ section, glowColor }: { section: ReturnType<typeof useWorkspaceStore.getState>['sections'][number]; glowColor: string }) {
+export function KanbanSection({ section, glowColor, compact = false }: { section: ReturnType<typeof useWorkspaceStore.getState>['sections'][number]; glowColor: string; compact?: boolean }) {
   const { updateSectionWidth, toggleSectionCollapse, removeSection } = useWorkspaceStore()
   const [isResizing, setIsResizing] = useState(false)
   const { setNodeRef, isOver } = useDroppable({ id: section.id })
@@ -85,7 +85,7 @@ export function KanbanSection({ section, glowColor }: { section: ReturnType<type
       </div>
 
       {/* Cards */}
-      {!section.isCollapsed && (
+      {!section.isCollapsed && !compact && (
         <div className="flex-1 flex flex-col gap-2 p-2 overflow-y-auto">
           {section.cards.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">
@@ -94,6 +94,22 @@ export function KanbanSection({ section, glowColor }: { section: ReturnType<type
           ) : (
             section.cards.map((card: KanbanCardType) => <KanbanCard key={card.id} card={card} glowColor={glowColor} />)
           )}
+        </div>
+      )}
+
+      {/* Compact indicator */}
+      {compact && section.cards.length > 0 && (
+        <div className="flex items-center justify-center py-1">
+          <span
+            className="text-[8px] px-1.5 py-0.5 rounded-full"
+            style={{
+              background: `${glowColor}12`,
+              color: `${glowColor}60`,
+              border: `1px solid ${glowColor}15`,
+            }}
+          >
+            {section.cards.length} card{section.cards.length > 1 ? 's' : ''}
+          </span>
         </div>
       )}
 

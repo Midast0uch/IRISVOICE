@@ -94,11 +94,45 @@ export function KanbanCard({ card, glowColor }: { card: ReturnType<typeof useWor
 
       {/* Card Body */}
       {card.state === 'maximized' && (
-        <div className="px-2 pb-2 text-[10px]" style={{ color: 'rgba(255,255,255,0.35)' }}>
-          {tab?.type === 'file' && <span className="font-mono">{tab.path}</span>}
-          {tab?.type === 'conversation' && <span>Conversation content preview...</span>}
-          {tab?.type === 'terminal' && <span>Terminal session</span>}
-          {!['file', 'conversation', 'terminal'].includes(tab?.type || '') && <span>{tab?.type} content</span>}
+        <div className="px-2 pb-2 text-[10px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.35)' }}>
+          {tab?.type === 'file' && (
+            <div className="font-mono space-y-0.5">
+              <div className="truncate">{tab.path}</div>
+              <div className="text-white/20 text-[8px] pl-1 border-l border-white/10">
+                import {'{'} useState {'}'} from 'react'<br />
+                export function App() {'{'}<br />
+                &nbsp;&nbsp;const [count, setCount] = ...
+              </div>
+            </div>
+          )}
+          {tab?.type === 'document' && (
+            <div>
+              <div className="truncate">{tab.path}</div>
+              <div className="text-white/20 text-[8px] mt-0.5 italic truncate">
+                # Getting Started
+                <br />
+                This project uses Next.js...
+              </div>
+            </div>
+          )}
+          {tab?.type === 'conversation' && (
+            <div>
+              <div className="truncate">{tab.path}</div>
+              <div className="text-white/20 text-[8px] mt-0.5 truncate">
+                Last: "Can you help me refactor..."
+              </div>
+            </div>
+          )}
+          {tab?.type === 'terminal' && (
+            <div className="font-mono">
+              <span className="text-white/25">$ </span>
+              <span className="text-white/30">npm run dev</span>
+              <div className="text-[8px] text-white/20 mt-0.5">Ready on localhost:3000</div>
+            </div>
+          )}
+          {tab?.type === 'folder' && (
+            <div className="truncate">{tab.path}</div>
+          )}
         </div>
       )}
     </div>

@@ -6,7 +6,7 @@ import { useBrandColor } from '@/contexts/BrandColorContext'
 import { KanbanSection } from './KanbanSection'
 
 export function KanbanCanvas() {
-  const { sections } = useWorkspaceStore()
+  const { sections, kanbanCompact } = useWorkspaceStore()
   const { getThemeConfig } = useBrandColor()
   const glowColor = getThemeConfig().glow?.color || '#60a5fa'
   const { setNodeRef, isOver } = useDroppable({ id: 'kanban-canvas' })
@@ -34,7 +34,7 @@ export function KanbanCanvas() {
       }}
     >
       {sections.map((section) => (
-        <KanbanSection key={section.id} section={section} glowColor={glowColor} />
+        <KanbanSection key={section.id} section={section} glowColor={glowColor} compact={kanbanCompact} />
       ))}
     </div>
   )
