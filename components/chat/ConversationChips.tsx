@@ -123,7 +123,7 @@ export function ConversationChips({
     return () => document.removeEventListener('keydown', onKey)
   }, [isOpen])
 
-  if (chips.length === 0) return null
+  const hasChips = chips.length > 0
 
   function handleSelect(messageId: string) {
     setIsOpen(false)
@@ -203,16 +203,19 @@ export function ConversationChips({
       {/* Trigger button */}
       <motion.button
         ref={triggerRef}
-        onClick={handleToggle}
-        className="flex items-center gap-1.5 px-2.5 py-1.5 transition-all duration-150 flex-shrink-0 rounded"
+        onClick={hasChips ? handleToggle : undefined}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 transition-all duration-150 flex-shrink-0 rounded-md"
         style={{
-          color: isOpen ? glowColor : 'rgba(255,255,255,0.75)',
-          background: isOpen ? `${glowColor}15` : 'rgba(255,255,255,0.07)',
-          border: `1px solid ${isOpen ? `${glowColor}50` : 'rgba(255,255,255,0.18)'}`,
+          color: isOpen ? glowColor : hasChips ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.3)',
+          background: isOpen ? `${glowColor}20` : 'rgba(14,14,24,0.85)',
+          border: `1px solid ${isOpen ? `${glowColor}60` : hasChips ? `${glowColor}30` : 'rgba(255,255,255,0.08)'}`,
+          boxShadow: isOpen ? `0 0 10px ${glowColor}20` : 'none',
+          cursor: hasChips ? 'pointer' : 'default',
+          opacity: hasChips ? 1 : 0.6,
         }}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        title={`Conversation history (${chips.length})`}
+        whileHover={hasChips ? { scale: 1.05 } : {}}
+        whileTap={hasChips ? { scale: 0.95 } : {}}
+        title={hasChips ? `Conversation history (${chips.length})` : 'No conversation history yet'}
       >
         <AlignJustify size={14} />
         <span className="text-[11px] font-mono leading-none">

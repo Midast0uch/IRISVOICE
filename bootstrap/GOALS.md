@@ -24,7 +24,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run alongside G1.6-G1.8)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1-13.3] NOT STARTED, [13.4] IMPLEMENTED awaits e2e) ← GATE 2
+    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1-13.3] NOT STARTED, [13.4] UI VERIFIED, [13.5] PARTIAL) ← GATE 2
     Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C/E done; [14.2][14.16][14.19][14.21] remain)
     Domain 15 — Linux Build + Cross-Platform Launcher (PARTIAL — tauri.conf.json targets set; needs Linux build machine)
     Domain 17 — Self-Coding Agent (NEW — ALL items not started) ← NEW NORTH STAR
@@ -857,17 +857,17 @@ WHAT IS MISSING (build these):
     Test: Set mode=personal → no terminal tab. Set mode=developer → terminal tab appears.
     Landmark: mode_capabilities_gated
 
-  [13.4] Terminal tab — developer mode only
-    Status: IMPLEMENTED — awaits e2e verification. Cannot be landmarked until
-            local model loading is verified (see Gate 1.6/1.7/1.8 + Domain 2
-            inference note) because agent-routed CLI tests depend on the
-            model actually running.
+  [13.4] Terminal tab / Developer Workspace UI — developer mode only
+    Status: UI REFINED — all workspace components styled and verified via
+            screenshot automation (2026-05-23). Backend e2e still pending
+            Gate 1.6/1.7/1.8 + Domain 2 inference verification.
     What was built:
       a) TerminalContext (contexts/TerminalContext.tsx) — widget state owner,
          auto-floats on iris:cli_started, tracks file activity ring-buffer.
       b) TerminalWidget (components/terminal/TerminalWidget.tsx) — xterm.js
          host using a portal pattern so the xterm instance survives
-         dock↔float transitions.
+         dock↔float transitions. Solid dark background (#0b0c1a) + inner
+         gradient overlay to blend with chat-view aesthetic.
       c) FloatingTerminalPanel — framer-motion drag + resize, z-index 40,
          pointer-events passthrough so dashboard stays interactive.
       d) TerminalHeaderBar, FileActivityPanel — header controls + file
@@ -878,6 +878,20 @@ WHAT IS MISSING (build these):
          mode, dispatches to terminal_handler.py (allowlist/blocklist).
       g) file_activity WebSocket message type added to useIRISWebSocket.ts
          → fires iris:file_activity custom event.
+      h) WorkspaceTabBar — glass aesthetic, glow accents, '+' button for new tabs,
+         draggable tabs with type-colored indicators.
+      i) Focus Mode — 4-state cycle (Full → Work → Chat → Zen) with individual
+         section toggles (Terminal / Archive / Kanban). Smooth AnimatePresence
+         transitions. Focus button label reflects current preset.
+      j) KanbanCanvas + KanbanSection + KanbanCard — glass panels, glow borders,
+         type-specific content previews (code snippet, doc excerpt, conversation
+         last message), compact mode for Chat preset.
+      k) ArchiveDock — auto-collapses to 2px glow line when empty, expands on
+         hover. Actual tab labels instead of cryptic IDs.
+      l) ConversationChips — repositioned inline in input toolbar (Send button
+         row) so it is never overlapped by workspace content. Always visible
+         with count badge; subdued style when empty.
+    UI verification screenshots: verification/p1-focus-{full,work,chat,zen}.png
     Manual verification checklist (run these to crystallise the landmark):
       1. Developer mode → Terminal tab → `git status` → output appears.
       2. Click float button → terminal becomes draggable floating panel;
