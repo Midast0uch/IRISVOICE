@@ -38,7 +38,7 @@ export function KanbanSection({ section, glowColor, compact = false }: { section
   return (
     <div
       ref={setNodeRef}
-      className={`flex flex-col shrink-0 rounded-lg transition-colors ${isResizing ? 'select-none' : ''}`}
+      className={`relative flex flex-col shrink-0 rounded-lg transition-colors ${isResizing ? 'select-none' : ''}`}
       style={{
         width: `${width}px`,
         minWidth: section.isCollapsed ? 40 : 200,
@@ -59,6 +59,19 @@ export function KanbanSection({ section, glowColor, compact = false }: { section
           {!section.isCollapsed && (
             <span className="text-[10px] font-semibold tracking-wide truncate" style={{ color: `${glowColor}90` }}>
               {section.title}
+            </span>
+          )}
+          {!section.isCollapsed && (
+            <span
+              className="text-[8px] font-mono px-1 rounded"
+              style={{
+                color: `${glowColor}50`,
+                background: `${glowColor}08`,
+                opacity: isResizing ? 1 : 0.6,
+                transition: 'opacity 0.2s',
+              }}
+            >
+              {Math.round(width)}px
             </span>
           )}
         </div>
@@ -118,7 +131,6 @@ export function KanbanSection({ section, glowColor, compact = false }: { section
         <div
           onMouseDown={handleResizeStart}
           className="absolute right-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-white/10"
-          style={{ position: 'relative' }}
         />
       )}
     </div>

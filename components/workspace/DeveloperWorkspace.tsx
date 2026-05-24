@@ -66,7 +66,7 @@ function TerminalSection() {
           </span>
         </button>
 
-        {isTerminalExpanded && (
+        {isTerminalExpanded ? (
           <div className="h-48 relative">
             {/* Subtle top highlight line */}
             <div
@@ -80,6 +80,32 @@ function TerminalSection() {
             }>
               <TerminalWidget />
             </Suspense>
+          </div>
+        ) : (
+          /* Collapsed $ strip */
+          <div
+            className="flex items-center px-3 py-1.5 cursor-pointer"
+            onClick={toggleTerminal}
+            style={{
+              background: 'linear-gradient(180deg, rgba(6,7,14,0.6) 0%, rgba(4,5,10,0.4) 100%)',
+            }}
+          >
+            <span
+              className="text-[11px] font-mono mr-2"
+              style={{ color: '#34d399', textShadow: '0 0 6px rgba(52,211,153,0.3)' }}
+            >
+              $
+            </span>
+            <span
+              className="w-2 h-[14px] inline-block animate-pulse"
+              style={{
+                background: 'rgba(52,211,153,0.6)',
+                boxShadow: '0 0 4px rgba(52,211,153,0.3)',
+              }}
+            />
+            <span className="ml-2 text-[9px]" style={{ color: 'rgba(255,255,255,0.2)' }}>
+              Click to expand
+            </span>
           </div>
         )}
       </div>
@@ -234,7 +260,7 @@ export function DeveloperWorkspace() {
               transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
               className="shrink-0 overflow-hidden"
             >
-              <ArchiveDock />
+              <ArchiveDock dragLocked={!!draggedTabId} />
             </motion.div>
           )}
         </AnimatePresence>

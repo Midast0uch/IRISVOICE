@@ -18,7 +18,7 @@ export function KanbanCard({ card, glowColor }: { card: ReturnType<typeof useWor
     data: { type: 'card', card },
   })
 
-  const { updateCardState, archiveCard, removeCard } = useWorkspaceStore()
+  const { updateCardState, archiveCard, closeCard } = useWorkspaceStore()
 
   const style: React.CSSProperties = {
     transform: transform ? `translate(${transform.x}px, ${transform.y}px)` : undefined,
@@ -81,11 +81,12 @@ export function KanbanCard({ card, glowColor }: { card: ReturnType<typeof useWor
             <Archive size={10} />
           </button>
           <button
-            onClick={() => removeCard(card.id)}
+            onClick={() => closeCard(card.id)}
             className="p-0.5 rounded transition-colors hover:bg-white/5"
             style={{ color: 'rgba(255,255,255,0.3)' }}
             onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(239,68,68,0.7)' }}
             onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.3)' }}
+            title="Close card (returns to tab bar)"
           >
             <X size={10} />
           </button>

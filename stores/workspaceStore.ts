@@ -84,6 +84,7 @@ interface WorkspaceStore extends WorkspaceState {
   archiveCard: (cardId: string) => void
   unarchiveCard: (cardId: string) => void
   removeCard: (cardId: string) => void
+  closeCard: (cardId: string) => void
 
   // Terminal
   toggleTerminal: () => void
@@ -261,6 +262,14 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         cards: s.cards.filter((c: KanbanCard) => c.id !== cardId),
       })),
       archived: state.archived.filter((a: ArchiveDockItem) => a.cardId !== cardId),
+    })),
+
+  closeCard: (cardId: string) =>
+    set((state: WorkspaceStore) => ({
+      sections: state.sections.map((s: KanbanSection) => ({
+        ...s,
+        cards: s.cards.filter((c: KanbanCard) => c.id !== cardId),
+      })),
     })),
 
   toggleTerminal: () =>

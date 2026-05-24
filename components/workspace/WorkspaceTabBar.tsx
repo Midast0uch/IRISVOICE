@@ -1,10 +1,11 @@
 'use client'
 
-import React from 'react'
+import React, { useState } from 'react'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { useBrandColor } from '@/contexts/BrandColorContext'
 import { FileText, Folder, MessageSquare, ScrollText, Terminal, Plus } from 'lucide-react'
+import { FilePickerModal } from './FilePickerModal'
 
 const TAB_TYPE_ICONS: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
   file: FileText,
@@ -83,50 +84,65 @@ export function WorkspaceTabBar() {
   const { tabs, activeTabId, setActiveTab, addTab } = useWorkspaceStore()
   const { getThemeConfig } = useBrandColor()
   const glowColor = getThemeConfig().glow?.color || '#60a5fa'
+  const [pickerOpen, setPickerOpen] = useState(false)
 
-  function handleAddTab() {
-    const id = `tab-${Date.now()}`
-    const n = tabs.length + 1
-    addTab({ id, label: `File ${n}`, type: 'file', path: `/untitled-${n}.txt`, icon: 'file', isVirtual: true })
+  function handlePick(items: import('./FilePickerModal').PickedItem[]) {
+    items.forEach((item) => {
+      addTab({
+        id: item.id,
+        label: item.label,
+        type: item.type,
+        path: item.path,
+        icon: item.type,
+        isVirtual: item.isVirtual,
+      })
+    })
   }
 
   return (
-    <div
-      className="shrink-0 flex items-center overflow-x-auto"
-      style={{
-        background: 'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%)',
-        borderBottom: `1px solid ${glowColor}15`,
-      }}
-    >
-      {tabs.length === 0 && (
-        <span className="px-3 py-2 text-[10px] text-white/20 italic">No tabs open</span>
-      )}
-      {tabs.map((tab) => (
-        <div key={tab.id} onClick={() => setActiveTab(tab.id)}>
-          <TabItem tab={tab} isActive={tab.id === activeTabId} glowColor={glowColor} />
-        </div>
-      ))}
-      <button
-        onClick={handleAddTab}
-        title="Add tab"
-        className="flex-shrink-0 ml-1 p-1.5 rounded-md text-[10px] font-medium transition-all duration-150 flex items-center gap-1"
+    <>
+      <div
+        className="shrink-0 flex items-center overflow-x-auto"
         style={{
-          color: `${glowColor}90`,
-          background: `${glowColor}10`,
-          border: `1px solid ${glowColor}20`,
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = `${glowColor}20`
-          e.currentTarget.style.color = glowColor
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = `${glowColor}10`
-          e.currentTarget.style.color = `${glowColor}90`
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%)',
+          borderBottom: `1px solid ${glowColor}15`,
         }}
       >
-        <Plus size={12} />
-        <span>New</span>
-      </button>
-    </div>
+        {tabs.length === 0 && (
+          <span className="px-3 py-2 text-[10px] text-white/20 italic">No tabs open</span>
+        )}
+        {tabs.map((tab) => (
+          <div key={tab.id} onClick={() => setActiveTab(tab.id)}>
+            <TabItem tab={tab} isActive={tab.id === activeTabId} glowColor={glowColor} />
+          </div>
+        ))}
+        <button
+          onClick={() => setPickerOpen(true)}
+          title="Add tab"
+          className="flex-shrink-0 ml-1 p-1.5 rounded-md text-[10px] font-medium transition-all duration-150 flex items-center gap-1"
+          style={{
+            color: `${glowColor}90`,
+            background: `${glowColor}10`,
+            border: `1px solid ${glowColor}20`,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = `${glowColor}20`
+            e.currentTarget.style.color = glowColor
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = `${glowColor}10`
+            e.currentTarget.style.color = `${glowColor}90`
+          }}
+        >
+          <Plus size={12} />
+          <span>New</span>
+        </button>
+      </div>
+      <FilePickerModal
+        isOpen={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onPick={handlePick}
+      />
+    </>
   )
 }
