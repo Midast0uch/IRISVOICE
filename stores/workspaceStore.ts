@@ -103,6 +103,10 @@ interface WorkspaceStore extends WorkspaceState {
   restoreSnapshot: () => void
   snapshot: WorkspaceState | null
 
+  // Processing state (for Xur spinner in toolbar)
+  isProcessing: boolean
+  setProcessing: (v: boolean) => void
+
   // Undo/redo (added by zundo)
   temporal?: TemporalApi
 }
@@ -122,6 +126,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       showKanban: true,
       kanbanCompact: false,
       snapshot: null,
+      isProcessing: false,
 
   addTab: (tab: WorkspaceTab) =>
     set((state: WorkspaceStore) => ({
@@ -322,6 +327,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       set({ ...state.snapshot, snapshot: state.snapshot })
     }
   },
+
+  setProcessing: (v: boolean) => set({ isProcessing: v }),
 }),
   {
     limit: 50,
@@ -337,6 +344,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       showArchive: state.showArchive,
       showKanban: state.showKanban,
       kanbanCompact: state.kanbanCompact,
+      isProcessing: state.isProcessing,
     }),
   }
 ))

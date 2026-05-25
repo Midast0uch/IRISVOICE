@@ -4042,15 +4042,16 @@ class IRISGateway:
         Payload: { query: str, workdir: str, tool_hint?: str }
         """
         # [13.3] Capability gate — terminal requires developer mode
-        import os
-        _cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "iris_config.json")
+        from backend.capabilities import CapabilitySet
         try:
-            with open(_cfg_path) as _f:
-                _cfg = json.load(_f)
-        except Exception:
-            _cfg = {}
-        if _cfg.get("mode") != "developer":
-            self._logger.warning("[13.3] dev_cli blocked: mode=%s", _cfg.get("mode"))
+            CapabilitySet.require(CapabilitySet.TERMINAL)
+        except PermissionError as exc:
+            self._logger.warning("[13.3] dev_cli blocked: %s", exc)
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "text_response",
+                "text": "Developer CLI is only available in developer mode.",
+                "sender": "assistant",
+            })
             return
 
         from .dev.orchestrator import get_dev_orchestrator  # lazy import
@@ -4074,15 +4075,11 @@ class IRISGateway:
     async def _handle_dev_abort(self, session_id: str, client_id: str) -> None:
         """Abort the active CLI subprocess for this session."""
         # [13.3] Capability gate — terminal requires developer mode
-        import os
-        _cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "iris_config.json")
+        from backend.capabilities import CapabilitySet
         try:
-            with open(_cfg_path) as _f:
-                _cfg = json.load(_f)
-        except Exception:
-            _cfg = {}
-        if _cfg.get("mode") != "developer":
-            self._logger.warning("[13.3] dev_abort blocked: mode=%s", _cfg.get("mode"))
+            CapabilitySet.require(CapabilitySet.TERMINAL)
+        except PermissionError as exc:
+            self._logger.warning("[13.3] dev_abort blocked: %s", exc)
             return
 
         from .dev.orchestrator import get_dev_orchestrator  # lazy import
@@ -4102,11 +4099,11 @@ class IRISGateway:
         Route a terminal_input message to TerminalHandler for direct shell access.
         Domain 13.4 — developer mode only, security-filtered.
         """
-        _cfg = self._state_manager.get_current_config(session_id)
-        if _cfg.get("mode") != "developer":
-            self._logger.warning(
-                "[13.4] terminal_input blocked: mode=%s", _cfg.get("mode")
-            )
+        from backend.capabilities import CapabilitySet
+        try:
+            CapabilitySet.require(CapabilitySet.TERMINAL)
+        except PermissionError as exc:
+            self._logger.warning("[13.4] terminal_input blocked: %s", exc)
             await self._send_error(
                 client_id, "Terminal only available in developer mode"
             )

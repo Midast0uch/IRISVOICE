@@ -10,7 +10,6 @@ import { SendMessageFunction } from "@/hooks/useIRISWebSocket"
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon"
 import { SpotlightState, UILayoutState } from "@/hooks/useUILayoutState"
 import { useLauncherMode } from "@/hooks/useLauncherMode"
-import { TerminalWidget } from "./terminal/TerminalWidget"
 
 // Notification types for the universal notification system
 interface Notification {
@@ -323,14 +322,6 @@ export function DashboardWing({
                   onRequestSpotlight={onSpotlightToggle}
                 />
               </div>
-              {isDeveloper && (
-                <div
-                  className="h-[240px] border-t flex flex-col"
-                  style={{ borderColor: `${glowColor}20` }}
-                >
-                  <TerminalWidget />
-                </div>
-              )}
             </div>
           </motion.div>
         </motion.div>

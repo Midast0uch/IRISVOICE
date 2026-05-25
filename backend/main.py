@@ -560,6 +560,29 @@ async def lifespan(app: FastAPI):
 
 
 # ============================================================================
+# Capability gating helper
+# ============================================================================
+
+from fastapi import Request, HTTPException, Depends
+from backend.capabilities import CapabilitySet
+
+
+def require_developer_mode(request: Request) -> None:
+    """FastAPI dependency that raises 403 when mode != developer."""
+    try:
+        CapabilitySet.require(CapabilitySet.REPO_ACCESS)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is only available in developer mode",
+        )
+
+
+# Re-usable Depends() wrapper for decorator usage
+_require_dev = Depends(require_developer_mode)
+
+
+# ============================================================================
 # FastAPI App Initialization
 # ============================================================================
 
@@ -755,7 +778,7 @@ async def get_launcher_mode():
     return {"mode": mode}
 
 
-@app.get("/api/worktree/status")
+@app.get("/api/worktree/status", dependencies=[_require_dev])
 async def get_worktree_status():
     """Returns developer worktree isolation status."""
     from backend import dev_worktree
@@ -933,19 +956,19 @@ async def api_workspace_get(conversation_id: str):
 # Git + Diff API (Domain 13.1 — iris-launcher developer mode)
 # ============================================================================
 
-@app.get("/api/git/status")
+@app.get("/api/git/status", dependencies=[_require_dev])
 async def api_git_status():
     """Returns git status for the active project."""
     return get_git_status()
 
 
-@app.get("/api/git/log")
+@app.get("/api/git/log", dependencies=[_require_dev])
 async def api_git_log(limit: int = 20):
     """Returns recent commits."""
     return get_git_log(limit=limit)
 
 
-@app.post("/api/git/commit")
+@app.post("/api/git/commit", dependencies=[_require_dev])
 async def api_git_commit(request: dict):
     """Stage all changes and commit."""
     message = request.get("message", "").strip()
@@ -954,7 +977,7 @@ async def api_git_commit(request: dict):
     return commit_all(message)
 
 
-@app.post("/api/git/rollback")
+@app.post("/api/git/rollback", dependencies=[_require_dev])
 async def api_git_rollback(request: dict):
     """Hard reset to target commit."""
     target = request.get("target", "").strip()
@@ -968,13 +991,13 @@ async def api_git_rollback(request: dict):
     return rollback(target)
 
 
-@app.get("/api/diff/pending")
+@app.get("/api/diff/pending", dependencies=[_require_dev])
 async def api_diff_pending():
     """Returns pending agent writes awaiting diff review."""
     return get_pending_writes()
 
 
-@app.post("/api/diff/approve")
+@app.post("/api/diff/approve", dependencies=[_require_dev])
 async def api_diff_approve(request: dict):
     """Approve a pending write — apply to disk and commit."""
     write_id = request.get("id", "").strip()
@@ -988,7 +1011,7 @@ async def api_diff_approve(request: dict):
     return approve_write(write_id)
 
 
-@app.post("/api/diff/reject")
+@app.post("/api/diff/reject", dependencies=[_require_dev])
 async def api_diff_reject(request: dict):
     """Reject a pending write — discard without applying."""
     write_id = request.get("id", "").strip()
@@ -1006,25 +1029,25 @@ async def api_diff_reject(request: dict):
 # Git Worktree API (Domain 13.2)
 # ============================================================================
 
-@app.get("/api/git/worktree/status")
+@app.get("/api/git/worktree/status", dependencies=[_require_dev])
 async def api_worktree_status():
     """Returns agent sandbox worktree status."""
     return get_worktree_status()
 
 
-@app.post("/api/git/worktree/ensure")
+@app.post("/api/git/worktree/ensure", dependencies=[_require_dev])
 async def api_worktree_ensure():
     """Create the agent sandbox worktree."""
     return ensure_worktree()
 
 
-@app.post("/api/git/worktree/remove")
+@app.post("/api/git/worktree/remove", dependencies=[_require_dev])
 async def api_worktree_remove():
     """Remove the agent sandbox worktree."""
     return remove_worktree()
 
 
-@app.post("/api/git/worktree/commit")
+@app.post("/api/git/worktree/commit", dependencies=[_require_dev])
 async def api_worktree_commit(request: dict):
     """Commit all changes in the worktree."""
     message = request.get("message", "").strip()
@@ -1033,14 +1056,14 @@ async def api_worktree_commit(request: dict):
     return commit_worktree(message)
 
 
-@app.post("/api/git/worktree/merge")
+@app.post("/api/git/worktree/merge", dependencies=[_require_dev])
 async def api_worktree_merge(request: dict):
     """Merge sandbox into main branch."""
     strategy = request.get("strategy", "squash")
     return merge_worktree(strategy=strategy)
 
 
-@app.post("/api/git/worktree/reset")
+@app.post("/api/git/worktree/reset", dependencies=[_require_dev])
 async def api_worktree_reset():
     """Hard reset worktree to main HEAD."""
     return reset_worktree()
@@ -1050,7 +1073,7 @@ async def api_worktree_reset():
 # GitHub OAuth + API (Real Integration)
 # ============================================================================
 
-@app.get("/api/github/status")
+@app.get("/api/github/status", dependencies=[_require_dev])
 async def api_github_status():
     """Return GitHub connection status."""
     connected = is_connected()
@@ -1061,7 +1084,7 @@ async def api_github_status():
     }
 
 
-@app.post("/api/github/connect")
+@app.post("/api/github/connect", dependencies=[_require_dev])
 async def api_github_connect(request: dict):
     """Connect using a Personal Access Token."""
     token = request.get("token", "").strip()
@@ -1078,19 +1101,19 @@ async def api_github_connect(request: dict):
     return {"status": "error", "error": result.get("error", "unknown")}
 
 
-@app.post("/api/github/disconnect")
+@app.post("/api/github/disconnect", dependencies=[_require_dev])
 async def api_github_disconnect():
     """Disconnect GitHub and revoke token."""
     return github_disconnect()
 
 
-@app.get("/api/github/repos")
+@app.get("/api/github/repos", dependencies=[_require_dev])
 async def api_github_repos():
     """Return list of user repositories."""
     return {"repos": get_repos()}
 
 
-@app.post("/api/github/ssh-keys/generate")
+@app.post("/api/github/ssh-keys/generate", dependencies=[_require_dev])
 async def api_github_ssh_generate(request: dict):
     """Generate a new SSH key pair."""
     name = request.get("name", "").strip()
@@ -1105,13 +1128,13 @@ async def api_github_ssh_generate(request: dict):
     return generate_ssh_key(name, key_type)
 
 
-@app.get("/api/github/ssh-keys")
+@app.get("/api/github/ssh-keys", dependencies=[_require_dev])
 async def api_github_ssh_list():
     """List generated SSH keys."""
     return {"keys": list_ssh_keys()}
 
 
-@app.post("/api/github/ssh-keys/delete")
+@app.post("/api/github/ssh-keys/delete", dependencies=[_require_dev])
 async def api_github_ssh_delete(request: dict):
     """Delete an SSH key."""
     name = request.get("name", "").strip()

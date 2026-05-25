@@ -24,7 +24,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 8  — Distribution    (PARTIAL — [8.1] MSI untested on clean machine)
     Domain 11 — PiN verification (ALL 5 items not started — run alongside G1.6-G1.8)
     Domain 12 — MCP storage      (ALL 5 items not started — after D11 passes)
-    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1] DONE, [13.2] NOT STARTED, [13.3] PARTIAL, [13.4] DONE, [13.5] PARTIAL) ← GATE 2
+    Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1] DONE, [13.2] NOT STARTED, [13.3] DONE, [13.4] DONE, [13.5] PARTIAL) ← GATE 2
     Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C/E done; [14.2][14.16][14.19][14.21] remain)
     Domain 15 — Linux Build + Cross-Platform Launcher (PARTIAL — tauri.conf.json targets set; needs Linux build machine)
     Domain 17 — Self-Coding Agent (NEW — ALL items not started) ← NEW NORTH STAR
@@ -138,7 +138,7 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
            /api/mode and /api/projects already in IRISVOICE backend.
     [G2.2] Backend git + diff endpoints (Domain 13.1) — DONE (git_ops.py, github_ops.py, network_ops.py, conversation_store.py created; backend boots cleanly)
     [G2.3] Git worktree isolation — agent writes to isolated branch (Domain 13.2)
-    [G2.4] Developer mode capabilities gated in IRISVOICE (Domain 13.3)
+    [G2.4] Developer mode capabilities gated in IRISVOICE (Domain 13.3) — DONE (capabilities.py, CapabilitySet gating on WS handlers, REST endpoints, tool_bridge, agent_kernel; backend boots cleanly)
     [G2.5] Terminal tab visible in developer mode only (Domain 13.4) — DONE (all 4 phases of terminal-chat-integration implemented, build passes)
     [G2.6] Session-end diff review in Launcher DiffReviewPage (Domain 13.5)
 
@@ -850,14 +850,23 @@ WHAT IS MISSING (build these):
     Landmark: dev_worktree_isolation
 
   [13.3] Developer mode capabilities in IRISVOICE
-    Status: PARTIAL — /api/mode exists but capabilities not gated on mode
-    What to build:
-      a) iris_gateway.py: read current mode → set CapabilitySet
-           personal  = {tts, voice, chat}
-           developer = {tts, voice, chat, terminal, repo_access}
-      b) Terminal tab in IRISVOICE tab-bar: visible only when mode=developer
-      c) Agent context injection: mode=developer → prepend IRIS_SOURCE_DIR block
-    Test: Set mode=personal → no terminal tab. Set mode=developer → terminal tab appears.
+    Status: DONE (2026-05-24)
+    What was built:
+      a) backend/capabilities.py — centralized CapabilitySet with:
+         personal = {tts, voice, chat}; developer = {tts, voice, chat, terminal, repo_access}
+      b) iris_gateway.py — _handle_dev_cli, _handle_dev_abort, _handle_terminal_input
+         now use CapabilitySet.require(CapabilitySet.TERMINAL) instead of ad-hoc config reads
+      c) main.py — all git/diff/worktree/github REST endpoints gated with
+         dependencies=[Depends(require_developer_mode)] → 403 in personal mode
+      d) tool_bridge.py — get_available_tools() filters out developer-only tools
+         (write_file, git_*, run_command, github_*, etc.) in personal mode.
+         execute_tool() adds runtime rejection for blocked tools.
+      e) agent_kernel.py — _build_system_prompt() keeps existing IRIS_SOURCE_DIR
+         block AND prepends spec-mandated 3-line block in developer mode.
+      f) dev_worktree.py — added get_active() / get_path() API so agent_kernel
+         can resolve the active worktree path.
+    Test: Set mode=personal → no terminal tab, repo APIs return 403, agent sees
+         only basic tools. Set mode=developer → all capabilities unlocked.
     Landmark: mode_capabilities_gated
 
   [13.4] Terminal tab / Developer Workspace UI — developer mode only

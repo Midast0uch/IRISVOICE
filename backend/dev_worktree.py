@@ -137,6 +137,33 @@ def status() -> dict:
     }
 
 
+class ActiveWorktree:
+    """Wrapper returned by get_active() so agent_kernel can call .get_path()."""
+
+    def __init__(self, path: str | None, branch: str | None = None):
+        self._path = path
+        self._branch = branch
+
+    def get_path(self) -> str | None:
+        return self._path
+
+    def get_branch(self) -> str | None:
+        return self._branch
+
+
+def get_active() -> ActiveWorktree | None:
+    """Return an ActiveWorktree wrapper if a worktree exists, else None."""
+    wt = get_worktree_path()
+    if wt:
+        return ActiveWorktree(wt, _branch_name())
+    return None
+
+
+def get_path() -> str | None:
+    """Return the worktree path if it exists, else None."""
+    return get_worktree_path()
+
+
 def get_worktree_path() -> str | None:
     """Return the worktree path if it exists, else None."""
     root = _find_git_root(_project_root())

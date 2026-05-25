@@ -858,17 +858,35 @@ class AgentKernel:
                 "Never commit to main or IRISVOICEv.3.\n"
             )
 
+            # [13.3] Spec-mandated developer context block (keep both)
+            spec_block = (
+                f"You are working in an isolated copy of the IRIS source at {worktree_path}.\n"
+                "Changes here do NOT affect the live codebase until approved.\n"
+                "Commit your changes; they will be reviewed in the Launcher diff view.\n"
+                if worktree_path
+                else ""
+            )
+
             if dev_ctx:
                 base = (
                     base
                     + "\n\n"
+                    + spec_block
+                    + "\n"
                     + "--- DEVELOPER MODE ACTIVE ---\n"
                     + worktree_block
                     + "\n"
                     + dev_ctx
                 )
             else:
-                base = base + "\n\n--- DEVELOPER MODE ACTIVE ---\n" + worktree_block
+                base = (
+                    base
+                    + "\n\n"
+                    + spec_block
+                    + "\n"
+                    + "--- DEVELOPER MODE ACTIVE ---\n"
+                    + worktree_block
+                )
         return base
 
     # ------------------------------------------------------------------

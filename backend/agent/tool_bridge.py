@@ -350,6 +350,12 @@ class AgentToolBridge:
             },
         ])
 
+        # [13.3] Filter developer-only tools in personal mode
+        from backend.capabilities import CapabilitySet
+        blocked = CapabilitySet.allowed_tools()
+        if blocked:
+            tools = [t for t in tools if t.get("name") not in blocked]
+
         return tools
 
     # Tool Execution Methods
@@ -680,6 +686,17 @@ class AgentToolBridge:
 
         Requirements: 8.3, 8.4, 8.5, 8.6
         """
+        # [13.3] Runtime capability gate
+        from backend.capabilities import CapabilitySet
+        if not CapabilitySet.is_tool_allowed(tool_name):
+            logger.warning(
+                "[13.3] Tool '%s' blocked in '%s' mode", tool_name, CapabilitySet.get_mode()
+            )
+            return {
+                "error": f"Tool '{tool_name}' is not available in {CapabilitySet.get_mode()} mode",
+                "success": False,
+            }
+
         # Map tool names to their execution methods
         vision_tools = ["vision_detect_element", "vision_analyze_screen",
                         "vision_validate_action", "vision_get_context"]
