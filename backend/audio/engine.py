@@ -255,13 +255,17 @@ class AudioEngine:
         self._tts_active = active
 
     def interrupt_speech(self) -> None:
-        """Signal any in-progress TTS playback to stop at the next sentence boundary.
+        """Signal any in-progress TTS playback to stop immediately.
 
         Thread-safe — can be called from the wake-word callback thread or the
         WebSocket handler.  The flag is consumed (reset to False) by
         is_speech_interrupted(), so callers don't need to clear it manually.
+
+        Also triggers pipeline.interrupt() for sub-5ms native audio cancellation.
         """
         self._speech_interrupted = True
+        if self.pipeline:
+            self.pipeline.interrupt()
 
     def is_speech_interrupted(self) -> bool:
         """Return True (and reset the flag) if interrupt_speech() was called since

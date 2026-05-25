@@ -1178,6 +1178,13 @@ class IRISGateway:
                 "payload": {"state": "processing_conversation"}
             })
 
+            # ── Streaming TTS: sentence queue shared between LLM and playback ─
+            import re as _re
+            sentence_queue = queue.Queue()
+            sentence_buf = []
+            _sentence_buf_words = 0
+            _SENTENCE_MAX_WORDS = 50   # flush if sentence grows too long
+
             def _execute_agent():
                 def chunk_callback(chunk: str):
                     _loop = self._main_loop
@@ -1190,14 +1197,49 @@ class IRISGateway:
                             _loop
                         )
 
+                    # Stream sentences into TTS as soon as boundaries appear
+                    nonlocal _sentence_buf_words
+                    sentence_buf.append(chunk)
+                    _sentence_buf_words += chunk.count(" ") + (1 if chunk.strip() else 0)
+                    text = "".join(sentence_buf)
+                    if m := _re.search(r"([.!?])\s+", text):
+                        complete = text[:m.end()]
+                        sentence_queue.put(complete)
+                        remainder = text[m.end():]
+                        sentence_buf[:] = [remainder]
+                        _sentence_buf_words = remainder.count(" ") + (1 if remainder.strip() else 0)
+                    elif _sentence_buf_words >= _SENTENCE_MAX_WORDS:
+                        # Flush oversized sentence to avoid infinite buffering
+                        sentence_queue.put(text)
+                        sentence_buf.clear()
+                        _sentence_buf_words = 0
+
                 resp = agent_kernel.process_text_message(
                     enriched,
                     session_id=session_id,
                     chunk_callback=chunk_callback,
                     from_voice=True,
                 )
+                # Final flush — any remaining text becomes a sentence
+                if sentence_buf:
+                    sentence_queue.put("".join(sentence_buf))
+                    sentence_buf.clear()
+                sentence_queue.put(None)  # sentinel: TTS knows LLM is done
                 spoken = agent_kernel.prepare_spoken_text(resp, enriched)
                 return resp, spoken
+
+            # Start TTS immediately — blocks on queue until first sentence arrives
+            await self._ws_manager.broadcast_to_session(session_id, {
+                "type": "listening_state",
+                "payload": {"state": "speaking"}
+            })
+            _tts_started = True
+            threading.Thread(
+                target=self._speak_response,
+                args=(sentence_queue, session_id),
+                daemon=True,
+                name="voice-tts"
+            ).start()
 
             # Run agent synchronously in thread pool
             response, spoken = await loop.run_in_executor(None, _execute_agent)
@@ -1212,26 +1254,6 @@ class IRISGateway:
                     **({"thinking": thinking} if thinking else {}),
                 }
             })
-
-            # ── TTS: speak the response ─────────────────────────────────────
-            if spoken.strip():
-                await self._ws_manager.broadcast_to_session(session_id, {
-                    "type": "listening_state",
-                    "payload": {"state": "speaking"}
-                })
-                _tts_started = True
-                threading.Thread(
-                    target=self._speak_response,
-                    args=(spoken, session_id),
-                    daemon=True,
-                    name="voice-tts"
-                ).start()
-                # _speak_response sends idle when TTS finishes
-            else:
-                await self._ws_manager.broadcast_to_session(session_id, {
-                    "type": "listening_state",
-                    "payload": {"state": "idle"}
-                })
 
         except Exception as e:
             self._logger.error(
@@ -1355,14 +1377,23 @@ class IRISGateway:
         FIRST_CHUNK_THRESHOLD = 1
         NORMAL_CHUNK_THRESHOLD = 8
 
+        # ── Native C++ audio fast-path (no asyncio.Queue, no polling) ──
+        _native = (engine.pipeline._native_available and
+                   engine.pipeline._native_player is not None)
+        if _native:
+            try:
+                if not engine.pipeline._native_player.open(
+                        engine.pipeline.output_device or -1, _TTS_SAMPLE_RATE):
+                    _native = False
+            except Exception as _native_err:
+                self._logger.warning(
+                    f"[Voice] Native player open failed ({_native_err}), falling back")
+                _native = False
+
         # 2. Synthesiser thread (producer)
         def _producer():
             try:
                 if isinstance(input_source, str):
-                    # Single-call path: pass the FULL text to F5-TTS in one go.
-                    # This preserves natural prosody across the entire response —
-                    # sentence-by-sentence synthesis creates prosody breaks and
-                    # robotic-sounding stitching at boundaries.
                     text = self._clean_for_speech(input_source)
                     if not text.strip():
                         return
@@ -1371,38 +1402,54 @@ class IRISGateway:
                         if interrupted.is_set():
                             break
                         if audio_chunk is not None and len(audio_chunk) > 0:
-                            asyncio.run_coroutine_threadsafe(
-                                audio_queue.put(audio_chunk), loop)
+                            if _native:
+                                try:
+                                    engine.pipeline._native_player.push_chunk(audio_chunk)
+                                except Exception as _push_err:
+                                    self._logger.warning(f"[Voice] Native push failed ({_push_err})")
+                            else:
+                                asyncio.run_coroutine_threadsafe(
+                                    audio_queue.put(audio_chunk), loop)
 
                 elif isinstance(input_source, queue.Queue):
-                    # Streaming path: read from sentence queue
                     _pending = []
                     _pending_words = 0
+                    _target = FIRST_CHUNK_THRESHOLD
+                    is_first_chunk = True
                     while True:
                         item = input_source.get()
                         if item is None:
-                            # Final flush
                             if _pending and not interrupted.is_set():
                                 chunk = " ".join(_pending)
                                 for audio_chunk in tts.synthesize_stream(chunk):
                                     if audio_chunk is not None and len(audio_chunk) > 0:
-                                        asyncio.run_coroutine_threadsafe(
-                                            audio_queue.put(audio_chunk), loop)
+                                        if _native:
+                                            try:
+                                                engine.pipeline._native_player.push_chunk(audio_chunk)
+                                            except Exception as _push_err:
+                                                self._logger.warning(f"[Voice] Native push failed ({_push_err})")
+                                        else:
+                                            asyncio.run_coroutine_threadsafe(
+                                                audio_queue.put(audio_chunk), loop)
                             break
 
                         _pending.append(item)
                         _pending_words += len(item.split())
 
-                        # Trigger synthesis if we hit the word count OR if it's the
-                        # very first sentence (regardless of length) for instant response.
                         if _pending_words >= _target or (is_first_chunk and len(_pending) >= 1):
                             if interrupted.is_set():
                                 break
                             chunk = " ".join(_pending)
                             for audio_chunk in tts.synthesize_stream(chunk):
                                 if audio_chunk is not None and len(audio_chunk) > 0:
-                                    asyncio.run_coroutine_threadsafe(
-                                        audio_queue.put(audio_chunk), loop)
+                                    if _native:
+                                        try:
+                                            engine.pipeline._native_player.push_chunk(audio_chunk)
+                                        except Exception as _push_err:
+                                            self._logger.warning(f"[Voice] Native push failed ({_push_err})")
+                                    else:
+                                        asyncio.run_coroutine_threadsafe(
+                                            audio_queue.put(audio_chunk), loop)
                             _pending = []
                             _pending_words = 0
                             if is_first_chunk:
@@ -1411,69 +1458,76 @@ class IRISGateway:
             except Exception as exc:
                 self._logger.error(f"[Voice] TTS Producer error: {exc}")
             finally:
-                asyncio.run_coroutine_threadsafe(
-                    audio_queue.put(None), loop)
+                if not _native:
+                    asyncio.run_coroutine_threadsafe(
+                        audio_queue.put(None), loop)
 
         # 3. Suppress Porcupine while IRIS is speaking
         engine.set_tts_active(True)
-        engine.is_speech_interrupted()
 
         try:
             producer_thread = threading.Thread(
                 target=_producer, daemon=True, name="tts-producer")
             producer_thread.start()
 
-            # 4. Consumer: play each chunk as soon as it arrives.
-            # First-chunk timeout is generous (90 s) to cover F5-TTS model
-            # load time on first call after startup.  Subsequent chunks use
-            # a tighter timeout (15 s) — once the model is warm each chunk
-            # arrives within ~1-2 s on CPU.
-            import numpy as _np
-            _first_chunk = True
-            while True:
-                _timeout = 90 if _first_chunk else 15
-                _start = time.monotonic()
-                chunk = None
-                while time.monotonic() - _start < _timeout:
-                    try:
-                        chunk = audio_queue.get_nowait()
-                        break
-                    except asyncio.QueueEmpty:
-                        time.sleep(0.01)
-                if chunk is None:
-                    self._logger.error(
-                        f"[Voice] TTS audio queue timed out after {_timeout}s — forcing idle"
-                    )
-                    interrupted.set()
-                    break
-                _first_chunk = False
-                if chunk is None:
-                    break
-
-                if engine.is_speech_interrupted():
-                    interrupted.set()
-                    while not audio_queue.empty():
+            if _native:
+                # Native path: producer pushes directly; just wait for it to finish
+                producer_thread.join()
+                try:
+                    engine.pipeline._native_player.wait_done()
+                except Exception as _wait_err:
+                    self._logger.warning(f"[Voice] Native wait_done failed ({_wait_err})")
+            else:
+                # Fallback path: asyncio.Queue + polling consumer loop
+                import numpy as _np
+                _first_chunk = True
+                while True:
+                    _timeout = 90 if _first_chunk else 15
+                    _start = time.monotonic()
+                    chunk = None
+                    while time.monotonic() - _start < _timeout:
                         try:
-                            audio_queue.get_nowait()
-                        except asyncio.QueueEmpty:
+                            chunk = audio_queue.get_nowait()
                             break
-                    break
+                        except asyncio.QueueEmpty:
+                            time.sleep(0.01)
+                    if chunk is None:
+                        self._logger.error(
+                            f"[Voice] TTS audio queue timed out after {_timeout}s — forcing idle"
+                        )
+                        interrupted.set()
+                        break
+                    _first_chunk = False
+                    if chunk is None:
+                        break
 
-                # Play each chunk immediately as it arrives.
-                # Do NOT greedily concatenate multiple chunks — that creates large
-                # blocking write() calls which starve the audio card buffer and cause
-                # gaps between bursts. Small individual writes let PortAudio maintain
-                # a continuous stream in its internal ring buffer.
-                # Pass the TTS native sample rate so sd.play() does one conversion
-                # step (24 kHz → device rate) instead of the previous two-step path
-                # (24 kHz → 16 kHz in _resample → device rate in sounddevice).
-                engine.pipeline.play_audio(chunk, sample_rate=_TTS_SAMPLE_RATE)
+                    if engine.is_speech_interrupted():
+                        interrupted.set()
+                        while not audio_queue.empty():
+                            try:
+                                audio_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                        break
 
-            producer_thread.join(timeout=5)
+                    engine.pipeline.play_audio(chunk, sample_rate=_TTS_SAMPLE_RATE)
+
+                producer_thread.join(timeout=5)
         except Exception as e:
             self._logger.error(f"[Voice] TTS Consumer error: {e}")
         finally:
+            if _native:
+                try:
+                    engine.pipeline._native_player.close()
+                except Exception:
+                    pass
             engine.set_tts_active(False)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
             if session_id and self._main_loop and self._main_loop.is_running():
                 import asyncio as _asyncio
                 # Conversation mode: auto-relisten unless interrupted or cancelled

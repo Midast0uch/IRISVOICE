@@ -261,7 +261,9 @@ class TTSManager:
         """Return available voice information."""
         use_f5 = self.config.get("tts_voice") == "Cloned Voice"
         if use_f5:
-            engine_name = "F5-TTS F5TTS_v1_Base (zero-shot voice cloning, CPU)"
+            import torch
+            _mode = "GPU" if torch.cuda.is_available() else "CPU"
+            engine_name = f"F5-TTS F5TTS_v1_Base (zero-shot voice cloning, {_mode})"
             engine_ready = self._f5tts is not None
             # "model available" = f5-tts pip package installed
             try:
@@ -413,15 +415,23 @@ class TTSManager:
         """Load F5-TTS model.  Must be called under self._lock.
 
         Downloads F5TTS_v1_Base (~800 MB) from HuggingFace on first run.
-        CPU-only — does not consume any VRAM.
+        Uses CUDA if available, otherwise CPU.
         """
         if self._f5tts is not None:
             return True
         try:
+            import torch
             from f5_tts.api import F5TTS
-            logger.info(f"[TTSManager] Loading F5-TTS ({F5TTS_MODEL})...")
-            self._f5tts = F5TTS(model=F5TTS_MODEL)
-            logger.info("[TTSManager] F5-TTS loaded (CPU mode)")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"[TTSManager] Loading F5-TTS ({F5TTS_MODEL}) on {device.upper()}...")
+            try:
+                self._f5tts = F5TTS(model=F5TTS_MODEL, device=device)
+            except TypeError:
+                # F5TTS constructor doesn't accept device — fallback to set_default_device
+                if device == "cuda":
+                    torch.set_default_device("cuda")
+                self._f5tts = F5TTS(model=F5TTS_MODEL)
+            logger.info(f"[TTSManager] F5-TTS loaded ({device.upper()} mode)")
             return True
         except ImportError:
             logger.error(
@@ -456,16 +466,21 @@ class TTSManager:
         speed = float(self.config.get("speaking_rate", 1.0))
         chunks = _split_into_chunks(text)
 
+        import torch
+        _cuda = torch.cuda.is_available()
         for i, chunk_text in enumerate(chunks):
             if not chunk_text.strip():
                 continue
             try:
-                wav, sr, _ = f5tts.infer(
-                    ref_file=ref_file,
-                    ref_text="",        # auto-transcribed from TOMV2.wav
-                    gen_text=chunk_text,
-                    speed=speed,
-                )
+                with torch.inference_mode(), torch.autocast(
+                    "cuda", dtype=torch.float16, enabled=_cuda
+                ):
+                    wav, sr, _ = f5tts.infer(
+                        ref_file=ref_file,
+                        ref_text="",        # auto-transcribed from TOMV2.wav
+                        gen_text=chunk_text,
+                        speed=speed,
+                    )
                 # wav may be a torch.Tensor or numpy array
                 try:
                     audio = wav.cpu().numpy().flatten().astype(np.float32)

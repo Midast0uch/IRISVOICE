@@ -26,7 +26,7 @@ class AudioPipeline:
     - Output stream to speakers
     - Audio buffering for inference
     """
-    
+
     def __init__(
         self,
         input_device: Optional[int] = None,
@@ -40,24 +40,36 @@ class AudioPipeline:
         self.sample_rate = sample_rate
         self.frame_length = frame_length
         self.channels = channels
-        
+
         # Streams
         self._input_stream = None
         self._output_stream = None
-        
+
         # Callback
         self._on_audio_frame: Optional[Callable[[np.ndarray], None]] = None
-        
+
         # State
         self._is_running = False
-        
+
         # Audio buffer for speech collection
         self._audio_buffer: List[np.ndarray] = []
         self._buffer_lock = threading.Lock()
-        
+
         # Frame listeners for unified audio access
         self._frame_listeners: List[Callable[[np.ndarray], None]] = []
         self._is_buffering = False
+
+        # Native low-latency player (optional C++ extension)
+        self._native_player = None
+        self._native_available = False
+        try:
+            from backend.native import IrisAudioPlayer, NATIVE_AVAILABLE
+            if NATIVE_AVAILABLE:
+                self._native_player = IrisAudioPlayer()
+                self._native_available = True
+                logger.info("[AudioPipeline] Native C++ player available")
+        except Exception:
+            pass
         
     def start_buffering(self):
         """Starts collecting audio frames into the buffer."""
@@ -164,12 +176,11 @@ class AudioPipeline:
                     logger.error(f"[AudioPipeline] Frame listener error: {exc}")
     
     def play_audio(self, audio_data: np.ndarray, sample_rate: int = None):
-        """Play audio through the system default output device using _sd().play().
+        """Play audio through the system default output device.
 
-        Uses _sd().play() instead of a persistent OutputStream.write() because:
-        - _sd().play() handles mono→stereo upmix, device sample-rate conversion in one step
-        - No persistent stream state to manage or get out of sync
-        - Blocking=True keeps the threading model simple and gap-free
+        Prefers the native C++ ring-buffer player when available for sub-5ms
+        chunk-to-speaker latency. Falls back to _sd().play() if the native
+        extension is not compiled or fails to open.
 
         Args:
             audio_data:  float32 mono PCM array
@@ -189,6 +200,20 @@ class AudioPipeline:
                 audio_float = audio_float * (0.85 / peak)
             audio_float = np.clip(audio_float, -1.0, 1.0)
 
+            # Native path: low-latency ring-buffer stream
+            if self._native_available and self._native_player is not None:
+                try:
+                    if not self._native_player.open(self.output_device or -1, sr):
+                        raise RuntimeError("Native player failed to open")
+                    self._native_player.push_chunk(audio_float)
+                    self._native_player.wait_done()
+                    self._native_player.close()
+                    logger.info(f"[AudioPipeline] play_audio: native complete ({duration_ms}ms)")
+                    return
+                except Exception as _native_err:
+                    logger.warning(f"[AudioPipeline] Native player failed ({_native_err}), falling back to sounddevice")
+
+            # Fallback path: sounddevice blocking playback
             _sd().play(audio_float, samplerate=sr, device=self.output_device, blocking=True)
             logger.info(f"[AudioPipeline] play_audio: complete ({duration_ms}ms)")
         except Exception as e:
@@ -206,6 +231,14 @@ class AudioPipeline:
         except ValueError:
             pass
 
+    def interrupt(self):
+        """Immediately stop any active TTS playback (barge-in support)."""
+        if self._native_available and self._native_player is not None:
+            try:
+                self._native_player.interrupt()
+            except Exception as exc:
+                logger.warning(f"[AudioPipeline] Native interrupt error: {exc}")
+
     def cleanup(self):
         """Release audio resources"""
         self._frame_listeners.clear()
@@ -213,7 +246,12 @@ class AudioPipeline:
             self._input_stream.stop()
             self._input_stream.close()
             self._input_stream = None
-        # _output_stream is always None — playback uses _sd().play() per chunk
+        # Close native player if open
+        if self._native_available and self._native_player is not None:
+            try:
+                self._native_player.close()
+            except Exception as exc:
+                logger.warning(f"[AudioPipeline] Native cleanup error: {exc}")
     
     @staticmethod
     def list_devices() -> List[dict]:

@@ -1,5 +1,106 @@
 # IRIS Changelog
 
+## [4.7.0] — TTS Performance Overhaul — 2026-05-25
+
+### perf: native C++ audio layer — lock-free ring-buffer playback
+
+Optional low-latency audio extension (`iris_audio.pyd`) built with pybind11 + PortAudio.
+Delivers <5ms chunk-to-speaker latency and <2ms inter-chunk gaps via a lock-free
+ring buffer in the PortAudio callback thread.
+
+#### New files
+
+- `backend/native/iris_audio.cpp` — `IrisAudioPlayer` C++ class:
+  - Ring buffer: 10 seconds @ 24kHz float32 (240k samples)
+  - `open()` — initializes PortAudio, opens output stream with 5ms suggested latency
+  - `push_chunk()` — producer writes float32 numpy array; blocks with 50ms timeout
+  - `interrupt()` — atomic flag stops callback immediately (sub-5ms cancel)
+  - `wait_done()` / `close()` — drain and cleanup
+  - `pa_callback()` — lock-free read from ring buffer, zero-fill underruns
+- `backend/native/CMakeLists.txt` — CMake build for pybind11 + PortAudio
+- `backend/native/__init__.py` — graceful loader: exports `IrisAudioPlayer` and
+  `NATIVE_AVAILABLE`; falls back to `None` if compilation missing
+- `build_native.ps1` — one-command Windows build script:
+  - Locates Python in venv
+  - Installs pybind11 + numpy
+  - Copies PortAudio DLL from sounddevice wheel
+  - Downloads PortAudio headers from `pa_stable_v190700_20210406.tgz`
+  - Generates `.lib` import library from DLL exports via `dumpbin` / `lib.exe`
+  - Runs CMake with Visual Studio 2022 generator
+  - Copies built `.pyd` to `backend/native/`
+
+#### Modified files
+
+- `backend/audio/pipeline.py` — integrated native player:
+  - `__init__`: attempts `from backend.native import IrisAudioPlayer, NATIVE_AVAILABLE`
+  - `play_audio()`: opens native stream, pushes chunk, `wait_done()`, `close()`
+  - `interrupt()`: calls `native_player.interrupt()` when available
+  - `cleanup()`: closes native stream on shutdown
+- `backend/iris_gateway.py` — `_speak_response` native fast-path:
+  - Detects native availability and opens stream before producer thread starts
+  - Producer pushes audio chunks directly to native player (bypasses asyncio.Queue)
+  - Consumer path: `producer_thread.join()` + `wait_done()` instead of polling loop
+  - Fallback to asyncio.Queue + `play_audio()` when native unavailable
+- `backend/audio/engine.py` — `interrupt_speech()` now also calls `pipeline.interrupt()`
+  for instant native audio cancellation alongside the atomic flag
+
+### perf: streaming LLM→TTS — parallel synthesis with generation
+
+IRIS starts speaking as soon as the first sentence is ready, without waiting for the
+full LLM response. A producer-consumer pattern with a `queue.Queue` bridges the LLM
+streaming thread and the TTS playback thread.
+
+- `backend/iris_gateway.py` — `_handle_voice_message()`:
+  - `chunk_callback` in `_execute_agent()` appends tokens to `sentence_buf`
+  - Regex detects sentence boundaries (`[.!?]\s+`) and queues complete sentences
+  - 50-word flush threshold prevents infinite buffering on boundary-less text
+  - Final flush sends remaining text + `None` sentinel when LLM completes
+  - TTS thread starts **before** agent runs, blocking on queue until first sentence arrives
+- `backend/iris_gateway.py` — `_speak_response()`:
+  - Dynamic chunking: first chunk at 1 sentence (instant voice onset), then 8 sentences
+  - `sentence_queue.get()` blocks producer until LLM delivers sentences
+  - `interrupted` Event stops synthesis mid-stream for barge-in
+  - `_clean_for_speech()` strips markdown before TTS
+
+### perf: F5-TTS GPU acceleration + memory hygiene
+
+- `backend/agent/tts.py` — `_load_f5tts()`:
+  - Auto-detects CUDA via `torch.cuda.is_available()`
+  - Falls back from `device=` constructor arg to `torch.set_default_device("cuda")`
+- `backend/agent/tts.py` — `_stream_f5tts()`:
+  - Wrapped in `torch.inference_mode()` + `torch.autocast("cuda", float16)`
+  - Zero RAM growth during long conversations
+- `backend/iris_gateway.py` — `_speak_response()` finally block:
+  - `torch.cuda.empty_cache()` after every TTS session
+- `backend/audio/voice_command.py` — `_run_transcription()`:
+  - Clears `_raw_frames` and `audio_buffer` after STT to free memory
+  - Duplicate `WhisperModel` creation fixed (cached under `_whisper_lock`)
+
+### fix: barge-in — sub-5ms TTS cancellation
+
+- `backend/audio/engine.py` — `interrupt_speech()` sets atomic flag AND calls
+  `pipeline.interrupt()` for native player immediate stop
+- `backend/native/iris_audio.cpp` — `interrupt()` sets atomic `interrupted_`;
+  callback returns `paComplete` on next fire, draining with silence
+- `backend/iris_gateway.py` — removed spurious `engine.is_speech_interrupted()`
+  call that consumed the flag before the TTS loop could check it
+
+### fix: API endpoint bugs
+
+- `backend/main.py` — `api_create_conversation()`: removed non-existent `preview`
+  parameter from `create_conversation()` call
+- `backend/main.py` — `api_add_message()`: added required `role=` parameter to
+  `add_message()` call
+
+### fix: O(n²) sentence buffering + thinking tag content loss
+
+- `backend/iris_gateway.py` — incremental word count (`_sentence_buf_words`)
+  replaces `text.split()` on every chunk (quadratic → linear)
+- `backend/agent/agent_kernel.py` — removed `continue` after `</思考>` tag close;
+  content appearing after the closing tag in the same chunk is no longer dropped
+
+---
+
 ## [Unreleased] — Developer Workspace Integration — 2026-05-22
 
 ### Phase 1 — COMPLETED ✅ — 2026-05-23

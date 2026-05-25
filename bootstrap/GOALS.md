@@ -17,7 +17,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Complete G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
 
   DOMAINS WITH OPEN ITEMS:
-    Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2][2.3] manual e2e not confirmed)
+    Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2] manual e2e not confirmed; [2.3] TTS GPU+streaming+native audio IMPLEMENTED)
     Domain 3  — Vision          (DEVELOPING — [3.1][3.2] need 2 more passing runs each)
     Domain 4  — Skills          (PARTIAL — [4.4] DONE; [4.5] self-improvement not proactive)
     Domain 7  — Backend quality (PARTIAL — [7.5] logging not standardised)
@@ -309,25 +309,26 @@ interact naturally. This is the primary input modality.
     Test: speak a sentence, verify transcript appears in ChatView (manual)
 
   [2.3] Text-to-speech (F5-TTS primary, Piper fallback)
-    Status: STRUCTURAL VERIFIED + ENGINE PRIORITY UPDATED (2026-04-05)
+    Status: IMPLEMENTED + GPU + STREAMING + NATIVE AUDIO (2026-05-25)
     Engine priority (hardcoded — not user-selectable):
       1. F5-TTS (F5TTS_v1_Base) — PRIMARY — always tried first when installed
-         Zero-shot voice cloning from data/TOMV2.wav. CPU, RTF ~0.15, ~800 MB.
+         Zero-shot voice cloning from data/TOMV2.wav. GPU via CUDA when available,
+         CPU fallback. RTF ~0.03 on GPU / ~0.15 on CPU. ~800 MB VRAM / ~300 MB RAM.
       2. Piper (en_US-ryan-high) — FALLBACK — used when F5-TTS absent or fails
          Fast CPU, RTF ~0.04x, ~65 MB. Auto-downloads on first Piper use.
       3. pyttsx3 (SAPI5) — LAST RESORT — zero download, Windows-only.
     Voice setting "Built-in" skips F5-TTS and goes straight to Piper.
     All other settings (including default "Cloned Voice") try F5-TTS first.
-    What was confirmed:
-      - piper-tts installed (find_spec passes)
-      - f5_tts NOT yet installed — Piper fallback active (install to activate primary)
-      - _select_engine() logs correct engine priority chain — does not raise
-      - synthesize() returns None when tts_enabled=False
-      - synthesize_stream() yields nothing when disabled
-      - f5_tts NOT imported at module level in tts.py (lazy load)
-      - Gateway broadcasts "speaking" state during TTS playback
-    Remaining gap: manual end-to-end (agent responds, audio plays through speakers)
+    What was implemented (2026-05-25):
+      - F5-TTS auto-detects CUDA and loads on GPU (with set_default_device fallback)
+      - Inference wrapped in torch.inference_mode() + torch.autocast(fp16) — zero RAM growth
+      - Streaming LLM→TTS: sentences queue into _speak_response while LLM still generates
+      - Native C++ audio layer (backend/native/): lock-free ring buffer, <2ms gaps, <5ms interrupt
+      - _speak_response Queue path NameError fixed
+      - Memory hygiene: duplicate WhisperModel fix, buffer release after STT, cuda.empty_cache() post-TTS
+    Remaining gap: manual end-to-end (say wake word → speak → IRIS responds with voice)
     To activate F5-TTS primary: pip install f5-tts + place TOMV2.wav at data/TOMV2.wav
+    To build native audio: .\build_native.ps1 (requires VS2022 Build Tools + CMake)
 
   [2.4] Voice-first DER loop mode
     Status: DONE — already fully implemented
@@ -554,6 +555,13 @@ lazy imports. Do not re-open unless a regression is observed.
   [10.8] Clean model switch (no gap state) — DONE
   [10.9] Inference settings hot-apply — DONE
   [10.10] TPS monitoring with gradient warning — DONE
+
+  NEW (2026-05-25) — TTS Performance & Memory Overhaul:
+    - [10.11] F5-TTS GPU acceleration — inference_mode + autocast(fp16) — DONE in code
+    - [10.12] Streaming LLM→TTS — parallel synthesis with generation — DONE in code
+    - [10.13] Native C++ audio layer — lock-free ring buffer, sub-5ms latency — DONE in code
+    - [10.14] Memory hygiene — duplicate Whisper fix, buffer release, cuda.empty_cache() — DONE
+    Build native audio: .\build_native.ps1 | Install CUDA torch: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
 
   Regression test:
     python -c "

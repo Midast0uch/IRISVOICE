@@ -1209,8 +1209,7 @@ async def api_conversations():
 async def api_create_conversation(request: dict):
     """Create a new conversation."""
     title = request.get("title", "").strip()
-    preview = request.get("preview", "").strip()
-    return create_conversation(title=title, preview=preview)
+    return create_conversation(title=title)
 
 
 @app.get("/api/conversations/{conversation_id}")
@@ -1241,8 +1240,8 @@ async def api_add_message(conversation_id: str, request: dict):
         )
     return add_message(
         conversation_id,
+        role=sender,
         text=text,
-        sender=sender,
         thinking=request.get("thinking", ""),
         feedback=request.get("feedback"),
     )

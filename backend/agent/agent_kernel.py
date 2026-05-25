@@ -1322,7 +1322,6 @@ class AgentKernel:
                                 in_think = True
                             if "</think>" in delta:
                                 in_think = False
-                                continue
 
                             if not in_think:
                                 chunk_callback(delta)
@@ -1664,7 +1663,6 @@ class AgentKernel:
                                     in_think = True
                                 if "</think>" in content_piece:
                                     in_think = False
-                                    continue
 
                                 if not in_think:
                                     chunk_callback(content_piece)
@@ -2183,7 +2181,7 @@ class AgentKernel:
                 "[AgentKernel] Direct response path (no planning needed)")
             try:
                 _t_llm_start = time.perf_counter()
-                response = self._respond_direct(text, context)
+                response = self._respond_direct(text, context, chunk_callback=chunk_callback)
                 _t_llm_end = time.perf_counter()
                 logger.info(
                     f"[Timing] LLM call (_respond_direct): {(_t_llm_end - _t_llm_start) * 1000:.0f} ms  |  "

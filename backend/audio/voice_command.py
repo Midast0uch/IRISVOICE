@@ -269,10 +269,9 @@ class VoiceCommandHandler:
                 "(need >= 4.0 GB) — skipping to speech_recognition fallback"
             )
         else:
-            # Attempt 1: faster_whisper
+            # Attempt 1: faster_whisper (reuse cached model, do not create a new one)
             try:
-                from faster_whisper import WhisperModel
-                _fw_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+                _fw_model = self._get_whisper()
                 segments, _ = _fw_model.transcribe(
                     audio_np, language="en", beam_size=1, vad_filter=True
                 )
@@ -377,6 +376,8 @@ class VoiceCommandHandler:
             if self._cancel_event.is_set():
                 self._cancel_event.clear()
                 logger.info("[VoiceCommand] Recording cancelled — skipping transcription")
+                self._raw_frames = []
+                self.audio_buffer = []
                 self._on_transcription_complete("")
                 return
 
@@ -408,6 +409,11 @@ class VoiceCommandHandler:
 
             self._on_transcription_complete(transcript)
 
+            # Explicit buffer release — free memory immediately after transcription
+            self._raw_frames = []
+            if hasattr(self, "audio_buffer"):
+                self.audio_buffer = []
+
         except Exception as e:
             logger.error(f"[VoiceCommand] Transcription error: {e}", exc_info=True)
             self.is_recording = False
@@ -419,6 +425,9 @@ class VoiceCommandHandler:
                     transcript = self._transcribe_with_fallback(audio_np)
                     if transcript:
                         self._on_transcription_complete(transcript)
+                        self._raw_frames = []
+                        if hasattr(self, "audio_buffer"):
+                            self.audio_buffer = []
                         return
             except Exception as _fb_exc:
                 logger.error(f"[VoiceCommand] _transcribe_with_fallback also failed: {_fb_exc}")
