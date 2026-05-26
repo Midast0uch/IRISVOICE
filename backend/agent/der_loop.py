@@ -62,17 +62,38 @@ class DirectorQueue:
     max_cycles: int          = 40   # DER_MAX_CYCLES
     max_veto_per_item: int   = 2    # DER_MAX_VETO_PER_ITEM
 
-    def next_ready(self) -> Optional[QueueItem]:
-        """Next item whose dependencies are all completed. None if none ready."""
+    def next_ready(self, session_id: str = "default") -> Optional[QueueItem]:
+        """
+        Next item whose dependencies are all completed.
+        Caducean-modulated: if Caducean signals CONTRACT, reduce queue depth.
+        None if none ready.
+        """
         completed = set(self.completed_ids)
+        ready_items = []
         for item in self.items:
             if item.step_id in self.completed_ids:
                 continue
             if item.step_id in self.vetoed_ids:
                 continue
             if all(dep in completed for dep in item.depends_on):
-                return item
-        return None
+                ready_items.append(item)
+
+        if not ready_items:
+            return None
+
+        # Caducean modulation: EXPAND=0, CONTRACT=1, MAINTAIN=2
+        try:
+            from backend.gateway.iris_ffi import ffi_caducean_recommend
+            rec = ffi_caducean_recommend(session_id)
+        except Exception:
+            rec = 2  # MAINTAIN on error
+
+        if rec == 1:  # CONTRACT — return only critical items
+            critical = [i for i in ready_items if i.critical]
+            return critical[0] if critical else ready_items[0]
+
+        # EXPAND or MAINTAIN — return first ready
+        return ready_items[0]
 
     def mark_complete(self, step_id: str) -> None:
         if step_id not in self.completed_ids:

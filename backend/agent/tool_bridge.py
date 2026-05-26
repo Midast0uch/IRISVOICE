@@ -768,6 +768,7 @@ class AgentToolBridge:
                     except Exception as _e:
                         logger.warning(f"[ToolBridge] skills_reloaded broadcast failed: {_e}")
 
+                self._record_tool_event(session_id, tool_name, "success", params, result)
                 return result
 
             # Git + Shell tools — executed inline via subprocess
@@ -777,10 +778,14 @@ class AgentToolBridge:
                 "git_push", "run_command",
             }
             if tool_name in git_tools:
-                return await self._execute_dev_tool(tool_name, params, session_id)
+                result = await self._execute_dev_tool(tool_name, params, session_id)
+                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result)
+                return result
 
             if tool_name == "run_research":
-                return await self._execute_research_tool(params, session_id)
+                result = await self._execute_research_tool(params, session_id)
+                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result)
+                return result
 
             error_result = {"error": f"Unknown tool: {tool_name}"}
 
@@ -802,6 +807,7 @@ class AgentToolBridge:
                     risk_score=0.1
                 )
 
+            self._record_tool_event(session_id, tool_name, "failure", params, error_result)
             return error_result
 
         except Exception as e:
@@ -825,7 +831,33 @@ class AgentToolBridge:
                     risk_score=0.7
                 )
 
+            # FFI auto-record: tool execution failure
+            self._record_tool_event(session_id, tool_name, "failure", params, error_result)
+
             return error_result
+
+    def _record_tool_event(
+        self, session_id: str, tool_name: str, outcome: str,
+        params: Dict, result: Dict
+    ) -> None:
+        """
+        Record a tool execution event via the C++ core FFI bridge.
+        Fire-and-forget: never blocks the tool execution path.
+        """
+        try:
+            from backend.gateway.iris_ffi import ffi_ingest_event
+            payload = json.dumps({"tool": tool_name, "params": params, "result": result})
+            ffi_ingest_event(
+                session_id=session_id,
+                domain="SYSTEM",
+                event_type="tool_execution",
+                actor="agent_tool_bridge",
+                outcome=outcome,
+                summary=f"Tool {tool_name} executed: {outcome}",
+                payload_json=payload
+            )
+        except Exception:
+            pass  # Never block tool execution on recording failure
 
     # ------------------------------------------------------------------
     # Developer tools — git and shell, executed via subprocess
