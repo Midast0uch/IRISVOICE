@@ -188,7 +188,7 @@ function getFieldCategory(field: any, sectionId: string): 'config' | 'visualizer
   return 'config';
 }
 
-const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, availableModels, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; availableModels?: string[]; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
+const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, availableModels, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; availableModels?: (string | {label: string, value: string})[]; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
   const value = fieldValues && sectionId ? (fieldValues[sectionId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
   
@@ -525,7 +525,7 @@ export function DarkGlassDashboard({
   const fieldValues = localFieldValues;
   const updateField = localUpdateField;
 
-  const [availableModels, setAvailableModels] = useState<string[]>(['LFM-2-8B', 'gpt-4o', 'claude-3-5-sonnet']);
+  const [availableModels, setAvailableModels] = useState<(string | {label: string, value: string})[]>(['LFM-2-8B', 'gpt-4o', 'claude-3-5-sonnet']);
   const [audioInputDevices, setAudioInputDevices] = useState<string[]>(['Default Input', 'Internal Microphone']);
   const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>(['Default Output', 'Internal Speakers']);
   const [wakeWords, setWakeWords] = useState<string[]>([]);
@@ -555,8 +555,12 @@ export function DarkGlassDashboard({
 
     const handleAvailableModels = (event: CustomEvent) => {
       const models = event.detail?.models || [];
-      const names = models.map((m: any) => m.name || m.id || m).filter(Boolean);
-      if (names.length > 0) setAvailableModels(names);
+      // Pass {label, value} objects so CustomDropdown sends the model ID (not display name) to the backend
+      const opts = models.map((m: any) => {
+        if (typeof m === 'string') return m;
+        return { label: m.name || m.id || String(m), value: m.id || m.name || String(m) };
+      }).filter(Boolean);
+      if (opts.length > 0) setAvailableModels(opts);
     };
 
     const handleAudioDevices = (event: CustomEvent) => {
@@ -587,12 +591,17 @@ export function DarkGlassDashboard({
   // Fetch device lists and models whenever the relevant tab is active
   useEffect(() => {
     if (!sendMessage) return;
-    if (activeTab === 'agent') sendMessage('get_available_models', {});
+    if (activeTab === 'agent') {
+      // Send current API config so backend can query the right provider for models
+      const apiBaseUrl = fieldValues?.model_selection?.api_base_url || '';
+      const apiKey = fieldValues?.model_selection?.api_key || '';
+      sendMessage('get_available_models', { api_base_url: apiBaseUrl, api_key: apiKey });
+    }
     if (activeTab === 'voice') {
       sendMessage('get_audio_devices', {});
       sendMessage('get_wake_words', {});
     }
-  }, [activeTab, sendMessage]);
+  }, [activeTab, sendMessage, fieldValues]);
 
   useEffect(() => {
     if (currentCategory && currentCategory !== 'voice' && currentCategory !== 'dashboard') {

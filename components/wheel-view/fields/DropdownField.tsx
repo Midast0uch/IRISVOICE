@@ -7,7 +7,7 @@ interface DropdownFieldProps {
   id: string
   label: string
   value: string
-  options: string[]
+  options: (string | { label: string; value: string })[]
   loadOptions?: () => Promise<{ label: string; value: string }[]>
   onChange: (value: string) => void
   glowColor: string
@@ -53,7 +53,7 @@ const DropdownFieldComponent: React.FC<DropdownFieldProps> = ({
   // Determine which options to use and normalise to {label, value} format
   const finalOptions: { label: string; value: string }[] = loadOptions
     ? dynamicOptions
-    : options.map(o => ({ label: o, value: o }))
+    : options.map(o => typeof o === 'string' ? { label: o, value: o } : o)
 
   return (
     <div className="flex flex-col gap-2.5">

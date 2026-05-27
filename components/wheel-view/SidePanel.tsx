@@ -54,7 +54,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   onBrowseMarketplace,
 }) => {
   const { sendMessage } = useNavigation()
-  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [availableModels, setAvailableModels] = useState<(string | {label: string, value: string})[]>([])
   const [audioInputDevices, setAudioInputDevices] = useState<string[]>([])
   const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>([])
   const [wakeWords, setWakeWords] = useState<string[]>([])
@@ -123,13 +123,19 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   // Fetch available models when models-card section is active
   useEffect(() => {
     if (card.id === 'models-card') {
-      // Send get_available_models message to backend
-      sendMessage('get_available_models', {})
+      // Send get_available_models message to backend with current API config
+      const apiBaseUrl = values?.api_base_url || ''
+      const apiKey = values?.api_key || ''
+      sendMessage('get_available_models', { api_base_url: apiBaseUrl, api_key: apiKey })
       
       // Listen for the response
       const handleAvailableModels = (event: CustomEvent) => {
         const models = event.detail.models || []
-        const modelOptions = models.map((m: any) => m.name || m.id)
+        // Pass {label, value} objects so the model ID (not display name) is sent to the backend
+        const modelOptions = models.map((m: any) => {
+          if (typeof m === 'string') return m;
+          return { label: m.name || m.id || String(m), value: m.id || m.name || String(m) };
+        })
         setAvailableModels(modelOptions)
       }
       
@@ -226,7 +232,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
       // Resolve dropdown options. WebSocket-fetched data takes priority over static loadOptions.
       // When real backend data is available, fieldLoadOptions is cleared so DropdownField
       // uses the `options` prop directly instead of calling the static loadOptions function.
-      let fieldOptions = field.options ?? []
+      let fieldOptions: (string | {label: string, value: string})[] = field.options ?? []
       let fieldLoadOptions = field.loadOptions
 
       // For models-card section, use available models for dropdowns
