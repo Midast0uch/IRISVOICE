@@ -41,13 +41,17 @@ except Exception:
     DER_MAX_VETO_PER_ITEM = 2
     DER_EMERGENCY_STOP = 200
     DER_TOKEN_BUDGETS: Dict[str, int] = {
-        "implement": 40000, "debug": 30000, "research": 20000,
-        "full": 50000, "quick_edit": 8000,
+        "implement": 40000,
+        "debug": 30000,
+        "research": 20000,
+        "full": 50000,
+        "quick_edit": 8000,
     }
     TRAILING_GAP_MIN = 2
 
 try:
     from backend.agent.trailing_director import TrailingDirector as _TrailingDirector
+
     _TRAILING_DIRECTOR_AVAILABLE = True
 except Exception:
     _TRAILING_DIRECTOR_AVAILABLE = False
@@ -62,11 +66,12 @@ class TaskContext:
     through planning, execution, and response synthesis. It prevents context
     loss at handoff points between the brain and executor models.
     """
-    task_id: str                          # unique per user message
-    user_message: str                     # original user request — never lost
+
+    task_id: str  # unique per user message
+    user_message: str  # original user request — never lost
     session_id: str
-    conversation_history: List[Dict]      # snapshot of memory at task start
-    plan: Optional[Dict] = None           # brain's plan (set after planning)
+    conversation_history: List[Dict]  # snapshot of memory at task start
+    plan: Optional[Dict] = None  # brain's plan (set after planning)
     # accumulates as steps execute
     step_results: List[Dict] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
@@ -81,15 +86,14 @@ class TaskContext:
         for i, result in enumerate(self.step_results, 1):
             if isinstance(result, dict):
                 if "error" in result:
-                    summary_parts.append(
-                        f"Step {i}: ERROR - {result.get('error')}")
+                    summary_parts.append(f"Step {i}: ERROR - {result.get('error')}")
                 elif result.get("success"):
                     tool_name = result.get("tool", "unknown")
                     action = result.get("action", "")
-                    result_text = result.get(
-                        "result", result.get("response", ""))
+                    result_text = result.get("result", result.get("response", ""))
                     summary_parts.append(
-                        f"Step {i}: {tool_name} ({action}): {result_text[:200]}")
+                        f"Step {i}: {tool_name} ({action}): {result_text[:200]}"
+                    )
 
         return "\n".join(summary_parts) if summary_parts else "No tool results."
 
@@ -108,7 +112,7 @@ class AgentKernel:
     def __init__(
         self,
         config_path: str = "./backend/agent/agent_config.yaml",
-        session_id: str = "default"
+        session_id: str = "default",
     ):
         """
         Initialize AgentKernel with dual-LLM coordination.
@@ -125,7 +129,9 @@ class AgentKernel:
         self._vps_gateway: Optional[VPSGateway] = None
         self._conversation_memory: Optional[ConversationMemory] = None
         self._personality: Optional[PersonalityManager] = None
-        self._tool_bridge: Optional[AgentToolBridge] = None  # Will be initialized lazily
+        self._tool_bridge: Optional[AgentToolBridge] = (
+            None  # Will be initialized lazily
+        )
         # For brain↔executor logging
         self._inter_model_communicator: Optional[InterModelCommunicator] = None
 
@@ -188,6 +194,12 @@ class AgentKernel:
         # cached PROJECT.md content
         self._developer_context: Optional[str] = None
 
+        # ── Model context window registry ──────────────────────────────────
+        # Maps (provider, model_name_substring) → context window in tokens.
+        # Used by resolve_context_window() so memory, conversation history,
+        # and MCM budgets are never hardcoded — they adapt to the model.
+        self._context_window_overrides: dict[str, int] = {}
+
         # Domain 4.5 — proactive skill creation.
         # Tracks how many times each normalized tool-name sequence (joined with "→")
         # has been used this session.  When a pattern hits the threshold, the agent
@@ -215,23 +227,28 @@ class AgentKernel:
         try:
             # Initialize Model Router with UNINITIALIZED mode (lazy loading)
             logger.info(
-                "[AgentKernel] Initializing Model Router in UNINITIALIZED mode (lazy loading)...")
+                "[AgentKernel] Initializing Model Router in UNINITIALIZED mode (lazy loading)..."
+            )
             from .model_router import InferenceMode
+
             self._model_router = ModelRouter(
-                self.config_path, inference_mode=InferenceMode.UNINITIALIZED)
+                self.config_path, inference_mode=InferenceMode.UNINITIALIZED
+            )
             logger.info(
-                "[AgentKernel] Model Router initialized - models will NOT be loaded automatically")
+                "[AgentKernel] Model Router initialized - models will NOT be loaded automatically"
+            )
             logger.info(
-                "[AgentKernel] Models will be loaded only when user selects Local Model inference mode")
+                "[AgentKernel] Models will be loaded only when user selects Local Model inference mode"
+            )
 
             # In UNINITIALIZED mode, we don't have models yet
             logger.info(
-                "[AgentKernel] Waiting for user to configure inference mode (Local/VPS/OpenAI)")
+                "[AgentKernel] Waiting for user to configure inference mode (Local/VPS/OpenAI)"
+            )
             self._single_model_mode = False
 
         except Exception as e:
-            logger.error(
-                f"[AgentKernel] Failed to initialize Model Router: {e}")
+            logger.error(f"[AgentKernel] Failed to initialize Model Router: {e}")
             self._initialization_error = f"Model Router initialization failed: {e}"
             self._model_router = None
 
@@ -241,22 +258,25 @@ class AgentKernel:
         self._vps_config = VPSConfig(enabled=False)
         self._vps_gateway = None
         logger.info(
-            "[AgentKernel] VPS Gateway deferred (lazy init — awaiting user VPS configuration)")
+            "[AgentKernel] VPS Gateway deferred (lazy init — awaiting user VPS configuration)"
+        )
 
         try:
             # Initialize Conversation Memory
             logger.info(
-                f"[AgentKernel] Initializing Conversation Memory for session {self.session_id}...")
+                f"[AgentKernel] Initializing Conversation Memory for session {self.session_id}..."
+            )
             self._conversation_memory = ConversationMemory(
                 session_id=self.session_id,
-                max_messages=10  # Default from requirements
+                max_messages=10,  # Default from requirements
             )
             logger.info("[AgentKernel] Conversation Memory initialized")
 
         except Exception as e:
-            logger.error(
-                f"[AgentKernel] Failed to initialize Conversation Memory: {e}")
-            self._initialization_error = f"Conversation Memory initialization failed: {e}"
+            logger.error(f"[AgentKernel] Failed to initialize Conversation Memory: {e}")
+            self._initialization_error = (
+                f"Conversation Memory initialization failed: {e}"
+            )
             self._conversation_memory = None
 
         try:
@@ -266,29 +286,29 @@ class AgentKernel:
             logger.info("[AgentKernel] Personality Manager initialized")
 
         except Exception as e:
-            logger.error(
-                f"[AgentKernel] Failed to initialize Personality Manager: {e}")
-            self._initialization_error = f"Personality Manager initialization failed: {e}"
+            logger.error(f"[AgentKernel] Failed to initialize Personality Manager: {e}")
+            self._initialization_error = (
+                f"Personality Manager initialization failed: {e}"
+            )
             self._personality = None
 
         try:
             # Initialize Inter-Model Communicator for brain↔executor logging (Bug 5 fix)
-            logger.info(
-                "[AgentKernel] Initializing Inter-Model Communicator...")
+            logger.info("[AgentKernel] Initializing Inter-Model Communicator...")
             if self._model_router:
                 model_conversation = ModelConversation()
                 self._inter_model_communicator = InterModelCommunicator(
-                    model_router=self._model_router,
-                    conversation=model_conversation
+                    model_router=self._model_router, conversation=model_conversation
                 )
-                logger.info(
-                    "[AgentKernel] Inter-Model Communicator initialized")
+                logger.info("[AgentKernel] Inter-Model Communicator initialized")
             else:
                 logger.warning(
-                    "[AgentKernel] Inter-Model Communicator not initialized: Model Router unavailable")
+                    "[AgentKernel] Inter-Model Communicator not initialized: Model Router unavailable"
+                )
         except Exception as e:
             logger.error(
-                f"[AgentKernel] Failed to initialize Inter-Model Communicator: {e}")
+                f"[AgentKernel] Failed to initialize Inter-Model Communicator: {e}"
+            )
             self._inter_model_communicator = None
 
         # Tool Bridge will be initialized lazily when needed
@@ -310,6 +330,7 @@ class AgentKernel:
 
         try:
             from backend.memory.mycelium.kyudo import TaskClassifier as _TC
+
             self._task_classifier = _TC()
             logger.info("[AgentKernel] TaskClassifier initialized (DER)")
         except Exception as _tc_err:
@@ -317,6 +338,7 @@ class AgentKernel:
 
         try:
             from backend.agent.der_loop import Reviewer as _Reviewer
+
             # memory_interface wired later via set_memory_interface()
             self._reviewer = _Reviewer(adapter=self, memory_interface=None)
             logger.info("[AgentKernel] Reviewer initialized (DER)")
@@ -325,6 +347,7 @@ class AgentKernel:
 
         try:
             from backend.agent.trailing_director import TrailingDirector as _TD
+
             # memory_interface wired later via set_memory_interface()
             self._trailing_director = _TD(adapter=self, memory_interface=None)
             logger.info("[AgentKernel] TrailingDirector initialized (DER)")
@@ -333,6 +356,7 @@ class AgentKernel:
 
         try:
             from backend.agent.mode_detector import ModeDetector as _MD
+
             self._mode_detector = _MD()
             logger.info("[AgentKernel] ModeDetector initialized (DER)")
         except Exception as _md_err:
@@ -364,6 +388,7 @@ class AgentKernel:
         logger.info("[AgentKernel] Memory interface connected")
         try:
             from backend.agent.mcm_protocol import MCMOrchestrator
+
             self._mcm_orch = MCMOrchestrator(
                 memory_interface=memory_interface,
                 session_id=self.session_id,
@@ -387,11 +412,13 @@ class AgentKernel:
         Never raises — returns empty-text object on any backend failure.
         Routes through the same backend as the agentic loop.
         """
+
         class _InferResult:
             def __init__(self, raw_text: str):
                 self.raw_text = raw_text
 
         try:
+            # --- Path 1: OpenAI-compatible local servers (LM Studio, IRIS Local, etc.) ---
             if self._is_openai_compat():
                 _lms = self._get_lmstudio_client()
                 _resp = _lms.chat.completions.create(
@@ -403,8 +430,58 @@ class AgentKernel:
                 )
                 return _InferResult(_resp.choices[0].message.content or "")
 
+            # --- Path 2: Remote API providers (Cohere, OpenAI, Groq, etc.) ---
+            if self._is_api_provider():
+                _model = self._selected_reasoning_model or ""
+                _api_client = self._get_api_client()
+
+                # Cohere has a native SDK — use it when the base_url targets Cohere
+                # (https://api.cohere.com/...). The Cohere chat API expects a different
+                # format than OpenAI (message list with role/content).
+                _base = (self._api_base_url or "").lower()
+                if "cohere" in _base:
+                    try:
+                        import cohere as _cohere
+
+                        _coh = _cohere.ClientV2(api_key=self._api_key or "")
+                        _coh_resp = _coh.chat(
+                            model=_model or "command-r-plus",
+                            messages=[{"role": "user", "content": prompt}],
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                        )
+                        # Cohere v2 returns message.content as a list of blocks
+                        _text = ""
+                        if hasattr(_coh_resp, "message") and _coh_resp.message:
+                            for block in _coh_resp.message.content:
+                                if hasattr(block, "text"):
+                                    _text += block.text
+                        return _InferResult(_text)
+                    except ImportError:
+                        logger.warning(
+                            "[AgentKernel.infer] cohere SDK not installed — "
+                            "falling back to OpenAI-compat client"
+                        )
+                    except Exception as _coh_err:
+                        logger.warning(
+                            f"[AgentKernel.infer] Cohere SDK call failed: {_coh_err}"
+                        )
+                        return _InferResult("")
+
+                # All other API providers — use OpenAI-compatible client
+                # (works with OpenAI, Groq, DeepSeek, Mistral, OpenRouter, etc.)
+                _resp = _api_client.chat.completions.create(
+                    model=_model or "gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                return _InferResult(_resp.choices[0].message.content or "")
+
+            # --- Path 3: Ollama native API (provider == "local", model has ":") ---
             if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
                 import requests as _req
+
                 _r = _req.post(
                     "http://localhost:11434/api/chat",
                     json={
@@ -437,8 +514,7 @@ class AgentKernel:
 
         try:
             context = self._memory_interface.get_task_context(
-                task=task,
-                session_id=self.session_id
+                task=task, session_id=self.session_id
             )
             return context
         except Exception as e:
@@ -480,12 +556,13 @@ class AgentKernel:
                 duration_ms=duration_ms,
                 source_channel="websocket",
                 node_id="local",
-                origin="local"
+                origin="local",
             )
 
             self._memory_interface.store_episode(episode)
             logger.debug(
-                f"[AgentKernel] Stored episode for task: {task_summary[:50]}...")
+                f"[AgentKernel] Stored episode for task: {task_summary[:50]}..."
+            )
 
         except Exception as e:
             logger.warning(f"[AgentKernel] Failed to store episode: {e}")
@@ -500,13 +577,14 @@ class AgentKernel:
         if self._vps_gateway and self._vps_config and self._vps_config.enabled:
             try:
                 logger.info(
-                    "[AgentKernel] Initializing VPS Gateway async operations...")
+                    "[AgentKernel] Initializing VPS Gateway async operations..."
+                )
                 await self._vps_gateway.initialize()
-                logger.info(
-                    "[AgentKernel] VPS Gateway async initialization complete")
+                logger.info("[AgentKernel] VPS Gateway async initialization complete")
             except Exception as e:
                 logger.error(
-                    f"[AgentKernel] Failed to initialize VPS Gateway async: {e}")
+                    f"[AgentKernel] Failed to initialize VPS Gateway async: {e}"
+                )
 
     async def shutdown_vps_gateway(self) -> None:
         """
@@ -521,8 +599,7 @@ class AgentKernel:
                 await self._vps_gateway.shutdown()
                 logger.info("[AgentKernel] VPS Gateway shutdown complete")
             except Exception as e:
-                logger.error(
-                    f"[AgentKernel] Error during VPS Gateway shutdown: {e}")
+                logger.error(f"[AgentKernel] Error during VPS Gateway shutdown: {e}")
 
     def configure_vps(self, vps_config: Dict[str, Any]) -> None:
         """
@@ -550,31 +627,31 @@ class AgentKernel:
                 endpoints=vps_config.get("endpoints", []),
                 auth_token=vps_config.get("auth_token"),
                 timeout=vps_config.get("timeout", 30),
-                health_check_interval=vps_config.get(
-                    "health_check_interval", 60),
+                health_check_interval=vps_config.get("health_check_interval", 60),
                 fallback_to_local=vps_config.get("fallback_to_local", True),
                 load_balancing=vps_config.get("load_balancing", False),
                 load_balancing_strategy=vps_config.get(
-                    "load_balancing_strategy", "round_robin"),
+                    "load_balancing_strategy", "round_robin"
+                ),
                 protocol=vps_config.get("protocol", "rest"),
-                offload_tools=vps_config.get("offload_tools", False)
+                offload_tools=vps_config.get("offload_tools", False),
             )
 
             # Only create VPSGateway when user has explicitly enabled it.
             # This prevents health-check loops on every reconnect when VPS is disabled.
             if self._vps_config.enabled and self._model_router:
-                self._vps_gateway = VPSGateway(
-                    self._vps_config, self._model_router)
+                self._vps_gateway = VPSGateway(self._vps_config, self._model_router)
                 logger.info(
-                    f"[AgentKernel] VPS Gateway created: enabled={self._vps_config.enabled}, endpoints={len(self._vps_config.endpoints)}")
+                    f"[AgentKernel] VPS Gateway created: enabled={self._vps_config.enabled}, endpoints={len(self._vps_config.endpoints)}"
+                )
             elif not self._vps_config.enabled:
                 # VPS disabled — clear any existing gateway to stop health checks
                 self._vps_gateway = None
-                logger.info(
-                    "[AgentKernel] VPS Gateway disabled by user config")
+                logger.info("[AgentKernel] VPS Gateway disabled by user config")
             else:
                 logger.warning(
-                    "[AgentKernel] Cannot configure VPS Gateway: Model Router unavailable")
+                    "[AgentKernel] Cannot configure VPS Gateway: Model Router unavailable"
+                )
 
         except Exception as e:
             logger.error(f"[AgentKernel] Failed to configure VPS Gateway: {e}")
@@ -608,10 +685,14 @@ class AgentKernel:
         """
         self._lmstudio_endpoint = self._normalise_endpoint(endpoint)
         self._lmstudio_client = None  # invalidate cached client — endpoint changed
+        self._sync_context_window()
         logger.info(
-            f"[AgentKernel] OpenAI-compatible endpoint configured: {self._lmstudio_endpoint}")
+            f"[AgentKernel] OpenAI-compatible endpoint configured: {self._lmstudio_endpoint}"
+        )
 
-    def configure_openai_compat(self, endpoint: Optional[str], provider_name: str = "openai_compatible") -> None:
+    def configure_openai_compat(
+        self, endpoint: Optional[str], provider_name: str = "openai_compatible"
+    ) -> None:
         """Configure any OpenAI-compatible inference server.
 
         Passing endpoint=None resets the kernel to an uninitialized state (e.g. after
@@ -622,16 +703,21 @@ class AgentKernel:
         self._model_provider = provider_name if endpoint else "uninitialized"
         if endpoint:
             logger.info(
-                f"[AgentKernel] {provider_name} endpoint configured: {self._lmstudio_endpoint}")
+                f"[AgentKernel] {provider_name} endpoint configured: {self._lmstudio_endpoint}"
+            )
         else:
             logger.info("[AgentKernel] Endpoint cleared — kernel is uninitialized")
 
     def configure_ollama(self, endpoint: str) -> None:
         """Configure the Ollama native API endpoint (provider == 'local')."""
         self._ollama_endpoint = endpoint.rstrip("/")
-        logger.info(f"[AgentKernel] Ollama endpoint configured: {self._ollama_endpoint}")
+        logger.info(
+            f"[AgentKernel] Ollama endpoint configured: {self._ollama_endpoint}"
+        )
 
-    def configure_api(self, api_key: str, base_url: str = "https://api.openai.com/v1") -> None:
+    def configure_api(
+        self, api_key: str, base_url: str = "https://api.openai.com/v1"
+    ) -> None:
         """Configure remote API credentials (provider == 'api').
 
         Works with any OpenAI-compatible remote API:
@@ -641,25 +727,207 @@ class AgentKernel:
         self._api_key = api_key
         self._api_base_url = base_url.rstrip("/")
         self._lmstudio_client = None  # invalidate cached client
-        logger.info(f"[AgentKernel] Remote API configured: base_url={self._api_base_url}")
+        self._sync_context_window()
+        logger.info(
+            f"[AgentKernel] Remote API configured: base_url={self._api_base_url}"
+        )
+
+    # ── Context window resolution ──────────────────────────────────────────
+    # Every model has a maximum context window.  Memory, conversation history,
+    # and MCM budgets should be derived from it — never hardcoded.
+
+    def _sync_context_window(self) -> None:
+        """Propagate the resolved context window to memory config + peers."""
+        token_budget = self.get_effective_token_budget()
+        try:
+            from backend.memory.config import update_context_size
+
+            update_context_size(token_budget)
+        except Exception as _err:
+            logger.warning(
+                f"[AgentKernel] Failed to sync context window to memory: {_err}"
+            )
+
+    # Known context windows (tokens).  Keyed by (provider, model_substring).
+    # Substring match is case-insensitive; first match wins.
+    _KNOWN_CONTEXT_WINDOWS: list[tuple[str, str, int]] = [
+        # Cohere
+        ("cohere", "command-r-plus", 128_000),
+        ("cohere", "command-r", 128_000),
+        ("cohere", "command-a", 256_000),
+        ("cohere", "command", 8_192),
+        # OpenAI
+        ("openai", "gpt-4o", 128_000),
+        ("openai", "gpt-4o-mini", 128_000),
+        ("openai", "gpt-4-turbo", 128_000),
+        ("openai", "gpt-4", 8_192),
+        ("openai", "gpt-3.5", 16_385),
+        # Groq
+        ("groq", "llama-3.3-70b", 128_000),
+        ("groq", "llama-3.1-70b", 128_000),
+        ("groq", "llama-3.1-8b", 128_000),
+        ("groq", "llama3-70b", 8_192),
+        ("groq", "llama3-8b", 8_192),
+        ("groq", "mixtral-8x7b", 32_768),
+        ("groq", "gemma2-9b", 8_192),
+        # DeepSeek
+        ("deepseek", "deepseek-chat", 65_536),
+        ("deepseek", "deepseek-coder", 16_384),
+        # Mistral
+        ("mistral", "mistral-large", 128_000),
+        ("mistral", "mistral-medium", 32_000),
+        ("mistral", "mistral-small", 32_000),
+        ("mistral", "mixtral", 32_000),
+        # OpenRouter — generic passthrough; use a conservative default
+        ("openrouter", "", 32_000),
+        # LM Studio / IRIS Local — common local models
+        ("lmstudio", "lfm-2-8b", 32_768),
+        ("lmstudio", "llama-3", 8_192),
+        ("lmstudio", "llama-3.1", 128_000),
+        ("lmstudio", "llama-3.2", 128_000),
+        ("lmstudio", "mistral", 32_768),
+        ("lmstudio", "qwen2.5", 32_768),
+        ("lmstudio", "phi-3", 128_000),
+        ("iris_local", "lfm-2-8b", 32_768),
+        ("iris_local", "llama-3", 8_192),
+        ("iris_local", "llama-3.1", 128_000),
+        # Ollama — common local models
+        ("local", "llama3.1", 128_000),
+        ("local", "llama3", 8_192),
+        ("local", "mistral", 32_768),
+        ("local", "qwen2.5", 32_768),
+        ("local", "phi3", 128_000),
+        ("local", "gemma2", 8_192),
+    ]
+
+    def resolve_context_window(self) -> int:
+        """Return the effective context window (tokens) for the current model.
+
+        Priority:
+          1. User override via _context_window_overrides
+          2. Known registry lookup by (provider, model_name)
+          3. Safe default (8k)
+        """
+        provider = self._model_provider or ""
+        model = self._selected_reasoning_model or ""
+
+        # 1. User override (set via confirm_card / model_selection)
+        if model in self._context_window_overrides:
+            return self._context_window_overrides[model]
+
+        # 2. Registry lookup — case-insensitive substring match
+        model_lower = model.lower().strip()
+        for reg_provider, reg_substring, tokens in self._KNOWN_CONTEXT_WINDOWS:
+            if reg_provider == provider and (
+                not reg_substring or reg_substring in model_lower
+            ):
+                return tokens
+
+        # 3. Fallback: try to detect from local_model_manager profiles
+        try:
+            from .local_model_manager import LocalModelManager
+
+            mgr = LocalModelManager()
+            for profile in mgr.profiles:
+                if profile.id in model_lower or model_lower in profile.id:
+                    return profile.n_ctx
+        except Exception:
+            pass
+
+        # 4. Safe default — 8k for unknown models
+        logger.info(
+            f"[AgentKernel] No context window known for provider={provider} "
+            f"model={model} — using default 8192"
+        )
+        return 8_192
+
+    def get_effective_token_budget(self, fraction: float = 0.75) -> int:
+        """Return the usable token budget as a fraction of the context window.
+
+        We reserve 25% for the system prompt + tool definitions + response
+        generation.  The fraction parameter lets callers override this.
+        """
+        return int(self.resolve_context_window() * fraction)
 
     def _get_api_client(self) -> Any:
-        """Return an OpenAI-compatible client for the remote API provider."""
+        """Return an OpenAI-compatible client for the remote API provider.
+
+        Includes httpx timeout to prevent hangs when SSE streams don't close.
+        """
         from openai import OpenAI as _OpenAI
+        import httpx
+
         return _OpenAI(
             api_key=self._api_key or "placeholder",
             base_url=self._api_base_url,
+            timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
         )
+
+    @staticmethod
+    def _safe_stream(resp, silence_timeout: float = 30.0):
+        """Wrap a streaming response iterator with a silence timeout.
+
+        If no new chunk arrives within *silence_timeout* seconds, the
+        iterator is abandoned and the loop stops.  This prevents the UI
+        from hanging when a provider fails to close the SSE stream.
+        """
+        import time
+        import threading
+
+        _sentinel = object()
+        _buffer: list = []
+        _done = threading.Event()
+        _ex = [None]
+
+        def _reader():
+            try:
+                for chunk in resp:
+                    _buffer.append(chunk)
+                    _done.set()
+            except Exception as exc:
+                _ex[0] = exc
+                _done.set()
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+
+        while True:
+            _done.wait(timeout=silence_timeout)
+            if _buffer:
+                yield _buffer.pop(0)
+                _done.clear()
+                continue
+            if not t.is_alive():
+                # Stream finished — drain any remaining chunks
+                while _buffer:
+                    yield _buffer.pop(0)
+                if _ex[0] is not None:
+                    logger.warning(f"[AgentKernel] stream error: {_ex[0]}")
+                return
+            # Timeout with no new chunks — abandon the stream
+            logger.warning(
+                f"[AgentKernel] stream silence timeout ({silence_timeout}s) — "
+                "abandoning response"
+            )
+            return
 
     # Providers that speak the OpenAI-compatible chat completions API.
     # When the user picks any of these, inference routes through _get_lmstudio_client()
     # using whatever endpoint they configured (LM Studio, llamafile, vllm, etc.).
-    _OPENAI_COMPAT_PROVIDERS = frozenset({
-        "lmstudio", "openai_compatible", "llamafile", "vllm", "llamacpp_server",
-        "koboldcpp", "textgen_webui", "ollama_openai",
-        # IRIS-native local model server (llama-cpp-python / ik_llama.cpp on port 8082)
-        "iris_local",
-    })
+    _OPENAI_COMPAT_PROVIDERS = frozenset(
+        {
+            "lmstudio",
+            "openai_compatible",
+            "llamafile",
+            "vllm",
+            "llamacpp_server",
+            "koboldcpp",
+            "textgen_webui",
+            "ollama_openai",
+            # IRIS-native local model server (llama-cpp-python / ik_llama.cpp on port 8082)
+            "iris_local",
+        }
+    )
 
     def _is_openai_compat(self) -> bool:
         """Return True if the user-selected provider speaks the OpenAI chat API (local).
@@ -727,9 +995,12 @@ class AgentKernel:
         # Path 2: cached real OpenAI HTTP client.
         if self._lmstudio_client is None:
             from openai import OpenAI as _OpenAI
+            import httpx
+
             self._lmstudio_client = _OpenAI(
                 base_url=f"{self._lmstudio_endpoint}/v1",
                 api_key="lm-studio",
+                timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
             )
             logger.debug(
                 f"[AgentKernel] Created LM Studio client → {self._lmstudio_endpoint}/v1"
@@ -762,8 +1033,7 @@ class AgentKernel:
                     messages=[{"role": "user", "content": "hi"}],
                     max_tokens=1,
                     temperature=0.0,
-                    extra_body={"chat_template_kwargs": {
-                        "enable_thinking": False}},
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
                 elapsed = time.perf_counter() - t0
                 logger.info(
@@ -779,8 +1049,9 @@ class AgentKernel:
                     f"(non-fatal): {e}"
                 )
 
-        threading.Thread(target=_do_prewarm, daemon=True,
-                         name="lmstudio-prewarm").start()
+        threading.Thread(
+            target=_do_prewarm, daemon=True, name="lmstudio-prewarm"
+        ).start()
 
     def set_launcher_mode(self, mode: str) -> None:
         """Set the launcher mode ('personal' or 'developer').
@@ -803,18 +1074,19 @@ class AgentKernel:
         if self._developer_context is not None:
             return self._developer_context
         import pathlib
+
         # Walk up from this file's location to find PROJECT.md
         here = pathlib.Path(__file__).parent
         for _ in range(6):
             candidate = here / "PROJECT.md"
             if candidate.exists():
                 self._developer_context = candidate.read_text(encoding="utf-8")
-                logger.info(
-                    f"[AgentKernel] Loaded developer context from {candidate}")
+                logger.info(f"[AgentKernel] Loaded developer context from {candidate}")
                 return self._developer_context
             here = here.parent
         logger.warning(
-            "[AgentKernel] PROJECT.md not found — developer context unavailable")
+            "[AgentKernel] PROJECT.md not found — developer context unavailable"
+        )
         self._developer_context = ""
         return ""
 
@@ -841,6 +1113,7 @@ class AgentKernel:
             # Resolve active worktree path (set when /api/mode switches to developer)
             try:
                 from backend.dev_worktree import get_active as _get_wt  # type: ignore
+
                 _wt = _get_wt()
                 worktree_path = _wt.get_path() if _wt else None
             except Exception:
@@ -852,8 +1125,7 @@ class AgentKernel:
                 "Changes here do NOT affect the live codebase until the session "
                 "ends and the user approves the diff in the Launcher.\n"
                 if worktree_path
-                else
-                "You have full access to the IRISVOICE source code. "
+                else "You have full access to the IRISVOICE source code. "
                 "Always commit your changes to the iris-agent branch. "
                 "Never commit to main or IRISVOICEv.3.\n"
             )
@@ -887,6 +1159,38 @@ class AgentKernel:
                     + "--- DEVELOPER MODE ACTIVE ---\n"
                     + worktree_block
                 )
+
+        # Gap 4: EML cognitive state visible to LLM
+        try:
+            from backend.gateway.iris_ffi import ffi_calculate_eml
+
+            _e, _x, _y = ffi_calculate_eml(self.session_id)
+            _phase = "EXPLORE" if _e >= 1.5 else ("VERIFY" if _e < 1.0 else "BALANCE")
+            base += (
+                f"\n\n[COGNITIVE STATE: {_phase} | EML={_e:.2f} x={_x:.2f} y={_y:.2f}]"
+            )
+        except Exception:
+            pass
+
+        # Domain 19: Caducean DER Governor state visible to LLM
+        # The Caducean governor tracks exploration-exploitation balance (ξ).
+        # Phase mapping: ξ < 0.3 → EXPLOIT, 0.3 ≤ ξ < 0.7 → BALANCE, ξ ≥ 0.7 → EXPLORE
+        try:
+            from backend.gateway.iris_ffi import ffi_caducean_get_xi
+
+            _xi = ffi_caducean_get_xi(self.session_id)
+            _cad_phase = (
+                "EXPLOIT" if _xi < 0.3 else ("EXPLORE" if _xi >= 0.7 else "BALANCE")
+            )
+            base += (
+                f"\n[CADUCEAN GOVERNOR: {_cad_phase} | ξ={_xi:.2f}]"
+                "\nYou are governed by the Caducean DER Governor, which balances "
+                "exploration vs exploitation. When asked about your phase or state, "
+                "report the Caducean phase and ξ value above."
+            )
+        except Exception:
+            pass
+
         return base
 
     # ------------------------------------------------------------------
@@ -914,7 +1218,11 @@ class AgentKernel:
         names = []
         for tc in tool_sequence:
             if isinstance(tc, dict):
-                name = tc.get("name") or tc.get("tool") or tc.get("function", {}).get("name", "")
+                name = (
+                    tc.get("name")
+                    or tc.get("tool")
+                    or tc.get("function", {}).get("name", "")
+                )
                 if name:
                     names.append(name)
         if len(names) < 2:
@@ -977,30 +1285,71 @@ class AgentKernel:
             return False
 
         # Common greetings and social "how are you" patterns
-        GREETINGS = ["hello", "hi", "hey", "morning",
-                     "afternoon", "evening", "greetings"]
+        GREETINGS = [
+            "hello",
+            "hi",
+            "hey",
+            "morning",
+            "afternoon",
+            "evening",
+            "greetings",
+        ]
         if any(t.startswith(g) for g in GREETINGS) and len(t.split()) < 10:
             return False
 
-        SOCIAL = ["how are you", "how's it going",
-                  "how are things", "what's up", "how have you been"]
+        SOCIAL = [
+            "how are you",
+            "how's it going",
+            "how are things",
+            "what's up",
+            "how have you been",
+        ]
         if any(s in t for s in SOCIAL) and len(t.split()) < 12:
             return False
 
         THINKING_TRIGGERS = [
             # Reasoning keywords
-            "why ", "how does", "how do", "explain", "analyse", "analyze",
-            "compare", "difference between", "pros and cons", "trade-off",
-            "step by step", "walk me through", "break down",
+            "why ",
+            "how does",
+            "how do",
+            "explain",
+            "analyse",
+            "analyze",
+            "compare",
+            "difference between",
+            "pros and cons",
+            "trade-off",
+            "step by step",
+            "walk me through",
+            "break down",
             # Code / debugging
-            "debug", "fix the", "what's wrong", "error in", "refactor",
-            "write a function", "write code", "implement", "algorithm",
+            "debug",
+            "fix the",
+            "what's wrong",
+            "error in",
+            "refactor",
+            "write a function",
+            "write code",
+            "implement",
+            "algorithm",
             # Planning / strategy
-            "plan", "strategy", "best way to", "should i", "recommend",
-            "what would you do", "help me design", "architect",
+            "plan",
+            "strategy",
+            "best way to",
+            "should i",
+            "recommend",
+            "what would you do",
+            "help me design",
+            "architect",
             # Math / logic
-            "calculate", "compute", "solve", "equation", "proof",
-            "if ", "given that", "assuming",
+            "calculate",
+            "compute",
+            "solve",
+            "equation",
+            "proof",
+            "if ",
+            "given that",
+            "assuming",
         ]
         return any(trigger in t for trigger in THINKING_TRIGGERS)
 
@@ -1071,11 +1420,44 @@ class AgentKernel:
         """
         t = text.lower()
         TOOL_TRIGGERS = [
-            "search", "find", "look up", "look for", "open", "launch", "start app",
-            "create", "write a file", "run", "execute", "install", "delete", "remove",
-            "screenshot", "take a photo", "click", "automate", "schedule",
-            "remind me", "set alarm", "set timer", "play music", "stop music",
-            "download", "upload", "send email", "browse",
+            "search",
+            "find",
+            "look up",
+            "look for",
+            "open",
+            "launch",
+            "start app",
+            "create",
+            "write a file",
+            "write file",
+            "run",
+            "execute",
+            "install",
+            "delete",
+            "remove",
+            "screenshot",
+            "take a photo",
+            "click",
+            "automate",
+            "schedule",
+            "remind me",
+            "set alarm",
+            "set timer",
+            "play music",
+            "stop music",
+            "download",
+            "upload",
+            "send email",
+            "browse",
+            "memory",
+            "store",
+            "recall",
+            "remember",
+            "save note",
+            "read file",
+            "list file",
+            "web search",
+            "fetch",
         ]
         return any(trigger in t for trigger in TOOL_TRIGGERS)
 
@@ -1095,6 +1477,7 @@ class AgentKernel:
             import time as _t
             import asyncio
             from backend.ws_manager import get_websocket_manager
+
             ws = get_websocket_manager()
             if not ws:
                 return
@@ -1112,9 +1495,7 @@ class AgentKernel:
             }
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(
-                    ws.broadcast_to_session(self.session_id, payload)
-                )
+                loop.create_task(ws.broadcast_to_session(self.session_id, payload))
             except RuntimeError:
                 # Called from a thread pool — use the captured main loop instead.
                 captured = self._broadcast_loop
@@ -1127,6 +1508,7 @@ class AgentKernel:
             # [10.10] Feed TPS into LocalModelManager's rolling window for gradient warnings
             try:
                 from backend.agent.local_model_manager import get_local_model_manager
+
                 mgr = get_local_model_manager()
                 if mgr.is_loaded():
                     hw = mgr.get_hardware_info()
@@ -1145,10 +1527,12 @@ class AgentKernel:
     # Context budget for direct responses. Keeps the most recent history
     # within the model's 32k window, leaving ~8k for system prompt + response.
     # With episodic injection headroom this sits at ~20k chat tokens max.
-    _DIRECT_CTX_BUDGET: int = 20_000   # tokens
+    _DIRECT_CTX_BUDGET: int = 20_000  # tokens
 
     def _count_tokens(self, messages: List[Dict]) -> int:
-        return sum(len(m.get("content") or "") for m in messages) // self._CHARS_PER_TOKEN
+        return (
+            sum(len(m.get("content") or "") for m in messages) // self._CHARS_PER_TOKEN
+        )
 
     def _assemble_direct_context(self, text: str, context: List[Dict]) -> List[Dict]:
         """
@@ -1177,14 +1561,22 @@ class AgentKernel:
         # ── Layer 2: episodic injection ───────────────────────────────────
         episodic_prefix: List[Dict] = []
         try:
-            if self._memory_interface is not None and hasattr(self._memory_interface, "episodic"):
+            if self._memory_interface is not None and hasattr(
+                self._memory_interface, "episodic"
+            ):
                 ep_ctx = self._memory_interface.episodic.assemble_episodic_context(text)
                 if ep_ctx and ep_ctx.strip():
                     # Inject as a pseudo-exchange so the message pattern stays
                     # [system, user, assistant, user, assistant, …, user]
                     episodic_prefix = [
-                        {"role": "user",      "content": f"<memory>\n{ep_ctx.strip()}\n</memory>"},
-                        {"role": "assistant", "content": "Understood — I have that context."},
+                        {
+                            "role": "user",
+                            "content": f"<memory>\n{ep_ctx.strip()}\n</memory>",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Understood — I have that context.",
+                        },
                     ]
         except Exception:
             pass  # episodic failure never blocks the response
@@ -1198,8 +1590,8 @@ class AgentKernel:
         # model can follow short-term conversational flow regardless of relevance.
         _RECENCY_TURNS = 4
 
-        sys_tokens     = len(system_prompt) // self._CHARS_PER_TOKEN
-        ep_tokens      = self._count_tokens(episodic_prefix)
+        sys_tokens = len(system_prompt) // self._CHARS_PER_TOKEN
+        ep_tokens = self._count_tokens(episodic_prefix)
         current_tokens = len(text) // self._CHARS_PER_TOKEN
 
         # ── 3a: semantic chunk retrieval from DB ──────────────────────────
@@ -1220,30 +1612,50 @@ class AgentKernel:
                     chunk_text = "\n---\n".join(_chunks)
                     # Inject as a pseudo-exchange so role alternation stays valid
                     chunk_prefix = [
-                        {"role": "user",      "content": f"<context_memory>\n{chunk_text}\n</context_memory>"},
-                        {"role": "assistant", "content": "Understood — I have those context fragments."},
+                        {
+                            "role": "user",
+                            "content": f"<context_memory>\n{chunk_text}\n</context_memory>",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Understood — I have those context fragments.",
+                        },
                     ]
         except Exception:
             pass  # chunk retrieval failure never blocks the response
 
         chunk_tokens = self._count_tokens(chunk_prefix)
         budget_for_history = (
-            self._DIRECT_CTX_BUDGET - sys_tokens - ep_tokens - chunk_tokens - current_tokens
+            self._DIRECT_CTX_BUDGET
+            - sys_tokens
+            - ep_tokens
+            - chunk_tokens
+            - current_tokens
         )
 
         # ── 3b: recency anchor — last N raw turns ─────────────────────────
         history = list(context)
         # Remove current user turn from tail if already appended
-        if history and history[-1].get("role") == "user" and history[-1].get("content") == text:
+        if (
+            history
+            and history[-1].get("role") == "user"
+            and history[-1].get("content") == text
+        ):
             history = history[:-1]
 
         if chunk_prefix:
             # DB has relevant chunks: only keep a small recency window
-            recent = history[-_RECENCY_TURNS:] if len(history) > _RECENCY_TURNS else list(history)
+            recent = (
+                history[-_RECENCY_TURNS:]
+                if len(history) > _RECENCY_TURNS
+                else list(history)
+            )
             recent_tokens = self._count_tokens(recent)
             while recent and recent_tokens > max(budget_for_history, 0):
                 removed_item = recent.pop(0)
-                recent_tokens -= len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
+                recent_tokens -= (
+                    len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
+                )
             while recent and recent[0].get("role") != "user":
                 recent.pop(0)
             history_block = recent
@@ -1252,19 +1664,25 @@ class AgentKernel:
             history_tokens = self._count_tokens(history)
             while history and history_tokens > max(budget_for_history, 0):
                 removed_item = history.pop(0)
-                history_tokens -= len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
+                history_tokens -= (
+                    len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
+                )
             while history and history[0].get("role") != "user":
                 history.pop(0)
             history_block = history
 
         # ── Assemble final message list ───────────────────────────────────
         messages: List[Dict] = [{"role": "system", "content": system_prompt}]
-        messages.extend(episodic_prefix)   # Layer 2: episodic summaries
-        messages.extend(chunk_prefix)      # Layer 3a: semantic DB chunks
-        messages.extend(history_block)     # Layer 3b: recency anchor
+        messages.extend(episodic_prefix)  # Layer 2: episodic summaries
+        messages.extend(chunk_prefix)  # Layer 3a: semantic DB chunks
+        messages.extend(history_block)  # Layer 3b: recency anchor
 
         # Ensure the list ends on the current user turn
-        if not messages or messages[-1].get("content") != text or messages[-1].get("role") != "user":
+        if (
+            not messages
+            or messages[-1].get("content") != text
+            or messages[-1].get("role") != "user"
+        ):
             messages.append({"role": "user", "content": text})
 
         # ── MCM Protocol: MITO tag injection + DCP prune ─────────────────
@@ -1276,7 +1694,12 @@ class AgentKernel:
 
         return messages
 
-    def _respond_direct(self, text: str, context: List[Dict], chunk_callback: Optional[Callable[[str], None]] = None) -> str:
+    def _respond_direct(
+        self,
+        text: str,
+        context: List[Dict],
+        chunk_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
         """
         Respond directly to the user without planning or tool execution.
         This is the default path for all conversational and non-tool messages.
@@ -1300,6 +1723,7 @@ class AgentKernel:
                 if chunk_callback:
                     # Streaming implementation
                     import time as _perf_t
+
                     _t0 = _perf_t.perf_counter()
                     resp = client.chat.completions.create(
                         model=sel,
@@ -1307,12 +1731,13 @@ class AgentKernel:
                         max_tokens=-1,
                         temperature=0.6,
                         stream=True,
-                        extra_body={"chat_template_kwargs": {
-                            "enable_thinking": use_thinking}},
+                        extra_body={
+                            "chat_template_kwargs": {"enable_thinking": use_thinking}
+                        },
                     )
                     full_reply = ""
                     in_think = False
-                    for chunk in resp:
+                    for chunk in self._safe_stream(resp):
                         if chunk.choices[0].delta.content:
                             delta = chunk.choices[0].delta.content
                             full_reply += delta
@@ -1337,6 +1762,7 @@ class AgentKernel:
                 else:
                     # Sync implementation
                     import time as _perf_t
+
                     _t0 = _perf_t.perf_counter()
                     resp = client.chat.completions.create(
                         model=sel,
@@ -1344,8 +1770,9 @@ class AgentKernel:
                         # -1 = unlimited for LM Studio (local model, no billing cap)
                         max_tokens=-1,
                         temperature=0.6,  # Qwen3 recommended; slightly more decisive
-                        extra_body={"chat_template_kwargs": {
-                            "enable_thinking": use_thinking}},
+                        extra_body={
+                            "chat_template_kwargs": {"enable_thinking": use_thinking}
+                        },
                     )
                     _elapsed = _perf_t.perf_counter() - _t0
                     reply = resp.choices[0].message.content or ""
@@ -1353,8 +1780,14 @@ class AgentKernel:
                     self._pending_thinking = thinking
                     # Emit inference_event — use usage stats if available
                     _usage = getattr(resp, "usage", None)
-                    _ptok = _usage.prompt_tokens if _usage else sum(len(m.get("content", "")) for m in messages) // 4
-                    _ctok = _usage.completion_tokens if _usage else max(1, len(reply) // 4)
+                    _ptok = (
+                        _usage.prompt_tokens
+                        if _usage
+                        else sum(len(m.get("content", "")) for m in messages) // 4
+                    )
+                    _ctok = (
+                        _usage.completion_tokens if _usage else max(1, len(reply) // 4)
+                    )
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
                     return clean
 
@@ -1363,22 +1796,36 @@ class AgentKernel:
                 client = self._get_api_client()
                 sel = self._selected_reasoning_model or "local-model"
                 # Fallback: local-model names don't work with remote APIs.
-                if sel in ("local-model", "Currently Loaded Model", "currently-loaded-model"):
+                if sel in (
+                    "local-model",
+                    "Currently Loaded Model",
+                    "currently-loaded-model",
+                ):
                     sel = "command-a-03-2025"
                 use_thinking = self._needs_thinking(text)
 
+                # Build API call kwargs — Cohere reasoning models support
+                # reasoning_effort ("none" / "high") via the OpenAI compat API.
+                # Standard models ignore this parameter safely.
+                _api_kwargs: Dict[str, Any] = dict(
+                    model=sel,
+                    messages=messages,
+                    max_tokens=4096,
+                    temperature=0.6,
+                )
+                if use_thinking and "reasoning" in sel.lower():
+                    _api_kwargs["reasoning_effort"] = "high"
+                    # reasoning_effort="high" requires temperature=1 per Cohere docs
+                    _api_kwargs["temperature"] = 1.0
+
                 if chunk_callback:
                     import time as _perf_t
+
                     _t0 = _perf_t.perf_counter()
-                    resp = client.chat.completions.create(
-                        model=sel,
-                        messages=messages,
-                        max_tokens=4096,
-                        temperature=0.6,
-                        stream=True,
-                    )
+                    _api_kwargs["stream"] = True
+                    resp = client.chat.completions.create(**_api_kwargs)
                     full_reply = ""
-                    for chunk in resp:
+                    for chunk in self._safe_stream(resp):
                         if chunk.choices[0].delta.content:
                             delta = chunk.choices[0].delta.content
                             full_reply += delta
@@ -1392,26 +1839,29 @@ class AgentKernel:
                     return clean
                 else:
                     import time as _perf_t
+
                     _t0 = _perf_t.perf_counter()
-                    resp = client.chat.completions.create(
-                        model=sel,
-                        messages=messages,
-                        max_tokens=4096,
-                        temperature=0.6,
-                    )
+                    resp = client.chat.completions.create(**_api_kwargs)
                     _elapsed = _perf_t.perf_counter() - _t0
                     reply = resp.choices[0].message.content or ""
                     thinking, clean = self._parse_thinking(reply)
                     self._pending_thinking = thinking
                     _usage = getattr(resp, "usage", None)
-                    _ptok = _usage.prompt_tokens if _usage else sum(len(m.get("content", "")) for m in messages) // 4
-                    _ctok = _usage.completion_tokens if _usage else max(1, len(reply) // 4)
+                    _ptok = (
+                        _usage.prompt_tokens
+                        if _usage
+                        else sum(len(m.get("content", "")) for m in messages) // 4
+                    )
+                    _ctok = (
+                        _usage.completion_tokens if _usage else max(1, len(reply) // 4)
+                    )
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
                     return clean
 
             # Ollama (model IDs contain ":")
             if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
                 import requests as _req
+
                 r = _req.post(
                     "http://localhost:11434/api/chat",
                     json={
@@ -1431,7 +1881,8 @@ class AgentKernel:
             reasoning_model = None
             if self._model_router and self._selected_reasoning_model:
                 reasoning_model = self._model_router.models.get(
-                    self._selected_reasoning_model)
+                    self._selected_reasoning_model
+                )
             if not reasoning_model and self._model_router:
                 reasoning_model = self._model_router.get_reasoning_model()
             if reasoning_model:
@@ -1456,10 +1907,13 @@ class AgentKernel:
 
         except Exception as e:
             if "Model reloaded" in str(e):
-                logger.warning(f"[AgentKernel] LM Studio model reloaded during request: {e}. Generating fallback response.")
-                return "My language model was just reloaded. Could you please repeat that?"
-            logger.error(
-                f"[AgentKernel] Direct response error: {e}", exc_info=True)
+                logger.warning(
+                    f"[AgentKernel] LM Studio model reloaded during request: {e}. Generating fallback response."
+                )
+                return (
+                    "My language model was just reloaded. Could you please repeat that?"
+                )
+            logger.error(f"[AgentKernel] Direct response error: {e}", exc_info=True)
             raise
 
     # Word count above which we consider a reply "long" for TTS purposes.
@@ -1475,25 +1929,22 @@ class AgentKernel:
         conversational replies are spoken verbatim.
         """
         import re
+
         lines = text.splitlines()
         # Markdown headings (# / ## / etc.)
-        if any(re.match(r'^#{1,6}\s', ln) for ln in lines):
+        if any(re.match(r"^#{1,6}\s", ln) for ln in lines):
             return True
         # Fenced code blocks (at least one opening fence)
-        if text.count('```') >= 2:
+        if text.count("```") >= 2:
             return True
         # Three or more bullet / numbered list items
-        list_items = sum(
-            1 for ln in lines
-            if re.match(r'^\s*[-*•]\s|^\s*\d+\.\s', ln)
-        )
+        list_items = sum(1 for ln in lines if re.match(r"^\s*[-*•]\s|^\s*\d+\.\s", ln))
         if list_items >= 3:
             return True
         # Long, dense multi-paragraph text (>10 non-empty lines, avg >8 words/line)
         non_empty = [ln for ln in lines if ln.strip()]
         if len(non_empty) > 10:
-            avg_words = sum(len(ln.split())
-                            for ln in non_empty) / len(non_empty)
+            avg_words = sum(len(ln.split()) for ln in non_empty) / len(non_empty)
             if avg_words > 8:
                 return True
         return False
@@ -1525,13 +1976,16 @@ class AgentKernel:
             return text
 
         # Document content: extract first 1-2 sentences up to _SPOKEN_MAX_WORDS.
-        sentences = re.split(r'(?<=[.!?…])\s+', text.strip())
+        sentences = re.split(r"(?<=[.!?…])\s+", text.strip())
         sentences = [s.strip() for s in sentences if s.strip()]
 
         spoken_words: list[str] = []
         for sentence in sentences:
             s_words = sentence.split()
-            if spoken_words and len(spoken_words) + len(s_words) > self._SPOKEN_MAX_WORDS:
+            if (
+                spoken_words
+                and len(spoken_words) + len(s_words) > self._SPOKEN_MAX_WORDS
+            ):
                 break
             spoken_words.extend(s_words)
             if len(spoken_words) >= self._SPOKEN_WORD_LIMIT:
@@ -1555,6 +2009,26 @@ class AgentKernel:
           {"type": "function", "function": {"name": …, "description": …, "parameters": {…}}}
         """
         if not self._tool_bridge:
+            # Lazy-initialize the tool bridge on first access.
+            # initialize() is async, so we create it as a background task
+            # that runs once.  Tools from _tools dict are available immediately;
+            # the async initialization sets up MCP/server connections.
+            try:
+                from backend.agent.tool_bridge import get_agent_tool_bridge
+
+                self._tool_bridge = get_agent_tool_bridge()
+                if not self._tool_bridge._initialized:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(self._tool_bridge.initialize())
+                    except RuntimeError:
+                        # No running event loop — run synchronously
+                        asyncio.run(self._tool_bridge.initialize())
+                logger.info("[AgentKernel] Tool bridge lazy-initialized")
+            except Exception as e:
+                logger.warning(f"[AgentKernel] Tool bridge init failed: {e}")
+                return []
+        if not self._tool_bridge:
             return []
         openai_tools: List[Dict] = []
         for t in self._tool_bridge.get_available_tools():
@@ -1567,23 +2041,30 @@ class AgentKernel:
                 }
                 if not pspec.get("optional", False):
                     required.append(pname)
-            openai_tools.append({
-                "type": "function",
-                "function": {
-                    "name": t["name"],
-                    "description": t.get("description", ""),
-                    "parameters": {
-                        "type": "object",
-                        "properties": props,
-                        "required": required,
+            openai_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "parameters": {
+                            "type": "object",
+                            "properties": props,
+                            "required": required,
+                        },
                     },
-                },
-            })
+                }
+            )
         return openai_tools
 
     # ── ReAct agentic loop ───────────────────────────────────────────────────
 
-    def _run_agentic_loop(self, messages: List[Dict], session_id: Optional[str] = None, chunk_callback: Optional[Callable[[str], None]] = None) -> str:
+    def _run_agentic_loop(
+        self,
+        messages: List[Dict],
+        session_id: Optional[str] = None,
+        chunk_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
         """
         Multi-step reasoning and tool execution loop (ReAct).
 
@@ -1631,8 +2112,7 @@ class AgentKernel:
                         # Thinking OFF during tool-call iterations — models need
                         # clean JSON for tool_calls; thinking can be re-enabled
                         # on the final free-response turn if desired.
-                        extra_body={"chat_template_kwargs": {
-                            "enable_thinking": False}},
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     if tools:
                         call_kwargs["tools"] = tools
@@ -1650,7 +2130,7 @@ class AgentKernel:
                         in_think = False
                         finish_reason = "stop"
 
-                        for chunk in resp:
+                        for chunk in self._safe_stream(resp):
                             if not chunk.choices:
                                 continue
                             delta = chunk.choices[0].delta
@@ -1672,15 +2152,28 @@ class AgentKernel:
                                 for tc in delta.tool_calls:
                                     idx = tc.index if hasattr(tc, "index") else 0
                                     while len(all_tool_calls) <= idx:
-                                        all_tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-                                    
+                                        all_tool_calls.append(
+                                            {
+                                                "id": "",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "",
+                                                    "arguments": "",
+                                                },
+                                            }
+                                        )
+
                                     if getattr(tc, "id", None):
                                         all_tool_calls[idx]["id"] = tc.id
                                     if getattr(tc, "function", None):
                                         if getattr(tc.function, "name", None):
-                                            all_tool_calls[idx]["function"]["name"] = tc.function.name
+                                            all_tool_calls[idx]["function"]["name"] = (
+                                                tc.function.name
+                                            )
                                         if getattr(tc.function, "arguments", None):
-                                            all_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+                                            all_tool_calls[idx]["function"][
+                                                "arguments"
+                                            ] += tc.function.arguments
 
                             if getattr(chunk.choices[0], "finish_reason", None):
                                 finish_reason = chunk.choices[0].finish_reason
@@ -1690,22 +2183,34 @@ class AgentKernel:
                             def __init__(self, name, arguments):
                                 self.name = name
                                 self.arguments = arguments
+
                         class DummyToolCall:
                             def __init__(self, id, function):
                                 self.id = id
                                 self.function = function
-                        
+
                         typed_tool_calls = [
-                            DummyToolCall(tc["id"], DummyFunction(tc["function"]["name"], tc["function"]["arguments"]))
+                            DummyToolCall(
+                                tc["id"],
+                                DummyFunction(
+                                    tc["function"]["name"], tc["function"]["arguments"]
+                                ),
+                            )
                             for tc in all_tool_calls
                         ]
 
                         class StreamedChoice:
                             def __init__(self, content, tool_calls, finish_reason):
-                                self.message = type('Message', (object,), {'content': content, 'tool_calls': tool_calls})()
+                                self.message = type(
+                                    "Message",
+                                    (object,),
+                                    {"content": content, "tool_calls": tool_calls},
+                                )()
                                 self.finish_reason = finish_reason
-                                
-                        choice = StreamedChoice(full_reply, typed_tool_calls, finish_reason)
+
+                        choice = StreamedChoice(
+                            full_reply, typed_tool_calls, finish_reason
+                        )
                     else:
                         # Non-streaming path (original logic)
                         choice = resp.choices[0]
@@ -1723,22 +2228,24 @@ class AgentKernel:
                     if all_tool_calls:
                         # Serialize the assistant turn so the model keeps its own
                         # tool_call references in subsequent context passes
-                        messages.append({
-                            "role": "assistant",
-                            # Use content from choice, which might be empty for tool calls
-                            "content": choice.message.content or "",
-                            "tool_calls": [
-                                {
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments,
-                                    },
-                                }
-                                for tc in all_tool_calls
-                            ],
-                        })
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                # Use content from choice, which might be empty for tool calls
+                                "content": choice.message.content or "",
+                                "tool_calls": [
+                                    {
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments,
+                                        },
+                                    }
+                                    for tc in all_tool_calls
+                                ],
+                            }
+                        )
 
                         for tc in all_tool_calls:
                             t_name = tc.function.name
@@ -1762,8 +2269,7 @@ class AgentKernel:
                                         )
                                     )
                                 else:
-                                    t_result = {
-                                        "error": "Tool bridge not available"}
+                                    t_result = {"error": "Tool bridge not available"}
                             except RuntimeError as run_err:
                                 # asyncio.run() can fail if called from inside an
                                 # already-running loop (shouldn't happen here, but just
@@ -1772,6 +2278,7 @@ class AgentKernel:
                                     f"[AgentLoop] asyncio.run failed: {run_err} — using ThreadPoolExecutor"
                                 )
                                 import concurrent.futures
+
                                 loop = asyncio.new_event_loop()
                                 try:
                                     t_result = loop.run_until_complete(
@@ -1785,31 +2292,307 @@ class AgentKernel:
                                 logger.error(
                                     f"[AgentLoop] Tool {t_name} raised: {exec_err}"
                                 )
-                                t_result = {"error": str(
-                                    exec_err), "tool": t_name}
+                                t_result = {"error": str(exec_err), "tool": t_name}
 
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": (
-                                    json.dumps(t_result)
-                                    if isinstance(t_result, dict)
-                                    else str(t_result)
-                                ),
-                            })
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": (
+                                        json.dumps(t_result)
+                                        if isinstance(t_result, dict)
+                                        else str(t_result)
+                                    ),
+                                }
+                            )
                         continue  # next iteration — model sees tool results
 
-                # ── Fallback for non-LM-Studio providers ─────────────────────
+                # ── Remote API provider (Cohere, OpenAI, Groq, etc.) ──────────
+                # These providers support OpenAI-compatible function calling via
+                # the remote API client — same protocol as LM Studio but over
+                # the network with an API key.
+                if self._is_api_provider():
+                    client = self._get_api_client()
+                    sel = self._selected_reasoning_model or "local-model"
+                    if sel in (
+                        "local-model",
+                        "Currently Loaded Model",
+                        "currently-loaded-model",
+                    ):
+                        sel = "command-a-03-2025"
+
+                    call_kwargs: Dict[str, Any] = dict(
+                        model=sel,
+                        messages=messages,
+                        max_tokens=4096,
+                        temperature=0.6,
+                    )
+                    if tools:
+                        call_kwargs["tools"] = tools
+                        call_kwargs["tool_choice"] = "auto"
+
+                    # Cohere reasoning models: disable reasoning_effort during
+                    # tool-call iterations (same rationale as LM Studio thinking
+                    # OFF — clean JSON for tool_calls).  Re-enabled on the final
+                    # free-response turn if the model is a reasoning variant.
+                    # Standard models ignore reasoning_effort safely.
+
+                    # Enable streaming if a chunk_callback is provided
+                    if chunk_callback:
+                        call_kwargs["stream"] = True
+
+                    # Validate that we have an API key before calling
+                    if not self._api_key and self._model_provider not in (
+                        "lmstudio",
+                        "local",
+                        "iris_local",
+                    ):
+                        return (
+                            "IRIS needs an API key to use this model. "
+                            "Open the agents card and add your key."
+                        )
+
+                    try:
+                        resp = client.chat.completions.create(**call_kwargs)
+                    except Exception as _call_err:
+                        _err_name = type(_call_err).__name__
+                        _provider_name = self._model_provider or "the API"
+                        if "AuthenticationError" in _err_name or "401" in str(
+                            _call_err
+                        ):
+                            return (
+                                f"IRIS couldn't authenticate with {_provider_name}. "
+                                f"Check your API key in the agents card."
+                            )
+                        elif "RateLimitError" in _err_name or "429" in str(_call_err):
+                            return (
+                                f"IRIS is being rate-limited by {_provider_name}. "
+                                f"Wait a moment and try again."
+                            )
+                        elif (
+                            "Timeout" in _err_name
+                            or "timed out" in str(_call_err).lower()
+                        ):
+                            return (
+                                f"IRIS timed out waiting for {_provider_name}. "
+                                f"The model may be overloaded — try again."
+                            )
+                        else:
+                            logger.error(
+                                f"[AgentLoop] API provider error ({_err_name}): {_call_err}"
+                            )
+                            return (
+                                f"IRIS hit an error with {_provider_name}: {_call_err}"
+                            )
+
+                    if chunk_callback and call_kwargs.get("stream"):
+                        full_reply = ""
+                        all_tool_calls = []
+                        finish_reason = "stop"
+
+                        for chunk in self._safe_stream(resp):
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta
+
+                            if getattr(delta, "content", None):
+                                content_piece = delta.content
+                                full_reply += content_piece
+                                chunk_callback(content_piece)
+
+                            # Accumulate tool calls safely
+                            if getattr(delta, "tool_calls", None):
+                                for tc in delta.tool_calls:
+                                    idx = tc.index if hasattr(tc, "index") else 0
+                                    while len(all_tool_calls) <= idx:
+                                        all_tool_calls.append(
+                                            {
+                                                "id": "",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "",
+                                                    "arguments": "",
+                                                },
+                                            }
+                                        )
+
+                                    if getattr(tc, "id", None):
+                                        all_tool_calls[idx]["id"] = tc.id
+                                    if getattr(tc, "function", None):
+                                        if getattr(tc.function, "name", None):
+                                            all_tool_calls[idx]["function"]["name"] = (
+                                                tc.function.name
+                                            )
+                                        if getattr(tc.function, "arguments", None):
+                                            all_tool_calls[idx]["function"][
+                                                "arguments"
+                                            ] += tc.function.arguments
+
+                            if getattr(chunk.choices[0], "finish_reason", None):
+                                finish_reason = chunk.choices[0].finish_reason
+
+                        # Convert accumulated tool calls dicts to simulated objects
+                        class DummyFunction:
+                            def __init__(self, name, arguments):
+                                self.name = name
+                                self.arguments = arguments
+
+                        class DummyToolCall:
+                            def __init__(self, id, function):
+                                self.id = id
+                                self.function = function
+
+                        typed_tool_calls = [
+                            DummyToolCall(
+                                tc["id"],
+                                DummyFunction(
+                                    tc["function"]["name"], tc["function"]["arguments"]
+                                ),
+                            )
+                            for tc in all_tool_calls
+                        ]
+
+                        class StreamedChoice:
+                            def __init__(self, content, tool_calls, finish_reason):
+                                self.message = type(
+                                    "Message",
+                                    (object,),
+                                    {"content": content, "tool_calls": tool_calls},
+                                )()
+                                self.finish_reason = finish_reason
+
+                        choice = StreamedChoice(
+                            full_reply, typed_tool_calls, finish_reason
+                        )
+                    else:
+                        # Non-streaming path
+                        choice = resp.choices[0]
+                        full_reply = choice.message.content or ""
+                        all_tool_calls = choice.message.tool_calls or []
+
+                    # Model finished without requesting any tool — return response
+                    if choice.finish_reason == "stop" or not all_tool_calls:
+                        content = full_reply
+                        thinking, clean = self._parse_thinking(content)
+                        self._pending_thinking = thinking
+                        return clean
+
+                    # Model wants to use one or more tools
+                    typed_tcs = (
+                        getattr(choice.message, "tool_calls", None) or all_tool_calls
+                    )
+                    if typed_tcs:
+                        # Helper: get field from either dict or object
+                        def _tc_attr(tc, field):
+                            if isinstance(tc, dict):
+                                return tc.get(field, None)
+                            return getattr(tc, field, None)
+
+                        def _tc_func_attr(tc, field):
+                            tc_func = _tc_attr(tc, "function")
+                            if tc_func is None:
+                                return None
+                            if isinstance(tc_func, dict):
+                                return tc_func.get(field, None)
+                            return getattr(tc_func, field, None)
+
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                "content": choice.message.content or "",
+                                "tool_calls": [
+                                    {
+                                        "id": _tc_attr(tc, "id") or "",
+                                        "type": "function",
+                                        "function": {
+                                            "name": _tc_func_attr(tc, "name") or "",
+                                            "arguments": _tc_func_attr(tc, "arguments")
+                                            or "",
+                                        },
+                                    }
+                                    for tc in typed_tcs
+                                ],
+                            }
+                        )
+
+                        for tc in typed_tcs:
+                            t_name = _tc_func_attr(tc, "name") or "unknown"
+                            t_args_raw = _tc_func_attr(tc, "arguments") or "{}"
+                            try:
+                                t_args = json.loads(t_args_raw)
+                            except Exception:
+                                t_args = {}
+
+                            logger.info(
+                                f"[AgentLoop/API] Tool call: {t_name}({list(t_args.keys())})"
+                            )
+
+                            logger.info(
+                                f"[AgentLoop/API] Tool call: {t_name}({list(t_args.keys())})"
+                            )
+                            _tc_id = _tc_attr(tc, "id") or ""
+
+                            try:
+                                if self._tool_bridge:
+                                    # Run async execute_tool in a dedicated thread
+                                    # to avoid event-loop nesting (asyncio.run
+                                    # cannot be called from inside a running loop).
+                                    import threading as _threading
+
+                                    _result_box = [None]
+                                    _error_box = [None]
+
+                                    def _run_tool():
+                                        try:
+                                            _result_box[0] = asyncio.run(
+                                                self._tool_bridge.execute_tool(
+                                                    t_name, t_args, session_id
+                                                )
+                                            )
+                                        except Exception as e:
+                                            _error_box[0] = e
+
+                                    _t = _threading.Thread(
+                                        target=_run_tool, daemon=True
+                                    )
+                                    _t.start()
+                                    _t.join(timeout=60)
+
+                                    if _error_box[0]:
+                                        raise _error_box[0]
+                                    t_result = _result_box[0] or {}
+                                else:
+                                    t_result = {"error": "Tool bridge not available"}
+                            except Exception as exec_err:
+                                logger.error(
+                                    f"[AgentLoop/API] Tool {t_name} raised: {exec_err}"
+                                )
+                                t_result = {"error": str(exec_err), "tool": t_name}
+
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": _tc_id,
+                                    "content": (
+                                        json.dumps(t_result)
+                                        if isinstance(t_result, dict)
+                                        else str(t_result)
+                                    ),
+                                }
+                            )
+                        continue  # next iteration — model sees tool results
+
+                # ── Fallback for Ollama / local models ─────────────────────
                 # Ollama and local models don't support tool calling yet;
                 # fall back to a direct conversational response.
                 last_user = next(
-                    (m["content"]
-                     for m in reversed(messages) if m["role"] == "user"),
+                    (m["content"] for m in reversed(messages) if m["role"] == "user"),
                     "",
                 )
-                ctx = [m for m in messages if m["role"]
-                       in ("user", "assistant")][-8:]
-                return self._respond_direct(last_user, ctx, chunk_callback=chunk_callback)
+                ctx = [m for m in messages if m["role"] in ("user", "assistant")][-8:]
+                return self._respond_direct(
+                    last_user, ctx, chunk_callback=chunk_callback
+                )
 
             except Exception as loop_err:
                 logger.error(
@@ -1821,17 +2604,16 @@ class AgentKernel:
                 break
 
         # Max iterations reached — ask model to summarise what it found
-        logger.warning(
-            f"[AgentLoop] Max iterations ({MAX_ITERATIONS}) reached")
+        logger.warning(f"[AgentLoop] Max iterations ({MAX_ITERATIONS}) reached")
         last_user = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user"),
             "your request",
         )
-        summary_ctx = [
-            m for m in messages if m["role"] in ("user", "assistant")
-        ][-6:]
+        summary_ctx = [m for m in messages if m["role"] in ("user", "assistant")][-6:]
         return self._respond_direct(
-            f"Summarise what you found so far for: {last_user}", summary_ctx, chunk_callback=chunk_callback
+            f"Summarise what you found so far for: {last_user}",
+            summary_ctx,
+            chunk_callback=chunk_callback,
         )
 
     def prepare_spoken_text(self, full_response: str, user_message: str = "") -> str:
@@ -1893,7 +2675,7 @@ class AgentKernel:
             truncated.rfind("? "),
         )
         if last_boundary > 25:
-            truncated = truncated[:last_boundary + 1]
+            truncated = truncated[: last_boundary + 1]
 
         spoken = normalize_text(truncated)
         if had_code:
@@ -1909,14 +2691,22 @@ class AgentKernel:
         Applied ONLY here — not in WebSocket validators.
         """
         import re as _re
+
         _PACMAN_PATTERNS = (
-            r'system://', r'trusted://', r'tool://', r'reference://',
-            r'MYCELIUM:', r'TOPOLOGY:', r'CONTRACT:',
-            r'GRADIENT WARNING', r'AMBIENT:', r'CAUSAL:',
+            r"system://",
+            r"trusted://",
+            r"tool://",
+            r"reference://",
+            r"MYCELIUM:",
+            r"TOPOLOGY:",
+            r"CONTRACT:",
+            r"GRADIENT WARNING",
+            r"AMBIENT:",
+            r"CAUSAL:",
         )
         result = task
         for pattern in _PACMAN_PATTERNS:
-            result = _re.sub(pattern, '[filtered]', result)
+            result = _re.sub(pattern, "[filtered]", result)
         return result
 
     def _build_planning_prompt(
@@ -1967,9 +2757,10 @@ class AgentKernel:
         """
         try:
             from backend.memory.mycelium.interpreter import ResolutionEncoder
+
             if (
                 self._memory_interface is not None
-                and hasattr(self._memory_interface, '_mycelium')
+                and hasattr(self._memory_interface, "_mycelium")
                 and self._memory_interface._mycelium is not None
             ):
                 conn = self._memory_interface._mycelium.conn
@@ -2002,9 +2793,13 @@ class AgentKernel:
         import re as _re
 
         _MODE_TEMPERATURES = {
-            "debug": 0.0, "review": 0.0, "test": 0.0,
-            "implement": 0.1, "quick_edit": 0.1,
-            "research": 0.3, "spec": 0.2,
+            "debug": 0.0,
+            "review": 0.0,
+            "test": 0.0,
+            "implement": 0.1,
+            "quick_edit": 0.1,
+            "research": 0.3,
+            "spec": 0.2,
         }
         temperature = _MODE_TEMPERATURES.get(mode, 0.1 if is_mature else 0.25)
 
@@ -2013,7 +2808,7 @@ class AgentKernel:
         preds = ""
         strategy_hint = ""
         if context_package is not None:
-            tier1 = getattr(context_package, 'tier1_directives', "") or ""
+            tier1 = getattr(context_package, "tier1_directives", "") or ""
             try:
                 preds = context_package.get_tier2_predictions() or ""
             except Exception:
@@ -2061,8 +2856,11 @@ class AgentKernel:
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
                 plan_raw = _r.choices[0].message.content
-            elif self._selected_reasoning_model and ":" in self._selected_reasoning_model:
+            elif (
+                self._selected_reasoning_model and ":" in self._selected_reasoning_model
+            ):
                 import requests as _req
+
                 _r2 = _req.post(
                     "http://localhost:11434/api/chat",
                     json={
@@ -2080,19 +2878,25 @@ class AgentKernel:
         # Parse JSON → ExecutionPlan
         try:
             if plan_raw:
-                m = _re.search(r'\{[\s\S]+\}', plan_raw)
+                m = _re.search(r"\{[\s\S]+\}", plan_raw)
                 if m:
                     data = json.loads(m.group())
                     steps: List[Any] = []
                     for raw_step in data.get("steps", []):
-                        steps.append(PlanStep(
-                            step_id=str(raw_step.get("step_id", str(_uuid.uuid4()))),
-                            step_number=int(raw_step.get("step_number", len(steps) + 1)),
-                            description=str(raw_step.get("description", "")),
-                            tool=raw_step.get("tool"),
-                            params=raw_step.get("params", {}),
-                            critical=bool(raw_step.get("critical", True)),
-                        ))
+                        steps.append(
+                            PlanStep(
+                                step_id=str(
+                                    raw_step.get("step_id", str(_uuid.uuid4()))
+                                ),
+                                step_number=int(
+                                    raw_step.get("step_number", len(steps) + 1)
+                                ),
+                                description=str(raw_step.get("description", "")),
+                                tool=raw_step.get("tool"),
+                                params=raw_step.get("params", {}),
+                                critical=bool(raw_step.get("critical", True)),
+                            )
+                        )
                     return ExecutionPlan(
                         plan_id=str(_uuid.uuid4()),
                         original_task=text,
@@ -2109,16 +2913,24 @@ class AgentKernel:
             original_task=text,
             strategy="do_it_myself",
             reasoning="_plan_task fallback — model returned non-JSON",
-            steps=[PlanStep(
-                step_id="s1",
-                step_number=1,
-                description=text,
-                tool=None,
-                critical=True,
-            )],
+            steps=[
+                PlanStep(
+                    step_id="s1",
+                    step_number=1,
+                    description=text,
+                    tool=None,
+                    critical=True,
+                )
+            ],
         )
 
-    def process_text_message(self, text: str, session_id: Optional[str] = None, chunk_callback: Optional[Callable[[str], None]] = None, from_voice: bool = False) -> str:
+    def process_text_message(
+        self,
+        text: str,
+        session_id: Optional[str] = None,
+        chunk_callback: Optional[Callable[[str], None]] = None,
+        from_voice: bool = False,
+    ) -> str:
         """
         Main entry point for text messages.
         Decides between direct response and agentic (tool-calling) loop.
@@ -2150,14 +2962,14 @@ class AgentKernel:
 
         # Create TaskContext to carry full context through pipeline (fixes Bug 3, 4, 5, 6)
         import uuid
+
         task_id = str(uuid.uuid4())
         _t_start = time.perf_counter()
 
         try:
             # Add user message to conversation memory
             self._conversation_memory.add_message("user", text)
-            logger.info(
-                f"[AgentKernel] Processing text message: {text[:50]}...")
+            logger.info(f"[AgentKernel] Processing text message: {text[:50]}...")
 
             # Get conversation context
             context = self._conversation_memory.get_context()
@@ -2177,11 +2989,12 @@ class AgentKernel:
         # questions, conversation — goes straight to _respond_direct() which
         # calls the model with no JSON schema overhead.
         if not self._needs_planning(text):
-            logger.info(
-                "[AgentKernel] Direct response path (no planning needed)")
+            logger.info("[AgentKernel] Direct response path (no planning needed)")
             try:
                 _t_llm_start = time.perf_counter()
-                response = self._respond_direct(text, context, chunk_callback=chunk_callback)
+                response = self._respond_direct(
+                    text, context, chunk_callback=chunk_callback
+                )
                 _t_llm_end = time.perf_counter()
                 logger.info(
                     f"[Timing] LLM call (_respond_direct): {(_t_llm_end - _t_llm_start) * 1000:.0f} ms  |  "
@@ -2189,7 +3002,9 @@ class AgentKernel:
                 )
             except Exception as e:
                 logger.error(f"[AgentKernel] LLM call failed: {e}")
-                return f"[IRIS error: could not reach language model — {type(e).__name__}]"
+                return (
+                    f"[IRIS error: could not reach language model — {type(e).__name__}]"
+                )
             try:
                 self._conversation_memory.add_message("assistant", response)
             except Exception:
@@ -2202,13 +3017,17 @@ class AgentKernel:
                     _turn = f"User: {text}\nAssistant: {response}"
                     if self._mcm_orch is not None:
                         self._mcm_orch.post_turn(
-                            self._conversation_memory.messages if self._conversation_memory else [],
+                            self._conversation_memory.messages
+                            if self._conversation_memory
+                            else [],
                             response_text=response,
                         )
                     elif (
                         self._memory_interface is not None
                         and hasattr(self._memory_interface, "episodic")
-                        and hasattr(self._memory_interface.episodic, "fragment_and_store")
+                        and hasattr(
+                            self._memory_interface.episodic, "fragment_and_store"
+                        )
                     ):
                         self._memory_interface.episodic.fragment_and_store(
                             _turn,
@@ -2220,7 +3039,8 @@ class AgentKernel:
                 pass
             if response is None:
                 logger.error(
-                    "[AgentKernel] _respond_direct returned None — returning fallback")
+                    "[AgentKernel] _respond_direct returned None — returning fallback"
+                )
                 response = "I wasn't able to generate a response. Please check the model connection."
             logger.info(f"[AgentKernel] Direct response: {response[:50]}...")
             return response
@@ -2262,7 +3082,7 @@ class AgentKernel:
             if from_voice:
                 _mode_name = "voice_first"
             else:
-                _mode_name = "full"   # default maps to DER_TOKEN_BUDGETS["full"]
+                _mode_name = "full"  # default maps to DER_TOKEN_BUDGETS["full"]
                 if self._mode_detector is not None:
                     try:
                         _mode_result = self._mode_detector.detect(
@@ -2295,7 +3115,11 @@ class AgentKernel:
 
             # GAP 6 — register plan address when Mycelium is mature
             try:
-                if _is_mature and _context_package and hasattr(_context_package, 'register_address'):
+                if (
+                    _is_mature
+                    and _context_package
+                    and hasattr(_context_package, "register_address")
+                ):
                     _plan_ctx_str = _plan.to_context_string()
                     _context_package.register_address(
                         url=f"system://plan/{_plan.plan_id[:8]}",
@@ -2310,9 +3134,7 @@ class AgentKernel:
                 # Use mode name as task_class so DER_TOKEN_BUDGETS[mode] applies.
                 # Falls back to _task_class if mode not in budget table.
                 _der_task_class = (
-                    _mode_name
-                    if _mode_name in DER_TOKEN_BUDGETS
-                    else _task_class
+                    _mode_name if _mode_name in DER_TOKEN_BUDGETS else _task_class
                 )
                 _der_response = self._execute_plan_der(
                     plan=_plan,
@@ -2329,14 +3151,32 @@ class AgentKernel:
             _der_response = None
 
         if _der_response is not None:
-            try:
-                self._conversation_memory.add_message("assistant", _der_response)
-            except Exception:
-                pass
-            logger.info(
-                f"[AgentKernel] DER response: {_der_response[:50]}..."
+            # Only accept DER response if it produced actual content.
+            # Empty plans (0 steps completed) or fallback markers from
+            # failed local-model execution should fall through to the
+            # agentic loop so the model can use tools via the API.
+            #
+            # Patterns that indicate DER produced no real response:
+            #   - empty string
+            #   - "[DER]" prefix with "0/" steps
+            #   - "[step X completed]" or "[step X error:]" which mean
+            #     the local execution model failed to produce content
+            _der_text = _der_response.strip()
+            _is_empty = (
+                not _der_text
+                or ("[DER]" in _der_text[:20] and "0/" in _der_text[:50])
+                or _der_text.startswith("[step ")
+                and _der_text.endswith("completed]")
+                or _der_text.startswith("[step ")
+                and "error:" in _der_text
             )
-            return _der_response
+            if not _is_empty:
+                try:
+                    self._conversation_memory.add_message("assistant", _der_response)
+                except Exception:
+                    pass
+                logger.info(f"[AgentKernel] DER response: {_der_response[:50]}...")
+                return _der_response
 
         # ── Agentic loop path: for tool-trigger messages ─────────────────────
         # Build the initial message list (system + conversation history + user turn).
@@ -2344,8 +3184,7 @@ class AgentKernel:
         # model emits finish_reason="stop", at which point we have the final answer.
         system_prompt = self._build_system_prompt()
 
-        loop_messages: List[Dict] = [
-            {"role": "system", "content": system_prompt}]
+        loop_messages: List[Dict] = [{"role": "system", "content": system_prompt}]
         context_window = list(context[-6:])
         while context_window and context_window[0]["role"] != "user":
             context_window.pop(0)
@@ -2356,13 +3195,16 @@ class AgentKernel:
 
         try:
             response = self._run_agentic_loop(
-                loop_messages, session_id or self.session_id, chunk_callback=chunk_callback)
+                loop_messages,
+                session_id or self.session_id,
+                chunk_callback=chunk_callback,
+            )
         except Exception as e:
-            logger.error(
-                f"[AgentKernel] Agentic loop failed: {e}", exc_info=True)
+            logger.error(f"[AgentKernel] Agentic loop failed: {e}", exc_info=True)
             try:
                 response = self._respond_direct(
-                    text, context, chunk_callback=chunk_callback)
+                    text, context, chunk_callback=chunk_callback
+                )
             except Exception:
                 response = "[IRIS error: could not process request]"
 
@@ -2371,17 +3213,18 @@ class AgentKernel:
             self._conversation_memory.add_message("assistant", response)
         except Exception as e:
             logger.warning(
-                f"[AgentKernel] Failed to save response to conversation memory: {e}")
+                f"[AgentKernel] Failed to save response to conversation memory: {e}"
+            )
 
         # Record task for session-level memory continuity
         try:
             import uuid as _uuid
+
             task_record = TaskRecord(
                 task_id=task_id,
                 user_message=text,
                 summary=response,
-                step_count=len(
-                    [m for m in loop_messages if m.get("role") == "tool"]),
+                step_count=len([m for m in loop_messages if m.get("role") == "tool"]),
                 had_failures=False,
                 tool_names_used=[
                     m.get("content", "")[:30]
@@ -2399,7 +3242,9 @@ class AgentKernel:
         logger.info(f"[AgentKernel] Generated response: {response[:50]}...")
         return response
 
-    def plan_task(self, task_description: str, context: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    def plan_task(
+        self, task_description: str, context: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
         """
         Use lfm2-8b (reasoning model) for task planning with timeout and error handling.
 
@@ -2427,10 +3272,12 @@ class AgentKernel:
                     # Use user-selected reasoning model if available
                     if self._selected_reasoning_model:
                         reasoning_model = self._model_router.models.get(
-                            self._selected_reasoning_model)
+                            self._selected_reasoning_model
+                        )
                         if reasoning_model:
                             logger.info(
-                                f"[AgentKernel] Using user-selected reasoning model: {self._selected_reasoning_model}")
+                                f"[AgentKernel] Using user-selected reasoning model: {self._selected_reasoning_model}"
+                            )
                         else:
                             # Only fall back to the default local stub when neither Ollama
                             # nor VPS will handle this request.  If ":" is in the model ID
@@ -2441,20 +3288,31 @@ class AgentKernel:
                             _ollama_will_handle = ":" in _sel_check
                             _vps_will_handle = bool(self._vps_gateway)
                             _lmstudio_will_handle = self._is_openai_compat()
-                            if not _ollama_will_handle and not _vps_will_handle and not _lmstudio_will_handle:
+                            if (
+                                not _ollama_will_handle
+                                and not _vps_will_handle
+                                and not _lmstudio_will_handle
+                            ):
                                 logger.warning(
                                     f"[AgentKernel] Selected model {_sel_check} unavailable, "
                                     "falling back to default local model"
                                 )
-                                reasoning_model = self._model_router.get_reasoning_model()
+                                reasoning_model = (
+                                    self._model_router.get_reasoning_model()
+                                )
                                 if reasoning_model:
                                     default_model_id = getattr(
-                                        reasoning_model, 'model_id', 'unknown')
+                                        reasoning_model, "model_id", "unknown"
+                                    )
                                     logger.info(
-                                        f"[AgentKernel] Fallback: using default reasoning model {default_model_id}")
+                                        f"[AgentKernel] Fallback: using default reasoning model {default_model_id}"
+                                    )
                             else:
-                                _dest = "LM Studio" if _lmstudio_will_handle else (
-                                    "Ollama" if _ollama_will_handle else "VPS")
+                                _dest = (
+                                    "LM Studio"
+                                    if _lmstudio_will_handle
+                                    else ("Ollama" if _ollama_will_handle else "VPS")
+                                )
                                 logger.info(
                                     f"[AgentKernel] Selected model '{_sel_check}' not in local cache — "
                                     f"will route to {_dest}"
@@ -2465,12 +3323,13 @@ class AgentKernel:
                         reasoning_model = self._model_router.get_reasoning_model()
                         if reasoning_model:
                             default_model_id = getattr(
-                                reasoning_model, 'model_id', 'unknown')
+                                reasoning_model, "model_id", "unknown"
+                            )
                             logger.info(
-                                f"[AgentKernel] No model selected, using default reasoning model: {default_model_id}")
+                                f"[AgentKernel] No model selected, using default reasoning model: {default_model_id}"
+                            )
                 except Exception as e:
-                    logger.error(
-                        f"[AgentKernel] Error getting reasoning model: {e}")
+                    logger.error(f"[AgentKernel] Error getting reasoning model: {e}")
                     return {"error": f"Failed to access reasoning model: {e}"}
 
             # Handle model unavailability
@@ -2478,13 +3337,16 @@ class AgentKernel:
                 if self._single_model_mode and self._available_model_id:
                     # Fall back to the single available local model
                     logger.warning(
-                        "[AgentKernel] Reasoning model unavailable, using fallback model")
+                        "[AgentKernel] Reasoning model unavailable, using fallback model"
+                    )
                     try:
                         reasoning_model = self._model_router.models.get(
-                            self._available_model_id)
+                            self._available_model_id
+                        )
                     except Exception as e:
                         logger.error(
-                            f"[AgentKernel] Error accessing fallback model: {e}")
+                            f"[AgentKernel] Error accessing fallback model: {e}"
+                        )
                         return {"error": f"Failed to access fallback model: {e}"}
                 elif self._is_openai_compat():
                     # LM Studio is configured — reasoning_model stays None; the LM Studio
@@ -2522,8 +3384,7 @@ class AgentKernel:
                         )
                         try:
                             self._model_router.load_models()
-                            reasoning_model = self._model_router.models.get(
-                                _sel)
+                            reasoning_model = self._model_router.models.get(_sel)
                             if reasoning_model is None:
                                 _all = list(self._model_router.models.values())
                                 if _all:
@@ -2534,7 +3395,8 @@ class AgentKernel:
                                     )
                         except Exception as _lazy_err:
                             logger.warning(
-                                f"[AgentKernel] Lazy load failed: {_lazy_err}")
+                                f"[AgentKernel] Lazy load failed: {_lazy_err}"
+                            )
                         if not reasoning_model:
                             return {
                                 "error": (
@@ -2557,13 +3419,13 @@ class AgentKernel:
                 try:
                     system_prompt = self._personality.get_system_prompt()
                 except Exception as e:
-                    logger.warning(
-                        f"[AgentKernel] Error getting system prompt: {e}")
+                    logger.warning(f"[AgentKernel] Error getting system prompt: {e}")
 
             context_str = ""
             if context:
-                context_str = "\n\nConversation Context:\n" + \
-                    json.dumps(context[-5:], indent=2)
+                context_str = "\n\nConversation Context:\n" + json.dumps(
+                    context[-5:], indent=2
+                )
 
             planning_prompt = f"""{system_prompt}
 
@@ -2595,34 +3457,37 @@ Respond with a JSON object:
             if self._vps_gateway:
                 try:
                     logger.info(
-                        "[AgentKernel] Using VPS Gateway for planning inference...")
+                        "[AgentKernel] Using VPS Gateway for planning inference..."
+                    )
                     try:
                         plan_response = asyncio.run(
                             self._vps_gateway.infer(
-                                model=self._model_router.get_reasoning_model_id() or "lfm2-8b",
+                                model=self._model_router.get_reasoning_model_id()
+                                or "lfm2-8b",
                                 prompt=planning_prompt,
-                                context={
-                                    "conversation_history": context} if context else {},
+                                context={"conversation_history": context}
+                                if context
+                                else {},
                                 params={"max_tokens": 512, "temperature": 0.2},
-                                session_id=self.session_id
+                                session_id=self.session_id,
                             )
                         )
-                        logger.info(
-                            "[AgentKernel] VPS Gateway inference complete")
+                        logger.info("[AgentKernel] VPS Gateway inference complete")
                     except RuntimeError as e:
                         if "already running" in str(e):
                             logger.warning(
-                                "[AgentKernel] Event loop conflict — falling back to local model")
+                                "[AgentKernel] Event loop conflict — falling back to local model"
+                            )
                             plan_response = None
                         else:
                             raise
                 except TimeoutError:
-                    logger.error(
-                        "[AgentKernel] VPS Gateway inference timed out")
+                    logger.error("[AgentKernel] VPS Gateway inference timed out")
                     raise
                 except Exception as e:
                     logger.warning(
-                        f"[AgentKernel] VPS Gateway inference failed, falling back to direct model: {e}")
+                        f"[AgentKernel] VPS Gateway inference failed, falling back to direct model: {e}"
+                    )
                     plan_response = None
 
             # LM Studio inference (OpenAI-compatible local API at localhost:1234).
@@ -2633,12 +3498,10 @@ Respond with a JSON object:
                     _lms = self._get_lmstudio_client()
                     _lms_resp = _lms.chat.completions.create(
                         model=self._selected_reasoning_model or "local-model",
-                        messages=[
-                            {"role": "user", "content": planning_prompt}],
+                        messages=[{"role": "user", "content": planning_prompt}],
                         max_tokens=-1,
                         temperature=0.2,  # low temp = faster, more deterministic JSON
-                        extra_body={"chat_template_kwargs": {
-                            "enable_thinking": False}},
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     plan_response = _lms_resp.choices[0].message.content
                     logger.info(
@@ -2647,17 +3510,21 @@ Respond with a JSON object:
                     )
                 except Exception as _lms_err:
                     logger.warning(
-                        f"[AgentKernel] LM Studio planning inference failed: {_lms_err}")
+                        f"[AgentKernel] LM Studio planning inference failed: {_lms_err}"
+                    )
 
             # Ollama local inference — runs when the model ID contains ":" which is
             # the Ollama format (e.g. "llama3.2:3b", "mistral:7b", "kimi-k2.5:cloud").
             # NOTE: provider="local" means LFM local file — it does NOT go to Ollama.
             # Only colon-format IDs are Ollama models.
-            if plan_response is None and self._selected_reasoning_model and (
-                ":" in self._selected_reasoning_model
+            if (
+                plan_response is None
+                and self._selected_reasoning_model
+                and (":" in self._selected_reasoning_model)
             ):
                 try:
                     import requests as _req
+
                     _ollama_resp = _req.post(
                         "http://localhost:11434/api/chat",
                         json={
@@ -2719,8 +3586,7 @@ Respond with a JSON object:
                 # Check timeout before loading model
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    raise TimeoutError(
-                        f"Planning timed out after {elapsed:.1f}s")
+                    raise TimeoutError(f"Planning timed out after {elapsed:.1f}s")
 
                 # Load model if needed with error handling
                 try:
@@ -2728,42 +3594,39 @@ Respond with a JSON object:
                         logger.info("[AgentKernel] Loading reasoning model...")
                         reasoning_model.load()
                 except Exception as e:
-                    logger.error(
-                        f"[AgentKernel] Failed to load reasoning model: {e}")
+                    logger.error(f"[AgentKernel] Failed to load reasoning model: {e}")
                     return {"error": f"Model loading failed: {e}"}
 
                 # Check timeout before inference
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    raise TimeoutError(
-                        f"Planning timed out after {elapsed:.1f}s")
+                    raise TimeoutError(f"Planning timed out after {elapsed:.1f}s")
 
                 # Generate plan with error handling
                 try:
                     plan_response = reasoning_model.generate(
-                        planning_prompt,
-                        max_tokens=-1,
-                        temperature=0.2
+                        planning_prompt, max_tokens=-1, temperature=0.2
                     )
                 except Exception as e:
                     logger.error(f"[AgentKernel] Model inference failed: {e}")
                     # Attempt to restart model
                     try:
                         logger.info(
-                            "[AgentKernel] Attempting to restart reasoning model...")
+                            "[AgentKernel] Attempting to restart reasoning model..."
+                        )
                         reasoning_model.unload()
                         reasoning_model.load()
                         plan_response = reasoning_model.generate(
-                            planning_prompt,
-                            max_tokens=-1,
-                            temperature=0.2
+                            planning_prompt, max_tokens=-1, temperature=0.2
                         )
-                        logger.info(
-                            "[AgentKernel] Model restarted successfully")
+                        logger.info("[AgentKernel] Model restarted successfully")
                     except Exception as restart_error:
                         logger.error(
-                            f"[AgentKernel] Model restart failed: {restart_error}")
-                        return {"error": f"Model crashed and restart failed: {restart_error}"}
+                            f"[AgentKernel] Model restart failed: {restart_error}"
+                        )
+                        return {
+                            "error": f"Model crashed and restart failed: {restart_error}"
+                        }
 
             # Check timeout after inference
             elapsed = time.time() - start_time
@@ -2774,7 +3637,8 @@ Respond with a JSON object:
             try:
                 plan = json.loads(plan_response)
                 logger.info(
-                    f"[AgentKernel] Plan generated with {len(plan.get('steps', []))} steps in {elapsed:.2f}s")
+                    f"[AgentKernel] Plan generated with {len(plan.get('steps', []))} steps in {elapsed:.2f}s"
+                )
                 return plan
             except json.JSONDecodeError:
                 # Model returned free-form text rather than JSON.
@@ -2782,26 +3646,29 @@ Respond with a JSON object:
                 # "respond_to_user" as the action string because execute_step would
                 # return that keyword verbatim to the frontend.
                 logger.warning(
-                    "[AgentKernel] Failed to parse plan as JSON, using raw text as response")
-                _raw_text = self._strip_thinking(
-                    plan_response) if plan_response else "I'm not sure how to respond to that."
+                    "[AgentKernel] Failed to parse plan as JSON, using raw text as response"
+                )
+                _raw_text = (
+                    self._strip_thinking(plan_response)
+                    if plan_response
+                    else "I'm not sure how to respond to that."
+                )
                 return {
                     "analysis": _raw_text[:200],
                     "requires_tools": False,
-                    "_raw_response": _raw_text,   # consumed by _synthesize_response
+                    "_raw_response": _raw_text,  # consumed by _synthesize_response
                     "steps": [
                         {
                             "step": 1,
-                            "action": _raw_text,   # the ACTUAL text, not a keyword
+                            "action": _raw_text,  # the ACTUAL text, not a keyword
                             "tool": None,
-                            "parameters": {}
+                            "parameters": {},
                         }
-                    ]
+                    ],
                 }
 
         except TimeoutError:
-            logger.error(
-                f"[AgentKernel] Planning timed out after {timeout_seconds}s")
+            logger.error(f"[AgentKernel] Planning timed out after {timeout_seconds}s")
             raise
         except Exception as e:
             error_msg = f"Error during task planning: {e}"
@@ -2828,7 +3695,9 @@ Respond with a JSON object:
         always reaches the user.
         """
         from backend.agent.der_loop import (
-            DirectorQueue, QueueItem, ReviewVerdict,
+            DirectorQueue,
+            QueueItem,
+            ReviewVerdict,
         )
         import uuid as _uuid
 
@@ -2840,7 +3709,9 @@ Respond with a JSON object:
         # Token budget — spec [1.2]: enforce DER_TOKEN_BUDGETS[task_class]
         # Tokens are estimated from step result length (4 chars ≈ 1 token).
         # Budget is a ceiling; the loop exits early if exceeded.
-        _token_budget: int = DER_TOKEN_BUDGETS.get(task_class, DER_TOKEN_BUDGETS.get("full", 50000))
+        _token_budget: int = DER_TOKEN_BUDGETS.get(
+            task_class, DER_TOKEN_BUDGETS.get("full", 50000)
+        )
         _tokens_used: int = 0
 
         # Build Director queue from ExecutionPlan steps
@@ -2854,8 +3725,9 @@ Respond with a JSON object:
                 critical=step.critical,
                 objective_anchor=plan.original_task,
                 coordinate_signal=(
-                    getattr(context_package, 'topology_position', "") or ""
-                    if context_package else ""
+                    getattr(context_package, "topology_position", "") or ""
+                    if context_package
+                    else ""
                 ),
             )
             for step in plan.steps
@@ -2872,6 +3744,7 @@ Respond with a JSON object:
         # Director always reads current gradient_warnings + tier2_predictions.
         try:
             from backend.memory.live_context import LiveContextPackage
+
             _live_ctx = LiveContextPackage(
                 initial_package=context_package,
                 memory_interface=self._memory_interface,
@@ -2888,6 +3761,7 @@ Respond with a JSON object:
         def _session_has_client() -> bool:
             try:
                 from backend.ws_manager import get_websocket_manager
+
                 ws = get_websocket_manager()
                 if ws is None:
                     return True  # no WS manager → non-WS path, keep running
@@ -2909,6 +3783,25 @@ Respond with a JSON object:
                 break
 
             queue.cycle_count += 1
+
+            # ── DOMAIN 19: Caducean phase read ──
+            import math as _math
+
+            _xi = 0.0
+            try:
+                from backend.gateway.iris_ffi import ffi_caducean_get_xi
+
+                _xi = ffi_caducean_get_xi(_session)
+            except Exception:
+                pass
+            _phase = 0  # 0=[0,π/2], 1=[π/2,π], 2=[π,3π/2], 3=[3π/2,2π]
+            if _xi >= 3.0 * _math.pi / 2.0:
+                _phase = 3
+            elif _xi >= _math.pi:
+                _phase = 2
+            elif _xi >= _math.pi / 2.0:
+                _phase = 1
+
             item = queue.next_ready()
             if item is None:
                 break  # dependency deadlock guard
@@ -2928,10 +3821,24 @@ Respond with a JSON object:
             # this way".  <50ms: uses cached embeddings after first query.
             try:
                 if self._memory_interface and item.description:
+                    _retrieval_limit = 2
+                    _retrieval_score = 0.55
+                    try:
+                        from backend.gateway.iris_ffi import ffi_calculate_eml
+
+                        _eml, _ex, _ey = ffi_calculate_eml(_session)
+                        if _eml >= 1.50 and _ex >= 0.60:
+                            _retrieval_limit = 5
+                            _retrieval_score = 0.40
+                        elif _eml < 1.00 and _ey >= 0.70:
+                            _retrieval_limit = 3
+                            _retrieval_score = 0.65
+                    except Exception:
+                        pass
                     _sub_eps = self._memory_interface.episodic.retrieve_similar(
                         task=item.description,
-                        limit=2,
-                        min_score=0.55,
+                        limit=_retrieval_limit,
+                        min_score=_retrieval_score,
                     )
                     if _sub_eps:
                         _hints = "; ".join(
@@ -3009,8 +3916,11 @@ Respond with a JSON object:
                     except RuntimeError as _rte:
                         # asyncio.run() fails if an event loop is already running in
                         # this thread (shouldn't happen in executor, but guard anyway)
-                        logger.warning(f"[DER] asyncio.run failed for tool {item.tool}: {_rte} — using executor")
+                        logger.warning(
+                            f"[DER] asyncio.run failed for tool {item.tool}: {_rte} — using executor"
+                        )
                         import concurrent.futures as _cf
+
                         with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
                             raw = _pool.submit(
                                 asyncio.run,
@@ -3018,7 +3928,7 @@ Respond with a JSON object:
                                     tool_name=item.tool,
                                     params=item.params,
                                     session_id=_session,
-                                )
+                                ),
                             ).result(timeout=60)
                     step_result = str(raw) if raw is not None else ""
                 else:
@@ -3050,7 +3960,9 @@ Respond with a JSON object:
                     elif (
                         self._memory_interface is not None
                         and hasattr(self._memory_interface, "episodic")
-                        and hasattr(self._memory_interface.episodic, "fragment_and_store")
+                        and hasattr(
+                            self._memory_interface.episodic, "fragment_and_store"
+                        )
                     ):
                         self._memory_interface.episodic.fragment_and_store(
                             _der_text,
@@ -3100,19 +4012,65 @@ Respond with a JSON object:
                 pass
 
             queue.mark_complete(item.step_id)
+
+            # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
+            try:
+                from backend.gateway.iris_ffi import (
+                    ffi_caducean_update,
+                    ffi_calculate_eml,
+                    ffi_immortus_chain_append,
+                )
+                from backend.agent.caducean_trajectory import get_trajectory_recorder
+
+                _action = 0
+                if item.tool in ("run_command", "git_commit", "git_push"):
+                    _action = 1
+                elif not step_success:
+                    _action = 2
+                _eml_score, _ex, _ey = ffi_calculate_eml(_session)
+                _balance = max(0.1, min(2.0, _eml_score))
+                ffi_caducean_update(_session, _action, _balance)
+
+                get_trajectory_recorder(self._memory_interface).record(
+                    session_id=_session,
+                    step_num=item.step_number,
+                    x=_ex,
+                    y=_ey,
+                    action=_action,
+                    outcome="success" if step_success else "failure",
+                    eml_after=_eml_score,
+                )
+
+                ffi_immortus_chain_append(
+                    thread_id=_session,
+                    result="success" if step_success else "failure",
+                    coords_from=getattr(item, "coordinate_signal", "") or "",
+                    coords_to=item.tool or "none",
+                    nbl_outcome=f"step_{item.step_number}",
+                    insight=item.description[:120],
+                    file_path=item.params.get("path", "") if item.params else "",
+                    landmark_id="",
+                )
+            except Exception:
+                pass
+
             completed_items.append(item)
 
             # ── TRAILING DIRECTOR: analyze gaps every TRAILING_GAP_MIN steps ─
+            # Domain 19: phase 4 (crystallization) forces gap analysis;
+            # phase 3 (strict) suppresses adding new gap items.
             try:
-                if (
-                    self._trailing_director is not None
-                    and len(completed_items) % TRAILING_GAP_MIN == 0
+                _force_gap = _phase == 3
+                _suppress_new = _phase == 2
+                if self._trailing_director is not None and (
+                    _force_gap or len(completed_items) % TRAILING_GAP_MIN == 0
                 ):
                     gap_items = self._trailing_director.analyze_gaps(
                         item, plan, context_package, is_mature
                     )
-                    for gap_item in gap_items:
-                        queue.add_item(gap_item)
+                    if not _suppress_new:
+                        for gap_item in gap_items:
+                            queue.add_item(gap_item)
             except Exception:
                 pass
 
@@ -3151,10 +4109,13 @@ Respond with a JSON object:
 
         try:
             if self._memory_interface:
-                _der_duration_total = int((time.perf_counter() - _der_start_time) * 1000)
+                _der_duration_total = int(
+                    (time.perf_counter() - _der_start_time) * 1000
+                )
                 _avg_step_ms = (
                     _der_duration_total / len(completed_items)
-                    if completed_items else 0.0
+                    if completed_items
+                    else 0.0
                 )
                 self._memory_interface.mycelium_record_plan_stats(
                     session_id=_session,
@@ -3223,7 +4184,7 @@ Respond with a JSON object:
         """
         try:
             cp_str = ""
-            if context_package and hasattr(context_package, 'get_system_zone_content'):
+            if context_package and hasattr(context_package, "get_system_zone_content"):
                 try:
                     cp_str = context_package.get_system_zone_content() or ""
                 except Exception:
@@ -3234,7 +4195,9 @@ Respond with a JSON object:
             wm_str = ""
             try:
                 if self._memory_interface:
-                    wm_str = self._memory_interface.get_assembled_context(session_id) or ""
+                    wm_str = (
+                        self._memory_interface.get_assembled_context(session_id) or ""
+                    )
             except Exception:
                 pass
 
@@ -3245,7 +4208,9 @@ Respond with a JSON object:
                 f"STEP {item.step_number}: {item.description}\n\n"
                 "Complete this step. Respond with the result only."
             ).strip()
-            result = self.infer(prompt, role="EXECUTION", max_tokens=512, temperature=0.3)
+            result = self.infer(
+                prompt, role="EXECUTION", max_tokens=512, temperature=0.3
+            )
             return result.raw_text or f"[step {item.step_number} completed]"
         except Exception as _e:
             return f"[step {item.step_number} error: {_e}]"
@@ -3269,11 +4234,9 @@ Respond with a JSON object:
             try:
                 result = await self.execute_step(step)
                 results.append(result)
-                logger.debug(
-                    f"[AgentKernel] Step {step.get('step')} completed")
+                logger.debug(f"[AgentKernel] Step {step.get('step')} completed")
             except Exception as e:
-                error_result = {
-                    "error": f"Step {step.get('step')} failed: {e}"}
+                error_result = {"error": f"Step {step.get('step')} failed: {e}"}
                 results.append(error_result)
                 logger.error(f"[AgentKernel] {error_result['error']}")
 
@@ -3311,17 +4274,23 @@ Respond with a JSON object:
                 # Use user-selected tool execution model if available
                 if self._selected_tool_execution_model:
                     execution_model = self._model_router.models.get(
-                        self._selected_tool_execution_model)
+                        self._selected_tool_execution_model
+                    )
                     if execution_model:
                         logger.info(
-                            f"[AgentKernel] Using user-selected tool execution model: {self._selected_tool_execution_model}")
+                            f"[AgentKernel] Using user-selected tool execution model: {self._selected_tool_execution_model}"
+                        )
                     else:
                         # Only fall back to default stub when Ollama/VPS won't handle it.
                         _sel_exec_check = self._selected_tool_execution_model
                         _ollama_exec_will_handle = ":" in _sel_exec_check
                         _vps_exec_will_handle = bool(self._vps_gateway)
                         _lmstudio_exec_will_handle = self._is_openai_compat()
-                        if not _ollama_exec_will_handle and not _vps_exec_will_handle and not _lmstudio_exec_will_handle:
+                        if (
+                            not _ollama_exec_will_handle
+                            and not _vps_exec_will_handle
+                            and not _lmstudio_exec_will_handle
+                        ):
                             logger.warning(
                                 f"[AgentKernel] Selected model {_sel_exec_check} unavailable, "
                                 "falling back to default local execution model"
@@ -3329,12 +4298,17 @@ Respond with a JSON object:
                             execution_model = self._model_router.get_execution_model()
                             if execution_model:
                                 default_model_id = getattr(
-                                    execution_model, 'model_id', 'unknown')
+                                    execution_model, "model_id", "unknown"
+                                )
                                 logger.info(
-                                    f"[AgentKernel] Fallback: using default execution model {default_model_id}")
+                                    f"[AgentKernel] Fallback: using default execution model {default_model_id}"
+                                )
                         else:
-                            _exec_dest = "LM Studio" if _lmstudio_exec_will_handle else (
-                                "Ollama" if _ollama_exec_will_handle else "VPS")
+                            _exec_dest = (
+                                "LM Studio"
+                                if _lmstudio_exec_will_handle
+                                else ("Ollama" if _ollama_exec_will_handle else "VPS")
+                            )
                             logger.info(
                                 f"[AgentKernel] Exec model '{_sel_exec_check}' not in local cache — "
                                 f"will route to {_exec_dest}"
@@ -3344,27 +4318,35 @@ Respond with a JSON object:
                     execution_model = self._model_router.get_execution_model()
                     if execution_model:
                         default_model_id = getattr(
-                            execution_model, 'model_id', 'unknown')
+                            execution_model, "model_id", "unknown"
+                        )
                         logger.info(
-                            f"[AgentKernel] No model selected, using default tool execution model: {default_model_id}")
+                            f"[AgentKernel] No model selected, using default tool execution model: {default_model_id}"
+                        )
             except Exception as e:
-                logger.error(
-                    f"[AgentKernel] Error getting execution model: {e}")
-                return {"error": f"Failed to access execution model: {e}", "success": False}
+                logger.error(f"[AgentKernel] Error getting execution model: {e}")
+                return {
+                    "error": f"Failed to access execution model: {e}",
+                    "success": False,
+                }
 
         # Handle model unavailability
         if not execution_model:
             if self._single_model_mode and self._available_model_id:
                 # Fall back to the single available local model
                 logger.warning(
-                    "[AgentKernel] Execution model unavailable, using fallback model")
+                    "[AgentKernel] Execution model unavailable, using fallback model"
+                )
                 try:
                     execution_model = self._model_router.models.get(
-                        self._available_model_id)
+                        self._available_model_id
+                    )
                 except Exception as e:
-                    logger.error(
-                        f"[AgentKernel] Error accessing fallback model: {e}")
-                    return {"error": f"Failed to access fallback model: {e}", "success": False}
+                    logger.error(f"[AgentKernel] Error accessing fallback model: {e}")
+                    return {
+                        "error": f"Failed to access fallback model: {e}",
+                        "success": False,
+                    }
             elif self._is_openai_compat():
                 # LM Studio configured — execution_model stays None; LM Studio block handles it.
                 logger.info(
@@ -3391,7 +4373,8 @@ Respond with a JSON object:
                             self._model_router.load_models()
                         except Exception as _le:
                             logger.warning(
-                                f"[AgentKernel] Lazy load (exec) failed: {_le}")
+                                f"[AgentKernel] Lazy load (exec) failed: {_le}"
+                            )
                     execution_model = self._model_router.models.get(_sel_exec)
                     if execution_model is None:
                         _all_exec = list(self._model_router.models.values())
@@ -3399,7 +4382,10 @@ Respond with a JSON object:
                             # prefer last (smallest/fastest)
                             execution_model = _all_exec[-1]
                     if not execution_model:
-                        return {"error": "Execution model not available", "success": False}
+                        return {
+                            "error": "Execution model not available",
+                            "success": False,
+                        }
             else:
                 return {"error": "Execution model not available", "success": False}
 
@@ -3418,33 +4404,37 @@ Provide the execution result."""
             if self._vps_gateway:
                 try:
                     logger.info(
-                        "[AgentKernel] Using VPS Gateway for execution inference...")
+                        "[AgentKernel] Using VPS Gateway for execution inference..."
+                    )
                     try:
                         result_text = asyncio.run(
                             self._vps_gateway.infer(
-                                model=self._model_router.get_execution_model_id() or "lfm2.5-1.2b-instruct",
+                                model=self._model_router.get_execution_model_id()
+                                or "lfm2.5-1.2b-instruct",
                                 prompt=execution_prompt,
                                 context={},
                                 params={"max_tokens": 512, "temperature": 0.3},
-                                session_id=self.session_id
+                                session_id=self.session_id,
                             )
                         )
                         logger.info(
-                            "[AgentKernel] VPS Gateway execution inference complete")
+                            "[AgentKernel] VPS Gateway execution inference complete"
+                        )
                     except RuntimeError as e:
                         if "already running" in str(e):
                             logger.warning(
-                                "[AgentKernel] Event loop conflict — falling back to local model")
+                                "[AgentKernel] Event loop conflict — falling back to local model"
+                            )
                             result_text = None
                         else:
                             raise
                 except TimeoutError:
-                    logger.error(
-                        "[AgentKernel] VPS Gateway execution timed out")
+                    logger.error("[AgentKernel] VPS Gateway execution timed out")
                     raise
                 except Exception as e:
                     logger.warning(
-                        f"[AgentKernel] VPS Gateway execution inference failed, falling back to direct model: {e}")
+                        f"[AgentKernel] VPS Gateway execution inference failed, falling back to direct model: {e}"
+                    )
                     result_text = None
 
             # LM Studio execution inference
@@ -3453,27 +4443,30 @@ Provide the execution result."""
                     _lms_exec = self._get_lmstudio_client()
                     _lms_exec_resp = _lms_exec.chat.completions.create(
                         model=self._selected_tool_execution_model or "local-model",
-                        messages=[
-                            {"role": "user", "content": execution_prompt}],
+                        messages=[{"role": "user", "content": execution_prompt}],
                         max_tokens=-1,
                         temperature=0.3,
-                        extra_body={"chat_template_kwargs": {
-                            "enable_thinking": False}},
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     result_text = _lms_exec_resp.choices[0].message.content
                     logger.info(
-                        "[AgentKernel] LM Studio execution inference successful")
+                        "[AgentKernel] LM Studio execution inference successful"
+                    )
                 except Exception as _lms_exec_err:
                     logger.warning(
-                        f"[AgentKernel] LM Studio execution inference failed: {_lms_exec_err}")
+                        f"[AgentKernel] LM Studio execution inference failed: {_lms_exec_err}"
+                    )
 
             # Ollama local execution inference — only for colon-format model IDs.
             # provider="local" means LFM local file; it does NOT route to Ollama.
-            if result_text is None and self._selected_tool_execution_model and (
-                ":" in self._selected_tool_execution_model
+            if (
+                result_text is None
+                and self._selected_tool_execution_model
+                and (":" in self._selected_tool_execution_model)
             ):
                 try:
                     import requests as _req
+
                     _ollama_exec_resp = _req.post(
                         "http://localhost:11434/api/chat",
                         json={
@@ -3485,7 +4478,9 @@ Provide the execution result."""
                     )
                     if _ollama_exec_resp.status_code == 200:
                         result_text = (
-                            _ollama_exec_resp.json().get("message", {}).get("content", "")
+                            _ollama_exec_resp.json()
+                            .get("message", {})
+                            .get("content", "")
                         )
                         logger.info(
                             f"[AgentKernel] Ollama execution inference successful "
@@ -3518,8 +4513,7 @@ Provide the execution result."""
                 # Check timeout before loading model
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    raise TimeoutError(
-                        f"Execution timed out after {elapsed:.1f}s")
+                    raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
 
                 # Load model if needed with error handling
                 try:
@@ -3527,51 +4521,46 @@ Provide the execution result."""
                         logger.info("[AgentKernel] Loading execution model...")
                         execution_model.load()
                 except Exception as e:
-                    logger.error(
-                        f"[AgentKernel] Failed to load execution model: {e}")
+                    logger.error(f"[AgentKernel] Failed to load execution model: {e}")
                     return {
                         "tool": tool_name,
                         "action": action,
                         "error": f"Model loading failed: {e}",
-                        "success": False
+                        "success": False,
                     }
 
                 # Check timeout before inference
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    raise TimeoutError(
-                        f"Execution timed out after {elapsed:.1f}s")
+                    raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
 
                 # Generate execution response with error handling
                 try:
                     result_text = execution_model.generate(
-                        execution_prompt,
-                        max_tokens=-1,
-                        temperature=0.3
+                        execution_prompt, max_tokens=-1, temperature=0.3
                     )
                 except Exception as e:
                     logger.error(f"[AgentKernel] Model inference failed: {e}")
                     # Attempt to restart model
                     try:
                         logger.info(
-                            "[AgentKernel] Attempting to restart execution model...")
+                            "[AgentKernel] Attempting to restart execution model..."
+                        )
                         execution_model.unload()
                         execution_model.load()
                         result_text = execution_model.generate(
-                            execution_prompt,
-                            max_tokens=-1,
-                            temperature=0.3
+                            execution_prompt, max_tokens=-1, temperature=0.3
                         )
-                        logger.info(
-                            "[AgentKernel] Model restarted successfully")
+                        logger.info("[AgentKernel] Model restarted successfully")
                     except Exception as restart_error:
                         logger.error(
-                            f"[AgentKernel] Model restart failed: {restart_error}")
+                            f"[AgentKernel] Model restart failed: {restart_error}"
+                        )
                         return {
                             "tool": tool_name,
                             "action": action,
                             "error": f"Model crashed and restart failed: {restart_error}",
-                            "success": False
+                            "success": False,
                         }
 
             # Check timeout after inference
@@ -3583,15 +4572,18 @@ Provide the execution result."""
             if self._tool_bridge:
                 try:
                     # Execute tool through tool bridge
-                    tool_result = await self._tool_bridge.execute_tool(tool_name, parameters)
+                    tool_result = await self._tool_bridge.execute_tool(
+                        tool_name, parameters
+                    )
                     if "error" in tool_result:
                         logger.warning(
-                            f"[AgentKernel] Tool execution error: {tool_result['error']}")
+                            f"[AgentKernel] Tool execution error: {tool_result['error']}"
+                        )
                         return {
                             "tool": tool_name,
                             "action": action,
                             "error": tool_result["error"],
-                            "success": False
+                            "success": False,
                         }
                 except Exception as e:
                     logger.error(f"[AgentKernel] Tool execution failed: {e}")
@@ -3599,21 +4591,19 @@ Provide the execution result."""
                         "tool": tool_name,
                         "action": action,
                         "error": f"Tool execution failed: {e}",
-                        "success": False
+                        "success": False,
                     }
 
-            logger.info(
-                f"[AgentKernel] Step executed successfully in {elapsed:.2f}s")
+            logger.info(f"[AgentKernel] Step executed successfully in {elapsed:.2f}s")
             return {
                 "tool": tool_name,
                 "action": action,
                 "result": result_text,
-                "success": True
+                "success": True,
             }
 
         except TimeoutError:
-            logger.error(
-                f"[AgentKernel] Execution timed out after {timeout_seconds}s")
+            logger.error(f"[AgentKernel] Execution timed out after {timeout_seconds}s")
             raise
         except Exception as e:
             error_msg = f"Error executing step: {e}"
@@ -3622,7 +4612,7 @@ Provide the execution result."""
                 "tool": tool_name,
                 "action": action,
                 "error": error_msg,
-                "success": False
+                "success": False,
             }
 
     def _generate_response(
@@ -3630,7 +4620,7 @@ Provide the execution result."""
         user_message: str,
         plan: Dict[str, Any],
         execution_results: List[Any],
-        context: List[Dict[str, Any]]
+        context: List[Dict[str, Any]],
     ) -> str:
         """
         Generate final response based on plan and execution results.
@@ -3646,8 +4636,7 @@ Provide the execution result."""
         """
         # Check if any steps failed
         has_errors = any(
-            isinstance(r, dict) and (
-                "error" in r or not r.get("success", True))
+            isinstance(r, dict) and ("error" in r or not r.get("success", True))
             for r in execution_results
         )
 
@@ -3662,7 +4651,8 @@ Provide the execution result."""
 
         # Extract successful results
         success_results = [
-            r for r in execution_results
+            r
+            for r in execution_results
             if isinstance(r, dict) and r.get("success", False)
         ]
 
@@ -3682,7 +4672,8 @@ Provide the execution result."""
         for r in success_results:
             if "result" in r:
                 summary_parts.append(
-                    f"- {r.get('action', 'Action')}: {r['result'][:100]}")
+                    f"- {r.get('action', 'Action')}: {r['result'][:100]}"
+                )
             elif "response" in r:
                 summary_parts.append(f"- {r['response'][:100]}")
 
@@ -3692,9 +4683,7 @@ Provide the execution result."""
         return "I've processed your request."
 
     def _synthesize_response(
-        self,
-        task: TaskContext,
-        execution_results: List[Any]
+        self, task: TaskContext, execution_results: List[Any]
     ) -> str:
         """
         Synthesize response using the brain model with tool results.
@@ -3712,8 +4701,7 @@ Provide the execution result."""
         # Short-circuit: if the plan already contains a raw free-form response
         # (model didn't output JSON), return it directly without a second model call.
         if task.plan and task.plan.get("_raw_response"):
-            logger.info(
-                "[AgentKernel] Using raw plan response (no synthesis needed)")
+            logger.info("[AgentKernel] Using raw plan response (no synthesis needed)")
             return task.plan["_raw_response"]
 
         # Get results summary for the brain
@@ -3737,14 +4725,17 @@ If any tools failed, address those issues in your response.
             reasoning_model = None
             if self._model_router and self._selected_reasoning_model:
                 reasoning_model = self._model_router.models.get(
-                    self._selected_reasoning_model)
+                    self._selected_reasoning_model
+                )
 
             if reasoning_model:
                 # Call the loaded local/LFM model for synthesis
                 response = self._strip_thinking(
-                    reasoning_model.generate(synthesis_prompt))
+                    reasoning_model.generate(synthesis_prompt)
+                )
                 logger.info(
-                    "[AgentKernel] Brain synthesized response with tool results context")
+                    "[AgentKernel] Brain synthesized response with tool results context"
+                )
                 return response
 
             # Try LM Studio synthesis
@@ -3754,26 +4745,25 @@ If any tools failed, address those issues in your response.
                     _lms_synth = self._get_lmstudio_client()
                     _lms_synth_resp = _lms_synth.chat.completions.create(
                         model=_sel_synth or "local-model",
-                        messages=[
-                            {"role": "user", "content": synthesis_prompt}],
+                        messages=[{"role": "user", "content": synthesis_prompt}],
                         max_tokens=-1,
                         temperature=0.7,
-                        extra_body={"chat_template_kwargs": {
-                            "enable_thinking": False}},
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     )
                     _synth_text = _lms_synth_resp.choices[0].message.content
                     if _synth_text:
-                        logger.info(
-                            "[AgentKernel] LM Studio synthesized response")
+                        logger.info("[AgentKernel] LM Studio synthesized response")
                         return self._strip_thinking(_synth_text)
                 except Exception as _lms_synth_err:
                     logger.warning(
-                        f"[AgentKernel] LM Studio synthesis failed: {_lms_synth_err}")
+                        f"[AgentKernel] LM Studio synthesis failed: {_lms_synth_err}"
+                    )
 
             # Try Ollama if the selected model is an Ollama model (colon-format ID)
             if not reasoning_model and ":" in _sel_synth:
                 try:
                     import requests as _req
+
                     _r = _req.post(
                         "http://localhost:11434/api/chat",
                         json={
@@ -3786,21 +4776,32 @@ If any tools failed, address those issues in your response.
                     if _r.status_code == 200:
                         _synth_text = _r.json().get("message", {}).get("content", "")
                         if _synth_text:
-                            logger.info(
-                                "[AgentKernel] Ollama synthesized response")
+                            logger.info("[AgentKernel] Ollama synthesized response")
                             return self._strip_thinking(_synth_text)
                 except Exception as _ollama_synth_err:
                     logger.warning(
-                        f"[AgentKernel] Ollama synthesis failed: {_ollama_synth_err}")
+                        f"[AgentKernel] Ollama synthesis failed: {_ollama_synth_err}"
+                    )
 
             # Template-based fallback (no model available)
             logger.warning(
-                "[AgentKernel] No model for synthesis — using template response")
-            return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
+                "[AgentKernel] No model for synthesis — using template response"
+            )
+            return self._generate_response(
+                task.user_message,
+                task.plan,
+                execution_results,
+                task.conversation_history,
+            )
 
         except Exception as e:
             logger.error(f"[AgentKernel] Error in brain synthesis: {e}")
-            return self._generate_response(task.user_message, task.plan, execution_results, task.conversation_history)
+            return self._generate_response(
+                task.user_message,
+                task.plan,
+                execution_results,
+                task.conversation_history,
+            )
 
     def get_status(self) -> Dict[str, Any]:
         """
@@ -3824,7 +4825,7 @@ If any tools failed, address those issues in your response.
             "tool_bridge_available": False,
             "model_status": {},
             "single_model_mode": self._single_model_mode,
-            "error": self._initialization_error
+            "error": self._initialization_error,
         }
 
         # Check model router status
@@ -3832,8 +4833,7 @@ If any tools failed, address those issues in your response.
             all_status = self._model_router.get_all_models_status()
             status["model_status"] = all_status
             status["total_models"] = len(all_status)
-            status["models_loaded"] = len(
-                self._model_router.get_loaded_models())
+            status["models_loaded"] = len(self._model_router.get_loaded_models())
 
             # Agent is ready if at least one model is available
             reasoning_model = self._model_router.get_reasoning_model()
@@ -3844,11 +4844,9 @@ If any tools failed, address those issues in your response.
         if self._tool_bridge:
             try:
                 bridge_status = self._tool_bridge.get_status()
-                status["tool_bridge_available"] = bridge_status.get(
-                    "available", False)
+                status["tool_bridge_available"] = bridge_status.get("available", False)
             except Exception as e:
-                logger.warning(
-                    f"[AgentKernel] Failed to get tool bridge status: {e}")
+                logger.warning(f"[AgentKernel] Failed to get tool bridge status: {e}")
 
         # Add VPS Gateway status
         if self._vps_gateway:
@@ -3857,17 +4855,10 @@ If any tools failed, address those issues in your response.
                 status["vps_gateway"] = vps_status
                 logger.debug(f"[AgentKernel] VPS Gateway status: {vps_status}")
             except Exception as e:
-                logger.warning(
-                    f"[AgentKernel] Failed to get VPS Gateway status: {e}")
-                status["vps_gateway"] = {
-                    "enabled": False,
-                    "error": str(e)
-                }
+                logger.warning(f"[AgentKernel] Failed to get VPS Gateway status: {e}")
+                status["vps_gateway"] = {"enabled": False, "error": str(e)}
         else:
-            status["vps_gateway"] = {
-                "enabled": False,
-                "available_endpoints": 0
-            }
+            status["vps_gateway"] = {"enabled": False, "available_endpoints": 0}
 
         return status
 
@@ -3876,9 +4867,12 @@ If any tools failed, address those issues in your response.
         if self._conversation_memory:
             self._conversation_memory.clear()
             logger.info(
-                f"[AgentKernel] Conversation cleared for session {self.session_id}")
+                f"[AgentKernel] Conversation cleared for session {self.session_id}"
+            )
 
-    def get_conversation_context(self, max_messages: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_conversation_context(
+        self, max_messages: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         """
         Get conversation context.
 
@@ -3909,7 +4903,7 @@ If any tools failed, address those issues in your response.
     _MODEL_ALIASES: Dict[str, str] = {
         # Legacy local model directory name → canonical ID (executor only; brain removed)
         "LFM2.5-1.2B-Instruct": "lfm2.5-1.2b-instruct",
-        "executor":              "lfm2.5-1.2b-instruct",
+        "executor": "lfm2.5-1.2b-instruct",
         # NOTE: LFM2-8B-A1B / "brain" / "lfm2-8b" aliases are intentionally absent.
         # That model is not in use — removing the aliases prevents accidental routing.
     }
@@ -3921,7 +4915,8 @@ If any tools failed, address those issues in your response.
         normalized = self._MODEL_ALIASES.get(model_id, model_id)
         if normalized != model_id:
             logger.debug(
-                f"[AgentKernel] Model ID alias resolved: '{model_id}' -> '{normalized}'")
+                f"[AgentKernel] Model ID alias resolved: '{model_id}' -> '{normalized}'"
+            )
         return normalized
 
     def set_model_selection(
@@ -3956,9 +4951,22 @@ If any tools failed, address those issues in your response.
             if model_provider:
                 self._model_provider = model_provider
 
+            ctx_window = self.resolve_context_window()
+            token_budget = self.get_effective_token_budget()
+
+            # Propagate context window to memory system
+            self._sync_context_window()
+
             logger.info(
                 f"[AgentKernel] Model selection updated: reasoning={reasoning_model}, "
-                f"tool_execution={tool_execution_model}, provider={self._model_provider}"
+                f"tool_execution={tool_execution_model}, provider={self._model_provider}, "
+                f"context_window={ctx_window}, token_budget={token_budget}"
+            )
+
+            logger.info(
+                f"[AgentKernel] Model selection updated: reasoning={reasoning_model}, "
+                f"tool_execution={tool_execution_model}, provider={self._model_provider}, "
+                f"context_window={ctx_window}, token_budget={token_budget}"
             )
 
             # Propagate to all peer kernels so secondary sessions (e.g.
@@ -3970,6 +4978,17 @@ If any tools failed, address those issues in your response.
                     peer_kernel._selected_tool_execution_model = tool_execution_model
                     if model_provider:
                         peer_kernel._model_provider = model_provider
+                    # Propagate API credentials so peers can call infer()
+                    # through the API provider path (Cohere, OpenAI, Groq, etc.)
+                    if self._api_key:
+                        peer_kernel._api_key = self._api_key
+                    if self._api_base_url:
+                        peer_kernel._api_base_url = self._api_base_url
+                    if self._lmstudio_endpoint:
+                        peer_kernel._lmstudio_endpoint = self._lmstudio_endpoint
+                    peer_kernel._context_window_overrides = dict(
+                        self._context_window_overrides
+                    )
                     logger.debug(
                         f"[AgentKernel] Propagated model config to peer session '{peer_id}'"
                     )
@@ -3989,7 +5008,7 @@ If any tools failed, address those issues in your response.
         """
         return {
             "reasoning_model": self._selected_reasoning_model,
-            "tool_execution_model": self._selected_tool_execution_model
+            "tool_execution_model": self._selected_tool_execution_model,
         }
 
     def set_internet_access(self, enabled: bool) -> None:
@@ -4004,9 +5023,11 @@ If any tools failed, address those issues in your response.
         """
         self._internet_access_enabled = enabled
         logger.info(
-            f"[AgentKernel] Agent internet access {'enabled' if enabled else 'disabled'}")
+            f"[AgentKernel] Agent internet access {'enabled' if enabled else 'disabled'}"
+        )
         logger.info(
-            "[AgentKernel] Note: This controls agent web search tools, not application connectivity")
+            "[AgentKernel] Note: This controls agent web search tools, not application connectivity"
+        )
 
     def get_internet_access(self) -> bool:
         """
@@ -4023,10 +5044,15 @@ If any tools failed, address those issues in your response.
         Initialises SwarmCoordinator and ContextControlHandler lazily on first enable.
         """
         self._swarm_enabled = enabled
-        if enabled and self._memory_interface is not None and self._swarm_coordinator is None:
+        if (
+            enabled
+            and self._memory_interface is not None
+            and self._swarm_coordinator is None
+        ):
             try:
                 from backend.agent.swarm import SwarmCoordinator, ContextControlHandler
                 from backend.agent.mcm import MCM
+
                 _mcm = MCM(self._memory_interface, self.session_id)
                 _protocol = self._mcm_orch._protocol if self._mcm_orch else None
                 self._swarm_coordinator = SwarmCoordinator(
@@ -4040,7 +5066,9 @@ If any tools failed, address those issues in your response.
                     mcm_instance=_mcm,
                     session_id=self.session_id,
                 )
-                logger.info("[AgentKernel] SwarmCoordinator + ContextControlHandler initialized")
+                logger.info(
+                    "[AgentKernel] SwarmCoordinator + ContextControlHandler initialized"
+                )
             except Exception as _swarm_err:
                 logger.warning("[AgentKernel] Swarm init failed: %s", _swarm_err)
         logger.info("[AgentKernel] Swarm %s", "enabled" if enabled else "disabled")
@@ -4049,8 +5077,7 @@ If any tools failed, address those issues in your response.
         """Return current swarm enabled state."""
         return self._swarm_enabled
 
-    def _handle_control_codes(self, response_text: str,
-                               messages: list) -> list:
+    def _handle_control_codes(self, response_text: str, messages: list) -> list:
         """
         Scan response for MCM: control codes (MCM:999/998/997/996) and execute.
         Called after every agent response when swarm is enabled.
@@ -4060,7 +5087,8 @@ If any tools failed, address those issues in your response.
             return messages
         try:
             self._context_control_handler.scan_and_execute(
-                response_text, messages,
+                response_text,
+                messages,
                 self._current_task if hasattr(self, "_current_task") else "",
             )
         except Exception:
@@ -4091,14 +5119,17 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
         # Auto-wire Pillar 4 (Memory) — connects episodic/semantic memory to every session
         try:
             from backend.memory import get_memory_interface
+
             memory = get_memory_interface()
             if memory is not None:
                 kernel.set_memory_interface(memory)
                 logger.info(
-                    f"[AgentKernel] Memory interface wired for session {session_id}")
+                    f"[AgentKernel] Memory interface wired for session {session_id}"
+                )
         except Exception as e:
             logger.warning(
-                f"[AgentKernel] Memory interface not available for session {session_id}: {e}")
+                f"[AgentKernel] Memory interface not available for session {session_id}: {e}"
+            )
 
         # Inherit model configuration from any already-configured kernel.
         #
@@ -4155,6 +5186,7 @@ def cleanup_agent_kernel(session_id: str) -> None:
             # Shut down VPS Gateway if it was active
             if kernel._vps_gateway is not None:
                 import asyncio
+
                 try:
                     # Prefer the already-running loop (cleanup called from async context).
                     # Fall back to a fresh asyncio.run() if called from a sync context.
@@ -4167,6 +5199,6 @@ def cleanup_agent_kernel(session_id: str) -> None:
                     pass
         except Exception as e:
             logger.warning(
-                f"[AgentKernel] Error during cleanup for session {session_id}: {e}")
-        logger.info(
-            f"[AgentKernel] Kernel cleaned up for session {session_id}")
+                f"[AgentKernel] Error during cleanup for session {session_id}: {e}"
+            )
+        logger.info(f"[AgentKernel] Kernel cleaned up for session {session_id}")
