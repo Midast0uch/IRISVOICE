@@ -237,42 +237,9 @@ export function useIRISWebSocket(
     setConnectionState("connecting")
     setLastError(null)
 
-    // Fix 1 — Readiness check: poll /ready before opening the WebSocket.
-    // The sidecar backend may take several seconds to initialize after spawn.
-    // /ready returns 200 after full startup, 503 while still loading.
-    // Falls back to / health check for older backends that lack /ready.
-    const httpBase = url.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/ws.*$/, '')
-    const readyUrl = `${httpBase}/ready`
-    const healthUrl = `${httpBase}/`
-
-    let backendReady = false
-    for (let attempt = 0; attempt < 8; attempt++) {
-      try {
-        const res = await fetch(readyUrl, { signal: AbortSignal.timeout(2000) })
-        if (res.ok) { backendReady = true; break }
-        if (res.status === 503) {
-          // Still starting — wait and retry
-          await new Promise(r => setTimeout(r, 800))
-          continue
-        }
-        // 404 = backend doesn't have /ready — fall back to basic health check
-        const health = await fetch(healthUrl, { signal: AbortSignal.timeout(2000) })
-        if (health.ok) { backendReady = true; break }
-        break
-      } catch {
-        if (attempt < 4) { await new Promise(r => setTimeout(r, 600)); continue }
-        break
-      }
-    }
-
-    if (!backendReady) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.log("[IRIS WebSocket] Backend not ready, will retry...")
-      }
-      setConnectionState("disconnected")
-      scheduleReconnect()
-      return
-    }
+    // The WebSocket handles connection failures via onerror/onclose + reconnect.
+    // Skip the blocking readiness check — it delays connection by up to 16s
+    // and can silently fail due to CORS on the internal fetch.
 
     try {
       const ws = new WebSocket(url)
