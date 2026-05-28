@@ -872,7 +872,7 @@ class IRISGateway:
                         "tool_execution_model"
                     )
                     # "local" | "vps" | "api"
-                    provider = values.get("model_provider")
+                    provider = values.get("model_provider") or values.get("provider")
 
                     # Always pass the provider so the kernel knows which inference
                     # backend to route to (Ollama / VPS / OpenAI).

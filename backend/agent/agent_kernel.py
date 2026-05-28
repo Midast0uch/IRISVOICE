@@ -1704,6 +1704,53 @@ class AgentKernel:
 
         return messages
 
+    @staticmethod
+    def _sanitize_messages(messages: List[Dict]) -> List[Dict]:
+        """
+        Sanitize message list before sending to model API.
+
+        Removes:
+          - Messages whose content starts with '[IRIS error:' (garbage accumulation)
+          - Non-system messages with empty/whitespace-only content
+          - Consecutive same-role non-system messages (breaks API alternation rules)
+
+        Ensures the list starts with system (or inserts an empty one) and ends
+        with the current user turn.
+        """
+        # 1. Strip messages with error content
+        cleaned = [
+            m for m in messages if not m.get("content", "").startswith("[IRIS error:")
+        ]
+
+        # 2. Remove truly empty non-system messages
+        cleaned = [
+            m
+            for m in cleaned
+            if m.get("role") == "system" or (m.get("content") or "").strip()
+        ]
+
+        # 3. Collapse consecutive same-role non-system messages
+        sanitized: List[Dict] = []
+        for m in cleaned:
+            if m["role"] == "system":
+                sanitized.append(m)
+            elif not sanitized:
+                # First non-system message is fine
+                sanitized.append(m)
+            elif sanitized[-1]["role"] == "system":
+                # After system, any role is fine
+                sanitized.append(m)
+            elif sanitized[-1]["role"] != m["role"]:
+                # Alternating roles — OK
+                sanitized.append(m)
+            # else: skip consecutive same-role non-system (keeps first of run)
+
+        # 4. Ensure first message is system
+        if sanitized and sanitized[0]["role"] != "system":
+            sanitized.insert(0, {"role": "system", "content": ""})
+
+        return sanitized
+
     def _respond_direct(
         self,
         text: str,
@@ -1720,6 +1767,7 @@ class AgentKernel:
           Layer 3: Full history         → token-aware (not a hard roll window)
         """
         messages = self._assemble_direct_context(text, context)
+        messages = self._sanitize_messages(messages)
 
         try:
             # LM Studio (OpenAI-compatible)
@@ -1735,27 +1783,39 @@ class AgentKernel:
                     import time as _perf_t
 
                     _t0 = _perf_t.perf_counter()
-                    resp = client.chat.completions.create(
+                    _create_kwargs = dict(
                         model=sel,
                         messages=messages,
-                        max_tokens=-1,
+                        max_tokens=4096,
                         temperature=0.6,
                         stream=True,
-                        extra_body={
-                            "chat_template_kwargs": {"enable_thinking": use_thinking}
-                        },
                     )
+                    # chat_template_kwargs is LM Studio-specific — only add
+                    # it when targeting a local endpoint
+                    if self._lmstudio_endpoint and self._lmstudio_endpoint in (
+                        self._api_base_url or ""
+                    ):
+                        _create_kwargs["extra_body"] = {
+                            "chat_template_kwargs": {"enable_thinking": use_thinking}
+                        }
+                    resp = client.chat.completions.create(**_create_kwargs)
                     full_reply = ""
                     in_think = False
                     for chunk in self._safe_stream(resp):
-                        if chunk.choices[0].delta.content:
-                            delta = chunk.choices[0].delta.content
-                            full_reply += delta
+                        delta = chunk.choices[0].delta
+                        # Handle both content and reasoning_content (reasoning models)
+                        token = (
+                            delta.content
+                            or getattr(delta, "reasoning_content", None)
+                            or ""
+                        )
+                        if token:
+                            full_reply += token
 
                             # Stream-safe thinking tag stripping (simplified)
-                            if "<think>" in delta:
+                            if "<think>" in token:
                                 in_think = True
-                            if "</think>" in delta:
+                            if "</think>" in token:
                                 in_think = False
 
                             if not in_think:
@@ -1768,7 +1828,8 @@ class AgentKernel:
                     _ctok = max(1, len(full_reply) // 4)
                     _ptok = sum(len(m.get("content", "")) for m in messages) // 4
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    return clean
+                    # Never return empty — prevents empty-string storage in history
+                    return clean or "(I see.)"
                 else:
                     # Sync implementation
                     import time as _perf_t
@@ -1799,7 +1860,7 @@ class AgentKernel:
                         _usage.completion_tokens if _usage else max(1, len(reply) // 4)
                     )
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    return clean
+                    return clean or "(I see.)"
 
             # Remote API provider (OpenAI, Groq, Cohere, etc.)
             if self._is_api_provider():
@@ -1833,20 +1894,38 @@ class AgentKernel:
 
                     _t0 = _perf_t.perf_counter()
                     _api_kwargs["stream"] = True
-                    resp = client.chat.completions.create(**_api_kwargs)
+                    try:
+                        resp = client.chat.completions.create(**_api_kwargs)
+                    except Exception as _api_err:
+                        logger.error(
+                            f"[API_DEBUG] API call failed: {type(_api_err).__name__}: {_api_err}"
+                        )
+                        thinking, clean = self._parse_thinking("")
+                        chunk_callback(
+                            f"IRIS error: could not reach language model — {type(_api_err).__name__}"
+                        )
+                        return (
+                            clean
+                            or f"[IRIS error: {type(_api_err).__name__}: {str(_api_err)[:200]}]"
+                        )
                     full_reply = ""
                     for chunk in self._safe_stream(resp):
-                        if chunk.choices[0].delta.content:
-                            delta = chunk.choices[0].delta.content
-                            full_reply += delta
-                            chunk_callback(delta)
+                        _delta = chunk.choices[0].delta
+                        _token = (
+                            _delta.content
+                            or getattr(_delta, "reasoning_content", None)
+                            or ""
+                        )
+                        if _token:
+                            full_reply += _token
+                            chunk_callback(_token)
                     thinking, clean = self._parse_thinking(full_reply)
                     self._pending_thinking = thinking
                     _elapsed = _perf_t.perf_counter() - _t0
                     _ctok = max(1, len(full_reply) // 4)
                     _ptok = sum(len(m.get("content", "")) for m in messages) // 4
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    return clean
+                    return clean or "(I see.)"
                 else:
                     import time as _perf_t
 
@@ -1866,7 +1945,7 @@ class AgentKernel:
                         _usage.completion_tokens if _usage else max(1, len(reply) // 4)
                     )
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    return clean
+                    return clean or "(I see.)"
 
             # Ollama (model IDs contain ":")
             if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
@@ -3015,10 +3094,14 @@ class AgentKernel:
                 return (
                     f"[IRIS error: could not reach language model — {type(e).__name__}]"
                 )
-            try:
-                self._conversation_memory.add_message("assistant", response)
-            except Exception:
-                pass
+            # Never store error or empty responses in conversation memory.
+            # They break role alternation and accumulate into garbage context
+            # on subsequent turns, causing Cohere/OpenAI 400 errors.
+            if response and not response.startswith("[IRIS error:"):
+                try:
+                    self._conversation_memory.add_message("assistant", response)
+                except Exception:
+                    pass
             # Option B / Pacman: fragment this turn-pair into the vector DB so future
             # context assembly can retrieve it semantically (PACMAN.md §Digestion).
             # MCM orchestrator handles fragmentation + compression check when available.
@@ -3180,7 +3263,7 @@ class AgentKernel:
                 or _der_text.startswith("[step ")
                 and "error:" in _der_text
             )
-            if not _is_empty:
+            if not _is_empty and not _der_response.startswith("[IRIS error:"):
                 try:
                     self._conversation_memory.add_message("assistant", _der_response)
                 except Exception:
