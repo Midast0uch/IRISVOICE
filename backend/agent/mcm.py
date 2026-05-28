@@ -239,7 +239,20 @@ class MCM:
     # ── Token counting ─────────────────────────────────────────────────────
 
     @staticmethod
-    def count_tokens(messages: list[dict], model_ref=None) -> int:
+    def _msg_to_dict(m) -> dict:
+        """Normalize a message object or dict into a dict with 'content'."""
+        if isinstance(m, dict):
+            return m
+        if hasattr(m, "model_dump"):  # Pydantic v2
+            return m.model_dump()
+        if hasattr(m, "dict"):  # Pydantic v1
+            return m.dict()
+        if hasattr(m, "content"):
+            return {"content": getattr(m, "content", ""), "role": getattr(m, "role", "user")}
+        return {"content": str(m)}
+
+    @staticmethod
+    def count_tokens(messages: list, model_ref=None) -> int:
         """
         Count tokens in *messages* using the best available method.
 
@@ -248,8 +261,8 @@ class MCM:
           3. chars / 4 — rough fallback.
         """
         text = " ".join(
-            m.get("content", "") if isinstance(m.get("content"), str)
-            else json.dumps(m.get("content", ""))
+            MCM._msg_to_dict(m).get("content", "") if isinstance(MCM._msg_to_dict(m).get("content"), str)
+            else json.dumps(MCM._msg_to_dict(m).get("content", ""))
             for m in messages
         )
         if model_ref is not None:

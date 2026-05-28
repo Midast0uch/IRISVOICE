@@ -29,6 +29,10 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Domain 19 imports (lazy — no hard dependency)
+from backend.agent.skill_simulator import SkillSimulator
+from backend.agent.trajectory_controller import TrajectoryController
+
 # ── Constants ──────────────────────────────────────────────────────────────
 
 # Minimum score improvement required to accept a variant (absolute delta)
@@ -126,17 +130,25 @@ class AutoResearchRunner:
         lmstudio_base_url: str = "http://localhost:1234",
         interval: float = DEFAULT_INTERVAL,
         model_name: str = "auto",        # "auto" → use whatever is loaded
+        caducean_session_id: Optional[str] = None,
     ) -> None:
         self._memory = memory_interface
         self._base_url = lmstudio_base_url
         self._interval = interval
         self._model_name = model_name
+        self._caducean_session_id = caducean_session_id
 
         self._task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
         self._running = False
         self._cycles_completed = 0
         self._reports: List[ResearchCycleReport] = []   # last 50
+        self._last_fire_ts: float = 0.0
+
+        # Domain 19 components
+        self._skill_sim = SkillSimulator()
+        conn = getattr(getattr(memory_interface, "episodic", None), "db", None)
+        self._traj_ctrl = TrajectoryController(conn) if conn is not None else None
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -147,7 +159,11 @@ class AutoResearchRunner:
             return
         self._stop_event.clear()
         self._running = True
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         self._task = loop.create_task(self._loop(), name="auto_research_loop")
         logger.info("[AutoResearch] Started background loop (interval=%.0fs)", self._interval)
 
@@ -173,6 +189,16 @@ class AutoResearchRunner:
                 if MAX_CYCLES > 0 and self._cycles_completed >= MAX_CYCLES:
                     logger.info("[AutoResearch] MAX_CYCLES reached — stopping")
                     break
+                # ── Domain 19: EML-aware firing decision ──
+                if not self._should_fire_now():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(self._stop_event.wait()),
+                            timeout=60.0,
+                        )
+                    except asyncio.TimeoutError:
+                        continue  # recheck EML every 60s
+                    continue
                 try:
                     await self._run_cycle()
                 except Exception as exc:
@@ -214,14 +240,24 @@ class AutoResearchRunner:
         logger.info("[AutoResearch] Baseline score: %.4f", baseline_score)
 
         # 3. Generate variants
-        variants = await self._generate_variants(skill_name, original_desc)
+        raw_variants = await self._generate_variants(skill_name, original_desc)
+
+        # ── Domain 19: pre-filter variants with SkillSimulator ──
+        caducean_state = self._get_caducean_state()
+        survivors = [
+            v for v in raw_variants
+            if self._skill_sim.predict(v.variant_description, original_desc, caducean_state) >= 0.35
+        ]
+        if not survivors and raw_variants:
+            survivors = raw_variants[:1]  # always evaluate at least one
+        logger.info("[AutoResearch] Variants: %d raw → %d survivors", len(raw_variants), len(survivors))
 
         # 4. Evaluate variants
         all_results: List[EvalResult] = []
         best_score = baseline_score
         best_variant: Optional[SkillVariant] = None
 
-        for v in variants:
+        for v in survivors:
             v_score, v_results = await self._evaluate_variant(v)
             all_results.extend(v_results)
             logger.info(
@@ -241,7 +277,7 @@ class AutoResearchRunner:
                 skill_name, baseline_score, best_score,
             )
 
-        # 6. Record report
+        # 6. Record report + train simulator
         report = ResearchCycleReport(
             cycle_id=cycle_id,
             started_at=t0,
@@ -257,11 +293,71 @@ class AutoResearchRunner:
         if len(self._reports) > 50:
             self._reports = self._reports[-50:]
         self._cycles_completed += 1
+        self._last_fire_ts = time.time()
+
+        # Feed report to SkillSimulator for future training
+        for v in survivors:
+            self._skill_sim.add_report({
+                "variant": v.variant_description,
+                "original": original_desc,
+                "caducean_state": caducean_state,
+                "improved": improved and (best_variant is not None and best_variant.variant_id == v.variant_id),
+            })
+
+        # Record COMPRESS action to trajectory table + refit controller
+        self._record_cycle_trajectory(improved)
+        if self._traj_ctrl is not None:
+            self._traj_ctrl.fit()
 
         logger.info(
             "[AutoResearch] Cycle %s done in %.1fs — improved=%s",
             cycle_id, report.duration_s(), improved,
         )
+
+    # ── Domain 19 helpers ─────────────────────────────────────────────────
+
+    def _should_fire_now(self) -> bool:
+        """EML-aware firing decision. Uses TrajectoryController if fitted, else EML threshold."""
+        if self._traj_ctrl is not None and self._traj_ctrl.is_fitted:
+            state = self._get_caducean_state()
+            should, _, _ = self._traj_ctrl.should_fire(
+                state.get("x", 0.5), state.get("y", 0.5),
+                state.get("xi", 0.0), state.get("u", 0.0),
+                state.get("eml", 1.0),
+                time.time() - self._last_fire_ts,
+            )
+            return should
+        # Bootstrap fallback: EML threshold
+        eml = self._get_caducean_state().get("eml", 1.0)
+        return eml > 1.5 or eml < 0.7
+
+    def _get_caducean_state(self) -> Dict[str, float]:
+        """Fetch live Caducean state via FFI, or return safe defaults."""
+        try:
+            from backend.gateway.iris_ffi import ffi_calculate_eml
+            from backend.agent.caducean_trajectory import CaduceanTrajectoryRecorder
+            eml, x, y = ffi_calculate_eml(self._caducean_session_id or "default")
+            return {"eml": float(eml), "x": float(x), "y": float(y),
+                    "xi": 0.0, "u": 0.0}
+        except Exception:
+            cached = CaduceanTrajectoryRecorder.get_cached_eml()
+            return {"eml": float(cached), "x": 0.5, "y": 0.5,
+                    "xi": 0.0, "u": 0.0}
+
+    def _record_cycle_trajectory(self, improved: bool) -> None:
+        """Record a COMPRESS action to trajectory table after research cycle."""
+        try:
+            from backend.gateway.iris_ffi import ffi_calculate_eml
+            from backend.agent.caducean_trajectory import get_trajectory_recorder
+            eml, x, y = ffi_calculate_eml(self._caducean_session_id or "default")
+            get_trajectory_recorder(self._memory).record(
+                session_id="autoresearch", step_num=self._cycles_completed,
+                x=x, y=y, action=1,  # COMPRESS
+                outcome="success" if improved else "neutral",
+                eml_after=eml,
+            )
+        except Exception:
+            pass
 
     # ── Memory helpers ────────────────────────────────────────────────────
 
@@ -288,6 +384,21 @@ class AutoResearchRunner:
 
             if not all_entries:
                 return None
+
+            # Domain 19: prefer target_category if controller recommends one
+            target_cat = (
+                self._traj_ctrl.target_category()
+                if self._traj_ctrl is not None
+                else None
+            )
+            if target_cat:
+                cat_map = {"explore": "auto_research",
+                           "compress": "named_skills",
+                           "continue": "research_topics"}
+                preferred = [e for e in all_entries
+                             if getattr(e, "_category", "") == cat_map.get(target_cat, "")]
+                if preferred:
+                    all_entries = preferred
 
             # Pick entry with lowest confidence (most room for improvement)
             worst = min(all_entries, key=lambda e: getattr(e, "confidence", 1.0))
@@ -353,7 +464,7 @@ class AutoResearchRunner:
 
     async def _lm_complete(self, prompt: str, max_tokens: int = 512) -> str:
         """Run a single completion against LM Studio (blocking, in executor)."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _call() -> str:
             client = self._get_lm_client()

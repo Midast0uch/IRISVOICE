@@ -3,6 +3,7 @@ IRIS Isolated State Manager
 Per-session state isolation — each session has its own IRISState.
 Handles persistence, auto-save, and state restoration.
 """
+
 import asyncio
 import json
 import logging
@@ -24,8 +25,10 @@ class IsolatedStateManager:
     def __init__(self, session_id: str):
         self.session_id = session_id
         from backend.core_models import IRISState
+
         self._state = IRISState()
         from backend.sessions.memory_bounds import MemoryTracker
+
         self._memory_tracker = MemoryTracker(session_id)
         self._lock = asyncio.Lock()
         self._persistence_dir: Optional[Path] = None
@@ -70,7 +73,12 @@ class IsolatedStateManager:
     async def get_state_copy(self):
         async with self._lock:
             from backend.core_models import IRISState
-            return self._state.model_copy() if hasattr(self._state, 'model_copy') else self._state
+
+            return (
+                self._state.model_copy()
+                if hasattr(self._state, "model_copy")
+                else self._state
+            )
 
     async def set_category(self, category: str) -> None:
         async with self._lock:
@@ -98,12 +106,16 @@ class IsolatedStateManager:
             # Check if this is an API key field
             try:
                 from backend.utils.encryption import encrypt_api_key
+
                 if "api_key" in field_id.lower() or "token" in field_id.lower():
                     stored_value = encrypt_api_key(str(value)) if value else value
             except Exception:
                 pass
 
-            if not hasattr(self._state, 'field_values') or self._state.field_values is None:
+            if (
+                not hasattr(self._state, "field_values")
+                or self._state.field_values is None
+            ):
                 self._state.field_values = {}
             if section_id not in self._state.field_values:
                 self._state.field_values[section_id] = {}
@@ -114,14 +126,21 @@ class IsolatedStateManager:
                 if field_id == "reasoning_model":
                     self._state.selected_reasoning_model = str(value) if value else None
                 elif field_id == "tool_execution_model":
-                    self._state.selected_tool_execution_model = str(value) if value else None
+                    self._state.selected_tool_execution_model = (
+                        str(value) if value else None
+                    )
 
             if self._persistence_dir:
                 await self._save_state()
 
-    async def confirm_section(self, category: str, section_id: str, values: Dict[str, Any]) -> None:
+    async def confirm_section(
+        self, category: str, section_id: str, values: Dict[str, Any]
+    ) -> float:
         async with self._lock:
-            if not hasattr(self._state, 'field_values') or self._state.field_values is None:
+            if (
+                not hasattr(self._state, "field_values")
+                or self._state.field_values is None
+            ):
                 self._state.field_values = {}
             if section_id not in self._state.field_values:
                 self._state.field_values[section_id] = {}
@@ -129,14 +148,20 @@ class IsolatedStateManager:
                 self._state.field_values[section_id][field_id] = value
             if self._persistence_dir:
                 await self._save_state()
+        return 0.0
 
-    async def update_theme(self, glow_color: str = None, font_color: str = None,
-                            state_colors: Dict = None, **kwargs) -> None:
+    async def update_theme(
+        self,
+        glow_color: str = None,
+        font_color: str = None,
+        state_colors: Dict = None,
+        **kwargs,
+    ) -> None:
         async with self._lock:
             old_theme = self._state.active_theme
-            if glow_color and hasattr(self._state.active_theme, 'glow'):
+            if glow_color and hasattr(self._state.active_theme, "glow"):
                 self._state.active_theme.glow = glow_color
-            if font_color and hasattr(self._state.active_theme, 'font'):
+            if font_color and hasattr(self._state.active_theme, "font"):
                 self._state.active_theme.font = font_color
             self._memory_tracker.track_theme_change(old_theme, self._state.active_theme)
             if self._persistence_dir:
@@ -159,40 +184,50 @@ class IsolatedStateManager:
             if self._persistence_dir:
                 await self._save_state()
 
-    def get_field_value(self, section_id: str, field_id: str, default: Any = None) -> Any:
-        fv = getattr(self._state, 'field_values', None) or {}
+    def get_field_value(
+        self, section_id: str, field_id: str, default: Any = None
+    ) -> Any:
+        fv = getattr(self._state, "field_values", None) or {}
         return fv.get(section_id, {}).get(field_id, default)
 
     def get_section_field_values(self, section_id: str) -> Dict[str, Any]:
-        fv = getattr(self._state, 'field_values', None) or {}
+        fv = getattr(self._state, "field_values", None) or {}
         return dict(fv.get(section_id, {}))
 
     def get_category_field_values(self, category: str) -> Dict[str, Any]:
-        fv = getattr(self._state, 'field_values', None) or {}
+        fv = getattr(self._state, "field_values", None) or {}
         result = {}
         for section_id, values in fv.items():
             if self._get_category_for_section(section_id) == category:
                 result.update(dict(values))
         return result
 
-    def get_decrypted_field_value(self, section_id: str, field_id: str, default: Any = None) -> Any:
+    def get_decrypted_field_value(
+        self, section_id: str, field_id: str, default: Any = None
+    ) -> Any:
         value = self.get_field_value(section_id, field_id, default)
         try:
             from backend.utils.encryption import decrypt_api_key
+
             return decrypt_api_key(value) if value else value
         except Exception:
             return value
 
-    def get_masked_field_value(self, section_id: str, field_id: str, default: Any = None) -> Any:
+    def get_masked_field_value(
+        self, section_id: str, field_id: str, default: Any = None
+    ) -> Any:
         value = self.get_decrypted_field_value(section_id, field_id, default)
         try:
             from backend.utils.encryption import mask_api_key
+
             return mask_api_key(value) if value else value
         except Exception:
             return value
 
     def register_state_change_callback(self, callback: Callable) -> None:
-        self._state_change_callbacks.append(weakref.ref(callback) if False else callback)
+        self._state_change_callbacks.append(
+            weakref.ref(callback) if False else callback
+        )
 
     async def _notify_state_change(self, key: str, value: Any) -> None:
         for callback in list(self._state_change_callbacks):
@@ -231,11 +266,11 @@ class IsolatedStateManager:
                 except Exception:
                     pass
             data = {}
-            if hasattr(self._state, 'model_dump'):
+            if hasattr(self._state, "model_dump"):
                 data = self._state.model_dump()
             else:
-                data = {"field_values": getattr(self._state, 'field_values', {})}
-            async with _aiofiles_open(state_file, 'w') as f:
+                data = {"field_values": getattr(self._state, "field_values", {})}
+            async with _aiofiles_open(state_file, "w") as f:
                 await f.write(json.dumps(data, indent=2, default=str))
         except Exception as e:
             logger.debug(f"[StateIsolation:{self.session_id}] Save failed: {e}")
@@ -249,7 +284,7 @@ class IsolatedStateManager:
         ]:
             if path.exists():
                 try:
-                    async with _aiofiles_open(path, 'r') as f:
+                    async with _aiofiles_open(path, "r") as f:
                         raw = await f.read()
                     data = json.loads(raw)
                     if isinstance(data, dict):
@@ -258,13 +293,16 @@ class IsolatedStateManager:
                             self._state.field_values = fv
                     return
                 except Exception as e:
-                    logger.debug(f"[StateIsolation:{self.session_id}] Load {label} failed: {e}")
+                    logger.debug(
+                        f"[StateIsolation:{self.session_id}] Load {label} failed: {e}"
+                    )
 
     async def _restore_model_selections(self) -> None:
         try:
             from backend.agent.agent_kernel import get_agent_kernel
+
             agent_kernel = get_agent_kernel()
-            fv = getattr(self._state, 'field_values', {}) or {}
+            fv = getattr(self._state, "field_values", {}) or {}
             ms_fv = fv.get("model_selection", {})
             reasoning = ms_fv.get("reasoning_model")
             tool_exec = ms_fv.get("tool_execution_model")
@@ -286,9 +324,10 @@ class IsolatedStateManager:
         if not self._persistence_dir:
             return
         try:
-            fv = getattr(self._state, 'field_values', {}) or {}
+            fv = getattr(self._state, "field_values", {}) or {}
             category_fields = {
-                sid: vals for sid, vals in fv.items()
+                sid: vals
+                for sid, vals in fv.items()
                 if self._get_category_for_section(sid) == category
             }
             data = {
@@ -298,15 +337,17 @@ class IsolatedStateManager:
             }
             await self._save_json(f"{category}.json", data)
         except Exception as e:
-            logger.debug(f"[StateIsolation:{self.session_id}] Save category '{category}' failed: {e}")
+            logger.debug(
+                f"[StateIsolation:{self.session_id}] Save category '{category}' failed: {e}"
+            )
 
     async def _save_theme(self) -> None:
         if not self._persistence_dir:
             return
         try:
-            theme = getattr(self._state, 'active_theme', None)
+            theme = getattr(self._state, "active_theme", None)
             data = {
-                "theme": theme.model_dump() if hasattr(theme, 'model_dump') else {},
+                "theme": theme.model_dump() if hasattr(theme, "model_dump") else {},
                 "saved_at": datetime.now().isoformat(),
             }
             await self._save_json("theme.json", data)
@@ -336,14 +377,18 @@ class IsolatedStateManager:
         if not filepath.exists():
             return None
         try:
-            async with _aiofiles_open(filepath, 'r') as f:
+            async with _aiofiles_open(filepath, "r") as f:
                 content = await f.read()
             return json.loads(content)
         except json.JSONDecodeError as e:
-            logger.debug(f"[StateIsolation:{self.session_id}] JSON decode error in {filename}: {e}")
+            logger.debug(
+                f"[StateIsolation:{self.session_id}] JSON decode error in {filename}: {e}"
+            )
             return None
         except Exception as e:
-            logger.debug(f"[StateIsolation:{self.session_id}] Load {filename} failed: {e}")
+            logger.debug(
+                f"[StateIsolation:{self.session_id}] Load {filename} failed: {e}"
+            )
             return None
 
     async def _save_json(self, filename: str, data: Dict) -> None:
@@ -352,21 +397,28 @@ class IsolatedStateManager:
         filepath = self._persistence_dir / filename
         try:
             content = json.dumps(data, indent=2, default=str)
-            async with _aiofiles_open(filepath, 'w') as f:
+            async with _aiofiles_open(filepath, "w") as f:
                 await f.write(content)
         except Exception as e:
-            logger.debug(f"[StateIsolation:{self.session_id}] Save {filename} failed: {e}")
+            logger.debug(
+                f"[StateIsolation:{self.session_id}] Save {filename} failed: {e}"
+            )
 
     def get_memory_usage(self) -> int:
         try:
-            return len(json.dumps(
-                self._state.model_dump() if hasattr(self._state, 'model_dump') else {}
-            ))
+            return len(
+                json.dumps(
+                    self._state.model_dump()
+                    if hasattr(self._state, "model_dump")
+                    else {}
+                )
+            )
         except Exception:
             return 0
 
 
-def _aiofiles_open(path, mode='r'):
+def _aiofiles_open(path, mode="r"):
     """Lazy aiofiles import to avoid startup cost."""
     import aiofiles
+
     return aiofiles.open(path, mode)

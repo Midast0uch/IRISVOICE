@@ -98,6 +98,13 @@ class _IrisFFI:
         ]
         self._lib.immortus_chain_keep_latest.restype = ctypes.c_int
 
+        # --- Caducean Simulator ---
+        self._lib.simulate_trajectories_to_db.argtypes = [
+            ctypes.c_int, ctypes.c_int,
+            ctypes.c_double, ctypes.c_double, ctypes.c_double
+        ]
+        self._lib.simulate_trajectories_to_db.restype = ctypes.c_int
+
     # Wrapper methods with encoding
     def init_core_engine(self, db_path: str, key_hex: str) -> int:
         return self._lib.init_core_engine(
@@ -159,6 +166,11 @@ class _IrisFFI:
         return self._lib.immortus_chain_keep_latest(
             thread_id.encode("utf-8"), keep_count
         )
+
+    def simulate_trajectories_to_db(
+        self, n: int, steps: int, a: float = 2.0, b: float = 2.0, s: float = 0.35
+    ) -> int:
+        return self._lib.simulate_trajectories_to_db(n, steps, a, b, s)
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +503,14 @@ class IrisCoreEngine:
             return self._fallback.immortus_chain_keep_latest(thread_id, keep_count)
         return -1
 
+    def simulate_trajectories_to_db(
+        self, n: int = 500, steps: int = 50,
+        a: float = 2.0, b: float = 2.0, s: float = 0.35
+    ) -> int:
+        if self._ffi:
+            return self._ffi.simulate_trajectories_to_db(n, steps, a, b, s)
+        return -1
+
 
 # ---------------------------------------------------------------------------
 # Module-level convenience helpers
@@ -545,6 +565,12 @@ def ffi_caducean_recommend(session_id: str) -> int:
     return _engine.caducean_recommend(session_id)
 
 
+def ffi_caducean_get_xi(session_id: str) -> float:
+    if _engine is None:
+        return 0.0
+    return _engine.caducean_get_xi(session_id)
+
+
 def ffi_caducean_update(session_id: str, action: int, balance: float) -> bool:
     if _engine is None:
         return False
@@ -555,3 +581,10 @@ def ffi_calculate_eml(session_id: str) -> Tuple[float, float, float]:
     if _engine is None:
         return 0.0, 0.0, 0.0
     return _engine.calculate_eml(session_id)
+
+
+def ffi_simulate_trajectories(n: int = 500, steps: int = 50) -> int:
+    """Run C++ Caducean simulation into trajectory table. Returns rows written."""
+    if _engine is None:
+        return -1
+    return _engine.simulate_trajectories_to_db(n, steps)

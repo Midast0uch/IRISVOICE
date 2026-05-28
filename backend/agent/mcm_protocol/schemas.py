@@ -102,9 +102,17 @@ class Workflow(BaseModel):
 # ── Collaboration / swarm models ─────────────────────────────────────────
 
 
-class ContextControlCode(BaseModel):
+class ContextControlCodeEntry(BaseModel):
     action:      str = ""
     description: str = ""
+
+
+class ContextControlCodesConfig(BaseModel):
+    enabled:  bool                           = True
+    prefix:   str                            = "MCM:"
+    pattern:  str                            = ""
+    _note:    str                            = ""
+    codes:    dict[str, ContextControlCodeEntry] = Field(default_factory=dict)
 
 
 class CompoundModeConfig(BaseModel):
@@ -131,7 +139,7 @@ class CollaborationRules(BaseModel):
     enabled:                bool                           = True
     last_updated:           str                            = ""
     compound_mode:          CompoundModeConfig             = Field(default_factory=CompoundModeConfig)
-    context_control_codes:  dict[str, ContextControlCode] = Field(default_factory=dict)
+    context_control_codes:  ContextControlCodesConfig      = Field(default_factory=ContextControlCodesConfig)
     join_policy:            JoinPolicy                     = Field(default_factory=JoinPolicy)
     signals:                dict[str, Any]                 = Field(default_factory=dict)
     natural_language_rules: list[str]                      = Field(default_factory=list)

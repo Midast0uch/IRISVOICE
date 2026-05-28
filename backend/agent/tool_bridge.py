@@ -328,6 +328,18 @@ class AgentToolBridge:
             {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)", "parameters": {"command": {
                 "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
 
+            # Memory
+            {
+                "name": "recall_memory",
+                "description": (
+                    "Search long-term episodic memory for relevant past context, "
+                    "solutions, or patterns. Use when you need prior knowledge for the current sub-task."
+                ),
+                "parameters": {"query": {"type": "string", "description": "What to search for"}},
+                "category": "memory",
+                "server": "internal",
+            },
+
             # AutoResearch — general-purpose improvement loop
             {
                 "name": "run_research",
@@ -781,6 +793,25 @@ class AgentToolBridge:
                 result = await self._execute_dev_tool(tool_name, params, session_id)
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result)
                 return result
+
+            if tool_name == "recall_memory":
+                query = params.get("query", "")
+                _retrieval_limit = 5
+                _retrieval_score = 0.40
+                try:
+                    from backend.gateway.iris_ffi import ffi_calculate_eml
+                    _eml, _ex, _ey = ffi_calculate_eml(session_id)
+                    if _eml < 1.00 and _ey >= 0.70:
+                        _retrieval_limit = 3
+                        _retrieval_score = 0.65
+                except Exception:
+                    pass
+                results = []
+                if self._memory_interface and hasattr(self._memory_interface, "episodic"):
+                    results = self._memory_interface.episodic.retrieve_similar(
+                        task=query, limit=_retrieval_limit, min_score=_retrieval_score
+                    ) or []
+                return {"success": True, "results": results}
 
             if tool_name == "run_research":
                 result = await self._execute_research_tool(params, session_id)
