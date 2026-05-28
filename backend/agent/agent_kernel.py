@@ -16,6 +16,7 @@ from .personality import PersonalityManager
 from .memory import ConversationMemory, TaskRecord
 from .model_router import ModelRouter
 from .tool_bridge import AgentToolBridge
+from ..llm_service import llm as _llm
 from typing import Any, Dict, Optional, List, Callable
 import json
 import asyncio
@@ -431,52 +432,25 @@ class AgentKernel:
                 return _InferResult(_resp.choices[0].message.content or "")
 
             # --- Path 2: Remote API providers (Cohere, OpenAI, Groq, etc.) ---
+            # Unified via LiteLLM — single call, any provider.
             if self._is_api_provider():
-                _model = self._selected_reasoning_model or ""
-                _api_client = self._get_api_client()
-
-                # Cohere has a native SDK — use it when the base_url targets Cohere
-                # (https://api.cohere.com/...). The Cohere chat API expects a different
-                # format than OpenAI (message list with role/content).
-                _base = (self._api_base_url or "").lower()
-                if "cohere" in _base:
-                    try:
-                        import cohere as _cohere
-
-                        _coh = _cohere.ClientV2(api_key=self._api_key or "")
-                        _coh_resp = _coh.chat(
-                            model=_model or "command-r-plus",
-                            messages=[{"role": "user", "content": prompt}],
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                        )
-                        # Cohere v2 returns message.content as a list of blocks
-                        _text = ""
-                        if hasattr(_coh_resp, "message") and _coh_resp.message:
-                            for block in _coh_resp.message.content:
-                                if hasattr(block, "text"):
-                                    _text += block.text
-                        return _InferResult(_text)
-                    except ImportError:
-                        logger.warning(
-                            "[AgentKernel.infer] cohere SDK not installed — "
-                            "falling back to OpenAI-compat client"
-                        )
-                    except Exception as _coh_err:
-                        logger.warning(
-                            f"[AgentKernel.infer] Cohere SDK call failed: {_coh_err}"
-                        )
-                        return _InferResult("")
-
-                # All other API providers — use OpenAI-compatible client
-                # (works with OpenAI, Groq, DeepSeek, Mistral, OpenRouter, etc.)
-                _resp = _api_client.chat.completions.create(
-                    model=_model or "gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-                return _InferResult(_resp.choices[0].message.content or "")
+                _model = self._selected_reasoning_model or "gpt-4o-mini"
+                try:
+                    _resp = _llm.complete(
+                        model=_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        stream=False,
+                        api_key=self._api_key,
+                        api_base=self._api_base_url,
+                    )
+                    return _InferResult(_resp.choices[0].message.content or "")
+                except Exception as _llm_err:
+                    logger.warning(
+                        f"[AgentKernel.infer] LiteLLM call failed: {_llm_err}"
+                    )
+                    return _InferResult("")
 
             # --- Path 3: Ollama native API (provider == "local", model has ":") ---
             if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
@@ -849,22 +823,8 @@ class AgentKernel:
         """
         return int(self.resolve_context_window() * fraction)
 
-    def _get_api_client(self) -> Any:
-        """Return an OpenAI-compatible client for the remote API provider.
-
-        Includes httpx timeout to prevent hangs when SSE streams don't close.
-        """
-        from openai import OpenAI as _OpenAI
-        import httpx
-
-        return _OpenAI(
-            api_key=self._api_key or "placeholder",
-            base_url=self._api_base_url,
-            timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
-        )
-
     @staticmethod
-    def _safe_stream(resp, silence_timeout: float = 30.0, total_timeout: float = 90.0):
+    def _safe_stream(resp, silence_timeout: float = 1.5, total_timeout: float = 90.0):
         """Wrap a streaming response iterator with silence and total timeouts.
 
         If no new chunk arrives within *silence_timeout* seconds, OR the
@@ -892,6 +852,8 @@ class AgentKernel:
         t.start()
 
         _start = time.monotonic()
+        _last_content_ts = _start  # wall-time of last CONTENTFUL yield
+        _SILENCE_TOTAL = 3.0  # wall-time silence (s) after the last content chunk
         while True:
             elapsed = time.monotonic() - _start
             remaining = total_timeout - elapsed
@@ -901,25 +863,42 @@ class AgentKernel:
                     "abandoning response"
                 )
                 return
-            wait = min(silence_timeout, remaining)
-            _done.wait(timeout=wait)
+            # Use a short wait (0.1s) so we can check wall-time silence
+            # even when litellm emits empty/done chunks every second.
+            _done.wait(timeout=0.1)
             if _buffer:
-                yield _buffer.pop(0)
-                _done.clear()
-                continue
-            if not t.is_alive():
-                # Stream finished — drain any remaining chunks
+                # Drain ALL buffered at once
+                _had_content = False
                 while _buffer:
-                    yield _buffer.pop(0)
+                    chunk = _buffer.pop(0)
+                    _delta = chunk.choices[0].delta
+                    # Yield every chunk — caller separates reasoning vs content
+                    _has = bool(
+                        _delta.content or getattr(_delta, "reasoning_content", None)
+                    )
+                    if _has:
+                        yield chunk
+                        _had_content = True
+                _done.clear()
+                if _had_content:
+                    _last_content_ts = time.monotonic()
+                    continue  # fresh content → keep going
+                # Empty chunks only — drop through to silence check below
+            if not t.is_alive():
+                # Stream finished
+                while _buffer:
+                    _buffer.pop(0)
                 if _ex[0] is not None:
                     logger.warning(f"[AgentKernel] stream error: {_ex[0]}")
                 return
-            # Timeout with no new chunks — abandon the stream
-            logger.warning(
-                f"[AgentKernel] stream silence timeout ({silence_timeout}s) — "
-                "abandoning response"
-            )
-            return
+            # Wall-time silence check — independent of empty-chunk spam
+            _wall_silence = time.monotonic() - _last_content_ts
+            if _wall_silence >= _SILENCE_TOTAL:
+                logger.warning(
+                    f"[AgentKernel] stream wall-silence ({_wall_silence:.1f}s) "
+                    "— abandoning response"
+                )
+                return
 
     # Providers that speak the OpenAI-compatible chat completions API.
     # When the user picks any of these, inference routes through _get_lmstudio_client()
@@ -1751,11 +1730,61 @@ class AgentKernel:
 
         return sanitized
 
+    @staticmethod
+    def _reasoning_chunk_count(delta: Any) -> int:
+        """Count reasoning tokens in a delta for buffer management."""
+        return len(getattr(delta, "reasoning_content", None) or "")
+
+    @staticmethod
+    def _chunk_batcher(
+        callback: Optional[Callable[[str], None]],
+        interval: float = 0.05,
+    ) -> Callable[[str], None]:
+        """Return a batched chunk callback that flushes every *interval* seconds.
+
+        Accumulates string tokens and sends them as a single WS message every
+        ``interval`` seconds.  The very first token is sent immediately so the
+        UI shows something right away.
+        """
+        import threading as _t
+
+        _buf: list[str] = []
+        _timer: list[Optional[_t.Timer]] = [None]
+        _lock = _t.Lock()
+        _first = True
+
+        def _flush() -> None:
+            nonlocal _first
+            with _lock:
+                if _buf:
+                    payload = "".join(_buf)
+                    _buf.clear()
+                    if callback:
+                        callback(payload)
+                _timer[0] = None
+
+        def _batcher(token: str) -> None:
+            nonlocal _first
+            with _lock:
+                _buf.append(token)
+                if _first:
+                    _first = False
+                    # First token immediate — no wait
+                    _flush()
+                elif _timer[0] is None:
+                    t = _t.Timer(interval, _flush)
+                    t.daemon = True
+                    t.start()
+                    _timer[0] = t
+
+        return _batcher
+
     def _respond_direct(
         self,
         text: str,
         context: List[Dict],
         chunk_callback: Optional[Callable[[str], None]] = None,
+        reasoning_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
         """
         Respond directly to the user without planning or tool execution.
@@ -1800,26 +1829,19 @@ class AgentKernel:
                         }
                     resp = client.chat.completions.create(**_create_kwargs)
                     full_reply = ""
-                    in_think = False
+                    _batched_cb = self._chunk_batcher(chunk_callback)
                     for chunk in self._safe_stream(resp):
                         delta = chunk.choices[0].delta
-                        # Handle both content and reasoning_content (reasoning models)
-                        token = (
-                            delta.content
-                            or getattr(delta, "reasoning_content", None)
-                            or ""
-                        )
-                        if token:
-                            full_reply += token
+                        _content = delta.content or ""
+                        _reasoning = getattr(delta, "reasoning_content", None) or ""
 
-                            # Stream-safe thinking tag stripping (simplified)
-                            if "<think>" in token:
-                                in_think = True
-                            if "</think>" in token:
-                                in_think = False
+                        if _reasoning and reasoning_callback:
+                            reasoning_callback(_reasoning)
 
-                            if not in_think:
-                                chunk_callback(delta)
+                        if _content:
+                            full_reply += _content
+                            _batched_cb(_content)
+                    _batched_cb("")  # force-flush
 
                     thinking, clean = self._parse_thinking(full_reply)
                     self._pending_thinking = thinking
@@ -1864,7 +1886,6 @@ class AgentKernel:
 
             # Remote API provider (OpenAI, Groq, Cohere, etc.)
             if self._is_api_provider():
-                client = self._get_api_client()
                 sel = self._selected_reasoning_model or "local-model"
                 # Fallback: local-model names don't work with remote APIs.
                 if sel in (
@@ -1883,6 +1904,8 @@ class AgentKernel:
                     messages=messages,
                     max_tokens=4096,
                     temperature=0.6,
+                    api_key=self._api_key,
+                    api_base=self._api_base_url,
                 )
                 if use_thinking and "reasoning" in sel.lower():
                     _api_kwargs["reasoning_effort"] = "high"
@@ -1895,10 +1918,10 @@ class AgentKernel:
                     _t0 = _perf_t.perf_counter()
                     _api_kwargs["stream"] = True
                     try:
-                        resp = client.chat.completions.create(**_api_kwargs)
+                        resp = _llm.complete(**_api_kwargs)
                     except Exception as _api_err:
                         logger.error(
-                            f"[API_DEBUG] API call failed: {type(_api_err).__name__}: {_api_err}"
+                            f"[API_DEBUG] LiteLLM call failed: {type(_api_err).__name__}: {_api_err}"
                         )
                         thinking, clean = self._parse_thinking("")
                         chunk_callback(
@@ -1909,28 +1932,50 @@ class AgentKernel:
                             or f"[IRIS error: {type(_api_err).__name__}: {str(_api_err)[:200]}]"
                         )
                     full_reply = ""
+                    _chunk_count = 0
+                    _reasoning_buf: list[str] = []
+                    # Wrap chunk_callback with the 50ms batcher
+                    _batched_cb = self._chunk_batcher(chunk_callback)
                     for chunk in self._safe_stream(resp):
                         _delta = chunk.choices[0].delta
-                        _token = (
-                            _delta.content
-                            or getattr(_delta, "reasoning_content", None)
-                            or ""
-                        )
-                        if _token:
-                            full_reply += _token
-                            chunk_callback(_token)
+                        _content = _delta.content or ""
+                        _reasoning = getattr(_delta, "reasoning_content", None) or ""
+
+                        if _reasoning:
+                            _reasoning_buf.append(_reasoning)
+                            if reasoning_callback:
+                                reasoning_callback(_reasoning)
+
+                        if _content:
+                            full_reply += _content
+                            _batched_cb(_content)
+                            _chunk_count += 1
+
+                    # Flush any remaining reasoning
+                    if _reasoning_buf and reasoning_callback:
+                        reasoning_callback("")  # end-of-reasoning marker
+                    # Flush last content batch
+                    _batched_cb("")  # force-flush by sending empty string
+
+                    # Fall through to _parse_thinking for any <think> tags
+                    # still embedded in content.
                     thinking, clean = self._parse_thinking(full_reply)
                     self._pending_thinking = thinking
                     _elapsed = _perf_t.perf_counter() - _t0
                     _ctok = max(1, len(full_reply) // 4)
                     _ptok = sum(len(m.get("content", "")) for m in messages) // 4
+                    logger.info(
+                        f"[API_TIMING] model={sel} elapsed={_elapsed:.2f}s "
+                        f"reply_len={len(full_reply)} chunks={_chunk_count} "
+                        f"ctok={_ctok}"
+                    )
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
                     return clean or "(I see.)"
                 else:
                     import time as _perf_t
 
                     _t0 = _perf_t.perf_counter()
-                    resp = client.chat.completions.create(**_api_kwargs)
+                    resp = _llm.complete(**_api_kwargs)
                     _elapsed = _perf_t.perf_counter() - _t0
                     reply = resp.choices[0].message.content or ""
                     thinking, clean = self._parse_thinking(reply)
@@ -2147,563 +2192,6 @@ class AgentKernel:
         return openai_tools
 
     # ── ReAct agentic loop ───────────────────────────────────────────────────
-
-    def _run_agentic_loop(
-        self,
-        messages: List[Dict],
-        session_id: Optional[str] = None,
-        chunk_callback: Optional[Callable[[str], None]] = None,
-    ) -> str:
-        """
-        Multi-step reasoning and tool execution loop (ReAct).
-
-        Calls the LLM with tool definitions.  If the model returns
-        ``finish_reason="tool_calls"`` the tools are executed and their results
-        are appended to the message history before the next LLM call.  This
-        repeats until the model produces a ``finish_reason="stop"`` response,
-        which is returned as the final answer.
-
-        Why this replaces the old plan→execute→synthesize pipeline
-        ────────────────────────────────────────────────────────────
-        The old pipeline asked the model to emit a static JSON plan upfront,
-        then executed it blindly.  The model never saw tool results, so it
-        could not adapt when a step failed or produced unexpected output.  This
-        loop (ReAct pattern) lets the model observe each result and decide what
-        to do next — enabling genuine multi-step reasoning and recovery.
-
-        Args:
-            messages: Initial message list (system + conversation history + user turn).
-            session_id: Passed through to tool_bridge for session isolation.
-            chunk_callback: Optional callback for streaming response chunks.
-
-        Returns:
-            The model's final clean response string.
-        """
-        MAX_ITERATIONS = 8
-        tools = self._get_openai_tools()
-
-        for iteration in range(MAX_ITERATIONS):
-            logger.info(
-                f"[AgentLoop] Iteration {iteration + 1}/{MAX_ITERATIONS}, "
-                f"messages={len(messages)}, tools={len(tools)}"
-            )
-            try:
-                # ── LM Studio (OpenAI-compatible API) ────────────────────────
-                if self._is_openai_compat():
-                    client = self._get_lmstudio_client()
-                    sel = self._selected_reasoning_model or "local-model"
-
-                    call_kwargs: Dict[str, Any] = dict(
-                        model=sel,
-                        messages=messages,
-                        max_tokens=-1,
-                        temperature=0.6,
-                        # Thinking OFF during tool-call iterations — models need
-                        # clean JSON for tool_calls; thinking can be re-enabled
-                        # on the final free-response turn if desired.
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                    )
-                    if tools:
-                        call_kwargs["tools"] = tools
-                        call_kwargs["tool_choice"] = "auto"
-
-                    # Enable streaming if a chunk_callback is provided
-                    if chunk_callback:
-                        call_kwargs["stream"] = True
-
-                    resp = client.chat.completions.create(**call_kwargs)
-
-                    if chunk_callback and call_kwargs.get("stream"):
-                        full_reply = ""
-                        all_tool_calls = []
-                        in_think = False
-                        finish_reason = "stop"
-
-                        for chunk in self._safe_stream(resp):
-                            if not chunk.choices:
-                                continue
-                            delta = chunk.choices[0].delta
-
-                            if getattr(delta, "content", None):
-                                content_piece = delta.content
-                                full_reply += content_piece
-
-                                if "<think>" in content_piece:
-                                    in_think = True
-                                if "</think>" in content_piece:
-                                    in_think = False
-
-                                if not in_think:
-                                    chunk_callback(content_piece)
-
-                            # Accumulate tool calls safely (handle both delta chunks and whole blocks)
-                            if getattr(delta, "tool_calls", None):
-                                for tc in delta.tool_calls:
-                                    idx = tc.index if hasattr(tc, "index") else 0
-                                    while len(all_tool_calls) <= idx:
-                                        all_tool_calls.append(
-                                            {
-                                                "id": "",
-                                                "type": "function",
-                                                "function": {
-                                                    "name": "",
-                                                    "arguments": "",
-                                                },
-                                            }
-                                        )
-
-                                    if getattr(tc, "id", None):
-                                        all_tool_calls[idx]["id"] = tc.id
-                                    if getattr(tc, "function", None):
-                                        if getattr(tc.function, "name", None):
-                                            all_tool_calls[idx]["function"]["name"] = (
-                                                tc.function.name
-                                            )
-                                        if getattr(tc.function, "arguments", None):
-                                            all_tool_calls[idx]["function"][
-                                                "arguments"
-                                            ] += tc.function.arguments
-
-                            if getattr(chunk.choices[0], "finish_reason", None):
-                                finish_reason = chunk.choices[0].finish_reason
-
-                        # Convert accumulated tool calls dicts to simulated objects for compatibility
-                        class DummyFunction:
-                            def __init__(self, name, arguments):
-                                self.name = name
-                                self.arguments = arguments
-
-                        class DummyToolCall:
-                            def __init__(self, id, function):
-                                self.id = id
-                                self.function = function
-
-                        typed_tool_calls = [
-                            DummyToolCall(
-                                tc["id"],
-                                DummyFunction(
-                                    tc["function"]["name"], tc["function"]["arguments"]
-                                ),
-                            )
-                            for tc in all_tool_calls
-                        ]
-
-                        class StreamedChoice:
-                            def __init__(self, content, tool_calls, finish_reason):
-                                self.message = type(
-                                    "Message",
-                                    (object,),
-                                    {"content": content, "tool_calls": tool_calls},
-                                )()
-                                self.finish_reason = finish_reason
-
-                        choice = StreamedChoice(
-                            full_reply, typed_tool_calls, finish_reason
-                        )
-                    else:
-                        # Non-streaming path (original logic)
-                        choice = resp.choices[0]
-                        full_reply = choice.message.content or ""
-                        all_tool_calls = choice.message.tool_calls or []
-
-                    # Model finished without requesting any tool — return response
-                    if choice.finish_reason == "stop" or not all_tool_calls:
-                        content = full_reply  # Already collected from stream or direct response
-                        thinking, clean = self._parse_thinking(content)
-                        self._pending_thinking = thinking
-                        return clean
-
-                    # Model wants to use one or more tools
-                    if all_tool_calls:
-                        # Serialize the assistant turn so the model keeps its own
-                        # tool_call references in subsequent context passes
-                        messages.append(
-                            {
-                                "role": "assistant",
-                                # Use content from choice, which might be empty for tool calls
-                                "content": choice.message.content or "",
-                                "tool_calls": [
-                                    {
-                                        "id": tc.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": tc.function.name,
-                                            "arguments": tc.function.arguments,
-                                        },
-                                    }
-                                    for tc in all_tool_calls
-                                ],
-                            }
-                        )
-
-                        for tc in all_tool_calls:
-                            t_name = tc.function.name
-                            try:
-                                t_args = json.loads(tc.function.arguments)
-                            except Exception:
-                                t_args = {}
-
-                            logger.info(
-                                f"[AgentLoop] Tool call: {t_name}({list(t_args.keys())})"
-                            )
-
-                            # Execute tool — tool_bridge.execute_tool is async;
-                            # asyncio.run() is safe here because process_text_message
-                            # runs inside a thread-pool executor (no event loop in thread).
-                            try:
-                                if self._tool_bridge:
-                                    t_result = asyncio.run(
-                                        self._tool_bridge.execute_tool(
-                                            t_name, t_args, session_id
-                                        )
-                                    )
-                                else:
-                                    t_result = {"error": "Tool bridge not available"}
-                            except RuntimeError as run_err:
-                                # asyncio.run() can fail if called from inside an
-                                # already-running loop (shouldn't happen here, but just
-                                # in case the executor shares a loop in a future version)
-                                logger.warning(
-                                    f"[AgentLoop] asyncio.run failed: {run_err} — using ThreadPoolExecutor"
-                                )
-                                import concurrent.futures
-
-                                loop = asyncio.new_event_loop()
-                                try:
-                                    t_result = loop.run_until_complete(
-                                        self._tool_bridge.execute_tool(
-                                            t_name, t_args, session_id
-                                        )
-                                    )
-                                finally:
-                                    loop.close()
-                            except Exception as exec_err:
-                                logger.error(
-                                    f"[AgentLoop] Tool {t_name} raised: {exec_err}"
-                                )
-                                t_result = {"error": str(exec_err), "tool": t_name}
-
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tc.id,
-                                    "content": (
-                                        json.dumps(t_result)
-                                        if isinstance(t_result, dict)
-                                        else str(t_result)
-                                    ),
-                                }
-                            )
-                        continue  # next iteration — model sees tool results
-
-                # ── Remote API provider (Cohere, OpenAI, Groq, etc.) ──────────
-                # These providers support OpenAI-compatible function calling via
-                # the remote API client — same protocol as LM Studio but over
-                # the network with an API key.
-                if self._is_api_provider():
-                    client = self._get_api_client()
-                    sel = self._selected_reasoning_model or "local-model"
-                    if sel in (
-                        "local-model",
-                        "Currently Loaded Model",
-                        "currently-loaded-model",
-                    ):
-                        sel = "command-a-03-2025"
-
-                    call_kwargs: Dict[str, Any] = dict(
-                        model=sel,
-                        messages=messages,
-                        max_tokens=4096,
-                        temperature=0.6,
-                    )
-                    if tools:
-                        call_kwargs["tools"] = tools
-                        call_kwargs["tool_choice"] = "auto"
-
-                    # Cohere reasoning models: disable reasoning_effort during
-                    # tool-call iterations (same rationale as LM Studio thinking
-                    # OFF — clean JSON for tool_calls).  Re-enabled on the final
-                    # free-response turn if the model is a reasoning variant.
-                    # Standard models ignore reasoning_effort safely.
-
-                    # Enable streaming if a chunk_callback is provided
-                    if chunk_callback:
-                        call_kwargs["stream"] = True
-
-                    # Validate that we have an API key before calling
-                    if not self._api_key and self._model_provider not in (
-                        "lmstudio",
-                        "local",
-                        "iris_local",
-                    ):
-                        return (
-                            "IRIS needs an API key to use this model. "
-                            "Open the agents card and add your key."
-                        )
-
-                    try:
-                        resp = client.chat.completions.create(**call_kwargs)
-                    except Exception as _call_err:
-                        _err_name = type(_call_err).__name__
-                        _provider_name = self._model_provider or "the API"
-                        if "AuthenticationError" in _err_name or "401" in str(
-                            _call_err
-                        ):
-                            return (
-                                f"IRIS couldn't authenticate with {_provider_name}. "
-                                f"Check your API key in the agents card."
-                            )
-                        elif "RateLimitError" in _err_name or "429" in str(_call_err):
-                            return (
-                                f"IRIS is being rate-limited by {_provider_name}. "
-                                f"Wait a moment and try again."
-                            )
-                        elif (
-                            "Timeout" in _err_name
-                            or "timed out" in str(_call_err).lower()
-                        ):
-                            return (
-                                f"IRIS timed out waiting for {_provider_name}. "
-                                f"The model may be overloaded — try again."
-                            )
-                        else:
-                            logger.error(
-                                f"[AgentLoop] API provider error ({_err_name}): {_call_err}"
-                            )
-                            return (
-                                f"IRIS hit an error with {_provider_name}: {_call_err}"
-                            )
-
-                    if chunk_callback and call_kwargs.get("stream"):
-                        full_reply = ""
-                        all_tool_calls = []
-                        finish_reason = "stop"
-
-                        for chunk in self._safe_stream(resp):
-                            if not chunk.choices:
-                                continue
-                            delta = chunk.choices[0].delta
-
-                            if getattr(delta, "content", None):
-                                content_piece = delta.content
-                                full_reply += content_piece
-                                chunk_callback(content_piece)
-
-                            # Accumulate tool calls safely
-                            if getattr(delta, "tool_calls", None):
-                                for tc in delta.tool_calls:
-                                    idx = tc.index if hasattr(tc, "index") else 0
-                                    while len(all_tool_calls) <= idx:
-                                        all_tool_calls.append(
-                                            {
-                                                "id": "",
-                                                "type": "function",
-                                                "function": {
-                                                    "name": "",
-                                                    "arguments": "",
-                                                },
-                                            }
-                                        )
-
-                                    if getattr(tc, "id", None):
-                                        all_tool_calls[idx]["id"] = tc.id
-                                    if getattr(tc, "function", None):
-                                        if getattr(tc.function, "name", None):
-                                            all_tool_calls[idx]["function"]["name"] = (
-                                                tc.function.name
-                                            )
-                                        if getattr(tc.function, "arguments", None):
-                                            all_tool_calls[idx]["function"][
-                                                "arguments"
-                                            ] += tc.function.arguments
-
-                            if getattr(chunk.choices[0], "finish_reason", None):
-                                finish_reason = chunk.choices[0].finish_reason
-
-                        # Convert accumulated tool calls dicts to simulated objects
-                        class DummyFunction:
-                            def __init__(self, name, arguments):
-                                self.name = name
-                                self.arguments = arguments
-
-                        class DummyToolCall:
-                            def __init__(self, id, function):
-                                self.id = id
-                                self.function = function
-
-                        typed_tool_calls = [
-                            DummyToolCall(
-                                tc["id"],
-                                DummyFunction(
-                                    tc["function"]["name"], tc["function"]["arguments"]
-                                ),
-                            )
-                            for tc in all_tool_calls
-                        ]
-
-                        class StreamedChoice:
-                            def __init__(self, content, tool_calls, finish_reason):
-                                self.message = type(
-                                    "Message",
-                                    (object,),
-                                    {"content": content, "tool_calls": tool_calls},
-                                )()
-                                self.finish_reason = finish_reason
-
-                        choice = StreamedChoice(
-                            full_reply, typed_tool_calls, finish_reason
-                        )
-                    else:
-                        # Non-streaming path
-                        choice = resp.choices[0]
-                        full_reply = choice.message.content or ""
-                        all_tool_calls = choice.message.tool_calls or []
-
-                    # Model finished without requesting any tool — return response
-                    if choice.finish_reason == "stop" or not all_tool_calls:
-                        content = full_reply
-                        thinking, clean = self._parse_thinking(content)
-                        self._pending_thinking = thinking
-                        return clean
-
-                    # Model wants to use one or more tools
-                    typed_tcs = (
-                        getattr(choice.message, "tool_calls", None) or all_tool_calls
-                    )
-                    if typed_tcs:
-                        # Helper: get field from either dict or object
-                        def _tc_attr(tc, field):
-                            if isinstance(tc, dict):
-                                return tc.get(field, None)
-                            return getattr(tc, field, None)
-
-                        def _tc_func_attr(tc, field):
-                            tc_func = _tc_attr(tc, "function")
-                            if tc_func is None:
-                                return None
-                            if isinstance(tc_func, dict):
-                                return tc_func.get(field, None)
-                            return getattr(tc_func, field, None)
-
-                        messages.append(
-                            {
-                                "role": "assistant",
-                                "content": choice.message.content or "",
-                                "tool_calls": [
-                                    {
-                                        "id": _tc_attr(tc, "id") or "",
-                                        "type": "function",
-                                        "function": {
-                                            "name": _tc_func_attr(tc, "name") or "",
-                                            "arguments": _tc_func_attr(tc, "arguments")
-                                            or "",
-                                        },
-                                    }
-                                    for tc in typed_tcs
-                                ],
-                            }
-                        )
-
-                        for tc in typed_tcs:
-                            t_name = _tc_func_attr(tc, "name") or "unknown"
-                            t_args_raw = _tc_func_attr(tc, "arguments") or "{}"
-                            try:
-                                t_args = json.loads(t_args_raw)
-                            except Exception:
-                                t_args = {}
-
-                            logger.info(
-                                f"[AgentLoop/API] Tool call: {t_name}({list(t_args.keys())})"
-                            )
-
-                            logger.info(
-                                f"[AgentLoop/API] Tool call: {t_name}({list(t_args.keys())})"
-                            )
-                            _tc_id = _tc_attr(tc, "id") or ""
-
-                            try:
-                                if self._tool_bridge:
-                                    # Run async execute_tool in a dedicated thread
-                                    # to avoid event-loop nesting (asyncio.run
-                                    # cannot be called from inside a running loop).
-                                    import threading as _threading
-
-                                    _result_box = [None]
-                                    _error_box = [None]
-
-                                    def _run_tool():
-                                        try:
-                                            _result_box[0] = asyncio.run(
-                                                self._tool_bridge.execute_tool(
-                                                    t_name, t_args, session_id
-                                                )
-                                            )
-                                        except Exception as e:
-                                            _error_box[0] = e
-
-                                    _t = _threading.Thread(
-                                        target=_run_tool, daemon=True
-                                    )
-                                    _t.start()
-                                    _t.join(timeout=60)
-
-                                    if _error_box[0]:
-                                        raise _error_box[0]
-                                    t_result = _result_box[0] or {}
-                                else:
-                                    t_result = {"error": "Tool bridge not available"}
-                            except Exception as exec_err:
-                                logger.error(
-                                    f"[AgentLoop/API] Tool {t_name} raised: {exec_err}"
-                                )
-                                t_result = {"error": str(exec_err), "tool": t_name}
-
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": _tc_id,
-                                    "content": (
-                                        json.dumps(t_result)
-                                        if isinstance(t_result, dict)
-                                        else str(t_result)
-                                    ),
-                                }
-                            )
-                        continue  # next iteration — model sees tool results
-
-                # ── Fallback for Ollama / local models ─────────────────────
-                # Ollama and local models don't support tool calling yet;
-                # fall back to a direct conversational response.
-                last_user = next(
-                    (m["content"] for m in reversed(messages) if m["role"] == "user"),
-                    "",
-                )
-                ctx = [m for m in messages if m["role"] in ("user", "assistant")][-8:]
-                return self._respond_direct(
-                    last_user, ctx, chunk_callback=chunk_callback
-                )
-
-            except Exception as loop_err:
-                logger.error(
-                    f"[AgentLoop] Iteration {iteration + 1} error: {loop_err}",
-                    exc_info=True,
-                )
-                if iteration == 0:
-                    raise  # Let caller handle on first iteration
-                break
-
-        # Max iterations reached — ask model to summarise what it found
-        logger.warning(f"[AgentLoop] Max iterations ({MAX_ITERATIONS}) reached")
-        last_user = next(
-            (m["content"] for m in reversed(messages) if m["role"] == "user"),
-            "your request",
-        )
-        summary_ctx = [m for m in messages if m["role"] in ("user", "assistant")][-6:]
-        return self._respond_direct(
-            f"Summarise what you found so far for: {last_user}",
-            summary_ctx,
-            chunk_callback=chunk_callback,
-        )
 
     def prepare_spoken_text(self, full_response: str, user_message: str = "") -> str:
         """
@@ -3018,6 +2506,7 @@ class AgentKernel:
         text: str,
         session_id: Optional[str] = None,
         chunk_callback: Optional[Callable[[str], None]] = None,
+        reasoning_callback: Optional[Callable[[str], None]] = None,
         from_voice: bool = False,
     ) -> str:
         """
@@ -3082,7 +2571,10 @@ class AgentKernel:
             try:
                 _t_llm_start = time.perf_counter()
                 response = self._respond_direct(
-                    text, context, chunk_callback=chunk_callback
+                    text,
+                    context,
+                    chunk_callback=chunk_callback,
+                    reasoning_callback=reasoning_callback,
                 )
                 _t_llm_end = time.perf_counter()
                 logger.info(

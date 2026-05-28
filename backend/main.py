@@ -451,13 +451,36 @@ async def lifespan(app: FastAPI):
             _provider = _mc.get("active_provider", "")
             _reasoning = _mc.get("reasoning_model", "")
             _tool_exec = _mc.get("tool_execution_model", "")
+            _api_key = _mc.get("api_key", "")
+            _api_base_url = _mc.get("api_base_url", "")
             if _provider and _reasoning and hasattr(app.state, "agent_kernel"):
-                try:
-                    app.state.agent_kernel.set_model_selection(
+
+                def _configure_kernel(kernel):
+                    kernel.set_model_selection(
                         reasoning_model=_reasoning,
                         tool_execution_model=_tool_exec or _reasoning,
                         model_provider=_provider,
                     )
+                    if _provider == "api" and _api_key:
+                        kernel.configure_api(
+                            api_key=_api_key,
+                            base_url=_api_base_url or "https://api.openai.com/v1",
+                        )
+
+                try:
+                    # Configure the default kernel (used during startup)
+                    _configure_kernel(app.state.agent_kernel)
+
+                    # ALSO configure the session_iris kernel (used by WebSocket clients)
+                    # The ws_manager maps client_id "iris" to session_id "session_iris"
+                    # which has its own separate kernel instance.
+                    from backend.agent.agent_kernel import get_agent_kernel as _get_ak
+
+                    _iris_kernel = _get_ak("session_iris")
+                    if _iris_kernel is not app.state.agent_kernel:
+                        _configure_kernel(_iris_kernel)
+                        logger.info(f"    [Model] Also configured session_iris kernel")
+
                     logger.info(
                         f"    [Model] Restored provider={_provider} "
                         f"reasoning={_reasoning} tool={_tool_exec}"

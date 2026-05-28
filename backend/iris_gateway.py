@@ -1431,12 +1431,27 @@ class IRISGateway:
 
             def _execute_agent():
                 def chunk_callback(chunk: str):
-                    _loop = self._main_loop
                     if _loop and _loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             self._ws_manager.send_to_client(
                                 client_id,
-                                {"type": "chat_chunk", "payload": {"chunk": chunk}},
+                                {
+                                    "type": "chat_chunk",
+                                    "payload": {"chunk": chunk},
+                                },
+                            ),
+                            _loop,
+                        )
+
+                def reasoning_callback(chunk: str):
+                    if _loop and _loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.send_to_client(
+                                client_id,
+                                {
+                                    "type": "chat_reasoning",
+                                    "payload": {"chunk": chunk},
+                                },
                             ),
                             _loop,
                         )
@@ -1462,10 +1477,11 @@ class IRISGateway:
                         sentence_buf.clear()
                         _sentence_buf_words = 0
 
-                resp = agent_kernel.process_text_message(
+                 resp = agent_kernel.process_text_message(
                     enriched,
                     session_id=session_id,
                     chunk_callback=chunk_callback,
+                    reasoning_callback=reasoning_callback,
                     from_voice=True,
                 )
                 # Final flush — any remaining text becomes a sentence
@@ -1952,9 +1968,26 @@ class IRISGateway:
                                 _loop,
                             )
 
+                    def _reasoning_cb(chunk: str):
+                        _loop = self._main_loop
+                        if _loop and _loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                self._ws_manager.send_to_client(
+                                    client_id,
+                                    {
+                                        "type": "chat_reasoning",
+                                        "payload": {"chunk": chunk},
+                                    },
+                                ),
+                                _loop,
+                            )
+
                     try:
                         response = agent_kernel.process_text_message(
-                            text, session_id=session_id, chunk_callback=_chunk_cb
+                            text,
+                            session_id=session_id,
+                            chunk_callback=_chunk_cb,
+                            reasoning_callback=_reasoning_cb,
                         )
                     except Exception as e:
                         self._logger.error(f"[Chat] Agent processing error: {e}")

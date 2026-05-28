@@ -1,3 +1,8 @@
 {
-  "mode": "personal"
+  "mode": "personal",
+  "active_provider": "api",
+  "reasoning_model": "MiniMaxAI/MiniMax-M2.5-TEE",
+  "tool_execution_model": "MiniMaxAI/MiniMax-M2.5-TEE",
+  "api_base_url": "https://llm.chutes.ai/v1",
+  "api_key": "cpk_2405c119f86644f281a4865ac95af4b3.2727f25f2cce5bb690b83ed0d9628923.5RCdRtXb0eKDpGkoutAeeW50KOOtaxmG"
 }

@@ -211,17 +211,36 @@ export function useIRISWebSocket(
 
   const isConnected = connectionState === "connected"
 
-  // Cleanup function
+  // HMR-safe cleanup — defers WS close for 2 s so that Fast Refresh /
+  // Turbopack remounts don't kill in-flight API responses.  The browser
+  // closes all WS on actual page unload, so the deferred close is safe.
+  const _closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cleanup = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
     }
+    // Close after 2 s delay — cancel if the component remounts before then
+    // (the new mount's effect calls _cancelDeferredClose).
     if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
+      _closeTimerRef.current = setTimeout(() => {
+        if (wsRef.current) {
+          wsRef.current.close()
+          wsRef.current = null
+        }
+        _closeTimerRef.current = null
+      }, 2000)
     }
   }, [])
+  // Called from the auto-connect effect to cancel a pending deferred close.
+  // Must be declared before the effect that uses it (hoisting in the
+  // function body is fine).
+  function _cancelDeferredClose() {
+    if (_closeTimerRef.current) {
+      clearTimeout(_closeTimerRef.current)
+      _closeTimerRef.current = null
+    }
+  }
 
   // ─── scheduleReconnect ───────────────────────────────────────────────────
   // Shared helper used by both the readiness check and ws.onclose.
@@ -573,17 +592,27 @@ export function useIRISWebSocket(
         break
       }
 
-      case "chat_chunk": {
-        // Streaming chunk — dispatch for progressive rendering
-        if (typeof window !== 'undefined' && typeof payload.chunk === 'string') {
-          window.dispatchEvent(new CustomEvent('iris:chat_chunk', {
-            detail: { chunk: payload.chunk }
-          }))
-        }
-        break
-      }
+       case "chat_chunk": {
+         // Streaming chunk — dispatch for progressive rendering
+         if (typeof window !== 'undefined' && typeof payload.chunk === 'string') {
+           window.dispatchEvent(new CustomEvent('iris:chat_chunk', {
+             detail: { chunk: payload.chunk }
+           }))
+         }
+         break
+       }
 
-      case "audio_level": {
+       case "chat_reasoning": {
+         // Reasoning/thinking tokens from chain-of-thought models
+         if (typeof window !== 'undefined') {
+           window.dispatchEvent(new CustomEvent('iris:chat_reasoning', {
+             detail: { chunk: payload.chunk ?? "" }
+           }))
+         }
+         break
+       }
+
+       case "audio_level": {
         // Audio level update during listening
         if (typeof payload.level === 'number') {
           setAudioLevel(payload.level)
@@ -1185,10 +1214,12 @@ export function useIRISWebSocket(
 
   // Initialize connection
   useEffect(() => {
+    _cancelDeferredClose()          // cancel pending delayed-close from a prior HMR
     if (autoConnect) {
       connect()
     }
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     return cleanup
   }, [autoConnect, connect, cleanup])
 
