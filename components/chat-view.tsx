@@ -1949,31 +1949,12 @@ ${message.text}`;
                           animate={{ opacity: 1 }}
                           className="py-2"
                         >
-                          <div className="flex items-center gap-1.5 mb-1">
+                          <div className="flex items-center gap-1.5">
+                            <Xur size={18} color={glowColor} speed={1.5} />
                             <span className="text-[9px] font-semibold" style={{ color: glowColor }}>
                               IRIS
                             </span>
                             <span className="text-[8px] text-white/40">thinking...</span>
-                          </div>
-                          <div className="flex gap-1">
-                            <motion.div 
-                              className="w-1 h-1 rounded-full"
-                              style={{ backgroundColor: glowColor }}
-                              animate={prefersReducedMotion ? {} : { opacity: [0.3, 1, 0.3] }}
-                              transition={{ duration: 1, repeat: Infinity }}
-                            />
-                            <motion.div 
-                              className="w-1 h-1 rounded-full"
-                              style={{ backgroundColor: glowColor }}
-                              animate={prefersReducedMotion ? {} : { opacity: [0.3, 1, 0.3] }}
-                              transition={{ duration: 1, repeat: Infinity, delay: 0.2 }}
-                            />
-                            <motion.div 
-                              className="w-1 h-1 rounded-full"
-                              style={{ backgroundColor: glowColor }}
-                              animate={prefersReducedMotion ? {} : { opacity: [0.3, 1, 0.3] }}
-                              transition={{ duration: 1, repeat: Infinity, delay: 0.4 }}
-                            />
                           </div>
                         </motion.div>
                       </div>
@@ -2219,21 +2200,6 @@ ${message.text}`;
 
                 {/* Compact Action Group */}
                 <div className="flex items-center gap-2 mb-2">
-                  {/* Conversation chips */}
-                  <ConversationChips
-                    chips={conversationChips}
-                    glowColor={glowColor}
-                    onChipClick={handleChipClick}
-                    containerRef={messagesContainerRef}
-                  />
-
-                  {/* Xur thinking spinner */}
-                  {isTyping && (
-                    <div className="flex items-center justify-center" style={{ color: glowColor }}>
-                      <Xur size={20} />
-                    </div>
-                  )}
-
                   {/* Send button */}
                   <motion.button
                     onClick={handleSendMessage}
@@ -2248,6 +2214,14 @@ ${message.text}`;
                   >
                     <Send size={18} />
                   </motion.button>
+
+                  {/* Conversation chips — between send and upload */}
+                  <ConversationChips
+                    chips={conversationChips}
+                    glowColor={glowColor}
+                    onChipClick={handleChipClick}
+                    containerRef={messagesContainerRef}
+                  />
 
                   {/* Hidden file input */}
                   <input

@@ -198,14 +198,14 @@ export function useIRISWebSocket(
   }, [onWakeDetected, onNativeAudioResponse])
 
   // Safety timeout: reset typing indicator if no chat_typing:false event
-  // arrives within 120s (matches backend's 90s stream timeout + 30s buffer).
-  // Covers the case where backend crashes mid-response leaving thinking... stuck.
+  // arrives within 30s. Covers the case where backend crashes mid-response
+  // or chat_typing event is lost, leaving thinking... stuck.
   useEffect(() => {
     if (!isChatTyping) return;
     const timer = setTimeout(() => {
       setIsChatTyping(false);
       console.log("[IRIS WebSocket] Typing indicator safety timeout — reset");
-    }, 120_000);
+    }, 30_000);
     return () => clearTimeout(timer);
   }, [isChatTyping])
 
@@ -558,6 +558,8 @@ export function useIRISWebSocket(
 
       case "chat_message": {
         // Final assistant response from text_message flow (streamed then complete)
+        // Also reset typing indicator — chat_message always means processing is done
+        setIsChatTyping(false)
         const content = typeof payload.content === 'string' ? payload.content : null
         if (content) {
           setLastTextResponse({
