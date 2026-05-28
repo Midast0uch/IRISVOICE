@@ -1073,6 +1073,26 @@ class IRISGateway:
             # Get current category
             state = await self._state_manager.get_state(session_id)
             if not state or not state.current_category:
+                # Model selection and critical config sections should work
+                # even without an active orbit category — they're global settings.
+                if section_id in ("model_selection", "identity", "inference_mode"):
+                    logger.info(
+                        f"[Gateway] confirm_card {section_id} applied (no active category — "
+                        "skipping orbit confirmation)"
+                    )
+                    # Broadcast that config was applied even without orbit
+                    await self._ws_manager.send_to_client(
+                        client_id,
+                        {
+                            "type": "card_confirmed",
+                            "payload": {
+                                "section_id": section_id,
+                                "orbit_angle": 0,
+                                "applied": True,
+                            },
+                        },
+                    )
+                    return
                 await self._send_error(client_id, "No active category")
                 return
 

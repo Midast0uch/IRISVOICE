@@ -864,17 +864,17 @@ class AgentKernel:
         )
 
     @staticmethod
-    def _safe_stream(resp, silence_timeout: float = 30.0):
-        """Wrap a streaming response iterator with a silence timeout.
+    def _safe_stream(resp, silence_timeout: float = 30.0, total_timeout: float = 90.0):
+        """Wrap a streaming response iterator with silence and total timeouts.
 
-        If no new chunk arrives within *silence_timeout* seconds, the
-        iterator is abandoned and the loop stops.  This prevents the UI
-        from hanging when a provider fails to close the SSE stream.
+        If no new chunk arrives within *silence_timeout* seconds, OR the
+        total elapsed time exceeds *total_timeout* seconds, the iterator
+        is abandoned.  This prevents the UI from hanging when a provider
+        stalls mid-stream or fails to close the SSE stream.
         """
         import time
         import threading
 
-        _sentinel = object()
         _buffer: list = []
         _done = threading.Event()
         _ex = [None]
@@ -891,8 +891,18 @@ class AgentKernel:
         t = threading.Thread(target=_reader, daemon=True)
         t.start()
 
+        _start = time.monotonic()
         while True:
-            _done.wait(timeout=silence_timeout)
+            elapsed = time.monotonic() - _start
+            remaining = total_timeout - elapsed
+            if remaining <= 0:
+                logger.warning(
+                    f"[AgentKernel] stream total timeout ({total_timeout}s) — "
+                    "abandoning response"
+                )
+                return
+            wait = min(silence_timeout, remaining)
+            _done.wait(timeout=wait)
             if _buffer:
                 yield _buffer.pop(0)
                 _done.clear()
