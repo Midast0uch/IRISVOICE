@@ -3188,69 +3188,13 @@ class AgentKernel:
                 logger.info(f"[AgentKernel] DER response: {_der_response[:50]}...")
                 return _der_response
 
-        # ── Agentic loop path: for tool-trigger messages ─────────────────────
-        # Build the initial message list (system + conversation history + user turn).
-        # The loop will append assistant + tool messages on each iteration until the
-        # model emits finish_reason="stop", at which point we have the final answer.
-        system_prompt = self._build_system_prompt()
-
-        loop_messages: List[Dict] = [{"role": "system", "content": system_prompt}]
-        context_window = list(context[-6:])
-        while context_window and context_window[0]["role"] != "user":
-            context_window.pop(0)
-        for msg in context_window:
-            loop_messages.append(msg)
-        if not context_window or loop_messages[-1]["role"] != "user":
-            loop_messages.append({"role": "user", "content": text})
-
-        try:
-            response = self._run_agentic_loop(
-                loop_messages,
-                session_id or self.session_id,
-                chunk_callback=chunk_callback,
-            )
-        except Exception as e:
-            logger.error(f"[AgentKernel] Agentic loop failed: {e}", exc_info=True)
-            try:
-                response = self._respond_direct(
-                    text, context, chunk_callback=chunk_callback
-                )
-            except Exception:
-                response = "[IRIS error: could not process request]"
-
-        # Add assistant response to conversation memory
-        try:
-            self._conversation_memory.add_message("assistant", response)
-        except Exception as e:
-            logger.warning(
-                f"[AgentKernel] Failed to save response to conversation memory: {e}"
-            )
-
-        # Record task for session-level memory continuity
-        try:
-            import uuid as _uuid
-
-            task_record = TaskRecord(
-                task_id=task_id,
-                user_message=text,
-                summary=response,
-                step_count=len([m for m in loop_messages if m.get("role") == "tool"]),
-                had_failures=False,
-                tool_names_used=[
-                    m.get("content", "")[:30]
-                    for m in loop_messages
-                    if m.get("role") == "tool"
-                ],
-                started_at=time.time(),
-                completed_at=time.time(),
-                session_id=session_id or self.session_id,
-            )
-            self._conversation_memory.record_task(task_record)
-        except Exception as e:
-            logger.warning(f"[AgentKernel] Failed to record task: {e}")
-
-        logger.info(f"[AgentKernel] Generated response: {response[:50]}...")
-        return response
+        # DER produced empty/failed response — return error instead of
+        # falling through to the agentic loop which would retry the API
+        # call multiple times and leave the UI stuck in "thinking..." state.
+        logger.warning(
+            "[AgentKernel] DER produced no response — returning error to user"
+        )
+        return "IRIS couldn't generate a response. Please try again."
 
     def plan_task(
         self, task_description: str, context: Optional[List[Dict[str, Any]]] = None
