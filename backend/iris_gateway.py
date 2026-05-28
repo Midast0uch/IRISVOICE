@@ -986,6 +986,36 @@ class IRISGateway:
                         await self._handle_get_available_models(
                             session_id, client_id, {}
                         )
+
+                    # Persist model config to iris_config.json so it survives
+                    # page refreshes and server restarts.
+                    _config_path = os.path.join(
+                        os.path.dirname(__file__), "..", "data", "iris_config.json"
+                    )
+                    try:
+                        _existing = {}
+                        if os.path.exists(_config_path):
+                            with open(_config_path, "r") as _f:
+                                _existing = json.load(_f)
+                        _existing.update(
+                            {
+                                "active_provider": provider or "",
+                                "reasoning_model": reasoning or "",
+                                "tool_execution_model": tool_exec or "",
+                                "api_base_url": values.get("api_base_url", ""),
+                                "api_key": values.get("api_key", ""),
+                            }
+                        )
+                        with open(_config_path, "w") as _f:
+                            json.dump(_existing, _f, indent=2)
+                        self._logger.info(
+                            f"[Session: {session_id}] Model config persisted to {_config_path}",
+                            extra={"session_id": session_id},
+                        )
+                    except Exception as _e2:
+                        self._logger.warning(
+                            f"[Session: {session_id}] Could not persist model config: {_e2}"
+                        )
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying model selection on confirm: {e}",

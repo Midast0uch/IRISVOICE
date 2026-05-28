@@ -16,6 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Configure structured logging
 from backend.core.logging_config import setup_backend_logging
+
 logger = setup_backend_logging(log_level=os.environ.get("IRIS_LOG_LEVEL", "INFO"))
 
 """
@@ -41,7 +42,7 @@ ALLOWED_ORIGINS = os.environ.get(
     "ALLOWED_ORIGINS",
     # port 3000/3001 = Next.js dev; 8080 = iris-launcher dev; tauri = packaged app
     # *.ts.net = Tailscale MagicDNS; 100.* = Tailscale direct CGNAT IPs
-    "http://localhost:3000,http://localhost:3001,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080,tauri://localhost,https://tauri.localhost,http://*.ts.net,https://*.ts.net,http://100.*"
+    "http://localhost:3000,http://localhost:3001,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080,tauri://localhost,https://tauri.localhost,http://*.ts.net,https://*.ts.net,http://100.*",
 ).split(",")
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
@@ -85,11 +86,11 @@ from backend.network_ops import (
 
 logger.info("  - Importing models...")
 from backend.models import (
-    Category, 
-    IRISState, 
-    ColorTheme, 
+    Category,
+    IRISState,
+    ColorTheme,
     get_sections_for_category,
-    SECTION_CONFIGS
+    SECTION_CONFIGS,
 )
 
 logger.info("  - Importing audio components...")
@@ -103,7 +104,7 @@ from backend.agent import (
     get_personality_engine,
     get_tts_manager,
     get_conversation_memory,
-    get_wake_config
+    get_wake_config,
 )
 
 logger.info("  - Importing MCP components...")
@@ -115,7 +116,7 @@ from backend.mcp import (
     AppLauncherServer,
     SystemServer,
     FileManagerServer,
-    GUIAutomationServer
+    GUIAutomationServer,
 )
 
 logger.info("  - Importing system components...")
@@ -123,14 +124,14 @@ from backend.system import (
     get_power_manager,
     get_display_manager,
     get_storage_manager,
-    get_network_manager
+    get_network_manager,
 )
 
 logger.info("  - Importing customize components...")
 from backend.customize import (
     get_startup_manager,
     get_behavior_manager,
-    get_notification_manager
+    get_notification_manager,
 )
 
 logger.info("  - Importing IRIS Gateway...")
@@ -141,7 +142,7 @@ from backend.monitor import (
     get_analytics_manager,
     get_log_manager,
     get_diagnostics_manager,
-    get_update_manager
+    get_update_manager,
 )
 
 logger.info("Finished backend.main imports.")
@@ -151,35 +152,43 @@ logger.info("Finished backend.main imports.")
 # Lifespan Management (Startup & Shutdown) - AUDIO ENGINE INITIALIZATION LOGGING
 # ============================================================================
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown events."""
     import time as _time
-    app.state.ready = False   # set True only after full startup
+
+    app.state.ready = False  # set True only after full startup
     app.state._started_at = _time.time()
     logger.info("IRIS Backend starting up...")
-    
+
     try:
         # Prune stale UUID session directories older than 7 days.
         # Keeps session_iris* dirs — removes only auto-generated UUID dirs.
         try:
             import time as _cleanup_time
             from pathlib import Path as _Path
+
             _sessions_root = _Path(__file__).parent / "sessions"
             if _sessions_root.is_dir():
                 _cutoff = _cleanup_time.time() - 7 * 86400
                 _removed = 0
                 for _entry in _sessions_root.iterdir():
-                    if _entry.name.startswith("_") or _entry.name.startswith("session_iris"):
+                    if _entry.name.startswith("_") or _entry.name.startswith(
+                        "session_iris"
+                    ):
                         continue
                     if _entry.is_dir() and _entry.stat().st_mtime < _cutoff:
                         import shutil as _shutil
+
                         _shutil.rmtree(_entry, ignore_errors=True)
                         _removed += 1
                 if _removed:
                     logger.info(f"  - [CLEANUP] Removed {_removed} stale session dirs")
         except Exception as _ce:
-            logger.warning(f"  - [CLEANUP] Session dir cleanup failed (non-fatal): {_ce}")
+            logger.warning(
+                f"  - [CLEANUP] Session dir cleanup failed (non-fatal): {_ce}"
+            )
 
         logger.info("  - Starting session manager...")
         session_manager = get_session_manager()
@@ -187,13 +196,13 @@ async def lifespan(app: FastAPI):
 
         logger.info("  - Initializing state manager...")
         state_manager = get_state_manager()
-        
+
         # ==========================================================================
         # AUDIO ENGINE INITIALIZATION WITH COMPREHENSIVE DIAGNOSTIC LOGGING
         # ==========================================================================
         logger.info("  - Initializing audio engine...")
         start_time = datetime.now()
-        
+
         # Step 1: Get AudioEngine instance via factory function
         try:
             audio_engine = get_audio_engine()
@@ -201,11 +210,11 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"    [x] [AUDIO ENGINE] Failed to create instance: {e}")
             raise
-        
+
         # Step 2: Log initialization progress with timestamps
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(f"  - [AUDIO ENGINE] Instance created in {elapsed:.3f}s")
-        
+
         # ==========================================================================
         # VOICE COMMAND HANDLER INITIALIZATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
@@ -213,20 +222,23 @@ async def lifespan(app: FastAPI):
         start_time = datetime.now()
         try:
             from backend.audio.voice_command import VoiceCommandHandler, VoiceState
+
             voice_handler = VoiceCommandHandler(audio_engine)
             app.state.voice_handler = voice_handler
             logger.info(f"    [+] [VOICE HANDLER] Created successfully")
         except Exception as e:
             logger.error(f"    [x] [VOICE HANDLER] Failed to create: {e}")
             raise
-        
+
         # faster-whisper / ctranslate2 warm-up is intentionally deferred.
         # Importing ctranslate2 allocates ~400 MB RAM and initialises a CUDA
         # context on GPU machines.  Running this at startup races with the
         # Next.js dev-server compilation and has caused OOM crashes.
         # Whisper loads lazily on the first voice command instead (~1-2 s).
-        logger.info("    [+] [VOICE HANDLER] faster-whisper will load on first voice command (deferred)")
-        
+        logger.info(
+            "    [+] [VOICE HANDLER] faster-whisper will load on first voice command (deferred)"
+        )
+
         # ==========================================================================
         # IRIS GATEWAY INITIALIZATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
@@ -234,22 +246,24 @@ async def lifespan(app: FastAPI):
         start_time = datetime.now()
         try:
             from backend.iris_gateway import get_iris_gateway, IRISGateway
+
             iris_gateway = get_iris_gateway()
             app.state.iris_gateway = iris_gateway
             logger.info(f"    [+] [IRIS GATEWAY] Instance created successfully")
         except Exception as e:
             logger.error(f"    [x] [IRIS GATEWAY] Failed to create: {e}")
             raise
-        
+
         # Step 6: Capture the running event loop for background task dispatch
         try:
             import asyncio
+
             iris_gateway.set_main_loop(asyncio.get_running_loop())
             logger.info("    [+] [IRIS GATEWAY] Event loop captured")
         except Exception as e:
             logger.error(f"    [x] [IRIS GATEWAY] Failed to capture event loop: {e}")
             raise
-        
+
         # Step 7: Wire VoiceCommandHandler → iris_gateway for 4-pillar voice processing
         try:
             iris_gateway.set_voice_handler(voice_handler)
@@ -257,7 +271,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"    [x] [IRIS GATEWAY] Failed to wire voice handler: {e}")
             raise
-        
+
         # ==========================================================================
         # WAKE WORD CALLBACK REGISTRATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
@@ -266,37 +280,42 @@ async def lifespan(app: FastAPI):
             _main_loop = asyncio.get_running_loop()
             audio_engine.set_wake_word_callback(
                 lambda word: asyncio.run_coroutine_threadsafe(
-                    on_wake_word(word),
-                    _main_loop
+                    on_wake_word(word), _main_loop
                 )
             )
             logger.info("    [+] [WAKE WORD] Callback registered")
         except Exception as e:
             logger.error(f"    [x] [WAKE WORD] Failed to register callback: {e}")
             raise
-        
+
         # ==========================================================================
         # WAKE WORD MODEL DISCOVERY AND CONFIGURATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
         logger.info("  - Discovering wake word models...")
         try:
             from backend.agent.wake_config import get_wake_config as _get_wake_cfg
+
             _wake_cfg = _get_wake_cfg()
             if not _wake_cfg.get_custom_model_path():
                 from backend.voice.wake_word_discovery import WakeWordDiscovery
+
                 _discovered = WakeWordDiscovery().scan_directory()
                 if _discovered:
                     _best = _discovered[0]
                     _wake_cfg.config["custom_model_path"] = _best.path
                     _wake_cfg.config["wake_phrase"] = _best.display_name.lower()
-                    logger.info(f"    [+] [WAKE WORD] Auto-configured: '{_best.display_name}' -> {_best.path}")
+                    logger.info(
+                        f"    [+] [WAKE WORD] Auto-configured: '{_best.display_name}' -> {_best.path}"
+                    )
                 else:
                     logger.warning("    [~] [WAKE WORD] No wake word models found")
             else:
-                logger.debug(f"    - [WAKE WORD] Using custom config: {_wake_cfg.get_custom_model_path()}")
+                logger.debug(
+                    f"    - [WAKE WORD] Using custom config: {_wake_cfg.get_custom_model_path()}"
+                )
         except Exception as e:
             logger.warning(f"    [~] [WAKE WORD] Discovery failed (non-fatal): {e}")
-        
+
         # ==========================================================================
         # PORCUPINE WAKE WORD INITIALIZATION WITH DIAGNOSTIC LOGGING
         # Wake word failure is NON-FATAL — app still works, just no wake word.
@@ -305,7 +324,7 @@ async def lifespan(app: FastAPI):
         # ==========================================================================
         logger.info("  - Initializing Porcupine...")
         try:
-            audio_engine.initialize_porcupine()   # reads phrase + sensitivity from WakeConfig
+            audio_engine.initialize_porcupine()  # reads phrase + sensitivity from WakeConfig
             logger.info("    [+] [PORCUPINE] Initialized with wake word config")
         except Exception as e:
             logger.warning(
@@ -316,25 +335,38 @@ async def lifespan(app: FastAPI):
         # Step 8: Register live-update callback for dynamic wake word changes
         try:
             from backend.agent.wake_config import get_wake_config
-            get_wake_config().register_change_callback(audio_engine.reinitialize_porcupine)
+
+            get_wake_config().register_change_callback(
+                audio_engine.reinitialize_porcupine
+            )
             logger.info("    [+] [PORCUPINE] Live wake-word updates registered")
         except Exception as e:
-            logger.warning(f"    [~] [PORCUPINE] Wake-word update callback failed (non-fatal): {e}")
-        
+            logger.warning(
+                f"    [~] [PORCUPINE] Wake-word update callback failed (non-fatal): {e}"
+            )
+
         # Step 9: Start the AudioEngine so Porcupine frame detection runs
         start_time = datetime.now()
         if not audio_engine.start():
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(f"    [x] [AUDIO ENGINE] Failed to start in {elapsed:.3f}s (mic may be unavailable)")
+            logger.warning(
+                f"    [x] [AUDIO ENGINE] Failed to start in {elapsed:.3f}s (mic may be unavailable)"
+            )
         else:
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.info(f"    [+] [AUDIO ENGINE] Started successfully in {elapsed:.3f}s — Porcupine wake word detection active")
-        
+            logger.info(
+                f"    [+] [AUDIO ENGINE] Started successfully in {elapsed:.3f}s — Porcupine wake word detection active"
+            )
+
         # Step 10: Log overall audio subsystem initialization status
         total_elapsed = (datetime.now() - start_time).total_seconds()
-        logger.info(f"  - [AUDIO SUBSYSTEM] Initialization complete in {total_elapsed:.3f}s")
-        logger.debug("  - Audio subsystem ready for wake word detection and voice processing")
-        
+        logger.info(
+            f"  - [AUDIO SUBSYSTEM] Initialization complete in {total_elapsed:.3f}s"
+        )
+        logger.debug(
+            "  - Audio subsystem ready for wake word detection and voice processing"
+        )
+
         # ==========================================================================
         # AGENT KERNEL INITIALIZATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
@@ -342,6 +374,7 @@ async def lifespan(app: FastAPI):
         try:
             from backend.agent import get_agent_kernel
             from backend.agent.tool_bridge import initialize_agent_tools
+
             agent_kernel = get_agent_kernel()
 
             # Initialize tool bridge (async — calls bridge.initialize() which wires
@@ -356,75 +389,97 @@ async def lifespan(app: FastAPI):
 
             app.state.agent_kernel = agent_kernel
 
-            # Auto-configure Cohere API for testing
-            try:
-                agent_kernel.configure_api(
-                    "rtUtK4MUo7ZxhTKc5kfaatpnHDEvSl89mF5fhXgn",
-                    "https://api.cohere.com/compatibility/v1"
-                )
-                agent_kernel.set_model_selection(
-                    reasoning_model="command-a-03-2025",
-                    tool_execution_model="command-a-03-2025",
-                    model_provider="api"
-                )
-                logger.info("    [+] [COHERE API] Auto-configured for testing")
-            except Exception as cfg_err:
-                logger.warning(f"  - Warning: Failed to auto-configure Cohere API: {cfg_err}")
-
             logger.info("    [+] [AGENT KERNEL] Initialized successfully")
             logger.info("    [+] [TOOL BRIDGE] MCP servers initialized")
-            logger.info("  - LAZY LOADING ACTIVE: Models will NOT be loaded automatically")
-            logger.info("  - Models will load only when user selects Local Model inference mode")
+            logger.info(
+                "  - LAZY LOADING ACTIVE: Models will NOT be loaded automatically"
+            )
+            logger.info(
+                "  - Models will load only when user selects Local Model inference mode"
+            )
         except Exception as e:
             logger.warning(f"  - Warning: Failed to initialize agent kernel: {e}")
             logger.info("  - Agent functionality will be unavailable.")
-        
+
         # ==========================================================================
         # MEMORY SYSTEM INITIALIZATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
         logger.info("  - Initializing memory system...")
         try:
             from backend.memory import initialise_memory
-            
+
             # Use agent kernel's model router as adapter if available
             adapter = None
-            if hasattr(app.state, 'agent_kernel') and app.state.agent_kernel:
+            if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
                 adapter = app.state.agent_kernel._model_router
-            
+
             if adapter:
                 memory = await initialise_memory(adapter=adapter)
                 app.state.memory = memory
-                
+
                 # Wire memory to agent kernel
-                if hasattr(app.state, 'agent_kernel') and app.state.agent_kernel:
+                if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
                     app.state.agent_kernel.set_memory_interface(memory)
-                
+
                 logger.info("    [+] [MEMORY SYSTEM] Initialized successfully")
             else:
-                logger.warning("  - Memory system: no model adapter available, skipping.")
+                logger.warning(
+                    "  - Memory system: no model adapter available, skipping."
+                )
                 app.state.memory = None
         except Exception as e:
-            logger.warning(f"  - Warning: Memory system init failed (non-critical): {e}")
+            logger.warning(
+                f"  - Warning: Memory system init failed (non-critical): {e}"
+            )
             app.state.memory = None
-        
+
         # Apply persisted launch mode (set by iris-launcher before first run)
         try:
             cfg = _load_iris_config()
             persisted_mode = cfg.get("mode", "personal")
             if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
                 app.state.agent_kernel.set_launcher_mode(persisted_mode)
-                logger.info(f"    [Mode] Launch mode loaded from config: {persisted_mode}")
+                logger.info(
+                    f"    [Mode] Launch mode loaded from config: {persisted_mode}"
+                )
         except Exception as exc:
             logger.warning(f"  - Could not apply persisted launch mode: {exc}")
+
+        # Apply persisted model configuration from iris_config.json
+        try:
+            _mc = _load_iris_config()
+            _provider = _mc.get("active_provider", "")
+            _reasoning = _mc.get("reasoning_model", "")
+            _tool_exec = _mc.get("tool_execution_model", "")
+            if _provider and _reasoning and hasattr(app.state, "agent_kernel"):
+                try:
+                    app.state.agent_kernel.set_model_selection(
+                        reasoning_model=_reasoning,
+                        tool_execution_model=_tool_exec or _reasoning,
+                        model_provider=_provider,
+                    )
+                    logger.info(
+                        f"    [Model] Restored provider={_provider} "
+                        f"reasoning={_reasoning} tool={_tool_exec}"
+                    )
+                except Exception as _me:
+                    logger.warning(
+                        f"  - Could not restore model config to kernel: {_me}"
+                    )
+        except Exception as e:
+            logger.warning(f"  - Could not load persisted model config: {e}")
 
         # ==========================================================================
         # MEMORY SEEDING [5.3] — transfer bootstrap landmarks to runtime Mycelium
         # ==========================================================================
         try:
             from backend.memory.bootstrap_seed import seed_mycelium_from_bootstrap
+
             n = seed_mycelium_from_bootstrap()
             if n > 0:
-                logger.info(f"    [BootstrapSeed] Seeded {n} permanent landmarks into Mycelium")
+                logger.info(
+                    f"    [BootstrapSeed] Seeded {n} permanent landmarks into Mycelium"
+                )
         except Exception as _seed_err:
             logger.debug(f"  - Bootstrap seed skipped: {_seed_err}")
 
@@ -439,11 +494,13 @@ async def lifespan(app: FastAPI):
 
             async def _on_soft():
                 import gc as _gc
+
                 _gc.collect()
                 try:
                     from backend.memory.interface import get_memory_interface
+
                     mem = get_memory_interface()
-                    if mem and hasattr(mem, '_mycelium') and mem._mycelium:
+                    if mem and hasattr(mem, "_mycelium") and mem._mycelium:
                         mem._mycelium.run_maintenance()
                 except Exception:
                     pass
@@ -451,9 +508,12 @@ async def lifespan(app: FastAPI):
             async def _on_hard():
                 await _on_soft()
                 try:
-                    from backend.agent.local_model_manager import get_local_model_manager
+                    from backend.agent.local_model_manager import (
+                        get_local_model_manager,
+                    )
+
                     mgr = get_local_model_manager()
-                    if hasattr(mgr, 'unload_active_model'):
+                    if hasattr(mgr, "unload_active_model"):
                         mgr.unload_active_model()
                 except Exception:
                     pass
@@ -464,31 +524,36 @@ async def lifespan(app: FastAPI):
             )
             logger.info("  [Watchdog] Memory watchdog started")
         except Exception as _wd_err:
-            logger.warning(f"  [Watchdog] Could not start watchdog (non-fatal): {_wd_err}")
+            logger.warning(
+                f"  [Watchdog] Could not start watchdog (non-fatal): {_wd_err}"
+            )
 
         # ── Status broadcast loop ──────────────────────────────────────────────
         # Broadcast system status updates to all connected WebSocket clients
         # at adaptive intervals (fast when active, slow when idle).
         try:
+
             async def _status_broadcast_loop():
                 from backend.api.status_snapshot import build_snapshot
                 from backend.core.idle_tracker import get_idle_tracker
+
                 last_payload: dict | None = None
                 while True:
                     try:
                         tracker = get_idle_tracker()
                         # Fast interval (1s) when user is active, slow (30s) when idle
-                        interval = 1.0 if not tracker.is_idle(threshold_s=30.0) else 30.0
+                        interval = (
+                            1.0 if not tracker.is_idle(threshold_s=30.0) else 30.0
+                        )
                         await asyncio.sleep(interval)
                         snap = await build_snapshot()
                         # Only broadcast if changed
                         if snap != last_payload:
                             last_payload = snap
                             ws_mgr = get_websocket_manager()
-                            await ws_mgr.broadcast({
-                                "type": "system_status",
-                                "payload": snap
-                            })
+                            await ws_mgr.broadcast(
+                                {"type": "system_status", "payload": snap}
+                            )
                     except asyncio.CancelledError:
                         return
                     except Exception as e:
@@ -500,7 +565,9 @@ async def lifespan(app: FastAPI):
             )
             logger.info("  [StatusBroadcast] System status broadcast loop started")
         except Exception as _sb_err:
-            logger.warning(f"  [StatusBroadcast] Could not start status broadcast (non-fatal): {_sb_err}")
+            logger.warning(
+                f"  [StatusBroadcast] Could not start status broadcast (non-fatal): {_sb_err}"
+            )
 
         # Pre-warm the GGUF file metadata cache in the background (filesystem
         # scan only — no model weights loaded, no CUDA initialization).
@@ -515,20 +582,26 @@ async def lifespan(app: FastAPI):
         # NOTE: The 30-second background GGUF scan was REMOVED (Domain 16 optimization).
         # scan_models() now runs lazily on first ModelsScreen open via get_available_models().
         # This eliminates the RSS spike at t=30s on every cold start.
-        logger.info("  [LocalModel] GGUF scan deferred to first ModelsScreen open (no startup pre-warm)")
+        logger.info(
+            "  [LocalModel] GGUF scan deferred to first ModelsScreen open (no startup pre-warm)"
+        )
 
     except Exception as e:
         app.state.ready = False
         logger.error(f"[ERROR] Failed to initialize backend: {e}")
         import traceback
+
         traceback.print_exc()
-    
+
     yield
-    
+
     logger.info("IRIS Backend shutting down...")
     try:
         # Cancel status broadcast and memory watchdog first so they don't log spurious errors during teardown
-        if hasattr(app.state, "status_broadcast_task") and app.state.status_broadcast_task:
+        if (
+            hasattr(app.state, "status_broadcast_task")
+            and app.state.status_broadcast_task
+        ):
             app.state.status_broadcast_task.cancel()
             try:
                 await app.state.status_broadcast_task
@@ -543,19 +616,20 @@ async def lifespan(app: FastAPI):
         logger.info("  - Stopping session manager...")
         session_manager = get_session_manager()
         await session_manager.stop()
-        
+
         logger.info("  - Cleaning up audio engine...")
         audio_engine = get_audio_engine()
         audio_engine.cleanup()
-        
+
         logger.info("  - Stopping all servers...")
         server_manager = get_server_manager()
         server_manager.stop_all_servers()
-        
+
         logger.info("IRIS Backend shutdown completed successfully!")
     except Exception as e:
         logger.error(f"[ERROR] Error during shutdown: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -590,7 +664,7 @@ app = FastAPI(
     title="IRIS Backend API",
     description="WebSocket-based backend for IRISVOICE with dual-LLM agent system",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Configure CORS middleware for Next.js and Tauri integration
@@ -607,6 +681,7 @@ logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
 
 # Register status snapshot router
 from backend.api.status_snapshot import router as status_snapshot_router
+
 app.include_router(status_snapshot_router)
 
 
@@ -617,6 +692,7 @@ app.include_router(status_snapshot_router)
 from backend.core.idle_tracker import get_idle_tracker as _get_idle_tracker
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
 from starlette.requests import Request as _Request
+
 
 class _IdleTrackerMiddleware(_BaseHTTPMiddleware):
     _SKIP_PATHS = frozenset({"", "/", "/health", "/api/status"})
@@ -629,12 +705,14 @@ class _IdleTrackerMiddleware(_BaseHTTPMiddleware):
                 pass
         return await call_next(request)
 
+
 app.add_middleware(_IdleTrackerMiddleware)
 
 
 # ============================================================================
 # Health Check Endpoint
 # ============================================================================
+
 
 @app.get("/")
 @app.get("/health")
@@ -652,6 +730,7 @@ async def readiness_check():
     if is_ready:
         return {"status": "ready", "service": "IRIS Backend"}
     from fastapi import Response
+
     return Response(
         content='{"status":"starting","service":"IRIS Backend"}',
         status_code=503,
@@ -665,7 +744,9 @@ async def first_run_check():
     The frontend shows the setup wizard when first_run=true."""
     try:
         if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
-            provider = getattr(app.state.agent_kernel, "_model_provider", "uninitialized")
+            provider = getattr(
+                app.state.agent_kernel, "_model_provider", "uninitialized"
+            )
             is_first_run = provider in (None, "uninitialized")
         else:
             is_first_run = True
@@ -680,7 +761,8 @@ async def first_run_check():
 
 _IRIS_CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data", "iris_config.json"
+    "data",
+    "iris_config.json",
 )
 
 
@@ -716,10 +798,13 @@ async def set_launcher_mode(request: dict):
     developer — full source access, git integration, diff review, rebuild pipeline
     """
     from fastapi import Response as FastAPIResponse
+
     mode = (request.get("mode") or "").strip().lower()
     if mode not in ("personal", "developer"):
         return FastAPIResponse(
-            content=json.dumps({"error": f"Invalid mode: {mode!r}. Must be 'personal' or 'developer'."}),
+            content=json.dumps(
+                {"error": f"Invalid mode: {mode!r}. Must be 'personal' or 'developer'."}
+            ),
             status_code=422,
             media_type="application/json",
         )
@@ -732,6 +817,7 @@ async def set_launcher_mode(request: dict):
     wt_info = None
     try:
         from backend import dev_worktree
+
         if mode == "developer":
             wt_info = dev_worktree.setup()
             if wt_info.get("status") == "ok":
@@ -782,6 +868,7 @@ async def get_launcher_mode():
 async def get_worktree_status():
     """Returns developer worktree isolation status."""
     from backend import dev_worktree
+
     return dev_worktree.status()
 
 
@@ -858,6 +945,7 @@ async def save_projects(request: dict):
     projects = request.get("projects", [])
     if not isinstance(projects, list):
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "projects must be a list"}),
             status_code=422,
@@ -874,8 +962,7 @@ async def save_projects(request: dict):
 # ============================================================================
 
 _WORKSPACE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data", "workspaces"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "workspaces"
 )
 
 
@@ -896,6 +983,7 @@ async def api_workspace_save(request: dict):
     state = request.get("state")
     if not conversation_id:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "conversationId required"}),
             status_code=422,
@@ -903,6 +991,7 @@ async def api_workspace_save(request: dict):
         )
     if not isinstance(state, dict):
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "state must be an object"}),
             status_code=422,
@@ -915,8 +1004,11 @@ async def api_workspace_save(request: dict):
             json.dump(state, f, indent=2)
         return {"status": "ok", "conversationId": conversation_id}
     except Exception as exc:
-        logger.error(f"[Workspace] Failed to save workspace for {conversation_id}: {exc}")
+        logger.error(
+            f"[Workspace] Failed to save workspace for {conversation_id}: {exc}"
+        )
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": str(exc)}),
             status_code=500,
@@ -933,6 +1025,7 @@ async def api_workspace_get(conversation_id: str):
     path = _workspace_path(conversation_id)
     if not os.path.exists(path):
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "not found"}),
             status_code=404,
@@ -943,8 +1036,11 @@ async def api_workspace_get(conversation_id: str):
             state = json.load(f)
         return {"status": "ok", "conversationId": conversation_id, "state": state}
     except Exception as exc:
-        logger.error(f"[Workspace] Failed to load workspace for {conversation_id}: {exc}")
+        logger.error(
+            f"[Workspace] Failed to load workspace for {conversation_id}: {exc}"
+        )
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": str(exc)}),
             status_code=500,
@@ -955,6 +1051,7 @@ async def api_workspace_get(conversation_id: str):
 # ============================================================================
 # Git + Diff API (Domain 13.1 — iris-launcher developer mode)
 # ============================================================================
+
 
 @app.get("/api/git/status", dependencies=[_require_dev])
 async def api_git_status():
@@ -983,6 +1080,7 @@ async def api_git_rollback(request: dict):
     target = request.get("target", "").strip()
     if not target:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "target commit hash required"}),
             status_code=422,
@@ -1003,6 +1101,7 @@ async def api_diff_approve(request: dict):
     write_id = request.get("id", "").strip()
     if not write_id:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "write id required"}),
             status_code=422,
@@ -1017,6 +1116,7 @@ async def api_diff_reject(request: dict):
     write_id = request.get("id", "").strip()
     if not write_id:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "write id required"}),
             status_code=422,
@@ -1028,6 +1128,7 @@ async def api_diff_reject(request: dict):
 # ============================================================================
 # Git Worktree API (Domain 13.2)
 # ============================================================================
+
 
 @app.get("/api/git/worktree/status", dependencies=[_require_dev])
 async def api_worktree_status():
@@ -1073,6 +1174,7 @@ async def api_worktree_reset():
 # GitHub OAuth + API (Real Integration)
 # ============================================================================
 
+
 @app.get("/api/github/status", dependencies=[_require_dev])
 async def api_github_status():
     """Return GitHub connection status."""
@@ -1090,6 +1192,7 @@ async def api_github_connect(request: dict):
     token = request.get("token", "").strip()
     if not token:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "token required"}),
             status_code=422,
@@ -1097,7 +1200,11 @@ async def api_github_connect(request: dict):
         )
     result = connect_with_pat(token)
     if result.get("status") == "ok":
-        return {"status": "ok", "login": result.get("login", ""), "avatar_url": result.get("avatar_url", "")}
+        return {
+            "status": "ok",
+            "login": result.get("login", ""),
+            "avatar_url": result.get("avatar_url", ""),
+        }
     return {"status": "error", "error": result.get("error", "unknown")}
 
 
@@ -1120,6 +1227,7 @@ async def api_github_ssh_generate(request: dict):
     key_type = request.get("type", "ed25519")
     if not name:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "key name required"}),
             status_code=422,
@@ -1140,6 +1248,7 @@ async def api_github_ssh_delete(request: dict):
     name = request.get("name", "").strip()
     if not name:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "name is required"}),
             status_code=422,
@@ -1151,6 +1260,7 @@ async def api_github_ssh_delete(request: dict):
 # ============================================================================
 # Network / Tailscale API (Domain 13.6 — Tailscale Mobile Integration)
 # ============================================================================
+
 
 @app.get("/api/network/status")
 async def api_network_status():
@@ -1174,6 +1284,7 @@ async def api_network_qrcode(url: str):
     """
     if not url:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "url query param is required"}),
             status_code=422,
@@ -1181,6 +1292,7 @@ async def api_network_qrcode(url: str):
         )
     png_bytes = generate_qr_png(url)
     from fastapi import Response as FastAPIResponse
+
     return FastAPIResponse(content=png_bytes, media_type="image/png")
 
 
@@ -1218,6 +1330,7 @@ async def api_get_conversation(conversation_id: str):
     conv = get_conversation(conversation_id)
     if not conv:
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "Conversation not found"}),
             status_code=404,
@@ -1233,6 +1346,7 @@ async def api_add_message(conversation_id: str, request: dict):
     sender = request.get("sender", "")
     if not text or sender not in ("user", "assistant", "error"):
         from fastapi import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=json.dumps({"error": "text and valid sender required"}),
             status_code=422,
@@ -1269,6 +1383,7 @@ async def api_patch_conversation(conversation_id: str, request: dict):
 # Wake Word Handler
 # ============================================================================
 
+
 async def on_wake_word(wake_word_name: str):
     """
     Called from AudioEngine when Porcupine detects the wake word.
@@ -1288,18 +1403,18 @@ async def on_wake_word(wake_word_name: str):
                 return
             session_id = next(
                 (s for s in active_sessions if "integration" not in s),
-                active_sessions[0]
+                active_sessions[0],
             )
 
         client_ids = ws_manager.get_clients_for_session(session_id)
         client_id = client_ids[0] if client_ids else None
         if client_id:
-            logger.info(f"[WakeWord] '{wake_word_name}' -> triggering voice for session {session_id}")
+            logger.info(
+                f"[WakeWord] '{wake_word_name}' -> triggering voice for session {session_id}"
+            )
             iris_gateway = get_iris_gateway()
             await iris_gateway._handle_voice(
-                session_id, client_id,
-                {"type": "voice_command_start"},
-                auto_stop=True
+                session_id, client_id, {"type": "voice_command_start"}, auto_stop=True
             )
         else:
             logger.warning(f"[WakeWord] Session {session_id} has no connected clients")
@@ -1311,11 +1426,10 @@ async def on_wake_word(wake_word_name: str):
 # WebSocket Endpoint
 # ============================================================================
 
+
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(
-    websocket: WebSocket,
-    client_id: str,
-    session_id: Optional[str] = Query(None)
+    websocket: WebSocket, client_id: str, session_id: Optional[str] = Query(None)
 ):
     """Handle WebSocket connections with session management."""
     ws_manager = get_websocket_manager()
@@ -1328,12 +1442,12 @@ async def websocket_endpoint(
     try:
         session = get_session_manager().get_session(active_session_id)
         if session and session.state_manager:
+
             async def state_change_callback(key: str, value: Any):
-                await ws_manager.send_to_client(client_id, {
-                    "type": "state_update",
-                    "key": key,
-                    "value": value
-                })
+                await ws_manager.send_to_client(
+                    client_id, {"type": "state_update", "key": key, "value": value}
+                )
+
             session.state_manager.register_state_change_callback(state_change_callback)
 
         while True:
@@ -1345,7 +1459,9 @@ async def websocket_endpoint(
         logger.info(f"Client {client_id} disconnected.")
     except RuntimeError as e:
         if "WebSocket is not connected" in str(e) or "accept" in str(e):
-            logger.info(f"Client {client_id}: stale socket superseded by reconnect (normal)")
+            logger.info(
+                f"Client {client_id}: stale socket superseded by reconnect (normal)"
+            )
         else:
             logger.error(f"Error in WebSocket for client {client_id}: {e}")
     except Exception as e:
@@ -1357,7 +1473,9 @@ async def websocket_endpoint(
                 iris_gateway = get_iris_gateway()
                 await iris_gateway.cleanup_session(active_session_id)
             except Exception as cleanup_error:
-                logger.error(f"Error cleaning up session {active_session_id}: {cleanup_error}")
+                logger.error(
+                    f"Error cleaning up session {active_session_id}: {cleanup_error}"
+                )
         if owns_connection:
             ws_manager.disconnect(client_id)
 
@@ -1365,6 +1483,7 @@ async def websocket_endpoint(
 # ============================================================================
 # Message Handler
 # ============================================================================
+
 
 async def handle_message(client_id: str, session_id: str, message: dict):
     """Process incoming messages — delegates to IRISGateway for unified routing."""
@@ -1385,52 +1504,60 @@ async def handle_memory_message(client_id: str, session_id: str, message: dict):
 
     try:
         from backend.memory import get_memory_interface
+
         memory = get_memory_interface()
 
         if memory is None:
-            await ws_manager.send_to_client(client_id, {
-                "type": "memory/error",
-                "payload": {"error": "Memory system not initialized"}
-            })
+            await ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "memory/error",
+                    "payload": {"error": "Memory system not initialized"},
+                },
+            )
             return
 
         if msg_type == "memory/get_preferences":
             entries = memory.get_user_profile_display()
-            await ws_manager.send_to_client(client_id, {
-                "type": "memory/preferences",
-                "payload": {"entries": entries}
-            })
+            await ws_manager.send_to_client(
+                client_id,
+                {"type": "memory/preferences", "payload": {"entries": entries}},
+            )
 
         elif msg_type == "memory/forget_preference":
             key = message.get("payload", {}).get("key")
             if key:
                 success = memory.forget_preference(key)
-                await ws_manager.send_to_client(client_id, {
-                    "type": "memory/forget_result",
-                    "payload": {"key": key, "success": success}
-                })
+                await ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "memory/forget_result",
+                        "payload": {"key": key, "success": success},
+                    },
+                )
             else:
-                await ws_manager.send_to_client(client_id, {
-                    "type": "memory/error",
-                    "payload": {"error": "No key provided"}
-                })
+                await ws_manager.send_to_client(
+                    client_id,
+                    {"type": "memory/error", "payload": {"error": "No key provided"}},
+                )
 
         elif msg_type == "memory/get_stats":
             stats = memory.get_memory_stats()
-            await ws_manager.send_to_client(client_id, {
-                "type": "memory/stats",
-                "payload": stats
-            })
+            await ws_manager.send_to_client(
+                client_id, {"type": "memory/stats", "payload": stats}
+            )
 
         else:
-            await ws_manager.send_to_client(client_id, {
-                "type": "memory/error",
-                "payload": {"error": f"Unknown memory message type: {msg_type}"}
-            })
+            await ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "memory/error",
+                    "payload": {"error": f"Unknown memory message type: {msg_type}"},
+                },
+            )
 
     except Exception as e:
         logger.error(f"[Memory] Error handling memory message: {e}")
-        await ws_manager.send_to_client(client_id, {
-            "type": "memory/error",
-            "payload": {"error": str(e)}
-        })
+        await ws_manager.send_to_client(
+            client_id, {"type": "memory/error", "payload": {"error": str(e)}}
+        )

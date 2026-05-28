@@ -197,6 +197,18 @@ export function useIRISWebSocket(
     onNativeAudioResponseRef.current = onNativeAudioResponse
   }, [onWakeDetected, onNativeAudioResponse])
 
+  // Safety timeout: reset typing indicator if no chat_typing:false event
+  // arrives within 120s (matches backend's 90s stream timeout + 30s buffer).
+  // Covers the case where backend crashes mid-response leaving thinking... stuck.
+  useEffect(() => {
+    if (!isChatTyping) return;
+    const timer = setTimeout(() => {
+      setIsChatTyping(false);
+      console.log("[IRIS WebSocket] Typing indicator safety timeout — reset");
+    }, 120_000);
+    return () => clearTimeout(timer);
+  }, [isChatTyping])
+
   const isConnected = connectionState === "connected"
 
   // Cleanup function
@@ -244,16 +256,18 @@ export function useIRISWebSocket(
     try {
       const ws = new WebSocket(url)
 
-      ws.onopen = () => {
-        if (process.env.NODE_ENV !== 'production') {
-          console.log("[IRIS WebSocket] Connected")
-        }
-        setConnectionState("connected")
-        reconnectAttemptsRef.current = 0     // reset backoff counter on success
-        connectedAtRef.current = Date.now()  // Fix 2 — record connection time
+       ws.onopen = () => {
+         if (process.env.NODE_ENV !== 'production') {
+           console.log("[IRIS WebSocket] Connected")
+         }
+         setConnectionState("connected")
+         reconnectAttemptsRef.current = 0     // reset backoff counter on success
+         connectedAtRef.current = Date.now()  // Fix 2 — record connection time
+         setIsChatTyping(false)               // Fix: reset typing state on reconnect
+                                              // prevents stuck "thinking..." after disconnect
 
-        // Fix 4 — reset sequence counter on each fresh connection
-        seqRef.current = 0
+         // Fix 4 — reset sequence counter on each fresh connection
+         seqRef.current = 0
 
         // Burst messages on open (seq-tagged)
         ws.send(JSON.stringify({ type: "request_state",     payload: {}, seq: seqRef.current++ }))
@@ -285,6 +299,10 @@ export function useIRISWebSocket(
         console.warn("[IRIS WebSocket] Connection failed - backend may be offline")
         setConnectionState("error")
         setLastError("Backend offline - running in standalone mode")
+        // onclose should follow onerror per the WS spec, but some browsers
+        // can skip it (chromium edge case). Close explicitly to guarantee
+        // onclose fires, which owns the reconnect scheduling.
+        try { ws.close() } catch { /* already closing */ }
       }
 
       ws.onclose = (event) => {
