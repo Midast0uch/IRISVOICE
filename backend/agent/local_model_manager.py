@@ -830,11 +830,10 @@ class LocalModelManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     def get_profile_params(self, profile: str, custom: Dict[str, Any] = None) -> Dict[str, Any]:
-        if profile == "custom" and custom:
-            base = dict(PROFILES["balanced"])
+        base = dict(PROFILES.get(profile, PROFILES["balanced"]))
+        if custom:
             base.update(custom)
-            return base
-        return dict(PROFILES.get(profile, PROFILES["balanced"]))
+        return base
 
     def recommend_profile(self, model_meta: Dict[str, Any]) -> str:
         """

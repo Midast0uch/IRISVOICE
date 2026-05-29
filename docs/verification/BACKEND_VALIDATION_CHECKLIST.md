@@ -42,9 +42,11 @@ Run against **both** model configs sequentially. Unit/integration tests mock the
 
 | Context | Baseline tok/s | MTP tok/s | Speedup | Acceptance | Status |
 |---------|---------------|-----------|---------|------------|--------|
-| 32k | TBD | TBD | TBD | TBD | PENDING |
-| 48k | TBD | TBD | TBD | TBD | PENDING |
-| 64k | TBD | TBD | TBD | TBD | PENDING |
+| 32k | N/A | N/A | N/A | N/A | **BLOCKED — VRAM** |
+| 48k | N/A | N/A | N/A | N/A | **BLOCKED — VRAM** |
+| 64k | N/A | N/A | N/A | N/A | **BLOCKED — VRAM** |
+
+**Hardware constraint:** Model `Qwopus3.6-27B-v2-MTP-Q3_K_S` (12.2 GB weights) requires ~15-16 GB total memory (weights + 32k KV cache + overhead). Test system: RTX 3070 8 GB VRAM / 16 GB RAM. Model does not fit even with `n_ctx=4096` and `n_gpu_layers=0` (needs ~11.8 GB free RAM; only 5.2 GB available).
 
 **Command used:**
 ```bash

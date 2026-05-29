@@ -672,6 +672,11 @@ MTP is auto-detected and enabled for compatible GGUF models. No UI toggles neede
 - `Jackrong/Qwopus3.6-27B-v2-MTP-GGUF` — 27B Qwen-based MTP model
 - `Unsloth/Qwen3.6-*-MTP-GGUF` — other MTP variants
 
+**Hardware requirements:**
+- MTP models are typically 8B-27B+ parameters. At Q3/Q4 quantization, plan for **~1.5× the GGUF file size in VRAM** (weights + KV cache + overhead).
+- Example: `Qwopus3.6-27B-v2-MTP-Q3_K_S` (12.2 GB file) needs **~15-16 GB VRAM/RAM** at 32k context.
+- For 8 GB GPUs, use a **smaller MTP model** (8B-14B) or reduce `n_ctx` to 4096 and use partial CPU offload.
+
 **Acceptance rate logging:** After each generation batch, the backend logs:
 ```
 [LocalModelManager] MTP acceptance: 142/200 = 71.0% (rolling 68.3%)
