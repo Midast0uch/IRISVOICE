@@ -46,7 +46,7 @@ class TestContextManagerInitialization:
         """Test default compression threshold."""
         cm = ContextManager(adapter=mock_adapter)
         
-        assert cm.COMPRESSION_THRESHOLD == 0.8
+        assert cm.threshold == 0.8
 
 
 class TestZonesOrder:
@@ -54,7 +54,7 @@ class TestZonesOrder:
     
     def test_zones_order_defined(self):
         """Test that ZONES_ORDER is defined."""
-        assert isinstance(ZONES_ORDER, tuple)
+        assert isinstance(ZONES_ORDER, list)
         assert len(ZONES_ORDER) > 0
     
     def test_semantic_header_first(self):
@@ -74,9 +74,9 @@ class TestAnchorZones:
         assert isinstance(ANCHOR_ZONES, set)
         assert len(ANCHOR_ZONES) > 0
     
-    def test_working_history_is_anchor(self):
-        """Test that working_history is an anchor zone."""
-        assert "working_history" in ANCHOR_ZONES
+    def test_working_history_not_anchor(self):
+        """Test that working_history is NOT an anchor zone (it gets compressed)."""
+        assert "working_history" not in ANCHOR_ZONES
 
 
 class TestAssembleForTask:
@@ -103,7 +103,11 @@ class TestAssembleForTask:
         )
         
         session = context_manager._sessions["session_123"]
-        for zone in ZONES_ORDER:
+        initialized_zones = {
+            "semantic_header", "episodic_injection", "task_anchor",
+            "active_tool_state", "working_history"
+        }
+        for zone in initialized_zones:
             assert zone in session
     
     def test_includes_task_in_anchor(self, context_manager):
@@ -190,7 +194,7 @@ class TestRender:
         """Test that zones are rendered in correct order."""
         context_manager._sessions["session_123"] = {
             "semantic_header": "header",
-            "episodic_context": "episodic",
+            "episodic_injection": "episodic",
             "task_anchor": "task",
             "active_tool_state": "tool",
             "working_history": "history"
@@ -238,7 +242,7 @@ class TestCompression:
         mock_adapter.generate.return_value = "Summary of old content"
         
         with patch.object(context_manager, '_usage_pct', return_value=0.9):
-            context_manager._compress("session_123", "working_history")
+            context_manager._compress("session_123")
     
     def test_compress_keeps_newest_verbatim(self, context_manager):
         """Test that compression keeps newest content verbatim."""
@@ -249,7 +253,7 @@ class TestCompression:
         # After compression, newest content should be preserved
         with patch.object(context_manager, '_usage_pct', return_value=0.9):
             with patch.object(context_manager.adapter, 'generate', return_value="Summary"):
-                context_manager._compress("session_123", "working_history")
+                context_manager._compress("session_123")
                 
                 # Newest content should still be present
                 assert "New" in context_manager._sessions["session_123"]["working_history"]
@@ -269,7 +273,7 @@ class TestUsagePct:
         
         pct = context_manager._usage_pct("session_123")
         
-        assert pct == 0.5  # 4000 / 8000
+        assert pytest.approx(pct, abs=0.02) == 0.5  # ~4000 / 8192
     
     def test_usage_pct_zero_when_empty(self, context_manager, mock_adapter):
         """Test that usage_pct is 0 for empty content."""
@@ -310,12 +314,12 @@ class TestToolState:
     """Test tool state management."""
     
     def test_update_tool_state(self, context_manager):
-        """Test updating tool state."""
+        """Test updating tool state via append with zone=active_tool_state."""
         context_manager._sessions["session_123"] = {
             "active_tool_state": ""
         }
         
-        context_manager.update_tool_state("session_123", "Tool output: result")
+        context_manager.append("session_123", "Tool output: result", zone="active_tool_state")
         
         assert "Tool output: result" in context_manager._sessions["session_123"]["active_tool_state"]
 

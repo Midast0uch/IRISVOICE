@@ -9,7 +9,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, Dict, Set
 
 # Add parent directory to path to allow absolute imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1449,6 +1449,13 @@ async def on_wake_word(wake_word_name: str):
 # WebSocket Endpoint
 # ============================================================================
 
+# Per-session message ordering locks and per-client in-flight task tracking
+_session_message_locks: Dict[str, asyncio.Lock] = {}
+_client_tasks: Dict[str, Set[asyncio.Task]] = {}
+
+# Message types that are handled immediately (lightweight control frames)
+_CONTROL_FRAMES = {"ping", "pong", "request_state"}
+
 
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(
@@ -1461,6 +1468,10 @@ async def websocket_endpoint(
     if not active_session_id:
         logger.warning(f"Failed to establish connection for client {client_id}")
         return
+
+    # Ensure ordering lock exists for this session
+    if active_session_id not in _session_message_locks:
+        _session_message_locks[active_session_id] = asyncio.Lock()
 
     try:
         session = get_session_manager().get_session(active_session_id)
@@ -1476,7 +1487,37 @@ async def websocket_endpoint(
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-            await handle_message(client_id, active_session_id, message)
+            msg_type = message.get("type", "")
+
+            # Heartbeat hardening: treat any inbound frame as liveness
+            ws_manager.mark_liveness(client_id)
+
+            if msg_type in _CONTROL_FRAMES:
+                # Control frames: handle immediately inline
+                await handle_message(client_id, active_session_id, message)
+            else:
+                # Long-running: dispatch to background task, preserving per-session order
+                async def _dispatch(msg: dict, sid: str, cid: str):
+                    try:
+                        lock = _session_message_locks.get(sid)
+                        if lock:
+                            async with lock:
+                                await handle_message(cid, sid, msg)
+                        else:
+                            await handle_message(cid, sid, msg)
+                    except Exception as exc:
+                        logger.error(
+                            f"[WS] Error in dispatched task for {cid}: {exc}",
+                            exc_info=True,
+                        )
+
+                task = asyncio.create_task(
+                    _dispatch(message, active_session_id, client_id)
+                )
+                _client_tasks.setdefault(client_id, set()).add(task)
+                task.add_done_callback(
+                    lambda t, c=client_id: _client_tasks.get(c, set()).discard(t)
+                )
 
     except WebSocketDisconnect:
         logger.info(f"Client {client_id} disconnected.")
@@ -1490,6 +1531,15 @@ async def websocket_endpoint(
     except Exception as e:
         logger.error(f"Error in WebSocket for client {client_id}: {e}")
     finally:
+        # Cancel any in-flight tasks for this client
+        for task in list(_client_tasks.pop(client_id, set())):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
         owns_connection = ws_manager.active_connections.get(client_id) is websocket
         if active_session_id and owns_connection:
             try:

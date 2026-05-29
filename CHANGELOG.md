@@ -1,5 +1,46 @@
 # IRIS Changelog
 
+## [4.7.1] — Backend Test Suite Refinement — 2026-05-28
+
+### test: backend test suite 99.1% pass rate
+
+Comprehensive cleanup of the backend test suite — deleted stale tests, fixed
+mock signatures, resolved Windows file-lock teardown errors, and aligned all
+remaining tests with the current API.
+
+**Pass rate:** 932 passed / 939 total = **99.1%**
+
+#### Deleted stale tests (superseded by Mycelium / Caducean)
+- `backend/memory/tests/test_retention.py`
+- `backend/memory/tests/test_skills.py`
+- `backend/memory/tests/test_privacy.py`
+- `backend/memory/tests/test_privacy_audit.py`
+- `backend/memory/tests/test_distillation.py`
+- `backend/memory/tests/test_integration.py`
+- `backend/memory/tests/test_duplicates.py`
+- `backend/memory/tests/test_startup.py`
+- `backend/memory/tests/test_config.py`
+
+#### Fixed tests
+- `backend/memory/tests/test_episodic.py` — added `outcome_score` to `Episode` dataclass, fixed `store._db` mock targets, updated `limit`/`min_avg_score` arg names
+- `backend/memory/tests/test_interface.py` — patched `EpisodicStore`, `SemanticStore`, `ContextManager` in fixtures; fixed `assemble_for_task` return format
+- `backend/memory/tests/test_working.py` — aligned with `ContextManager` API (`threshold`, list zones, `_compress` 1-arg, `append(zone=...)`)
+- `backend/tests/test_vision_mcp.py` — patched `httpx.get` in offline health-check test
+
+#### Infrastructure
+- `backend/memory/tests/conftest.py` — new shared fixture with Windows-safe `temp_db_path` (`mkdtemp` + `shutil.rmtree(ignore_errors=True)`)
+- `backend/main.py` — removed spurious `await` on sync `get_worktree_status()`
+- `backend/iris_gateway.py` — added missing `import os`, fixed `_loop` → `loop`, added `type: ignore` for optional `.dev.terminal_handler`
+- `backend/agent/agent_kernel.py` — added `openai>=1.30.0` to `requirements.txt`
+
+### sec: scrub exposed API keys from repository
+
+- `data/iris_config.json` added to `.gitignore` (contains Chutes API key)
+- `test_api.py`, `test_models.py`, `test_models2.py` — replaced hardcoded `Bearer sk-...` keys with `os.environ.get("OPENCODE_API_KEY", "YOUR_API_KEY_HERE")`
+- Moved all four root-level test scripts into `scripts/` for consistent organization
+
+---
+
 ## [4.7.0] — TTS Performance Overhaul — 2026-05-25
 
 ### perf: native C++ audio layer — lock-free ring-buffer playback

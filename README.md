@@ -19,6 +19,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Flexible Inference**: Brain model via ik_llama.cpp (port 8082) or llama-cpp-python, vision via upstream llama.cpp (port 8081), or remote OpenAI-compatible API — select in Settings
 - **Tool Execution**: Dedicated tool-calling model handles structured tool calls; main LLM handles reasoning and conversation
 - **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer, token-budget enforcement, and mid-loop episodic retrieval (C.4)
+- **Caducean DER Governor (Domain 19)**: 4-phase attention governor modulates the DER loop via ξ-phase reads — suppresses new work in Verify phase, forces crystallization in Lock-in phase. Integrated with AutoResearch learned controller and trajectory recorder. 87 tests passing.
 - **Recall-as-Cognition**: Two-phase memory retrieval protocol — model emits structured `<recall/>` ops before answering, resolves them against the coordinate graph, then answers with real memory context. 84% prompt token reduction vs full-history injection. Provider-uniform via prompt caching. See [architecture doc](./docs/architecture/RECALL_AS_COGNITION.md)
 - **Mycelium v1.7**: 6-layer coordinate-graph memory — episodic events, semantic compression, landmarks, Pacman lifecycle, PiNs, and cross-project landmark bridges
 - **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — markdown notes, files, folders, images, URLs, decisions, fragments, mid-write checkpoints. Agent-callable (`pin_add`, `pin_search`, `pin_link`, `pin_checkpoint`) and surfaced via `<recall pin .../>`. Auto-checkpoints fire after large file writes so the agent can recover in-progress work on a future turn. Tunable search weights. Available in both modes. See [pin system doc](./docs/architecture/PIN_SYSTEM.md)
@@ -484,6 +485,9 @@ Output: `backend/native/iris_core.dll` (auto-copied on POST_BUILD).
 # C++ smoke tests (9/9 must pass)
 python -m pytest backend/tests/test_iris_core_smoke.py -v
 
+# C++ simulation tests (2/2 must pass)
+python -m pytest backend/tests/test_iris_core_simulate.py -v
+
 # C++ microbenchmarks (measures Caducean, RE2, ingestion, EML, memory)
 & src-tauri/src/iris_core/build/Release/iris_core_bench.exe
 
@@ -492,6 +496,55 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 # Python FFI loads
 cd backend && python -c "from gateway.iris_ffi import IrisCoreEngine; print('OK')"
+```
+
+## ⚡ Domain 19 — Caducean DER Governor (Completed May 2026)
+
+A learned controller integration that closes the loop between Caducean attention dynamics, episodic memory, and the DER loop.
+
+### What was delivered
+
+| Component | File | Role |
+|-----------|------|------|
+| **CaduceanTrajectoryRecorder** | `backend/agent/caducean_trajectory.py` | Records every DER step's 4D state (x, y, xi, u) into SQLite |
+| **SkillSimulator** | `backend/agent/skill_simulator.py` | Fast heuristic pre-filter for AutoResearch variants (~12 ms for 1000 calls) |
+| **TrajectoryController** | `backend/agent/trajectory_controller.py` | Polynomial regression learned controller over Caducean state |
+| **DER Phase Governor** | `backend/agent/agent_kernel.py` | Reads ξ each DER cycle; modulates TrailingDirector (force in phase 4, suppress in phase 3) |
+| **recall_memory tool** | `backend/agent/tool_bridge.py` | EML-aware episodic retrieval with adaptive limit/score |
+| **C++ Simulator** | `src-tauri/src/iris_core/iris_core.cpp` | `simulate_trajectories_to_db()` — 500×50 random-walk trajectories into DB |
+
+### Architecture
+
+The DER loop now queries `ffi_caducean_get_xi(session_id)` at the start of each cycle. The angular phase ξ ∈ [0, 2π) is divided into four quadrants:
+
+| Phase | ξ range | Mode | TrailingDirector behaviour |
+|-------|---------|------|---------------------------|
+| 1 (Explore) | [0, π/2) | Open | Normal gap analysis every `TRAILING_GAP_MIN` steps |
+| 2 (Balance) | [π/2, π) | Cautious | Normal gap analysis |
+| 3 (Verify) | [π, 3π/2) | Strict | **Suppresses** adding new gap items — only executes existing plan |
+| 4 (Crystallize) | [3π/2, 2π) | Lock-in | **Forces** gap analysis regardless of step interval |
+
+The EML cognitive state (score, x-drift, y-drift) is also injected into the system prompt so the LLM can adapt its reasoning style dynamically.
+
+### AutoResearch Integration
+
+`AutoResearchRunner` now uses the learned `TrajectoryController` to decide when to fire research cycles, and `SkillSimulator` to pre-filter variant proposals before expensive evaluation. This reduces wasted cycles when EML indicates the system is in a high-drift (exploration) phase.
+
+### Test Coverage
+
+87 tests across 9 suites, all passing:
+
+```bash
+# All Domain 19 suites
+python -m pytest backend/tests/test_der_loop.py \
+  backend/tests/test_iris_core_smoke.py \
+  backend/tests/test_trailing_director.py \
+  backend/tests/test_caducean_trajectory.py \
+  backend/tests/test_skill_simulator.py \
+  backend/tests/test_trajectory_controller.py \
+  backend/tests/test_autoresearch_integration.py \
+  backend/tests/test_der_caducean_gaps.py \
+  backend/tests/test_iris_core_simulate.py -v
 ```
 
 ## ⚙️ Configuration
@@ -703,15 +756,27 @@ npm run dev:backend & npm run dev:frontend
 
 ## 🧪 Testing
 
+### Backend Validation
+
+See [`docs/verification/BACKEND_VALIDATION_CHECKLIST.md`](docs/verification/BACKEND_VALIDATION_CHECKLIST.md) for the full validation matrix (model configs, pass rates, latency benchmarks).
+
+**Current pass rate:** 932/939 = **99.1%**
+
 ### Running Tests
 
-**Backend Tests:**
+**All Backend Tests:**
 ```bash
-# All tests
+# Full suite (backend + agent + memory)
+python -m pytest backend/tests/ backend/agent/tests/ backend/memory/tests/ -q
+
+# Memory tests only
 python -m pytest backend/memory/tests/ -v
 
 # Mycelium layer tests only
 python -m pytest backend/memory/tests/test_mycelium_*.py -v
+
+# Agent tests only
+python -m pytest backend/agent/tests/ -v
 
 # C++ Hybrid Core smoke tests (9 tests — FFI, Caducean, EML, Ingestor, Immortus)
 python -m pytest backend/tests/test_iris_core_smoke.py -v
@@ -976,6 +1041,6 @@ For issues and questions:
 
 ---
 
-**Version**: 4.7.0
-**Last Updated**: May 2026
-**Status**: Production Ready ✅
+**Version**: 4.8.0
+**Last Updated**: May 26, 2026
+**Status**: Production Ready ✅ (Domain 19 Complete)

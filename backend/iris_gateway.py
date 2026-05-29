@@ -16,6 +16,7 @@ from .ws_manager import WebSocketManager, get_websocket_manager
 import asyncio
 import json
 import logging
+import os
 import queue
 import re
 import threading
@@ -23,6 +24,7 @@ import time
 import httpx
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Union, Iterator, Callable
+from backend.utils.observability import get_turn_id, loud_error
 
 # ---------------------------------------------------------------------------
 # Pre-compiled regex patterns — used by _clean_for_speech and _speak_response.
@@ -1431,7 +1433,7 @@ class IRISGateway:
 
             def _execute_agent():
                 def chunk_callback(chunk: str):
-                    if _loop and _loop.is_running():
+                    if loop and loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             self._ws_manager.send_to_client(
                                 client_id,
@@ -1440,11 +1442,11 @@ class IRISGateway:
                                     "payload": {"chunk": chunk},
                                 },
                             ),
-                            _loop,
+                            loop,
                         )
 
                 def reasoning_callback(chunk: str):
-                    if _loop and _loop.is_running():
+                    if loop and loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             self._ws_manager.send_to_client(
                                 client_id,
@@ -1453,7 +1455,7 @@ class IRISGateway:
                                     "payload": {"chunk": chunk},
                                 },
                             ),
-                            _loop,
+                            loop,
                         )
 
                     # Stream sentences into TTS as soon as boundaries appear
@@ -1477,7 +1479,7 @@ class IRISGateway:
                         sentence_buf.clear()
                         _sentence_buf_words = 0
 
-                 resp = agent_kernel.process_text_message(
+                resp = agent_kernel.process_text_message(
                     enriched,
                     session_id=session_id,
                     chunk_callback=chunk_callback,
@@ -1915,6 +1917,7 @@ class IRISGateway:
 
         if msg_type == "text_message":
             text = payload.get("text")
+            turn_id = get_turn_id()
 
             if not text:
                 await self._send_validation_error(
@@ -1988,6 +1991,7 @@ class IRISGateway:
                             session_id=session_id,
                             chunk_callback=_chunk_cb,
                             reasoning_callback=_reasoning_cb,
+                            turn_id=turn_id,
                         )
                     except Exception as e:
                         self._logger.error(f"[Chat] Agent processing error: {e}")
@@ -2028,23 +2032,25 @@ class IRISGateway:
                             },
                         },
                     )
-                except Exception:
-                    pass  # never block the response
+                except Exception as _inf_exc:
+                    loud_error(_inf_exc, "broadcast inference_event")
 
                 # Send final complete message (updates the UI with the full text + metadata)
                 thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
-                await self._ws_manager.send_to_client(
-                    client_id,
-                    {
-                        "type": "chat_message",
-                        "payload": {
-                            "role": "assistant",
-                            "content": response,
-                            "thinking": thinking,
-                            "timestamp": datetime.now().isoformat(),
-                        },
+                _final_msg = {
+                    "type": "chat_message",
+                    "payload": {
+                        "role": "assistant",
+                        "content": response,
+                        "thinking": thinking,
+                        "timestamp": datetime.now().isoformat(),
+                        "turn_id": turn_id,
                     },
-                )
+                }
+                _delivered = await self._ws_manager.send_to_client(client_id, _final_msg)
+                if not _delivered:
+                    # Client disconnected mid-inference — buffer for replay on reconnect
+                    self._ws_manager.buffer_message(session_id, _final_msg)
 
                 # Clear ChatView typing indicator
                 await self._ws_manager.send_to_client(
@@ -3128,6 +3134,7 @@ class IRISGateway:
     async def _handle_request_state(self, session_id: str, client_id: str) -> None:
         """
         Handle request_state message - send full state to client.
+        Also flushes any buffered undelivered messages (guaranteed delivery).
 
         Args:
             session_id: Session ID
@@ -3142,6 +3149,9 @@ class IRISGateway:
                 "payload": {"state": state.model_dump() if state else {}},
             },
         )
+
+        # Flush any pending deliveries that were buffered while disconnected
+        await self._ws_manager.flush_pending(session_id, client_id)
 
     async def _handle_get_wake_words(self, session_id: str, client_id: str) -> None:
         """
@@ -5224,7 +5234,7 @@ class IRISGateway:
             return
 
         try:
-            from .dev.terminal_handler import get_terminal_handler
+            from .dev.terminal_handler import get_terminal_handler  # type: ignore[import-not-found]
 
             payload = message.get("payload", message)
             line = payload.get("line", "")

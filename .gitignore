@@ -50,6 +50,15 @@ next-env.d.ts
 /bootstrap/*.db-shm
 /bootstrap/*.db-wal
 
+# Session state files contain API keys
+/backend/sessions/
+
+# Benchmark secrets
+.env.benchmark
+
+# API keys / model config (contains secrets)
+data/iris_config.json
+
 # Windows nul file (reserved name bug)
 nul
 NUL

@@ -163,10 +163,11 @@ def test_lfm_vl_config_defaults():
 
 def test_lfm_vl_provider_health_check_false_when_server_down():
     """health_check() must return False (not raise) when llama-server is not running."""
+    from unittest.mock import patch
     from backend.tools.lfm_vl_provider import LFMVLProvider
     provider = LFMVLProvider()
-    result = provider.health_check()
-    # Server is not running in CI — must be False without raising
+    with patch("httpx.get", side_effect=Exception("connection refused")):
+        result = provider.health_check()
     assert result is False
 
 
