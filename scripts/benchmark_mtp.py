@@ -135,7 +135,7 @@ async def benchmark(args):
         )
     print(f"Results saved to {out}")
 
-    mgr.unload_model()
+    await mgr.unload_model()
 
 
 def main():
