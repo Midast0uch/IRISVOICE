@@ -73,3 +73,8 @@ test_image.png
 
 # tailscale
 tailscale_active.png
+
+# llama.cpp build (in-project compile — build artifacts only)
+llama.cpp/build/
+llama.cpp/CMakeCache.txt
+llama.cpp/CMakeFiles/

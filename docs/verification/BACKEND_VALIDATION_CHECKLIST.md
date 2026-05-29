@@ -3,6 +3,7 @@
 **Date:** 2026-05-28
 **Models Tested:**
 - Local: `LFM2.5-8B-A1B-Q4_K_M` (via IRIS Local / llama.cpp)
+- Local: `Qwopus3.6-27B-v2-MTP-Q3_K_S` (MTP speculative decoding, pending benchmark)
 - Chutes API: `MiniMaxAI/MiniMax-M2.5-TEE`
 - Local: `prism-ml/ternary-bonsai-8b` (swarm run)
 
@@ -30,6 +31,33 @@ Run against **both** model configs sequentially. Unit/integration tests mock the
 | Chutes API | MiniMaxAI/MiniMax-M2.5-TEE | 632ms | **1.5s** | PASS |
 
 **Finding:** Local model is ~10x slower on E2E latency, confirming local inference is functional. First local prompt had 16s E2E (model load into RAM), then stabilized.
+
+---
+
+## 1.5 MTP Speculative Decoding Benchmarks
+
+**Model:** `Qwopus3.6-27B-v2-MTP-Q3_K_S` (Jackrong/Qwopus3.6-27B-v2-MTP-GGUF)
+**Hardware:** RTX 3070 8GB
+**Build:** `llama-server` compiled from upstream ggml-org/llama.cpp (in-project)
+
+| Context | Baseline tok/s | MTP tok/s | Speedup | Acceptance | Status |
+|---------|---------------|-----------|---------|------------|--------|
+| 32k | TBD | TBD | TBD | TBD | PENDING |
+| 48k | TBD | TBD | TBD | TBD | PENDING |
+| 64k | TBD | TBD | TBD | TBD | PENDING |
+
+**Command used:**
+```bash
+llama-server -m Qwopus3.6-27B-v2-MTP-Q3_K_S.gguf \
+  --spec-type draft-mtp --spec-draft-n-max 3 \
+  --ctx-size 32768 --n-gpu-layers -1 --flash-attn
+```
+
+**Notes:**
+- MTP requires compiled `llama-server` binary (not llama-cpp-python)
+- Auto-detected via tensor name inspection (`mtp.*` prefix)
+- Profile: `balanced_mtp` (32k ctx, `--spec-draft-n-max 3`, `--spec-draft-p-min 0.75`)
+- Non-MTP models route transparently to in-process `Llama()` path
 
 ---
 

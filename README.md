@@ -17,6 +17,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 
 ### 🤖 AI Agent System
 - **Flexible Inference**: Brain model via ik_llama.cpp (port 8082) or llama-cpp-python, vision via upstream llama.cpp (port 8081), or remote OpenAI-compatible API — select in Settings
+- **MTP Speculative Decoding (1.5-3× speedup)**: Multi-Token Prediction for compatible GGUF models (e.g. Qwopus3.6-27B-MTP). Auto-detected from tensor names, routed to compiled `llama-server --spec-type draft-mtp`. Configurable `--spec-draft-n-max` (1-6) and acceptance-rate logging. Non-MTP models fall back transparently to in-process inference.
 - **Tool Execution**: Dedicated tool-calling model handles structured tool calls; main LLM handles reasoning and conversation
 - **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer, token-budget enforcement, and mid-loop episodic retrieval (C.4)
 - **Caducean DER Governor (Domain 19)**: 4-phase attention governor modulates the DER loop via ξ-phase reads — suppresses new work in Verify phase, forces crystallization in Lock-in phase. Integrated with AutoResearch learned controller and trajectory recorder. 87 tests passing.
@@ -143,6 +144,28 @@ This compiles the C++ core (`iris_core.dll`) with:
 - **Pre-keyed Read Pool** — 4 pooled read connections (no repeated key derivation)
 
 The DLL auto-copies to `backend/native/iris_core.dll`. If the build fails, the Python backend falls back to pure-Python implementations transparently.
+
+### 3a. Build llama-server for MTP (Optional — required for speculative decoding)
+
+MTP (Multi-Token Prediction) models need the upstream `llama-server` binary compiled from source. This is separate from `llama-cpp-python` (which does not support self-MTP).
+
+```powershell
+# One-command build (run from repo root)
+& build_llama_server.ps1
+```
+
+**Requirements:** Visual Studio 2022 Build Tools + CMake + CUDA Toolkit (optional but recommended)
+
+This builds `llama-server.exe` in `llama.cpp/build/bin/Release/` with:
+- **MTP speculative decoding** — `--spec-type draft-mtp` for 1.5-3× speedup
+- **CUDA offload** — `-DGGML_CUDA=ON` for GPU layers (requires CUDA VS integration)
+
+If CUDA VS integration is missing, build CPU-only:
+```powershell
+& build_llama_server.ps1 -CPUOnly
+```
+
+The backend auto-discovers the binary at startup; no manual PATH edits needed.
 
 ### 4. Backend Setup
 
@@ -631,6 +654,29 @@ Supported wake phrases:
 - "computer" (built-in)
 - "bumblebee" (built-in)
 - "porcupine" (built-in)
+
+### MTP (Multi-Token Prediction) Configuration
+
+MTP is auto-detected and enabled for compatible GGUF models. No UI toggles needed.
+
+**How it works:**
+1. The backend scans GGUF tensor names for `mtp.*` prefixes
+2. If detected, the model is routed to compiled `llama-server` with `--spec-type draft-mtp`
+3. Non-MTP models continue using the fast in-process `llama_cpp.Llama` path
+
+**Profiles:**
+- `balanced_mtp` — same as `balanced` but with `--spec-draft-n-max 3` (default)
+- Custom: set `mtp_n_max` (1-6) and `mtp_p_min` (0.0-1.0) in model settings
+
+**Example models:**
+- `Jackrong/Qwopus3.6-27B-v2-MTP-GGUF` — 27B Qwen-based MTP model
+- `Unsloth/Qwen3.6-*-MTP-GGUF` — other MTP variants
+
+**Acceptance rate logging:** After each generation batch, the backend logs:
+```
+[LocalModelManager] MTP acceptance: 142/200 = 71.0% (rolling 68.3%)
+```
+Higher acceptance = better speedup. Typical range: 50-80%.
 
 ### Frontend Configuration
 

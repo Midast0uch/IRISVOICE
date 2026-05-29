@@ -102,6 +102,23 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "keep_model_in_memory": True,
         "use_mmap": True,
     },
+    # MTP-optimized profile for models with draft-mtp speculative decoding.
+    # Uses compiled llama-server subprocess (required for self-MTP).
+    "balanced_mtp": {
+        "n_gpu_layers": -1,
+        "n_ctx": 32768,
+        "flash_attn": True,
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0",
+        "n_batch": 2048,
+        "offload_kv_cache": True,
+        "unified_kv_cache": True,
+        "keep_model_in_memory": True,
+        "use_mmap": True,
+        "mtp_n_max": 3,              # --spec-draft-n-max (1-6)
+        "mtp_p_min": 0.75,           # --spec-draft-p-min (optional)
+        "force_subprocess": True,    # MTP requires compiled llama-server
+    },
     # High-throughput: same as balanced but context reduced for minimum first-token latency.
     # Use for fast iterative coding / tool-calling tasks.
     "performance": {
@@ -247,6 +264,10 @@ class LocalModelManager:
         # [10.10] TPS rolling window — last 3 measurements for gradient warning
         self._tps_window: list = []
         self._tps_slow_warned: bool = False
+        # MTP speculative-decoding metrics
+        self._mtp_acceptance_window: list = []  # rolling acceptance rates
+        self._mtp_draft_tokens_total: int = 0
+        self._mtp_accepted_total: int = 0
         # ── RotorQuant fork detection ───────────────────────────────────
         # The scrya-com/rotorquant fork adds `cache_type_k` / `cache_type_v`
         # string kwargs to Llama.__init__ that accept "planar3" / "iso3" etc.
@@ -651,6 +672,7 @@ class LocalModelManager:
                 "last_ctx": model_settings.get("last_ctx", 32768),
                 "last_gpu_layers": model_settings.get("last_gpu_layers", -1),
                 "shard_count": 1,
+                "is_mtp_capable": meta.get("is_mtp", False) or "mtp" in filename.lower() or "mtp" in base_stem.lower(),
             }
             seen_bases[base_stem] = entry
 
@@ -738,6 +760,11 @@ class LocalModelManager:
                 meta["architecture"] = val
             elif key == "general.parameter_count" and isinstance(val, int):
                 meta["params_b"] = round(val / 1e9, 1)
+            elif key == "general.name" and isinstance(val, str):
+                meta["model_name"] = val
+                # Filename-based MTP detection heuristic
+                if "mtp" in val.lower():
+                    meta["is_mtp"] = True
             elif key == "general.size_label" and isinstance(val, str):
                 # e.g. "1.2B", "450M", "8B" — fallback when parameter_count is absent
                 try:
@@ -750,8 +777,27 @@ class LocalModelManager:
                     pass
             elif key.endswith(".context_length") and isinstance(val, int):
                 meta["context_length"] = val
-            elif key == "general.name" and isinstance(val, str):
-                meta["model_name"] = val
+
+        # Tensor-based MTP detection: peek at first few tensor names for mtp. prefix
+        if not meta.get("is_mtp"):
+            try:
+                # Read tensor name count and a small slice of tensor names
+                tensor_count = struct.unpack("<Q", buf[pos:pos+8])[0]
+                pos += 8
+                for _ in range(min(tensor_count, 20)):
+                    name_len = struct.unpack("<I", buf[pos:pos+4])[0]
+                    pos += 4
+                    name = buf[pos:pos+name_len].decode("utf-8", errors="replace")
+                    pos += name_len
+                    if name.startswith("mtp.") or ".mtp." in name:
+                        meta["is_mtp"] = True
+                        break
+                    # Skip type (4) + offset (8) + dimensions
+                    pos += 4 + 8
+                    ndim = struct.unpack("<I", buf[pos-4:pos])[0] if pos >= 4 else 0
+                    pos += ndim * 8
+            except Exception:
+                pass
 
         return meta
 
@@ -860,6 +906,18 @@ class LocalModelManager:
         # Server listening (about to be ready)
         if re.search(r"(listening|HTTP server|server started|server is running)", line, re.I):
             return {"phase": "ready", "pct": 98, "msg": "Server online"}
+
+        # MTP speculative decoding metrics
+        # llama-server prints: spec_decode_draft_tokens=N, spec_decode_draft_accepted=M
+        m = re.search(r"spec_decode_draft_tokens[=:]\s*(\d+)", line)
+        if m:
+            return {"phase": "metrics", "type": "mtp_draft_tokens", "value": int(m.group(1))}
+        m = re.search(r"spec_decode_draft_accepted[=:]\s*(\d+)", line)
+        if m:
+            return {"phase": "metrics", "type": "mtp_accepted", "value": int(m.group(1))}
+        m = re.search(r"spec_decode_n_past[=:]\s*(\d+)", line)
+        if m:
+            return {"phase": "metrics", "type": "mtp_n_past", "value": int(m.group(1))}
 
         return None
 
@@ -1064,9 +1122,19 @@ class LocalModelManager:
                         pass
                 return False
 
-            # ── In-process path (preferred) ──────────────────────────────
-            # Short-circuits the entire subprocess machinery below.
-            if self._inprocess_enabled():
+            # Detect MTP-capable models; they require compiled llama-server
+            model_meta = self.parse_gguf_metadata(Path(model_path))
+            is_mtp = model_meta.get("is_mtp", False) or "mtp" in Path(model_path).name.lower()
+            force_server = params.get("force_subprocess", False) or is_mtp
+
+            if is_mtp and self._inprocess_enabled():
+                logger.info(
+                    f"[LocalModelManager] MTP model detected ({Path(model_path).name}); "
+                    f"routing to compiled llama-server subprocess for speculative decoding."
+                )
+
+            # ── In-process path (preferred, but NOT for MTP) ─────────────
+            if self._inprocess_enabled() and not force_server:
                 self._current_profile = profile
                 ok = await self._load_inprocess(model_path, params, progress_cb=progress_cb)
                 if ok:
@@ -1079,9 +1147,9 @@ class LocalModelManager:
                     self._invalidate_hw_cache()
                 return ok
 
-            # ── Legacy subprocess path (IRIS_INPROCESS_LLAMA=0) ──────────
-            cmd = self._build_server_cmd(model_path, params)
-            logger.info(f"[LocalModelManager] Starting llama-cpp-python server: {' '.join(cmd)}")
+            # ── Subprocess path (MTP or IRIS_INPROCESS_LLAMA=0) ──────────
+            cmd = self._build_server_cmd(model_path, params, is_mtp=is_mtp)
+            logger.info(f"[LocalModelManager] Starting llama-server: {' '.join(cmd)}")
 
             loop = asyncio.get_running_loop()
 
@@ -1116,7 +1184,28 @@ class LocalModelManager:
                         logger.debug(f"[llama-server] {line}")
                         event = self._parse_load_progress(line)
                         if event:
-                            loop.call_soon_threadsafe(progress_queue.put_nowait, event)
+                            # Accumulate MTP metrics in background thread
+                            if event.get("phase") == "metrics":
+                                mtype = event.get("type")
+                                val = event.get("value", 0)
+                                if mtype == "mtp_draft_tokens":
+                                    self._mtp_draft_tokens_total += val
+                                elif mtype == "mtp_accepted":
+                                    self._mtp_accepted_total += val
+                                    # Compute rolling acceptance rate
+                                    total = self._mtp_draft_tokens_total
+                                    if total > 0:
+                                        rate = self._mtp_accepted_total / total
+                                        self._mtp_acceptance_window.append(rate)
+                                        if len(self._mtp_acceptance_window) > 20:
+                                            self._mtp_acceptance_window.pop(0)
+                                        logger.info(
+                                            f"[LocalModelManager] MTP acceptance: "
+                                            f"{self._mtp_accepted_total}/{total} = {rate:.1%} "
+                                            f"(rolling {sum(self._mtp_acceptance_window)/len(self._mtp_acceptance_window):.1%})"
+                                        )
+                            else:
+                                loop.call_soon_threadsafe(progress_queue.put_nowait, event)
                 except Exception as exc:
                     logger.debug(f"[LocalModelManager] stdout reader exited: {exc}")
                 finally:
@@ -1306,6 +1395,8 @@ class LocalModelManager:
             candidates = [
                 Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server.exe",
                 Path.home() / "llama.cpp" / "build" / "bin" / "llama-server.exe",
+                IRISVOICE_ROOT / "llama.cpp" / "build" / "bin" / "Release" / "llama-server.exe",
+                IRISVOICE_ROOT / "llama.cpp" / "build" / "bin" / "llama-server.exe",
                 Path("C:/tools/llama-server.exe"),
                 Path("C:/llama/llama-server.exe"),
             ]
@@ -1314,6 +1405,7 @@ class LocalModelManager:
             candidates = [
                 Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server",
                 Path.home() / "llama.cpp" / "build" / "bin" / "llama-server",
+                IRISVOICE_ROOT / "llama.cpp" / "build" / "bin" / "llama-server",
                 Path("/usr/local/bin/llama-server"),
                 Path("/usr/bin/llama-server"),
                 Path("/opt/llama/bin/llama-server"),
@@ -1400,7 +1492,9 @@ class LocalModelManager:
         # Fall back to current interpreter even without CUDA
         return sys.executable
 
-    def _build_server_cmd(self, model_path: str, params: Dict[str, Any]) -> List[str]:
+    def _build_server_cmd(
+        self, model_path: str, params: Dict[str, Any], is_mtp: bool = False
+    ) -> List[str]:
         """
         Build the inference server command.
         Prefers ik_llama.cpp's llama-server binary when available.
@@ -1416,7 +1510,7 @@ class LocalModelManager:
 
         if llama_server:
             # ── ik_llama.cpp / compiled llama-server ───────────────────────
-            logger.info(f"[LocalModelManager] Using ik_llama.cpp binary: {llama_server}")
+            logger.info(f"[LocalModelManager] Using compiled llama-server: {llama_server}")
             cmd = [
                 llama_server,
                 "--model", str(model_path),
@@ -1446,6 +1540,19 @@ class LocalModelManager:
             seed = params.get("seed")
             if seed is not None and seed != -1:
                 cmd += ["--seed", str(int(seed))]
+
+            # ── MTP speculative decoding flags ─────────────────────────────
+            if is_mtp:
+                cmd += ["--spec-type", "draft-mtp"]
+                mtp_n_max = params.get("mtp_n_max", 3)
+                cmd += ["--spec-draft-n-max", str(mtp_n_max)]
+                mtp_p_min = params.get("mtp_p_min")
+                if mtp_p_min is not None:
+                    cmd += ["--spec-draft-p-min", str(mtp_p_min)]
+                logger.info(
+                    f"[LocalModelManager] MTP enabled: --spec-type draft-mtp "
+                    f"--spec-draft-n-max {mtp_n_max}"
+                )
         else:
             # ── llama-cpp-python fallback ──────────────────────────────────
             # Flag reference (llama_cpp.server v0.3+):
