@@ -57,9 +57,14 @@ if ($CPUOnly) {
 & cmake @CMakeArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`nCMake configuration FAILED." -ForegroundColor Red
-    Write-Host "If CUDA error: ensure CUDA VS integration is installed." -ForegroundColor Red
-    Write-Host "  1. Open CUDA installer -> Custom -> CUDA -> Visual Studio Integration" -ForegroundColor Red
-    Write-Host "  2. Or build with: .\build_llama_server.ps1 -CPUOnly" -ForegroundColor Red
+    Write-Host "If CUDA error ('No CUDA toolset found'): install CUDA VS integration." -ForegroundColor Red
+    Write-Host "  1. Re-run CUDA installer (e.g. cuda_12.4.x_windows.exe)" -ForegroundColor Red
+    Write-Host "  2. Choose Custom install -> CUDA -> Visual Studio Integration" -ForegroundColor Red
+    Write-Host "  3. Or manually copy files:" -ForegroundColor Red
+    Write-Host "     Copy from: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\extras\visual_studio_integration\MSBuildExtensions\" -ForegroundColor Red
+    Write-Host "     Copy to:   C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Microsoft\VC\v170\BuildCustomizations\" -ForegroundColor Red
+    Write-Host "  4. Then re-run: .\build_llama_server.ps1" -ForegroundColor Red
+    Write-Host "  5. Or build CPU-only now: .\build_llama_server.ps1 -CPUOnly" -ForegroundColor Red
     exit 1
 }
 

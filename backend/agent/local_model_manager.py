@@ -777,6 +777,8 @@ class LocalModelManager:
                     pass
             elif key.endswith(".context_length") and isinstance(val, int):
                 meta["context_length"] = val
+            elif key.endswith(".block_count") and isinstance(val, int):
+                meta["block_count"] = val
 
         # Tensor-based MTP detection: peek at first few tensor names for mtp. prefix
         if not meta.get("is_mtp"):
@@ -925,10 +927,11 @@ class LocalModelManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _preflight_resource_check(
-        self, model_path: str, params: Dict[str, Any]
+        self, model_path: str, params: Dict[str, Any], model_meta: Dict[str, Any] = None
     ) -> Optional[str]:
         """
         Estimate VRAM/RAM requirements before spawning the subprocess.
+        Properly accounts for partial GPU offloading (n_gpu_layers > 0).
         Returns an error string if resources are insufficient, None if OK.
         Fails open (returns None) if hardware info is unavailable —
         we never block a load due to a failed check.
@@ -947,19 +950,51 @@ class LocalModelManager:
             # Estimate KV cache RAM: ~2 bytes * n_ctx * n_layers (rough: ctx/1000 GB)
             kv_cache_gb = (n_ctx / 1000.0) * 0.1
 
+            # Get total layer count from metadata or estimate from params
+            total_layers = 0
+            if model_meta:
+                total_layers = model_meta.get("block_count", 0)
+            if not total_layers and model_meta:
+                params_b = model_meta.get("params_b", 0)
+                if params_b:
+                    # Heuristic: Qwen ~2.2 layers per B, Llama ~4 layers per B
+                    total_layers = max(24, int(params_b * 2.5))
+
+            # Scale weight VRAM by fraction of layers offloaded to GPU
             if n_gpu != 0 and hw.get("cuda_available"):
-                # GPU load: model fits in VRAM + KV cache overhead
-                vram_needed = file_gb * 1.05 + kv_cache_gb
+                if n_gpu == -1:
+                    # All layers on GPU
+                    weight_vram = file_gb * 1.05
+                elif total_layers and n_gpu > 0:
+                    # Partial offload: only offloaded layers go to GPU
+                    offload_frac = min(n_gpu / total_layers, 1.0)
+                    weight_vram = file_gb * 1.05 * offload_frac
+                else:
+                    # Fallback: assume all on GPU when we don't know layer count
+                    weight_vram = file_gb * 1.05
+
+                vram_needed = weight_vram + kv_cache_gb
                 vram_free = hw.get("vram_free_gb", 0.0)
                 if vram_free > 0 and vram_needed > vram_free * 0.92:
                     return (
                         f"Insufficient VRAM: model needs ~{vram_needed:.1f} GB, "
-                        f"{vram_free:.1f} GB free. Try a smaller quantization or "
-                        f"reduce n_ctx."
+                        f"{vram_free:.1f} GB free. Try a smaller quantization, "
+                        f"reduce n_ctx, or reduce n_gpu_layers."
                     )
             else:
                 # CPU load: model + KV cache must fit in RAM
-                ram_needed = file_gb + kv_cache_gb
+                # With mmap, the OS pages from disk; actual RAM is working set
+                use_mmap = params.get("use_mmap", True)
+                if use_mmap:
+                    # With mmap, only ~10-20% of model needs to be in physical RAM
+                    # (active layers + OS page cache). Be conservative at 25%.
+                    if total_layers and n_gpu != 0:
+                        cpu_frac = 1.0 - min(abs(n_gpu) / total_layers, 1.0)
+                    else:
+                        cpu_frac = 1.0  # all on CPU
+                    ram_needed = file_gb * cpu_frac * 0.25 + kv_cache_gb
+                else:
+                    ram_needed = file_gb + kv_cache_gb
                 if PSUTIL_AVAILABLE:
                     ram_free = psutil.virtual_memory().available / (1024 ** 3)
                     if ram_needed > ram_free * 0.85:
@@ -1110,8 +1145,12 @@ class LocalModelManager:
             profile = self._resolve_profile_for_environment(profile)
             params = self.get_profile_params(profile, custom_params or {})
 
+            # Parse metadata early so preflight check can use layer count for
+            # accurate partial-offload VRAM estimation.
+            model_meta = self.parse_gguf_metadata(Path(model_path))
+
             # [10.5] Pre-flight resource check — fail fast before spawning
-            preflight_error = self._preflight_resource_check(model_path, params)
+            preflight_error = self._preflight_resource_check(model_path, params, model_meta)
             if preflight_error:
                 logger.error(f"[LocalModelManager] Pre-flight failed: {preflight_error}")
                 if progress_cb:
@@ -1122,7 +1161,6 @@ class LocalModelManager:
                 return False
 
             # Detect MTP-capable models; they require compiled llama-server
-            model_meta = self.parse_gguf_metadata(Path(model_path))
             is_mtp = model_meta.get("is_mtp", False) or "mtp" in Path(model_path).name.lower()
             force_server = params.get("force_subprocess", False) or is_mtp
 
@@ -1525,7 +1563,7 @@ class LocalModelManager:
             if params.get("n_batch"):
                 cmd += ["--batch-size", str(params["n_batch"])]
             if params.get("flash_attn"):
-                cmd += ["--flash-attn"]
+                cmd += ["--flash-attn", "on"]
             if params.get("cache_type_k"):
                 cmd += ["--cache-type-k", params["cache_type_k"]]
             if params.get("cache_type_v"):
