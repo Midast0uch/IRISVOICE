@@ -36,7 +36,7 @@ def compute_profile(model: dict, hw: dict) -> dict:
         if cuda and vram_free > 0:
             # GPU path: find max layers that fit in VRAM
             # weights on GPU + KV cache on GPU
-            avail_vram = vram_free * 0.90  # 10% headroom
+            avail_vram = vram_free * 0.70  # 30% headroom for OS + other apps
             
             if file_gb * 1.05 + kv_gb <= avail_vram:
                 # All layers fit
@@ -166,6 +166,35 @@ def main():
         else:
             print()
             print("  WARNING: Model does not fit available memory!")
+        
+        # Swarm capacity: how many instances fit with 30% OS headroom
+        vram_total = hw.get("vram_total_gb", 0)
+        os_reserve = vram_total * 0.30  # Leave 30% for OS + other apps
+        avail_for_models = vram_total - os_reserve
+        
+        usable = [p for p in profiles if p["fits"]]
+        if usable:
+            # GPU-optimized swarm (using best profile that hits >=25 tok/s)
+            best_gpu = None
+            for p in reversed(usable):  # Prefer larger contexts
+                if p["est_tok_per_sec"] >= 25 and p["vram_used_gb"] > 0:
+                    best_gpu = p
+            if not best_gpu:
+                best_gpu = max(usable, key=lambda x: x["est_tok_per_sec"])
+            
+            gpu_vram = max(best_gpu["vram_used_gb"], 0.5)
+            gpu_instances = int(avail_for_models / gpu_vram)
+            
+            print()
+            print(f"  SWARM CAPACITY (RTX 3070 8GB, 30% OS reserve = {os_reserve:.1f}GB):")
+            print(f"    GPU-optimized instances: {gpu_instances} (each ~{gpu_vram:.1f}GB VRAM)")
+            print(f"    Combined tok/s (estimate): {gpu_instances * best_gpu['est_tok_per_sec']:.1f}")
+            
+            # CPU-only fallback (if different)
+            cpu_profiles = [p for p in usable if p["vram_used_gb"] == 0]
+            if cpu_profiles:
+                cpu_instances = int(16.0 / 2.0)  # 16GB RAM, ~2GB per CPU model
+                print(f"    CPU-only instances: ~{cpu_instances} (each ~2.0GB RAM)")
         
         print()
 
