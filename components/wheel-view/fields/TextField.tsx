@@ -7,8 +7,9 @@ interface TextFieldProps {
   label: string
   value: string
   placeholder?: string
-  onChange: (value: string) => void
+  onChange?: (value: string) => void
   glowColor: string
+  readOnly?: boolean
 }
 
 const TextFieldComponent: React.FC<TextFieldProps> = ({
@@ -18,6 +19,7 @@ const TextFieldComponent: React.FC<TextFieldProps> = ({
   placeholder,
   onChange,
   glowColor,
+  readOnly = false,
 }) => {
   return (
     <div className="flex flex-col gap-2.5">
@@ -32,16 +34,23 @@ const TextFieldComponent: React.FC<TextFieldProps> = ({
         type="text"
         value={value}
         placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full px-4 py-3 text-[11px] font-bold text-white bg-black/20 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-white/20 transition-all duration-300 placeholder:text-white/20"
+        readOnly={readOnly}
+        onChange={(e) => onChange?.(e.target.value)}
+        className={`w-full px-4 py-3 text-[11px] font-bold text-white border rounded-xl focus:outline-none transition-all duration-300 placeholder:text-white/20 ${
+          readOnly
+            ? 'bg-black/10 border-white/5 cursor-default'
+            : 'bg-black/20 border-white/10 focus:ring-2 focus:ring-white/20'
+        }`}
         style={{
-          caretColor: glowColor,
+          caretColor: readOnly ? 'transparent' : glowColor,
         }}
         onFocus={(e) => {
+          if (readOnly) return
           e.target.style.borderColor = `${glowColor}66`
           e.target.style.backgroundColor = "rgba(0, 0, 0, 0.3)"
         }}
         onBlur={(e) => {
+          if (readOnly) return
           e.target.style.borderColor = "rgba(255, 255, 255, 0.1)"
           e.target.style.backgroundColor = "rgba(0, 0, 0, 0.2)"
         }}

@@ -477,11 +477,15 @@ export const WheelView: React.FC<WheelViewProps> = ({
 
             {/* 5-Layer Core Architecture + Interactive Button (Phase 110) */}
             <motion.button
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full focus:outline-none"
+              className="absolute rounded-full focus:outline-none"
               style={{
-                width: 72,
-                height: 72,
-                zIndex: 99,
+                left: '50%',
+                top: '50%',
+                marginLeft: -32,
+                marginTop: -32,
+                width: 64,
+                height: 64,
+                zIndex: 100,
                 overflow: 'visible',
                 background: 'transparent',
                 border: 'none',
@@ -656,14 +660,14 @@ export const WheelView: React.FC<WheelViewProps> = ({
                   backdropFilter: "blur(12px)",
                   WebkitBackdropFilter: "blur(12px)",
                   boxShadow: "0 4px 12px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.2)",
-                  zIndex: 3
+                  zIndex: 2
                 }}
               />
 
               {/* Invisible clickable surface - ensures entire button area is clickable */}
-              <div 
+              <div
                 className="absolute inset-0 rounded-full"
-                style={{ 
+                style={{
                   background: 'transparent',
                   cursor: 'pointer',
                   zIndex: 5
@@ -671,7 +675,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
               />
 
               {/* 5. CONTENT AREA */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ zIndex: 10 }}>
                 <span className="text-[10px] font-black uppercase tracking-[0.1em] text-white select-none" style={{ textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>
                   {categoryId}
                 </span>

@@ -1,5 +1,54 @@
 # IRIS Changelog
 
+## [Unreleased] — WheelView UI Fixes + Inference Wiring — 2026-05-29
+
+### fix: WheelView tactile core (IrisOrb) placement and centering
+
+- `components/wheel-view/WheelView.tsx` — Fixed button centering by replacing
+  Tailwind `-translate-x-1/2 -translate-y-1/2` with explicit `marginLeft: -32` /
+  `marginTop: -32`. Framer Motion `scale` animations were overriding the CSS
+  transform, causing the button to drift off-center.
+- `components/wheel-view/DualRingMechanism.tsx` — Restored White Core Halo as
+  SVG elements at layer 16 (between Core Kinetic Glider layer 15 and IrisOrb
+  button layer 17). Uses `r=orbSize*0.11` with animated outer glare + static
+  core halo with drop-shadow filters. Removed duplicate halo divs from inside
+  the button.
+- `components/wheel-view/WheelView.tsx` — Removed redundant halo/glare divs
+  from inside the tactile core button since they now render correctly in the SVG.
+
+### fix: Monitor cards display-only UX (analytics, logs, diagnostics)
+
+- `components/wheel-view/fields/TextField.tsx` — Added `readOnly` prop with
+  muted styling (`bg-black/10`, `border-white/5`, transparent caret) and
+  optional `onChange`.
+- `components/wheel-view/SidePanel.tsx` — Monitor cards now auto-send
+  `confirm_card` (mapped via `CARD_TO_SECTION_ID`) on selection using a ref
+  guard to prevent infinite loops. Confirm button is hidden for monitor cards.
+  Text fields render as read-only display-only inputs.
+- `data/cards.ts` — Updated monitor card placeholders from "Tap Confirm to..."
+  to "Loading..." to indicate auto-fetch behavior.
+- `types/navigation.ts` — Fixed `showIf.values` type from `string[]` to
+  `(string | boolean)[]` to resolve TypeScript errors for boolean conditions.
+
+### feat: Wire dead inference settings to backend kernel
+
+- `backend/iris_gateway.py` — `_handle_settings` now wires
+  `thinking_style`, `max_response_length`, `reasoning_effort`, `tool_mode`
+  from the inference_mode card to `AgentKernel` attributes.
+- `backend/agent/agent_kernel.py` — Added inference behavior fields
+  (`_thinking_style`, `_response_length`, `_reasoning_effort`, `_tool_mode`)
+  and wired them into `_respond_direct`, `_needs_thinking`, `_needs_planning`.
+  Added swarm guards to prevent model name overwrites when swarm is enabled.
+  Propagates inference behavior settings to peer kernels on spawn.
+- `INFERENCE_ARCHITECTURE.md` — Updated dead wire audit to mark inference
+  behavior settings as fixed.
+
+**Status:** Wired but **not end-to-end tested** — swarm E2E verification
+blocked by UI bugs fixed above. Next session will run
+`docs/swarm_inference_plan.md` test protocol.
+
+---
+
 ## [4.7.1] — Backend Test Suite Refinement — 2026-05-28
 
 ### test: backend test suite 99.1% pass rate

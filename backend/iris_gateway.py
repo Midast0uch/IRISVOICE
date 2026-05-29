@@ -10,6 +10,7 @@ from .voice.wake_word_discovery import WakeWordDiscovery
 from .audio.pipeline import AudioPipeline
 from .agent.tts import get_tts_manager
 from .agent import get_agent_kernel
+from .agent.swarm_inference_manager import SwarmInferenceManager
 from .core_models import Category, get_sections_for_category
 from .state_manager import StateManager, get_state_manager
 from .ws_manager import WebSocketManager, get_websocket_manager
@@ -17,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 import queue
 import re
 import threading
@@ -791,9 +793,14 @@ class IRISGateway:
                             "api": "api",
                         }
                         provider = _mode_map.get(
-                            str(_legacy_mode).lower().strip(), "lmstudio"
+                            str(_legacy_mode).lower().strip()
                         )
-                        if provider == "lmstudio":
+                        if provider is None:
+                            self._logger.info(
+                                f"[Session: {session_id}] Unknown inference_mode "
+                                f"'{_legacy_mode}' — skipping legacy provider configuration"
+                            )
+                        elif provider == "lmstudio":
                             lms_ep = (
                                 values.get("lmstudio_endpoint", "http://localhost:1234")
                                 or "http://localhost:1234"
@@ -855,6 +862,162 @@ class IRISGateway:
                             self._logger.info(
                                 f"[Session: {session_id}] Swarm {'enabled' if swarm_on else 'disabled'}"
                             )
+                        if not swarm_on:
+                            # Clear global snapshot so new sessions don't inherit
+                            # a stale swarm config after the user disabled it.
+                            try:
+                                import backend.agent.agent_kernel as _ak_mod
+
+                                _ak_mod._swarm_config_snapshot = None
+                                self._logger.info(
+                                    f"[Session: {session_id}] Swarm snapshot cleared"
+                                )
+                            except Exception:
+                                pass
+
+                    # Apply swarm_mode auto-configuration
+                    if swarm_on and "swarm_mode" in values:
+                        mode = values.get("swarm_mode", "local_fast")
+                        worker_ctx = int(values.get("worker_context", 2048))
+                        try:
+                            mgr = SwarmInferenceManager()
+                            cfg = mgr.apply_swarm_mode(mode, worker_ctx)
+                            if mode == "api_director":
+                                # Director uses API — ensure API provider is configured
+                                self._logger.info(
+                                    f"[Session: {session_id}] Swarm mode=api_director — "
+                                    f"Director will use API, workers on GPU"
+                                )
+                            else:
+                                mgr.start_swarm()
+                                self._logger.info(
+                                    f"[Session: {session_id}] Swarm started: "
+                                    f"mode={cfg.mode.value}, director={cfg.director_model or 'API'}, "
+                                    f"workers={cfg.worker_model}, worker_ctx={cfg.worker_ctx}"
+                                )
+                                # ── Route kernel inference to swarm endpoints ──
+                                # The kernel currently supports a single OpenAI-compatible
+                                # endpoint.  quality_director → Director (8081) for quality;
+                                # local_fast      → Workers (8082) for speed.
+                                _swarm_ep = (
+                                    cfg.director_endpoint
+                                    if cfg.mode.value == "quality_director"
+                                    else cfg.workers_endpoint
+                                )
+                                kernel.configure_openai_compat(
+                                    _swarm_ep.rstrip("/").removesuffix("/v1"),
+                                    provider_name="iris_local",
+                                )
+                                # Pick model names that llama-server will accept
+                                _dir_name = (
+                                    Path(cfg.director_model).stem
+                                    if cfg.director_model
+                                    else "local-model"
+                                )
+                                _wrk_name = Path(cfg.worker_model).stem
+                                kernel._selected_reasoning_model = _dir_name
+                                kernel._selected_tool_execution_model = _wrk_name
+                                self._logger.info(
+                                    f"[Session: {session_id}] Kernel routed to swarm: "
+                                    f"endpoint={_swarm_ep}, reasoning={_dir_name}, tool={_wrk_name}"
+                                )
+                                # ── Persist swarm snapshot for future sessions ──
+                                # New sessions created after this point will auto-hydrate
+                                # from this snapshot instead of staying "uninitialized".
+                                import backend.agent.agent_kernel as _ak_mod
+
+                                _ak_mod._swarm_config_snapshot = {
+                                    "endpoint": _swarm_ep.rstrip("/").removesuffix("/v1"),
+                                    "reasoning_model": _dir_name,
+                                    "tool_model": _wrk_name,
+                                    "mode": cfg.mode.value,
+                                }
+                                self._logger.info(
+                                    f"[Session: {session_id}] Swarm config snapshot stored: "
+                                    f"{_ak_mod._swarm_config_snapshot}"
+                                )
+                                # ── Broadcast swarm config to ALL sessions ──
+                                # The frontend may have multiple WebSocket connections
+                                # (e.g. one for the UI, one for integration). Ensure every
+                                # session kernel points to the swarm so chat messages
+                                # from any connection reach the local llama-server.
+                                from backend.agent.agent_kernel import _agent_kernel_instances
+
+                                for _sid, _k in _agent_kernel_instances.items():
+                                    if _sid == session_id:
+                                        continue
+                                    _k.configure_openai_compat(
+                                        _swarm_ep.rstrip("/").removesuffix("/v1"),
+                                        provider_name="iris_local",
+                                    )
+                                    _k._selected_reasoning_model = _dir_name
+                                    _k._selected_tool_execution_model = _wrk_name
+                                    # Propagate inference behaviour so all sessions share them.
+                                    _k._thinking_style = kernel._thinking_style
+                                    _k._response_length = kernel._response_length
+                                    _k._reasoning_effort = kernel._reasoning_effort
+                                    _k._tool_mode = kernel._tool_mode
+                                    self._logger.info(
+                                        f"[Session: {_sid}] Kernel also routed to swarm: "
+                                        f"endpoint={_swarm_ep}"
+                                    )
+                            # Store manager reference on kernel for status queries
+                            if hasattr(kernel, "_swarm_inference_mgr"):
+                                kernel._swarm_inference_mgr = mgr
+
+                            # ── Defensive re-apply: if swarm is ON but provider drifted, fix it ──
+                            if (
+                                swarm_on
+                                and getattr(kernel, "_model_provider", "") != "iris_local"
+                            ):
+                                self._logger.warning(
+                                    f"[Session: {session_id}] Swarm ON but provider="
+                                    f"'{kernel._model_provider}' — forcing re-configure to iris_local"
+                                )
+                                kernel.configure_openai_compat(
+                                    _swarm_ep.rstrip("/").removesuffix("/v1"),
+                                    provider_name="iris_local",
+                                )
+                                kernel._selected_reasoning_model = _dir_name
+                                kernel._selected_tool_execution_model = _wrk_name
+                        except Exception as _swarm_err:
+                            self._logger.error(
+                                f"[Session: {session_id}] Swarm start failed: {_swarm_err}",
+                                exc_info=True,
+                            )
+
+                    # ── Wire up inference behaviour fields (dead settings fix) ──
+                    # These fields have always been stored in session state but never
+                    # consumed by the backend. Map them to kernel attributes so they
+                    # actually affect inference.
+                    _thinking = values.get("agent_thinking_style")
+                    if _thinking in ("concise", "balanced", "thorough"):
+                        kernel._thinking_style = _thinking
+                        self._logger.info(
+                            f"[Session: {session_id}] Thinking style set to '{_thinking}'"
+                        )
+
+                    _response_len = values.get("max_response_length")
+                    if _response_len in ("short", "medium", "long"):
+                        kernel._response_length = _response_len
+                        self._logger.info(
+                            f"[Session: {session_id}] Response length set to '{_response_len}'"
+                        )
+
+                    _reasoning_effort = values.get("reasoning_effort")
+                    if _reasoning_effort in ("fast", "balanced", "accurate"):
+                        kernel._reasoning_effort = _reasoning_effort
+                        self._logger.info(
+                            f"[Session: {session_id}] Reasoning effort set to '{_reasoning_effort}'"
+                        )
+
+                    _tool_mode = values.get("tool_mode")
+                    if _tool_mode in ("auto", "ask_first", "disabled"):
+                        kernel._tool_mode = _tool_mode
+                        self._logger.info(
+                            f"[Session: {session_id}] Tool mode set to '{_tool_mode}'"
+                        )
+
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying inference_mode: {e}",
@@ -1101,6 +1264,27 @@ class IRISGateway:
                         f"[Session: {session_id}] Error applying output device on confirm: {e}",
                         extra={"session_id": session_id, "client_id": client_id},
                     )
+
+            # ── Monitor cards: analytics / logs / diagnostics ──────────────
+            # These cards show system status.  When confirmed we push live
+            # data back into the card fields via update_field messages.
+            elif section_id in ("analytics", "logs", "diagnostics") and values:
+                await self._handle_monitor_card(
+                    session_id, client_id, section_id, values
+                )
+                # Return early so we skip orbit confirmation (monitor is global)
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "card_confirmed",
+                        "payload": {
+                            "section_id": section_id,
+                            "orbit_angle": 0,
+                            "applied": True,
+                        },
+                    },
+                )
+                return
 
             # Get current category
             state = await self._state_manager.get_state(session_id)
@@ -2238,6 +2422,40 @@ class IRISGateway:
                 f"[Session: {session_id}] Getting available models for provider: {inference_mode}"
             )
 
+            # If swarm is active (provider='iris_local'), skip LM Studio probe
+            # entirely — it just generates false warnings in the logs.
+            try:
+                from backend.agent.agent_kernel import get_agent_kernel as _gk
+
+                _kernel = _gk(session_id)
+                if (
+                    getattr(_kernel, "_swarm_enabled", False)
+                    and inference_mode == "lmstudio"
+                ):
+                    self._logger.info(
+                        f"[Session: {session_id}] Swarm is active — skipping LM Studio probe"
+                    )
+                    await self._ws_manager.send_to_client(
+                        client_id,
+                        {
+                            "type": "available_models",
+                            "payload": {
+                                "models": [
+                                    {
+                                        "id": _kernel._selected_reasoning_model
+                                        or "local-model",
+                                        "name": _kernel._selected_reasoning_model
+                                        or "Swarm Director Model",
+                                        "source": "iris_local",
+                                    }
+                                ]
+                            },
+                        },
+                    )
+                    return
+            except Exception:
+                pass  # non-fatal — continue to normal flow
+
             available_models = []
 
             # Vision-only models should NOT appear in reasoning/tool dropdowns.
@@ -2828,6 +3046,208 @@ class IRISGateway:
                         "error": f"Failed to get available models: {str(e)}",
                     },
                 },
+            )
+
+    async def _handle_monitor_card(
+        self, session_id: str, client_id: str, section_id: str, values: dict
+    ) -> None:
+        """Handle monitor cards (analytics / logs / diagnostics).
+
+        When the user confirms a monitor card we gather live data and push it
+        back into the card fields via update_field messages so the UI shows
+        actual system status instead of empty placeholders.
+        """
+        try:
+            from .agent.agent_kernel import get_agent_kernel, _agent_kernel_instances
+
+            kernel = get_agent_kernel(session_id)
+
+            if section_id == "diagnostics":
+                # ── Run diagnostics ─────────────────────────────────────
+                lines = ["=== IRIS Diagnostics ===", ""]
+
+                # 1. Kernel provider + endpoint
+                lines.append(
+                    f"Provider: {kernel._model_provider}"
+                )
+                lines.append(
+                    f"Endpoint: {kernel._lmstudio_endpoint}"
+                )
+                lines.append(
+                    f"Swarm: {getattr(kernel, '_swarm_enabled', False)}"
+                )
+                lines.append(
+                    f"Reasoning model: {kernel._selected_reasoning_model or 'None'}"
+                )
+                lines.append(
+                    f"Tool model: {kernel._selected_tool_execution_model or 'None'}"
+                )
+                lines.append("")
+
+                # 2. llama-server processes
+                import subprocess as _sp
+                try:
+                    result = _sp.run(
+                        ["tasklist", "/FI", "IMAGENAME eq llama-server.exe"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if "llama-server.exe" in result.stdout:
+                        lines.append("llama-server: RUNNING")
+                        # Try to extract port info from command line
+                        try:
+                            ps_result = _sp.run(
+                                ["powershell", "-Command",
+                                 "Get-NetTCPConnection -OwningProcess (Get-Process llama-server).Id -ErrorAction SilentlyContinue | Select-Object LocalPort"],
+                                capture_output=True,
+                                text=True,
+                                timeout=5,
+                            )
+                            for port_line in ps_result.stdout.strip().split("\n"):
+                                if port_line.strip() and port_line.strip().isdigit():
+                                    lines.append(f"  Port: {port_line.strip()}")
+                        except Exception:
+                            pass
+                    else:
+                        lines.append("llama-server: NOT RUNNING")
+                except Exception as e:
+                    lines.append(f"llama-server check failed: {e}")
+
+                lines.append("")
+
+                # 3. GPU status
+                try:
+                    gpu_result = _sp.run(
+                        ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+                         "--format=csv,noheader"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if gpu_result.returncode == 0:
+                        for gpu_line in gpu_result.stdout.strip().split("\n"):
+                            if gpu_line.strip():
+                                lines.append(f"GPU: {gpu_line.strip()}")
+                    else:
+                        lines.append("GPU: nvidia-smi not available")
+                except Exception:
+                    lines.append("GPU: nvidia-smi not available")
+
+                diag_text = "\n".join(lines)
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "update_field",
+                        "section_id": "diagnostics",
+                        "field_id": "system_health",
+                        "value": diag_text,
+                    },
+                )
+
+                # Also populate troubleshoot with a quick summary
+                troubleshoot = []
+                if kernel._model_provider == "uninitialized":
+                    troubleshoot.append("ISSUE: Kernel provider is 'uninitialized'. Confirm Inference Mode settings.")
+                if not getattr(kernel, "_swarm_enabled", False):
+                    troubleshoot.append("NOTE: Swarm is disabled. Enable in Inference Mode for local GPU inference.")
+                if kernel._model_provider == "api":
+                    troubleshoot.append("WARNING: Using remote API. Local swarm NOT active.")
+                if not troubleshoot:
+                    troubleshoot.append("All checks passed. Ready for inference.")
+
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "update_field",
+                        "section_id": "diagnostics",
+                        "field_id": "troubleshoot",
+                        "value": "\n".join(troubleshoot),
+                    },
+                )
+
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "update_field",
+                        "section_id": "diagnostics",
+                        "field_id": "debug_info",
+                        "value": f"Active kernels: {len(_agent_kernel_instances)} | Session: {session_id}",
+                    },
+                )
+                self._logger.info(
+                    f"[Session: {session_id}] Diagnostics pushed to UI"
+                )
+
+            elif section_id == "logs":
+                # ── Read backend logs ───────────────────────────────────
+                log_lines = []
+                try:
+                    from pathlib import Path
+
+                    project_dir = Path(__file__).parent.parent.resolve()
+                    err_file = project_dir / "backend_test.err"
+                    if err_file.exists():
+                        with open(err_file, "r", encoding="utf-8", errors="ignore") as f:
+                            tail = f.readlines()[-30:]
+                        log_lines.extend([l.strip() for l in tail if l.strip()])
+                    else:
+                        log_lines.append("No backend_test.err found.")
+                except Exception as e:
+                    log_lines.append(f"Error reading logs: {e}")
+
+                log_text = "\n".join(log_lines[-20:])
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "update_field",
+                        "section_id": "logs",
+                        "field_id": "system_logs",
+                        "value": log_text,
+                    },
+                )
+
+                # Error logs — same file for now, could be filtered
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "update_field",
+                        "section_id": "logs",
+                        "field_id": "error_logs",
+                        "value": log_text,
+                    },
+                )
+                self._logger.info(
+                    f"[Session: {session_id}] Logs pushed to UI"
+                )
+
+            elif section_id == "analytics":
+                # ── Gather usage stats ──────────────────────────────────
+                stats = [
+                    f"Active sessions: {len(_agent_kernel_instances)}",
+                    f"Current provider: {kernel._model_provider}",
+                    f"Reasoning model: {kernel._selected_reasoning_model or 'None'}",
+                    f"Tool model: {kernel._selected_tool_execution_model or 'None'}",
+                    f"Swarm enabled: {getattr(kernel, '_swarm_enabled', False)}",
+                    f"Endpoint: {kernel._lmstudio_endpoint}",
+                ]
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "update_field",
+                        "section_id": "analytics",
+                        "field_id": "usage_stats",
+                        "value": "\n".join(stats),
+                    },
+                )
+                self._logger.info(
+                    f"[Session: {session_id}] Analytics pushed to UI"
+                )
+
+        except Exception as e:
+            self._logger.error(
+                f"[Session: {session_id}] Monitor card handler error: {e}",
+                exc_info=True,
             )
 
     async def _handle_request_models(

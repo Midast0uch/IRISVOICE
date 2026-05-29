@@ -176,18 +176,35 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     if (card.id === 'wake-word-card') {
       // Send get_wake_words message to backend
       sendMessage('get_wake_words', {})
-      
+
       // Listen for the response
       const handleWakeWords = (event: CustomEvent) => {
         const wakeWordsList = event.detail.wake_words || []
         const wakeWordOptions = wakeWordsList.map((w: any) => w.display_name || w.filename)
         setWakeWords(wakeWordOptions)
       }
-      
+
       window.addEventListener('iris:wake_words_list', handleWakeWords as EventListener)
-      
+
       return () => {
         window.removeEventListener('iris:wake_words_list', handleWakeWords as EventListener)
+      }
+    }
+  }, [card.id, sendMessage])
+
+  // Auto-request monitor data when monitor cards are selected (once per card)
+  const autoConfirmedRef = React.useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const monitorCards = ['analytics-card', 'logs-card', 'diagnostics-card']
+    if (monitorCards.includes(card.id) && !autoConfirmedRef.current.has(card.id)) {
+      autoConfirmedRef.current.add(card.id)
+      const sectionId = CARD_TO_SECTION_ID[card.id]
+      if (sectionId) {
+        // Auto-confirm to trigger backend data push — no user action needed
+        sendMessage('confirm_card', {
+          section_id: sectionId,
+          values: values
+        })
       }
     }
   }, [card.id, sendMessage])
@@ -266,7 +283,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
       if (showIf) {
         const depField = card.fields.find((f: any) => f.id === showIf.field)
         const depValue = values[showIf.field] ?? depField?.defaultValue ?? ''
-        if (!showIf.values.includes(String(depValue))) return null
+        if (!showIf.values.map(String).includes(String(depValue))) return null
       }
 
       switch (field.type) {
@@ -279,18 +296,21 @@ export const SidePanel: React.FC<SidePanelProps> = ({
             </div>
           )
 
-        case "text":
+        case "text": {
+          const isMonitor = card.id === 'analytics-card' || card.id === 'logs-card' || card.id === 'diagnostics-card'
           return (
             <TextField
               key={field.id}
               id={field.id}
               label={field.label}
               value={(fieldValue as string) ?? ""}
-              placeholder={field.placeholder}
-              onChange={(value) => onValueChange(field.id, value)}
+              placeholder={isMonitor ? undefined : field.placeholder}
+              onChange={isMonitor ? undefined : (value) => onValueChange(field.id, value)}
               glowColor={glowColor}
+              readOnly={isMonitor}
             />
           )
+        }
 
         case "slider":
           return (
@@ -734,37 +754,39 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           </div>
 
           {/* Panel Footer - Protective Gutter (Phase 68) */}
-          <div className="px-7 py-4 border-t border-white/10">
-            <button
-              onClick={onConfirm}
-              aria-label="Confirm settings"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-white/20 active:scale-[0.97]"
-              style={{
-                backgroundColor: `${glowColor}15`,
-                border: `1px solid ${glowColor}33`,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = `${glowColor}25`
-                e.currentTarget.style.borderColor = `${glowColor}55`
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = `${glowColor}15`
-                e.currentTarget.style.borderColor = `${glowColor}33`
-              }}
-            >
-              <Check
-                className="w-4 h-4"
-                style={{ color: glowColor }}
-                strokeWidth={3}
-              />
-              <span
-                className="text-[11px] font-bold uppercase tracking-wider"
-                style={{ color: glowColor }}
+          {!['analytics-card', 'logs-card', 'diagnostics-card'].includes(card.id) && (
+            <div className="px-7 py-4 border-t border-white/10">
+              <button
+                onClick={onConfirm}
+                aria-label="Confirm settings"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-white/20 active:scale-[0.97]"
+                style={{
+                  backgroundColor: `${glowColor}15`,
+                  border: `1px solid ${glowColor}33`,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = `${glowColor}25`
+                  e.currentTarget.style.borderColor = `${glowColor}55`
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = `${glowColor}15`
+                  e.currentTarget.style.borderColor = `${glowColor}33`
+                }}
               >
-                Confirm
-              </span>
-            </button>
-          </div>
+                <Check
+                  className="w-4 h-4"
+                  style={{ color: glowColor }}
+                  strokeWidth={3}
+                />
+                <span
+                  className="text-[11px] font-bold uppercase tracking-wider"
+                  style={{ color: glowColor }}
+                >
+                  Confirm
+                </span>
+              </button>
+            </div>
+          )}
         </div>
       </motion.div>
 

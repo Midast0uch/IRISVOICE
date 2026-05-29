@@ -17,12 +17,19 @@ from .memory import ConversationMemory, TaskRecord
 from .model_router import ModelRouter
 from .tool_bridge import AgentToolBridge
 from ..llm_service import llm as _llm
+from . import streaming as _streaming
 from typing import Any, Dict, Optional, List, Callable
 import json
 import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from backend.utils.observability import (
+    TurnMetrics,
+    loud_error,
+    get_turn_id,
+    broadcast_inference_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +194,12 @@ class AgentKernel:
         self._swarm_enabled: bool = False
         self._swarm_coordinator = None
         self._context_control_handler = None
+
+        # ── Inference behaviour fields (wired from inference_mode card) ──
+        self._thinking_style: str = "balanced"       # concise | balanced | thorough
+        self._response_length: str = "medium"        # short | medium | long
+        self._reasoning_effort: str = "balanced"     # fast | balanced | accurate
+        self._tool_mode: str = "auto"                # auto | ask_first | disabled
 
         # Launcher mode: "personal" (default) or "developer"
         # Developer mode injects PROJECT.md into every system prompt so the
@@ -824,81 +837,19 @@ class AgentKernel:
         return int(self.resolve_context_window() * fraction)
 
     @staticmethod
-    def _safe_stream(resp, silence_timeout: float = 1.5, total_timeout: float = 90.0):
-        """Wrap a streaming response iterator with silence and total timeouts.
+    def _extract_chunk_text(chunk):
+        """Delegate to streaming module."""
+        return _streaming.extract_chunk_text(chunk)
 
-        If no new chunk arrives within *silence_timeout* seconds, OR the
-        total elapsed time exceeds *total_timeout* seconds, the iterator
-        is abandoned.  This prevents the UI from hanging when a provider
-        stalls mid-stream or fails to close the SSE stream.
-        """
-        import time
-        import threading
-
-        _buffer: list = []
-        _done = threading.Event()
-        _ex = [None]
-
-        def _reader():
-            try:
-                for chunk in resp:
-                    _buffer.append(chunk)
-                    _done.set()
-            except Exception as exc:
-                _ex[0] = exc
-                _done.set()
-
-        t = threading.Thread(target=_reader, daemon=True)
-        t.start()
-
-        _start = time.monotonic()
-        _last_content_ts = _start  # wall-time of last CONTENTFUL yield
-        _SILENCE_TOTAL = 3.0  # wall-time silence (s) after the last content chunk
-        while True:
-            elapsed = time.monotonic() - _start
-            remaining = total_timeout - elapsed
-            if remaining <= 0:
-                logger.warning(
-                    f"[AgentKernel] stream total timeout ({total_timeout}s) — "
-                    "abandoning response"
-                )
-                return
-            # Use a short wait (0.1s) so we can check wall-time silence
-            # even when litellm emits empty/done chunks every second.
-            _done.wait(timeout=0.1)
-            if _buffer:
-                # Drain ALL buffered at once
-                _had_content = False
-                while _buffer:
-                    chunk = _buffer.pop(0)
-                    _delta = chunk.choices[0].delta
-                    # Yield every chunk — caller separates reasoning vs content
-                    _has = bool(
-                        _delta.content or getattr(_delta, "reasoning_content", None)
-                    )
-                    if _has:
-                        yield chunk
-                        _had_content = True
-                _done.clear()
-                if _had_content:
-                    _last_content_ts = time.monotonic()
-                    continue  # fresh content → keep going
-                # Empty chunks only — drop through to silence check below
-            if not t.is_alive():
-                # Stream finished
-                while _buffer:
-                    _buffer.pop(0)
-                if _ex[0] is not None:
-                    logger.warning(f"[AgentKernel] stream error: {_ex[0]}")
-                return
-            # Wall-time silence check — independent of empty-chunk spam
-            _wall_silence = time.monotonic() - _last_content_ts
-            if _wall_silence >= _SILENCE_TOTAL:
-                logger.warning(
-                    f"[AgentKernel] stream wall-silence ({_wall_silence:.1f}s) "
-                    "— abandoning response"
-                )
-                return
+    @staticmethod
+    def _safe_stream(resp, silence_timeout=1.5, total_timeout=90.0, on_first_token=None):
+        """Delegate to streaming module."""
+        yield from _streaming.safe_stream(
+            resp,
+            silence_timeout=silence_timeout,
+            total_timeout=total_timeout,
+            on_first_token=on_first_token,
+        )
 
     # Providers that speak the OpenAI-compatible chat completions API.
     # When the user picks any of these, inference routes through _get_lmstudio_client()
@@ -991,7 +942,7 @@ class AgentKernel:
                 api_key="lm-studio",
                 timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
             )
-            logger.debug(
+            logger.info(
                 f"[AgentKernel] Created LM Studio client → {self._lmstudio_endpoint}/v1"
             )
         return self._lmstudio_client
@@ -1257,16 +1208,23 @@ class AgentKernel:
     # Helpers: thinking-token stripping, planning gate, direct response
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _needs_thinking(text: str) -> bool:
+    def _needs_thinking(self, text: str) -> bool:
         """
         Return True only for messages that genuinely benefit from chain-of-thought
         reasoning.  Simple conversational questions and greetings skip thinking mode,
         cutting latency from ~30s to ~5s on Qwen3-9B.
 
-        Thinking is reserved for: multi-step analysis, code/debugging, planning,
-        comparisons, math, and anything that asks the model to reason deeply.
+        Respects the user's _thinking_style setting:
+          concise   → never use thinking
+          balanced  → heuristic trigger-based (default)
+          thorough  → always use thinking
         """
+        style = getattr(self, "_thinking_style", "balanced")
+        if style == "concise":
+            return False
+        if style == "thorough":
+            return True
+
         t = text.lower().strip()
 
         # Very short messages are almost always conversational
@@ -1395,18 +1353,24 @@ class AgentKernel:
         _, clean = AgentKernel._parse_thinking(text)
         return clean
 
-    def get_pending_thinking(self) -> str:
-        """Return the extracted thinking/reasoning blocks from the last LLM response."""
-        thinking = self._pending_thinking
-        self._pending_thinking = ""  # clear after reading
-        return thinking
-
-    @staticmethod
-    def _needs_planning(text: str) -> bool:
+    def _needs_planning(self, text: str) -> bool:
         """
         Return True only when the message explicitly requests a tool-backed action.
         Conversational messages, greetings, and simple questions bypass planning entirely.
+
+        Respects _tool_mode:
+          auto        → heuristic trigger-based (default)
+          ask_first   → never auto-plan; user must explicitly request tools
+          disabled    → never plan, always direct response
         """
+        mode = getattr(self, "_tool_mode", "auto")
+        if mode == "disabled":
+            return False
+        if mode == "ask_first":
+            # Only plan if message starts with explicit tool request prefix
+            t = text.lower().strip()
+            return t.startswith(("tool:", "run:", "execute:", "plan:"))
+
         t = text.lower()
         TOOL_TRIGGERS = [
             "search",
@@ -1457,56 +1421,15 @@ class AgentKernel:
         completion_tokens: int,
         elapsed_s: float,
     ) -> None:
-        """Fire-and-forget inference_event broadcast to this session's WS clients.
-
-        Called after every LLM completion so InferenceConsolePanel can display
-        live tokens/sec, token counts, and latency.  Never raises.
-        """
-        try:
-            import time as _t
-            import asyncio
-            from backend.ws_manager import get_websocket_manager
-
-            ws = get_websocket_manager()
-            if not ws:
-                return
-            tps = round(completion_tokens / max(0.001, elapsed_s), 2)
-            payload = {
-                "type": "inference_event",
-                "payload": {
-                    "model": model,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "tps": tps,
-                    "time_ms": round(elapsed_s * 1000),
-                    "timestamp": _t.time(),
-                },
-            }
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(ws.broadcast_to_session(self.session_id, payload))
-            except RuntimeError:
-                # Called from a thread pool — use the captured main loop instead.
-                captured = self._broadcast_loop
-                if captured is not None and captured.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        ws.broadcast_to_session(self.session_id, payload),
-                        captured,
-                    )
-
-            # [10.10] Feed TPS into LocalModelManager's rolling window for gradient warnings
-            try:
-                from backend.agent.local_model_manager import get_local_model_manager
-
-                mgr = get_local_model_manager()
-                if mgr.is_loaded():
-                    hw = mgr.get_hardware_info()
-                    gpu_active = hw.get("cuda_available", False)
-                    mgr.record_tps(tps, gpu_active=gpu_active)
-            except Exception:
-                pass  # never block the response
-        except Exception:
-            pass  # never block the response
+        """Fire-and-forget inference_event broadcast. Delegates to observability module."""
+        broadcast_inference_event(
+            session_id=self.session_id,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            elapsed_s=elapsed_s,
+            broadcast_loop=self._broadcast_loop,
+        )
 
     # ── Token estimation ─────────────────────────────────────────────────────
     # Rough but fast: 1 token ≈ 4 chars. Real tokenizer adds <5% accuracy gain
@@ -1516,7 +1439,7 @@ class AgentKernel:
     # Context budget for direct responses. Keeps the most recent history
     # within the model's 32k window, leaving ~8k for system prompt + response.
     # With episodic injection headroom this sits at ~20k chat tokens max.
-    _DIRECT_CTX_BUDGET: int = 20_000  # tokens
+    _DIRECT_CTX_BUDGET: int = 24_000  # tokens (supports 12k context + system + response)
 
     def _count_tokens(self, messages: List[Dict]) -> int:
         return (
@@ -1567,8 +1490,8 @@ class AgentKernel:
                             "content": "Understood — I have that context.",
                         },
                     ]
-        except Exception:
-            pass  # episodic failure never blocks the response
+        except Exception as _ep_exc:
+            loud_error(_ep_exc, "episodic.assemble_episodic_context")
 
         # ── Layer 3: Option B — DB-backed semantic context (Pacman retrieval) ──
         # Instead of a blind rolling-window crop, we retrieve the most relevant
@@ -1577,7 +1500,7 @@ class AgentKernel:
         #
         # Recency anchor: always keep the last _RECENCY_TURNS raw turns so the
         # model can follow short-term conversational flow regardless of relevance.
-        _RECENCY_TURNS = 4
+        _RECENCY_TURNS = 8
 
         sys_tokens = len(system_prompt) // self._CHARS_PER_TOKEN
         ep_tokens = self._count_tokens(episodic_prefix)
@@ -1610,8 +1533,8 @@ class AgentKernel:
                             "content": "Understood — I have those context fragments.",
                         },
                     ]
-        except Exception:
-            pass  # chunk retrieval failure never blocks the response
+        except Exception as _ch_exc:
+            loud_error(_ch_exc, "episodic.retrieve_context_chunks")
 
         chunk_tokens = self._count_tokens(chunk_prefix)
         budget_for_history = (
@@ -1731,53 +1654,27 @@ class AgentKernel:
         return sanitized
 
     @staticmethod
-    def _reasoning_chunk_count(delta: Any) -> int:
-        """Count reasoning tokens in a delta for buffer management."""
-        return len(getattr(delta, "reasoning_content", None) or "")
-
-    @staticmethod
     def _chunk_batcher(
         callback: Optional[Callable[[str], None]],
         interval: float = 0.05,
     ) -> Callable[[str], None]:
-        """Return a batched chunk callback that flushes every *interval* seconds.
+        """Delegate to streaming module."""
+        return _streaming.chunk_batcher(callback, interval)
 
-        Accumulates string tokens and sends them as a single WS message every
-        ``interval`` seconds.  The very first token is sent immediately so the
-        UI shows something right away.
-        """
-        import threading as _t
-
-        _buf: list[str] = []
-        _timer: list[Optional[_t.Timer]] = [None]
-        _lock = _t.Lock()
-        _first = True
-
-        def _flush() -> None:
-            nonlocal _first
-            with _lock:
-                if _buf:
-                    payload = "".join(_buf)
-                    _buf.clear()
-                    if callback:
-                        callback(payload)
-                _timer[0] = None
-
-        def _batcher(token: str) -> None:
-            nonlocal _first
-            with _lock:
-                _buf.append(token)
-                if _first:
-                    _first = False
-                    # First token immediate — no wait
-                    _flush()
-                elif _timer[0] is None:
-                    t = _t.Timer(interval, _flush)
-                    t.daemon = True
-                    t.start()
-                    _timer[0] = t
-
-        return _batcher
+    def _stream_and_collect(
+        self,
+        resp,
+        chunk_callback: Optional[Callable[[str], None]],
+        reasoning_callback: Optional[Callable[[str], None]] = None,
+        on_first_token=None,
+    ) -> str:
+        """Delegate to streaming module."""
+        return _streaming.stream_and_collect(
+            resp,
+            chunk_callback,
+            reasoning_callback=reasoning_callback,
+            on_first_token=on_first_token,
+        )
 
     def _respond_direct(
         self,
@@ -1798,6 +1695,15 @@ class AgentKernel:
         messages = self._assemble_direct_context(text, context)
         messages = self._sanitize_messages(messages)
 
+        # Resolve inference behaviour settings
+        _max_tokens = {"short": 1024, "medium": 4096, "long": 8192}.get(
+            getattr(self, "_response_length", "medium"), 4096
+        )
+        _temperature = {"fast": 0.9, "balanced": 0.6, "accurate": 0.3}.get(
+            getattr(self, "_reasoning_effort", "balanced"), 0.6
+        )
+        _reasoning_effort_val = getattr(self, "_reasoning_effort", "balanced")
+
         try:
             # LM Studio (OpenAI-compatible)
             if self._is_openai_compat():
@@ -1815,8 +1721,8 @@ class AgentKernel:
                     _create_kwargs = dict(
                         model=sel,
                         messages=messages,
-                        max_tokens=4096,
-                        temperature=0.6,
+                        max_tokens=_max_tokens,
+                        temperature=_temperature,
                         stream=True,
                     )
                     # chat_template_kwargs is LM Studio-specific — only add
@@ -1828,29 +1734,15 @@ class AgentKernel:
                             "chat_template_kwargs": {"enable_thinking": use_thinking}
                         }
                     resp = client.chat.completions.create(**_create_kwargs)
-                    full_reply = ""
-                    _batched_cb = self._chunk_batcher(chunk_callback)
-                    for chunk in self._safe_stream(resp):
-                        delta = chunk.choices[0].delta
-                        _content = delta.content or ""
-                        _reasoning = getattr(delta, "reasoning_content", None) or ""
-
-                        if _reasoning and reasoning_callback:
-                            reasoning_callback(_reasoning)
-
-                        if _content:
-                            full_reply += _content
-                            _batched_cb(_content)
-                    _batched_cb("")  # force-flush
-
+                    full_reply = self._stream_and_collect(
+                        resp, chunk_callback, reasoning_callback
+                    )
                     thinking, clean = self._parse_thinking(full_reply)
                     self._pending_thinking = thinking
-                    # Emit inference_event — approximate token count from char length
                     _elapsed = _perf_t.perf_counter() - _t0
                     _ctok = max(1, len(full_reply) // 4)
                     _ptok = sum(len(m.get("content", "")) for m in messages) // 4
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    # Never return empty — prevents empty-string storage in history
                     return clean or "(I see.)"
                 else:
                     # Sync implementation
@@ -1860,9 +1752,8 @@ class AgentKernel:
                     resp = client.chat.completions.create(
                         model=sel,
                         messages=messages,
-                        # -1 = unlimited for LM Studio (local model, no billing cap)
-                        max_tokens=-1,
-                        temperature=0.6,  # Qwen3 recommended; slightly more decisive
+                        max_tokens=_max_tokens,
+                        temperature=_temperature,
                         extra_body={
                             "chat_template_kwargs": {"enable_thinking": use_thinking}
                         },
@@ -1902,15 +1793,20 @@ class AgentKernel:
                 _api_kwargs: Dict[str, Any] = dict(
                     model=sel,
                     messages=messages,
-                    max_tokens=4096,
-                    temperature=0.6,
+                    max_tokens=_max_tokens,
+                    temperature=_temperature,
                     api_key=self._api_key,
                     api_base=self._api_base_url,
                 )
+                # Map UI reasoning_effort to API reasoning_effort
                 if use_thinking and "reasoning" in sel.lower():
-                    _api_kwargs["reasoning_effort"] = "high"
+                    _effort_map = {"fast": "low", "balanced": "medium", "accurate": "high"}
+                    _api_kwargs["reasoning_effort"] = _effort_map.get(
+                        _reasoning_effort_val, "medium"
+                    )
                     # reasoning_effort="high" requires temperature=1 per Cohere docs
-                    _api_kwargs["temperature"] = 1.0
+                    if _api_kwargs["reasoning_effort"] == "high":
+                        _api_kwargs["temperature"] = 1.0
 
                 if chunk_callback:
                     import time as _perf_t
@@ -1931,34 +1827,9 @@ class AgentKernel:
                             clean
                             or f"[IRIS error: {type(_api_err).__name__}: {str(_api_err)[:200]}]"
                         )
-                    full_reply = ""
-                    _chunk_count = 0
-                    _reasoning_buf: list[str] = []
-                    # Wrap chunk_callback with the 50ms batcher
-                    _batched_cb = self._chunk_batcher(chunk_callback)
-                    for chunk in self._safe_stream(resp):
-                        _delta = chunk.choices[0].delta
-                        _content = _delta.content or ""
-                        _reasoning = getattr(_delta, "reasoning_content", None) or ""
-
-                        if _reasoning:
-                            _reasoning_buf.append(_reasoning)
-                            if reasoning_callback:
-                                reasoning_callback(_reasoning)
-
-                        if _content:
-                            full_reply += _content
-                            _batched_cb(_content)
-                            _chunk_count += 1
-
-                    # Flush any remaining reasoning
-                    if _reasoning_buf and reasoning_callback:
-                        reasoning_callback("")  # end-of-reasoning marker
-                    # Flush last content batch
-                    _batched_cb("")  # force-flush by sending empty string
-
-                    # Fall through to _parse_thinking for any <think> tags
-                    # still embedded in content.
+                    full_reply = self._stream_and_collect(
+                        resp, chunk_callback, reasoning_callback
+                    )
                     thinking, clean = self._parse_thinking(full_reply)
                     self._pending_thinking = thinking
                     _elapsed = _perf_t.perf_counter() - _t0
@@ -1966,8 +1837,7 @@ class AgentKernel:
                     _ptok = sum(len(m.get("content", "")) for m in messages) // 4
                     logger.info(
                         f"[API_TIMING] model={sel} elapsed={_elapsed:.2f}s "
-                        f"reply_len={len(full_reply)} chunks={_chunk_count} "
-                        f"ctok={_ctok}"
+                        f"reply_len={len(full_reply)} ctok={_ctok}"
                     )
                     self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
                     return clean or "(I see.)"
@@ -2082,57 +1952,6 @@ class AgentKernel:
             if avg_words > 8:
                 return True
         return False
-
-    def get_spoken_version(self, text: str) -> str:
-        """Return a TTS-friendly spoken variant of *text*.
-
-        Behaviour depends on content type:
-        - Short replies (≤ _SPOKEN_WORD_LIMIT words): always spoken verbatim.
-        - Document / code / list content: summarised to the first 1–2 sentences
-          so IRIS does not read out entire documents aloud.
-        - Conversational replies that are long: spoken verbatim — the user asked
-          a question and deserves a full spoken answer.
-
-        A second LLM call is intentionally avoided; sentence-extraction is fast,
-        zero-latency, and produces acceptable quality for document summarisation.
-        """
-        import re
-
-        words = text.split()
-        if len(words) <= self._SPOKEN_WORD_LIMIT:
-            return text  # short enough — speak as-is
-
-        # Conversational replies are always spoken in full.
-        if not self._is_document_content(text):
-            logger.debug(
-                f"[AgentKernel] Conversational reply ({len(words)} words) — speaking in full"
-            )
-            return text
-
-        # Document content: extract first 1-2 sentences up to _SPOKEN_MAX_WORDS.
-        sentences = re.split(r"(?<=[.!?…])\s+", text.strip())
-        sentences = [s.strip() for s in sentences if s.strip()]
-
-        spoken_words: list[str] = []
-        for sentence in sentences:
-            s_words = sentence.split()
-            if (
-                spoken_words
-                and len(spoken_words) + len(s_words) > self._SPOKEN_MAX_WORDS
-            ):
-                break
-            spoken_words.extend(s_words)
-            if len(spoken_words) >= self._SPOKEN_WORD_LIMIT:
-                break
-
-        spoken = " ".join(spoken_words).strip()
-        if spoken:
-            logger.debug(
-                f"[AgentKernel] Document summary ({len(spoken_words)} words): {spoken!r}"
-            )
-            return spoken
-
-        return text  # fallback: speak full response
 
     # ── Tool definitions for OpenAI-compatible function calling ─────────────
 
@@ -2508,6 +2327,7 @@ class AgentKernel:
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         from_voice: bool = False,
+        turn_id: Optional[str] = None,
     ) -> str:
         """
         Main entry point for text messages.
@@ -2527,21 +2347,37 @@ class AgentKernel:
         # Reset thinking from any previous call so stale data never leaks
         self._pending_thinking = ""
 
+        # Stage 1 observability: per-turn metrics (created early so error paths can log)
+        import uuid
+        task_id = turn_id or str(uuid.uuid4())
+        metrics = TurnMetrics(turn_id=task_id)
+        try:
+            from backend.gateway.iris_ffi import _engine
+            metrics.engine = "native" if (_engine and getattr(_engine, "_ffi", None)) else "fallback"
+        except Exception:
+            metrics.engine = "fallback"
+
+        # Wrap chunk_callback to mark TTFT on first contentful chunk
+        _original_chunk_cb = chunk_callback
+        def _wrapped_chunk_cb(chunk: str):
+            metrics.mark_first_token()
+            if _original_chunk_cb:
+                _original_chunk_cb(chunk)
+
         # Check if agent is available
         if self._initialization_error:
             error_msg = f"Agent kernel is not available: {self._initialization_error}"
             logger.error(f"[AgentKernel] {error_msg}")
+            logger.info(metrics.to_log_line())
             return error_msg
 
         if not self._model_router or not self._conversation_memory:
             error_msg = "Agent kernel is not available"
             logger.error(f"[AgentKernel] {error_msg}")
+            logger.info(metrics.to_log_line())
             return error_msg
 
         # Create TaskContext to carry full context through pipeline (fixes Bug 3, 4, 5, 6)
-        import uuid
-
-        task_id = str(uuid.uuid4())
         _t_start = time.perf_counter()
 
         try:
@@ -2573,7 +2409,7 @@ class AgentKernel:
                 response = self._respond_direct(
                     text,
                     context,
-                    chunk_callback=chunk_callback,
+                    chunk_callback=_wrapped_chunk_cb,
                     reasoning_callback=reasoning_callback,
                 )
                 _t_llm_end = time.perf_counter()
@@ -2583,6 +2419,7 @@ class AgentKernel:
                 )
             except Exception as e:
                 logger.error(f"[AgentKernel] LLM call failed: {e}")
+                logger.info(metrics.to_log_line())
                 return (
                     f"[IRIS error: could not reach language model — {type(e).__name__}]"
                 )
@@ -2592,8 +2429,8 @@ class AgentKernel:
             if response and not response.startswith("[IRIS error:"):
                 try:
                     self._conversation_memory.add_message("assistant", response)
-                except Exception:
-                    pass
+                except Exception as _mem_exc:
+                    loud_error(_mem_exc, "conversation_memory.add_message (direct)")
             # Option B / Pacman: fragment this turn-pair into the vector DB so future
             # context assembly can retrieve it semantically (PACMAN.md §Digestion).
             # MCM orchestrator handles fragmentation + compression check when available.
@@ -2607,6 +2444,7 @@ class AgentKernel:
                             else [],
                             response_text=response,
                         )
+                        metrics.pacman_store += 1
                     elif (
                         self._memory_interface is not None
                         and hasattr(self._memory_interface, "episodic")
@@ -2620,14 +2458,17 @@ class AgentKernel:
                             chunk_type="context_fragment",
                             zone="trusted",
                         )
-            except Exception:
-                pass
+                        metrics.pacman_store += 1
+            except Exception as _pac_exc:
+                loud_error(_pac_exc, "pacman fragment_and_store")
             if response is None:
                 logger.error(
                     "[AgentKernel] _respond_direct returned None — returning fallback"
                 )
                 response = "I wasn't able to generate a response. Please check the model connection."
+            metrics.path = "direct"
             logger.info(f"[AgentKernel] Direct response: {response[:50]}...")
+            logger.info(metrics.to_log_line())
             return response
 
         # ── DER path: sanitize → classify → Mycelium → plan → execute ──────
@@ -2639,8 +2480,8 @@ class AgentKernel:
             if self._task_classifier is not None:
                 try:
                     _task_class, _ = self._task_classifier.classify(_task_clean)
-                except Exception:
-                    pass
+                except Exception as _tc_exc:
+                    loud_error(_tc_exc, "task_classifier.classify")
 
             _context_package = None
             _is_mature = False
@@ -2655,8 +2496,8 @@ class AgentKernel:
                         _context_package, _is_mature = _ctx_result
                     elif _ctx_result is not None:
                         _context_package = _ctx_result
-                except Exception:
-                    pass
+                except Exception as _ctx_exc:
+                    loud_error(_ctx_exc, "memory_interface.get_task_context_package")
 
             # Mode detection — runs AFTER Mycelium fetch so mature graph data
             # can suppress clarification mode and improve confidence.
@@ -2676,8 +2517,8 @@ class AgentKernel:
                             is_mature=_is_mature,
                         )
                         _mode_name = _mode_result.mode.name.lower()
-                    except Exception:
-                        pass
+                    except Exception as _md_exc:
+                        loud_error(_md_exc, "mode_detector.detect")
 
             _plan = self._plan_task(
                 text=_task_clean,
@@ -2695,8 +2536,8 @@ class AgentKernel:
                         statement=f"task required {_plan.strategy}: {_plan.reasoning}",
                         session_id=session_id or self.session_id,
                     )
-            except Exception:
-                pass
+            except Exception as _ing_exc:
+                loud_error(_ing_exc, "mycelium_ingest_statement")
 
             # GAP 6 — register plan address when Mycelium is mature
             try:
@@ -2711,8 +2552,8 @@ class AgentKernel:
                         token_count=len(_plan_ctx_str.split()),
                         summary=f"{_plan.strategy}: {_plan.original_task[:60]}",
                     )
-            except Exception:
-                pass
+            except Exception as _reg_exc:
+                loud_error(_reg_exc, "context_package.register_address")
 
             # GAP 4 — route by strategy (do_it_myself → DER; others → ReAct)
             if _plan.strategy == "do_it_myself":
@@ -2758,17 +2599,21 @@ class AgentKernel:
             if not _is_empty and not _der_response.startswith("[IRIS error:"):
                 try:
                     self._conversation_memory.add_message("assistant", _der_response)
-                except Exception:
-                    pass
+                except Exception as _mem_exc:
+                    loud_error(_mem_exc, "conversation_memory.add_message (der)")
+                metrics.path = "der"
                 logger.info(f"[AgentKernel] DER response: {_der_response[:50]}...")
+                logger.info(metrics.to_log_line())
                 return _der_response
 
         # DER produced empty/failed response — return error instead of
         # falling through to the agentic loop which would retry the API
         # call multiple times and leave the UI stuck in "thinking..." state.
+        metrics.path = "der"
         logger.warning(
             "[AgentKernel] DER produced no response — returning error to user"
         )
+        logger.info(metrics.to_log_line())
         return "IRIS couldn't generate a response. Please try again."
 
     def plan_task(
@@ -3321,8 +3166,8 @@ Respond with a JSON object:
                 from backend.gateway.iris_ffi import ffi_caducean_get_xi
 
                 _xi = ffi_caducean_get_xi(_session)
-            except Exception:
-                pass
+            except Exception as _ffi_exc:
+                loud_error(_ffi_exc, "ffi_caducean_get_xi")
             _phase = 0  # 0=[0,π/2], 1=[π/2,π], 2=[π,3π/2], 3=[3π/2,2π]
             if _xi >= 3.0 * _math.pi / 2.0:
                 _phase = 3
@@ -3362,8 +3207,8 @@ Respond with a JSON object:
                         elif _eml < 1.00 and _ey >= 0.70:
                             _retrieval_limit = 3
                             _retrieval_score = 0.65
-                    except Exception:
-                        pass
+                    except Exception as _eml_exc:
+                        loud_error(_eml_exc, "caducean_eml_retrieval")
                     _sub_eps = self._memory_interface.episodic.retrieve_similar(
                         task=item.description,
                         limit=_retrieval_limit,
@@ -3380,8 +3225,8 @@ Respond with a JSON object:
                             item.coordinate_signal = (
                                 _prior + f"\nSUB-TASK HINT: {_hints}"
                             ).strip()
-            except Exception:
-                pass  # never blocks Explorer
+            except Exception as _explore_exc:
+                loud_error(_explore_exc, "explorer_sub_episodes")
 
             # ── REVIEWER PHASE ─────────────────────────────────────────────
             if reviewer is not None:
@@ -3411,8 +3256,8 @@ Respond with a JSON object:
                                 total_steps=len(queue.items),
                                 session_id=_session,
                             )
-                    except Exception:
-                        pass
+                    except Exception as _rev_exc:
+                        loud_error(_rev_exc, "reviewer_trajectory_record")
 
                     if item.veto_count <= queue.max_veto_per_item:
                         # Keep in queue for Director to reroute next cycle
@@ -3499,8 +3344,8 @@ Respond with a JSON object:
                             chunk_type="der_output",
                             zone="tool",
                         )
-            except Exception:
-                pass
+            except Exception as _frag_exc:
+                loud_error(_frag_exc, "der_pacman_fragment")
 
             # ── TOKEN BUDGET: accumulate estimated tokens from step result ──
             # 4 chars ≈ 1 token; also count prompt overhead per step (~200 tok)
@@ -3521,8 +3366,8 @@ Respond with a JSON object:
                         total_steps=len(queue.items),
                         session_id=_session,
                     )
-            except Exception:
-                pass
+            except Exception as _wm_exc:
+                loud_error(_wm_exc, "mycelium_working_memory")
 
             # ── WORKING MEMORY: accumulate findings for later steps ────────
             # Appends step result to working_history zone so _run_step_direct()
@@ -3537,8 +3382,8 @@ Respond with a JSON object:
                     self._memory_interface.append_to_session(
                         _session, _wm_note, zone="working_history"
                     )
-            except Exception:
-                pass
+            except Exception as _wm2_exc:
+                loud_error(_wm2_exc, "append_working_history")
 
             queue.mark_complete(item.step_id)
 
@@ -3580,8 +3425,8 @@ Respond with a JSON object:
                     file_path=item.params.get("path", "") if item.params else "",
                     landmark_id="",
                 )
-            except Exception:
-                pass
+            except Exception as _cad_exc:
+                loud_error(_cad_exc, "caducean_trajectory_immortus")
 
             completed_items.append(item)
 
@@ -3600,41 +3445,22 @@ Respond with a JSON object:
                     if not _suppress_new:
                         for gap_item in gap_items:
                             queue.add_item(gap_item)
-            except Exception:
-                pass
+            except Exception as _gap_exc:
+                loud_error(_gap_exc, "trailing_director_gaps")
 
-        # ── OUTCOME RECORDING (ordered per spec: record → crystallize → clear → stats)
+        # ── OUTCOME RECORDING (ordered per spec: clear → stats → episode)
+        # NOTE: _store_task_episode internally calls mycelium_record_outcome
+        # and mycelium_crystallize_landmark, so we do NOT duplicate them here.
         had_failures = any("[STEP ERROR" in o for o in step_outputs)
         outcome = "failure" if had_failures else "success"
-
-        try:
-            if self._memory_interface:
-                self._memory_interface.mycelium_record_outcome(
-                    task=plan.original_task,
-                    outcome=outcome,
-                    session_id=_session,
-                )
-        except Exception:
-            pass
-
-        try:
-            if self._memory_interface:
-                self._memory_interface.mycelium_crystallize_landmark(
-                    session_id=_session,
-                    score=0.8 if not had_failures else 0.4,
-                    outcome=outcome,
-                    task_entry_label=plan.original_task,
-                )
-        except Exception:
-            pass
 
         try:
             if self._memory_interface:
                 self._memory_interface.mycelium_clear_session(
                     session_id=_session,
                 )
-        except Exception:
-            pass
+        except Exception as _exc:
+            loud_error(_exc, "mycelium_clear_session")
 
         try:
             if self._memory_interface:
@@ -3657,13 +3483,14 @@ Respond with a JSON object:
                     outcome=outcome,
                     graph_mature=is_mature,
                 )
-        except Exception:
-            pass
+        except Exception as _exc:
+            loud_error(_exc, "mycelium_record_plan_stats")
 
         # ── EPISODIC STORAGE: write completed task to episodic memory ──────────
         # Closes the read/write loop. get_task_context() already calls
         # assemble_episodic_context() which reads from this store — but only
         # if episodes exist. This call creates them.
+        # Also triggers Mycelium outcome + crystallization internally.
         try:
             if self._memory_interface:
                 _der_duration_ms = int((time.perf_counter() - _der_start_time) * 1000)
@@ -3693,10 +3520,10 @@ Respond with a JSON object:
                         tool_sequence=_tool_seq,
                         task_summary=plan.original_task,
                     )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as _exc:
+                    loud_error(_exc, "skill_creation_trigger")
+        except Exception as _exc:
+            loud_error(_exc, "store_task_episode")
 
         if step_outputs:
             return "\n".join(o for o in step_outputs if o)
@@ -4475,10 +4302,22 @@ If any tools failed, address those issues in your response.
         tool_execution_model = self._normalize_model_id(tool_execution_model)
 
         try:
-            self._selected_reasoning_model = reasoning_model
-            self._selected_tool_execution_model = tool_execution_model
-            if model_provider:
-                self._model_provider = model_provider
+            # Swarm mode is the highest-priority configuration.
+            # If swarm is enabled, do NOT let the Models card overwrite
+            # provider='iris_local' or the swarm model names back to UI selections.
+            if getattr(self, "_swarm_enabled", False):
+                if reasoning_model or tool_execution_model or model_provider:
+                    logger.info(
+                        f"[AgentKernel] Swarm is enabled — ignoring model_selection "
+                        f"from Models card (keeping provider='{self._model_provider}', "
+                        f"reasoning='{self._selected_reasoning_model}', "
+                        f"tool='{self._selected_tool_execution_model}')"
+                    )
+            else:
+                self._selected_reasoning_model = reasoning_model
+                self._selected_tool_execution_model = tool_execution_model
+                if model_provider:
+                    self._model_provider = model_provider
 
             ctx_window = self.resolve_context_window()
             token_budget = self.get_effective_token_budget()
@@ -4503,6 +4342,12 @@ If any tools failed, address those issues in your response.
             # with the model the user just selected in the main UI session.
             for peer_id, peer_kernel in _agent_kernel_instances.items():
                 if peer_kernel is not self:
+                    if getattr(peer_kernel, "_swarm_enabled", False):
+                        logger.debug(
+                            f"[AgentKernel] Peer '{peer_id}' swarm enabled — "
+                            f"skipping model_selection overwrite"
+                        )
+                        continue
                     peer_kernel._selected_reasoning_model = reasoning_model
                     peer_kernel._selected_tool_execution_model = tool_execution_model
                     if model_provider:
@@ -4628,6 +4473,12 @@ If any tools failed, address those issues in your response.
 # Singleton instance management
 _agent_kernel_instances: Dict[str, AgentKernel] = {}
 
+# Last-known-good swarm configuration snapshot.
+# When a new session's kernel is created after swarm mode has already been
+# configured, it reads from this snapshot instead of relying on peer
+# inheritance (which fails if all peers were also created post-swarm).
+_swarm_config_snapshot: Optional[dict] = None
+
 
 def get_agent_kernel(session_id: str = "default") -> AgentKernel:
     """
@@ -4685,6 +4536,11 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
                         kernel._api_key = peer_kernel._api_key
                     if peer_kernel._api_base_url:
                         kernel._api_base_url = peer_kernel._api_base_url
+                    # Also copy inference behaviour settings so all sessions share them.
+                    kernel._thinking_style = peer_kernel._thinking_style
+                    kernel._response_length = peer_kernel._response_length
+                    kernel._reasoning_effort = peer_kernel._reasoning_effort
+                    kernel._tool_mode = peer_kernel._tool_mode
                     logger.info(
                         f"[AgentKernel] Session '{session_id}' inherited model config "
                         f"from '{peer_id}' "
@@ -4692,6 +4548,29 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
                         f"model={peer_kernel._selected_reasoning_model!r})"
                     )
                     break
+
+            # If no peer was configured but a global swarm snapshot exists,
+            # auto-hydrate this kernel so it doesn't stay "uninitialized".
+            if (
+                kernel._model_provider == "uninitialized"
+                and _swarm_config_snapshot is not None
+            ):
+                kernel.configure_openai_compat(
+                    _swarm_config_snapshot.get("endpoint"),
+                    provider_name="iris_local",
+                )
+                kernel._selected_reasoning_model = _swarm_config_snapshot.get(
+                    "reasoning_model"
+                )
+                kernel._selected_tool_execution_model = _swarm_config_snapshot.get(
+                    "tool_model"
+                )
+                kernel._swarm_enabled = True
+                logger.info(
+                    f"[AgentKernel] Session '{session_id}' auto-hydrated from "
+                    f"swarm snapshot (provider='iris_local', "
+                    f"endpoint={_swarm_config_snapshot.get('endpoint')!r})"
+                )
 
         _agent_kernel_instances[session_id] = kernel
 

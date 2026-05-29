@@ -21,7 +21,7 @@ export interface FieldConfig {
   // button props
   action?: string
   // conditional visibility
-  showIf?: { field: string; values: string[] }
+  showIf?: { field: string; values: (string | boolean)[] }
 }
 
 export interface Card {

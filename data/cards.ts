@@ -31,12 +31,15 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           unit: '%',
           defaultValue: 75
         },
-        {
-          id: 'noise_gate',
-          type: 'toggle',
-          label: 'Noise Gate',
-          defaultValue: false
-        },
+    {
+      id: 'context_window',
+      label: 'Context Window (K tokens)',
+      type: 'slider',
+      defaultValue: 10,
+      min: 1,
+      max: 128,
+      unit: 'K',
+    },
         {
           id: 'vad',
           type: 'toggle',
@@ -323,6 +326,32 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           label: 'Swarm Mode',
           description: 'Enable multi-agent compound collaboration — agents self-join tasks and share context through Mycelium',
           defaultValue: false,
+        },
+        {
+          id: 'swarm_mode',
+          type: 'dropdown',
+          label: 'Swarm Configuration',
+          description: 'Auto-configures Director and Worker models',
+          options: ['local_fast', 'api_director', 'quality_director'],
+          defaultValue: 'local_fast',
+          showIf: { field: 'swarm_enabled', values: [true] }
+        },
+        {
+          id: 'worker_context',
+          type: 'slider',
+          label: 'Worker Context',
+          description: 'Context window per swarm worker (tokens)',
+          min: 1024,
+          max: 4096,
+          step: 1024,
+          defaultValue: 2048,
+          showIf: { field: 'swarm_enabled', values: [true] }
+        },
+        {
+          id: 'swarm_status',
+          type: 'custom',
+          label: 'Swarm Status',
+          showIf: { field: 'swarm_enabled', values: [true] }
         }
       ]
     }
@@ -758,7 +787,7 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
   // MONITOR CATEGORY (4 Cards)
   // ============================================================================
 
-  // analytics section - analytics-card (display-only action buttons)
+  // analytics section - analytics-card (live data from backend)
   analytics: [
     {
       id: 'analytics-card',
@@ -766,20 +795,17 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
       icon: 'BarChart3',
       fields: [
         {
-          id: 'view_analytics',
-          type: 'custom',
-          label: 'View Analytics'
-        },
-        {
-          id: 'export_report',
-          type: 'custom',
-          label: 'Export Report'
+          id: 'usage_stats',
+          type: 'text',
+          label: 'Usage Stats',
+          placeholder: 'Loading stats...',
+          defaultValue: ''
         }
       ]
     }
   ],
 
-  // logs section - logs-card (action buttons)
+  // logs section - logs-card (live data from backend)
   logs: [
     {
       id: 'logs-card',
@@ -787,20 +813,24 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
       icon: 'FileText',
       fields: [
         {
-          id: 'view_logs',
-          type: 'custom',
-          label: 'View Logs'
+          id: 'system_logs',
+          type: 'text',
+          label: 'System Logs',
+          placeholder: 'Loading logs...',
+          defaultValue: ''
         },
         {
-          id: 'clear_logs',
-          type: 'custom',
-          label: 'Clear Logs'
+          id: 'error_logs',
+          type: 'text',
+          label: 'Error Logs',
+          placeholder: 'Loading errors...',
+          defaultValue: ''
         }
       ]
     }
   ],
 
-  // diagnostics section - diagnostics-card (action buttons)
+  // diagnostics section - diagnostics-card (live data from backend)
   diagnostics: [
     {
       id: 'diagnostics-card',
@@ -808,20 +838,25 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
       icon: 'Stethoscope',
       fields: [
         {
-          id: 'open_inference_console',
-          type: 'button',
-          label: 'Open Inference Console',
-          action: 'open_inference_console'
+          id: 'system_health',
+          type: 'text',
+          label: 'System Health',
+          placeholder: 'Running diagnostics...',
+          defaultValue: ''
         },
         {
-          id: 'run_diagnostics',
-          type: 'custom',
-          label: 'Run Diagnostics'
+          id: 'troubleshoot',
+          type: 'text',
+          label: 'Troubleshoot',
+          placeholder: 'Issues will appear here...',
+          defaultValue: ''
         },
         {
-          id: 'system_info',
-          type: 'custom',
-          label: 'System Info'
+          id: 'debug_info',
+          type: 'text',
+          label: 'Debug Info',
+          placeholder: 'Debug details...',
+          defaultValue: ''
         }
       ]
     }

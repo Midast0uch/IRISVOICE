@@ -484,7 +484,7 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
         <motion.circle
           cx={center}
           cy={center}
-          r={orbSize * 0.125}
+          r={orbSize * 0.11}
           fill="none"
           stroke="white"
           strokeWidth="6"
@@ -508,7 +508,7 @@ export const DualRingMechanism: React.FC<DualRingMechanismProps> = ({
         <circle
           cx={center}
           cy={center}
-          r={orbSize * 0.12}
+          r={orbSize * 0.11}
           fill="none"
           stroke="white"
           strokeWidth="2"
