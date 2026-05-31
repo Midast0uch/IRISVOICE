@@ -14,8 +14,14 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation — BLOCKING.
     Domain 16 (Backend Stability) fully complete — idle memory flat, watchdog active.
     Domain 18 (C++ Hybrid Core Memory Engine) fully complete — all 6 phases verified, smoke tests pass.
+    NEW: API provider routing working — named providers (Cohere, DeepSeek, Anthropic, Chutes AI,
+    Cerebras, OpenCodeGo) with pre-configured endpoints, verified across multiple providers.
+    DER _is_api_provider bug fixed — providers now route correctly through infer().
+    Simplified MODEL SELECTION card — named providers replace old generic api/vps/iris_local.
+    Structured telemetry logging added — context assembly metrics, API request shapes,
+    and DER metrics (xi, pacman_store/recall, der_steps, etc.) logged to irisvoice.log.
     NEW NORTH STAR: Domain 17 — Self-Coding Agent (agent inside IRIS).
-    Complete Domain 18 → G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
+    Complete G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
 
   DOMAINS WITH OPEN ITEMS:
     Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2] manual e2e not confirmed; [2.3] TTS GPU+streaming+native audio IMPLEMENTED)
@@ -121,6 +127,26 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
             test: in developer mode, ask the agent to "create a skill that
             lists files" — verify the tool call executes and the skill is
             recalled on a follow-up.
+
+  Session 2026-05-30 milestone — API Provider Routing:
+    ✅ Named API providers working across multiple providers (2026-05-30)
+      - Fixed DER _is_api_provider() to recognize named provider values (cohere, deepseek, etc.)
+      - Provider→URL mapping with correct OpenAI-compatible endpoints
+      - Cohere: https://api.cohere.ai/compatibility/v1 (dedicated OpenAI compat API)
+      - Anthropic: https://api.anthropic.com/v1 (OpenAI SDK compat endpoint)
+      - Deferred DER _swarm_enabled flag polish (see notes) to unblock Gate 1.6→1.8
+    ✅ UI simplified: MODEL SELECTION has named providers with pre-configured endpoints
+      - LM Studio and Local (GGUF) remain as separate connection types
+      - Reasoning Model / Tool Model dropdowns show per-provider model lists
+      - Swarm auto-off when API provider is selected
+    ✅ Structured telemetry logging added to irisvoice.log
+      - Context assembly: total_chars, episodic_chars, history_turns, etc.
+      - API request: provider, model, messages count, chars, max_tokens
+      - DER metrics: xi, der_steps, pacman_store/recall, traj_rows, map_events
+      - Query with: python -c "import json; [print(json.dumps(d,indent=2)) for l in open('backend/logs/irisvoice.log') if (d:=json.loads(l.strip())) and 'xi' in d]"
+    ⬜ G1.6-G1.8 still need local GGUF model verification (next session)
+    ⬜ Bootstrap DB migration to runtime DB (next session)
+    ⬜ Stress test prompt list development (next session)
 
   Verify by: Start both servers, open the app, load a model via ModelsScreen,
   type a message in chat, confirm reply comes from the local GGUF with GPU active.

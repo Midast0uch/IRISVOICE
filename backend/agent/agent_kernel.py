@@ -1615,6 +1615,32 @@ class AgentKernel:
         ):
             messages.append({"role": "user", "content": text})
 
+        # ── Telemetry: log context assembly metrics ─────────────────────
+        try:
+            _sys_chars = len(system_prompt) if system_prompt else 0
+            _ep_chars = sum(len(m.get("content", "")) for m in episodic_prefix)
+            _ck_chars = sum(len(m.get("content", "")) for m in chunk_prefix)
+            _hist_chars = sum(len(m.get("content", "")) for m in history_block)
+            _total_chars = _sys_chars + _ep_chars + _ck_chars + _hist_chars + len(text)
+            _total_msgs = len(messages)
+            from backend.core.logging_config import get_agent_logger
+
+            get_agent_logger().info(
+                "Context assembly",
+                total_chars=_total_chars,
+                total_messages=_total_msgs,
+                sys_chars=_sys_chars,
+                episodic_chars=_ep_chars,
+                chunk_chars=_ck_chars,
+                history_chars=_hist_chars,
+                current_turn=len(text),
+                episodic_count=len(episodic_prefix),
+                chunk_count=len(chunk_prefix),
+                history_turns=len(history_block),
+            )
+        except Exception:
+            pass
+
         # ── MCM Protocol: MITO tag injection + DCP prune ─────────────────
         if self._mcm_orch is not None:
             try:
@@ -1891,6 +1917,23 @@ class AgentKernel:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        # ── Telemetry: log API request shape (not content) ──────────
+        try:
+            _msg_count = len(messages)
+            _total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            from backend.core.logging_config import get_agent_logger
+
+            get_agent_logger().info(
+                "API request",
+                provider=self._model_provider,
+                model=sel,
+                messages=_msg_count,
+                chars=_total_chars,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception:
+            pass
 
         if chunk_callback:
             # Streaming path
