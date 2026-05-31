@@ -1,8 +1,34 @@
 {
-  "mode": "personal",
-  "active_provider": "api",
-  "reasoning_model": "MiniMaxAI/MiniMax-M2.5-TEE",
-  "tool_execution_model": "MiniMaxAI/MiniMax-M2.5-TEE",
-  "api_base_url": "https://llm.chutes.ai/v1",
-  "api_key": "cpk_2405c119f86644f281a4865ac95af4b3.2727f25f2cce5bb690b83ed0d9628923.5RCdRtXb0eKDpGkoutAeeW50KOOtaxmG"
+  "routing": {
+    "mode": "SINGLE_API",
+    "director_source": "api"
+  },
+  "inference": {
+    "provider": "chutes",
+    "reasoning_model": "MiniMaxAI/MiniMax-M2.5-TEE",
+    "tool_execution_model": "",
+    "api_base_url": "https://llm.chutes.ai/v1",
+    "api_key": "cpk_2405c119f86644f281a4865ac95af4b3.2727f25f2cce5bb690b83ed0d9628923.5RCdRtXb0eKDpGkoutAeeW50KOOtaxmG",
+    "lm_studio_url": "http://localhost:1234",
+    "ollama_url": "http://localhost:11434",
+    "local_model_path": "models/gguf/bartowski/prism-ml_Bonsai-8B-unpacked-Q3_K_M.gguf",
+    "local_model_id": "apothic/bonsai-8B-1bit-turboquant",
+    "models_directory": "C:/Users/midas/.lmstudio/models",
+    "hardware_profile": "balanced",
+    "temperature": 0.6,
+    "max_tokens": 8192,
+    "reasoning_effort": "balanced",
+    "response_length": "medium",
+    "thinking_style": "balanced",
+    "tool_mode": "auto",
+    "swarm_enabled": false,
+    "swarm_mode": "SWARM_TURBO",
+    "swarm_worker_count": 2,
+    "gpu_layers": 99,
+    "worker_context": "auto"
+  },
+  "system": {
+    "mode": "personal",
+    "projects": []
+  }
 }

@@ -18,7 +18,7 @@ from .model_router import ModelRouter
 from .tool_bridge import AgentToolBridge
 from ..llm_service import llm as _llm
 from . import streaming as _streaming
-from typing import Any, Dict, Optional, List, Callable
+from typing import Any, Dict, Optional, List, Callable, Tuple
 import json
 import asyncio
 import logging
@@ -196,10 +196,10 @@ class AgentKernel:
         self._context_control_handler = None
 
         # ── Inference behaviour fields (wired from inference_mode card) ──
-        self._thinking_style: str = "balanced"       # concise | balanced | thorough
-        self._response_length: str = "medium"        # short | medium | long
-        self._reasoning_effort: str = "balanced"     # fast | balanced | accurate
-        self._tool_mode: str = "auto"                # auto | ask_first | disabled
+        self._thinking_style: str = "balanced"  # concise | balanced | thorough
+        self._response_length: str = "medium"  # short | medium | long
+        self._reasoning_effort: str = "balanced"  # fast | balanced | accurate
+        self._tool_mode: str = "auto"  # auto | ask_first | disabled
 
         # Launcher mode: "personal" (default) or "developer"
         # Developer mode injects PROJECT.md into every system prompt so the
@@ -842,7 +842,9 @@ class AgentKernel:
         return _streaming.extract_chunk_text(chunk)
 
     @staticmethod
-    def _safe_stream(resp, silence_timeout=1.5, total_timeout=90.0, on_first_token=None):
+    def _safe_stream(
+        resp, silence_timeout=1.5, total_timeout=90.0, on_first_token=None
+    ):
         """Delegate to streaming module."""
         yield from _streaming.safe_stream(
             resp,
@@ -881,7 +883,21 @@ class AgentKernel:
 
     def _is_api_provider(self) -> bool:
         """Return True if the user selected a remote API provider."""
-        return self._model_provider == "api"
+        if self._model_provider == "api":
+            return True
+        # New named API providers (Cohere, DeepSeek, Anthropic, etc.)
+        _api_providers = frozenset(
+            {
+                "opencodego",
+                "cohere",
+                "deepseek",
+                "anthropic",
+                "chutes",
+                "cerebras",
+                "lmstudio",
+            }
+        )
+        return self._model_provider in _api_providers
 
     def configure_inprocess_local(self, mgr: Any) -> None:
         """Bind (or unbind) a `LocalModelManager` for in-process inference.
@@ -1439,7 +1455,9 @@ class AgentKernel:
     # Context budget for direct responses. Keeps the most recent history
     # within the model's 32k window, leaving ~8k for system prompt + response.
     # With episodic injection headroom this sits at ~20k chat tokens max.
-    _DIRECT_CTX_BUDGET: int = 24_000  # tokens (supports 12k context + system + response)
+    _DIRECT_CTX_BUDGET: int = (
+        24_000  # tokens (supports 12k context + system + response)
+    )
 
     def _count_tokens(self, messages: List[Dict]) -> int:
         return (
@@ -1685,12 +1703,15 @@ class AgentKernel:
     ) -> str:
         """
         Respond directly to the user without planning or tool execution.
-        This is the default path for all conversational and non-tool messages.
+        Routes to the right backend provider based on IRISConfig routing mode
+        or auto-detected provider type.
 
         Context uses all three memory layers (see CONTEXT_ENGINEERING.md):
           Layer 1: Mycelium coordinates → system prompt
           Layer 2: Episodic store       → memory block prefix
           Layer 3: Full history         → token-aware (not a hard roll window)
+
+        Returns: response text string.
         """
         messages = self._assemble_direct_context(text, context)
         messages = self._sanitize_messages(messages)
@@ -1704,221 +1725,436 @@ class AgentKernel:
         )
         _reasoning_effort_val = getattr(self, "_reasoning_effort", "balanced")
 
-        try:
-            # LM Studio (OpenAI-compatible)
-            if self._is_openai_compat():
-                client = self._get_lmstudio_client()
-                sel = self._selected_reasoning_model or "local-model"
-                # Only enable thinking for complex queries — skips 300-1000 extra tokens
-                # for simple conversational messages, cutting latency from ~30s → ~5s.
-                use_thinking = self._needs_thinking(text)
+        # === Load IRISConfig for routing ===
+        config_mode = getattr(self, "_config_mode", None)
+        config = None
+        if not config_mode:
+            try:
+                from backend.iris_config import load_config
 
-                if chunk_callback:
-                    # Streaming implementation
-                    import time as _perf_t
+                config = load_config()
+                config_mode = config.routing.mode
+            except Exception as _cfg_err:
+                logger.warning(f"[RespondDirect] Config load failed: {_cfg_err}")
+                config_mode = "auto"
 
-                    _t0 = _perf_t.perf_counter()
-                    _create_kwargs = dict(
-                        model=sel,
-                        messages=messages,
-                        max_tokens=_max_tokens,
-                        temperature=_temperature,
-                        stream=True,
-                    )
-                    # chat_template_kwargs is LM Studio-specific — only add
-                    # it when targeting a local endpoint
-                    if self._lmstudio_endpoint and self._lmstudio_endpoint in (
-                        self._api_base_url or ""
-                    ):
-                        _create_kwargs["extra_body"] = {
-                            "chat_template_kwargs": {"enable_thinking": use_thinking}
-                        }
-                    resp = client.chat.completions.create(**_create_kwargs)
-                    full_reply = self._stream_and_collect(
-                        resp, chunk_callback, reasoning_callback
-                    )
-                    thinking, clean = self._parse_thinking(full_reply)
-                    self._pending_thinking = thinking
-                    _elapsed = _perf_t.perf_counter() - _t0
-                    _ctok = max(1, len(full_reply) // 4)
-                    _ptok = sum(len(m.get("content", "")) for m in messages) // 4
-                    self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    return clean or "(I see.)"
-                else:
-                    # Sync implementation
-                    import time as _perf_t
+        # === Config-driven dispatch: SINGLE_API ===
+        if config_mode == "SINGLE_API":
+            # Always load credentials and model from config when in SINGLE_API mode.
+            # _api_base_url defaults to "https://api.openai.com/v1" (non-empty),
+            # so a bare truthiness check would skip loading the config URL.
+            # The config URL always takes precedence when available.
+            if config:
+                if config.inference.api_base_url:
+                    self._api_base_url = config.inference.api_base_url
+                if config.inference.api_key:
+                    self._api_key = config.inference.api_key
+                if config.inference.reasoning_model:
+                    self._selected_reasoning_model = config.inference.reasoning_model
+            response_text, thinking_text = self._dispatch_api(
+                messages,
+                _max_tokens,
+                _temperature,
+                _reasoning_effort_val,
+                chunk_callback=chunk_callback,
+                reasoning_callback=reasoning_callback,
+            )
+            self._pending_thinking = thinking_text
+            return response_text
 
-                    _t0 = _perf_t.perf_counter()
-                    resp = client.chat.completions.create(
-                        model=sel,
-                        messages=messages,
-                        max_tokens=_max_tokens,
-                        temperature=_temperature,
-                        extra_body={
-                            "chat_template_kwargs": {"enable_thinking": use_thinking}
-                        },
-                    )
-                    _elapsed = _perf_t.perf_counter() - _t0
-                    reply = resp.choices[0].message.content or ""
-                    thinking, clean = self._parse_thinking(reply)
-                    self._pending_thinking = thinking
-                    # Emit inference_event — use usage stats if available
-                    _usage = getattr(resp, "usage", None)
-                    _ptok = (
-                        _usage.prompt_tokens
-                        if _usage
-                        else sum(len(m.get("content", "")) for m in messages) // 4
-                    )
-                    _ctok = (
-                        _usage.completion_tokens if _usage else max(1, len(reply) // 4)
-                    )
-                    self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    return clean or "(I see.)"
+        # === Config-driven dispatch: SINGLE_LOCAL ===
+        if config_mode == "SINGLE_LOCAL":
+            response_text, thinking_text = self._dispatch_inprocess(
+                messages,
+                _max_tokens,
+                _temperature,
+                chunk_callback=chunk_callback,
+                reasoning_callback=reasoning_callback,
+            )
+            self._pending_thinking = thinking_text
+            return response_text
 
-            # Remote API provider (OpenAI, Groq, Cohere, etc.)
-            if self._is_api_provider():
-                sel = self._selected_reasoning_model or "local-model"
-                # Fallback: local-model names don't work with remote APIs.
-                if sel in (
-                    "local-model",
-                    "Currently Loaded Model",
-                    "currently-loaded-model",
-                ):
-                    sel = "command-a-03-2025"
-                use_thinking = self._needs_thinking(text)
+        # === Auto mode: per-provider detection ===
+        sel = self._selected_reasoning_model or "local-model"
 
-                # Build API call kwargs — Cohere reasoning models support
-                # reasoning_effort ("none" / "high") via the OpenAI compat API.
-                # Standard models ignore this parameter safely.
-                _api_kwargs: Dict[str, Any] = dict(
-                    model=sel,
-                    messages=messages,
-                    max_tokens=_max_tokens,
-                    temperature=_temperature,
-                    api_key=self._api_key,
-                    api_base=self._api_base_url,
-                )
-                # Map UI reasoning_effort to API reasoning_effort
-                if use_thinking and "reasoning" in sel.lower():
-                    _effort_map = {"fast": "low", "balanced": "medium", "accurate": "high"}
-                    _api_kwargs["reasoning_effort"] = _effort_map.get(
-                        _reasoning_effort_val, "medium"
-                    )
-                    # reasoning_effort="high" requires temperature=1 per Cohere docs
-                    if _api_kwargs["reasoning_effort"] == "high":
-                        _api_kwargs["temperature"] = 1.0
+        # LM Studio (OpenAI-compatible)
+        if self._is_openai_compat():
+            use_thinking = self._needs_thinking(text)
+            response_text, thinking_text = self._dispatch_openai_compat(
+                messages,
+                _max_tokens,
+                _temperature,
+                _reasoning_effort_val,
+                chunk_callback=chunk_callback,
+                reasoning_callback=reasoning_callback,
+            )
+            self._pending_thinking = thinking_text
+            # Timing is handled inside _dispatch_openai_compat
+            return response_text
 
-                if chunk_callback:
-                    import time as _perf_t
+        # Remote API provider (OpenAI, Groq, Cohere, etc.)
+        if self._is_api_provider():
+            response_text, thinking_text = self._dispatch_api(
+                messages,
+                _max_tokens,
+                _temperature,
+                _reasoning_effort_val,
+                chunk_callback=chunk_callback,
+                reasoning_callback=reasoning_callback,
+            )
+            self._pending_thinking = thinking_text
+            return response_text
 
-                    _t0 = _perf_t.perf_counter()
-                    _api_kwargs["stream"] = True
-                    try:
-                        resp = _llm.complete(**_api_kwargs)
-                    except Exception as _api_err:
-                        logger.error(
-                            f"[API_DEBUG] LiteLLM call failed: {type(_api_err).__name__}: {_api_err}"
-                        )
-                        thinking, clean = self._parse_thinking("")
-                        chunk_callback(
-                            f"IRIS error: could not reach language model — {type(_api_err).__name__}"
-                        )
-                        return (
-                            clean
-                            or f"[IRIS error: {type(_api_err).__name__}: {str(_api_err)[:200]}]"
-                        )
-                    full_reply = self._stream_and_collect(
-                        resp, chunk_callback, reasoning_callback
-                    )
-                    thinking, clean = self._parse_thinking(full_reply)
-                    self._pending_thinking = thinking
-                    _elapsed = _perf_t.perf_counter() - _t0
-                    _ctok = max(1, len(full_reply) // 4)
-                    _ptok = sum(len(m.get("content", "")) for m in messages) // 4
-                    logger.info(
-                        f"[API_TIMING] model={sel} elapsed={_elapsed:.2f}s "
-                        f"reply_len={len(full_reply)} ctok={_ctok}"
-                    )
-                    self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    return clean or "(I see.)"
-                else:
-                    import time as _perf_t
+        # Ollama (model IDs contain ":")
+        if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
+            import requests as _req
 
-                    _t0 = _perf_t.perf_counter()
-                    resp = _llm.complete(**_api_kwargs)
-                    _elapsed = _perf_t.perf_counter() - _t0
-                    reply = resp.choices[0].message.content or ""
-                    thinking, clean = self._parse_thinking(reply)
-                    self._pending_thinking = thinking
-                    _usage = getattr(resp, "usage", None)
-                    _ptok = (
-                        _usage.prompt_tokens
-                        if _usage
-                        else sum(len(m.get("content", "")) for m in messages) // 4
-                    )
-                    _ctok = (
-                        _usage.completion_tokens if _usage else max(1, len(reply) // 4)
-                    )
-                    self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                    return clean or "(I see.)"
-
-            # Ollama (model IDs contain ":")
-            if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
-                import requests as _req
-
-                r = _req.post(
-                    "http://localhost:11434/api/chat",
-                    json={
-                        "model": self._selected_reasoning_model,
-                        "messages": messages,
-                        "stream": False,
-                    },
-                    timeout=30,
-                )
-                if r.status_code == 200:
-                    reply = r.json().get("message", {}).get("content", "")
-                    thinking, clean = self._parse_thinking(reply)
-                    self._pending_thinking = thinking
-                    return clean
-
-            # Local loaded model
-            reasoning_model = None
-            if self._model_router and self._selected_reasoning_model:
-                reasoning_model = self._model_router.models.get(
-                    self._selected_reasoning_model
-                )
-            if not reasoning_model and self._model_router:
-                reasoning_model = self._model_router.get_reasoning_model()
-            if reasoning_model:
-                reply = reasoning_model.generate(text)
+            r = _req.post(
+                "http://localhost:11434/api/chat",
+                json={
+                    "model": self._selected_reasoning_model,
+                    "messages": messages,
+                    "stream": False,
+                },
+                timeout=30,
+            )
+            if r.status_code == 200:
+                reply = r.json().get("message", {}).get("content", "")
                 thinking, clean = self._parse_thinking(reply)
                 self._pending_thinking = thinking
                 return clean
 
-            # No provider matched — this session's kernel has not been configured yet.
-            # Return an informative message instead of None (which causes a TypeError
-            # in the caller when it tries response[:50]).
-            logger.error(
-                f"[AgentKernel] _respond_direct: no model provider matched for session "
-                f"'{self.session_id}' (provider={self._model_provider!r}, "
-                f"model={self._selected_reasoning_model!r}). "
-                "Was set_model_selection() called for this session?"
+        # Local loaded model
+        reasoning_model = None
+        if self._model_router and self._selected_reasoning_model:
+            reasoning_model = self._model_router.models.get(
+                self._selected_reasoning_model
             )
-            return (
-                "I'm not connected to a language model yet. "
-                "Please select a model in IRIS settings and try again."
-            )
+        if not reasoning_model and self._model_router:
+            reasoning_model = self._model_router.get_reasoning_model()
+        if reasoning_model:
+            reply = reasoning_model.generate(text)
+            thinking, clean = self._parse_thinking(reply)
+            self._pending_thinking = thinking
+            return clean
 
-        except Exception as e:
-            if "Model reloaded" in str(e):
-                logger.warning(
-                    f"[AgentKernel] LM Studio model reloaded during request: {e}. Generating fallback response."
+        # No provider matched
+        logger.error(
+            f"[AgentKernel] _respond_direct: no model provider matched for session "
+            f"'{self.session_id}' (provider={self._model_provider!r}, "
+            f"model={self._selected_reasoning_model!r}). "
+            "Was set_model_selection() called for this session?"
+        )
+        return (
+            "I'm not connected to a language model yet. "
+            "Please select a model in IRIS settings and try again."
+        )
+
+    # ------------------------------------------------------------------ #
+    # Dispatch methods
+    # ------------------------------------------------------------------ #
+
+    def _dispatch_api(
+        self,
+        messages: List[Dict],
+        max_tokens: int,
+        temperature: float,
+        reasoning_effort: str = "balanced",
+        chunk_callback: Optional[Callable[[str], None]] = None,
+        reasoning_callback: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[str, str]:
+        """Remote API provider — direct httpx streaming (Chutes, OpenAI, etc.).
+
+        Uses httpx directly instead of _llm.complete() to avoid thread-pool hangs.
+        Returns (response_text, thinking_text).
+
+        Raises RuntimeError on API errors — no silent error swallowing.
+        """
+        import json as _json
+        import time as _perf_t
+        import httpx as _httpx
+
+        _api_base = self._api_base_url or "https://api.openai.com/v1"
+        _api_key = self._api_key or ""
+        sel = self._selected_reasoning_model or "local-model"
+        if sel in ("local-model", "Currently Loaded Model", "currently-loaded-model"):
+            sel = "command-a-03-2025"
+
+        _url = f"{_api_base.rstrip('/')}/chat/completions"
+        _headers = {
+            "Authorization": f"Bearer {_api_key}",
+            "Content-Type": "application/json",
+        }
+        _body = {
+            "model": sel,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        if chunk_callback:
+            # Streaming path
+            _t0 = _perf_t.perf_counter()
+            full_reply = ""
+            _reasoning_buf: List[str] = []
+
+            with _httpx.Client(timeout=_httpx.Timeout(60.0)) as _client:
+                with _client.stream(
+                    "POST", _url, headers=_headers, json={**_body, "stream": True}
+                ) as _resp:
+                    if _resp.status_code != 200:
+                        # Streaming response: reading .text raises ResponseNotRead
+                        # because httpx hasn't consumed the body yet. Read the first
+                        # chunk manually for the error detail.
+                        try:
+                            _first = next(_resp.iter_bytes(), b"")
+                            _err_detail = _first[:200].decode("utf-8", errors="replace")
+                        except Exception:
+                            _err_detail = "(could not read error body)"
+                        raise RuntimeError(
+                            f"API returned {_resp.status_code}: {_err_detail}"
+                        )
+                    for _line in _resp.iter_lines():
+                        if not _line or not _line.startswith("data:"):
+                            continue
+                        _data = _line[5:].strip()
+                        if _data == "[DONE]":
+                            break
+                        # Let JSONDecodeError propagate on malformed data
+                        _chunk = _json.loads(_data)
+                        _choices = _chunk.get("choices", [])
+                        if not _choices:
+                            continue
+                        _delta = _choices[0].get("delta", {})
+
+                        # Reasoning content — field name varies by provider
+                        _r = _delta.get("reasoning_content") or _delta.get("reasoning")
+                        if _r:
+                            _reasoning_buf.append(_r)
+                            if reasoning_callback:
+                                reasoning_callback(_r)
+
+                        # Text content
+                        _c = _delta.get("content")
+                        if _c:
+                            full_reply += _c
+                            if chunk_callback:
+                                chunk_callback(_c)
+
+            reasoning_text = "".join(_reasoning_buf)
+            if reasoning_callback:
+                reasoning_callback("")  # end marker
+            if chunk_callback:
+                chunk_callback("")  # force-flush
+
+            # Reasoning fallback: some models return answer in reasoning_content
+            # with empty content. When using reasoning fallback, skip _parse_thinking
+            # since the reasoning IS the answer (preamble stripping would kill it).
+            if not full_reply.strip() and reasoning_text.strip():
+                _elapsed = _perf_t.perf_counter() - _t0
+                _ctok = max(1, len(reasoning_text) // 4)
+                _ptok = sum(len(m.get("content", "")) for m in messages) // 4
+                self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
+                return reasoning_text, reasoning_text
+
+            thinking, clean = self._parse_thinking(full_reply)
+            _elapsed = _perf_t.perf_counter() - _t0
+            _ctok = max(1, len(full_reply) // 4)
+            _ptok = sum(len(m.get("content", "")) for m in messages) // 4
+            self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
+            return clean or "(I see.)", thinking
+
+        else:
+            # Non-streaming path
+            with _httpx.Client(timeout=_httpx.Timeout(60.0)) as _client:
+                _resp = _client.post(_url, headers=_headers, json=_body)
+                if _resp.status_code != 200:
+                    raise RuntimeError(
+                        f"API returned {_resp.status_code}: {_resp.text[:200]}"
+                    )
+                _result = _resp.json()
+                _reply = (
+                    _result.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
                 )
-                return (
-                    "My language model was just reloaded. Could you please repeat that?"
+
+            if not _reply:
+                raise RuntimeError("Empty response from API")
+
+            thinking, clean = self._parse_thinking(_reply)
+            return clean or "(I see.)", thinking
+
+    def _dispatch_openai_compat(
+        self,
+        messages: List[Dict],
+        max_tokens: int,
+        temperature: float,
+        reasoning_effort: str = "balanced",
+        chunk_callback: Optional[Callable[[str], None]] = None,
+        reasoning_callback: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[str, str]:
+        """LM Studio / local OpenAI-compatible endpoint — direct httpx streaming.
+
+        Similar to _dispatch_api but uses _lmstudio_endpoint and LM Studio's
+        Extra-body template hints. Returns (response_text, thinking_text).
+
+        Raises RuntimeError on API errors — no silent error swallowing.
+        """
+        import json as _json
+        import time as _perf_t
+        import httpx as _httpx
+
+        _api_base = self._lmstudio_endpoint or "http://localhost:1234"
+        sel = self._selected_reasoning_model or "local-model"
+        use_thinking = self._needs_thinking(
+            messages[-1].get("content", "") if messages else ""
+        )
+
+        _url = f"{_api_base.rstrip('/')}/v1/chat/completions"
+
+        # LM Studio may serve an older API path
+        _url_v1 = f"{_api_base.rstrip('/')}/chat/completions"
+
+        _body = {
+            "model": sel,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        # LM Studio-specific extra_body for thinking template hints
+        _body["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": use_thinking}
+        }
+
+        if chunk_callback:
+            # Streaming path
+            _t0 = _perf_t.perf_counter()
+            full_reply = ""
+            _reasoning_buf: List[str] = []
+
+            with _httpx.Client(timeout=_httpx.Timeout(60.0)) as _client:
+                # Try the standard v1 path, fall back to v1-less path for older LM Studio
+                for _try_url in [_url, _url_v1]:
+                    try:
+                        _resp = _client.stream(
+                            "POST",
+                            _try_url,
+                            headers={"Content-Type": "application/json"},
+                            json={**_body, "stream": True},
+                        )
+                        break
+                    except Exception:
+                        continue
+                else:
+                    raise RuntimeError(f"Could not connect to LM Studio at {_api_base}")
+
+                with _resp as _stream:
+                    if _stream.status_code != 200:
+                        raise RuntimeError(
+                            f"LM Studio returned {_stream.status_code}: {_stream.text[:200]}"
+                        )
+                    for _line in _stream.iter_lines():
+                        if not _line or not _line.startswith("data:"):
+                            continue
+                        _data = _line[5:].strip()
+                        if _data == "[DONE]":
+                            break
+                        _chunk = _json.loads(_data)
+                        _choices = _chunk.get("choices", [])
+                        if not _choices:
+                            continue
+                        _delta = _choices[0].get("delta", {})
+
+                        _r = _delta.get("reasoning_content") or _delta.get("reasoning")
+                        if _r:
+                            _reasoning_buf.append(_r)
+                            if reasoning_callback:
+                                reasoning_callback(_r)
+
+                        _c = _delta.get("content")
+                        if _c:
+                            full_reply += _c
+                            if chunk_callback:
+                                chunk_callback(_c)
+
+            reasoning_text = "".join(_reasoning_buf)
+            if reasoning_callback:
+                reasoning_callback("")
+            if chunk_callback:
+                chunk_callback("")
+
+            if not full_reply.strip() and reasoning_text.strip():
+                return reasoning_text, reasoning_text
+
+            thinking, clean = self._parse_thinking(full_reply)
+            return clean or "(I see.)", thinking
+
+        else:
+            # Non-streaming path
+            with _httpx.Client(timeout=_httpx.Timeout(60.0)) as _client:
+                for _try_url in [_url, _url_v1]:
+                    try:
+                        _resp = _client.post(
+                            _try_url,
+                            headers={"Content-Type": "application/json"},
+                            json=_body,
+                        )
+                        if _resp.status_code < 500:
+                            break
+                    except Exception:
+                        continue
+                else:
+                    raise RuntimeError(f"Could not connect to LM Studio at {_api_base}")
+
+                if _resp.status_code != 200:
+                    raise RuntimeError(
+                        f"LM Studio returned {_resp.status_code}: {_resp.text[:200]}"
+                    )
+                _result = _resp.json()
+                _reply = (
+                    _result.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
                 )
-            logger.error(f"[AgentKernel] Direct response error: {e}", exc_info=True)
-            raise
+
+            if not _reply:
+                raise RuntimeError("Empty response from LM Studio")
+
+            thinking, clean = self._parse_thinking(_reply)
+            return clean or "(I see.)", thinking
+
+    def _dispatch_inprocess(
+        self,
+        messages: List[Dict],
+        max_tokens: int,
+        temperature: float,
+        chunk_callback: Optional[Callable[[str], None]] = None,
+        reasoning_callback: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[str, str]:
+        """Local in-process model inference.
+
+        Uses the locally loaded model (via _model_router / get_reasoning_model()).
+        Falls back to the old `reasoning_model.generate()` if chunk_callback is None.
+        Returns (response_text, thinking_text).
+        """
+        reasoning_model = None
+        if self._model_router and self._selected_reasoning_model:
+            reasoning_model = self._model_router.models.get(
+                self._selected_reasoning_model
+            )
+        if not reasoning_model and self._model_router:
+            reasoning_model = self._model_router.get_reasoning_model()
+
+        if not reasoning_model:
+            raise RuntimeError("No local model loaded")
+
+        reply = reasoning_model.generate(
+            messages[-1].get("content", "") if messages else ""
+        )
+        thinking, clean = self._parse_thinking(reply)
+        return clean or "(I see.)", thinking
 
     # Word count above which we consider a reply "long" for TTS purposes.
     # Only applied to DOCUMENT-like content; conversational replies are always spoken in full.
@@ -2349,16 +2585,21 @@ class AgentKernel:
 
         # Stage 1 observability: per-turn metrics (created early so error paths can log)
         import uuid
+
         task_id = turn_id or str(uuid.uuid4())
         metrics = TurnMetrics(turn_id=task_id)
         try:
             from backend.gateway.iris_ffi import _engine
-            metrics.engine = "native" if (_engine and getattr(_engine, "_ffi", None)) else "fallback"
+
+            metrics.engine = (
+                "native" if (_engine and getattr(_engine, "_ffi", None)) else "fallback"
+            )
         except Exception:
             metrics.engine = "fallback"
 
         # Wrap chunk_callback to mark TTFT on first contentful chunk
         _original_chunk_cb = chunk_callback
+
         def _wrapped_chunk_cb(chunk: str):
             metrics.mark_first_token()
             if _original_chunk_cb:
@@ -2420,9 +2661,10 @@ class AgentKernel:
             except Exception as e:
                 logger.error(f"[AgentKernel] LLM call failed: {e}")
                 logger.info(metrics.to_log_line())
-                return (
-                    f"[IRIS error: could not reach language model — {type(e).__name__}]"
-                )
+                # Re-raise so the caller (_execute_agent in iris_gateway.py)
+                # handles it with structured logging and sends a visible
+                # error to the UI. No silent error swallowing.
+                raise
             # Never store error or empty responses in conversation memory.
             # They break role alternation and accumulate into garbage context
             # on subsequent turns, causing Cohere/OpenAI 400 errors.
@@ -2574,7 +2816,20 @@ class AgentKernel:
             logger.warning(
                 f"[AgentKernel] DER path error (falling back to ReAct): {_der_err}"
             )
-            _der_response = None
+            # Also log to structured logger so error appears in irisvoice.log
+            try:
+                from backend.core.logging_config import get_agent_logger
+
+                get_agent_logger().warning(
+                    "DER path error",
+                    error=str(_der_err),
+                    error_type=type(_der_err).__name__,
+                )
+            except Exception:
+                pass
+            # Store the actual error in _der_response so the error path below
+            # can surface it to the user instead of a generic message.
+            _der_response = f"[IRIS error: {_der_err}]"
 
         if _der_response is not None:
             # Only accept DER response if it produced actual content.
@@ -2588,33 +2843,87 @@ class AgentKernel:
             #   - "[step X completed]" or "[step X error:]" which mean
             #     the local execution model failed to produce content
             _der_text = _der_response.strip()
-            _is_empty = (
-                not _der_text
-                or ("[DER]" in _der_text[:20] and "0/" in _der_text[:50])
-                or _der_text.startswith("[step ")
-                and _der_text.endswith("completed]")
-                or _der_text.startswith("[step ")
-                and "error:" in _der_text
+            _is_empty = not _der_text or (
+                "[DER]" in _der_text[:20] and "0/" in _der_text[:50]
             )
-            if not _is_empty and not _der_response.startswith("[IRIS error:"):
+            if not _is_empty:
                 try:
                     self._conversation_memory.add_message("assistant", _der_response)
                 except Exception as _mem_exc:
                     loud_error(_mem_exc, "conversation_memory.add_message (der)")
                 metrics.path = "der"
-                logger.info(f"[AgentKernel] DER response: {_der_response[:50]}...")
+                logger.info(f"[AgentKernel] DER response: {_der_response[:200]}...")
                 logger.info(metrics.to_log_line())
+                # Log DER metrics to structured logger for verifiable backend data
+                try:
+                    from backend.core.logging_config import get_agent_logger
+
+                    get_agent_logger().info(
+                        "DER completed",
+                        path=metrics.path,
+                        der_steps=metrics.der_steps,
+                        pacman_store=metrics.pacman_store,
+                        pacman_recall=metrics.pacman_recall,
+                        xi=metrics.xi,
+                        traj_rows=metrics.traj_rows,
+                        map_events=metrics.map_events,
+                        ttft_ms=metrics.ttft_ms,
+                        e2e_ms=metrics.e2e_ms,
+                    )
+                except Exception:
+                    pass
                 return _der_response
 
         # DER produced empty/failed response — return error instead of
         # falling through to the agentic loop which would retry the API
         # call multiple times and leave the UI stuck in "thinking..." state.
         metrics.path = "der"
+
+        # Extract the actual error from the step error format:
+        # [step N error: {actual_error}]
+        _der_err_text = ""
+        if _der_response and "error:" in _der_response:
+            # Find the error after "error:" prefix
+            _err_match = _der_response.split("error:")[-1].strip().rstrip("]")
+            if _err_match and _err_match != _der_response:
+                _der_err_text = _err_match[:300]
+        try:
+            from backend.core.logging_config import get_agent_logger
+
+            get_agent_logger().warning(
+                "DER produced no response",
+                error=_der_err_text or "(no error detail)",
+            )
+        except Exception:
+            pass
         logger.warning(
-            "[AgentKernel] DER produced no response — returning error to user"
+            f"[AgentKernel] DER produced no response: {_der_err_text or '(empty)'}"
         )
         logger.info(metrics.to_log_line())
+
+        # Return specific error to user so they can fix it immediately
+        if _der_err_text:
+            return f"IRIS couldn't generate a response. API error: {_der_err_text}"
         return "IRIS couldn't generate a response. Please try again."
+        # Truncate to avoid leaking full traceback in chat
+        if len(_der_error_detail) > 200:
+            _der_error_detail = _der_error_detail[:200] + "..."
+        # Log to structured logger for diagnostics
+        try:
+            from backend.core.logging_config import get_agent_logger
+
+            get_agent_logger().warning(
+                "DER produced no response",
+                error=_der_error_detail,
+                error_type=getattr(type(_der_err), "__name__", "Unknown")
+                if "_der_err" in dir() and _der_err
+                else "NoError",
+            )
+        except Exception:
+            pass
+        logger.warning(f"[AgentKernel] DER produced no response: {_der_error_detail}")
+        logger.info(metrics.to_log_line())
+        return f"IRIS couldn't generate a response. Error: {_der_error_detail}"
 
     def plan_task(
         self, task_description: str, context: Optional[List[Dict[str, Any]]] = None

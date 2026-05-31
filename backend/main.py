@@ -190,6 +190,15 @@ async def lifespan(app: FastAPI):
                 f"  - [CLEANUP] Session dir cleanup failed (non-fatal): {_ce}"
             )
 
+        # Kill any orphaned llama-server from previous crashes
+        try:
+            from .agent.local_model_manager import kill_orphan_servers
+
+            kill_orphan_servers()
+            logger.info("  - [CLEANUP] Orphaned llama-server processes killed")
+        except Exception:
+            pass
+
         logger.info("  - Starting session manager...")
         session_manager = get_session_manager()
         await session_manager.start()
@@ -647,6 +656,15 @@ async def lifespan(app: FastAPI):
         logger.info("  - Stopping all servers...")
         server_manager = get_server_manager()
         server_manager.stop_all_servers()
+
+        # Kill any orphaned llama-server processes before shutdown
+        try:
+            from .agent.local_model_manager import kill_orphan_servers
+
+            kill_orphan_servers()
+            logger.info("  - [CLEANUP] Orphaned llama-server processes killed")
+        except Exception:
+            pass
 
         logger.info("IRIS Backend shutdown completed successfully!")
     except Exception as e:
@@ -1317,6 +1335,99 @@ async def api_network_qrcode(url: str):
     from fastapi import Response as FastAPIResponse
 
     return FastAPIResponse(content=png_bytes, media_type="image/png")
+
+
+# ============================================================================
+# Model Browser API
+# ============================================================================
+
+
+@app.get("/api/models")
+async def api_list_models():
+    """List available GGUF models scanned from the configured models directory."""
+    try:
+        from .agent.local_model_manager import get_local_model_manager
+
+        mgr = get_local_model_manager()
+        models = mgr.scan_models()
+        return {
+            "models": models,
+            "models_dir": str(mgr.effective_models_dir),
+        }
+    except Exception as e:
+        from fastapi.responses import JSONResponse
+        import traceback
+
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "traceback": traceback.format_exc()},
+        )
+
+
+@app.post("/api/models/load")
+async def api_load_model(body: dict):
+    """Load a GGUF model. Body: { path, profile? }
+    Blocks until loaded; progress is broadcast via WebSocket model_load_progress events.
+    """
+    from .agent.local_model_manager import get_local_model_manager
+    from backend.ws_manager import get_websocket_manager
+
+    mgr = get_local_model_manager()
+    ws = get_websocket_manager()
+    model_path = (body.get("path") or "").strip()
+    if not model_path:
+        return {"status": "error", "message": "No model path provided"}
+    profile = body.get("profile", "balanced")
+
+    async def _progress_cb(event: dict):
+        """Broadcast load progress to all connected WebSocket clients."""
+        try:
+            await ws.broadcast(
+                {
+                    "type": "model_load_progress",
+                    "percent": event.get("pct", 0),
+                    "message": event.get("msg", ""),
+                    "phase": event.get("phase", ""),
+                }
+            )
+        except Exception:
+            pass
+
+    try:
+        await mgr.load_model(model_path, profile=profile, progress_cb=_progress_cb)
+        # Signal completion
+        await ws.broadcast(
+            {
+                "type": "model_load_progress",
+                "percent": 100,
+                "message": f"Model loaded ({profile})",
+                "phase": "done",
+            }
+        )
+        return {"status": "ok", "message": f"Model loaded (profile={profile})"}
+    except Exception as e:
+        await ws.broadcast(
+            {
+                "type": "model_load_progress",
+                "percent": 100,
+                "message": f"Error: {e}",
+                "phase": "error",
+            }
+        )
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/models/unload")
+async def api_unload_model():
+    """Unload the currently loaded GGUF model."""
+    from .agent.local_model_manager import get_local_model_manager
+
+    mgr = get_local_model_manager()
+    try:
+        await mgr.unload_model()
+        return {"status": "ok", "message": "Model unloaded"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # ============================================================================

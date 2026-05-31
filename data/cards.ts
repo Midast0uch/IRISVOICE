@@ -190,28 +190,48 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'model_provider',
           type: 'dropdown',
           label: 'Provider',
-          options: ['lmstudio', 'api', 'vps', 'iris_local'],
-          defaultValue: 'lmstudio'
+          options: [
+            { label: 'OpenCodeGo', value: 'opencodego' },
+            { label: 'Cerebras', value: 'cerebras' },
+            { label: 'Chutes AI', value: 'chutes' },
+            { label: 'Cohere', value: 'cohere' },
+            { label: 'DeepSeek', value: 'deepseek' },
+            { label: 'Anthropic', value: 'anthropic' },
+            { label: 'Local', value: 'local' },
+            { label: 'LM Studio', value: 'lmstudio' },
+          ],
+          defaultValue: 'opencodego'
+        },
+        {
+          id: 'api_key',
+          type: 'text',
+          label: 'API Key',
+          placeholder: 'sk-...',
+          defaultValue: '',
+          showIf: { field: 'model_provider', values: ['opencodego', 'cerebras', 'chutes', 'cohere', 'deepseek', 'anthropic'] }
         },
         {
           id: 'use_same_model',
           type: 'toggle',
           label: 'Use Same Model for Both',
-          defaultValue: true
+          defaultValue: true,
+          showIf: { field: 'model_provider', values: ['opencodego', 'cerebras', 'chutes', 'cohere', 'deepseek', 'anthropic'] }
         },
         {
           id: 'reasoning_model',
           type: 'dropdown',
           label: 'Reasoning Model',
-          options: [], // Populated dynamically
-          defaultValue: ''
+          options: [], // Populated dynamically by available_models event
+          defaultValue: '',
+          showIf: { field: 'model_provider', values: ['opencodego', 'cerebras', 'chutes', 'cohere', 'deepseek', 'anthropic'] }
         },
         {
           id: 'tool_model',
           type: 'dropdown',
           label: 'Tool Model',
           options: [], // Populated dynamically
-          defaultValue: ''
+          defaultValue: '',
+          showIf: { field: 'model_provider', values: ['opencodego', 'cerebras', 'chutes', 'cohere', 'deepseek', 'anthropic'] }
         },
         {
           id: 'lmstudio_endpoint',
@@ -221,66 +241,6 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           defaultValue: 'http://localhost:1234',
           showIf: { field: 'model_provider', values: ['lmstudio'] }
         },
-        {
-          id: 'api_base_url',
-          type: 'text',
-          label: 'API Base URL',
-          placeholder: 'https://api.openai.com/v1',
-          defaultValue: 'https://api.openai.com/v1',
-          showIf: { field: 'model_provider', values: ['api', 'vps'] }
-        },
-        {
-          id: 'api_key',
-          type: 'text',
-          label: 'API Key',
-          placeholder: 'sk-...',
-          defaultValue: '',
-          showIf: { field: 'model_provider', values: ['api', 'vps'] }
-        },
-        // ── iris_local GGUF section ──────────────────────────────────────────
-        {
-          id: 'iris_local_model_path',
-          type: 'text',
-          label: 'Active GGUF Model',
-          placeholder: '(none — select in Models Browser)',
-          defaultValue: '',
-          showIf: { field: 'model_provider', values: ['iris_local'] }
-        },
-        {
-          id: 'iris_local_profile',
-          type: 'dropdown',
-          label: 'Hardware Profile',
-          options: ['eco', 'balanced', 'performance', 'voice_first', 'research', 'custom'],
-          defaultValue: 'balanced',
-          showIf: { field: 'model_provider', values: ['iris_local'] }
-        },
-        {
-          id: 'iris_local_ctx',
-          type: 'slider',
-          label: 'Context Length',
-          min: 1024,
-          max: 65536,
-          step: 1024,
-          defaultValue: 16384,
-          showIf: { field: 'model_provider', values: ['iris_local'] }
-        },
-        {
-          id: 'iris_local_gpu_layers',
-          type: 'slider',
-          label: 'GPU Offload (-1 = auto)',
-          min: -1,
-          max: 128,
-          step: 1,
-          defaultValue: -1,
-          showIf: { field: 'model_provider', values: ['iris_local'] }
-        },
-        {
-          id: 'browse_local_models',
-          type: 'button',
-          label: 'Browse & Manage Models',
-          action: 'open_models_screen',
-          showIf: { field: 'model_provider', values: ['iris_local'] }
-        }
       ]
     }
   ],
@@ -346,6 +306,58 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           step: 1024,
           defaultValue: 2048,
           showIf: { field: 'swarm_enabled', values: [true] }
+        },
+        {
+          id: 'models_directory',
+          type: 'text',
+          label: 'GGUF Models Directory',
+          placeholder: '~/.lmstudio/models',
+          defaultValue: '',
+          description: 'Directory where GGUF model files are scanned. Defaults to ~/.lmstudio/models from env IRIS_MODELS_DIR.'
+        },
+        // ── Local Inference (single model, not swarm) ────────────────────
+        {
+          id: 'iris_local_model_path',
+          type: 'text',
+          label: 'Selected Model',
+          placeholder: '(none — use Browse & Manage Models below)',
+          defaultValue: '',
+          showIf: { field: 'swarm_enabled', values: [false] }
+        },
+        {
+          id: 'iris_local_profile',
+          type: 'dropdown',
+          label: 'Hardware Profile',
+          options: ['eco', 'balanced', 'performance', 'voice_first', 'research', 'custom'],
+          defaultValue: 'balanced',
+          showIf: { field: 'swarm_enabled', values: [false] }
+        },
+        {
+          id: 'iris_local_ctx',
+          type: 'slider',
+          label: 'Context Length',
+          min: 1024,
+          max: 65536,
+          step: 1024,
+          defaultValue: 16384,
+          showIf: { field: 'swarm_enabled', values: [false] }
+        },
+        {
+          id: 'iris_local_gpu_layers',
+          type: 'slider',
+          label: 'GPU Offload (-1 = auto)',
+          min: -1,
+          max: 128,
+          step: 1,
+          defaultValue: -1,
+          showIf: { field: 'swarm_enabled', values: [false] }
+        },
+        {
+          id: 'browse_local_models',
+          type: 'button',
+          label: 'Browse & Manage Models',
+          action: 'open_models_screen',
+          showIf: { field: 'swarm_enabled', values: [false] }
         },
         {
           id: 'swarm_status',

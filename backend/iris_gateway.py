@@ -3,6 +3,7 @@ IRIS Gateway - WebSocket Message Router
 Routes incoming WebSocket messages to appropriate handlers based on message type.
 """
 
+from .iris_config import IRISConfig, load_config, save_config, InferenceConfig
 from .integrations import get_integration_handler
 from .tools.lfm_vl_provider import LFMVLProvider
 from .tools.cleanup_analyzer import CleanupAnalyzer
@@ -777,82 +778,12 @@ class IRISGateway:
 
                     # ── Provider routing (DELEGATED to model_selection) ──────
                     # The inference_mode card no longer has an "inference_mode"
-                    # field.  If the old field IS present (backwards-compat), use
-                    # it; otherwise skip provider configuration entirely so we
-                    # don't clobber what model_selection just set.
-                    _legacy_mode = values.get("inference_mode")
-                    if _legacy_mode is not None:
-                        _mode_map = {
-                            "lm studio": "lmstudio",
-                            "lmstudio": "lmstudio",
-                            "local models": "local",
-                            "local": "local",
-                            "vps gateway": "vps",
-                            "vps": "vps",
-                            "openai api": "api",
-                            "api": "api",
-                        }
-                        provider = _mode_map.get(
-                            str(_legacy_mode).lower().strip()
-                        )
-                        if provider is None:
-                            self._logger.info(
-                                f"[Session: {session_id}] Unknown inference_mode "
-                                f"'{_legacy_mode}' — skipping legacy provider configuration"
-                            )
-                        elif provider == "lmstudio":
-                            lms_ep = (
-                                values.get("lmstudio_endpoint", "http://localhost:1234")
-                                or "http://localhost:1234"
-                            )
-                            kernel.configure_lmstudio(lms_ep)
-                            kernel.configure_vps({"enabled": False})
-                            kernel.prewarm_lmstudio()
-                            self._logger.info(
-                                f"[Session: {session_id}] inference_mode confirmed → LM Studio {lms_ep}"
-                            )
-                        elif provider == "local":
-                            kernel.configure_ollama(
-                                values.get("ollama_endpoint", "http://localhost:11434")
-                                or "http://localhost:11434"
-                            )
-                            kernel.configure_vps({"enabled": False})
-                            self._logger.info(
-                                f"[Session: {session_id}] inference_mode confirmed → Ollama"
-                            )
-                        elif provider == "api":
-                            kernel.configure_api(
-                                values.get("openai_api_key", "") or "",
-                                values.get("api_base_url", "https://api.openai.com/v1")
-                                or "https://api.openai.com/v1",
-                            )
-                            kernel.configure_vps({"enabled": False})
-                            self._logger.info(
-                                f"[Session: {session_id}] inference_mode confirmed → Remote API"
-                            )
-                        elif provider == "vps":
-                            vps_ep = values.get("vps_url", "")
-                            if vps_ep:
-                                kernel.configure_vps(
-                                    {
-                                        "enabled": True,
-                                        "endpoints": [vps_ep],
-                                        "auth_token": values.get("vps_api_key") or None,
-                                    }
-                                )
-                                self._logger.info(
-                                    f"[Session: {session_id}] inference_mode confirmed → VPS {vps_ep}"
-                                )
-                        # Also refresh model list for the UI
-                        await self._handle_get_available_models(
-                            session_id, client_id, {}
-                        )
-                    else:
-                        self._logger.info(
-                            f"[Session: {session_id}] inference_mode card confirmed "
-                            f"(no legacy mode field — provider routing delegated to "
-                            f"model_selection section)"
-                        )
+                    # field. Provider routing is handled exclusively by the
+                    # model_selection section.
+                    self._logger.info(
+                        f"[Session: {session_id}] inference_mode card confirmed "
+                        f"(provider routing delegated to model_selection section)"
+                    )
 
                     # Apply swarm_enabled if present in inference_mode values
                     if "swarm_enabled" in values:
@@ -875,11 +806,71 @@ class IRISGateway:
                             except Exception:
                                 pass
 
-                    # Apply swarm_mode auto-configuration
-                    if swarm_on and "swarm_mode" in values:
+                    # ── Local / Swarm config — only applies when provider is iris_local ──
+                    # If the user selected an API provider, skip all inference_mode startup.
+                    current_provider = cfg.inference.provider if cfg else ""
+                    is_local = current_provider in ("local", "iris_local")
+
+                    if is_local and not swarm_on:
+                        _model_path = values.get("iris_local_model_path", "").strip()
+                        _profile = values.get("iris_local_profile", "balanced")
+                        _models_dir = values.get("models_directory", "").strip()
+
+                        # Persist to config so Load button in model browser knows what to load
+                        if _model_path:
+                            cfg.inference.local_model_path = _model_path
+                        cfg.inference.hardware_profile = _profile
+                        if _models_dir:
+                            cfg.inference.models_directory = _models_dir
+
+                        # Set models_directory on the manager so scan_models() finds models
+                        if _models_dir:
+                            from .agent.local_model_manager import (
+                                get_local_model_manager,
+                            )
+
+                            mgr = get_local_model_manager()
+                            mgr.set_models_directory(_models_dir)
+                            self._logger.info(
+                                f"[inference_mode] Models directory: {_models_dir}",
+                                extra={"session_id": session_id},
+                            )
+
+                        self._logger.info(
+                            f"[inference_mode] Local config saved — model not loaded. "
+                            f"Use Load button in model browser.",
+                            extra={"session_id": session_id},
+                        )
+
+                    # Only start swarm when using iris_local provider
+                    if is_local and swarm_on and "swarm_mode" in values:
                         mode = values.get("swarm_mode", "local_fast")
                         worker_ctx = int(values.get("worker_context", 2048))
                         try:
+                            # ── Guard: unload in-process model before spawning swarm ──
+                            try:
+                                from .agent.local_model_manager import (
+                                    get_local_model_manager,
+                                )
+
+                                _lm_mgr = get_local_model_manager()
+                                if _lm_mgr.is_loaded():
+                                    self._logger.info(
+                                        f"[inference_mode] Unloading in-process model "
+                                        f"before swarm spawn",
+                                        extra={"session_id": session_id},
+                                    )
+                                    await _lm_mgr.unload_model()
+                                    self._logger.info(
+                                        f"[inference_mode] In-process model unloaded OK",
+                                        extra={"session_id": session_id},
+                                    )
+                            except Exception as _ul_err:
+                                self._logger.warning(
+                                    f"[inference_mode] Failed to unload "
+                                    f"in-process model: {_ul_err}"
+                                )
+
                             mgr = SwarmInferenceManager()
                             cfg = mgr.apply_swarm_mode(mode, worker_ctx)
                             if mode == "api_director":
@@ -889,7 +880,7 @@ class IRISGateway:
                                     f"Director will use API, workers on GPU"
                                 )
                             else:
-                                mgr.start_swarm()
+                                await mgr.start_swarm()
                                 self._logger.info(
                                     f"[Session: {session_id}] Swarm started: "
                                     f"mode={cfg.mode.value}, director={cfg.director_model or 'API'}, "
@@ -927,7 +918,9 @@ class IRISGateway:
                                 import backend.agent.agent_kernel as _ak_mod
 
                                 _ak_mod._swarm_config_snapshot = {
-                                    "endpoint": _swarm_ep.rstrip("/").removesuffix("/v1"),
+                                    "endpoint": _swarm_ep.rstrip("/").removesuffix(
+                                        "/v1"
+                                    ),
                                     "reasoning_model": _dir_name,
                                     "tool_model": _wrk_name,
                                     "mode": cfg.mode.value,
@@ -941,7 +934,9 @@ class IRISGateway:
                                 # (e.g. one for the UI, one for integration). Ensure every
                                 # session kernel points to the swarm so chat messages
                                 # from any connection reach the local llama-server.
-                                from backend.agent.agent_kernel import _agent_kernel_instances
+                                from backend.agent.agent_kernel import (
+                                    _agent_kernel_instances,
+                                )
 
                                 for _sid, _k in _agent_kernel_instances.items():
                                     if _sid == session_id:
@@ -968,7 +963,8 @@ class IRISGateway:
                             # ── Defensive re-apply: if swarm is ON but provider drifted, fix it ──
                             if (
                                 swarm_on
-                                and getattr(kernel, "_model_provider", "") != "iris_local"
+                                and getattr(kernel, "_model_provider", "")
+                                != "iris_local"
                             ):
                                 self._logger.warning(
                                     f"[Session: {session_id}] Swarm ON but provider="
@@ -1018,6 +1014,28 @@ class IRISGateway:
                             f"[Session: {session_id}] Tool mode set to '{_tool_mode}'"
                         )
 
+                    # ── GGUF Models Directory ──
+                    # Allow user to override where local GGUF models are scanned from.
+                    # Empty string means keep default (env var / ~/.lmstudio/models).
+                    _models_dir = values.get("models_directory", "").strip()
+                    if _models_dir:
+                        self._logger.info(
+                            f"[Session: {session_id}] Setting models directory to '{_models_dir}'"
+                        )
+                        from .agent.local_model_manager import get_local_model_manager
+
+                        mgr = get_local_model_manager()
+                        mgr.set_models_directory(_models_dir)
+                        # Persist to config so it survives restart
+                        self._config.inference.models_directory = _models_dir
+                    elif "models_directory" in values:
+                        # Explicitly empty — clear override, revert to default
+                        from .agent.local_model_manager import get_local_model_manager
+
+                        mgr = get_local_model_manager()
+                        mgr.set_models_directory("")
+                        self._config.inference.models_directory = ""
+
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying inference_mode: {e}",
@@ -1052,8 +1070,32 @@ class IRISGateway:
                         extra={"session_id": session_id, "client_id": client_id},
                     )
 
-                    # Wire up the correct inference backend based on provider.
-                    if provider == "lmstudio":
+                    # ── Provider URL map ─────────────────────────────────────
+                    # Named providers with well-known endpoints.
+                    # Each maps to a base URL; the user only needs to provide an API key.
+                    PROVIDER_ENDPOINTS = {
+                        "opencodego": "https://opencode.ai/zen/go/v1",
+                        "cerebras": "https://api.cerebras.ai/v1",
+                        "chutes": "https://llm.chutes.ai/v1",
+                        # Cohere OpenAI-compatible API: https://docs.cohere.com/docs/compatibility-api
+                        "cohere": "https://api.cohere.ai/compatibility/v1",
+                        "deepseek": "https://api.deepseek.com",
+                        # Anthropic OpenAI-compatible API: https://platform.claude.com/docs/en/api/openai-sdk
+                        "anthropic": "https://api.anthropic.com/v1",
+                    }
+                    api_key = values.get("api_key", "") or ""
+
+                    if provider in PROVIDER_ENDPOINTS:
+                        # Named API provider — URL is pre-configured
+                        base_url = PROVIDER_ENDPOINTS[provider]
+                        kernel.configure_api(api_key, base_url)
+                        kernel.configure_vps({"enabled": False})
+                        self._logger.info(
+                            f"[Session: {session_id}] {provider} configured: {base_url}",
+                            extra={"session_id": session_id},
+                        )
+
+                    elif provider == "lmstudio":
                         # LM Studio / any OpenAI-compatible local server.
                         lms_endpoint = (
                             values.get("lmstudio_endpoint", "http://localhost:1234")
@@ -1069,72 +1111,22 @@ class IRISGateway:
                         # into VRAM now so cold-start delay doesn't hit the first message.
                         kernel.prewarm_lmstudio()
 
-                    elif provider == "local":
-                        # Ollama native API.
-                        ollama_endpoint = (
-                            values.get("ollama_endpoint", "http://localhost:11434")
-                            or "http://localhost:11434"
-                        )
-                        kernel.configure_ollama(ollama_endpoint)
-                        kernel.configure_vps({"enabled": False})
-                        self._logger.info(
-                            f"[Session: {session_id}] Ollama configured: {ollama_endpoint}",
-                            extra={"session_id": session_id},
-                        )
-
-                    elif provider == "api":
-                        # Remote OpenAI-compatible API (OpenAI, Groq, Together, OpenRouter, etc.)
-                        api_key = values.get("api_key", "") or ""
-                        api_base_url = (
-                            values.get("api_base_url", "https://api.openai.com/v1")
-                            or "https://api.openai.com/v1"
-                        )
-                        kernel.configure_api(api_key, api_base_url)
-                        kernel.configure_vps({"enabled": False})
-                        self._logger.info(
-                            f"[Session: {session_id}] Remote API configured: {api_base_url}",
-                            extra={"session_id": session_id},
-                        )
-
-                    elif provider == "vps":
-                        vps_endpoint = values.get("vps_endpoint", "")
-                        vps_token = values.get("vps_token", "")
-                        if vps_endpoint:
-                            kernel.configure_vps(
-                                {
-                                    "enabled": True,
-                                    "endpoints": [vps_endpoint],
-                                    "auth_token": vps_token or None,
-                                }
-                            )
-                            self._logger.info(
-                                f"[Session: {session_id}] VPS gateway configured: {vps_endpoint}",
-                                extra={"session_id": session_id},
-                            )
-
-                    elif provider == "iris_local":
-                        # IRIS-native local server on port 8082 (llama-cpp-python /
-                        # ik_llama.cpp, OpenAI-compatible). IRIS owns this server —
-                        # NOT LM Studio. Use configure_openai_compat so _model_provider
-                        # is set to "iris_local" and routing works correctly.
+                    elif provider in ("local", "iris_local"):
+                        # Local GGUF model — configure kernel for in-process endpoint.
+                        # Model loading is triggered separately via the Load button
+                        # in the model browser (POST /api/models/load).
                         from .agent.local_model_manager import get_local_model_manager
 
                         mgr = get_local_model_manager()
-                        # mgr.ENDPOINT already ends with /v1 — strip it so
-                        # _get_lmstudio_client() doesn't double up to /v1/v1/...
                         _iris_base = mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
                         kernel.configure_openai_compat(
                             _iris_base, provider_name="iris_local"
                         )
-                        # Restore in-process binding if a model is already
-                        # loaded — e.g. user flipped back to iris_local after
-                        # experimenting with another provider. No-op when
-                        # mgr.get_inprocess_client() returns None.
                         if hasattr(kernel, "configure_inprocess_local"):
                             kernel.configure_inprocess_local(mgr)
                         kernel.configure_vps({"enabled": False})
                         self._logger.info(
-                            f"[iris_local] Provider selected: {mgr.ENDPOINT} (session {session_id})",
+                            f"[Session: {session_id}] iris_local configured: {_iris_base}",
                             extra={"session_id": session_id},
                         )
 
@@ -1152,29 +1144,46 @@ class IRISGateway:
                             session_id, client_id, {}
                         )
 
-                    # Persist model config to iris_config.json so it survives
-                    # page refreshes and server restarts.
-                    _config_path = os.path.join(
-                        os.path.dirname(__file__), "..", "data", "iris_config.json"
-                    )
+                    # Persist model config via IRISConfig (single source of truth)
                     try:
-                        _existing = {}
-                        if os.path.exists(_config_path):
-                            with open(_config_path, "r") as _f:
-                                _existing = json.load(_f)
-                        _existing.update(
-                            {
-                                "active_provider": provider or "",
-                                "reasoning_model": reasoning or "",
-                                "tool_execution_model": tool_exec or "",
-                                "api_base_url": values.get("api_base_url", ""),
-                                "api_key": values.get("api_key", ""),
-                            }
-                        )
-                        with open(_config_path, "w") as _f:
-                            json.dump(_existing, _f, indent=2)
+                        from .iris_config import RoutingMode
+
+                        cfg = load_config()
+                        cfg.inference.provider = provider or ""
+                        cfg.inference.reasoning_model = reasoning or ""
+                        cfg.inference.tool_execution_model = tool_exec or ""
+                        # Derive base URL from provider name or use lmstudio_endpoint
+                        _provider_endpoints = {
+                            "opencodego": "https://opencode.ai/zen/go/v1",
+                            "cerebras": "https://api.cerebras.ai/v1",
+                            "chutes": "https://llm.chutes.ai/v1",
+                            "cohere": "https://api.cohere.ai/compatibility/v1",
+                            "deepseek": "https://api.deepseek.com",
+                            "anthropic": "https://api.anthropic.com/v1",
+                        }
+                        if provider in _provider_endpoints:
+                            cfg.inference.api_base_url = _provider_endpoints[provider]
+                            cfg.inference.api_key = values.get("api_key", "")
+                        elif provider == "lmstudio":
+                            cfg.inference.api_base_url = values.get(
+                                "lmstudio_endpoint", "http://localhost:1234"
+                            )
+                        elif provider in ("local", "iris_local"):
+                            # Local GGUF — endpoint is the in-process llama server
+                            cfg.inference.api_base_url = ""
+                            cfg.routing.mode = RoutingMode.SINGLE_LOCAL
+                            cfg.inference.provider = "local"
+                        # Routing: model_selection only handles API/endpoint providers.
+                        # LOCAL/SWARM routing is set by inference_mode confirm_card.
+                        if provider not in ("local", "iris_local"):
+                            cfg.routing.mode = RoutingMode.SINGLE_API
+                            # Force swarm OFF for API providers — prevents stale
+                            # swarm config from overriding the API provider selection
+                            # when the initial state is loaded from localStorage.
+                            cfg.inference.swarm_enabled = False
+                        save_config(cfg)
                         self._logger.info(
-                            f"[Session: {session_id}] Model config persisted to {_config_path}",
+                            f"[Session: {session_id}] Model config persisted via IRISConfig",
                             extra={"session_id": session_id},
                         )
                     except Exception as _e2:
@@ -2085,6 +2094,18 @@ class IRISGateway:
                 },
             )
 
+    async def _chat_heartbeat(self, client_id: str, interval: float = 5.0):
+        """Send periodic chat_heartbeat messages to keep the TCP layer alive
+        during long inference.  The frontend ignores this type."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._ws_manager.send_to_client(
+                    client_id, {"type": "chat_heartbeat", "payload": {}}
+                )
+            except Exception:
+                break
+
     async def _handle_chat(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -2141,33 +2162,81 @@ class IRISGateway:
 
                 # Process message in executor to avoid blocking event loop
                 loop = asyncio.get_running_loop()
+                # Refresh captured loop so callbacks always target the current one
+                self._main_loop = loop
                 _t_exec_start = _time.perf_counter()
 
                 def _execute_agent():
                     def _chunk_cb(chunk: str):
                         _loop = self._main_loop
                         if _loop and _loop.is_running():
-                            asyncio.run_coroutine_threadsafe(
-                                self._ws_manager.send_to_client(
-                                    client_id,
+                            try:
+                                _future = asyncio.run_coroutine_threadsafe(
+                                    self._ws_manager.send_to_client(
+                                        client_id,
+                                        {
+                                            "type": "chat_chunk",
+                                            "payload": {"chunk": chunk},
+                                        },
+                                    ),
+                                    _loop,
+                                )
+                                # Fire-and-forget: don't block the stream thread.
+                                # Delivery failures are handled by the reconnect buffer.
+                                _future.add_done_callback(
+                                    lambda f: (
+                                        None
+                                        if f.exception() is None
+                                        else self._ws_manager.buffer_message(
+                                            session_id,
+                                            {
+                                                "type": "chat_chunk",
+                                                "payload": {"chunk": chunk},
+                                            },
+                                        )
+                                    )
+                                )
+                            except Exception:
+                                self._ws_manager.buffer_message(
+                                    session_id,
                                     {"type": "chat_chunk", "payload": {"chunk": chunk}},
-                                ),
-                                _loop,
-                            )
+                                )
 
                     def _reasoning_cb(chunk: str):
                         _loop = self._main_loop
                         if _loop and _loop.is_running():
-                            asyncio.run_coroutine_threadsafe(
-                                self._ws_manager.send_to_client(
-                                    client_id,
+                            try:
+                                _future = asyncio.run_coroutine_threadsafe(
+                                    self._ws_manager.send_to_client(
+                                        client_id,
+                                        {
+                                            "type": "chat_reasoning",
+                                            "payload": {"chunk": chunk},
+                                        },
+                                    ),
+                                    _loop,
+                                )
+                                _future.add_done_callback(
+                                    lambda f: (
+                                        None
+                                        if f.exception() is None
+                                        else self._ws_manager.buffer_message(
+                                            session_id,
+                                            {
+                                                "type": "chat_reasoning",
+                                                "payload": {"chunk": chunk},
+                                            },
+                                        )
+                                    )
+                                )
+                            except Exception:
+                                self._ws_manager.buffer_message(
+                                    session_id,
                                     {
                                         "type": "chat_reasoning",
                                         "payload": {"chunk": chunk},
                                     },
-                                ),
-                                _loop,
-                            )
+                                )
 
                     try:
                         response = agent_kernel.process_text_message(
@@ -2179,11 +2248,22 @@ class IRISGateway:
                         )
                     except Exception as e:
                         self._logger.error(f"[Chat] Agent processing error: {e}")
+                        # Signal error to UI stream so user sees something before
+                        # the outer handler sends the final error message.
+                        _chunk_cb(f"\n[IRIS error: {type(e).__name__}: {str(e)[:200]}]")
                         raise
 
                     return response
 
-                response = await loop.run_in_executor(None, _execute_agent)
+                heartbeat_task = asyncio.create_task(self._chat_heartbeat(client_id))
+                try:
+                    response = await loop.run_in_executor(None, _execute_agent)
+                finally:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
 
                 _t_exec_end = _time.perf_counter()
                 _elapsed_ms = round((_t_exec_end - _t_exec_start) * 1000)
@@ -2231,7 +2311,9 @@ class IRISGateway:
                         "turn_id": turn_id,
                     },
                 }
-                _delivered = await self._ws_manager.send_to_client(client_id, _final_msg)
+                _delivered = await self._ws_manager.send_to_client(
+                    client_id, _final_msg
+                )
                 if not _delivered:
                     # Client disconnected mid-inference — buffer for replay on reconnect
                     self._ws_manager.buffer_message(session_id, _final_msg)
@@ -2247,7 +2329,29 @@ class IRISGateway:
                 await self._ws_manager.send_to_client(
                     client_id, {"type": "chat_typing", "payload": {"active": False}}
                 )
+                # Send error as chat_message so it appears in the chat UI
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "chat_message",
+                        "payload": {
+                            "role": "error",
+                            "content": f"Agent kernel error: {str(e)}",
+                            "timestamp": datetime.now().isoformat(),
+                            "turn_id": turn_id,
+                        },
+                    },
+                )
                 await self._send_error(client_id, f"Agent kernel error: {str(e)}")
+
+            # Flush any buffered chunks/messages that failed to send mid-inference.
+            # This ensures reconnecting clients get the full response replay.
+            try:
+                await self._ws_manager.flush_pending(session_id, client_id)
+            except Exception as _flush_err:
+                self._logger.debug(
+                    f"[Session: {session_id}] flush_pending failed: {_flush_err}"
+                )
 
         elif msg_type == "clear_chat":
             # Get AgentKernel for this session and clear conversation
@@ -2355,7 +2459,7 @@ class IRISGateway:
             lmstudio_endpoint = "http://localhost:1234"
 
             if session_state:
-                # inference_mode field lives in the 'inference_mode' section.
+                # model_provider field lives in the 'model_selection' section.
                 # The UI shows display values; normalise them to internal keys:
                 #   "LM Studio" / "lmstudio" → "lmstudio"
                 #   "Local Models" / "local"  → "local"   (Ollama)
@@ -2366,9 +2470,6 @@ class IRISGateway:
                     payload.get("model_provider")
                     or session_state.get_field_value(
                         "model_selection", "model_provider", ""
-                    )
-                    or session_state.get_field_value(
-                        "inference_mode", "inference_mode", "lmstudio"
                     )
                     or "lmstudio"
                 )
@@ -2387,15 +2488,11 @@ class IRISGateway:
                 )
                 vps_url = (
                     session_state.get_field_value("model_selection", "vps_url", "")
-                    or session_state.get_field_value("inference_mode", "vps_url", "")
                     or ""
                 )
                 openai_api_key = (
                     payload.get("api_key")  # override from frontend
                     or session_state.get_field_value("model_selection", "api_key", "")
-                    or session_state.get_field_value(
-                        "inference_mode", "openai_api_key", ""
-                    )
                     or ""
                 )
                 api_base_url = (
@@ -3067,15 +3164,9 @@ class IRISGateway:
                 lines = ["=== IRIS Diagnostics ===", ""]
 
                 # 1. Kernel provider + endpoint
-                lines.append(
-                    f"Provider: {kernel._model_provider}"
-                )
-                lines.append(
-                    f"Endpoint: {kernel._lmstudio_endpoint}"
-                )
-                lines.append(
-                    f"Swarm: {getattr(kernel, '_swarm_enabled', False)}"
-                )
+                lines.append(f"Provider: {kernel._model_provider}")
+                lines.append(f"Endpoint: {kernel._lmstudio_endpoint}")
+                lines.append(f"Swarm: {getattr(kernel, '_swarm_enabled', False)}")
                 lines.append(
                     f"Reasoning model: {kernel._selected_reasoning_model or 'None'}"
                 )
@@ -3086,6 +3177,7 @@ class IRISGateway:
 
                 # 2. llama-server processes
                 import subprocess as _sp
+
                 try:
                     result = _sp.run(
                         ["tasklist", "/FI", "IMAGENAME eq llama-server.exe"],
@@ -3098,8 +3190,11 @@ class IRISGateway:
                         # Try to extract port info from command line
                         try:
                             ps_result = _sp.run(
-                                ["powershell", "-Command",
-                                 "Get-NetTCPConnection -OwningProcess (Get-Process llama-server).Id -ErrorAction SilentlyContinue | Select-Object LocalPort"],
+                                [
+                                    "powershell",
+                                    "-Command",
+                                    "Get-NetTCPConnection -OwningProcess (Get-Process llama-server).Id -ErrorAction SilentlyContinue | Select-Object LocalPort",
+                                ],
                                 capture_output=True,
                                 text=True,
                                 timeout=5,
@@ -3119,8 +3214,11 @@ class IRISGateway:
                 # 3. GPU status
                 try:
                     gpu_result = _sp.run(
-                        ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,utilization.gpu",
-                         "--format=csv,noheader"],
+                        [
+                            "nvidia-smi",
+                            "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+                            "--format=csv,noheader",
+                        ],
                         capture_output=True,
                         text=True,
                         timeout=5,
@@ -3148,11 +3246,17 @@ class IRISGateway:
                 # Also populate troubleshoot with a quick summary
                 troubleshoot = []
                 if kernel._model_provider == "uninitialized":
-                    troubleshoot.append("ISSUE: Kernel provider is 'uninitialized'. Confirm Inference Mode settings.")
+                    troubleshoot.append(
+                        "ISSUE: Kernel provider is 'uninitialized'. Confirm Inference Mode settings."
+                    )
                 if not getattr(kernel, "_swarm_enabled", False):
-                    troubleshoot.append("NOTE: Swarm is disabled. Enable in Inference Mode for local GPU inference.")
+                    troubleshoot.append(
+                        "NOTE: Swarm is disabled. Enable in Inference Mode for local GPU inference."
+                    )
                 if kernel._model_provider == "api":
-                    troubleshoot.append("WARNING: Using remote API. Local swarm NOT active.")
+                    troubleshoot.append(
+                        "WARNING: Using remote API. Local swarm NOT active."
+                    )
                 if not troubleshoot:
                     troubleshoot.append("All checks passed. Ready for inference.")
 
@@ -3175,9 +3279,7 @@ class IRISGateway:
                         "value": f"Active kernels: {len(_agent_kernel_instances)} | Session: {session_id}",
                     },
                 )
-                self._logger.info(
-                    f"[Session: {session_id}] Diagnostics pushed to UI"
-                )
+                self._logger.info(f"[Session: {session_id}] Diagnostics pushed to UI")
 
             elif section_id == "logs":
                 # ── Read backend logs ───────────────────────────────────
@@ -3188,7 +3290,9 @@ class IRISGateway:
                     project_dir = Path(__file__).parent.parent.resolve()
                     err_file = project_dir / "backend_test.err"
                     if err_file.exists():
-                        with open(err_file, "r", encoding="utf-8", errors="ignore") as f:
+                        with open(
+                            err_file, "r", encoding="utf-8", errors="ignore"
+                        ) as f:
                             tail = f.readlines()[-30:]
                         log_lines.extend([l.strip() for l in tail if l.strip()])
                     else:
@@ -3217,9 +3321,7 @@ class IRISGateway:
                         "value": log_text,
                     },
                 )
-                self._logger.info(
-                    f"[Session: {session_id}] Logs pushed to UI"
-                )
+                self._logger.info(f"[Session: {session_id}] Logs pushed to UI")
 
             elif section_id == "analytics":
                 # ── Gather usage stats ──────────────────────────────────
@@ -3240,9 +3342,7 @@ class IRISGateway:
                         "value": "\n".join(stats),
                     },
                 )
-                self._logger.info(
-                    f"[Session: {session_id}] Analytics pushed to UI"
-                )
+                self._logger.info(f"[Session: {session_id}] Analytics pushed to UI")
 
         except Exception as e:
             self._logger.error(

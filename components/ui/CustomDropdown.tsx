@@ -66,7 +66,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
   )
 
   const selectedLabel = normalizedOpts.find(o => o.value === value)?.label ?? value
-  const displayLabel = selectedLabel || placeholder
+  const displayLabel = typeof selectedLabel === 'string' ? selectedLabel : placeholder || ''
 
   // Close on outside click
   useEffect(() => {
@@ -219,7 +219,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
                       opacity: isSelected ? 1 : 0,
                     }}
                   />
-                  <span>{opt.label}</span>
+                  <span>{String(opt.label ?? '')}</span>
                 </div>
               )
             })

@@ -16,7 +16,7 @@ export interface FieldConfig {
   step?: number
   unit?: string
   // dropdown props
-  options?: string[]
+  options?: (string | { label: string; value: string })[]
   loadOptions?: () => Promise<{ label: string; value: string }[]>
   // button props
   action?: string

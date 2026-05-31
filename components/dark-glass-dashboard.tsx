@@ -15,6 +15,7 @@ import { ActivityPanel } from './dashboard/ActivityPanel';
 import { LogsPanel } from './dashboard/LogsPanel';
 import { InferenceConsolePanel } from './dashboard/InferenceConsolePanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
+import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
@@ -480,10 +481,25 @@ export function DarkGlassDashboard({
   );
 
   // Seed localFieldValues once contextFieldValues arrives from the WS hook on first load.
+  // Clear stale card value cache — the new provider→models mapping uses
+  // {label, value} objects which can conflict with old localStorage entries.
+  useEffect(() => {
+    try { localStorage.removeItem('iris-card-values'); } catch {}
+  }, []);
+
   const seededRef = useRef(false);
   useEffect(() => {
     if (!seededRef.current && contextFieldValues && Object.keys(contextFieldValues).length > 0) {
-      setLocalFieldValues(contextFieldValues as Record<string, Record<string, any>>);
+      const values = { ...contextFieldValues } as Record<string, Record<string, any>>;
+      // Migration: force swarm OFF when an API provider is selected (not "local").
+      // Prevents stale localStorage cache from keeping swarm ON and blocking API routing.
+      const provider = values?.model_selection?.model_provider || '';
+      if (provider && provider !== 'local' && provider !== 'lmstudio') {
+        if (values.inference_mode) {
+          values.inference_mode = { ...values.inference_mode, swarm_enabled: false };
+        }
+      }
+      setLocalFieldValues(values);
       seededRef.current = true;
     }
   }, [contextFieldValues]);
@@ -522,10 +538,101 @@ export function DarkGlassDashboard({
     if (propUpdateField) propUpdateField(sectionId, fieldId, value);
   }, [propUpdateField]);
 
+  // Listen for model-selected events from the ModelBrowserPanel
+  useEffect(() => {
+    const onModelSelected = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.path) {
+        localUpdateField('inference_mode', 'iris_local_model_path', detail.path)
+        if (detail.native_ctx) {
+          localUpdateField('inference_mode', 'iris_local_ctx', detail.native_ctx)
+        }
+      }
+    }
+    window.addEventListener('model-selected', onModelSelected)
+    return () => window.removeEventListener('model-selected', onModelSelected)
+  }, [localUpdateField])
+
   const fieldValues = localFieldValues;
   const updateField = localUpdateField;
 
-  const [availableModels, setAvailableModels] = useState<(string | {label: string, value: string})[]>(['LFM-2-8B', 'gpt-4o', 'claude-3-5-sonnet']);
+  // ── Provider → Models mapping ─────────────────────────────────────
+  // Real model IDs from each provider's official API docs, fetched 2026-05-30.
+  // The dropdown options update immediately when provider changes.
+  const PROVIDER_MODELS: Record<string, (string | {label: string, value: string})[]> = {
+    // OpenCode Go (low-cost plan): https://opencode.ai/docs/go/
+    opencodego: [
+      { label: 'GLM 5.1', value: 'glm-5.1' },
+      { label: 'GLM 5', value: 'glm-5' },
+      { label: 'Kimi K2.5', value: 'kimi-k2.5' },
+      { label: 'Kimi K2.6', value: 'kimi-k2.6' },
+      { label: 'DeepSeek V4 Pro', value: 'deepseek-v4-pro' },
+      { label: 'DeepSeek V4 Flash', value: 'deepseek-v4-flash' },
+      { label: 'MiMo V2.5', value: 'mimo-v2.5' },
+      { label: 'MiMo V2.5 Pro', value: 'mimo-v2.5-pro' },
+      { label: 'MiniMax M2.5', value: 'minimax-m2.5' },
+      { label: 'MiniMax M2.7', value: 'minimax-m2.7' },
+      { label: 'Qwen3.6 Plus', value: 'qwen3.6-plus' },
+      { label: 'Qwen3.7 Max', value: 'qwen3.7-max' },
+    ],
+    // Cerebras: https://inference-docs.cerebras.ai/models/overview
+    cerebras: [
+      { label: 'GPT OSS 120B', value: 'gpt-oss-120b' },
+      { label: 'Z.ai GLM 4.7', value: 'zai-glm-4.7' },
+    ],
+    // Chutes AI: https://llm.chutes.ai/v1/models (live, sorted by usage)
+    // Many models have TEE variants (confidential compute) with -TEE suffix.
+    chutes: [
+      { label: 'Kimi K2.6 TEE', value: 'moonshotai/Kimi-K2.6-TEE' },
+      { label: 'Kimi K2.6', value: 'moonshotai/Kimi-K2.6' },
+      { label: 'Kimi K2.5 TEE', value: 'moonshotai/Kimi-K2.5-TEE' },
+      { label: 'MiniMax M2.5 TEE', value: 'MiniMaxAI/MiniMax-M2.5-TEE' },
+      { label: 'DeepSeek R1 TEE', value: 'deepseek-ai/DeepSeek-R1-TEE' },
+      { label: 'DeepSeek R1', value: 'deepseek-ai/DeepSeek-R1' },
+      { label: 'DeepSeek V3 (0324) TEE', value: 'deepseek-ai/DeepSeek-V3-0324-TEE' },
+      { label: 'DeepSeek V3 (0324)', value: 'deepseek-ai/DeepSeek-V3-0324' },
+      { label: 'DeepSeek R1 (0528) TEE', value: 'deepseek-ai/DeepSeek-R1-0528-TEE' },
+      { label: 'DeepSeek R1 (0528)', value: 'deepseek-ai/DeepSeek-R1-0528' },
+      { label: 'Qwen3 Coder 480B (FP8)', value: 'Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8' },
+      { label: 'Kimi K2 Instruct', value: 'moonshotai/Kimi-K2-Instruct' },
+      { label: 'GLM 4.5 (FP8)', value: 'zai-org/GLM-4.5-FP8' },
+      { label: 'Mistral Small 3.1 (24B)', value: 'chutesai/Mistral-Small-3.1-24B-Instruct-2503' },
+      { label: 'Qwen3 235B (A22B)', value: 'Qwen/Qwen3-235B-A22B-Instruct-2507' },
+      { label: 'Qwen3 32B', value: 'Qwen/Qwen3-32B' },
+      { label: 'Qwen3 8B', value: 'Qwen/Qwen3-8B' },
+    ],
+    // Cohere: https://docs.cohere.com/docs/models
+    cohere: [
+      { label: 'Command A (03-2025)', value: 'command-a-03-2025' },
+      { label: 'Command R+ (08-2024)', value: 'command-r-plus-08-2024' },
+      { label: 'Command R (08-2024)', value: 'command-r-08-2024' },
+      { label: 'Command R7B (12-2024)', value: 'command-r7b-12-2024' },
+    ],
+    // DeepSeek: https://api-docs.deepseek.com/
+    deepseek: [
+      { label: 'DeepSeek V4 Pro', value: 'deepseek-v4-pro' },
+      { label: 'DeepSeek V4 Flash', value: 'deepseek-v4-flash' },
+      { label: 'DeepSeek Chat (legacy)', value: 'deepseek-chat' },
+      { label: 'DeepSeek Reasoner (legacy)', value: 'deepseek-reasoner' },
+    ],
+    // Anthropic: https://platform.claude.com/docs/en/api/openai-sdk
+    // Model IDs are aliases (not dated snapshots) for OpenAI-compatible API
+    anthropic: [
+      { label: 'Claude Opus 4.7', value: 'claude-opus-4-7' },
+      { label: 'Claude Opus 4.6', value: 'claude-opus-4-6' },
+      { label: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6' },
+      { label: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5' },
+      { label: 'Claude Haiku 4.5', value: 'claude-haiku-4-5' },
+      { label: 'Claude Opus 4.5', value: 'claude-opus-4-5' },
+      { label: 'Claude Opus 4.1', value: 'claude-opus-4-1' },
+    ],
+  };
+
+  const [availableModels, setAvailableModels] = useState<(string | {label: string, value: string})[]>(
+    PROVIDER_MODELS['opencodego'] || []
+  );
+  // Keep a ref to the current provider so event handlers (which are set up once) can read it
+  const providerRef = useRef('opencodego');
   const [audioInputDevices, setAudioInputDevices] = useState<string[]>(['Default Input', 'Internal Microphone']);
   const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>(['Default Output', 'Internal Speakers']);
   const [wakeWords, setWakeWords] = useState<string[]>([]);
@@ -554,6 +661,12 @@ export function DarkGlassDashboard({
     };
 
     const handleAvailableModels = (event: CustomEvent) => {
+      // Only use backend models when there's no pre-defined list for the current provider.
+      // This prevents the backend's fallback/generic list from overwriting our
+      // provider-specific model lists (which are defined in PROVIDER_MODELS).
+      const currentProvider = providerRef.current || '';
+      if (PROVIDER_MODELS[currentProvider]) return;
+
       const models = event.detail?.models || [];
       // Pass {label, value} objects so CustomDropdown sends the model ID (not display name) to the backend
       const opts = models.map((m: any) => {
@@ -587,6 +700,16 @@ export function DarkGlassDashboard({
       window.removeEventListener('iris:wake_words_list',  handleWakeWords       as EventListener);
     };
   }, [sendMessage]);
+
+  // Update model dropdown options when provider changes
+  useEffect(() => {
+    const provider = fieldValues?.model_selection?.model_provider || '';
+    providerRef.current = provider;
+    const models = PROVIDER_MODELS[provider];
+    if (models) {
+      setAvailableModels(models);
+    }
+  }, [fieldValues?.model_selection?.model_provider]);
 
   // Fetch device lists and models whenever the relevant tab is active
   useEffect(() => {
@@ -664,7 +787,13 @@ export function DarkGlassDashboard({
     });
   };
 
+  const applyCooldownRef = useRef(false);
+
   const handleApplySettings = useCallback(async () => {
+    // Guard: prevent rapid re-clicks (2s cooldown on top of state guard)
+    if (applyCooldownRef.current) return;
+    applyCooldownRef.current = true;
+
     setIsApplying(true);
     try {
       // Mirror WheelView's confirm flow: send 'confirm_card' via WebSocket for
@@ -678,10 +807,14 @@ export function DarkGlassDashboard({
           });
         }
       }
+      // Keep the button disabled for at least 2s so the backend can process
+      // and guard against duplicate subprocess/server launches.
+      await new Promise(r => setTimeout(r, 2000));
     } catch (error) {
       console.error("[DarkGlassDashboard] Apply failed:", error);
     } finally {
       setIsApplying(false);
+      setTimeout(() => { applyCooldownRef.current = false; }, 2000);
     }
   }, [sendMessage, activeSections, localFieldValues]);
 
@@ -933,7 +1066,7 @@ export function DarkGlassDashboard({
              const isExpanded = expandedSections.has(section.id);
              const sectionFields = section.fields || [];
              return (
-               <div key={section.id} className="group/section overflow-hidden rounded-lg border transition-all" style={{ borderColor: isExpanded ? `${glowColor}30` : 'rgba(255,255,255,0.04)', backgroundColor: isExpanded ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.01)' }}>
+               <div key={section.id} className="group/section overflow-visible rounded-lg border transition-all" style={{ borderColor: isExpanded ? `${glowColor}30` : 'rgba(255,255,255,0.04)', backgroundColor: isExpanded ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.01)' }}>
                  <button onClick={() => toggleSection(section.id)} className="w-full h-11 px-4 flex items-center justify-between transition-all hover:bg-white/[0.04] relative group/btn">
                    <div className="flex items-center gap-2 min-w-0">
                      <section.icon size={13} className="flex-shrink-0" style={{ color: isExpanded ? glowColor : 'white' }} />
@@ -1076,9 +1209,11 @@ export function DarkGlassDashboard({
          <LogsPanel key="logs" glowColor={glowColor} fontColor="white" />
        ) : activeSubApp === 'marketplace' ? (
          <MarketplaceScreen key="marketplace" glowColor={glowColor} fontColor="white" />
-       ) : activeSubApp === 'inference_console' ? (
-         <InferenceConsolePanel key="inference_console" glowColor={glowColor} fontColor="white" />
-       ) : null}
+        ) : activeSubApp === 'inference_console' ? (
+          <InferenceConsolePanel key="inference_console" glowColor={glowColor} fontColor="white" />
+        ) : activeSubApp === 'models' ? (
+          <ModelBrowserPanel key="model_browser" glowColor={glowColor} fontColor="white" />
+        ) : null}
     </div>
   );
 
@@ -1088,12 +1223,12 @@ export function DarkGlassDashboard({
       <div className="absolute inset-0 pointer-events-none z-10" style={{ boxShadow: `inset 0 0 60px ${glowColor}05` }} />
       <div className="flex-1 flex overflow-hidden relative z-20">
         {renderNavigationRail()}
-        <div className="flex-1 flex flex-col overflow-hidden relative">
-          {renderHeader()}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            {renderContentZone()}
+          <div className="flex-1 flex flex-col overflow-visible relative">
+            {renderHeader()}
+            <div className="flex-1 flex flex-col overflow-visible">
+              {renderContentZone()}
+            </div>
           </div>
-        </div>
       </div>
       {renderActionBar()}
     </div>
