@@ -1829,12 +1829,9 @@ class IRISGateway:
                 {"type": "listening_state", "payload": {"state": "speaking"}},
             )
             _tts_started = True
-            threading.Thread(
-                target=self._speak_response,
-                args=(sentence_queue, session_id),
-                daemon=True,
-                name="voice-tts",
-            ).start()
+            # Note: The sentence_queue streaming thread was previously started here
+            # but has been removed.  The full response is spoken by _wrap_tts after
+            # the agent completes (see below).  This avoids overlapping/doubled TTS.
 
             # Run agent synchronously in thread pool
             response, spoken = await loop.run_in_executor(None, _execute_agent)

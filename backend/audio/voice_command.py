@@ -224,7 +224,9 @@ class VoiceCommandHandler:
                     logger.error("[VoiceCommand] AudioEngine pipeline not available")
                     self._set_state(VoiceState.ERROR, "Audio pipeline not ready")
                     self.is_recording = False
-                    return False
+                return (
+                    True  # recording IS in progress — this is a success, not a failure
+                )
 
             # Start transcription thread (handles VAD + whisper in background)
             self._transcription_thread = threading.Thread(
