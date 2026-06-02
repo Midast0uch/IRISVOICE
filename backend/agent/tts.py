@@ -527,21 +527,15 @@ class TTSManager:
         voice_state,
         text: str,
     ) -> Generator[np.ndarray, None, None]:
-        """Stream audio chunks from Pocket-TTS (true streaming inference).
-
-        voice_state is either a voice embedding dict (voice cloning) or a
-        catalog voice name (string like 'alba').  The streaming API handles
-        either.
-        """
+        """Stream audio chunks from Pocket-TTS (true streaming inference)."""
         if model is None or voice_state is None:
             return
-        speed = float(self.config.get("speaking_rate", 1.0))
         try:
             for chunk_tensor in model.generate_audio_stream(
                 voice_state,
                 text,
-                speed=speed,
-                chunk_size=100,  # characters per streaming chunk
+                # frames_after_eos = None (default — stop at natural EOS)
+                # copy_state = True (default — shared state between chunks)
             ):
                 audio = chunk_tensor.cpu().numpy().astype(np.float32)
                 if len(audio) == 0:
@@ -549,16 +543,6 @@ class TTSManager:
                 yield audio
         except Exception as exc:
             logger.warning(f"[TTSManager] Pocket-TTS stream failed: {exc}")
-
-        except Exception as exc:
-            logger.error(f"[TTSManager] pyttsx3 error: {exc}", exc_info=True)
-            return None
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
 
 
 def get_tts_manager() -> TTSManager:
