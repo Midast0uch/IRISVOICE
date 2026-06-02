@@ -1,8 +1,9 @@
 """
-TTS Manager — F5-TTS (zero-shot voice cloning) for IRIS.
-
-Primary engine : F5-TTS (F5TTS_v1_Base)
-  - ~800 MB model, CPU-compatible (RTF ~0.15 on modern CPU — fast)
+TTS Manager — Pocket-TTS (voice cloning) for IRIS.
+Primary engine : Pocket-TTS (~100M int8 quantized, ~100 MB RAM)
+  - Zero-shot voice cloning from reference audio (TOMV2.wav)
+  - True streaming inference (generate_audio_stream — yields chunk-by-chunk)
+  - Fallback engines: Piper → pyttsx3
   - Zero-shot voice cloning from TOMV2.wav reference audio
   - Chunked synthesis: text split into sentences, each synthesized
     sequentially and yielded as audio — approximates streaming
@@ -22,7 +23,6 @@ Lock discipline
   The lock is NOT reentrant — do not acquire it inside _stream_f5tts.
 """
 
-import gc
 import logging
 import math
 import os
@@ -64,9 +64,6 @@ PIPER_MODEL_DIR = _BACKEND_DIR / "voice" / "piper_models"
 PIPER_MODEL_ONNX = PIPER_MODEL_DIR / "en_US-ryan-high.onnx"
 
 AVAILABLE_VOICES: List[str] = ["Cloned Voice", "Built-in"]
-
-# F5-TTS model identifier — F5TTS_v1_Base (~800 MB, downloads on first use)
-F5TTS_MODEL = "F5TTS_v1_Base"
 
 
 # ---------------------------------------------------------------------------
@@ -185,37 +182,25 @@ class TTSManager:
 
         self.config: Dict[str, Any] = {
             "tts_enabled": True,
-            # F5-TTS is always the primary TTS engine.
-            # "Cloned Voice" = F5-TTS primary (default).
-            # "Built-in"     = force Piper (skips F5-TTS).
+            # Pocket-TTS is the primary TTS engine (voice cloning).
+            # "Cloned Voice" = Pocket-TTS primary (default).
+            # "Built-in"     = force Piper (skips Pocket-TTS).
             # In both cases Piper → pyttsx3 are available as automatic fallbacks.
-            #
-            # 2026-06-02: Default flipped to "Built-in" — F5-TTS is being
-            # deprecated in favour of a replacement engine.  Piper is the
-            # active engine; pyttsx3 is the final fallback.  This avoids the
-            # ~800 MB F5-TTS model load on every backend start.
-            "tts_voice": "Cloned Voice",  # F5-TTS voice cloning
+            "tts_voice": "Cloned Voice",  # Pocket-TTS voice cloning
             "speaking_rate": 1.0,
         }
 
         # Engine instances (lazy-loaded)
-        self._f5tts = None  # F5TTS instance
+        self._pocket_tts_model = None  # Pocket-TTS model instance
+        self._voice_state = None  # cached voice embedding from TOMV2.wav
         self._piper = None  # PiperVoice instance
         self._lock = threading.Lock()  # guards init only, NOT inference
-        self._last_f5tts_used_at = 0.0  # monotonic clock, for idle-unload
 
         TTSManager._initialized = True
 
         threading.Thread(
             target=self._log_preflight, daemon=True, name="tts-preflight"
         ).start()
-
-        # Idle-unload watchdog — frees F5-TTS (~500-800 MB) after 10 min of no use
-        threading.Thread(
-            target=self._f5tts_idle_watchdog, daemon=True, name="tts-idle-unload"
-        ).start()
-        # Note: pre-warming F5-TTS at startup is handled by iris_gateway.py's
-        # _prewarm_tts, which sends WebSocket progress messages to the UI.
 
     # ------------------------------------------------------------------
     # Public API
@@ -289,20 +274,12 @@ class TTSManager:
 
     def get_voice_info(self) -> Dict[str, Any]:
         """Return available voice information."""
-        use_f5 = self.config.get("tts_voice") == "Cloned Voice"
-        if use_f5:
-            import torch
-
-            _mode = "GPU" if torch.cuda.is_available() else "CPU"
-            engine_name = f"F5-TTS F5TTS_v1_Base (zero-shot voice cloning, {_mode})"
-            engine_ready = self._f5tts is not None
-            # "model available" = f5-tts pip package installed
-            try:
-                import importlib.util
-
-                model_path_exists = importlib.util.find_spec("f5_tts") is not None
-            except Exception:
-                model_path_exists = False
+        use_cloned = self.config.get("tts_voice") == "Cloned Voice"
+        if use_cloned:
+            _mode = "GPU" if True else "CPU"  # Pocket-TTS loads on any device
+            engine_name = f"Pocket-TTS (~100M, zero-shot voice cloning, int8)"
+            engine_ready = self._pocket_tts_model is not None
+            model_path_exists = True  # installed via pip
         else:
             engine_name = "Piper en_US-ryan-high (CPU)"
             engine_ready = self._piper is not None
@@ -337,7 +314,7 @@ class TTSManager:
     def _select_engine(self) -> None:
         """Resolve which engine to use on first call (no-op after that).
 
-        F5-TTS is always the primary.  Selecting "Built-in" forces Piper.
+        Pocket-TTS is always the primary.  Selecting "Built-in" forces Piper.
         """
         if self._engine_selected:
             return
@@ -345,15 +322,14 @@ class TTSManager:
         force_builtin = self.config.get("tts_voice") == "Built-in"
         logger.info(
             f"[TTSManager] Engine priority: "
-            f"{'Piper/pyttsx3 (Built-in selected — F5-TTS skipped)' if force_builtin else 'F5-TTS (primary) → Piper (fallback) → pyttsx3 (last resort)'}"
+            f"{'Piper/pyttsx3 (Built-in selected — Pocket-TTS skipped)' if force_builtin else 'Pocket-TTS (primary) → Piper (fallback) → pyttsx3 (last resort)'}"
         )
 
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """Stream synthesis — yields float32 arrays at OUTPUT_SAMPLE_RATE Hz.
 
         Text is normalised before synthesis (strips markdown / expands symbols).
-        F5-TTS path: text split into sentence chunks; each chunk synthesized
-        in sequence and yielded immediately — approximates streaming.
+        Pocket-TTS path: streaming yields chunks during generation (true streaming).
         Piper path:  native per-sentence streaming via piper.synthesize().
         pyttsx3:     one full chunk as last resort.
 
@@ -371,27 +347,27 @@ class TTSManager:
 
         self._select_engine()
 
-        # --- F5-TTS: primary engine (always tried unless user forces "Built-in") ---
+        # --- Pocket-TTS: primary engine (voice cloning) -----------------------
         force_builtin = self.config.get("tts_voice") == "Built-in"
         if not force_builtin:
             with self._lock:
-                loaded = self._load_f5tts()
-                f5tts = self._f5tts
+                loaded = self._load_pocket_tts()
+                pocket = self._pocket_tts_model
+                voice = self._voice_state
 
-            if loaded and f5tts is not None:
+            if loaded and pocket is not None and voice is not None:
                 try:
-                    for chunk in self._stream_f5tts(f5tts, normalized):
+                    for chunk in self._stream_pocket(pocket, voice, normalized):
                         yield chunk
                     return
                 except Exception as exc:
                     logger.warning(
-                        f"[TTSManager] F5-TTS stream failed, falling back to Piper: {exc}",
+                        f"[TTSManager] Pocket-TTS stream failed, falling back to Piper: {exc}",
                         exc_info=True,
                     )
             else:
                 logger.info(
-                    "[TTSManager] F5-TTS unavailable (not installed or model load failed) — "
-                    "falling back to Piper"
+                    "[TTSManager] Pocket-TTS unavailable — falling back to Piper"
                 )
 
         # --- Piper path: fallback engine ------------------------------------
@@ -441,277 +417,138 @@ class TTSManager:
             return text.strip()
 
     # ------------------------------------------------------------------
-    # F5-TTS engine (CPU primary — zero-shot voice cloning)
+    # Pocket-TTS engine (primary — zero-shot voice cloning)
     # ------------------------------------------------------------------
 
-    def _load_f5tts(self) -> bool:
-        if self._f5tts is not None:
-            return True
-        try:
-            # On Windows, torchcodec (a dependency of F5-TTS) requires the
-            # FFmpeg shared DLLs on the library search path.  If installed
-            # via WinGet/Gyan they live under the shared build's bin/ dir.
-            import os as _os
-
-            _FFMPEG_SHARED = (
-                "C:\\Users\\midas\\AppData\\Local\\Microsoft\\WinGet\\Packages"
-                "\\Gyan.FFmpeg.Shared_Microsoft.Winget.Source_8wekyb3d8bbwe"
-                "\\ffmpeg-8.0.1-full_build-shared\\bin"
-            )
-            if _os.path.isdir(_FFMPEG_SHARED):
-                _os.add_dll_directory(_FFMPEG_SHARED)
-
-            # Set HF token for F5-TTS model downloads (Vocos + F5TTS_Base)
-            _hf_token = _os.environ.get("HF_TOKEN") or _os.environ.get(
-                "HUGGINGFACE_TOKEN"
-            )
-            if _hf_token:
-                _os.environ["HF_TOKEN"] = _hf_token
-
-            import torch
-            from f5_tts.api import F5TTS
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            rss_before = psutil.Process().memory_info().rss // 1048576
-            logger.info(
-                f"[TTSManager] Loading F5-TTS ({F5TTS_MODEL}) on {device.upper()} "
-                f"(RSS before: {rss_before} MB)..."
-            )
-            t0 = time.monotonic()
-            try:
-                self._f5tts = F5TTS(model=F5TTS_MODEL, device=device)
-            except TypeError:
-                # F5TTS constructor doesn't accept device — fallback to set_default_device
-                if device == "cuda":
-                    torch.set_default_device("cuda")
-                self._f5tts = F5TTS(model=F5TTS_MODEL)
-            dt = time.monotonic() - t0
-
-            # Note: float16 casting was attempted here but caused persistent
-            # "Input type (float) and bias type (struct c10::Half)" errors during
-            # inference on CUDA — the F5TTS model has sub-modules whose intermediate
-            # tensors stay in float32 even after all parameters are cast, creating a
-            # type mismatch.  Keeping the model in native float32 is the safe choice.
-            dtype_str = "float32"
-            rss_after = psutil.Process().memory_info().rss // 1048576
-            logger.info(
-                f"[TTSManager] F5-TTS loaded — "
-                f"dtype={dtype_str}, device={device.upper()}, "
-                f"RSS: {rss_before} → {rss_after} MB "
-                f"(Δ +{rss_after - rss_before} MB, load took {dt:.1f}s)"
-            )
-            self._last_f5tts_used_at = time.monotonic()
-            return True
-        except ImportError:
-            logger.error("[TTSManager] f5-tts not installed. Run: pip install f5-tts")
-            self._f5tts = None
-            return False
-        except Exception as exc:
-            logger.error(f"[TTSManager] Failed to load F5-TTS: {exc}", exc_info=True)
-            self._f5tts = None
-            return False
-
-    def _f5tts_idle_watchdog(self) -> None:
-        """Daemon thread: unload F5-TTS model after 10+ minutes of no synthesis."""
-        while True:
-            time.sleep(60)
-            if self._f5tts is None:
-                continue
-            idle = time.monotonic() - self._last_f5tts_used_at
-            if idle > 600:  # 10 minutes
-                rss_before = psutil.Process().memory_info().rss // 1048576
-                logger.info(
-                    f"[TTSManager] F5-TTS idle for {idle / 60:.0f}m — unloading "
-                    f"(RSS before: {rss_before} MB)"
-                )
-                self._f5tts = None
-                gc.collect()
-                rss_after = psutil.Process().memory_info().rss // 1048576
-                logger.info(
-                    f"[TTSManager] F5-TTS unloaded — "
-                    f"RSS after: {rss_after} MB (freed {rss_before - rss_after} MB)"
-                )
-
-    def _warm_f5tts(self) -> None:
-        """Obsolete — pre-warming is handled by iris_gateway._prewarm_tts."""
-        pass
-
+    # Manual transcript of data/TOMV2.wav (5.6 s, used for voice cloning).
+    # Note: voice cloning requires accepting terms at
+    # https://huggingface.co/kyutai/pocket-tts — until then we fall back
+    # to the built-in "alba" catalog voice.
     REFERENCE_TRANSCRIPT: str = (
         "There's been a lot of talk about race lately. "
         "I don't see color. Racism isn't real anymore."
     )
+    POCKET_CATALOG_VOICE: str = "alba"
 
-    def _stream_f5tts(self, f5tts, text: str) -> Generator[np.ndarray, None, None]:
-        if not REFERENCE_AUDIO.exists():
-            logger.warning(
-                f"[TTSManager] Reference audio missing: {REFERENCE_AUDIO}. "
-                "Falling back to Piper."
+    def _load_pocket_tts(self) -> bool:
+        """Load Pocket-TTS model + voice/voice-state (once, cached)."""
+        if self._pocket_tts_model is not None:
+            return True
+        try:
+            from pocket_tts import TTSModel
+
+            t0 = time.monotonic()
+            self._pocket_tts_model = TTSModel.load_model(
+                variant=os.environ.get("POCKET_TTS_VARIANT", "b6369a24"),
             )
-            return
+            dt = time.monotonic() - t0
+            logger.info(f"[TTSManager] Pocket-TTS model loaded in {dt:.1f}s")
+            self._load_voice_state()
+            return True
+        except ImportError:
+            logger.error(
+                "[TTSManager] pocket-tts not installed. Run: pip install pocket-tts"
+            )
+            self._pocket_tts_model = None
+            return False
+        except Exception as exc:
+            logger.warning(f"[TTSManager] Failed to load Pocket-TTS: {exc}")
+            self._pocket_tts_model = None
+            return False
 
-        # Mark as "in use" so the idle-unload watchdog doesn't free the model mid-stream
-        self._last_f5tts_used_at = time.monotonic()
+    def _load_voice_state(self) -> bool:
+        """Extract voice embedding from TOMV2.wav (gated) or use catalog voice."""
+        if self._voice_state is not None:
+            return True
 
-        ref_file = str(REFERENCE_AUDIO)
-        speed = float(self.config.get("speaking_rate", 1.0))
-        chunks = _split_into_chunks(text)
-
-        import torch
-
-        _cuda = torch.cuda.is_available()
-        # On CPU use bfloat16 (safer than float16 — less underflow).
-        # On CUDA use float16 (native autocast dtype).
-        autocast_dtype = torch.float16 if _cuda else torch.bfloat16
-        for i, chunk_text in enumerate(chunks):
-            if not chunk_text.strip():
-                continue
+        # If the model supports voice cloning, try TOMV2.wav
+        ref_path = REFERENCE_AUDIO
+        if self._pocket_tts_model.has_voice_cloning and ref_path.exists():
             try:
-                with (
-                    torch.inference_mode(),
-                    torch.autocast(
-                        device_type="cuda" if _cuda else "cpu",
-                        dtype=autocast_dtype,
-                        enabled=True,
-                    ),
-                ):
-                    wav, sr, _ = f5tts.infer(
-                        ref_file=ref_file,
-                        ref_text=self.REFERENCE_TRANSCRIPT,
-                        gen_text=chunk_text,
-                        speed=speed,
-                        # Higher guidance → less attention drift at sentence endings,
-                        # which prevents the abrupt "cut off at periods" effect.
-                        cfg_strength=3.5,
-                    )
-                # wav may be a torch.Tensor or numpy array
-                try:
-                    audio = wav.cpu().numpy().flatten().astype(np.float32)
-                except AttributeError:
-                    audio = np.asarray(wav, dtype=np.float32).flatten()
-
-                if len(audio) == 0:
-                    continue
-
-                audio = _resample(audio, sr)
-                # Append 200 ms of silence so F5-TTS's natural fade-out doesn't
-                # sound abrupt at sentence boundaries (especially periods).
-                if len(audio) > 0:
-                    pad = np.zeros(int(sr * 0.2), dtype=np.float32)
-                    audio = np.concatenate([audio, pad])
-                logger.debug(
-                    f"[TTSManager] F5-TTS chunk {i + 1}/{len(chunks)}: "
-                    f"{len(audio)} samples @ {sr} Hz"
+                t0 = time.monotonic()
+                self._voice_state = self._pocket_tts_model.get_state_for_audio_prompt(
+                    str(ref_path)
                 )
-                yield audio
+                dt = time.monotonic() - t0
+                logger.info(
+                    f"[TTSManager] Voice state from {ref_path.name} in {dt:.1f}s"
+                )
+                return True
             except Exception as exc:
                 logger.warning(
-                    f"[TTSManager] F5-TTS chunk {i + 1} failed: {exc}. Skipping."
+                    f"[TTSManager] Failed to clone voice from {ref_path.name}: {exc}"
                 )
-                continue
+                logger.info(
+                    "[TTSManager] Accept terms at https://huggingface.co/kyutai/pocket-tts "
+                    "for voice cloning. Using default catalog voice."
+                )
 
-    # ------------------------------------------------------------------
-    # Piper engine (CPU fallback)
-    # ------------------------------------------------------------------
-
-    def _load_piper(self) -> bool:
-        """Load Piper voice model.  Must be called under self._lock."""
-        if self._piper is not None:
-            return True
-        if not PIPER_MODEL_ONNX.exists():
-            logger.warning(f"[TTSManager] Piper model not found at {PIPER_MODEL_ONNX}")
-            return False
+        # Fallback: use a catalog voice
+        catalog = self.POCKET_CATALOG_VOICE
         try:
-            from piper import PiperVoice
-
-            logger.info(f"[TTSManager] Loading Piper from {PIPER_MODEL_ONNX}...")
-            self._piper = PiperVoice.load(str(PIPER_MODEL_ONNX))
-            logger.info("[TTSManager] Piper loaded (en_US-ryan-high)")
+            _, _sr = self._pocket_tts_model.generate_audio(catalog, "")  # warm up
+            self._voice_state = catalog  # store the voice name
+            logger.info(f"[TTSManager] Using catalog voice '{catalog}'")
             return True
         except Exception as exc:
-            logger.error(f"[TTSManager] Failed to load Piper: {exc}", exc_info=True)
-            self._piper = None
+            logger.warning(f"[TTSManager] Catalog voice '{catalog}' failed: {exc}")
+            self._voice_state = None
+            return False
+        except Exception as exc:
+            logger.warning(f"[TTSManager] Failed to load Pocket-TTS: {exc}")
+            self._pocket_tts_model = None
             return False
 
-    @staticmethod
-    def _stream_piper(piper, text: str) -> Generator[np.ndarray, None, None]:
-        """Run Piper inference and yield float32 chunks at OUTPUT_SAMPLE_RATE.
+    def _load_voice_state(self) -> bool:
+        """Extract voice embedding from TOMV2.wav and cache it."""
+        if self._voice_state is not None:
+            return True
+        ref_path = REFERENCE_AUDIO
+        if not ref_path.exists():
+            logger.warning(f"[TTSManager] Reference audio missing: {ref_path}")
+            self._voice_state = None
+            return False
+        try:
+            t0 = time.monotonic()
+            self._voice_state = self._pocket_tts_model.get_state_for_audio_prompt(
+                str(ref_path)
+            )
+            dt = time.monotonic() - t0
+            logger.info(f"[TTSManager] Voice state from {ref_path.name} in {dt:.1f}s")
+            return True
+        except Exception as exc:
+            logger.warning(f"[TTSManager] Failed to get voice state: {exc}")
+            self._voice_state = None
+            return False
 
-        piper.synthesize() yields AudioChunk objects per sentence.
-        Each chunk has audio_int16_array (numpy int16) and sample_rate.
-        RTF ~0.04x on CPU; first chunk typically in <100 ms.
+    def _stream_pocket(
+        self,
+        model,
+        voice_state,
+        text: str,
+    ) -> Generator[np.ndarray, None, None]:
+        """Stream audio chunks from Pocket-TTS (true streaming inference).
+
+        voice_state is either a voice embedding dict (voice cloning) or a
+        catalog voice name (string like 'alba').  The streaming API handles
+        either.
         """
-        for chunk in piper.synthesize(text):
-            arr = chunk.audio_int16_array  # numpy int16
-            piper_rate = chunk.sample_rate
-            audio = arr.astype(np.float32) / 32768.0
-            audio = _resample(audio, piper_rate)
-            if len(audio) > 0:
+        if model is None or voice_state is None:
+            return
+        speed = float(self.config.get("speaking_rate", 1.0))
+        try:
+            for chunk_tensor in model.generate_audio_stream(
+                voice_state,
+                text,
+                speed=speed,
+                chunk_size=100,  # characters per streaming chunk
+            ):
+                audio = chunk_tensor.cpu().numpy().astype(np.float32)
+                if len(audio) == 0:
+                    continue
                 yield audio
-
-    # ------------------------------------------------------------------
-    # pyttsx3 fallback (SAPI5)
-    # ------------------------------------------------------------------
-
-    def _synthesize_pyttsx(self, text: str) -> Optional[np.ndarray]:
-        """Synthesize with pyttsx3 SAPI5.
-
-        Returns float32 array at OUTPUT_SAMPLE_RATE Hz.
-        """
-        try:
-            import pyttsx3
-        except ImportError:
-            logger.error("[TTSManager] pyttsx3 not installed")
-            return None
-
-        tmp_path = None
-        try:
-            engine = pyttsx3.init()
-
-            voices = engine.getProperty("voices")
-            if voices:
-                for v in voices:
-                    if any(n in v.name.lower() for n in ("english", "david", "zira")):
-                        engine.setProperty("voice", v.id)
-                        break
-
-            rate_multiplier = float(self.config.get("speaking_rate", 1.0))
-            engine.setProperty("rate", int(150 * rate_multiplier))
-            engine.setProperty("volume", 1.0)
-
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                tmp_path = f.name
-
-            engine.save_to_file(text, tmp_path)
-            engine.runAndWait()
-            engine.stop()
-
-            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
-                logger.warning("[TTSManager] pyttsx3 produced empty WAV")
-                return None
-
-            with wave.open(tmp_path, "rb") as wf:
-                n_frames = wf.getnframes()
-                samp_width = wf.getsampwidth()
-                n_channels = wf.getnchannels()
-                file_rate = wf.getframerate()
-                raw = wf.readframes(n_frames)
-
-            if samp_width == 2:
-                audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            elif samp_width == 4:
-                audio = (
-                    np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
-                )
-            else:
-                logger.warning(
-                    f"[TTSManager] pyttsx3 unsupported sample width: {samp_width}"
-                )
-                return None
-
-            if n_channels > 1:
-                audio = audio.reshape(-1, n_channels).mean(axis=1)
-
-            return _resample(audio, file_rate)
+        except Exception as exc:
+            logger.warning(f"[TTSManager] Pocket-TTS stream failed: {exc}")
 
         except Exception as exc:
             logger.error(f"[TTSManager] pyttsx3 error: {exc}", exc_info=True)

@@ -134,7 +134,9 @@ class IRISGateway:
         # suppresses all "safety net" re-trigger paths so nothing tries to load
         # it early.  synthesize_stream calls _select_engine() + _load_f5tts()
         # itself when it first runs.
-        self._tts_prewarmed = False  # pre-warm triggered below in set_main_loop
+        self._tts_prewarmed = (
+            True  # Pocket-TTS loads in ~1s — no startup prewarm needed
+        )
 
     # ── Routing Mode Resolver ──────────────────────────────────────────────
     def _resolve_routing_mode(self) -> str:
@@ -164,13 +166,8 @@ class IRISGateway:
             self._session_gc_task = asyncio.create_task(self._session_gc_loop())
             self._logger.info("[IRISGateway] Session GC task started.")
 
-        # Pre-warm F5-TTS in background so the first TTS response is instant.
         if not self._tts_prewarmed:
-            import threading
-
-            threading.Thread(
-                target=self._prewarm_tts, daemon=True, name="tts-prewarm"
-            ).start()
+            pass  # Pocket-TTS loads in ~1s — no startup prewarm
 
     def _touch_session(self, session_id: str) -> None:
         """Update the last-seen timestamp for a session."""
@@ -1877,58 +1874,6 @@ class IRISGateway:
                 pass
             self._logger.debug(f"[Voice] Pipeline complete for session {session_id}")
 
-    def _prewarm_tts(self) -> None:
-        """Optionally pre-warm the TTS engine in a background thread.
-
-        Idempotent — early-exits if already called successfully so re-triggering
-        on the first voice command (as a safety net) does not double-load.
-
-        F5-TTS is ~800 MB on CPU and loads in a few seconds.  A 6-second startup
-        delay lets other components (FastAPI, audio pipeline, WebSocket manager,
-        Porcupine) finish initialising before the model load begins.
-        """
-        if self._tts_prewarmed:
-            return
-        try:
-            import time as _time
-
-            _time.sleep(6)  # let backend fully start before TTS model load
-
-            # RAM safety check: F5-TTS needs ~1–2 GB.
-            try:
-                import psutil as _psutil
-
-                _free_gb = _psutil.virtual_memory().available / (1024**3)
-                if _free_gb < 2.0:
-                    self._logger.warning(
-                        f"[IRISGateway] TTS load skipped — only {_free_gb:.1f} GB RAM free "
-                        "(need >= 2 GB for F5-TTS). "
-                        "Voice TTS will be unavailable this session."
-                    )
-                    self._tts_prewarmed = True
-                    return
-                self._logger.info(
-                    f"[IRISGateway] TTS load: {_free_gb:.1f} GB RAM free — proceeding"
-                )
-            except Exception:
-                pass  # psutil unavailable — proceed with prewarm
-
-            from .agent.tts import get_tts_manager
-
-            tts = get_tts_manager()
-            if tts.config.get("tts_voice") == "Built-in":
-                self._tts_prewarmed = True  # built-in engine needs no warm-up
-                return
-            tts._load_f5tts()
-            self._tts_prewarmed = True
-            self._logger.info("[IRISGateway] F5-TTS pipeline warmed up")
-        except Exception as e:
-            self._logger.warning(f"[IRISGateway] TTS pre-warm failed (non-fatal): {e}")
-        finally:
-            # Mark as pre-warmed / attempted regardless of success to prevent
-            # infinite retry loops in _handle_voice (which would spam logs).
-            self._tts_prewarmed = True
-
     @staticmethod
     def _clean_for_speech(text: str) -> str:
         """Sanitise *text* before sending to the TTS engine.
@@ -1972,35 +1917,6 @@ class IRISGateway:
 
         engine = get_audio_engine()
         tts = get_tts_manager()
-
-        # Play PreSpeech.wav as immediate audio feedback while TTS loads/should
-        # otherwise.  This bridges the ~5 s F5-TTS model load on first request,
-        # giving the user a natural "I'm processing" cue.
-        _prespeech_path = Path(__file__).parents[1] / "data" / "PreSpeech.wav"
-        if _prespeech_path.exists():
-            try:
-                import wave
-                import numpy as np
-
-                with wave.open(str(_prespeech_path), "rb") as _wf:
-                    _raw = (
-                        np.frombuffer(
-                            _wf.readframes(_wf.getnframes()), dtype=np.int16
-                        ).astype(np.float32)
-                        / 32768.0
-                    )
-                    _prespeech_sr = _wf.getframerate()
-                    _prespeech_ch = _wf.getnchannels()
-                # PreSpeech.wav is 48k stereo → mix down to mono + resample
-                if _prespeech_ch == 2:
-                    _raw = _raw.reshape(-1, 2).mean(axis=1)
-                from .agent.tts import _resample as _tts_resample
-
-                _prespeech_audio = _tts_resample(_raw, _prespeech_sr)
-                if engine.pipeline:
-                    engine.pipeline.play_audio(_prespeech_audio)
-            except Exception:
-                pass
 
         if not engine.pipeline:
             return
