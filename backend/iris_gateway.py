@@ -1827,41 +1827,41 @@ class IRISGateway:
             # Run agent synchronously in thread pool
             response, spoken = await loop.run_in_executor(None, _execute_agent)
 
-             # ── Auto-speak the final response through TTS ─────────────────────
-             # The chunk_callback streaming path puts partial sentences into
-             # sentence_queue during generation, but the sentinel (line 1810) is
-             # placed before prepare_spoken_text (line 1811) inside _execute_agent,
-             # so the spoken text is never read by the TTS thread.  Instead we
-             # launch a NEW TTS thread with the full text, same as the play button.
-             if spoken:
-                 # Sync orb animation: speaking → TTS → listening (conversational loop)
-                 _loop = asyncio.get_running_loop()
-                 await self._ws_manager.send_to_client(
-                     client_id,
-                     {"type": "listening_state", "payload": {"state": "speaking"}},
-                 )
+            # ── Auto-speak the final response through TTS ─────────────────────
+            # The chunk_callback streaming path puts partial sentences into
+            # sentence_queue during generation, but the sentinel (line 1810) is
+            # placed before prepare_spoken_text (line 1811) inside _execute_agent,
+            # so the spoken text is never read by the TTS thread.  Instead we
+            # launch a NEW TTS thread with the full text, same as the play button.
+            if spoken:
+                # Sync orb animation: speaking → TTS → listening (conversational loop)
+                _loop = asyncio.get_running_loop()
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {"type": "listening_state", "payload": {"state": "speaking"}},
+                )
 
-                 def _wrap_tts(text: str, sid: str, cid: str, _l):
-                     try:
-                         self._speak_response(text, sid)
-                     finally:
-                         # After TTS completes, re-open the mic (conversational loop)
-                         # and update the orb animation.
-                         _l.call_soon_threadsafe(
-                             lambda: asyncio.ensure_future(
-                                 self._ws_manager.send_to_client(
-                                     cid,
-                                     {"type": "listening_state",
-                                      "payload": {"state": "listening"}},
-                                 )
-                             )
-                         )
-                         # Start backend recording directly (thread-safe —
-                         # VoiceCommandHandler uses a threading.Lock).
-                         if self._voice_handler:
-                             self._voice_handler.start_recording(auto_stop=True)
+                def _wrap_tts(text: str, sid: str, cid: str, _l):
+                    try:
+                        self._speak_response(text, sid)
+                    finally:
+                        # After TTS completes, re-open the mic (conversational loop)
+                        # and update the orb animation.
+                        _l.call_soon_threadsafe(
+                            lambda: asyncio.ensure_future(
+                                self._ws_manager.send_to_client(
+                                    cid,
+                                    {"type": "listening_state",
+                                     "payload": {"state": "listening"}},
+                                )
+                            )
+                        )
+                        # Start backend recording directly (thread-safe —
+                        # VoiceCommandHandler uses a threading.Lock).
+                            if self._voice_handler:
+                                self._voice_handler.start_recording(auto_stop=True)
 
-                 threading.Thread(
+            threading.Thread(
                      target=_wrap_tts,
                      args=(spoken, session_id, client_id, _loop),
                      daemon=True,
