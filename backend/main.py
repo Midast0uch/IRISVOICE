@@ -287,11 +287,7 @@ async def lifespan(app: FastAPI):
         logger.info("  - Registering wake word callback...")
         try:
             _main_loop = asyncio.get_running_loop()
-            audio_engine.set_wake_word_callback(
-                lambda word: asyncio.run_coroutine_threadsafe(
-                    on_wake_word(word), _main_loop
-                )
-            )
+            audio_engine.set_wake_word_callback(lambda word: _on_wake_word_sync(word))
             logger.info("    [+] [WAKE WORD] Callback registered")
         except Exception as e:
             logger.error(f"    [x] [WAKE WORD] Failed to register callback: {e}")
@@ -1730,7 +1726,30 @@ _last_wake_word_time: float = 0.0
 _WAKE_WORD_COOLDOWN_SEC: float = 5.0
 
 
-async def on_wake_word(wake_word_name: str):
+def _on_wake_word_sync(wake_word_name: str) -> None:
+    """Synchronous wrapper — called from the audio callback thread.
+
+    Checks cooldown BEFORE scheduling the async handler on the event loop.
+    This prevents Porcupine's audio-frame-level re-detections from queuing
+    multiple coroutines before the first one has a chance to run.
+    """
+    import time as _time
+
+    global _last_wake_word_time
+    now = _time.monotonic()
+    if now - _last_wake_word_time < _WAKE_WORD_COOLDOWN_SEC:
+        return
+    _last_wake_word_time = now
+
+    # Schedule the async handler on the event loop
+    try:
+        _loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    asyncio.run_coroutine_threadsafe(_on_wake_word_async(wake_word_name), _loop)
+
+
+async def _on_wake_word_async(wake_word_name: str):
     """
     Called from AudioEngine when Porcupine detects the wake word.
     Routes to the main IRIS UI session (not integration sessions).
