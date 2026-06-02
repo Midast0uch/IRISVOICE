@@ -1834,7 +1834,7 @@ class IRISGateway:
             # so the spoken text is never read by the TTS thread.  Instead we
             # launch a NEW TTS thread with the full text, same as the play button.
             if spoken:
-                # Sync orb animation: speaking → TTS → listening (conversational loop)
+                # Sync orb animation: idle → speaking → TTS → idle
                 _loop = asyncio.get_running_loop()
                 await self._ws_manager.send_to_client(
                     client_id,
@@ -1845,23 +1845,17 @@ class IRISGateway:
                     try:
                         self._speak_response(text, sid)
                     finally:
-                        # After TTS completes, re-open the mic (conversational loop)
-                        # and update the orb animation.
                         _l.call_soon_threadsafe(
                             lambda: asyncio.ensure_future(
                                 self._ws_manager.send_to_client(
                                     cid,
                                     {
                                         "type": "listening_state",
-                                        "payload": {"state": "listening"},
+                                        "payload": {"state": "idle"},
                                     },
                                 )
                             )
                         )
-                        # Start backend recording directly (thread-safe —
-                        # VoiceCommandHandler uses a threading.Lock).
-                        if self._voice_handler:
-                            self._voice_handler.start_recording(auto_stop=True)
 
             threading.Thread(
                 target=_wrap_tts,

@@ -570,6 +570,10 @@ class TTSManager:
                 audio = chunk_tensor.cpu().numpy().astype(np.float32)
                 if len(audio) == 0:
                     continue
+                # Skip near-silent lead-in chunks (Pocket-TTS warm-up artifacts).
+                # First ~3 chunks (240 ms) are ~60 dB below actual speech RMS.
+                if np.max(np.abs(audio)) < 0.01:
+                    continue
                 yield audio
         except Exception as exc:
             logger.warning(f"[TTSManager] Pocket-TTS stream failed: {exc}")

@@ -1,6 +1,7 @@
 """
 AudioPipeline - Manages audio input/output streams using sounddevice
 """
+
 import threading
 import queue
 import logging
@@ -9,6 +10,7 @@ from typing import Optional, Callable, List
 logger = logging.getLogger(__name__)
 import numpy as np
 
+
 # sounddevice (PortAudio) is imported lazily inside methods to avoid loading the
 # PortAudio DLL at backend startup. On Windows, PortAudio can take 200-2000 ms
 # to initialize when there are many audio devices, USB audio, or Bluetooth audio.
@@ -16,6 +18,7 @@ import numpy as np
 def _sd():
     """Lazy accessor for sounddevice — loads PortAudio on first audio use."""
     import sounddevice as _sounddevice
+
     return _sounddevice
 
 
@@ -33,7 +36,7 @@ class AudioPipeline:
         output_device: Optional[int] = None,
         sample_rate: int = 16000,
         frame_length: int = 512,
-        channels: int = 1
+        channels: int = 1,
     ):
         self.input_device = input_device
         self.output_device = output_device
@@ -64,13 +67,14 @@ class AudioPipeline:
         self._native_available = False
         try:
             from backend.native import IrisAudioPlayer, NATIVE_AVAILABLE
+
             if NATIVE_AVAILABLE:
                 self._native_player = IrisAudioPlayer()
                 self._native_available = True
                 logger.info("[AudioPipeline] Native C++ player available")
         except Exception:
             pass
-        
+
     def start_buffering(self):
         """Starts collecting audio frames into the buffer."""
         with self._buffer_lock:
@@ -93,14 +97,14 @@ class AudioPipeline:
             if not self._audio_buffer:
                 return np.array([], dtype=np.float32)
             return np.concatenate(self._audio_buffer)
-        
+
     def add_frame_listener(self, callback: Callable[[np.ndarray], None]):
         """Add a listener for raw audio frames."""
         self._frame_listeners.append(callback)
-        
+
         # Don't print devices on instantiation - slows down startup
         # self._print_input_devices()
-        
+
     def start(self, on_audio_frame: Callable[[np.ndarray], None]) -> bool:
         """Start audio pipeline.
 
@@ -118,7 +122,7 @@ class AudioPipeline:
                 channels=self.channels,
                 samplerate=self.sample_rate,
                 callback=self._input_callback,
-                blocksize=self.frame_length
+                blocksize=self.frame_length,
             )
             self._input_stream.start()
             input_ok = True
@@ -142,15 +146,17 @@ class AudioPipeline:
             )
             return True
 
-        logger.error("[AudioPipeline] Both input and output streams failed — pipeline not running")
+        logger.error(
+            "[AudioPipeline] Both input and output streams failed — pipeline not running"
+        )
         return False
-    
+
     def stop(self):
         """Stop audio pipeline"""
         self._is_running = False
         self.cleanup()
         logger.info("[AudioPipeline] Stopped")
-    
+
     def _input_callback(self, indata, frames, time, status):
         """This is called (from a separate thread) for each audio block."""
         if status:
@@ -174,7 +180,45 @@ class AudioPipeline:
                     listener(audio_frame)
                 except Exception as exc:
                     logger.error(f"[AudioPipeline] Frame listener error: {exc}")
-    
+
+    def play_stream(self, audio_chunks, sample_rate: int = None):
+        """Stream audio from an iterable of float32 chunks.
+
+        Opens the native player ONCE, pushes every chunk without blocking
+        between them (avoiding the gap/choppiness of per-chunk play_audio),
+        then waits for all audio to finish before closing.
+
+        IMPORTANT: Does NOT normalize per chunk — Pocket-TTS output has near-silent
+        lead-in chunks that would be amplified into noise by per-chunk peak
+        normalization.  The raw audio is pushed as-is.
+        """
+        sr = sample_rate if sample_rate is not None else self.sample_rate
+        if self._native_available and self._native_player is not None:
+            try:
+                if not self._native_player.open(self.output_device or -1, sr):
+                    raise RuntimeError("Native player failed to open")
+                for audio_data in audio_chunks:
+                    audio_float = audio_data.astype(np.float32)
+                    # Clip to valid range but do NOT normalise — per-chunk normalisation
+                    # would amplify near-silent lead-in chunks into loud static.
+                    audio_float = np.clip(audio_float, -1.0, 1.0)
+                    self._native_player.push_chunk(audio_float)
+                self._native_player.wait_done()
+                self._native_player.close()
+                return
+            except Exception as _native_err:
+                logger.warning(
+                    f"[AudioPipeline] Native stream failed ({_native_err}), falling back"
+                )
+
+        # Fallback: concatenate all chunks into one and use play_audio
+        all_audio = np.concatenate(list(audio_chunks))
+        # Normalise the FULL audio (not per-chunk) to avoid amplifying silent lead-in
+        peak = np.max(np.abs(all_audio))
+        if peak > 1e-6:
+            all_audio = all_audio * (0.85 / peak)
+        self.play_audio(all_audio, sr)
+
     def play_audio(self, audio_data: np.ndarray, sample_rate: int = None):
         """Play audio through the system default output device.
 
@@ -188,7 +232,9 @@ class AudioPipeline:
         """
         sr = sample_rate if sample_rate is not None else self.sample_rate
         duration_ms = int(len(audio_data) / sr * 1000)
-        logger.info(f"[AudioPipeline] play_audio: {len(audio_data)} frames @ {sr}Hz ({duration_ms}ms) → device={self.output_device}")
+        logger.info(
+            f"[AudioPipeline] play_audio: {len(audio_data)} frames @ {sr}Hz ({duration_ms}ms) → device={self.output_device}"
+        )
 
         try:
             audio_float = audio_data.astype(np.float32)
@@ -208,22 +254,28 @@ class AudioPipeline:
                     self._native_player.push_chunk(audio_float)
                     self._native_player.wait_done()
                     self._native_player.close()
-                    logger.info(f"[AudioPipeline] play_audio: native complete ({duration_ms}ms)")
+                    logger.info(
+                        f"[AudioPipeline] play_audio: native complete ({duration_ms}ms)"
+                    )
                     return
                 except Exception as _native_err:
-                    logger.warning(f"[AudioPipeline] Native player failed ({_native_err}), falling back to sounddevice")
+                    logger.warning(
+                        f"[AudioPipeline] Native player failed ({_native_err}), falling back to sounddevice"
+                    )
 
             # Fallback path: sounddevice blocking playback
-            _sd().play(audio_float, samplerate=sr, device=self.output_device, blocking=True)
+            _sd().play(
+                audio_float, samplerate=sr, device=self.output_device, blocking=True
+            )
             logger.info(f"[AudioPipeline] play_audio: complete ({duration_ms}ms)")
         except Exception as e:
             logger.error(f"[AudioPipeline] Output error: {e}")
-    
+
     def clear_buffer(self):
         """Clear audio buffer"""
         with self._buffer_lock:
             self._audio_buffer.clear()
-    
+
     def remove_frame_listener(self, callback: Callable[[np.ndarray], None]) -> None:
         """Remove a previously registered frame listener."""
         try:
@@ -252,7 +304,7 @@ class AudioPipeline:
                 self._native_player.close()
             except Exception as exc:
                 logger.warning(f"[AudioPipeline] Native cleanup error: {exc}")
-    
+
     @staticmethod
     def list_devices() -> List[dict]:
         """List available audio devices, deduplicated across host APIs.
