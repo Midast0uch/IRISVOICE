@@ -134,7 +134,7 @@ class IRISGateway:
         # suppresses all "safety net" re-trigger paths so nothing tries to load
         # it early.  synthesize_stream calls _select_engine() + _load_f5tts()
         # itself when it first runs.
-        self._tts_prewarmed = True  # no startup prewarm — lazy load on first use
+        self._tts_prewarmed = False  # pre-warm triggered below in set_main_loop
 
     # ── Routing Mode Resolver ──────────────────────────────────────────────
     def _resolve_routing_mode(self) -> str:
@@ -163,6 +163,14 @@ class IRISGateway:
         if self._session_gc_task is None:
             self._session_gc_task = asyncio.create_task(self._session_gc_loop())
             self._logger.info("[IRISGateway] Session GC task started.")
+
+        # Pre-warm F5-TTS in background so the first TTS response is instant.
+        if not self._tts_prewarmed:
+            import threading
+
+            threading.Thread(
+                target=self._prewarm_tts, daemon=True, name="tts-prewarm"
+            ).start()
 
     def _touch_session(self, session_id: str) -> None:
         """Update the last-seen timestamp for a session."""
@@ -1947,6 +1955,35 @@ class IRISGateway:
 
         engine = get_audio_engine()
         tts = get_tts_manager()
+
+        # Play PreSpeech.wav as immediate audio feedback while TTS loads/should
+        # otherwise.  This bridges the ~5 s F5-TTS model load on first request,
+        # giving the user a natural "I'm processing" cue.
+        _prespeech_path = Path(__file__).parents[1] / "data" / "PreSpeech.wav"
+        if _prespeech_path.exists():
+            try:
+                import wave
+                import numpy as np
+
+                with wave.open(str(_prespeech_path), "rb") as _wf:
+                    _raw = (
+                        np.frombuffer(
+                            _wf.readframes(_wf.getnframes()), dtype=np.int16
+                        ).astype(np.float32)
+                        / 32768.0
+                    )
+                    _prespeech_sr = _wf.getframerate()
+                    _prespeech_ch = _wf.getnchannels()
+                # PreSpeech.wav is 48k stereo → mix down to mono + resample
+                if _prespeech_ch == 2:
+                    _raw = _raw.reshape(-1, 2).mean(axis=1)
+                from .agent.tts import _resample as _tts_resample
+
+                _prespeech_audio = _tts_resample(_raw, _prespeech_sr)
+                if engine.pipeline:
+                    engine.pipeline.play_audio(_prespeech_audio, False)
+            except Exception:
+                pass
 
         if not engine.pipeline:
             return

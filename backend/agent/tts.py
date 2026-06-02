@@ -214,12 +214,8 @@ class TTSManager:
         threading.Thread(
             target=self._f5tts_idle_watchdog, daemon=True, name="tts-idle-unload"
         ).start()
-
-        # Pre-warm F5-TTS on a background thread so the first TTS request after
-        # boot doesn't have to wait ~5 s for the GPU model load.
-        threading.Thread(
-            target=self._warm_f5tts, daemon=True, name="tts-warmup"
-        ).start()
+        # Note: pre-warming F5-TTS at startup is handled by iris_gateway.py's
+        # _prewarm_tts, which sends WebSocket progress messages to the UI.
 
     # ------------------------------------------------------------------
     # Public API
@@ -537,15 +533,8 @@ class TTSManager:
                 )
 
     def _warm_f5tts(self) -> None:
-        """Background thread: pre-load F5-TTS at startup so the first TTS
-        request has zero model-load latency."""
-        time.sleep(0.5)  # let the rest of the system settle before GPU load
-        logger.info("[TTSManager] Pre-warming F5-TTS…")
-        ok = self._load_f5tts()
-        if ok:
-            logger.info("[TTSManager] F5-TTS pre-warmed successfully")
-        else:
-            logger.info("[TTSManager] F5-TTS pre-warm skipped (dep or config)")
+        """Obsolete — pre-warming is handled by iris_gateway._prewarm_tts."""
+        pass
 
     REFERENCE_TRANSCRIPT: str = (
         "There's been a lot of talk about race lately. "
