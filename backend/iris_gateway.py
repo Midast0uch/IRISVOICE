@@ -785,6 +785,18 @@ class IRISGateway:
                         kwargs["speaking_rate"] = float(values["speaking_rate"])
                     if kwargs:
                         tts.update_config(**kwargs)
+                        # Persist TTS settings to data/iris_config.json
+                        try:
+                            from .iris_config import load_config, save_config
+
+                            cfg = load_config()
+                            for k, v in kwargs.items():
+                                setattr(cfg.tts, k, v)
+                            save_config(cfg)
+                        except Exception as _cfg_err:
+                            self._logger.warning(
+                                f"[Session: {session_id}] Failed to persist TTS config: {_cfg_err}"
+                            )
                         self._logger.info(
                             f"[Session: {session_id}] TTS config applied: {kwargs}",
                             extra={"session_id": session_id, "client_id": client_id},

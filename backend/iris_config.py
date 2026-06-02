@@ -17,12 +17,36 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger("irisvoice")
+
+# ---------------------------------------------------------------------------
+# Config write lock — serializes concurrent load-modify-save cycles to
+# prevent race conditions when multiple async handlers write config.
+# ---------------------------------------------------------------------------
+_config_lock = threading.Lock()
+
+
+def with_modify_config(modifier_fn: Callable[["IRISConfig"], None]) -> "IRISConfig":
+    """Atomically load config, apply *modifier_fn*, and save.
+
+    *modifier_fn* receives the loaded ``IRISConfig`` and mutates it in-place.
+    The entire cycle (load → modify → save) runs under a single lock so
+    concurrent async handlers cannot overwrite each other's changes.
+
+    Returns the modified config.
+    """
+    with _config_lock:
+        cfg = load_config()
+        modifier_fn(cfg)
+        save_config(cfg)
+        return cfg
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -73,6 +97,34 @@ class RoutingConfig:
 
 
 @dataclass
+class SwarmRoleConfig:
+    """Per-role settings for swarm director/worker."""
+
+    director_model: str = ""
+    director_provider: str = "api"
+    worker_model: str = ""
+    worker_count: int = 2
+    worker_gpu_layers: int = -1
+    worker_context: int = 2048
+    auto_balance_vram: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "SwarmRoleConfig":
+        return cls(
+            director_model=d.get("director_model", ""),
+            director_provider=d.get("director_provider", "api"),
+            worker_model=d.get("worker_model", ""),
+            worker_count=int(d.get("worker_count", 2)),
+            worker_gpu_layers=int(d.get("worker_gpu_layers", -1)),
+            worker_context=int(d.get("worker_context", 2048)),
+            auto_balance_vram=bool(d.get("auto_balance_vram", True)),
+        )
+
+
+@dataclass
 class InferenceConfig:
     """Model provider and generation parameters."""
 
@@ -91,9 +143,15 @@ class InferenceConfig:
     # Ollama settings
     ollama_url: str = "http://localhost:11434"
 
-    # Local GGUF settings
+    # Local GGUF settings (from local_model card)
     local_model_path: str = ""
     local_model_id: str = ""
+    local_model_profile: str = (
+        "balanced"  # eco | balanced | performance | voice_first | research | custom
+    )
+    local_model_gpu_layers: int = -1
+    local_model_ctx: int = 16384
+    local_model_status: str = "unloaded"  # unloaded | loaded | loading | error
     models_directory: str = ""
     hardware_profile: str = "balanced"
 
@@ -127,6 +185,10 @@ class InferenceConfig:
             ollama_url=d.get("ollama_url", "http://localhost:11434"),
             local_model_path=d.get("local_model_path", ""),
             local_model_id=d.get("local_model_id", ""),
+            local_model_profile=d.get("local_model_profile", "balanced"),
+            local_model_gpu_layers=int(d.get("local_model_gpu_layers", -1)),
+            local_model_ctx=int(d.get("local_model_ctx", 16384)),
+            local_model_status=d.get("local_model_status", "unloaded"),
             models_directory=d.get("models_directory", ""),
             hardware_profile=d.get("hardware_profile", "balanced"),
             temperature=float(d.get("temperature", 0.6)),
@@ -164,19 +226,46 @@ class SystemConfig:
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
+class TTSConfig:
+    """Text-to-Speech configuration."""
+
+    tts_voice: str = "Cloned Voice"
+    tts_enabled: bool = True
+    speaking_rate: float = 1.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "tts_voice": self.tts_voice,
+            "tts_enabled": self.tts_enabled,
+            "speaking_rate": self.speaking_rate,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any]) -> "TTSConfig":
+        return cls(
+            tts_voice=raw.get("tts_voice", "Cloned Voice"),
+            tts_enabled=raw.get("tts_enabled", True),
+            speaking_rate=raw.get("speaking_rate", 1.0),
+        )
+
+
 @dataclass
 class IRISConfig:
     """Complete IRIS configuration — the single source of truth."""
 
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
+    swarm_roles: SwarmRoleConfig = field(default_factory=SwarmRoleConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
+    tts: TTSConfig = field(default_factory=TTSConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "routing": self.routing.to_dict(),
             "inference": self.inference.to_dict(),
+            "swarm_roles": self.swarm_roles.to_dict(),
             "system": self.system.to_dict(),
+            "tts": self.tts.to_dict(),
         }
 
     @classmethod
@@ -184,7 +273,9 @@ class IRISConfig:
         return cls(
             routing=RoutingConfig.from_dict(raw.get("routing", {})),
             inference=InferenceConfig.from_dict(raw.get("inference", raw)),
+            swarm_roles=SwarmRoleConfig.from_dict(raw.get("swarm_roles", {})),
             system=SystemConfig.from_dict(raw.get("system", raw)),
+            tts=TTSConfig.from_dict(raw.get("tts", {})),
         )
 
 

@@ -188,9 +188,9 @@ class AudioPipeline:
         between them (avoiding the gap/choppiness of per-chunk play_audio),
         then waits for all audio to finish before closing.
 
-        IMPORTANT: Does NOT normalize per chunk — Pocket-TTS output has near-silent
-        lead-in chunks that would be amplified into noise by per-chunk peak
-        normalization.  The raw audio is pushed as-is.
+        Applies a fixed 2.5× gain to compensate for Pocket-TTS's quiet output
+        (~0.03 RMS, ~0.37 peak).  Per-chunk peak normalization is NOT used
+        because it would amplify near-silent lead-in chunks into loud static.
         """
         sr = sample_rate if sample_rate is not None else self.sample_rate
         if self._native_available and self._native_player is not None:
@@ -199,9 +199,10 @@ class AudioPipeline:
                     raise RuntimeError("Native player failed to open")
                 for audio_data in audio_chunks:
                     audio_float = audio_data.astype(np.float32)
-                    # Clip to valid range but do NOT normalise — per-chunk normalisation
-                    # would amplify near-silent lead-in chunks into loud static.
-                    audio_float = np.clip(audio_float, -1.0, 1.0)
+                    # Apply fixed 2.5× gain (Pocket-TTS output is ~0.37 peak).
+                    # Clip to [-0.99, 0.99] to prevent wrap-around — do NOT use
+                    # per-chunk peak normalization (amplifies silence to static).
+                    audio_float = np.clip(audio_float * 2.5, -0.99, 0.99)
                     self._native_player.push_chunk(audio_float)
                 self._native_player.wait_done()
                 self._native_player.close()
@@ -213,7 +214,6 @@ class AudioPipeline:
 
         # Fallback: concatenate all chunks into one and use play_audio
         all_audio = np.concatenate(list(audio_chunks))
-        # Normalise the FULL audio (not per-chunk) to avoid amplifying silent lead-in
         peak = np.max(np.abs(all_audio))
         if peak > 1e-6:
             all_audio = all_audio * (0.85 / peak)
