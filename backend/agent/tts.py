@@ -63,7 +63,18 @@ REFERENCE_AUDIO = _PROJECT_DIR / "data" / "TOMV2.wav"
 PIPER_MODEL_DIR = _BACKEND_DIR / "voice" / "piper_models"
 PIPER_MODEL_ONNX = PIPER_MODEL_DIR / "en_US-ryan-high.onnx"
 
-AVAILABLE_VOICES: List[str] = ["Cloned Voice", "Built-in"]
+AVAILABLE_VOICES: List[str] = [
+    "Cloned Voice",
+    "alba",
+    "marius",
+    "javert",
+    "jean",
+    "fantine",
+    "cosette",
+    "eponine",
+    "azelma",
+    "Built-in",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +439,16 @@ class TTSManager:
         "There's been a lot of talk about race lately. "
         "I don't see color. Racism isn't real anymore."
     )
-    POCKET_CATALOG_VOICE: str = "alba"
+    PREDEFINED_VOICES = [
+        "alba",
+        "marius",
+        "javert",
+        "jean",
+        "fantine",
+        "cosette",
+        "eponine",
+        "azelma",
+    ]
 
     def _load_pocket_tts(self) -> bool:
         """Load Pocket-TTS model + voice/voice-state (once, cached)."""
@@ -457,11 +477,17 @@ class TTSManager:
             return False
 
     def _load_voice_state(self) -> bool:
-        """Extract voice embedding from TOMV2.wav (gated) or use catalog voice."""
+        """Load the appropriate voice state: cloned from TOMV2.wav or catalog embedding."""
         if self._voice_state is not None:
             return True
 
-        # If the model supports voice cloning, try TOMV2.wav
+        voice_name = self.config.get("tts_voice", "Cloned Voice")
+
+        # --- Catalog voice path ---
+        if voice_name in self.PREDEFINED_VOICES:
+            return self._load_catalog_voice(voice_name)
+
+        # --- Voice cloning path (Cloned Voice / default) ---
         ref_path = REFERENCE_AUDIO
         if self._pocket_tts_model.has_voice_cloning and ref_path.exists():
             try:
@@ -475,50 +501,54 @@ class TTSManager:
                 )
                 return True
             except Exception as exc:
-                logger.warning(
-                    f"[TTSManager] Failed to clone voice from {ref_path.name}: {exc}"
-                )
-                logger.info(
-                    "[TTSManager] Accept terms at https://huggingface.co/kyutai/pocket-tts "
-                    "for voice cloning. Using default catalog voice."
-                )
+                logger.warning(f"[TTSManager] Failed to clone voice: {exc}")
 
-        # Fallback: use a catalog voice
-        catalog = self.POCKET_CATALOG_VOICE
+        logger.info(
+            "[TTSManager] Accept terms at https://huggingface.co/kyutai/pocket-tts "
+            "for voice cloning. Using first catalog voice."
+        )
+        # Fallback to first catalog voice
+        return self._load_catalog_voice(self.PREDEFINED_VOICES[0])
+
+    def _load_catalog_voice(self, voice_name: str) -> bool:
+        """Download a Pocket-TTS catalog voice embedding and convert to state dict."""
         try:
-            _, _sr = self._pocket_tts_model.generate_audio(catalog, "")  # warm up
-            self._voice_state = catalog  # store the voice name
-            logger.info(f"[TTSManager] Using catalog voice '{catalog}'")
+            from huggingface_hub import hf_hub_download
+            from safetensors.torch import load_file
+            import torch
+
+            t0 = time.monotonic()
+            emb_path = hf_hub_download(
+                repo_id="kyutai/pocket-tts",
+                filename=f"languages/english/embeddings/{voice_name}.safetensors",
+            )
+            flat = load_file(emb_path)
+
+            # Convert flat key format (e.g. "transformer.layers.0.self_attn/cache")
+            # to nested dict format expected by generate_audio_stream
+            state = {}
+            for flat_key, tensor in flat.items():
+                module_path, attr = flat_key.split("/")
+                if module_path not in state:
+                    state[module_path] = {}
+                state[module_path][attr] = tensor
+
+            self._voice_state = state
+            dt = time.monotonic() - t0
+            logger.info(
+                f"[TTSManager] Catalog voice '{voice_name}' loaded in {dt:.1f}s "
+                f"({len(flat)} tensors)"
+            )
             return True
         except Exception as exc:
-            logger.warning(f"[TTSManager] Catalog voice '{catalog}' failed: {exc}")
+            logger.warning(
+                f"[TTSManager] Failed to load catalog voice '{voice_name}': {exc}"
+            )
             self._voice_state = None
             return False
         except Exception as exc:
             logger.warning(f"[TTSManager] Failed to load Pocket-TTS: {exc}")
             self._pocket_tts_model = None
-            return False
-
-    def _load_voice_state(self) -> bool:
-        """Extract voice embedding from TOMV2.wav and cache it."""
-        if self._voice_state is not None:
-            return True
-        ref_path = REFERENCE_AUDIO
-        if not ref_path.exists():
-            logger.warning(f"[TTSManager] Reference audio missing: {ref_path}")
-            self._voice_state = None
-            return False
-        try:
-            t0 = time.monotonic()
-            self._voice_state = self._pocket_tts_model.get_state_for_audio_prompt(
-                str(ref_path)
-            )
-            dt = time.monotonic() - t0
-            logger.info(f"[TTSManager] Voice state from {ref_path.name} in {dt:.1f}s")
-            return True
-        except Exception as exc:
-            logger.warning(f"[TTSManager] Failed to get voice state: {exc}")
-            self._voice_state = None
             return False
 
     def _stream_pocket(

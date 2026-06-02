@@ -1827,19 +1827,46 @@ class IRISGateway:
             # Run agent synchronously in thread pool
             response, spoken = await loop.run_in_executor(None, _execute_agent)
 
-            # ── Auto-speak the final response through TTS ─────────────────────
-            # The chunk_callback streaming path puts partial sentences into
-            # sentence_queue during generation, but the sentinel (line 1810) is
-            # placed before prepare_spoken_text (line 1811) inside _execute_agent,
-            # so the spoken text is never read by the TTS thread.  Instead we
-            # launch a NEW TTS thread with the full text, same as the play button.
-            if spoken:
-                threading.Thread(
-                    target=self._speak_response,
-                    args=(spoken, session_id),
-                    daemon=True,
-                    name="voice-tts-response",
-                ).start()
+             # ── Auto-speak the final response through TTS ─────────────────────
+             # The chunk_callback streaming path puts partial sentences into
+             # sentence_queue during generation, but the sentinel (line 1810) is
+             # placed before prepare_spoken_text (line 1811) inside _execute_agent,
+             # so the spoken text is never read by the TTS thread.  Instead we
+             # launch a NEW TTS thread with the full text, same as the play button.
+             if spoken:
+                 # Sync orb animation: speaking → TTS → listening (conversational loop)
+                 _loop = asyncio.get_running_loop()
+                 await self._ws_manager.send_to_client(
+                     client_id,
+                     {"type": "listening_state", "payload": {"state": "speaking"}},
+                 )
+
+                 def _wrap_tts(text: str, sid: str, cid: str, _l):
+                     try:
+                         self._speak_response(text, sid)
+                     finally:
+                         # After TTS completes, re-open the mic (conversational loop)
+                         # and update the orb animation.
+                         _l.call_soon_threadsafe(
+                             lambda: asyncio.ensure_future(
+                                 self._ws_manager.send_to_client(
+                                     cid,
+                                     {"type": "listening_state",
+                                      "payload": {"state": "listening"}},
+                                 )
+                             )
+                         )
+                         # Start backend recording directly (thread-safe —
+                         # VoiceCommandHandler uses a threading.Lock).
+                         if self._voice_handler:
+                             self._voice_handler.start_recording(auto_stop=True)
+
+                 threading.Thread(
+                     target=_wrap_tts,
+                     args=(spoken, session_id, client_id, _loop),
+                     daemon=True,
+                     name="voice-tts-response",
+                 ).start()
 
             # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
@@ -1948,34 +1975,41 @@ class IRISGateway:
                 )
                 _native = False
 
-        # 2. Synthesiser thread (producer)
+            # 2. Synthesiser thread (producer)
+            # After TTS streaming completes, send state transitions
+            if isinstance(input_source, str):
+                # Notify frontend: TTS is starting
+                self._broadcast_voice_state(
+                    session_id,
+                    "speaking",
+                    # Only set auto_relisten for voice-command-triggered TTS
+                    auto_relisten=getattr(self, "_tts_auto_relisten", False),
+                )
+
         def _producer():
+            # Helper: push chunk to native player with auto-fallback to queue
+            def _push_or_queue(audio_chunk: np.ndarray):
+                native_ok = False
+                if engine.pipeline and engine.pipeline._native_player is not None:
+                    try:
+                        engine.pipeline._native_player.push_chunk(audio_chunk)
+                        native_ok = True
+                    except Exception:
+                        pass
+                if not native_ok:
+                    asyncio.run_coroutine_threadsafe(audio_queue.put(audio_chunk), loop)
+
             try:
+                _native = (
+                    engine.pipeline is not None
+                    and engine.pipeline._native_player is not None
+                )
                 if isinstance(input_source, str):
-                    text = self._clean_for_speech(input_source)
-                    if not text.strip():
-                        return
-                    self._logger.info(
-                        f"[Voice] TTS synthesizing {len(text.split())} words in single pass"
-                    )
-                    for audio_chunk in tts.synthesize_stream(text):
+                    for audio_chunk in tts.synthesize_stream(input_source):
                         if interrupted.is_set() or engine.is_speech_interrupted():
                             interrupted.set()
                             break
-                        if audio_chunk is not None and len(audio_chunk) > 0:
-                            if _native:
-                                try:
-                                    engine.pipeline._native_player.push_chunk(
-                                        audio_chunk
-                                    )
-                                except Exception as _push_err:
-                                    self._logger.warning(
-                                        f"[Voice] Native push failed ({_push_err})"
-                                    )
-                            else:
-                                asyncio.run_coroutine_threadsafe(
-                                    audio_queue.put(audio_chunk), loop
-                                )
+                        _push_or_queue(audio_chunk)
 
                 elif isinstance(input_source, queue.Queue):
                     _pending = []
@@ -2062,9 +2096,11 @@ class IRISGateway:
                         f"[Voice] Native wait_done failed ({_wait_err})"
                     )
             else:
-                # Fallback path: asyncio.Queue + polling consumer loop
-                import numpy as _np
-
+                # Fallback path: asyncio.Queue + polling consumer loop.
+                # Accumulate all chunks and play in one shot via play_stream
+                # (which opens the native player ONCE, avoiding the per-chunk
+                # wait_done() gap that causes choppiness).
+                _buffered_chunks = []
                 _first_chunk = True
                 while True:
                     _timeout = 90 if _first_chunk else 15
@@ -2095,7 +2131,13 @@ class IRISGateway:
                                 break
                         break
 
-                    engine.pipeline.play_audio(chunk, sample_rate=_TTS_SAMPLE_RATE)
+                    _buffered_chunks.append(chunk)
+
+                if _buffered_chunks:
+                    if engine.pipeline:
+                        engine.pipeline.play_stream(
+                            _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE
+                        )
 
                 producer_thread.join(timeout=5)
         except Exception as e:

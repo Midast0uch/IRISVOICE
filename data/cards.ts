@@ -156,9 +156,19 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'tts_voice',
           type: 'dropdown',
           label: 'Voice',
-          // CosyVoice2 zero-shot voice cloning (uses data/TOMV2.wav) + pyttsx3 fallback
+          // Pocket-TTS voices: Cloned Voice (from TOMV2.wav) or built-in catalog voices.
+          // "Built-in" forces Piper → pyttsx3 fallback.
+          // Catalog voices are downloaded from HF on first use (cached).
           options: [
             'Cloned Voice',
+            'alba',
+            'marius',
+            'javert',
+            'jean',
+            'fantine',
+            'cosette',
+            'eponine',
+            'azelma',
             'Built-in',
           ],
           defaultValue: 'Cloned Voice'
@@ -197,7 +207,6 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
             { label: 'Cohere', value: 'cohere' },
             { label: 'DeepSeek', value: 'deepseek' },
             { label: 'Anthropic', value: 'anthropic' },
-            { label: 'Local', value: 'local' },
             { label: 'LM Studio', value: 'lmstudio' },
           ],
           defaultValue: 'opencodego'
@@ -279,7 +288,86 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           label: 'Tool Mode',
           options: ['auto', 'ask_first', 'disabled'],
           defaultValue: 'auto'
+        }
+      ]
+    }
+  ],
+
+  // local_model section — local GGUF model card (mutually exclusive with LM Studio)
+  local_model: [
+    {
+      id: 'local-model-card',
+      label: 'Local Model',
+      icon: 'HardDrive',
+      fields: [
+        {
+          id: 'local_model_path',
+          type: 'dropdown',
+          label: 'GGUF Model',
+          description: 'Select a loaded GGUF model. Browse & Manage to find more.',
+          options: [], // Populated dynamically by available_models / local_models_scanned events
+          defaultValue: '',
         },
+        {
+          id: 'local_model_profile',
+          type: 'dropdown',
+          label: 'Hardware Profile',
+          options: ['eco', 'balanced', 'performance', 'voice_first', 'research', 'custom'],
+          defaultValue: 'balanced',
+        },
+        {
+          id: 'local_model_ctx',
+          type: 'slider',
+          label: 'Context Length',
+          min: 1024,
+          max: 65536,
+          step: 1024,
+          defaultValue: 16384,
+        },
+        {
+          id: 'local_model_gpu_layers',
+          type: 'slider',
+          label: 'GPU Offload (-1 = auto)',
+          min: -1,
+          max: 128,
+          step: 1,
+          defaultValue: -1,
+        },
+        {
+          id: 'local_model_status',
+          type: 'custom',
+          label: 'Model Status',
+          defaultValue: 'unloaded',
+        },
+        {
+          id: 'browse_local_models_lm',
+          type: 'button',
+          label: 'Browse & Manage Models',
+          action: 'open_models_screen',
+        },
+        {
+          id: 'load_local_model',
+          type: 'button',
+          label: 'Load Model',
+          action: 'load_local_model',
+        },
+        {
+          id: 'unload_local_model',
+          type: 'button',
+          label: 'Unload Model',
+          action: 'unload_local_model',
+        },
+      ]
+    }
+  ],
+
+  // swarm_setup section — multi-agent swarm mode with Director + Workers
+  swarm_setup: [
+    {
+      id: 'swarm-setup-card',
+      label: 'Swarm Setup',
+      icon: 'Network',
+      fields: [
         {
           id: 'swarm_enabled',
           type: 'toggle',
@@ -294,6 +382,38 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           description: 'Auto-configures Director and Worker models',
           options: ['local_fast', 'api_director', 'quality_director'],
           defaultValue: 'local_fast',
+          showIf: { field: 'swarm_enabled', values: [true] }
+        },
+        {
+          id: 'director_source',
+          type: 'dropdown',
+          label: 'Director Source',
+          description: 'Director model source — API provider or local GGUF',
+          options: [
+            { label: 'API Provider', value: 'api' },
+            { label: 'Local GGUF', value: 'local' },
+          ],
+          defaultValue: 'local_fast',
+          showIf: { field: 'swarm_enabled', values: [true] }
+        },
+        {
+          id: 'worker_model',
+          type: 'dropdown',
+          label: 'Workers Model',
+          description: 'GGUF model for swarm workers (populated from scanned GGUFs)',
+          options: [],  // Populated dynamically from scanned models
+          defaultValue: '',
+          showIf: { field: 'swarm_enabled', values: [true] }
+        },
+        {
+          id: 'worker_count',
+          type: 'slider',
+          label: 'Worker Count',
+          description: 'Number of parallel workers (capped by VRAM)',
+          min: 1,
+          max: 8,
+          step: 1,
+          defaultValue: 2,
           showIf: { field: 'swarm_enabled', values: [true] }
         },
         {
@@ -313,58 +433,36 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           label: 'GGUF Models Directory',
           placeholder: '~/.lmstudio/models',
           defaultValue: '',
-          description: 'Directory where GGUF model files are scanned. Defaults to ~/.lmstudio/models from env IRIS_MODELS_DIR.'
-        },
-        // ── Local Inference (single model, not swarm) ────────────────────
-        {
-          id: 'iris_local_model_path',
-          type: 'text',
-          label: 'Selected Model',
-          placeholder: '(none — use Browse & Manage Models below)',
-          defaultValue: '',
-          showIf: { field: 'swarm_enabled', values: [false] }
+          description: 'Directory where GGUF model files are scanned. Defaults to ~/.lmstudio/models from env IRIS_MODELS_DIR.',
+          showIf: { field: 'swarm_enabled', values: [true] }
         },
         {
-          id: 'iris_local_profile',
-          type: 'dropdown',
-          label: 'Hardware Profile',
-          options: ['eco', 'balanced', 'performance', 'voice_first', 'research', 'custom'],
-          defaultValue: 'balanced',
-          showIf: { field: 'swarm_enabled', values: [false] }
-        },
-        {
-          id: 'iris_local_ctx',
-          type: 'slider',
-          label: 'Context Length',
-          min: 1024,
-          max: 65536,
-          step: 1024,
-          defaultValue: 16384,
-          showIf: { field: 'swarm_enabled', values: [false] }
-        },
-        {
-          id: 'iris_local_gpu_layers',
-          type: 'slider',
-          label: 'GPU Offload (-1 = auto)',
-          min: -1,
-          max: 128,
-          step: 1,
-          defaultValue: -1,
-          showIf: { field: 'swarm_enabled', values: [false] }
-        },
-        {
-          id: 'browse_local_models',
+          id: 'browse_swarm_models',
           type: 'button',
           label: 'Browse & Manage Models',
           action: 'open_models_screen',
-          showIf: { field: 'swarm_enabled', values: [false] }
+          showIf: { field: 'swarm_enabled', values: [true] }
         },
         {
           id: 'swarm_status',
           type: 'custom',
           label: 'Swarm Status',
           showIf: { field: 'swarm_enabled', values: [true] }
-        }
+        },
+        {
+          id: 'start_swarm',
+          type: 'button',
+          label: 'Start Swarm',
+          action: 'start_swarm',
+          showIf: { field: 'swarm_enabled', values: [true] }
+        },
+        {
+          id: 'stop_swarm',
+          type: 'button',
+          label: 'Stop Swarm',
+          action: 'stop_swarm',
+          showIf: { field: 'swarm_enabled', values: [true] }
+        },
       ]
     }
   ],
