@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 class VoiceState(str, Enum):
     """Voice command states"""
+
     IDLE = "idle"
     RECORDING = "recording"
     PROCESSING = "processing"
@@ -46,24 +47,27 @@ class VoiceCommandHandler:
     """
 
     # VAD tuning — adjustable per environment
-    VAD_ENERGY_THRESHOLD: float = 0.008   # RMS level that counts as speech
-    VAD_MIN_SPEECH_SEC: float = 0.25      # ignore blips shorter than this
-    VAD_SILENCE_SEC: float = 0.5          # silence after speech → end of utterance
-    VAD_MAX_DURATION_SEC: float = 30.0    # hard cap on recording length
+    VAD_ENERGY_THRESHOLD: float = 0.008  # RMS level that counts as speech
+    VAD_MIN_SPEECH_SEC: float = 0.25  # ignore blips shorter than this
+    VAD_SILENCE_SEC: float = 2.0  # silence after speech → end of utterance (was 0.5)
+    VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
 
     def __init__(self, audio_engine: AudioEngine):
         self.audio_engine = audio_engine
-        self._whisper = None            # lazy-loaded WhisperModel
+        self._whisper = None  # lazy-loaded WhisperModel
         self._whisper_lock = threading.Lock()
 
         # State
         self.state = VoiceState.IDLE
         self.is_recording = False
+        self._recording_started_at = (
+            0.0  # monotonic clock; used for duplicate-fire detection
+        )
         # audio_buffer length checked by iris_gateway (> 30 frames = has real audio).
         # Sentinel Nones keep the count accurate without storing duplicates.
         self.audio_buffer: List = []
-        self._raw_frames: List[np.ndarray] = []   # actual float32 PCM frames
+        self._raw_frames: List[np.ndarray] = []  # actual float32 PCM frames
 
         # Configuration
         self.sample_rate = 16000
@@ -91,7 +95,9 @@ class VoiceCommandHandler:
         # Internal
         self._frame_listener_registered = False
         self._transcription_thread: Optional[threading.Thread] = None
-        self._start_lock = threading.Lock()  # prevents concurrent start_recording() calls
+        self._start_lock = (
+            threading.Lock()
+        )  # prevents concurrent start_recording() calls
 
         # Warm up the STT model immediately (background thread)
         self.warm_up()
@@ -104,7 +110,9 @@ class VoiceCommandHandler:
         """Register callback fired on every state transition."""
         self._on_state_change = callback
 
-    def set_command_result_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+    def set_command_result_callback(
+        self, callback: Callable[[Dict[str, Any]], None]
+    ) -> None:
         """Register callback fired with the transcription result dict."""
         self._on_command_result = callback
 
@@ -126,7 +134,9 @@ class VoiceCommandHandler:
             "speech_started": self.is_recording,
         }
 
-    def start_recording(self, auto_stop: bool = False, pre_speech_timeout_sec: float = 0.0) -> bool:
+    def start_recording(
+        self, auto_stop: bool = False, pre_speech_timeout_sec: float = 0.0
+    ) -> bool:
         """
         Begin recording user speech.
 
@@ -141,7 +151,9 @@ class VoiceCommandHandler:
             True if recording started successfully.
         """
         if not self._start_lock.acquire(blocking=False):
-            logger.warning("[VoiceCommand] start_recording() already in progress — ignoring duplicate call")
+            logger.warning(
+                "[VoiceCommand] start_recording() already in progress — ignoring duplicate call"
+            )
             return False
 
         try:
@@ -149,36 +161,55 @@ class VoiceCommandHandler:
         finally:
             self._start_lock.release()
 
-    def _start_recording_locked(self, auto_stop: bool, pre_speech_timeout_sec: float) -> bool:
+    def _start_recording_locked(
+        self, auto_stop: bool, pre_speech_timeout_sec: float
+    ) -> bool:
         """Inner implementation of start_recording — called only when _start_lock is held."""
         self._auto_stop_mode = auto_stop
         self._pre_speech_timeout_sec = pre_speech_timeout_sec
         if self.is_recording:
-            # A new wake-word arrived while a recording is already in progress.
-            # Cancel the existing take silently so the new one can start fresh.
+            elapsed = time.monotonic() - self._recording_started_at
+            if elapsed < 2.0:
+                # UI double-fire or spurious duplicate within 2 seconds —
+                # ignore rather than disrupt the active recording.
+                logger.debug(
+                    f"[VoiceCommand] Duplicate start ignored "
+                    f"({elapsed:.1f}s since current recording started)"
+                )
+                return False
+            # A new wake-word arrived well after the previous one started.
+            # Cancel the existing take so the new one can start fresh.
             # Without this, the second "hey iris" is silently swallowed and the
             # orb stays frozen until the first recording times out.
-            logger.info("[VoiceCommand] New recording requested while already recording — cancelling previous take")
+            logger.info(
+                "[VoiceCommand] New recording requested while already recording — cancelling previous take"
+            )
             self.cancel_recording()
             # The transcription thread checks _stop_event every ~15 ms (VAD poll
             # interval).  Give it a short window to set is_recording=False before
             # we continue; 50 ms is more than enough.
             import time as _t
-            for _ in range(4):          # up to 4 × 15 ms = 60 ms
+
+            for _ in range(4):  # up to 4 × 15 ms = 60 ms
                 if not self.is_recording:
                     break
                 _t.sleep(0.015)
             if self.is_recording:
                 # Still hasn't stopped — don't double-start, caller will retry
-                logger.warning("[VoiceCommand] Previous recording thread didn't stop in time — skipping new start")
+                logger.warning(
+                    "[VoiceCommand] Previous recording thread didn't stop in time — skipping new start"
+                )
                 return False
 
         try:
             logger.info("[VoiceCommand] Starting recording (faster-whisper)...")
             # Play beep in parallel so recording setup doesn't wait for audio I/O
-            threading.Thread(target=self._play_activation_beep, daemon=True, name="iris-beep").start()
+            threading.Thread(
+                target=self._play_activation_beep, daemon=True, name="iris-beep"
+            ).start()
 
             self.is_recording = True
+            self._recording_started_at = time.monotonic()
             self.audio_buffer = []
             self._raw_frames = []
             self._cancel_event.clear()  # clear any stale cancel from the previous take
@@ -233,7 +264,9 @@ class VoiceCommandHandler:
         """
         if not self.is_recording:
             return
-        logger.info("[VoiceCommand] Recording cancelled by user — skipping transcription")
+        logger.info(
+            "[VoiceCommand] Recording cancelled by user — skipping transcription"
+        )
         self._cancel_event.set()
         self._stop_event.set()
 
@@ -262,7 +295,7 @@ class VoiceCommandHandler:
         import psutil
 
         # RAM guard — require at least 4.0 GB free before attempting model load
-        _avail_gb = psutil.virtual_memory().available / (1024 ** 3)
+        _avail_gb = psutil.virtual_memory().available / (1024**3)
         if _avail_gb < 4.0:
             logger.warning(
                 f"[VoiceCommand] Fallback STT: only {_avail_gb:.1f} GB RAM available "
@@ -277,10 +310,14 @@ class VoiceCommandHandler:
                 )
                 transcript = " ".join(s.text.strip() for s in segments).strip()
                 if transcript:
-                    logger.info(f"[VoiceCommand] Fallback (faster_whisper): '{transcript[:80]}'")
+                    logger.info(
+                        f"[VoiceCommand] Fallback (faster_whisper): '{transcript[:80]}'"
+                    )
                     return transcript
             except Exception as _fw_exc:
-                logger.warning(f"[VoiceCommand] faster_whisper fallback failed: {_fw_exc}")
+                logger.warning(
+                    f"[VoiceCommand] faster_whisper fallback failed: {_fw_exc}"
+                )
 
         # Attempt 2: speech_recognition (Google Web Speech API — last resort)
         try:
@@ -290,7 +327,9 @@ class VoiceCommandHandler:
 
             recognizer = sr.Recognizer()
             # Convert float32 to PCM int16 bytes for speech_recognition
-            import numpy as np
+            # (np is imported at module level; do not re-import locally —
+            #  doing so would shadow np at function scope and trigger
+            #  UnboundLocalError for the earlier use at line ~390.)
             pcm_int16 = (audio_np * 32767).clip(-32768, 32767).astype(np.int16)
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wf:
@@ -302,10 +341,14 @@ class VoiceCommandHandler:
             with sr.AudioFile(buf) as source:
                 audio_data = recognizer.record(source)
             transcript = recognizer.recognize_google(audio_data)
-            logger.info(f"[VoiceCommand] Fallback (speech_recognition): '{transcript[:80]}'")
+            logger.info(
+                f"[VoiceCommand] Fallback (speech_recognition): '{transcript[:80]}'"
+            )
             return transcript
         except Exception as _sr_exc:
-            logger.warning(f"[VoiceCommand] speech_recognition fallback failed: {_sr_exc}")
+            logger.warning(
+                f"[VoiceCommand] speech_recognition fallback failed: {_sr_exc}"
+            )
 
         return ""
 
@@ -315,7 +358,10 @@ class VoiceCommandHandler:
             with self._whisper_lock:
                 if self._whisper is None:
                     from faster_whisper import WhisperModel
-                    logger.info("[VoiceCommand] Loading faster-whisper tiny/int8 on CPU...")
+
+                    logger.info(
+                        "[VoiceCommand] Loading faster-whisper tiny/int8 on CPU..."
+                    )
                     # Always use CPU for STT.  F5-TTS also runs on CPU so keeping
                     # STT on CPU avoids any CUDA context serialisation; tiny/int8
                     # transcribes a 3 s clip in ~80 ms on any modern CPU.
@@ -323,8 +369,8 @@ class VoiceCommandHandler:
                         "tiny",
                         device="cpu",
                         compute_type="int8",
-                        num_workers=1,          # single-threaded is fine for our latency target
-                        cpu_threads=4,          # cap so we don't starve the F5-TTS thread
+                        num_workers=1,  # single-threaded is fine for our latency target
+                        cpu_threads=4,  # cap so we don't starve the F5-TTS thread
                     )
                     logger.info("[VoiceCommand] faster-whisper ready")
         return self._whisper
@@ -347,11 +393,17 @@ class VoiceCommandHandler:
                 # any lazy ONNX/CTranslate2 kernel compilation.
                 silence = np.zeros(int(self.sample_rate * 0.5), dtype=np.float32)
                 list(model.transcribe(silence, language="en", beam_size=1)[0])
-                logger.info("[VoiceCommand] Whisper warm-up complete — first transcription will be instant")
+                logger.info(
+                    "[VoiceCommand] Whisper warm-up complete — first transcription will be instant"
+                )
             except Exception as exc:
-                logger.warning(f"[VoiceCommand] Whisper warm-up failed (non-fatal): {exc}")
+                logger.warning(
+                    f"[VoiceCommand] Whisper warm-up failed (non-fatal): {exc}"
+                )
 
-        threading.Thread(target=_do_warm_up, daemon=True, name="iris-stt-warmup").start()
+        threading.Thread(
+            target=_do_warm_up, daemon=True, name="iris-stt-warmup"
+        ).start()
 
     def _run_transcription(self) -> None:
         """
@@ -375,7 +427,9 @@ class VoiceCommandHandler:
             # to abort a wake-word recording (nothing said, or wants to redo).
             if self._cancel_event.is_set():
                 self._cancel_event.clear()
-                logger.info("[VoiceCommand] Recording cancelled — skipping transcription")
+                logger.info(
+                    "[VoiceCommand] Recording cancelled — skipping transcription"
+                )
                 self._raw_frames = []
                 self.audio_buffer = []
                 self._on_transcription_complete("")
@@ -397,11 +451,11 @@ class VoiceCommandHandler:
             segments, _ = whisper.transcribe(
                 audio_np,
                 language="en",
-                beam_size=1,                # 3× faster than default beam_size=5; quality
-                                            # loss is negligible for conversational STT on tiny
-                best_of=1,                  # no random sampling — deterministic, fastest path
-                condition_on_previous_text=False,   # prevents hallucination drift between clips
-                vad_filter=True,            # faster-whisper built-in VAD for clean segments
+                beam_size=1,  # 3× faster than default beam_size=5; quality
+                # loss is negligible for conversational STT on tiny
+                best_of=1,  # no random sampling — deterministic, fastest path
+                condition_on_previous_text=False,  # prevents hallucination drift between clips
+                vad_filter=True,  # faster-whisper built-in VAD for clean segments
                 vad_parameters={"min_silence_duration_ms": 300},
             )
             transcript = " ".join(s.text.strip() for s in segments).strip()
@@ -420,8 +474,13 @@ class VoiceCommandHandler:
             logger.warning(f"[VoiceCommand] Failed to load native audio model: {e}")
             try:
                 if self._raw_frames:
-                    import numpy as np
-                    audio_np = np.concatenate(self._raw_frames, axis=0).astype(np.float32)
+                    # np is imported at module level; do NOT re-import here
+                    # (a local `import numpy as np` makes the name local
+                    #  throughout the function, breaking the earlier read at
+                    #  line 390 with UnboundLocalError).
+                    audio_np = np.concatenate(self._raw_frames, axis=0).astype(
+                        np.float32
+                    )
                     transcript = self._transcribe_with_fallback(audio_np)
                     if transcript:
                         self._on_transcription_complete(transcript)
@@ -430,7 +489,9 @@ class VoiceCommandHandler:
                             self.audio_buffer = []
                         return
             except Exception as _fb_exc:
-                logger.error(f"[VoiceCommand] _transcribe_with_fallback also failed: {_fb_exc}")
+                logger.error(
+                    f"[VoiceCommand] _transcribe_with_fallback also failed: {_fb_exc}"
+                )
             self._set_state(VoiceState.ERROR, f"Transcription failed: {e}")
             threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
 
@@ -446,13 +507,14 @@ class VoiceCommandHandler:
         If _pre_speech_timeout_sec > 0, gives up if speech onset doesn't
         arrive within that window — used by conversation-mode relisten passes.
         """
-        frame_sec = 512 / self.sample_rate          # ≈ 0.032 s per frame at 16 kHz
+        frame_sec = 512 / self.sample_rate  # ≈ 0.032 s per frame at 16 kHz
         silence_needed = int(self.VAD_SILENCE_SEC / frame_sec)
         speech_needed = int(self.VAD_MIN_SPEECH_SEC / frame_sec)
         max_frames = int(self.VAD_MAX_DURATION_SEC / frame_sec)
         pre_speech_max_frames = (
             int(self._pre_speech_timeout_sec / frame_sec)
-            if self._pre_speech_timeout_sec > 0 else max_frames
+            if self._pre_speech_timeout_sec > 0
+            else max_frames
         )
 
         silence_count = 0
@@ -486,7 +548,12 @@ class VoiceCommandHandler:
                 _level_frame_count += 1
                 if _level_frame_count >= _LEVEL_EMIT_EVERY and self._on_audio_level:
                     # Normalise: divide by 2× threshold so speech ≈ 0.5, loud ≈ 1.0
-                    level = min(1.0, _level_accum / _level_frame_count / (self.VAD_ENERGY_THRESHOLD * 2))
+                    level = min(
+                        1.0,
+                        _level_accum
+                        / _level_frame_count
+                        / (self.VAD_ENERGY_THRESHOLD * 2),
+                    )
                     try:
                         self._on_audio_level(level)
                     except Exception:
@@ -516,7 +583,9 @@ class VoiceCommandHandler:
                             )
                             return  # no speech onset in time → done (empty frames)
 
-        logger.debug(f"[VoiceCommand] VAD: loop ended (frames={total_frames}, speech_started={speech_started})")
+        logger.debug(
+            f"[VoiceCommand] VAD: loop ended (frames={total_frames}, speech_started={speech_started})"
+        )
 
     # -------------------------------------------------------------------------
     # Internal — audio capture
@@ -543,24 +612,28 @@ class VoiceCommandHandler:
         transcript = transcript.strip()
 
         if not transcript:
-            logger.info("[VoiceCommand] Empty transcript — returning empty result to gateway")
+            logger.info(
+                "[VoiceCommand] Empty transcript — returning empty result to gateway"
+            )
             self._set_state(VoiceState.IDLE, "")
             if self._on_command_result:
-                self._on_command_result({
-                    "type":          "voice_transcription",
-                    "transcript":    "",
-                    "audio_context": "",
-                    "session_id":    self._active_session_id,
-                    "status":        "success",
-                })
+                self._on_command_result(
+                    {
+                        "type": "voice_transcription",
+                        "transcript": "",
+                        "audio_context": "",
+                        "session_id": self._active_session_id,
+                        "status": "success",
+                    }
+                )
             return
 
         result: Dict[str, Any] = {
-            "type":          "voice_transcription",
-            "transcript":    transcript,
+            "type": "voice_transcription",
+            "transcript": transcript,
             "audio_context": "",
-            "session_id":    self._active_session_id,
-            "status":        "success",
+            "session_id": self._active_session_id,
+            "status": "success",
         }
 
         if self._on_command_result:

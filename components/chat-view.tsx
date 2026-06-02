@@ -254,7 +254,15 @@ export function ChatWing({
 
   // Derive isTyping: use isChatTyping for text messages (won't animate the orb),
   // and voiceState for voice pipeline processing/tool states.
-  const isTyping = isChatTyping || voiceState === "processing_tool";
+  // localTyping: set optimistically when sending a message; cleared when the
+  // WS/REST acknowledges (chat_typing:true arrives) or after timeout.
+  const [localTyping, setLocalTyping] = useState(false)
+  const isTyping = isChatTyping || voiceState === "processing_tool" || localTyping
+
+  // Clear optimistic localTyping when WS/REST acknowledges the message
+  useEffect(() => {
+    if (isChatTyping) setLocalTyping(false)
+  }, [isChatTyping])
 
   // Get theme colors from BrandColorContext for real-time updates
   const { getThemeConfig } = useBrandColor();
@@ -540,11 +548,84 @@ export function ChatWing({
     }
 
     // Route to crawler if the query looks like a web-research request
-    const msgType = isCrawlerQuery(userMessage.text) ? "crawler_query" : "text_message"
-    const payload = msgType === "crawler_query"
-      ? { query: userMessage.text }
-      : { text: userMessage.text }
-    sendMessage?.(msgType, payload)
+    if (isCrawlerQuery(userMessage.text)) {
+      // Web crawler queries still go through WebSocket (streaming results)
+      sendMessage?.("crawler_query", { query: userMessage.text })
+      return
+    }
+
+    // === Primary path: REST /api/chat (reliable, no WS dependency) ===
+    setLocalTyping(true)
+    const restThreadId = activeConversationId || undefined
+    fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: userMessage.text, thread_id: restThreadId }),
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = await res.text()
+          throw new Error(`POST /api/chat returned ${res.status}: ${body}`)
+        }
+        return res.json()
+      })
+      .then((data) => {
+        setLocalTyping(false)
+        // Store the server-assigned thread_id so subsequent messages
+        // continue the same conversation on the same kernel session.
+        //
+        // BUG FIX: Previously the response handler tried to match the
+        // conversation by `conv.id === data.thread_id || conv.id === restThreadId`.
+        // In the empty-state path, the conversation was created with a LOCAL id
+        // (`Date.now().toString()`) and `restThreadId` was `undefined`, so the
+        // match always failed and the assistant response was silently dropped.
+        //
+        // Fix: do the rename + append in ONE setConversations pass, and fall
+        // back to "the most recent conversation whose last message matches the
+        // text we just sent" so the empty-state flow works correctly.
+        const userText = userMessage.text
+        const newId = data.thread_id
+        const newAssistantMsg = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          sender: "assistant" as const,
+          text: data.content || "",
+          thinking: data.thinking || "",
+          timestamp: new Date(),
+        }
+        setConversations((prev) => {
+          // 1) Find by current active or rest thread id
+          let target = prev.find(c => c.id === restThreadId)
+          // 2) If new server id was already used (re-attached session), use it
+          if (!target && newId) target = prev.find(c => c.id === newId)
+          // 3) Last resort: find a conversation whose LAST message is the
+          //    exact user text we just sent (covers the empty-state case
+          //    where the conversation was just created with a local id).
+          if (!target) {
+            target = [...prev].reverse().find(
+              c => c.messages.length > 0
+                && c.messages[c.messages.length - 1].sender === "user"
+                && c.messages[c.messages.length - 1].text === userText
+            )
+          }
+          if (!target) return prev  // nothing to update; should not happen
+          const finalId = newId || target.id
+          return prev.map((conv) => {
+            if (conv.id !== target!.id) return conv
+            return {
+              ...conv,
+              id: finalId,  // rename to server thread_id if we have one
+              messages: [...conv.messages, newAssistantMsg],
+            }
+          })
+        })
+        if (newId) setActiveConversationId(newId)
+      })
+      .catch((err) => {
+        console.error("[REST primary] /api/chat failed, falling back to WS:", err)
+        setLocalTyping(false)
+        // Fallback: try WebSocket
+        sendMessage?.("text_message", { text: userMessage.text })
+      })
   }
 
   // Conversation management functions
@@ -635,9 +716,15 @@ export function ChatWing({
     sendMessage?.('message_feedback', { message_id: messageId, feedback });
   };
 
-  const handlePlayTTS = (text: string) => {
+  const handlePlayTTS = useRef(false);
+  const handlePlayTTSClick = useCallback((text: string) => {
+    // Prevent overlapping TTS plays from rapid button clicks
+    if (handlePlayTTS.current) return;
+    handlePlayTTS.current = true;
     sendMessage?.('tts_play', { text });
-  };
+    // Reset the guard after a generous timeout; the backend will be done by then
+    setTimeout(() => { handlePlayTTS.current = false; }, 15000);
+  }, [sendMessage]);
 
   // Smart message length handling helpers
   const detectContentType = useCallback((text: string): ContentType => {
@@ -1877,7 +1964,7 @@ ${message.text}`;
                               </button>
                               
                               <button
-                                onClick={() => handlePlayTTS(message.text)}
+                                onClick={() => handlePlayTTSClick(message.text)}
                                 className="p-1.5 rounded transition-colors hover:bg-white/5 text-white/40 hover:text-white/70"
                                 title="Play text-to-speech"
                               >
@@ -2154,7 +2241,7 @@ ${message.text}`;
                 )}
               </AnimatePresence>
 
-              <div className="relative flex items-end gap-6" style={{ marginRight: '12px' }}>
+              <div className="relative flex items-end gap-6" style={{ marginRight: '4px' }}>
                 <div className="flex-1 relative">
                   <textarea
                     ref={inputRef as any}
@@ -2199,7 +2286,7 @@ ${message.text}`;
                 </div>
 
                 {/* Compact Action Group */}
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-0.5 mb-2">
                   {/* Send button */}
                   <motion.button
                     onClick={handleSendMessage}
@@ -2215,15 +2302,7 @@ ${message.text}`;
                     <Send size={18} />
                   </motion.button>
 
-                  {/* Conversation chips — between send and upload */}
-                  <ConversationChips
-                    chips={conversationChips}
-                    glowColor={glowColor}
-                    onChipClick={handleChipClick}
-                    containerRef={messagesContainerRef}
-                  />
-
-                  {/* Hidden file input */}
+                  {/* Upload + hidden file input */}
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -2231,8 +2310,6 @@ ${message.text}`;
                     className="hidden"
                     accept="*/*"
                   />
-
-                  {/* Plus button for file upload */}
                   <motion.button
                     onClick={() => fileInputRef.current?.click()}
                     disabled={voiceState === 'listening'}
@@ -2246,6 +2323,14 @@ ${message.text}`;
                   >
                     <Plus size={18} />
                   </motion.button>
+
+                  {/* Conversation chips */}
+                  <ConversationChips
+                    chips={conversationChips}
+                    glowColor={glowColor}
+                    onChipClick={handleChipClick}
+                    containerRef={messagesContainerRef}
+                  />
 
                 </div>
               </div>

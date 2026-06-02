@@ -23,7 +23,8 @@ import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
-  LayoutDashboard, ShoppingBag, Menu, User, ArrowLeft, RotateCcw, Home, ArrowRight as ArrowRightIcon, ExternalLink, History, AlertCircle, Code, FileCode, Plus as PlusIcon
+  LayoutDashboard, ShoppingBag, Menu, User, ArrowLeft, RotateCcw, Home, ArrowRight as ArrowRightIcon, ExternalLink, History, AlertCircle, Code, FileCode, Plus as PlusIcon,
+  Network as NetworkIcon
 } from 'lucide-react';
 
 interface DarkGlassDashboardProps {
@@ -111,6 +112,7 @@ const getIconComponent = (iconName: string) => {
     'Globe': Globe,
     'Bot': Bot,
     'Settings': Settings,
+    'Network': NetworkIcon,
   };
   return iconMap[iconName] || Boxes;
 };
@@ -162,7 +164,7 @@ function useSectionsData() {
       activity: ['logs'],
       logs: ['analytics'],
       marketplace: ['updates'],
-      agent: ['model_selection', 'inference_mode', 'identity', 'memory'],
+      agent: ['model_selection', 'inference_mode', 'local_model', 'swarm_setup', 'identity', 'memory'],
       automate: ['tools', 'vision', 'desktop_control', 'skills', 'profile'],
       system: ['power', 'display', 'storage', 'network'],
       customize: ['theme', 'startup', 'behavior', 'notifications'],
@@ -248,27 +250,52 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
         </div>
       );
     }
+    // Model status badge (local_model_status)
+    if (field.id === 'local_model_status') {
+      const status = (value as string) || 'unloaded';
+      const statusColors: Record<string, { bg: string; border: string; text: string }> = {
+        loaded: { bg: 'rgba(34,197,94,0.15)', border: 'rgba(34,197,94,0.4)', text: '#22c55e' },
+        unloaded: { bg: 'rgba(148,163,184,0.15)', border: 'rgba(148,163,184,0.4)', text: '#94a3b8' },
+        loading: { bg: 'rgba(59,130,246,0.15)', border: 'rgba(59,130,246,0.4)', text: '#3b82f6' },
+        error: { bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.4)', text: '#ef4444' },
+      };
+      const sc = statusColors[status] || statusColors.unloaded;
+      return (
+        <div className="py-2 col-span-full">
+          <div className="flex items-center justify-between px-3 py-2 rounded-xl text-[10px] uppercase tracking-wider"
+            style={{ background: sc.bg, border: `1px solid ${sc.border}` }}>
+            <span style={{ color: 'rgba(255,255,255,0.5)' }}>MODEL STATUS</span>
+            <span style={{ color: sc.text }}>{status.toUpperCase()}</span>
+          </div>
+        </div>
+      );
+    }
+    // Swarm status badge
+    if (field.id === 'swarm_status') {
+      const state = (value as string) || 'inactive';
+      return (
+        <div className="py-2 col-span-full">
+          <div className="flex items-center justify-between px-3 py-2 rounded-xl text-[10px] uppercase tracking-wider"
+            style={{
+              background: state === 'active' ? 'rgba(139,92,246,0.15)' : 'rgba(148,163,184,0.15)',
+              border: `1px solid ${state === 'active' ? 'rgba(139,92,246,0.4)' : 'rgba(148,163,184,0.4)'}`,
+            }}>
+            <span style={{ color: 'rgba(255,255,255,0.5)' }}>SWARM STATE</span>
+            <span style={{ color: state === 'active' ? '#8b5cf6' : '#94a3b8' }}>
+              {state === 'active' ? 'ACTIVE' : 'INACTIVE'}
+            </span>
+          </div>
+        </div>
+      );
+    }
+    // Generic custom fallback
     return (
       <div className="py-2 col-span-full">
-        <button
-          onClick={() => setValue("trigger")}
-          className="w-full py-2 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all"
-          style={{
-            background: `${glowColor}15`,
-            border: `1px solid ${glowColor}44`,
-            color: glowColor
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = `${glowColor}25`
-            e.currentTarget.style.borderColor = `${glowColor}66`
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = `${glowColor}15`
-            e.currentTarget.style.borderColor = `${glowColor}44`
-          }}
-        >
-          {field.label}
-        </button>
+        <div className="flex items-center justify-between px-3 py-2 rounded-xl text-[10px] tracking-wider"
+          style={{ background: `${glowColor}10`, border: `1px solid ${glowColor}30` }}>
+          <span style={{ color: 'rgba(255,255,255,0.5)' }}>{field.label}</span>
+          <span style={{ color: glowColor }}>{String(value || '—')}</span>
+        </div>
       </div>
     );
   }
@@ -318,7 +345,7 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_model' || field.id === 'tool_execution_model')) options = availableModels || [];
     if (sectionId === 'input' && field.id === 'input_device') options = audioInputDevices || [];
     if (sectionId === 'output' && field.id === 'output_device') options = audioOutputDevices || [];
-    if (sectionId === 'wake' && field.id === 'wake_word') options = wakeWords && wakeWords.length > 0 ? wakeWords : (field.options || []);
+    if (sectionId === 'wake' && (field.id === 'wake_word' || field.id === 'wake_phrase')) options = wakeWords && wakeWords.length > 0 ? wakeWords : (field.options || []);
     
     return (
       <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
@@ -476,9 +503,32 @@ export function DarkGlassDashboard({
   // Initialized from the WS-supplied contextFieldValues and kept in sync via iris:initial_state.
   // Writing through localUpdateField ensures the UI reflects user changes immediately, without
   // waiting for a backend round-trip (which only updates contextFieldValues via WS).
+  //
+  // Persists to localStorage under "iris-dash-field-values" to survive DashboardWing un-mounts
+  // (which happen every time the user navigates away from the dashboard).
   const [localFieldValues, setLocalFieldValues] = useState<Record<string, Record<string, any>>>(
-    () => (propFieldValues || contextFieldValues || {}) as Record<string, Record<string, any>>
+    () => {
+      // 1) Check localStorage cache first (survives component unmounts)
+      try {
+        const cached = localStorage.getItem('iris-dash-field-values');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+            return parsed as Record<string, Record<string, any>>;
+          }
+        }
+      } catch {}
+      // 2) Fall through to WS context or empty
+      return (propFieldValues || contextFieldValues || {}) as Record<string, Record<string, any>>;
+    }
   );
+
+  // Persist localFieldValues to localStorage on every change.
+  useEffect(() => {
+    try {
+      localStorage.setItem('iris-dash-field-values', JSON.stringify(localFieldValues));
+    } catch {}
+  }, [localFieldValues]);
 
   // Seed localFieldValues once contextFieldValues arrives from the WS hook on first load.
   // Clear stale card value cache — the new provider→models mapping uses
@@ -703,12 +753,14 @@ export function DarkGlassDashboard({
 
   // Update model dropdown options when provider changes
   useEffect(() => {
+    let mounted = true;
     const provider = fieldValues?.model_selection?.model_provider || '';
     providerRef.current = provider;
     const models = PROVIDER_MODELS[provider];
-    if (models) {
+    if (models && mounted) {
       setAvailableModels(models);
     }
+    return () => { mounted = false; };
   }, [fieldValues?.model_selection?.model_provider]);
 
   // Fetch device lists and models whenever the relevant tab is active
@@ -796,15 +848,35 @@ export function DarkGlassDashboard({
 
     setIsApplying(true);
     try {
-      // Mirror WheelView's confirm flow: send 'confirm_card' via WebSocket for
-      // each visible section so the backend applies the changes immediately.
-      if (sendMessage && activeSections.length > 0) {
-        for (const section of activeSections) {
-          const sectionValues = localFieldValues[section.id] || {};
+      // Send 'confirm_card' for EVERY section that has values, not just the
+      // currently-visible tab.  This way voice / model / theme changes are
+      // persisted regardless of which tab the user was on when they clicked APPLY.
+      const allSections = Object.entries(localFieldValues).filter(
+        ([_sectionId, values]) => values && typeof values === 'object' && Object.keys(values).length > 0
+      );
+      for (const [sectionId, sectionValues] of allSections) {
+        
+        // Try WebSocket first (fast path)
+        if (sendMessage) {
           sendMessage('confirm_card', {
-            section_id: section.id,
+            section_id: sectionId,
             values: sectionValues,
           });
+        }
+        
+        // Also call HTTP API as reliable fallback (works even if WebSocket is down)
+        try {
+          await fetch('/api/config/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              section_id: sectionId,
+              card_id: sectionId,
+              values: sectionValues,
+            }),
+          });
+        } catch (fetchErr) {
+          console.warn('[DarkGlassDashboard] HTTP fallback failed:', fetchErr);
         }
       }
       // Keep the button disabled for at least 2s so the backend can process
@@ -846,7 +918,7 @@ export function DarkGlassDashboard({
     <motion.nav 
       initial={false}
       animate={{ 
-        width: isSidebarHidden ? 0 : (isRailExpanded ? 150 : 56),
+        width: isSidebarHidden ? 0 : (isRailExpanded ? 120 : 56),
         opacity: isSidebarHidden ? 0 : 1,
         x: isSidebarHidden ? -20 : 0
       }}
@@ -901,26 +973,31 @@ export function DarkGlassDashboard({
       <div className="h-[1px] bg-white/[0.05] mx-4 mb-4" />
 
       <div className="flex-1 py-1 overflow-y-auto scrollbar-hide">
-        <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-3 px-2">
           {MAIN_NODES_DATA.filter(n => !('developerOnly' in n && n.developerOnly && irisMode !== 'developer')).map((node) => {
             const Icon = node.icon;
             const isActive = activeTab === node.id && !activeSubApp;
+            const isExpanded = isRailExpanded;
             return (
               <button
                 key={node.id}
                 onClick={() => handleTabChange(node.id)}
-                className="group w-full flex items-center px-4 py-3 transition-colors relative"
+                className="group w-full flex items-center justify-center transition-all duration-200 relative rounded-full"
+                style={{
+                  height: 34,
+                  backgroundColor: isActive ? `${glowColor}2E` : 'transparent',
+                  border: isActive ? `1px solid ${glowColor}40` : '1px solid transparent',
+                  boxShadow: isActive ? `0 0 12px ${glowColor}26` : 'none',
+                  ...(isExpanded ? { paddingLeft: 12, paddingRight: 12, justifyContent: 'flex-start' } : { width: 34, margin: '0 auto' }),
+                }}
+                title={isExpanded ? undefined : node.label}
               >
-                <div className="absolute inset-y-1 inset-x-2 rounded-lg transition-colors" style={{ backgroundColor: isActive ? `${glowColor}10` : 'transparent' }} />
-                <div className="relative flex items-center w-full">
-                  <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
-                  {isRailExpanded && (
-                    <span className="ml-3 text-[11px] font-black uppercase tracking-[0.2em]" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.4)' }}>
-                      {node.label}
-                    </span>
-                  )}
-                  {isActive && <div className="absolute -left-4 top-1 bottom-1 w-[2px]" style={{ backgroundColor: glowColor }} />}
-                </div>
+                <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
+                {isExpanded && (
+                  <span className="ml-2.5 text-[10px] font-semibold tracking-wider whitespace-nowrap" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.35)' }}>
+                    {node.label}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -936,7 +1013,7 @@ export function DarkGlassDashboard({
             <div className="flex flex-col min-w-0">
               <span className="text-[11px] font-semibold text-white truncate">Online</span>
               <span className="text-[9px] text-white/40 truncate">
-            Model: {(localFieldValues?.model_selection?.reasoning_model as string) || 'LFM-2-8B'}
+            Model: {(localFieldValues?.model_selection?.reasoning_model as string) || (localFieldValues?.local_model?.local_model_path as string) || 'No model'}
           </span>
             </div>
           )}
@@ -1017,7 +1094,7 @@ export function DarkGlassDashboard({
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
           <Brain className="w-3 h-3" style={{ color: glowColor }} />
           <span className="text-[9px] font-medium tracking-wide text-white/80">
-            {((localFieldValues?.model_selection?.reasoning_model as string) || 'LFM-2-8B').toUpperCase()} READY
+            {((localFieldValues?.model_selection?.reasoning_model as string) || (localFieldValues?.local_model?.local_model_path as string) || 'No model').toUpperCase()} READY
           </span>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
@@ -1030,6 +1107,15 @@ export function DarkGlassDashboard({
               : 'SYSTEM IDLE'}
           </span>
         </div>
+        <button 
+          onClick={() => handleSubAppChange('models')}
+          className="px-4 py-1.5 rounded-lg text-[9px] font-bold tracking-wider transition-all border text-white/70 hover:text-white flex items-center gap-1.5"
+          style={{ borderColor: 'rgba(255,255,255,0.15)' }}
+          title="Browse & Manage Models"
+        >
+          <HardDrive size={12} />
+          MODELS
+        </button>
       </div>
       <div className="flex items-center gap-4 ml-auto">
         <button 

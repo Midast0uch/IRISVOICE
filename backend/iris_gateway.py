@@ -136,6 +136,21 @@ class IRISGateway:
         # itself when it first runs.
         self._tts_prewarmed = True  # no startup prewarm — lazy load on first use
 
+    # ── Routing Mode Resolver ──────────────────────────────────────────────
+    def _resolve_routing_mode(self) -> str:
+        """
+        Read config and return the effective routing mode string.
+        Swarm takes priority — when enabled, routing mode is 'SWARM'.
+        Otherwise returns the configured provider (api, lmstudio, ollama, iris_local).
+        """
+        try:
+            cfg = load_config()
+            if cfg.inference.swarm_enabled:
+                return "SWARM"
+            return cfg.inference.provider or "api"
+        except Exception:
+            return "api"
+
     def set_main_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Capture the running event loop for background task dispatch.
 
@@ -312,6 +327,15 @@ class IRISGateway:
             # Local GGUF model management (llama-cpp-python on port 8082)
             elif msg_type == "get_local_models":
                 await self._handle_get_local_models(session_id, client_id, message)
+
+            elif msg_type == "load_local_model":
+                await self._handle_load_local_model(session_id, client_id, message)
+
+            elif msg_type == "unload_local_model":
+                await self._handle_unload_local_model(session_id, client_id, message)
+
+            elif msg_type in ("start_swarm", "stop_swarm", "swarm_action"):
+                await self._handle_swarm_action(session_id, client_id, message)
 
             elif msg_type == "load_local_model":
                 await self._handle_load_local_model(session_id, client_id, message)
@@ -574,6 +598,10 @@ class IRISGateway:
             client_id: Client ID
             message: Message dictionary
         """
+        # Load current config at function entry so subsequent references to `cfg`
+        # resolve to the live config (this function also reassigns `cfg` later,
+        # which would otherwise cause UnboundLocalError on the early read).
+        cfg = load_config()
         msg_type = message.get("type")
         payload = message.get("payload", {})
 
@@ -1146,42 +1174,45 @@ class IRISGateway:
 
                     # Persist model config via IRISConfig (single source of truth)
                     try:
-                        from .iris_config import RoutingMode
+                        from .iris_config import with_modify_config, RoutingMode
 
-                        cfg = load_config()
-                        cfg.inference.provider = provider or ""
-                        cfg.inference.reasoning_model = reasoning or ""
-                        cfg.inference.tool_execution_model = tool_exec or ""
-                        # Derive base URL from provider name or use lmstudio_endpoint
-                        _provider_endpoints = {
-                            "opencodego": "https://opencode.ai/zen/go/v1",
-                            "cerebras": "https://api.cerebras.ai/v1",
-                            "chutes": "https://llm.chutes.ai/v1",
-                            "cohere": "https://api.cohere.ai/compatibility/v1",
-                            "deepseek": "https://api.deepseek.com",
-                            "anthropic": "https://api.anthropic.com/v1",
-                        }
-                        if provider in _provider_endpoints:
-                            cfg.inference.api_base_url = _provider_endpoints[provider]
-                            cfg.inference.api_key = values.get("api_key", "")
-                        elif provider == "lmstudio":
-                            cfg.inference.api_base_url = values.get(
-                                "lmstudio_endpoint", "http://localhost:1234"
-                            )
-                        elif provider in ("local", "iris_local"):
-                            # Local GGUF — endpoint is the in-process llama server
-                            cfg.inference.api_base_url = ""
-                            cfg.routing.mode = RoutingMode.SINGLE_LOCAL
-                            cfg.inference.provider = "local"
-                        # Routing: model_selection only handles API/endpoint providers.
-                        # LOCAL/SWARM routing is set by inference_mode confirm_card.
-                        if provider not in ("local", "iris_local"):
-                            cfg.routing.mode = RoutingMode.SINGLE_API
-                            # Force swarm OFF for API providers — prevents stale
-                            # swarm config from overriding the API provider selection
-                            # when the initial state is loaded from localStorage.
-                            cfg.inference.swarm_enabled = False
-                        save_config(cfg)
+                        def _update_model_config(cfg):
+                            cfg.inference.provider = provider or ""
+                            cfg.inference.reasoning_model = reasoning or ""
+                            cfg.inference.tool_execution_model = tool_exec or ""
+                            # Derive base URL from provider name or use lmstudio_endpoint
+                            _provider_endpoints = {
+                                "opencodego": "https://opencode.ai/zen/go/v1",
+                                "cerebras": "https://api.cerebras.ai/v1",
+                                "chutes": "https://llm.chutes.ai/v1",
+                                "cohere": "https://api.cohere.ai/compatibility/v1",
+                                "deepseek": "https://api.deepseek.com",
+                                "anthropic": "https://api.anthropic.com/v1",
+                            }
+                            if provider in _provider_endpoints:
+                                cfg.inference.api_base_url = _provider_endpoints[
+                                    provider
+                                ]
+                                cfg.inference.api_key = values.get("api_key", "")
+                            elif provider == "lmstudio":
+                                cfg.inference.api_base_url = values.get(
+                                    "lmstudio_endpoint", "http://localhost:1234"
+                                )
+                            elif provider in ("local", "iris_local"):
+                                # Local GGUF — endpoint is the in-process llama server
+                                cfg.inference.api_base_url = ""
+                                cfg.routing.mode = RoutingMode.SINGLE_LOCAL
+                                cfg.inference.provider = "local"
+                            # Routing: model_selection only handles API/endpoint providers.
+                            # LOCAL/SWARM routing is set by inference_mode confirm_card.
+                            if provider not in ("local", "iris_local"):
+                                cfg.routing.mode = RoutingMode.SINGLE_API
+                                # Force swarm OFF for API providers — prevents stale
+                                # swarm config from overriding the API provider selection
+                                # when the initial state is loaded from localStorage.
+                                cfg.inference.swarm_enabled = False
+
+                        cfg = with_modify_config(_update_model_config)
                         self._logger.info(
                             f"[Session: {session_id}] Model config persisted via IRISConfig",
                             extra={"session_id": session_id},
@@ -1194,6 +1225,91 @@ class IRISGateway:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying model selection on confirm: {e}",
                         extra={"session_id": session_id, "client_id": client_id},
+                    )
+
+            # ── Local Model card ──────────────────────────────────────────
+            # Apply local_model card values when that section is confirmed.
+            # NOTE: This only saves config. Model loading is triggered by the
+            # Load button (action: load_local_model) in the card.
+            elif section_id == "local_model" and values:
+                try:
+                    cfg = load_config()
+                    path = values.get("local_model_path", "")
+                    profile = values.get("local_model_profile", "balanced")
+                    ctx = int(values.get("local_model_ctx", 16384))
+                    gpu_layers = int(values.get("local_model_gpu_layers", -1))
+                    models_dir = values.get("models_directory", "").strip()
+
+                    # Auto-unload previous model if model changed and one is loaded
+                    if (
+                        cfg.inference.local_model_status == "loaded"
+                        and path != cfg.inference.local_model_path
+                    ):
+                        try:
+                            from .agent.local_model_manager import (
+                                get_local_model_manager,
+                            )
+
+                            mgr = get_local_model_manager()
+                            if mgr.is_loaded():
+                                await mgr.unload_model()
+                                self._logger.info(
+                                    f"[Session: {session_id}] Auto-unloaded previous model on config change"
+                                )
+                        except Exception as ul_e:
+                            self._logger.warning(
+                                f"[Session: {session_id}] Auto-unload failed: {ul_e}"
+                            )
+                        cfg.inference.local_model_status = "unloaded"
+
+                    cfg.inference.local_model_path = path
+                    cfg.inference.local_model_profile = profile
+                    cfg.inference.local_model_ctx = ctx
+                    cfg.inference.local_model_gpu_layers = gpu_layers
+                    if models_dir:
+                        cfg.inference.models_directory = models_dir
+                        cfg.inference.local_model_path = ""
+                        from .agent.local_model_manager import get_local_model_manager
+
+                        mgr = get_local_model_manager()
+                        mgr.set_models_directory(models_dir)
+                    save_config(cfg)
+                    self._logger.info(
+                        f"[Session: {session_id}] Local model config saved on confirm: "
+                        f"path={path}, profile={profile}, ctx={ctx}, gpu_layers={gpu_layers}"
+                    )
+                except Exception as e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying local_model: {e}",
+                        exc_info=True,
+                    )
+
+            # ── Swarm Setup card ──────────────────────────────────────────
+            # Apply swarm_setup card values when that section is confirmed.
+            # NOTE: This only saves config. Swarm is started/stopped by the
+            # Start Swarm / Stop Swarm buttons in the card.
+            elif section_id == "swarm_setup" and values:
+                try:
+                    cfg = load_config()
+                    swarm_on = bool(values.get("swarm_enabled", False))
+                    mode = values.get("swarm_mode", "local_fast")
+                    worker_ctx = int(values.get("worker_context", 2048))
+                    models_dir = values.get("models_directory", "").strip()
+
+                    cfg.inference.swarm_enabled = swarm_on
+                    cfg.inference.swarm_mode = mode
+                    cfg.inference.worker_context = str(worker_ctx)
+                    if models_dir:
+                        cfg.inference.models_directory = models_dir
+                    save_config(cfg)
+                    self._logger.info(
+                        f"[Session: {session_id}] Swarm config saved on confirm: "
+                        f"enabled={swarm_on}, mode={mode}, worker_ctx={worker_ctx}"
+                    )
+                except Exception as e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying swarm_setup: {e}",
+                        exc_info=True,
                     )
 
             # Apply memory settings when the memory section is confirmed.
@@ -1873,7 +1989,8 @@ class IRISGateway:
                         f"[Voice] TTS synthesizing {len(text.split())} words in single pass"
                     )
                     for audio_chunk in tts.synthesize_stream(text):
-                        if interrupted.is_set():
+                        if interrupted.is_set() or engine.is_speech_interrupted():
+                            interrupted.set()
                             break
                         if audio_chunk is not None and len(audio_chunk) > 0:
                             if _native:
@@ -1898,7 +2015,11 @@ class IRISGateway:
                     while True:
                         item = input_source.get()
                         if item is None:
-                            if _pending and not interrupted.is_set():
+                            if (
+                                _pending
+                                and not interrupted.is_set()
+                                and not engine.is_speech_interrupted()
+                            ):
                                 chunk = " ".join(_pending)
                                 for audio_chunk in tts.synthesize_stream(chunk):
                                     if audio_chunk is not None and len(audio_chunk) > 0:
@@ -1923,7 +2044,7 @@ class IRISGateway:
                         if _pending_words >= _target or (
                             is_first_chunk and len(_pending) >= 1
                         ):
-                            if interrupted.is_set():
+                            if interrupted.is_set() or engine.is_speech_interrupted():
                                 break
                             chunk = " ".join(_pending)
                             for audio_chunk in tts.synthesize_stream(chunk):
@@ -2329,6 +2450,43 @@ class IRISGateway:
                 await self._ws_manager.send_to_client(
                     client_id, {"type": "chat_typing", "payload": {"active": False}}
                 )
+                # Translate the raw exception into a friendly user-facing message.
+                # Common cases: 401 wrong key, 404 model not found, 429 rate limit.
+                err_str = str(e)
+                user_msg = err_str
+                for prefix in ("Agent kernel error: ", "Agent kernel error:"):
+                    if user_msg.startswith(prefix):
+                        user_msg = user_msg[len(prefix) :]
+                        break
+                # Try to extract a clean message field from any embedded JSON blob.
+                import json as _json
+
+                try:
+                    blob_start = user_msg.find("{")
+                    if blob_start != -1:
+                        parsed = _json.loads(user_msg[blob_start:])
+                        if isinstance(parsed, dict) and "message" in parsed:
+                            user_msg = parsed["message"]
+                except Exception:
+                    pass
+                # Bucket the error so the frontend can style it.
+                if "API returned 401" in err_str or "API returned 403" in err_str:
+                    friendly = (
+                        f"API key rejected by upstream. "
+                        f"Check your key in SYSTEM HUD. ({user_msg})"
+                    )
+                elif "API returned 404" in err_str:
+                    friendly = (
+                        f"Model not found at upstream. "
+                        f"Check the model name in SYSTEM HUD. ({user_msg})"
+                    )
+                elif "API returned 429" in err_str:
+                    friendly = (
+                        f"Upstream rate limit hit. Please wait and try again. "
+                        f"({user_msg})"
+                    )
+                else:
+                    friendly = f"Agent kernel error: {user_msg}"
                 # Send error as chat_message so it appears in the chat UI
                 await self._ws_manager.send_to_client(
                     client_id,
@@ -2336,13 +2494,13 @@ class IRISGateway:
                         "type": "chat_message",
                         "payload": {
                             "role": "error",
-                            "content": f"Agent kernel error: {str(e)}",
+                            "content": friendly,
                             "timestamp": datetime.now().isoformat(),
                             "turn_id": turn_id,
                         },
                     },
                 )
-                await self._send_error(client_id, f"Agent kernel error: {str(e)}")
+                await self._send_error(client_id, friendly)
 
             # Flush any buffered chunks/messages that failed to send mid-inference.
             # This ensures reconnecting clients get the full response replay.
@@ -5362,6 +5520,197 @@ class IRISGateway:
             )
         except Exception as e:
             self._logger.error(f"[LocalModel] get_hardware_info error: {e}")
+
+    # ── Swarm Action Handler ───────────────────────────────────────────────
+    async def _handle_swarm_action(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """Handle start_swarm / stop_swarm / swarm_action messages from card buttons."""
+        action = message.get("type", "")
+        # Normalise — cards send "start_swarm" / "stop_swarm" directly
+        if action == "swarm_action":
+            action = message.get("action", "")
+        payload = message.get("payload", {})
+
+        try:
+            from .agent.swarm_inference_manager import SwarmInferenceManager
+
+            mgr = SwarmInferenceManager()
+            cfg = load_config()
+
+            if action == "start_swarm":
+                self._logger.info(
+                    f"[Session: {session_id}] Starting swarm (mode={cfg.inference.swarm_mode})"
+                )
+                await mgr.start_swarm(
+                    director_model=cfg.inference.reasoning_model,
+                    worker_count=cfg.inference.swarm_worker_count,
+                    mode=cfg.inference.swarm_mode,
+                )
+                cfg.inference.swarm_enabled = True
+                save_config(cfg)
+                # Notify dashboard
+                await self._broadcast_json(
+                    {
+                        "type": "swarm_status",
+                        "title": "Swarm Started",
+                        "message": f"Swarm active — {cfg.inference.swarm_worker_count} workers",
+                        "progress": 100,
+                        "status": "active",
+                    }
+                )
+
+            elif action == "stop_swarm":
+                self._logger.info(f"[Session: {session_id}] Stopping swarm")
+                await mgr.stop_swarm()
+                cfg.inference.swarm_enabled = False
+                save_config(cfg)
+                await self._broadcast_json(
+                    {
+                        "type": "swarm_status",
+                        "title": "Swarm Stopped",
+                        "message": "All swarm workers terminated",
+                        "status": "inactive",
+                    }
+                )
+
+            else:
+                self._logger.warning(
+                    f"[Session: {session_id}] Unknown swarm action: {action}"
+                )
+
+        except Exception as e:
+            self._logger.error(
+                f"[Session: {session_id}] Swarm action failed: {e}", exc_info=True
+            )
+            await self._send_json(
+                client_id,
+                {
+                    "type": "swarm_status",
+                    "title": "Swarm Error",
+                    "message": str(e),
+                    "status": "error",
+                },
+            )
+
+    # ── Local Model Load/Unload Handlers ────────────────────────────────────
+    async def _handle_load_local_model(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """Load a local GGUF model via the LocalModelManager."""
+        try:
+            from .agent.local_model_manager import get_local_model_manager
+
+            cfg = load_config()
+            model_path = cfg.inference.local_model_path
+            if not model_path:
+                await self._send_json(
+                    client_id,
+                    {
+                        "type": "model_load_progress",
+                        "title": "Model Load Error",
+                        "message": "No model selected. Choose a model first.",
+                        "status": "error",
+                        "progress": 0,
+                    },
+                )
+                return
+
+            mgr = get_local_model_manager()
+            self._logger.info(
+                f"[Session: {session_id}] Loading local model: {model_path}"
+            )
+            await self._broadcast_json(
+                {
+                    "type": "model_load_progress",
+                    "title": "Loading Model",
+                    "message": f"Loading {model_path}...",
+                    "progress": 10,
+                    "status": "loading",
+                }
+            )
+
+            await mgr.load_model(
+                model_path=model_path,
+                gpu_layers=cfg.inference.local_model_gpu_layers,
+                context_length=cfg.inference.local_model_ctx,
+                hardware_profile=cfg.inference.local_model_profile,
+            )
+
+            cfg.inference.local_model_status = "loaded"
+            save_config(cfg)
+
+            await self._broadcast_json(
+                {
+                    "type": "model_load_progress",
+                    "title": "Model Loaded",
+                    "message": f"{model_path} ready",
+                    "progress": 100,
+                    "status": "loaded",
+                }
+            )
+            self._logger.info(
+                f"[Session: {session_id}] Local model loaded: {model_path}"
+            )
+
+        except Exception as e:
+            self._logger.error(
+                f"[Session: {session_id}] Failed to load local model: {e}",
+                exc_info=True,
+            )
+            cfg = load_config()
+            cfg.inference.local_model_status = "error"
+            save_config(cfg)
+            await self._broadcast_json(
+                {
+                    "type": "model_load_progress",
+                    "title": "Model Load Error",
+                    "message": str(e),
+                    "status": "error",
+                    "progress": 0,
+                }
+            )
+
+    async def _handle_unload_local_model(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """Unload the currently loaded local GGUF model."""
+        try:
+            from .agent.local_model_manager import get_local_model_manager
+
+            mgr = get_local_model_manager()
+            self._logger.info(f"[Session: {session_id}] Unloading local model")
+            await mgr.unload_model()
+
+            cfg = load_config()
+            cfg.inference.local_model_status = "unloaded"
+            save_config(cfg)
+
+            await self._broadcast_json(
+                {
+                    "type": "model_load_progress",
+                    "title": "Model Unloaded",
+                    "message": "Local model unloaded successfully",
+                    "progress": 0,
+                    "status": "unloaded",
+                }
+            )
+            self._logger.info(f"[Session: {session_id}] Local model unloaded")
+
+        except Exception as e:
+            self._logger.error(
+                f"[Session: {session_id}] Failed to unload local model: {e}",
+                exc_info=True,
+            )
+            await self._broadcast_json(
+                {
+                    "type": "model_load_progress",
+                    "title": "Unload Error",
+                    "message": str(e),
+                    "status": "error",
+                    "progress": 0,
+                }
+            )
 
     async def _handle_download_gguf_model(
         self, session_id: str, client_id: str, message: dict

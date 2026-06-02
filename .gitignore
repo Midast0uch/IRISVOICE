@@ -74,7 +74,16 @@ test_image.png
 # tailscale
 tailscale_active.png
 
-# llama.cpp build (in-project compile — build artifacts only)
+# llama.cpp forks (external dependencies, not committed)
 llama.cpp/build/
 llama.cpp/CMakeCache.txt
 llama.cpp/CMakeFiles/
+ik_llama.cpp/build_ik/
+ik_llama.cpp/CMakeCache.txt
+ik_llama.cpp/CMakeFiles/
+llama-cpp-turboquant/
+
+# build scripts (generated)
+build_*.bat
+bench_*.bat
+**/__pycache__/

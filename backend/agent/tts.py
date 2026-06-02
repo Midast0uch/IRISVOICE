@@ -21,17 +21,24 @@ Lock discipline
   inference so synthesis never blocks the consumer's audio-queue timeout.
   The lock is NOT reentrant — do not acquire it inside _stream_f5tts.
 """
+
+import gc
 import logging
+import math
 import os
+import queue
+import random
 import re
-import sys
-import tempfile
 import threading
+import time
+import tempfile
+import traceback
 import wave
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Generator
+from typing import Any, Dict, Generator, List, Optional
 
 import numpy as np
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -39,21 +46,21 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-F5TTS_NATIVE_RATE:  int = 24_000  # F5-TTS native output sample rate
-PIPER_NATIVE_RATE:  int = 22_050  # Piper ryan-high native rate
+F5TTS_NATIVE_RATE: int = 24_000  # F5-TTS native output sample rate
+PIPER_NATIVE_RATE: int = 22_050  # Piper ryan-high native rate
 OUTPUT_SAMPLE_RATE: int = F5TTS_NATIVE_RATE  # pipeline rate
 PYTTSX_NATIVE_RATE: int = 22_050
-SAMPLE_RATE:        int = OUTPUT_SAMPLE_RATE  # legacy alias
+SAMPLE_RATE: int = OUTPUT_SAMPLE_RATE  # legacy alias
 
 # Paths (relative to this file: backend/agent/tts.py)
-_THIS_DIR    = Path(__file__).parent          # backend/agent/
-_BACKEND_DIR = _THIS_DIR.parent               # backend/
-_PROJECT_DIR = _BACKEND_DIR.parent            # IRISVOICE/
+_THIS_DIR = Path(__file__).parent  # backend/agent/
+_BACKEND_DIR = _THIS_DIR.parent  # backend/
+_PROJECT_DIR = _BACKEND_DIR.parent  # IRISVOICE/
 
 REFERENCE_AUDIO = _PROJECT_DIR / "data" / "TOMV2.wav"
 
 # Piper TTS — fast CPU engine (RTF ~0.04x). Used as fallback.
-PIPER_MODEL_DIR  = _BACKEND_DIR / "voice" / "piper_models"
+PIPER_MODEL_DIR = _BACKEND_DIR / "voice" / "piper_models"
 PIPER_MODEL_ONNX = PIPER_MODEL_DIR / "en_US-ryan-high.onnx"
 
 AVAILABLE_VOICES: List[str] = ["Cloned Voice", "Built-in"]
@@ -66,6 +73,7 @@ F5TTS_MODEL = "F5TTS_v1_Base"
 # Helper — resample to pipeline rate
 # ---------------------------------------------------------------------------
 
+
 def _resample(audio: np.ndarray, orig_sr: int) -> np.ndarray:
     """Resample *audio* (float32) from *orig_sr* to OUTPUT_SAMPLE_RATE.
 
@@ -76,21 +84,23 @@ def _resample(audio: np.ndarray, orig_sr: int) -> np.ndarray:
         return audio.astype(np.float32)
     try:
         from scipy.signal import resample as _sp_resample
+
         n_out = int(len(audio) * OUTPUT_SAMPLE_RATE / orig_sr)
         return _sp_resample(audio, n_out).astype(np.float32)
     except Exception as exc:
-        logger.warning(f"[TTSManager] scipy resample failed ({exc}); using numpy interp fallback")
+        logger.warning(
+            f"[TTSManager] scipy resample failed ({exc}); using numpy interp fallback"
+        )
         n_out = int(len(audio) * OUTPUT_SAMPLE_RATE / orig_sr)
         return np.interp(
-            np.linspace(0, len(audio) - 1, n_out),
-            np.arange(len(audio)),
-            audio
+            np.linspace(0, len(audio) - 1, n_out), np.arange(len(audio)), audio
         ).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
 # Helper — sentence chunker
 # ---------------------------------------------------------------------------
+
 
 def _split_into_chunks(text: str, max_chars: int = 200) -> List[str]:
     """Split *text* into sentence-level chunks suitable for F5-TTS synthesis.
@@ -100,7 +110,7 @@ def _split_into_chunks(text: str, max_chars: int = 200) -> List[str]:
     Empty chunks are discarded.
     """
     # Split at sentence boundaries
-    raw = re.split(r'(?<=[.!?])\s+', text.strip())
+    raw = re.split(r"(?<=[.!?])\s+", text.strip())
     chunks: List[str] = []
     for sentence in raw:
         sentence = sentence.strip()
@@ -110,7 +120,7 @@ def _split_into_chunks(text: str, max_chars: int = 200) -> List[str]:
             chunks.append(sentence)
         else:
             # Long sentence — split further at commas
-            parts = re.split(r',\s+', sentence)
+            parts = re.split(r",\s+", sentence)
             buf = ""
             for part in parts:
                 if buf and len(buf) + len(part) + 2 > max_chars:
@@ -126,6 +136,7 @@ def _split_into_chunks(text: str, max_chars: int = 200) -> List[str]:
 # ---------------------------------------------------------------------------
 # TTSManager
 # ---------------------------------------------------------------------------
+
 
 class TTSManager:
     """
@@ -173,23 +184,42 @@ class TTSManager:
         self._engine_selected = False
 
         self.config: Dict[str, Any] = {
-            "tts_enabled":   True,
+            "tts_enabled": True,
             # F5-TTS is always the primary TTS engine.
             # "Cloned Voice" = F5-TTS primary (default).
             # "Built-in"     = force Piper (skips F5-TTS).
             # In both cases Piper → pyttsx3 are available as automatic fallbacks.
-            "tts_voice":     "Cloned Voice",
+            #
+            # 2026-06-02: Default flipped to "Built-in" — F5-TTS is being
+            # deprecated in favour of a replacement engine.  Piper is the
+            # active engine; pyttsx3 is the final fallback.  This avoids the
+            # ~800 MB F5-TTS model load on every backend start.
+            "tts_voice": "Cloned Voice",  # F5-TTS voice cloning
             "speaking_rate": 1.0,
         }
 
         # Engine instances (lazy-loaded)
-        self._f5tts       = None    # F5TTS instance
-        self._piper       = None    # PiperVoice instance
-        self._lock        = threading.Lock()   # guards init only, NOT inference
+        self._f5tts = None  # F5TTS instance
+        self._piper = None  # PiperVoice instance
+        self._lock = threading.Lock()  # guards init only, NOT inference
+        self._last_f5tts_used_at = 0.0  # monotonic clock, for idle-unload
 
         TTSManager._initialized = True
 
-        threading.Thread(target=self._log_preflight, daemon=True, name="tts-preflight").start()
+        threading.Thread(
+            target=self._log_preflight, daemon=True, name="tts-preflight"
+        ).start()
+
+        # Idle-unload watchdog — frees F5-TTS (~500-800 MB) after 10 min of no use
+        threading.Thread(
+            target=self._f5tts_idle_watchdog, daemon=True, name="tts-idle-unload"
+        ).start()
+
+        # Pre-warm F5-TTS on a background thread so the first TTS request after
+        # boot doesn't have to wait ~5 s for the GPU model load.
+        threading.Thread(
+            target=self._warm_f5tts, daemon=True, name="tts-warmup"
+        ).start()
 
     # ------------------------------------------------------------------
     # Public API
@@ -233,7 +263,9 @@ class TTSManager:
                 )
         else:
             # User explicitly selected "Built-in" → Piper only
-            logger.info("[TTSManager] Voice set to 'Built-in' — using Piper directly (F5-TTS skipped)")
+            logger.info(
+                "[TTSManager] Voice set to 'Built-in' — using Piper directly (F5-TTS skipped)"
+            )
             if PIPER_MODEL_ONNX.exists():
                 logger.info(f"[TTSManager] Piper engine at {PIPER_MODEL_ONNX}")
             else:
@@ -244,7 +276,9 @@ class TTSManager:
 
     def update_config(self, **kwargs) -> None:
         """Update TTS configuration."""
-        voice_changed = "tts_voice" in kwargs and kwargs["tts_voice"] != self.config.get("tts_voice")
+        voice_changed = "tts_voice" in kwargs and kwargs[
+            "tts_voice"
+        ] != self.config.get("tts_voice")
         for key, value in kwargs.items():
             if key in self.config:
                 self.config[key] = value
@@ -262,12 +296,14 @@ class TTSManager:
         use_f5 = self.config.get("tts_voice") == "Cloned Voice"
         if use_f5:
             import torch
+
             _mode = "GPU" if torch.cuda.is_available() else "CPU"
             engine_name = f"F5-TTS F5TTS_v1_Base (zero-shot voice cloning, {_mode})"
             engine_ready = self._f5tts is not None
             # "model available" = f5-tts pip package installed
             try:
                 import importlib.util
+
                 model_path_exists = importlib.util.find_spec("f5_tts") is not None
             except Exception:
                 model_path_exists = False
@@ -277,15 +313,15 @@ class TTSManager:
             model_path_exists = PIPER_MODEL_ONNX.exists()
 
         return {
-            "available_voices":       AVAILABLE_VOICES,
-            "current_voice":          self.config.get("tts_voice", "Built-in"),
-            "config":                 self.get_config(),
-            "model":                  engine_name,
-            "model_ready":            engine_ready,
-            "model_path_exists":      model_path_exists,
-            "reference_audio":        str(REFERENCE_AUDIO),
+            "available_voices": AVAILABLE_VOICES,
+            "current_voice": self.config.get("tts_voice", "Built-in"),
+            "config": self.get_config(),
+            "model": engine_name,
+            "model_ready": engine_ready,
+            "model_path_exists": model_path_exists,
+            "reference_audio": str(REFERENCE_AUDIO),
             "reference_audio_exists": REFERENCE_AUDIO.exists(),
-            "sample_rate":            OUTPUT_SAMPLE_RATE,
+            "sample_rate": OUTPUT_SAMPLE_RATE,
         }
 
     def synthesize(self, text: Optional[str]) -> Optional[np.ndarray]:
@@ -399,6 +435,7 @@ class TTSManager:
         """
         try:
             from backend.voice.tts_normalizer import normalize_for_speech
+
             return normalize_for_speech(text)
         except ImportError:
             # Minimal inline fallback — remove markdown code fences and bold/italic
@@ -412,18 +449,39 @@ class TTSManager:
     # ------------------------------------------------------------------
 
     def _load_f5tts(self) -> bool:
-        """Load F5-TTS model.  Must be called under self._lock.
-
-        Downloads F5TTS_v1_Base (~800 MB) from HuggingFace on first run.
-        Uses CUDA if available, otherwise CPU.
-        """
         if self._f5tts is not None:
             return True
         try:
+            # On Windows, torchcodec (a dependency of F5-TTS) requires the
+            # FFmpeg shared DLLs on the library search path.  If installed
+            # via WinGet/Gyan they live under the shared build's bin/ dir.
+            import os as _os
+
+            _FFMPEG_SHARED = (
+                "C:\\Users\\midas\\AppData\\Local\\Microsoft\\WinGet\\Packages"
+                "\\Gyan.FFmpeg.Shared_Microsoft.Winget.Source_8wekyb3d8bbwe"
+                "\\ffmpeg-8.0.1-full_build-shared\\bin"
+            )
+            if _os.path.isdir(_FFMPEG_SHARED):
+                _os.add_dll_directory(_FFMPEG_SHARED)
+
+            # Set HF token for F5-TTS model downloads (Vocos + F5TTS_Base)
+            _hf_token = _os.environ.get("HF_TOKEN") or _os.environ.get(
+                "HUGGINGFACE_TOKEN"
+            )
+            if _hf_token:
+                _os.environ["HF_TOKEN"] = _hf_token
+
             import torch
             from f5_tts.api import F5TTS
+
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"[TTSManager] Loading F5-TTS ({F5TTS_MODEL}) on {device.upper()}...")
+            rss_before = psutil.Process().memory_info().rss // 1048576
+            logger.info(
+                f"[TTSManager] Loading F5-TTS ({F5TTS_MODEL}) on {device.upper()} "
+                f"(RSS before: {rss_before} MB)..."
+            )
+            t0 = time.monotonic()
             try:
                 self._f5tts = F5TTS(model=F5TTS_MODEL, device=device)
             except TypeError:
@@ -431,13 +489,25 @@ class TTSManager:
                 if device == "cuda":
                     torch.set_default_device("cuda")
                 self._f5tts = F5TTS(model=F5TTS_MODEL)
-            logger.info(f"[TTSManager] F5-TTS loaded ({device.upper()} mode)")
+            dt = time.monotonic() - t0
+
+            # Note: float16 casting was attempted here but caused persistent
+            # "Input type (float) and bias type (struct c10::Half)" errors during
+            # inference on CUDA — the F5TTS model has sub-modules whose intermediate
+            # tensors stay in float32 even after all parameters are cast, creating a
+            # type mismatch.  Keeping the model in native float32 is the safe choice.
+            dtype_str = "float32"
+            rss_after = psutil.Process().memory_info().rss // 1048576
+            logger.info(
+                f"[TTSManager] F5-TTS loaded — "
+                f"dtype={dtype_str}, device={device.upper()}, "
+                f"RSS: {rss_before} → {rss_after} MB "
+                f"(Δ +{rss_after - rss_before} MB, load took {dt:.1f}s)"
+            )
+            self._last_f5tts_used_at = time.monotonic()
             return True
         except ImportError:
-            logger.error(
-                "[TTSManager] f5-tts not installed. "
-                "Run: pip install f5-tts"
-            )
+            logger.error("[TTSManager] f5-tts not installed. Run: pip install f5-tts")
             self._f5tts = None
             return False
         except Exception as exc:
@@ -445,16 +515,44 @@ class TTSManager:
             self._f5tts = None
             return False
 
-    def _stream_f5tts(
-        self, f5tts, text: str
-    ) -> Generator[np.ndarray, None, None]:
-        """Synthesize *text* with F5-TTS using TOMV2.wav as reference voice.
+    def _f5tts_idle_watchdog(self) -> None:
+        """Daemon thread: unload F5-TTS model after 10+ minutes of no synthesis."""
+        while True:
+            time.sleep(60)
+            if self._f5tts is None:
+                continue
+            idle = time.monotonic() - self._last_f5tts_used_at
+            if idle > 600:  # 10 minutes
+                rss_before = psutil.Process().memory_info().rss // 1048576
+                logger.info(
+                    f"[TTSManager] F5-TTS idle for {idle / 60:.0f}m — unloading "
+                    f"(RSS before: {rss_before} MB)"
+                )
+                self._f5tts = None
+                gc.collect()
+                rss_after = psutil.Process().memory_info().rss // 1048576
+                logger.info(
+                    f"[TTSManager] F5-TTS unloaded — "
+                    f"RSS after: {rss_after} MB (freed {rss_before - rss_after} MB)"
+                )
 
-        Text is split into sentence chunks and each is synthesized in sequence.
-        Yields float32 audio at OUTPUT_SAMPLE_RATE Hz per chunk.
+    def _warm_f5tts(self) -> None:
+        """Background thread: pre-load F5-TTS at startup so the first TTS
+        request has zero model-load latency."""
+        time.sleep(0.5)  # let the rest of the system settle before GPU load
+        logger.info("[TTSManager] Pre-warming F5-TTS…")
+        ok = self._load_f5tts()
+        if ok:
+            logger.info("[TTSManager] F5-TTS pre-warmed successfully")
+        else:
+            logger.info("[TTSManager] F5-TTS pre-warm skipped (dep or config)")
 
-        ref_text is left empty — F5-TTS auto-transcribes the reference audio.
-        """
+    REFERENCE_TRANSCRIPT: str = (
+        "There's been a lot of talk about race lately. "
+        "I don't see color. Racism isn't real anymore."
+    )
+
+    def _stream_f5tts(self, f5tts, text: str) -> Generator[np.ndarray, None, None]:
         if not REFERENCE_AUDIO.exists():
             logger.warning(
                 f"[TTSManager] Reference audio missing: {REFERENCE_AUDIO}. "
@@ -462,24 +560,39 @@ class TTSManager:
             )
             return
 
+        # Mark as "in use" so the idle-unload watchdog doesn't free the model mid-stream
+        self._last_f5tts_used_at = time.monotonic()
+
         ref_file = str(REFERENCE_AUDIO)
         speed = float(self.config.get("speaking_rate", 1.0))
         chunks = _split_into_chunks(text)
 
         import torch
+
         _cuda = torch.cuda.is_available()
+        # On CPU use bfloat16 (safer than float16 — less underflow).
+        # On CUDA use float16 (native autocast dtype).
+        autocast_dtype = torch.float16 if _cuda else torch.bfloat16
         for i, chunk_text in enumerate(chunks):
             if not chunk_text.strip():
                 continue
             try:
-                with torch.inference_mode(), torch.autocast(
-                    "cuda", dtype=torch.float16, enabled=_cuda
+                with (
+                    torch.inference_mode(),
+                    torch.autocast(
+                        device_type="cuda" if _cuda else "cpu",
+                        dtype=autocast_dtype,
+                        enabled=True,
+                    ),
                 ):
                     wav, sr, _ = f5tts.infer(
                         ref_file=ref_file,
-                        ref_text="",        # auto-transcribed from TOMV2.wav
+                        ref_text=self.REFERENCE_TRANSCRIPT,
                         gen_text=chunk_text,
                         speed=speed,
+                        # Higher guidance → less attention drift at sentence endings,
+                        # which prevents the abrupt "cut off at periods" effect.
+                        cfg_strength=3.5,
                     )
                 # wav may be a torch.Tensor or numpy array
                 try:
@@ -491,14 +604,19 @@ class TTSManager:
                     continue
 
                 audio = _resample(audio, sr)
+                # Append 200 ms of silence so F5-TTS's natural fade-out doesn't
+                # sound abrupt at sentence boundaries (especially periods).
+                if len(audio) > 0:
+                    pad = np.zeros(int(sr * 0.2), dtype=np.float32)
+                    audio = np.concatenate([audio, pad])
                 logger.debug(
-                    f"[TTSManager] F5-TTS chunk {i+1}/{len(chunks)}: "
+                    f"[TTSManager] F5-TTS chunk {i + 1}/{len(chunks)}: "
                     f"{len(audio)} samples @ {sr} Hz"
                 )
                 yield audio
             except Exception as exc:
                 logger.warning(
-                    f"[TTSManager] F5-TTS chunk {i+1} failed: {exc}. Skipping."
+                    f"[TTSManager] F5-TTS chunk {i + 1} failed: {exc}. Skipping."
                 )
                 continue
 
@@ -515,6 +633,7 @@ class TTSManager:
             return False
         try:
             from piper import PiperVoice
+
             logger.info(f"[TTSManager] Loading Piper from {PIPER_MODEL_ONNX}...")
             self._piper = PiperVoice.load(str(PIPER_MODEL_ONNX))
             logger.info("[TTSManager] Piper loaded (en_US-ryan-high)")
@@ -582,18 +701,22 @@ class TTSManager:
                 return None
 
             with wave.open(tmp_path, "rb") as wf:
-                n_frames   = wf.getnframes()
+                n_frames = wf.getnframes()
                 samp_width = wf.getsampwidth()
                 n_channels = wf.getnchannels()
-                file_rate  = wf.getframerate()
-                raw        = wf.readframes(n_frames)
+                file_rate = wf.getframerate()
+                raw = wf.readframes(n_frames)
 
             if samp_width == 2:
                 audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
             elif samp_width == 4:
-                audio = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+                audio = (
+                    np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+                )
             else:
-                logger.warning(f"[TTSManager] pyttsx3 unsupported sample width: {samp_width}")
+                logger.warning(
+                    f"[TTSManager] pyttsx3 unsupported sample width: {samp_width}"
+                )
                 return None
 
             if n_channels > 1:
