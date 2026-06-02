@@ -1626,8 +1626,11 @@ class IRISGateway:
                     from .audio.engine import get_audio_engine
 
                     engine = get_audio_engine()
-                    if engine._tts_active:
-                        engine.interrupt_speech()
+                    engine.interrupt_speech()  # idempotent — safe to call when idle
+                    # Also flush the native player's ring buffer so already-queued
+                    # audio stops immediately (synthesis cancel ≠ playback stop).
+                    if engine.pipeline:
+                        engine.pipeline.interrupt()
                 except Exception:
                     pass
                 await self._ws_manager.broadcast_to_session(
@@ -1827,6 +1830,20 @@ class IRISGateway:
             # Run agent synchronously in thread pool
             response, spoken = await loop.run_in_executor(None, _execute_agent)
 
+            # ── Auto-speak the final response through TTS ─────────────────────
+            # The chunk_callback streaming path puts partial sentences into
+            # sentence_queue during generation, but the sentinel (line 1810) is
+            # placed before prepare_spoken_text (line 1811) inside _execute_agent,
+            # so the spoken text is never read by the TTS thread.  Instead we
+            # launch a NEW TTS thread with the full text, same as the play button.
+            if spoken:
+                threading.Thread(
+                    target=self._speak_response,
+                    args=(spoken, session_id),
+                    daemon=True,
+                    name="voice-tts-response",
+                ).start()
+
             # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
             await self._ws_manager.send_to_client(
@@ -1981,7 +1998,7 @@ class IRISGateway:
 
                 _prespeech_audio = _tts_resample(_raw, _prespeech_sr)
                 if engine.pipeline:
-                    engine.pipeline.play_audio(_prespeech_audio, False)
+                    engine.pipeline.play_audio(_prespeech_audio)
             except Exception:
                 pass
 

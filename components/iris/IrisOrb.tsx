@@ -344,6 +344,10 @@ export function IrisOrb({
         zIndex: 0 // Set z-index to 0 as per requirements
       }}
       onMouseDown={handleMouseDown}
+      onDoubleClick={(e) => {
+        e.preventDefault();
+        handleDoubleClick();
+      }}
       animate={{ 
         scale: finalScale,
         filter: `blur(${orbBlur}px)`,
