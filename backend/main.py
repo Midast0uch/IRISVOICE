@@ -287,6 +287,8 @@ async def lifespan(app: FastAPI):
         logger.info("  - Registering wake word callback...")
         try:
             _main_loop = asyncio.get_running_loop()
+            global _main_event_loop
+            _main_event_loop = _main_loop
             audio_engine.set_wake_word_callback(lambda word: _on_wake_word_sync(word))
             logger.info("    [+] [WAKE WORD] Callback registered")
         except Exception as e:
@@ -1724,6 +1726,9 @@ async def api_patch_conversation(conversation_id: str, request: dict):
 # Last wake-word detection time — used to debounce Porcupine's repeated triggers
 _last_wake_word_time: float = 0.0
 _WAKE_WORD_COOLDOWN_SEC: float = 5.0
+# Stored at setup so _on_wake_word_sync (called from audio thread) can schedule
+# the async handler on the correct event loop without calling get_running_loop().
+_main_event_loop: asyncio.AbstractEventLoop = None
 
 
 def _on_wake_word_sync(wake_word_name: str) -> None:
@@ -1741,12 +1746,13 @@ def _on_wake_word_sync(wake_word_name: str) -> None:
         return
     _last_wake_word_time = now
 
-    # Schedule the async handler on the event loop
-    try:
-        _loop = asyncio.get_running_loop()
-    except RuntimeError:
+    # Schedule the async handler on the main event loop (stored at setup —
+    # do NOT call asyncio.get_running_loop() here; we're in the audio thread).
+    if _main_event_loop is None:
         return
-    asyncio.run_coroutine_threadsafe(_on_wake_word_async(wake_word_name), _loop)
+    asyncio.run_coroutine_threadsafe(
+        _on_wake_word_async(wake_word_name), _main_event_loop
+    )
 
 
 async def _on_wake_word_async(wake_word_name: str):
