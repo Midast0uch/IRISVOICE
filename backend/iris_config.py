@@ -226,6 +226,7 @@ class SystemConfig:
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
+@dataclass
 class TTSConfig:
     """Text-to-Speech configuration."""
 

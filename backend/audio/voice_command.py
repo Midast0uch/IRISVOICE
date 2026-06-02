@@ -170,13 +170,15 @@ class VoiceCommandHandler:
         if self.is_recording:
             elapsed = time.monotonic() - self._recording_started_at
             if elapsed < 2.0:
-                # UI double-fire or spurious duplicate within 2 seconds —
-                # ignore rather than disrupt the active recording.
+                # Duplicate within 2s — return True so the caller doesn't
+                # reset the orb to idle (the existing recording is still valid).
                 logger.debug(
                     f"[VoiceCommand] Duplicate start ignored "
                     f"({elapsed:.1f}s since current recording started)"
                 )
-                return False
+                return (
+                    True  # recording IS in progress — this is a success, not a failure
+                )
             # A new wake-word arrived well after the previous one started.
             # Cancel the existing take so the new one can start fresh.
             # Without this, the second "hey iris" is silently swallowed and the
