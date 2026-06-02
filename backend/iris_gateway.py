@@ -1851,22 +1851,24 @@ class IRISGateway:
                             lambda: asyncio.ensure_future(
                                 self._ws_manager.send_to_client(
                                     cid,
-                                    {"type": "listening_state",
-                                     "payload": {"state": "listening"}},
+                                    {
+                                        "type": "listening_state",
+                                        "payload": {"state": "listening"},
+                                    },
                                 )
                             )
                         )
                         # Start backend recording directly (thread-safe —
                         # VoiceCommandHandler uses a threading.Lock).
-                            if self._voice_handler:
-                                self._voice_handler.start_recording(auto_stop=True)
+                        if self._voice_handler:
+                            self._voice_handler.start_recording(auto_stop=True)
 
             threading.Thread(
-                     target=_wrap_tts,
-                     args=(spoken, session_id, client_id, _loop),
-                     daemon=True,
-                     name="voice-tts-response",
-                 ).start()
+                target=_wrap_tts,
+                args=(spoken, session_id, client_id, _loop),
+                daemon=True,
+                name="voice-tts-response",
+            ).start()
 
             # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
