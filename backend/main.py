@@ -722,8 +722,10 @@ logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
 
 # Register status snapshot router
 from backend.api.status_snapshot import router as status_snapshot_router
+from backend.api.chat import router as chat_router
 
 app.include_router(status_snapshot_router)
+app.include_router(chat_router)
 
 
 # ── Idle tracker middleware ────────────────────────────────────────────────
@@ -1430,6 +1432,211 @@ async def api_unload_model():
         return {"status": "error", "message": str(e)}
 
 
+@app.post("/api/swarm/start")
+async def api_swarm_start(body: dict = {}):
+    """Start swarm mode. Body: { mode?, worker_count?, director_model? }
+    Delegates to SwarmInferenceManager."""
+    from .agent.swarm_inference_manager import SwarmInferenceManager
+    from backend.ws_manager import get_websocket_manager
+
+    mgr = SwarmInferenceManager()
+    ws = get_websocket_manager()
+    mode = body.get("mode", "local_fast")
+    worker_count = int(body.get("worker_count", 2))
+    director_model = body.get("director_model", "")
+
+    try:
+        await mgr.start_swarm(
+            director_model=director_model,
+            worker_count=worker_count,
+            mode=mode,
+        )
+        await ws.broadcast(
+            {
+                "type": "swarm_status",
+                "title": "Swarm Started",
+                "message": f"Swarm active — {worker_count} workers ({mode})",
+                "status": "active",
+            }
+        )
+        return {
+            "status": "ok",
+            "message": f"Swarm started (mode={mode}, workers={worker_count})",
+            "status_payload": mgr.get_status(),
+        }
+    except Exception as e:
+        import traceback
+
+        return {
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }
+
+
+@app.post("/api/swarm/stop")
+async def api_swarm_stop():
+    """Stop swarm mode and kill all worker processes."""
+    from .agent.swarm_inference_manager import SwarmInferenceManager
+    from backend.ws_manager import get_websocket_manager
+
+    mgr = SwarmInferenceManager()
+    ws = get_websocket_manager()
+    try:
+        mgr.stop_swarm()
+        await ws.broadcast(
+            {
+                "type": "swarm_status",
+                "title": "Swarm Stopped",
+                "message": "All swarm workers terminated",
+                "status": "inactive",
+            }
+        )
+        return {"status": "ok", "message": "Swarm stopped"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/swarm/status")
+async def api_swarm_status():
+    """Get current swarm status and configuration."""
+    from .agent.swarm_inference_manager import SwarmInferenceManager
+
+    mgr = SwarmInferenceManager()
+    try:
+        status = mgr.get_status()
+        return {"status": "ok", "payload": status}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ── Config Save (HTTP fallback for APPLY button when WebSocket unavailable) ─
+@app.post("/api/config/save")
+async def api_config_save(body: dict = {}):
+    """Save section card values to config.
+
+    Body: { section_id: str, card_id: str, values: dict }
+
+    This is the HTTP fallback for the APPLY button — used when WebSocket
+    is disconnected or unavailable. Delegates to the same handler logic
+    as the WebSocket confirm_card handler.
+    """
+    try:
+        from backend.iris_config import load_config, save_config
+
+        section_id = body.get("section_id", "")
+        values = body.get("values", {})
+
+        if not section_id or not values:
+            return {"status": "error", "message": "section_id and values required"}
+
+        cfg = load_config()
+
+        # ── model_selection ───────────────────────────────────────────────
+        if section_id == "model_selection":
+            # IMPORTANT: frontend sends "model_provider", NOT "provider".
+            # Check both to match the WS confirm_card handler in iris_gateway.py.
+            provider = values.get("model_provider") or values.get("provider")
+            if provider:
+                cfg.inference.provider = provider
+                # Derive api_base_url from provider — MUST override any stale
+                # "api_base_url" that the frontend may have cached from a
+                # previous provider selection (e.g. Cohere URL when provider
+                # is now Cerebras). This matches the logic in the WS
+                # confirm_card handler (iris_gateway.py line 1112).
+                _provider_endpoints = {
+                    "opencodego": "https://opencode.ai/zen/go/v1",
+                    "cerebras": "https://api.cerebras.ai/v1",
+                    "cohere": "https://api.cohere.ai/compatibility/v1",
+                    "chutes": "https://api.chutes.ai/v1",
+                    "deepseek": "https://api.deepseek.com/beta",
+                    "anthropic": "https://api.anthropic.com/v1",
+                }
+                if provider in _provider_endpoints:
+                    cfg.inference.api_base_url = _provider_endpoints[provider]
+            elif "api_base_url" in values:
+                # Only use raw api_base_url from frontend if no provider was
+                # specified (for custom/unknown endpoints).
+                cfg.inference.api_base_url = values["api_base_url"]
+            if "reasoning_model" in values:
+                cfg.inference.reasoning_model = values["reasoning_model"]
+            if "tool_execution_model" in values:
+                cfg.inference.tool_execution_model = values["tool_execution_model"]
+            if "lm_studio_url" in values:
+                cfg.inference.lm_studio_url = values["lm_studio_url"]
+            if "ollama_url" in values:
+                cfg.inference.ollama_url = values["ollama_url"]
+            # Save api_key to disk so both WS and HTTP handlers persist it
+            # (WS confirm_card already does this; HTTP must as well).
+            if "api_key" in values:
+                cfg.inference.api_key = values["api_key"]
+
+        # ── inference_mode ───────────────────────────────────────────────
+        elif section_id == "inference_mode":
+            if "thinking_style" in values:
+                cfg.inference.thinking_style = values["thinking_style"]
+            if "response_length" in values:
+                cfg.inference.response_length = values["response_length"]
+            if "reasoning_effort" in values:
+                cfg.inference.reasoning_effort = values["reasoning_effort"]
+            if "tool_mode" in values:
+                cfg.inference.tool_mode = values["tool_mode"]
+
+        # ── local_model ───────────────────────────────────────────────────
+        elif section_id == "local_model":
+            path = values.get("local_model_path", "")
+            profile = values.get("local_model_profile", "balanced")
+            ctx = int(values.get("local_model_ctx", 16384))
+            gpu = int(values.get("local_model_gpu_layers", -1))
+            md = values.get("models_directory", "").strip()
+
+            cfg.inference.local_model_path = path
+            cfg.inference.local_model_profile = profile
+            cfg.inference.local_model_ctx = ctx
+            cfg.inference.local_model_gpu_layers = gpu
+            if md:
+                cfg.inference.models_directory = md
+
+        # ── swarm_setup ──────────────────────────────────────────────────
+        elif section_id == "swarm_setup":
+            swarm_on = bool(values.get("swarm_enabled", False))
+            mode = values.get("swarm_mode", "local_fast")
+            worker_ctx = int(values.get("worker_context", 2048))
+            worker_count = int(values.get("worker_count", 2))
+            md = values.get("models_directory", "").strip()
+
+            cfg.inference.swarm_enabled = swarm_on
+            cfg.inference.swarm_mode = mode
+            cfg.inference.worker_context = str(worker_ctx)
+            cfg.inference.swarm_worker_count = worker_count
+            if md:
+                cfg.inference.models_directory = md
+
+        # ── identity ─────────────────────────────────────────────────────
+        elif section_id == "identity":
+            if "agent_name" in values:
+                cfg.system.agent_name = values["agent_name"]
+            if "system_prompt" in values:
+                cfg.system.system_prompt = values["system_prompt"]
+
+        # ── memory ───────────────────────────────────────────────────────
+        elif section_id == "memory":
+            if "memory_count" in values:
+                cfg.memory.max_memories = int(values["memory_count"])
+
+        save_config(cfg)
+        return {"status": "ok", "section": section_id}
+
+    except Exception as e:
+        import traceback
+
+        return {
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }
+
+
 # ============================================================================
 # Conversation Sync API (Domain 13.8 — Cross-device chat history)
 # ============================================================================
@@ -1518,11 +1725,24 @@ async def api_patch_conversation(conversation_id: str, request: dict):
 # ============================================================================
 
 
+# Last wake-word detection time — used to debounce Porcupine's repeated triggers
+_last_wake_word_time: float = 0.0
+_WAKE_WORD_COOLDOWN_SEC: float = 5.0
+
+
 async def on_wake_word(wake_word_name: str):
     """
     Called from AudioEngine when Porcupine detects the wake word.
     Routes to the main IRIS UI session (not integration sessions).
     """
+    import time as _time
+
+    global _last_wake_word_time
+    now = _time.monotonic()
+    if now - _last_wake_word_time < _WAKE_WORD_COOLDOWN_SEC:
+        return  # debounce: Porcupine sometimes re-detects the same utterance
+    _last_wake_word_time = now
+
     try:
         ws_manager = get_websocket_manager()
 

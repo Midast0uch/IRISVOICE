@@ -787,8 +787,6 @@ class IRISGateway:
                         tts.update_config(**kwargs)
                         # Persist TTS settings to data/iris_config.json
                         try:
-                            from .iris_config import load_config, save_config
-
                             cfg = load_config()
                             for k, v in kwargs.items():
                                 setattr(cfg.tts, k, v)
