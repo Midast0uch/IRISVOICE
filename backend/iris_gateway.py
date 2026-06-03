@@ -129,10 +129,10 @@ class IRISGateway:
         # a background thread without calling asyncio.get_event_loop() in that thread.
         import threading
 
-        # F5-TTS loads lazily — only on first actual TTS synthesis request
+        # Pocket-TTS loads lazily — only on first actual TTS synthesis request
         # inside _speak_response → synthesize_stream.  _tts_prewarmed = True
         # suppresses all "safety net" re-trigger paths so nothing tries to load
-        # it early.  synthesize_stream calls _select_engine() + _load_f5tts()
+        # it early.  synthesize_stream calls _select_engine() + _load_pocket_tts()
         # itself when it first runs.
         self._tts_prewarmed = (
             True  # Pocket-TTS loads in ~1s — no startup prewarm needed
@@ -1543,7 +1543,7 @@ class IRISGateway:
                 # Track which client triggered this so wake-word callback knows where to respond
                 self._active_voice_client[session_id] = client_id
 
-                # F5-TTS loads lazily on first synthesize_stream() call.
+                # Pocket-TTS loads lazily on first synthesize_stream() call.
                 # No pre-trigger here — model must not load until the user
                 # actually requests speech output.
 

@@ -41,10 +41,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 # 1. TTSManager — F5-TTS path constants
 # ---------------------------------------------------------------------------
 
+
 class TestTTSManagerPaths:
     def test_reference_audio_path_is_in_data_dir(self):
         """Reference audio must be under IRISVOICE/data/."""
         from backend.agent.tts import REFERENCE_AUDIO
+
         assert "data" in str(REFERENCE_AUDIO).replace("\\", "/"), (
             f"REFERENCE_AUDIO not in data/: {REFERENCE_AUDIO}"
         )
@@ -53,20 +55,23 @@ class TestTTSManagerPaths:
     def test_reference_audio_exists(self):
         """TOMV2.wav must be present — without it voice cloning is disabled."""
         from backend.agent.tts import REFERENCE_AUDIO
+
         assert REFERENCE_AUDIO.exists(), (
             f"TOMV2.wav not found at {REFERENCE_AUDIO}. "
             "Place the reference audio file at IRISVOICE/data/TOMV2.wav."
         )
 
     def test_output_sample_rate_is_24khz(self):
-        """Output sample rate must be 24 kHz (F5-TTS native rate)."""
-        from backend.agent.tts import F5TTS_NATIVE_RATE, OUTPUT_SAMPLE_RATE
-        assert F5TTS_NATIVE_RATE == 24_000
+        """Output sample rate must be 24 kHz (Pocket-TTS native rate)."""
+        from backend.agent.tts import TTS_NATIVE_RATE, OUTPUT_SAMPLE_RATE
+
+        assert TTS_NATIVE_RATE == 24_000
         assert OUTPUT_SAMPLE_RATE == 24_000
 
     def test_available_voices_list(self):
         """AVAILABLE_VOICES must include both Cloned Voice and Built-in."""
         from backend.agent.tts import AVAILABLE_VOICES
+
         assert "Cloned Voice" in AVAILABLE_VOICES
         assert "Built-in" in AVAILABLE_VOICES
 
@@ -75,10 +80,12 @@ class TestTTSManagerPaths:
 # 2. TTSManager — singleton behaviour
 # ---------------------------------------------------------------------------
 
+
 class TestTTSManagerSingleton:
     def test_singleton_returns_same_instance(self):
         """TTSManager() must always return the same object."""
         from backend.agent.tts import TTSManager
+
         a = TTSManager()
         b = TTSManager()
         assert a is b
@@ -86,6 +93,7 @@ class TestTTSManagerSingleton:
     def test_get_tts_manager_factory(self):
         """get_tts_manager() must return the singleton TTSManager."""
         from backend.agent.tts import TTSManager, get_tts_manager
+
         mgr = get_tts_manager()
         assert isinstance(mgr, TTSManager)
         assert mgr is TTSManager()
@@ -93,6 +101,7 @@ class TestTTSManagerSingleton:
     def test_config_has_required_keys(self):
         """TTSManager config must have the three expected keys."""
         from backend.agent.tts import get_tts_manager
+
         cfg = get_tts_manager().get_config()
         assert "tts_enabled" in cfg
         assert "tts_voice" in cfg
@@ -101,20 +110,23 @@ class TestTTSManagerSingleton:
     def test_get_voice_info_includes_model_and_reference(self):
         """get_voice_info() must expose model path and reference audio status."""
         from backend.agent.tts import get_tts_manager
+
         info = get_tts_manager().get_voice_info()
         assert "model_path_exists" in info
         assert "reference_audio_exists" in info
-        assert info.get("reference_audio_exists") is True   # TOMV2.wav confirmed present
+        assert info.get("reference_audio_exists") is True  # TOMV2.wav confirmed present
 
 
 # ---------------------------------------------------------------------------
 # 3. TTSManager — resample helper
 # ---------------------------------------------------------------------------
 
+
 class TestTTSResample:
     def test_noop_when_same_rate(self):
         """_resample must return unchanged array when src == dst rate."""
         from backend.agent.tts import _resample, OUTPUT_SAMPLE_RATE
+
         arr = np.random.randn(1000).astype(np.float32)
         out = _resample(arr, OUTPUT_SAMPLE_RATE)
         np.testing.assert_array_equal(out, arr.astype(np.float32))
@@ -122,6 +134,7 @@ class TestTTSResample:
     def test_resamples_to_correct_length(self):
         """_resample must produce array of correct length."""
         from backend.agent.tts import _resample, OUTPUT_SAMPLE_RATE
+
         orig_sr = 22_050
         arr = np.random.randn(22_050).astype(np.float32)  # 1 second at 22050 Hz
         out = _resample(arr, orig_sr)
@@ -134,6 +147,7 @@ class TestTTSResample:
     def test_output_is_float32(self):
         """_resample must always return float32."""
         from backend.agent.tts import _resample
+
         arr = np.random.randn(500).astype(np.float64)
         out = _resample(arr, 16_000)
         assert out.dtype == np.float32
@@ -143,10 +157,12 @@ class TestTTSResample:
 # 4. TTSManager — pyttsx3 fallback (synthesize returns None when disabled)
 # ---------------------------------------------------------------------------
 
+
 class TestTTSSynthesizeDisabled:
     def test_synthesize_returns_none_when_disabled(self):
         """synthesize() must return None when tts_enabled=False."""
         from backend.agent.tts import TTSManager
+
         mgr = TTSManager()
         mgr.update_config(tts_enabled=False)
         result = mgr.synthesize("hello world")
@@ -156,6 +172,7 @@ class TestTTSSynthesizeDisabled:
     def test_synthesize_returns_none_for_empty_text(self):
         """synthesize() must return None for blank/whitespace text."""
         from backend.agent.tts import TTSManager
+
         mgr = TTSManager()
         assert mgr.synthesize("") is None
         assert mgr.synthesize("   ") is None
@@ -164,6 +181,7 @@ class TestTTSSynthesizeDisabled:
     def test_synthesize_stream_empty_for_disabled(self):
         """synthesize_stream() must yield nothing when tts_enabled=False."""
         from backend.agent.tts import TTSManager
+
         mgr = TTSManager()
         mgr.update_config(tts_enabled=False)
         chunks = list(mgr.synthesize_stream("test"))
@@ -174,6 +192,7 @@ class TestTTSSynthesizeDisabled:
 # ---------------------------------------------------------------------------
 # 5. VoiceCommandHandler — state machine
 # ---------------------------------------------------------------------------
+
 
 class TestVoiceCommandHandlerStates:
     """Test VoiceCommandHandler without real audio hardware."""
@@ -218,7 +237,7 @@ class TestVoiceCommandHandlerStates:
     def test_cancel_noop_when_not_recording(self):
         """cancel_recording() must do nothing if not currently recording."""
         handler, _ = self._make_handler()
-        handler.cancel_recording()   # should not raise
+        handler.cancel_recording()  # should not raise
         assert not handler._cancel_event.is_set()
         assert not handler._stop_event.is_set()
 
@@ -246,6 +265,7 @@ class TestVoiceCommandHandlerStates:
         """VAD loop must use _stop_event.wait(timeout=...) not time.sleep."""
         import inspect
         from backend.audio.voice_command import VoiceCommandHandler
+
         src = inspect.getsource(VoiceCommandHandler._vad_wait_for_speech_then_silence)
         assert "_stop_event.wait(timeout=" in src, (
             "VAD loop must use _stop_event.wait(timeout=VAD_POLL_INTERVAL_SEC) "
@@ -256,6 +276,7 @@ class TestVoiceCommandHandlerStates:
         """_run_transcription must check _cancel_event.is_set() not _cancelled."""
         import inspect
         from backend.audio.voice_command import VoiceCommandHandler
+
         src = inspect.getsource(VoiceCommandHandler._run_transcription)
         assert "_cancel_event.is_set()" in src, (
             "_run_transcription must use _cancel_event.is_set() (threading.Event) "
@@ -270,6 +291,7 @@ class TestVoiceCommandHandlerStates:
 # 6. AudioEngine — ModelManager removed
 # ---------------------------------------------------------------------------
 
+
 class TestAudioEngineClean:
     def test_model_manager_not_imported_in_engine(self):
         """engine.py must not import ModelManager after dead code removal."""
@@ -283,6 +305,7 @@ class TestAudioEngineClean:
     def test_get_status_no_model_loaded_key(self):
         """AudioEngine.get_status() must not expose 'model_loaded' after cleanup."""
         from backend.audio.engine import AudioEngine
+
         # Reset singleton for test isolation
         AudioEngine._initialized = False
         AudioEngine._instance = None
@@ -295,6 +318,7 @@ class TestAudioEngineClean:
     def test_audio_engine_has_no_model_manager_attr(self):
         """AudioEngine instance must not have a model_manager attribute."""
         from backend.audio.engine import AudioEngine
+
         engine = AudioEngine()
         assert not hasattr(engine, "model_manager"), (
             "AudioEngine still has model_manager attribute — dead code not cleaned up"
@@ -305,11 +329,18 @@ class TestAudioEngineClean:
 # 7. audio/__init__.py exports only live symbols
 # ---------------------------------------------------------------------------
 
+
 class TestAudioInitExports:
     def test_no_dead_symbols_exported(self):
         """audio/__init__.py must not export ModelManager, VADProcessor, etc."""
         import backend.audio as audio_module
-        dead_names = ["ModelManager", "VADProcessor", "AudioTokenizer", "LFM2_5AudioProcessor"]
+
+        dead_names = [
+            "ModelManager",
+            "VADProcessor",
+            "AudioTokenizer",
+            "LFM2_5AudioProcessor",
+        ]
         for name in dead_names:
             assert not hasattr(audio_module, name), (
                 f"backend.audio still exports dead symbol: {name}"
@@ -318,6 +349,7 @@ class TestAudioInitExports:
     def test_live_symbols_exported(self):
         """audio/__init__.py must export AudioEngine, VoiceState, etc."""
         import backend.audio as audio_module
+
         for name in ["AudioEngine", "VoiceState", "get_audio_engine", "AudioPipeline"]:
             assert hasattr(audio_module, name), (
                 f"backend.audio is missing expected export: {name}"
@@ -327,6 +359,7 @@ class TestAudioInitExports:
 # ---------------------------------------------------------------------------
 # 8. requirements.txt — RealtimeSTT removed, faster-whisper present
 # ---------------------------------------------------------------------------
+
 
 class TestRequirements:
     @pytest.fixture
@@ -367,6 +400,7 @@ class TestRequirements:
 # 9. Dead files removed
 # ---------------------------------------------------------------------------
 
+
 class TestDeadFilesRemoved:
     def _audio_dir(self):
         return Path(__file__).parent.parent / "audio"
@@ -394,6 +428,7 @@ class TestDeadFilesRemoved:
 # 10. download_models.py present and importable
 # ---------------------------------------------------------------------------
 
+
 class TestDownloadScript:
     def test_script_exists(self):
         """scripts/download_models.py must exist."""
@@ -403,6 +438,7 @@ class TestDownloadScript:
     def test_script_importable(self):
         """download_models.py must import without errors."""
         import importlib.util
+
         script = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
         spec = importlib.util.spec_from_file_location("download_models", script)
         mod = importlib.util.module_from_spec(spec)
@@ -414,6 +450,7 @@ class TestDownloadScript:
     def test_check_functions_return_bool(self):
         """Verification helpers must return booleans."""
         import importlib.util
+
         script = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
         spec = importlib.util.spec_from_file_location("download_models", script)
         mod = importlib.util.module_from_spec(spec)
@@ -426,6 +463,7 @@ class TestDownloadScript:
     def test_reference_audio_check_correct(self):
         """check_reference_audio() must return True since TOMV2.wav exists."""
         import importlib.util
+
         script = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
         spec = importlib.util.spec_from_file_location("download_models", script)
         mod = importlib.util.module_from_spec(spec)
@@ -440,23 +478,30 @@ class TestDownloadScript:
 # 11. WS event integration — audio_level callback
 # ---------------------------------------------------------------------------
 
+
 class TestAudioLevelCallback:
     """VoiceCommandHandler must fire an audio_level callback during VAD loop."""
 
     def _make_handler(self):
         """Build a VoiceCommandHandler with all heavy deps mocked out."""
         with patch("backend.audio.engine.AudioEngine.__init__", lambda self: None):
-            engine = object.__new__(__import__("backend.audio.engine", fromlist=["AudioEngine"]).AudioEngine)
+            engine = object.__new__(
+                __import__("backend.audio.engine", fromlist=["AudioEngine"]).AudioEngine
+            )
             engine.pipeline = None
         from backend.audio.voice_command import VoiceCommandHandler
+
         with patch.object(VoiceCommandHandler, "warm_up"):
             handler = VoiceCommandHandler.__new__(VoiceCommandHandler)
             # Manually init without calling warm_up
             import threading
+
             handler.audio_engine = engine
             handler._whisper = None
             handler._whisper_lock = threading.Lock()
-            handler.state = __import__("backend.audio.voice_command", fromlist=["VoiceState"]).VoiceState.IDLE
+            handler.state = __import__(
+                "backend.audio.voice_command", fromlist=["VoiceState"]
+            ).VoiceState.IDLE
             handler.is_recording = False
             handler.audio_buffer = []
             handler._raw_frames = []
@@ -491,6 +536,7 @@ class TestAudioLevelCallback:
         The loop exits naturally; stop_event is NOT pre-set.
         """
         from backend.audio.voice_command import VoiceCommandHandler
+
         handler = self._make_handler()
         fired_levels = []
         handler.set_audio_level_callback(fired_levels.append)
@@ -500,7 +546,7 @@ class TestAudioLevelCallback:
         # frame_sec = 512 / 16000 = 0.032 s
         frame_sec = 512 / handler.sample_rate
         speech_needed = int(VoiceCommandHandler.VAD_MIN_SPEECH_SEC / frame_sec)  # ~8
-        silence_needed = int(VoiceCommandHandler.VAD_SILENCE_SEC / frame_sec)    # ~16
+        silence_needed = int(VoiceCommandHandler.VAD_SILENCE_SEC / frame_sec)  # ~16
 
         # Speech frames: RMS = 0.05, well above VAD_ENERGY_THRESHOLD (0.008)
         speech_frame = np.full(512, 0.05, dtype=np.float32)
@@ -530,7 +576,7 @@ class TestAudioLevelCallback:
         """VAD loop with no frames must not raise even with callback set."""
         handler = self._make_handler()
         handler.set_audio_level_callback(lambda _: None)
-        handler._stop_event.set()   # exit immediately
+        handler._stop_event.set()  # exit immediately
         # Should return without error
         handler._vad_wait_for_speech_then_silence()
 
@@ -538,6 +584,7 @@ class TestAudioLevelCallback:
 # ---------------------------------------------------------------------------
 # 12. WS event integration — set_voice_handler wires all callbacks
 # ---------------------------------------------------------------------------
+
 
 class TestSetVoiceHandlerWiring:
     """IRISGateway.set_voice_handler must wire command_result AND audio_level callbacks."""
@@ -549,13 +596,16 @@ class TestSetVoiceHandlerWiring:
         mock_ws = MagicMock()
         mock_state = MagicMock()
 
-        with patch("backend.iris_gateway.get_websocket_manager", return_value=mock_ws), \
-             patch("backend.iris_gateway.get_state_manager", return_value=mock_state), \
-             patch("backend.iris_gateway.WakeWordDiscovery"), \
-             patch("backend.iris_gateway.CleanupAnalyzer"), \
-             patch("backend.iris_gateway.LFMVLProvider"), \
-             patch("threading.Thread"):
+        with (
+            patch("backend.iris_gateway.get_websocket_manager", return_value=mock_ws),
+            patch("backend.iris_gateway.get_state_manager", return_value=mock_state),
+            patch("backend.iris_gateway.WakeWordDiscovery"),
+            patch("backend.iris_gateway.CleanupAnalyzer"),
+            patch("backend.iris_gateway.LFMVLProvider"),
+            patch("threading.Thread"),
+        ):
             from backend.iris_gateway import IRISGateway
+
             gw = IRISGateway.__new__(IRISGateway)
             # Minimal init
             gw._ws_manager = mock_ws
@@ -594,6 +644,7 @@ class TestSetVoiceHandlerWiring:
 # 13. WS event integration — listening_state payload structure
 # ---------------------------------------------------------------------------
 
+
 class TestListeningStatePayloads:
     """
     All listening_state messages sent by the gateway must use the string
@@ -602,17 +653,22 @@ class TestListeningStatePayloads:
                    "processing_tool" | "speaking" | "error"
     """
 
-    VALID_STATES = frozenset({
-        "idle", "listening", "processing_conversation",
-        "processing_tool", "speaking", "error",
-    })
+    VALID_STATES = frozenset(
+        {
+            "idle",
+            "listening",
+            "processing_conversation",
+            "processing_tool",
+            "speaking",
+            "error",
+        }
+    )
 
     def _extract_listening_states(self):
         """Parse all listening_state payloads from iris_gateway.py source."""
         import re
-        gateway_path = (
-            Path(__file__).parent.parent / "iris_gateway.py"
-        )
+
+        gateway_path = Path(__file__).parent.parent / "iris_gateway.py"
         source = gateway_path.read_text(encoding="utf-8")
         # Match: "type": "listening_state", ... "state": "<value>"
         # (state value appears on the next line in the actual source)
@@ -640,6 +696,7 @@ class TestListeningStatePayloads:
 # 14. WS event integration — text_response payload for voice flow
 # ---------------------------------------------------------------------------
 
+
 class TestTextResponsePayload:
     """
     Voice pipeline must send text_response with 'text' and 'sender' keys.
@@ -652,6 +709,7 @@ class TestTextResponsePayload:
         message with sender='user' (the transcript bubble).
         """
         import re
+
         gateway_path = Path(__file__).parent.parent / "iris_gateway.py"
         source = gateway_path.read_text(encoding="utf-8")
         # Find text_response blocks and verify sender=user appears
@@ -671,6 +729,7 @@ class TestTextResponsePayload:
         message with sender='assistant' (the AI reply bubble).
         """
         import re
+
         gateway_path = Path(__file__).parent.parent / "iris_gateway.py"
         source = gateway_path.read_text(encoding="utf-8")
         matches = re.findall(
@@ -689,6 +748,7 @@ class TestTextResponsePayload:
         Frontend hook case: 'audio_level' → payload.level (number).
         """
         import re
+
         gateway_path = Path(__file__).parent.parent / "iris_gateway.py"
         source = gateway_path.read_text(encoding="utf-8")
         # The set_voice_handler callback closure must contain both the type
@@ -706,6 +766,7 @@ class TestTextResponsePayload:
 # 15. Voice-first DER loop mode
 # ---------------------------------------------------------------------------
 
+
 class TestVoiceFirstDERMode:
     """
     Voice requests must use a tighter DER token budget (< 20k) so the agent
@@ -716,6 +777,7 @@ class TestVoiceFirstDERMode:
     def test_voice_first_budget_exists_in_der_constants(self):
         """DER_TOKEN_BUDGETS must contain 'voice_first' with budget under 20k."""
         from backend.agent.der_constants import DER_TOKEN_BUDGETS
+
         assert "voice_first" in DER_TOKEN_BUDGETS, (
             "DER_TOKEN_BUDGETS missing 'voice_first' key — "
             "voice pipeline has no dedicated token budget"
@@ -729,6 +791,7 @@ class TestVoiceFirstDERMode:
         """process_text_message() must accept from_voice keyword argument."""
         import inspect
         from backend.agent.agent_kernel import AgentKernel
+
         sig = inspect.signature(AgentKernel.process_text_message)
         assert "from_voice" in sig.parameters, (
             "AgentKernel.process_text_message() missing 'from_voice' parameter — "

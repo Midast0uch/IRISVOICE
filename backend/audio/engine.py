@@ -2,6 +2,7 @@
 AudioEngine - Singleton audio processing engine for IRIS
 Manages voice pipeline, wake word detection (Porcupine), and audio I/O
 """
+
 import asyncio
 import logging
 import threading
@@ -19,6 +20,7 @@ from backend.voice.porcupine_detector import PorcupineWakeWordDetector
 
 class VoiceState(str, Enum):
     """Voice processing states for native audio flow"""
+
     IDLE = "idle"
     LISTENING = "listening"
     PROCESSING_NATIVE_AUDIO = "processing_native_audio"
@@ -35,7 +37,7 @@ class AudioEngine:
     4. Speech interrupt signalling for in-progress TTS cancellation
     """
 
-    _instance: Optional['AudioEngine'] = None
+    _instance: Optional["AudioEngine"] = None
     _initialized: bool = False
 
     def __new__(cls, *args, **kwargs):
@@ -53,7 +55,7 @@ class AudioEngine:
         # Porcupine wake word detector (initialized lazily via initialize_porcupine())
         self._porcupine: Optional[PorcupineWakeWordDetector] = None
         self._porcupine_initialized: bool = False
-        self._on_wake_word_detected = None   # callback: (wake_word_name: str) -> None
+        self._on_wake_word_detected = None  # callback: (wake_word_name: str) -> None
 
         # State
         self._state = VoiceState.IDLE
@@ -118,7 +120,9 @@ class AudioEngine:
                 except Exception as e:
                     logger.error(f"State callback error: {e}")
 
-    def initialize_porcupine(self, wake_phrase: Optional[str] = None, sensitivity: Optional[float] = None) -> bool:
+    def initialize_porcupine(
+        self, wake_phrase: Optional[str] = None, sensitivity: Optional[float] = None
+    ) -> bool:
         """
         Initialize Porcupine wake word detector using the user's chosen wake phrase.
         Supports both built-in pvporcupine keywords and custom .ppn model files.
@@ -127,6 +131,7 @@ class AudioEngine:
         """
         try:
             from backend.agent.wake_config import get_wake_config
+
             wake_config = get_wake_config()
 
             # Read from user settings if not overridden
@@ -144,19 +149,20 @@ class AudioEngine:
             if custom_model_path:
                 # Custom .ppn file (user-trained wake word, e.g. hey-iris_en_windows_v4_0_0.ppn)
                 self._porcupine = PorcupineWakeWordDetector(
-                    custom_model_path=custom_model_path,
-                    sensitivities=[sensitivity]
+                    custom_model_path=custom_model_path, sensitivities=[sensitivity]
                 )
                 logger.info(
                     f"[AudioEngine] Porcupine initialized — custom model '{wake_phrase}' "
                     f"({custom_model_path}) sensitivity={sensitivity:.2f}"
                 )
-            elif wake_phrase.lower().replace(" ", "_") in _BUILTIN_KEYWORDS or wake_phrase.lower() in _BUILTIN_KEYWORDS:
+            elif (
+                wake_phrase.lower().replace(" ", "_") in _BUILTIN_KEYWORDS
+                or wake_phrase.lower() in _BUILTIN_KEYWORDS
+            ):
                 # Built-in pvporcupine keyword (jarvis, computer, bumblebee, porcupine)
                 keyword = wake_phrase.lower().replace(" ", "_")
                 self._porcupine = PorcupineWakeWordDetector(
-                    builtin_keywords=[keyword],
-                    sensitivities=[sensitivity]
+                    builtin_keywords=[keyword], sensitivities=[sensitivity]
                 )
                 logger.info(
                     f"[AudioEngine] Porcupine initialized — builtin '{keyword}' sensitivity={sensitivity:.2f}"
@@ -166,22 +172,28 @@ class AudioEngine:
                 # Try to auto-discover a matching .ppn file via WakeWordDiscovery.
                 try:
                     from backend.voice.wake_word_discovery import WakeWordDiscovery
+
                     discovery = WakeWordDiscovery()
                     discovered = discovery.scan_directory()
                     match = next(
-                        (f for f in discovered if f.display_name.lower() == wake_phrase.lower()),
-                        None
+                        (
+                            f
+                            for f in discovered
+                            if f.display_name.lower() == wake_phrase.lower()
+                        ),
+                        None,
                     )
                 except Exception as disc_err:
-                    logger.warning(f"[AudioEngine] WakeWordDiscovery lookup failed: {disc_err}")
+                    logger.warning(
+                        f"[AudioEngine] WakeWordDiscovery lookup failed: {disc_err}"
+                    )
                     match = None
 
                 if match:
                     # Found the .ppn file — use it and update WakeConfig so future inits are fast
                     wake_config.update_config(custom_model_path=match.path)
                     self._porcupine = PorcupineWakeWordDetector(
-                        custom_model_path=match.path,
-                        sensitivities=[sensitivity]
+                        custom_model_path=match.path, sensitivities=[sensitivity]
                     )
                     logger.info(
                         f"[AudioEngine] Porcupine initialized — auto-discovered custom model '{wake_phrase}' "
@@ -195,10 +207,11 @@ class AudioEngine:
                         f"matching .ppn file was found. Falling back to '{fallback}'. "
                         f"Select a valid wake word in Voice settings and press Confirm."
                     )
-                    wake_config.update_config(wake_phrase=fallback, custom_model_path=None)
+                    wake_config.update_config(
+                        wake_phrase=fallback, custom_model_path=None
+                    )
                     self._porcupine = PorcupineWakeWordDetector(
-                        builtin_keywords=[fallback],
-                        sensitivities=[sensitivity]
+                        builtin_keywords=[fallback], sensitivities=[sensitivity]
                     )
                     logger.info(
                         f"[AudioEngine] Porcupine initialized — fallback builtin '{fallback}' sensitivity={sensitivity:.2f}"
@@ -220,6 +233,7 @@ class AudioEngine:
         """
         try:
             from backend.agent.wake_config import get_wake_config
+
             enabled = get_wake_config().config.get("wake_word_enabled", True)
         except Exception:
             enabled = True
@@ -237,7 +251,9 @@ class AudioEngine:
             logger.info("[AudioEngine] Wake word disabled — Porcupine stopped")
             return True
 
-        return self.initialize_porcupine()   # reads fresh phrase/sensitivity from WakeConfig
+        return (
+            self.initialize_porcupine()
+        )  # reads fresh phrase/sensitivity from WakeConfig
 
     def set_wake_word_callback(self, callback) -> None:
         """Set callback fired when wake word is detected. callback(wake_word_name: str) -> None"""
@@ -248,7 +264,7 @@ class AudioEngine:
 
         While active, Porcupine wake-word processing is suppressed:
         - Prevents speaker output from bleeding into the mic and triggering false detections.
-        - Reduces CPU load so the F5-TTS synthesis thread is not starved of frames.
+        - Reduces CPU load so the TTS synthesis thread is not starved of frames.
         Call set_tts_active(True) before the first sentence plays and
         set_tts_active(False) once playback finishes.
         """
@@ -293,18 +309,24 @@ class AudioEngine:
                     first_input = next((d for d in devices if d.get("input")), None)
                     if first_input:
                         self.config["input_device"] = first_input.get("index")
-                        logger.info(f"[AudioEngine] Auto-selected input: {first_input['name']} (index {first_input['index']})")
+                        logger.info(
+                            f"[AudioEngine] Auto-selected input: {first_input['name']} (index {first_input['index']})"
+                        )
                 except Exception as device_err:
-                    logger.error(f"[AudioEngine] Failed to auto-select input device: {device_err}")
+                    logger.error(
+                        f"[AudioEngine] Failed to auto-select input device: {device_err}"
+                    )
 
             output_device = self.config.get("output_device")
-            logger.info(f"[AudioEngine] Output device: {'system default' if output_device is None else output_device}")
+            logger.info(
+                f"[AudioEngine] Output device: {'system default' if output_device is None else output_device}"
+            )
 
             self.pipeline = AudioPipeline(
                 input_device=self.config["input_device"],
                 output_device=output_device,
                 sample_rate=self.config["sample_rate"],
-                frame_length=self.config["frame_length"]
+                frame_length=self.config["frame_length"],
             )
 
             logger.info("[AudioEngine] Initialization complete")
@@ -326,9 +348,7 @@ class AudioEngine:
 
         try:
             logger.info("[AudioEngine] Starting audio pipeline...")
-            self.pipeline.start(
-                on_audio_frame=self._process_audio_frame
-            )
+            self.pipeline.start(on_audio_frame=self._process_audio_frame)
             self._is_running = True
             self._set_state(VoiceState.IDLE)
             logger.info("[AudioEngine] Audio pipeline started")
@@ -356,7 +376,12 @@ class AudioEngine:
         """
         try:
             # Wake word detection — gated on user toggle, Porcupine state, and TTS
-            if self._wake_word_enabled and self._porcupine_initialized and self._porcupine and not self._tts_active:
+            if (
+                self._wake_word_enabled
+                and self._porcupine_initialized
+                and self._porcupine
+                and not self._tts_active
+            ):
                 # Convert float32 [-1,1] → int16 PCM for Porcupine.
                 # PERF: keep as numpy array — avoid .tolist() which allocates a Python
                 # int object per sample (512 objects × 31 frames/sec = ~16k allocs/sec).
@@ -366,7 +391,7 @@ class AudioEngine:
                 frame_len = self._porcupine.frame_length
                 # Process in Porcupine-sized chunks (numpy slicing is O(1), zero-copy)
                 for i in range(0, len(pcm_int16) - frame_len + 1, frame_len):
-                    chunk = pcm_int16[i:i + frame_len]
+                    chunk = pcm_int16[i : i + frame_len]
                     detected, word = self._porcupine.process_frame(chunk)
                     if detected:
                         logger.info(f"[AudioEngine] Wake word detected: '{word}'")
@@ -385,8 +410,7 @@ class AudioEngine:
 
         if self._main_loop and self._main_loop.is_running():
             self._main_loop.call_soon_threadsafe(
-                self._main_loop.create_task,
-                ws_manager.broadcast(message)
+                self._main_loop.create_task, ws_manager.broadcast(message)
             )
         else:
             # _main_loop was not captured at startup (AudioEngine initialised
@@ -394,7 +418,9 @@ class AudioEngine:
             # than calling asyncio.get_event_loop() from a background thread,
             # which raises "There is no current event loop in thread '...'" on
             # Python 3.10+.
-            logger.debug(f"[AudioEngine] (WS skip: no main loop ref) {message.get('type', 'unknown')}")
+            logger.debug(
+                f"[AudioEngine] (WS skip: no main loop ref) {message.get('type', 'unknown')}"
+            )
 
     def update_config(self, **kwargs):
         """Update engine configuration"""
@@ -435,9 +461,9 @@ class AudioEngine:
     def get_status(self) -> Dict[str, Any]:
         """Get current engine status"""
         return {
-            "state":                 self._state.value,
-            "is_running":            self._is_running,
-            "config":                self.config,
+            "state": self._state.value,
+            "is_running": self._is_running,
+            "config": self.config,
             "porcupine_initialized": self._porcupine_initialized,
         }
 
