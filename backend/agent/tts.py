@@ -546,10 +546,6 @@ class TTSManager:
             )
             self._voice_state = None
             return False
-        except Exception as exc:
-            logger.warning(f"[TTSManager] Failed to load Pocket-TTS: {exc}")
-            self._pocket_tts_model = None
-            return False
 
     def _stream_pocket(
         self,
