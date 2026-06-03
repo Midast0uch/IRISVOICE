@@ -1990,6 +1990,10 @@ class IRISGateway:
         def _producer():
             # Helper: push chunk to native player with auto-fallback to queue
             def _push_or_queue(audio_chunk: np.ndarray):
+                # Apply 2.5x gain for Pocket-TTS quiet output (peak ~0.37).
+                # Clip to [-0.99, 0.99] — same as play_stream() in pipeline.py.
+                audio_chunk = np.clip(audio_chunk * 2.5, -0.99, 0.99)
+
                 native_ok = False
                 if engine.pipeline and engine.pipeline._native_player is not None:
                     try:
@@ -2029,6 +2033,10 @@ class IRISGateway:
                                 chunk = " ".join(_pending)
                                 for audio_chunk in tts.synthesize_stream(chunk):
                                     if audio_chunk is not None and len(audio_chunk) > 0:
+                                        # Apply 2.5x gain + clip for Pocket-TTS consistency
+                                        audio_chunk = np.clip(
+                                            audio_chunk * 2.5, -0.99, 0.99
+                                        )
                                         if _native:
                                             try:
                                                 engine.pipeline._native_player.push_chunk(
@@ -2055,6 +2063,10 @@ class IRISGateway:
                             chunk = " ".join(_pending)
                             for audio_chunk in tts.synthesize_stream(chunk):
                                 if audio_chunk is not None and len(audio_chunk) > 0:
+                                    # Apply 2.5x gain + clip for Pocket-TTS consistency
+                                    audio_chunk = np.clip(
+                                        audio_chunk * 2.5, -0.99, 0.99
+                                    )
                                     if _native:
                                         try:
                                             engine.pipeline._native_player.push_chunk(
