@@ -1772,20 +1772,9 @@ class IRISGateway:
                             loop,
                         )
 
-                def reasoning_callback(chunk: str):
-                    if loop and loop.is_running():
-                        asyncio.run_coroutine_threadsafe(
-                            self._ws_manager.send_to_client(
-                                client_id,
-                                {
-                                    "type": "chat_reasoning",
-                                    "payload": {"chunk": chunk},
-                                },
-                            ),
-                            loop,
-                        )
-
-                    # Stream sentences into TTS as soon as boundaries appear
+                    # Stream sentences into TTS from RESPONSE text
+                    # (chunk_callback receives actual response content from the LLM,
+                    #  NOT reasoning/thinking — reasoning goes through reasoning_callback).
                     nonlocal _sentence_buf_words
                     sentence_buf.append(chunk)
                     _sentence_buf_words += chunk.count(" ") + (
@@ -1806,6 +1795,19 @@ class IRISGateway:
                         sentence_buf.clear()
                         _sentence_buf_words = 0
 
+                def reasoning_callback(chunk: str):
+                    if loop and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.send_to_client(
+                                client_id,
+                                {
+                                    "type": "chat_reasoning",
+                                    "payload": {"chunk": chunk},
+                                },
+                            ),
+                            loop,
+                        )
+
                 resp = agent_kernel.process_text_message(
                     enriched,
                     session_id=session_id,
@@ -1825,41 +1827,39 @@ class IRISGateway:
             # starts playing — not here while the LLM is still thinking.
             _tts_started = True
 
-            # Run agent synchronously in thread pool
-            response, spoken = await loop.run_in_executor(None, _execute_agent)
+            # ── Start TTS thread BEFORE agent runs ────────────────────────────
+            # chunk_callback pushes response sentences into sentence_queue
+            # during LLM generation.  The TTS thread picks them up and starts
+            # playing the first sentence immediately — no waiting for full reply.
+            _loop = asyncio.get_running_loop()
 
-            # ── Auto-speak the final response through TTS ─────────────────────
-            # The chunk_callback streaming path puts partial sentences into
-            # sentence_queue during generation, but the sentinel (line 1810) is
-            # placed before prepare_spoken_text (line 1811) inside _execute_agent,
-            # so the spoken text is never read by the TTS thread.  Instead we
-            # launch a NEW TTS thread with the full text, same as the play button.
-            # "speaking" state is sent by _speak_response when audio starts.
-            if spoken:
-                _loop = asyncio.get_running_loop()
-
-                def _wrap_tts(text: str, sid: str, cid: str, _l):
-                    try:
-                        self._speak_response(text, sid)
-                    finally:
-                        _l.call_soon_threadsafe(
-                            lambda: asyncio.ensure_future(
-                                self._ws_manager.send_to_client(
-                                    cid,
-                                    {
-                                        "type": "listening_state",
-                                        "payload": {"state": "idle"},
-                                    },
-                                )
+            def _wrap_tts_streaming(q: queue.Queue, sid: str, cid: str, _l):
+                """Consume sentences from the queue and stream TTS."""
+                try:
+                    self._speak_response(q, sid)
+                finally:
+                    _l.call_soon_threadsafe(
+                        lambda: asyncio.ensure_future(
+                            self._ws_manager.send_to_client(
+                                cid,
+                                {
+                                    "type": "listening_state",
+                                    "payload": {"state": "idle"},
+                                },
                             )
                         )
+                    )
 
             threading.Thread(
-                target=_wrap_tts,
-                args=(spoken, session_id, client_id, _loop),
+                target=_wrap_tts_streaming,
+                args=(sentence_queue, session_id, client_id, _loop),
                 daemon=True,
-                name="voice-tts-response",
+                name="voice-tts-streaming",
             ).start()
+
+            # Run agent synchronously in thread pool — chunk_callback pushes
+            # sentences into sentence_queue as the LLM streams the response.
+            response, spoken = await loop.run_in_executor(None, _execute_agent)
 
             # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
@@ -2017,6 +2017,7 @@ class IRISGateway:
                     _pending_words = 0
                     _target = FIRST_CHUNK_THRESHOLD
                     is_first_chunk = True
+                    _speaking_broadcasted = False
                     while True:
                         item = input_source.get()
                         if item is None:
@@ -2072,6 +2073,29 @@ class IRISGateway:
                             if is_first_chunk:
                                 is_first_chunk = False
                                 _target = NORMAL_CHUNK_THRESHOLD
+                                # Broadcast "speaking" on first audio chunk
+                                if (
+                                    not _speaking_broadcasted
+                                    and session_id
+                                    and self._main_loop
+                                    and self._main_loop.is_running()
+                                ):
+                                    _speaking_broadcasted = True
+                                    try:
+                                        import asyncio as _asyncio
+
+                                        _asyncio.run_coroutine_threadsafe(
+                                            self._ws_manager.broadcast_to_session(
+                                                session_id,
+                                                {
+                                                    "type": "listening_state",
+                                                    "payload": {"state": "speaking"},
+                                                },
+                                            ),
+                                            self._main_loop,
+                                        )
+                                    except Exception:
+                                        pass
             except Exception as exc:
                 self._logger.error(f"[Voice] TTS Producer error: {exc}")
             finally:
