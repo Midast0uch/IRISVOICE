@@ -1791,6 +1791,12 @@ async def _on_wake_word_async(wake_word_name: str):
             logger.info(
                 f"[WakeWord] '{wake_word_name}' -> triggering voice for session {session_id}"
             )
+            # Notify frontend that wake word was detected — triggers the same
+            # visual feedback as double-click (flash animation + listening state).
+            await ws_manager.send_to_client(
+                client_id,
+                {"type": "wake_detected", "payload": {"keyword": wake_word_name}},
+            )
             iris_gateway = get_iris_gateway()
             await iris_gateway._handle_voice(
                 session_id, client_id, {"type": "voice_command_start"}, auto_stop=True

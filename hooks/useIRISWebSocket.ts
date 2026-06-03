@@ -92,7 +92,6 @@ interface UseIRISWebSocketReturn {
   lastError: string | null
   fieldErrors: Record<string, string> // Map of "sectionId:fieldId" to error message
   clearFieldError: (sectionId: string, fieldId: string) => void
-  onWakeDetected?: () => void
   // Vision state and actions
   visionStatus: VisionStatus
   enableVision: () => void
@@ -121,7 +120,6 @@ const STABILITY_THRESHOLD = 10_000  // reset backoff counter after 10 s of uptim
 export function useIRISWebSocket(
   url: string = "ws://127.0.0.1:8000/ws/iris",
   autoConnect: boolean = true,
-  onWakeDetected?: () => void,
   onNativeAudioResponse?: (payload: Record<string, unknown>) => void
 ): UseIRISWebSocketReturn {
   // Connection state
@@ -177,7 +175,6 @@ export function useIRISWebSocket(
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectAttemptsRef = useRef(0)
-  const onWakeDetectedRef = useRef(onWakeDetected)
   const onNativeAudioResponseRef = useRef(onNativeAudioResponse)
 
   // Resilience: sequence counter, send queue, connection-stability tracking
@@ -191,11 +188,13 @@ export function useIRISWebSocket(
   // Timestamp tracking for out-of-order update handling
   const fieldTimestampsRef = useRef<Map<string, number>>(new Map())
 
+  // Deduplicate buffered chat_message replays by turn_id
+  const seenTurnIdsRef = useRef<Set<string>>(new Set())
+
   // Update ref when callback changes
   useEffect(() => {
-    onWakeDetectedRef.current = onWakeDetected
     onNativeAudioResponseRef.current = onNativeAudioResponse
-  }, [onWakeDetected, onNativeAudioResponse])
+  }, [onNativeAudioResponse])
 
   // Safety timeout: reset typing indicator if no chat_typing:false event
   // arrives within 30s. Covers the case where backend crashes mid-response
@@ -542,9 +541,14 @@ export function useIRISWebSocket(
       }
 
       case "wake_detected": {
-        // Trigger wake word callback if provided
-        if (onWakeDetectedRef.current) {
-          onWakeDetectedRef.current()
+        // Wake word detected — same visual feedback as double-click.
+        // Backend already started recording via _handle_voice, so no need
+        // to send voice_command_start (that would be a duplicate).
+        setVoiceState("listening")
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
+            detail: { state: "listening" }
+          }))
         }
         break
       }
@@ -579,6 +583,16 @@ export function useIRISWebSocket(
         // Final assistant response from text_message flow (streamed then complete)
         // Also reset typing indicator — chat_message always means processing is done
         setIsChatTyping(false)
+        const _turnId = typeof payload.turn_id === 'string' ? payload.turn_id : null
+        if (_turnId && seenTurnIdsRef.current.has(_turnId)) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.log(`[IRIS WebSocket] Deduplicating replayed chat_message turn=${_turnId}`)
+          }
+          break
+        }
+        if (_turnId) {
+          seenTurnIdsRef.current.add(_turnId)
+        }
         const content = typeof payload.content === 'string' ? payload.content : null
         if (content) {
           setLastTextResponse({
@@ -1049,6 +1063,7 @@ export function useIRISWebSocket(
       wsRef.current.send(JSON.stringify({ type, payload, seq: seqRef.current++ }))
       return true
     }
+
     // Not connected: queue non-ephemeral messages for delivery on next reconnect
     if (!NON_QUEUEABLE_TYPES.has(type)) {
       if (messageQueueRef.current.length >= 50) {
