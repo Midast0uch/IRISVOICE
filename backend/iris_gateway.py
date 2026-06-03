@@ -1961,6 +1961,25 @@ class IRISGateway:
         FIRST_CHUNK_THRESHOLD = 1
         NORMAL_CHUNK_THRESHOLD = 8
 
+        # ── Notify frontend: TTS is starting ──
+        # Must happen regardless of native vs fallback player path.
+        # Only for string input — queue input gets "speaking" from the caller.
+        if (
+            isinstance(input_source, str)
+            and session_id
+            and self._main_loop
+            and self._main_loop.is_running()
+        ):
+            import asyncio as _asyncio
+
+            _asyncio.run_coroutine_threadsafe(
+                self._ws_manager.broadcast_to_session(
+                    session_id,
+                    {"type": "listening_state", "payload": {"state": "speaking"}},
+                ),
+                self._main_loop,
+            )
+
         # ── Native C++ audio fast-path (no asyncio.Queue, no polling) ──
         _native = (
             engine.pipeline._native_available
@@ -1977,17 +1996,6 @@ class IRISGateway:
                     f"[Voice] Native player open failed ({_native_err}), falling back"
                 )
                 _native = False
-
-            # 2. Synthesiser thread (producer)
-            # After TTS streaming completes, send state transitions
-            if isinstance(input_source, str):
-                # Notify frontend: TTS is starting
-                self._broadcast_voice_state(
-                    session_id,
-                    "speaking",
-                    # Only set auto_relisten for voice-command-triggered TTS
-                    auto_relisten=getattr(self, "_tts_auto_relisten", False),
-                )
 
         def _producer():
             # Helper: push chunk to native player with auto-fallback to queue
