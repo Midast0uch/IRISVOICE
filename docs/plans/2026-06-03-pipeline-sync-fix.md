@@ -993,9 +993,9 @@ if now - _last_level_time[0] >= 0.1:
     # ... broadcast audio_level ...
 ```
 
-### Finding 5: Wake Word Path Doesn't Match Double-Click Path ❌ NOT YET FIXED
+### Finding 5: Wake Word Path Doesn't Match Double-Click Path ✅ FIXED
 
-**Severity:** HIGH — wake word detection doesn't trigger the same frontend actions as double-click
+**Severity:** HIGH — wake word detection didn't trigger the same frontend actions as double-click
 
 **What's wrong:**
 
@@ -1023,41 +1023,32 @@ if now - _last_level_time[0] >= 0.1:
 2. The frontend `onWakeDetected` callback should be wired up in the components that use `useIRISWebSocket`
 3. The `onWakeDetected` callback should call `startVoiceCommand()` to ensure the same state machine as double-click
 
-**Proposed fix:**
+**What was done:**
 
-**Step 1: Backend sends `wake_detected` event**
-
-In `backend/main.py`, inside `_on_wake_word_async`, after calling `_handle_voice`, also broadcast:
-
+**Backend** (`backend/main.py`): Send `wake_detected` event to frontend before calling `_handle_voice`:
 ```python
-# Notify frontend that wake word was detected (for flash animation)
-asyncio.ensure_future(
-    gateway._ws_manager.send_to_client(
-        client_id,
-        {"type": "wake_detected", "payload": {"keyword": keyword}},
-    )
+await ws_manager.send_to_client(
+    client_id,
+    {"type": "wake_detected", "payload": {"keyword": wake_word_name}},
 )
+iris_gateway = get_iris_gateway()
+await iris_gateway._handle_voice(...)
 ```
 
-**Step 2: Wire `onWakeDetected` in `useIRISWebSocket` consumers**
-
-In `app/orbit-node.tsx` and `contexts/NavigationContext.tsx`, pass the callback:
-
+**Frontend hook** (`hooks/useIRISWebSocket.ts`): The `wake_detected` handler now sets `voiceState` to "listening" and dispatches the `iris:voice_state_change` CustomEvent — same as `startVoiceCommand()` but WITHOUT sending a duplicate `voice_command_start` to the backend (the backend already started recording):
 ```typescript
-const { startVoiceCommand, ... } = useIRISWebSocket({
-  onWakeDetected: () => {
-    // Same action as double-click — start voice command flow
-    startVoiceCommand()
+case "wake_detected": {
+  setVoiceState("listening")
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
+      detail: { state: "listening" }
+    }))
   }
-})
+  break
+}
 ```
 
-**Step 3: Update `wake_detected` handler in `useIRISWebSocket.ts`**
-
-The current handler only calls the ref. It should also:
-- Set `voiceState` to "listening"
-- Dispatch `iris:voice_state_change` CustomEvent
-- These are the same actions as the `listening_state:listening` handler, so they're redundant but provide immediate visual feedback before the backend broadcast arrives
+Also removed the dead `onWakeDetected` prop and ref from the hook interface — nobody ever passed this callback, so it was pure technical debt. Net code change: -5 lines.
 
 ### Finding 6: `sentence_queue` Was Fed by `reasoning_callback` (Thinking Tokens) ✅ FIXED (in Task 4)
 
@@ -1067,9 +1058,9 @@ The current handler only calls the ref. It should also:
 
 **Fix applied (in Task 4):** Moved the sentence accumulation logic from `reasoning_callback` to `chunk_callback`. The `reasoning_callback` now only forwards thinking chunks to the frontend for display — it does NOT feed the TTS queue.
 
-### Finding 7: `play_stream` Has Inconsistent Gain Between Native and Fallback Sub-Paths ⚠️ PRE-EXISTING
+### Finding 7: `play_stream` Has Inconsistent Gain Between Native and Fallback Sub-Paths ✅ FIXED
 
-**Severity:** LOW — pre-existing issue, not introduced by our changes
+**Severity:** LOW — pre-existing issue, now fixed
 
 **What's happening:** Inside `play_stream()` in `pipeline.py`:
 - **Native sub-path** (line 196-209): Applies `np.clip(audio_float * 2.5, -0.99, 0.99)` — fixed 2.5× gain
@@ -1079,7 +1070,7 @@ These produce different volume levels. The native path is louder for quiet audio
 
 This is a pre-existing inconsistency. Our changes don't make it worse — we correctly apply gain only for the native player path in `_speak_response`, and let `play_stream` handle its own gain for the fallback path.
 
-**Recommendation for future fix:** Unify the gain strategy in `play_stream` — either always use 2.5× gain + clip, or always use peak normalization. The 2.5× approach is simpler and works well for Pocket-TTS.
+**What was done:** Both sub-paths in `play_stream()` now use `np.clip(audio_float * 2.5, -0.99, 0.99)` for consistent volume. The fallback path bypasses `play_audio()` and goes directly to `_sd().play()`, avoiding `play_audio()`'s own peak normalization.
 
 ---
 
@@ -1111,12 +1102,4 @@ TTS completes            listening_state:idle              IDLE
 
 ## Remaining Work
 
-| # | Finding | Status | Priority |
-|---|---------|--------|----------|
-| 1 | Double-gain bug in fallback path | ✅ Fixed | CRITICAL |
-| 2 | Dead code — unreachable if/else block | ✅ Fixed | MEDIUM |
-| 3 | Sentinel safety — TTS thread blocks on exception | ✅ Fixed | HIGH |
-| 4 | Audio-level broadcast not throttled | ✅ Fixed | MEDIUM |
-| 5 | Wake word path doesn't match double-click | ❌ Not fixed | HIGH |
-| 6 | sentence_queue fed by reasoning_callback | ✅ Fixed (Task 4) | CRITICAL |
-| 7 | play_stream inconsistent gain | ⚠️ Pre-existing | LOW |
+All 7 findings resolved. No remaining issues.
