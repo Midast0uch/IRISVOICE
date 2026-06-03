@@ -1808,20 +1808,24 @@ class IRISGateway:
                             loop,
                         )
 
-                resp = agent_kernel.process_text_message(
-                    enriched,
-                    session_id=session_id,
-                    chunk_callback=chunk_callback,
-                    reasoning_callback=reasoning_callback,
-                    from_voice=True,
-                )
-                # Final flush — any remaining text becomes a sentence
-                if sentence_buf:
-                    sentence_queue.put("".join(sentence_buf))
-                    sentence_buf.clear()
-                sentence_queue.put(None)  # sentinel: TTS knows LLM is done
-                spoken = agent_kernel.prepare_spoken_text(resp, enriched)
-                return resp, spoken
+                try:
+                    resp = agent_kernel.process_text_message(
+                        enriched,
+                        session_id=session_id,
+                        chunk_callback=chunk_callback,
+                        reasoning_callback=reasoning_callback,
+                        from_voice=True,
+                    )
+                    # Final flush — any remaining text becomes a sentence
+                    if sentence_buf:
+                        sentence_queue.put("".join(sentence_buf))
+                        sentence_buf.clear()
+                    spoken = agent_kernel.prepare_spoken_text(resp, enriched)
+                    return resp, spoken
+                finally:
+                    # ALWAYS put sentinel — even if agent throws, the TTS thread
+                    # must not block forever on sentence_queue.get().
+                    sentence_queue.put(None)
 
             # "speaking" state is now sent by _speak_response when audio actually
             # starts playing — not here while the LLM is still thinking.
@@ -1989,37 +1993,47 @@ class IRISGateway:
 
         def _producer():
             # Helper: push chunk to native player with auto-fallback to queue
-            def _push_or_queue(audio_chunk: np.ndarray):
-                # Apply 2.5x gain for Pocket-TTS quiet output (peak ~0.37).
-                # Clip to [-0.99, 0.99] — same as play_stream() in pipeline.py.
-                audio_chunk = np.clip(audio_chunk * 2.5, -0.99, 0.99)
+            _last_level_time = [0.0]  # mutable for closure; throttle to ~10 Hz
 
+            def _push_or_queue(audio_chunk: np.ndarray):
                 native_ok = False
                 if engine.pipeline and engine.pipeline._native_player is not None:
                     try:
-                        engine.pipeline._native_player.push_chunk(audio_chunk)
+                        # Apply 2.5x gain + clip ONLY for native player path.
+                        # The fallback path (via play_stream) applies its own gain.
+                        gained = np.clip(audio_chunk * 2.5, -0.99, 0.99)
+                        engine.pipeline._native_player.push_chunk(gained)
                         native_ok = True
                     except Exception:
                         pass
                 if not native_ok:
+                    # Push raw chunk — play_stream will apply gain/normalization
                     asyncio.run_coroutine_threadsafe(audio_queue.put(audio_chunk), loop)
 
-                # Broadcast audio level for orb speaking animation
-                if session_id and self._main_loop and self._main_loop.is_running():
-                    try:
-                        rms = float(np.sqrt(np.mean(np.square(audio_chunk))))
-                        level = min(1.0, rms * 5.0)
-                        import asyncio as _asyncio
+                # Broadcast audio level for orb speaking animation (throttled ~10 Hz)
+                import time as _time
 
-                        _asyncio.run_coroutine_threadsafe(
-                            self._ws_manager.broadcast_to_session(
-                                session_id,
-                                {"type": "audio_level", "payload": {"level": level}},
-                            ),
-                            self._main_loop,
-                        )
-                    except Exception:
-                        pass
+                now = _time.monotonic()
+                if now - _last_level_time[0] >= 0.1:
+                    _last_level_time[0] = now
+                    if session_id and self._main_loop and self._main_loop.is_running():
+                        try:
+                            rms = float(np.sqrt(np.mean(np.square(audio_chunk))))
+                            level = min(1.0, rms * 5.0)
+                            import asyncio as _asyncio
+
+                            _asyncio.run_coroutine_threadsafe(
+                                self._ws_manager.broadcast_to_session(
+                                    session_id,
+                                    {
+                                        "type": "audio_level",
+                                        "payload": {"level": level},
+                                    },
+                                ),
+                                self._main_loop,
+                            )
+                        except Exception:
+                            pass
 
             try:
                 _native = (
@@ -2050,14 +2064,13 @@ class IRISGateway:
                                 chunk = " ".join(_pending)
                                 for audio_chunk in tts.synthesize_stream(chunk):
                                     if audio_chunk is not None and len(audio_chunk) > 0:
-                                        # Apply 2.5x gain + clip for Pocket-TTS consistency
-                                        audio_chunk = np.clip(
-                                            audio_chunk * 2.5, -0.99, 0.99
-                                        )
                                         if _native:
+                                            gained = np.clip(
+                                                audio_chunk * 2.5, -0.99, 0.99
+                                            )
                                             try:
                                                 engine.pipeline._native_player.push_chunk(
-                                                    audio_chunk
+                                                    gained
                                                 )
                                             except Exception as _push_err:
                                                 self._logger.warning(
@@ -2080,14 +2093,11 @@ class IRISGateway:
                             chunk = " ".join(_pending)
                             for audio_chunk in tts.synthesize_stream(chunk):
                                 if audio_chunk is not None and len(audio_chunk) > 0:
-                                    # Apply 2.5x gain + clip for Pocket-TTS consistency
-                                    audio_chunk = np.clip(
-                                        audio_chunk * 2.5, -0.99, 0.99
-                                    )
                                     if _native:
+                                        gained = np.clip(audio_chunk * 2.5, -0.99, 0.99)
                                         try:
                                             engine.pipeline._native_player.push_chunk(
-                                                audio_chunk
+                                                gained
                                             )
                                         except Exception as _push_err:
                                             self._logger.warning(
