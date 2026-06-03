@@ -212,12 +212,15 @@ class AudioPipeline:
                     f"[AudioPipeline] Native stream failed ({_native_err}), falling back"
                 )
 
-        # Fallback: concatenate all chunks into one and use play_audio
+        # Fallback: concatenate all chunks, apply same 2.5× gain + clip
+        # as the native path for consistent volume across both paths.
         all_audio = np.concatenate(list(audio_chunks))
-        peak = np.max(np.abs(all_audio))
-        if peak > 1e-6:
-            all_audio = all_audio * (0.85 / peak)
-        self.play_audio(all_audio, sr)
+        audio_float = np.clip(all_audio.astype(np.float32) * 2.5, -0.99, 0.99)
+        duration_ms = int(len(audio_float) / sr * 1000)
+        logger.info(
+            f"[AudioPipeline] play_stream fallback: {len(audio_float)} frames @ {sr}Hz ({duration_ms}ms)"
+        )
+        _sd().play(audio_float, samplerate=sr, device=self.output_device, blocking=True)
 
     def play_audio(self, audio_data: np.ndarray, sample_rate: int = None):
         """Play audio through the system default output device.
@@ -239,7 +242,7 @@ class AudioPipeline:
         try:
             audio_float = audio_data.astype(np.float32)
 
-            # Normalise amplitude — F5-TTS cloned voice can be quiet (~0.05 peak).
+            # Normalise amplitude — Pocket-TTS cloned voice can be quiet (~0.37 peak).
             # Target 0.85 peak: loud and clear, safely below hard clip at 1.0.
             peak = np.max(np.abs(audio_float))
             if peak > 1e-6:
