@@ -2004,6 +2004,23 @@ class IRISGateway:
                 if not native_ok:
                     asyncio.run_coroutine_threadsafe(audio_queue.put(audio_chunk), loop)
 
+                # Broadcast audio level for orb speaking animation
+                if session_id and self._main_loop and self._main_loop.is_running():
+                    try:
+                        rms = float(np.sqrt(np.mean(np.square(audio_chunk))))
+                        level = min(1.0, rms * 5.0)
+                        import asyncio as _asyncio
+
+                        _asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.broadcast_to_session(
+                                session_id,
+                                {"type": "audio_level", "payload": {"level": level}},
+                            ),
+                            self._main_loop,
+                        )
+                    except Exception:
+                        pass
+
             try:
                 _native = (
                     engine.pipeline is not None

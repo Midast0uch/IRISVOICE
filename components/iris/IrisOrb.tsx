@@ -215,8 +215,8 @@ export function IrisOrb({
   const glowOpacity = Math.min(theme.glow.opacity * intensityMultipliers.glowOpacity, 0.6)
   const shimmerOpacity = Math.min(1 * intensityMultipliers.shimmerOpacity, 1)
   
-  // Audio level visualization - apply smooth interpolation
-  const audioLevelScale = isListening ? 1 + (audioLevel * 0.15) : 1 // Scale glow by up to 15% based on audio level
+  // Audio level visualization - apply during both listening (mic) and speaking (TTS)
+  const audioLevelScale = (isListening || isSpeaking) ? 1 + (audioLevel * 0.15) : 1
 
   const handleInterceptedClick = useCallback(() => {
     // Single-click always cancels any active voice state immediately
