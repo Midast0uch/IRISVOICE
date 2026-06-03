@@ -1821,15 +1821,9 @@ class IRISGateway:
                 spoken = agent_kernel.prepare_spoken_text(resp, enriched)
                 return resp, spoken
 
-            # Start TTS immediately — blocks on queue until first sentence arrives
-            await self._ws_manager.broadcast_to_session(
-                session_id,
-                {"type": "listening_state", "payload": {"state": "speaking"}},
-            )
+            # "speaking" state is now sent by _speak_response when audio actually
+            # starts playing — not here while the LLM is still thinking.
             _tts_started = True
-            # Note: The sentence_queue streaming thread was previously started here
-            # but has been removed.  The full response is spoken by _wrap_tts after
-            # the agent completes (see below).  This avoids overlapping/doubled TTS.
 
             # Run agent synchronously in thread pool
             response, spoken = await loop.run_in_executor(None, _execute_agent)
@@ -1840,13 +1834,9 @@ class IRISGateway:
             # placed before prepare_spoken_text (line 1811) inside _execute_agent,
             # so the spoken text is never read by the TTS thread.  Instead we
             # launch a NEW TTS thread with the full text, same as the play button.
+            # "speaking" state is sent by _speak_response when audio starts.
             if spoken:
-                # Sync orb animation: idle → speaking → TTS → idle
                 _loop = asyncio.get_running_loop()
-                await self._ws_manager.send_to_client(
-                    client_id,
-                    {"type": "listening_state", "payload": {"state": "speaking"}},
-                )
 
                 def _wrap_tts(text: str, sid: str, cid: str, _l):
                     try:
