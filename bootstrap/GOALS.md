@@ -36,6 +36,8 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 15 — Linux Build + Cross-Platform Launcher (PARTIAL — tauri.conf.json targets set; needs Linux build machine)
     Domain 17 — Self-Coding Agent (NEW — ALL items not started) ← NEW NORTH STAR
     Domain 18 — C++ Hybrid Core Memory Engine ✓ all 6 phases verified
+    Domain 19 — Caducean v2: Mitochondria to Mycelium (NEW — spec written, no code yet) ← BRANCH feat/caducean-v2-mitochondria-mycelium
+      Critical: Phase 0 fixes a dead-code bug where ffi_init_engine() was never called.
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
@@ -50,20 +52,23 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
          Load Qwen3.5-9B through ModelsScreen, send a chat, confirm in-process inference
          streams at ≥40 tok/s with no orphaned processes. Then confirm tool calling
          works with iris_local model (create a skill, recall it same session).
-    1. Domain 17 — Self-Coding Agent ← NEW NORTH STAR
-         Build the agent-in-IRIS loop first (see Domain 17 spec below).
-         This is the new strategic goal: IRIS writing its own remaining code.
-    2. Domain 13 — Gate 2: Launcher + Developer Mode (13.1→13.2→13.3→13.5)
-    3. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
-    4. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
-    5. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
-    6. Domain 2  — Voice pipeline (primary input modality — manual e2e)
-    7. Domain 12 — PiN + MCP storage integrations (after D11 verified)
-    8. Domain 4  — Skills library (self-extension)
-    9. Domain 7  — Backend reliability (logging standardisation)
-    10. Domain 15 — Linux Build (blocked on Linux machine or CI)
-    11. Domain 8  — Distribution (MSI clean install)
-    12. Domain 9  — Advanced features (after everything else)
+    1. Domain 19 — Caducean v2: Mitochondria to Mycelium (BRANCH feat/caducean-v2-mitochondria-mycelium)
+         Start with Phase 0: fix the engine init bug (one-file change, one-test verify).
+         Then proceed in the order: C++ core → Python FFI → Mycelium modulation →
+         Agent kernel → Tauri proxy → Frontend hook → ConversationKernel.
+         Voice pipeline becomes phase-driven (not heuristic) — primary interface.
+    2. Domain 17 — Self-Coding Agent ← NORTH STAR (after Domain 19 stabilises Caducean)
+    3. Domain 13 — Gate 2: Launcher + Developer Mode (13.1→13.2→13.3→13.5)
+    4. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
+    5. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
+    6. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
+    7. Domain 2  — Voice pipeline (primary input modality — manual e2e; pairs with D19 ConvKernel)
+    8. Domain 12 — PiN + MCP storage integrations (after D11 verified)
+    9. Domain 4  — Skills library (self-extension)
+    10. Domain 7  — Backend reliability (logging standardisation)
+    11. Domain 15 — Linux Build (blocked on Linux machine or CI)
+    12. Domain 8  — Distribution (MSI clean install)
+    13. Domain 9  — Advanced features (after everything else)
 
 ---
 
@@ -1918,6 +1923,160 @@ Phased plan: `.windsurf/plans/cpp-memory-engine-23ec52.md`
     python -m pytest backend/tests/test_iris_core_smoke.py -v  (9/9 pass)
     cargo check --manifest-path src-tauri/Cargo.toml             (frontend clean)
     python -c "from backend.gateway.iris_ffi import IrisCoreEngine; print('OK')"
+
+---
+
+## DOMAIN 19 — CADUCEAN v2: MITOCHONDRIA TO MYCELIUM  ⭐ NEW
+Branch: `feat/caducean-v2-mitochondria-mycelium`
+Spec: `docs/plans/Cadv2plan.md` (implementation) + `docs/cad_v2_architecture.md` (architecture)
+Date opened: 2026-06-12
+
+**The strategic goal:** Make the Caducean Engine the **mitochondria** of the Mycelium memory
+system. It already exists as C++ code (Domain 18) but is currently dead code — `ffi_init_engine()`
+was never called from `MemoryInterface.__init__`, so every Caducean call fell back to the Python
+stub returning `MAINTAIN`. v2 fixes this and wires the engine's physics state (u, ξ, phase_accel)
+into Mycelium decay, resonance retrieval, the DER loop, and the voice pipeline.
+
+**Why now:** Domain 17 (self-coding) needs the strongest possible DER loop with real-time
+tool evaluation. The Caducean v2 mitochondrial governor is the foundation that makes the DER
+loop stable on long-tier tasks (Gate 2 result: 22.75× efficiency on 150–200 step sessions).
+Without it, self-coding would be the rambling baseline.
+
+**Architectural decisions (2026-06-12):**
+  - Biometric key: Option C — frontend generates session_id, passed via WS handshake
+  - Tauri↔Python comms: Option A — HTTP POST to FastAPI /api/caducean/*
+  - Frontend state: Option A — polling Tauri commands at 500ms
+  - Future: Option B — WebSocket broadcast when latency becomes a felt problem
+  - DLL ownership: Python owns iris_core.dll (single ctypes load), Tauri is thin proxy
+  - This avoids: memory spikes from duplicate loading, race conditions, version mismatch
+
+  [19.0] Phase 0 — Critical engine initialization fix (P0, blocks everything else)
+    Status: NOT STARTED
+    Bug: `backend/memory/interface.py` accepts `biometric_key` but never calls `ffi_init_engine()`.
+         The C++ engine is loaded by ctypes lazily but never initialized → all Caducean calls
+         fall through to `_PythonCaduceanFallbackState.recommend()` which returns 2 (MAINTAIN).
+    Fix: Add at end of `MemoryInterface.__init__`:
+      ```python
+      try:
+          from backend.gateway.iris_ffi import ffi_init_engine
+          ffi_init_engine(db_path, biometric_key.hex())
+      except Exception as _e:
+          logger.warning(f"[MemoryInterface] C++ engine init failed: {_e} — Python fallback")
+      ```
+    Wrapped in try/except so backend never crashes if DLL missing.
+    `ffi_init_engine()` is idempotent (checks `_initialized` flag).
+    Test: Run `python -c "from backend.memory.interface import MemoryInterface; m = MemoryInterface(None, 'test.db', b'\\x00'*32); print('OK')"`
+    Verify log line `[iris_ffi] C++ core loaded from ...` appears.
+    Landmark: caducean_engine_actually_initialized
+
+  [19.1] Phase 1 — C++ core: winding numbers, phase history, adaptive safety net, DirectionSignal
+    Status: NOT STARTED (plan written, no code yet)
+    Files: `src-tauri/src/iris_core/caducean.h`, `caducean.cpp`, `iris_core.h`, `iris_core.cpp`
+    What to build:
+      a) SessionState: add `l, m, xi_prev1, xi_prev2, c_eff`
+      b) DirectionSignal struct: `{target_u, force_magnitude, u_current, phase, balance}`
+      c) caducean_init_session(session_id, l, m) — compute c_eff
+      d) update(): shift phase history, advance with c_eff
+      e) recommend() with adaptive safety net:
+         Q > 0.8 AND phase_accel > 0.05 → return 3 (TOPO_VIOLATION)
+      f) get_direction_signal(): F = a*u - b*u^3, target_u = sign(u)
+      g) set_params(session_id, a, b, s): dynamic Duffing potential tuning
+      h) iris_core.cpp: O(1) EML formula (Ne=x, Nt=y, L=min, V=sum+1)
+      i) FFI exports: caducean_init_session, caducean_get_direction_signal, caducean_set_params
+    Gate: build_cpp_core.ps1 succeeds; smoke test loads DLL; DirectionSignal struct has all 5 fields
+    Test: python -m pytest backend/tests/test_iris_core_smoke.py -v (existing 9 + new ~6 tests)
+    Landmark: caducean_v2_cpp_complete
+
+  [19.2] Phase 2 — Python FFI: ctypes bindings, fallback updates
+    Status: NOT STARTED
+    File: `backend/gateway/iris_ffi.py`
+    What to build:
+      a) `IrisDirectionSignal(ctypes.Structure)` with the 5 double fields
+      b) _IrisFFI: register argtypes/restypes for 3 new FFI functions
+      c) Module-level helpers: ffi_caducean_init_session, ffi_caducean_get_direction_signal, ffi_caducean_set_params
+      d) _PythonCaduceanFallbackState: return mock DirectionSignal
+    Test: All FFI tests + fallback tests pass.
+    Landmark: caducean_v2_ffi_wired
+
+  [19.3] Phase 3 — Mycelium modulation + new schema
+    Status: NOT STARTED
+    Files: `backend/memory/interface.py`, `mycelium/interface.py`, `mycelium/scorer.py`, `mycelium/resonance.py`
+    New: `backend/migrations/003_caducean_trajectories.sql`
+    What to build:
+      a) caducean_trajectories table: (session_id, step, x, y, xi, u, balance, recommendation)
+      b) Migration call in MemoryInterface.__init__ (idempotent)
+      c) mycelium_record_anomaly(session_id, signal_type) → QuorumSensor
+      d) EdgeScorer.apply_decay(): read latest u, set multiplier 0.5 (u>0) | 1.0 (u≈0) | 1.8 (u<0)
+      e) ResonanceScorer._score_candidate(): modulate multiplier by 0.5 (creativity) | 1.8 (focus)
+    Test: All memory tests pass + new trajectory tests.
+    Landmark: mycelium_caducean_modulated
+
+  [19.4] Phase 4 — Agent kernel: DER queue modulation, TOPO_VIOLATION, trajectory controller
+    Status: NOT STARTED
+    Files: `backend/agent/der_loop.py`, `agent_kernel.py`, `trajectory_controller.py`
+    New: `backend/agent/coupled_registry.py`
+    What to build:
+      a) der_loop.next_ready(): fetch DirectionSignal, restrict to critical when target_u=-1
+      b) agent_kernel: compute balance=clamp(EML/2.34, 0.1, 3.0); handle recommendation=3
+      c) agent_kernel: persist trajectory row to caducean_trajectories
+      d) trajectory_controller: tune a, b, s based on violation count (clamped)
+      e) coupled_registry: singleton; rational c_eff ratio → angular momentum exchange;
+         irrational → destructive interference
+    Test: All DER tests + new coupled_registry tests.
+    Landmark: der_caducean_v2_wired
+
+  [19.5] Phase 5 — Tauri shell + FastAPI endpoints (thin proxy)
+    Status: NOT STARTED
+    Files: `src-tauri/src/commands/caducean.rs` (new), `src-tauri/src/main.rs`, `backend/main.py`
+    What to build:
+      a) 3 Tauri commands: get_state, get_direction_signal, set_params (HTTP proxy)
+      b) Register in main.rs invoke_handler
+      c) 3 FastAPI endpoints: /api/caducean/state, /direction, /params
+    Test: cargo check passes; curl endpoints return correct JSON.
+    Landmark: tauri_caducean_proxy_wired
+
+  [19.6] Phase 6 — Frontend: React hook + VoiceInterface integration + debug panel
+    Status: NOT STARTED
+    New: `app/hooks/useCaducean.ts`, `app/components/CaduceanDebugPanel.tsx`
+    Mod: `app/components/VoiceInterface.tsx`
+    What to build:
+      a) useCaducean(sessionId, pollMs=500): useState + setInterval, calls invoke('caducean_get_state')
+      b) VoiceInterface: consume hook; map target_u/force_magnitude to TTS chunk size and turn-taking
+      c) CaduceanDebugPanel: dev-only floating panel with live state + u/ξ plot + a/b/s sliders
+    Test: Manual — debug panel shows live values; sliders update C++ state (verify via /api/caducean/state)
+    Landmark: frontend_caducean_hook_wired
+
+  [19.7] Phase 7 — ConversationKernel (voice-first phase-driven turn-taking)
+    Status: NOT STARTED
+    New: `backend/agent/conversation_kernel.py`
+    What to build:
+      a) Polls ffi_caducean_get_direction_signal() every 100ms (internal, not via WS)
+      b) ξ ∈ [0, π) → AGENT_SPEAK; ξ ∈ [π, 2π) → AGENT_LISTEN
+      c) VAD events → send EXPAND/COMPRESS actions to Caducean
+      d) TTS chunk size = clamp(force_magnitude * 300, 20, 200) tokens
+      e) Interrupt during AGENT_SPEAK → record anomaly, force target_u=-1
+    Test: Manual — speak, verify phase transitions in debug panel; interrupt mid-TTS.
+    Landmark: conversation_kernel_wired
+
+  Graduate condition:
+    1. All existing tests pass (no regressions) — 250+ tests
+    2. New tests pass: ~6 C++ smoke + ~3 integration + ~3 conversation kernel
+    3. Manual e2e: wake word → speak → IRIS responds → debug panel shows live Caducean state
+    4. Caducean v2 is the source of truth: u changes affect Mycelium decay rate (verify in DB),
+       resonance retrieval behavior (verify in episode selection logs), DER queue depth
+       (verify in agent logs), and voice turn-taking (verify in TTS chunk logs)
+    5. Phase 0 fix verified: log line confirms C++ DLL actually loaded (not just Python fallback)
+    6. The engine's physics state is now the metabolic governor — not a stub
+
+  Why this unlocks Domain 17 (self-coding):
+    - On long-tier coding tasks (100+ file operations), the adaptive safety net prevents
+      the DER loop from wandering into TOPO_VIOLATION states that would halt execution
+    - Phase-driven voice feedback means the developer can interrupt self-coding via voice
+      without leaving the keyboard (the ConversationKernel forces target_u=-1 on interrupt)
+    - Caducean-modulated decay means the memory graph stays healthy across long self-coding
+      sessions — exploratory paths preserved while compress phase prunes stale ones
+    - CoupledRegistry means self-coding agent + voice agent can be active simultaneously
+      with rational c_eff coupling — voice gets concise output during intense coding
 
 ---
 
