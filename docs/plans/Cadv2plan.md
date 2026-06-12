@@ -284,21 +284,89 @@ Add migration call in `MemoryInterface.__init__` (idempotent).
 
 ### Component 5: Voice Pipeline — ConversationKernel (`backend/agent`)
 
-> **Why this is in v2:** The technical overview lists ConversationKernel as "ready to build". The voice pipeline is the PRIMARY interface per CLAUDE.md. v2 makes the kernel phase-driven, not heuristic.
+> **Architectural decision (2026-06-12 update):** The voice pipeline is a **rich existing communication layer** — `iris_gateway._on_voice_result` → `_process_voice_transcription` → `_speak_response` (with native C++ audio fast-path), `VoiceCommandHandler` (with energy-based VAD, audio-level callbacks, state transitions), and `TTSManager.synthesize_stream()` (with sentence chunking, interrupt support). **ConversationKernel is NOT a new system — it is a thin orchestrator that wraps these existing pieces** with Caducean phase-awareness. Zero duplication. Zero parallel state.
 
 #### [NEW] [conversation_kernel.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/agent/conversation_kernel.py)
 - `class ConversationKernel`:
-  - Subscribes to Caducean `DirectionSignal` for the active session (via polling 100ms internal to backend, not over WS).
-  - **Phase-based turn-taking:**
-    - `ξ ∈ [0, π)`: AGENT_SPEAK (synthesize and stream TTS)
-    - `ξ ∈ [π, 2π)`: AGENT_LISTEN (VAD active, expect user input)
-  - **VAD feedback → Caducean:**
-    - When user voice detected: `ffi_caducean_update(session_id, 1, balance)` (COMPRESS action)
-    - When user finishes: `ffi_caducean_update(session_id, 0, balance)` (EXPAND action)
-  - **TTS chunk sizing:**
-    - `force_magnitude > 0.5` → synthesize larger chunks (confident, uninterrupted)
-    - `force_magnitude < 0.1` → smaller chunks (easily interruptible)
-  - **Interrupt handling:** if user voice during AGENT_SPEAK: record anomaly, force `target_u = -1.0`.
+  - **Constructor** takes references to already-wired singletons:
+    ```python
+    def __init__(self, voice_handler: VoiceCommandHandler, tts_manager: TTSManager,
+                 audio_pipeline: AudioPipeline, get_caducean_state: Callable):
+        ...
+    ```
+  - **NOT** a new event loop, NOT a new VAD, NOT a new TTS — only adds Caducean state to the decisions that existing classes already make.
+  - **Hook into existing callbacks** (no rewiring):
+    - `voice_handler.set_state_callback(self._on_voice_state)` — observe IDLE→RECORDING→PROCESSING transitions
+    - `voice_handler.set_audio_level_callback(self._on_audio_level)` — observe RMS for VAD-fire signal
+    - (Optional) hook into the existing `_on_audio_level` RMS path in `iris_gateway` — ConversationKernel reads the same level for phase updates
+  - **Phase-to-action mapping** (the *only* new logic):
+    | Caducean state | Existing class action (no change) | ConversationKernel addition |
+    |----------------|-----------------------------------|-----------------------------|
+    | `target_u = +1.0` AND `ξ ∈ [0, π)` | TTS streams via `_speak_response` | Read `force_magnitude`, scale TTS chunk size |
+    | `target_u = -1.0` OR `ξ ∈ [π, 2π)` | VoiceCommandHandler is recording | If user speaks, send COMPRESS action to Caducean |
+    | User voice during agent speech | `_speak_response` checks `interrupted` event | `force target_u = -1.0` via `ffi_caducean_set_params` |
+    | `recommendation == 3` | (no existing behavior) | Halt TTS via `audio_pipeline.interrupt()` + `engine.interrupt_speech()` |
+  - **Methods (thin wrappers, no parallel logic):**
+    ```python
+    def _on_voice_state(self, state: VoiceState, message: str) -> None:
+        """Fires on every VoiceCommandHandler state transition. Updates Caducean
+        with EXPAND when transitioning to IDLE (user turn complete) and COMPRESS
+        when entering RECORDING (user turn started)."""
+        if state == VoiceState.RECORDING:
+            ffi_caducean_update(self._session_id, 1, self._current_balance)
+        elif state == VoiceState.IDLE and self._was_speaking:
+            ffi_caducean_update(self._session_id, 0, self._current_balance)
+
+    def _on_audio_level(self, level: float) -> None:
+        """Already wired in iris_gateway. We read the same level for force_magnitude
+        → TTS chunk size scaling. No duplicate VAD — single source of truth."""
+        self._current_audio_level = level
+        if level > 0.5 and self._speaking_active:
+            # User speaking during agent speech — barge-in
+            self._interrupt_for_barge_in()
+
+    def get_tts_chunk_size(self) -> int:
+        """Returns the chunk size in tokens for the next TTS synthesis, scaled
+        by force_magnitude. Called by _speak_response (via a wrapper) to replace
+        the hardcoded FIRST_CHUNK_THRESHOLD/NORMAL_CHUNK_THRESHOLD constants."""
+        sig = ffi_caducean_get_direction_signal(self._session_id)
+        chunk = int(sig.force_magnitude * 300)
+        return max(20, min(200, chunk))
+
+    def should_halt_on_violation(self) -> bool:
+        """Returns True if Caducean reports TOPO_VIOLATION. Called by _speak_response
+        at chunk boundary. Halts TTS via existing audio_pipeline.interrupt()."""
+        rec = ffi_caducean_recommend(self._session_id)
+        if rec == 3:
+            audio_pipeline.interrupt()  # existing method, no new logic
+            return True
+        return False
+    ```
+  - **No new threads, no new queues, no new state machines** — everything routes through existing `VoiceCommandHandler.state` enum, existing `_on_audio_level` callback, existing `audio_pipeline.interrupt()`, existing `engine.interrupt_speech()`.
+
+#### [MODIFY] [iris_gateway.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/iris_gateway.py) — minimal hooks
+- In `set_voice_handler()` (already exists, ~line 1479), instantiate the `ConversationKernel` and pass it the same references. **No other changes.**
+- In `_speak_response()` (already exists, ~line 1925), replace the hardcoded `FIRST_CHUNK_THRESHOLD = 1` / `NORMAL_CHUNK_THRESHOLD = 8` constants with a call to `conversation_kernel.get_tts_chunk_size()` at the point where chunks are decided (~line 1955).
+- In `_speak_response()`, add a single check per chunk: `if conversation_kernel.should_halt_on_violation(): break` (one line addition).
+- **No other changes to iris_gateway.** All the wake-word, STT, agent routing, TTS, and interrupt logic remains untouched.
+
+#### [MODIFY] [backend/main.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/main.py) — lifespan
+- After the existing `iris_gateway.set_voice_handler(voice_handler)` call (~line in `lifespan`), add: `iris_gateway.set_caducean_session(session_id)`. This wires the active session_id into the kernel — frontend generates the session_id via the existing WS handshake (Option C from our decision matrix).
+
+#### [MODIFY] [backend/agent/agent_kernel.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/agent/agent_kernel.py) — voice-first mode
+- The existing `voice_first` mode (`DER_TOKEN_BUDGETS["voice_first"] = 15000` and `task_class == "voice_first"` single-step) is **unchanged**. The Caducean v2 integration is at the *physics* layer — agent_kernel is unaware. The existing mode detection in `_process_voice_transcription(from_voice=True)` continues to work.
+
+#### Why this consolidation matters
+
+| Concern | Old plan (parallel system) | New plan (thin wrapper) |
+|---------|---------------------------|--------------------------|
+| New VAD | Would duplicate VoiceCommandHandler's energy-based VAD | Reuse `_on_audio_level` callback |
+| New TTS | Would need a separate streaming path | `TTSManager.synthesize_stream()` unchanged |
+| New state machine | VoiceState + CaduceanState + ??? | VoiceState only (Caducean state is read-only input) |
+| New interrupt logic | Three ways to interrupt TTS | Single path: `audio_pipeline.interrupt()` (existing) |
+| Wiring changes | Touch every file in audio/ | Touch iris_gateway.set_voice_handler (one method) |
+| Failure modes | N independent paths, N×M failures | Single path, single failure mode |
+| Testing | Re-test all voice tests | Voice tests unchanged; add 1-2 new behavioral tests |
 
 ---
 
@@ -369,63 +437,190 @@ All endpoints: simple pass-through, no business logic. CORS already configured.
 
 ---
 
-### Component 9: Verification Suite (`backend/tests`)
+### Component 9: Verification Suite — Layered Testing (`backend/tests`)
+
+> **Why this is 4 separate layers:** Unit tests prove the code runs. Integration tests prove the components connect. **Contract tests** prove the FFI boundary and API surface are stable. **Behavioral tests** prove the *physics behaves correctly* — that an agent in "explore mode" actually retains more memory than one in "compress mode" over 1000+ steps. Without behavioral tests, v2 could "pass all tests" while the Mycelium is actually getting worse.
+
+#### Layer 1: Unit Tests (existing + new)
 
 #### [MODIFY] [test_iris_core_smoke.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/test_iris_core_smoke.py)
 - Add tests:
   - `test_caducean_init_session_returns_success` — `ffi_caducean_init_session("test", 1, 1)` returns True.
   - `test_caducean_direction_signal_fields` — struct has all 5 fields, types correct.
   - `test_caducean_direction_signal_target_u_sign` — `target_u` is +1 or -1.
-  - `test_caducean_adaptive_safety_net_no_false_positive` — stable limit cycle does NOT fire TOPO_VIOLATION.
-  - `test_caducean_adaptive_safety_net_real_drift` — chaotic input DOES fire TOPO_VIOLATION.
   - `test_caducean_set_params_updates_a_b_s` — verify via `get_direction_signal().u` after many updates with new params.
+  - `test_caducean_c_eff_formula_correct` — for (l=1,m=1): c_eff=1.0; (2,1): 1.414; (3,3): 2.121 (within 0.001).
+  - `test_caducean_winding_number_rejected` — `init_session("t", 0, 0)` raises or rejects (l,m must be non-zero).
+
+#### Layer 2: Integration Tests (cross-component)
 
 #### [NEW] [test_caducean_v2_integration.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/test_caducean_v2_integration.py)
-- End-to-end: init engine → run 100 agent steps → verify `caducean_trajectories` table populated → verify Mycelium decay multiplier was modulated.
-- 2-session coupling: register two sessions with rational c_eff → verify angular momentum exchange at phase alignment.
+- `test_trajectory_table_populated` — init engine → run 100 agent steps → `SELECT COUNT(*) FROM caducean_trajectories WHERE session_id=?` returns 100.
+- `test_o1_eml_matches_sql_eml` — for 20 randomized (x,y) pairs, compare O(1) formula result to SQLite-based result within 0.01 tolerance.
+- `test_mycelium_decay_modulated_by_u` — run maintenance with u>0 vs u<0, verify edge score distributions differ as expected.
+- `test_resonance_multiplier_modulated_by_u` — same episode set retrieved with u>0 vs u<0, verify different candidates selected.
+- `test_der_queue_restricted_on_compress` — set target_u=-1, verify `next_ready()` returns only critical items.
+- `test_topo_violation_raises_and_records_anomaly` — force TOPO_VIOLATION, verify exception raised AND `mycelium_anomaly` table has row.
+- `test_2session_rational_coupling` — register sessions with (l=1,m=1) and (l=2,m=2) (rational c_eff ratio), run 200 steps, verify angular momentum exchange.
+- `test_2session_irrational_interference` — sessions with (1,1) and (3,2) (irrational ratio), verify destructive interference (-0.05 to u).
 
 #### [NEW] [test_conversation_kernel.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/test_conversation_kernel.py)
-- Mock VAD events → verify correct EXPAND/COMPRESS actions sent to Caducean.
-- Verify TTS chunk size scales with `force_magnitude`.
-- Verify interrupt during AGENT_SPEAK records anomaly.
+- **Consolidation tests (prove we didn't break the existing pipeline):**
+  - `test_voice_handler_state_callbacks_wired` — ConversationKernel registers `_on_voice_state` AND `_on_audio_level` on the existing `VoiceCommandHandler` (no new callbacks added).
+  - `test_no_duplicate_vad` — `AudioPipeline` is the only VAD source; ConversationKernel has no `is_voice_active` method (uses existing audio_level).
+  - `test_no_duplicate_tts` — `TTSManager` is the only TTS source; ConversationKernel has no `synthesize` method (returns chunk size only).
+  - `test_existing_voice_tests_still_pass` — full `test_domain2_voice.py` suite (38 tests) passes unchanged.
+  - `test_speak_response_uses_kernel_chunk_size` — mock ConversationKernel returning chunk=200, verify `_speak_response` synthesizes 200-token chunks (not the old hardcoded thresholds).
+  - `test_halt_on_violation_breaks_tts_loop` — mock `should_halt_on_violation()=True`, verify TTS loop breaks within 1 chunk.
+- **Behavioral tests (the new physics):**
+  - `test_vad_compress_action_sent` — mock VAD voice detected, verify `ffi_caducean_update(session_id, 1, balance)` called.
+  - `test_vad_end_expand_action_sent` — mock VAD voice ended, verify `ffi_caducean_update(session_id, 0, balance)` called.
+  - `test_tts_chunk_size_scales_with_force` — force_magnitude=0.1 → chunk=20 tokens; force_magnitude=1.0 → chunk=200 tokens.
+  - `test_interrupt_during_speak_records_anomaly` — user voice during AGENT_SPEAK, verify anomaly recorded AND target_u forced to -1.
+
+#### Layer 3: Contract Tests (FFI + API boundary stability)
+
+> **Why contracts matter:** The C++ ↔ Python boundary and the HTTP API surface are both contractual. If `DirectionSignal` field order changes, ctypes silently corrupts memory. If a JSON field renames, frontend breaks at runtime. Contract tests fail loudly when the contract drifts.
+
+#### [NEW] [test_caducean_ffi_contract.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/test_caducean_ffi_contract.py)
+- **Struct shape contract:** `IrisDirectionSignal` ctypes structure has exactly 5 fields, all `c_double`, in this order: `target_u, force_magnitude, u_current, phase, balance`. Failure = "struct drift detected".
+- **Argtype contract:** Every new FFI function has matching `argtypes` in `_IrisFFI.__init__`. Test iterates functions and checks against a frozen manifest.
+- **Restype contract:** All void-returning FFI functions have `restype = None`; all int-returning have `restype = c_int`; double-returning have `c_double`. Drift = "FFI manifest stale".
+- **Return code contract:** `caducean_recommend()` returns only {0, 1, 2, 3}. Any other value = "recommendation code drift".
+- **Fallback parity contract:** When Python fallback is active (DLL missing), `ffi_caducean_get_direction_signal()` returns a DirectionSignal with all 5 fields populated (not None). Verifies graceful degradation.
+
+#### [NEW] [test_caducean_api_contract.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/test_caducean_api_contract.py)
+- Uses `httpx.AsyncClient` against a `TestClient(main.app)` instance.
+- `GET /api/caducean/state` response schema: `{x: int, y: int, xi: float, u: float, balance: float, recommendation: int}` — all fields required, types enforced via Pydantic model.
+- `GET /api/caducean/direction` response schema: matches `IrisDirectionSignal` exactly (5 doubles).
+- `POST /api/caducean/params` request schema: `{session_id: str, a: float, b: float, s: float}` — Pydantic validation.
+- `POST /api/caducean/params` response: `{ok: bool}` always (even on error, error in `error` field).
+- 400/404/422 behavior: invalid session_id → 404; missing fields → 422 with detail; type errors → 422.
+- Contract is frozen in a JSON file (`backend/tests/contracts/caducean_api_v2.json`) and checked in.
+
+#### [NEW] [backend/tests/contracts/caducean_api_v2.json](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/contracts/caducean_api_v2.json)
+- JSON Schema definitions for all request/response shapes. Used by both Python (`jsonschema` lib) and Rust (`schemars`) for cross-language validation.
+
+#### Layer 4: Behavioral E2E Tests (physics behaves correctly over time)
+
+> **Why behavioral tests are critical:** A "passing" integration test might confirm the table got a row, but it can't tell if Mycelium actually retains better in explore mode. Behavioral tests run long simulations and assert on the *statistical outcome* — that physics contract is honored.
+
+#### [NEW] [test_caducean_behavioral.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/test_caducean_behavioral.py)
+- **Test: explore mode retains more edges than compress mode.**
+  - Setup: 1000 Mycelium edges with identical decay rates.
+  - Run A: maintain u=+0.5 (explore) for 1000 maintenance cycles → measure retained edges.
+  - Run B: maintain u=-0.5 (compress) for 1000 maintenance cycles → measure retained edges.
+  - Assert: retained_A > retained_B (explore mode preserves memory, compress mode prunes).
+- **Test: adaptive safety net has 0% false positives on stable limit cycles.**
+  - Run 200 agent steps on a stable task (per Gate 2 mid-tier: 30–70 steps, success path).
+  - Assert: TOPO_VIOLATION count = 0 over 100 trials (Gate 2 baseline: static net had 58% FPs).
+- **Test: adaptive safety net catches real drift within 5 steps.**
+  - Force a chaotic input sequence (random action, extreme balance).
+  - Assert: TOPO_VIOLATION fires within ≤ 5 steps of drift onset.
+- **Test: phase_accel invariant on stable limit cycle.**
+  - Run 500 steps of balanced updates.
+  - Assert: `mean(abs(phase_accel))` < 0.01 (limit cycle has zero acceleration).
+- **Test: trajectory persistence is non-blocking.**
+  - Call `ffi_caducean_update()` 1000 times in a tight loop with persistence enabled.
+  - Assert: total wall time < 5 seconds (DB writes must not block hot path).
+- **Test: coupled registry actually differentiates roles.**
+  - Register 2 sessions with rational c_eff ratio, run 1000 cycles.
+  - Assert: one session's `mean(u)` > 0 (barrier) AND other's `mean(u)` < 0 (nucleus).
+- **Test: ConversationKernel respects physics within 100ms.**
+  - Inject voice event → measure time until `DirectionSignal.target_u` reflects it.
+  - Assert: latency < 100ms (real-time responsiveness).
+
+#### Layer 5: Full Stack E2E (Tauri + Python + C++ + Mycelium + Voice)
+
+> **Why full-stack E2E:** Component tests can all pass while the integrated system is broken (e.g., a Tauri command that can't find the Python server, or a frontend hook that calls the wrong field name). Full-stack E2E catches integration issues at the boundary.
+
+#### [NEW] [backend/tests/e2e/conftest.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/e2e/conftest.py)
+- Fixtures: `live_backend` (starts FastAPI on a free port), `live_tauri_app` (spawns Tauri dev or uses Tauri's mock harness), `playwright_browser` (chromium headless), `mock_audio_stream` (synthesizes PCM data for VAD/TTS).
+
+#### [NEW] [backend/tests/e2e/test_caducean_full_stack.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/e2e/test_caducean_full_stack.py)
+- **Test: Frontend hook → Tauri command → Python HTTP → C++ FFI roundtrip.**
+  - Playwright opens the app, navigates to debug panel.
+  - Wait for `useCaducean` first poll (≤1s).
+  - Assert: panel displays non-zero `x, y, u, ξ`.
+  - Move a slider → wait 1s → assert C++ state changed (read via `/api/caducean/state`).
+- **Test: Voice pipeline phase transitions visible in UI.**
+  - Inject mock PCM audio (3s of speech) into VAD pipeline.
+  - Wait 2s for ConversationKernel to process.
+  - Playwright checks debug panel: `target_u` flipped to `-1`, `phase` advanced into `[π, 2π)`.
+- **Test: Mycelium decay rate changes when Caducean state changes.**
+  - Pre-populate Mycelium with 100 edges (all same decay_rate=0.01, same age).
+  - Force u=+0.8 via API. Run maintenance.
+  - Verify: edges_retained > 80.
+  - Force u=-0.8 via API. Reset, run maintenance.
+  - Verify: edges_retained < 50.
+- **Test: TOPO_VIOLATION halts DER loop and shows in UI.**
+  - Force chaotic inputs via API for 10 steps.
+  - Assert: `/api/caducean/state` returns `recommendation: 3` within 5 steps.
+  - Assert: DER loop's next call raises `TopologyViolationException` (caught and surfaced).
+  - Playwright checks: debug panel shows "TOPO_VIOLATION" red indicator.
+
+#### [NEW] [backend/tests/e2e/run_e2e.sh](file:///C:/Users/midas/Desktop/IRISVOICE/backend/tests/e2e/run_e2e.sh) (and `run_e2e.ps1`)
+- Orchestration script:
+  1. Compile C++ DLL (`build_cpp_core.ps1`).
+  2. Start FastAPI on test port (background).
+  3. Start Tauri dev or load Tauri mock.
+  4. Run pytest with `--e2e` marker.
+  5. Teardown all processes (even on failure).
+- Returns non-zero exit on any E2E failure → blocks CI.
+
+#### Test Markers and CI Integration
+
+- `pytest.mark.unit` — fast (<1s each), run on every commit.
+- `pytest.mark.integration` — medium (1–10s each), run on every PR.
+- `pytest.mark.contract` — fast (validates structure), run on every commit.
+- `pytest.mark.behavioral` — slow (10s–5min each), run nightly.
+- `pytest.mark.e2e` — very slow (minutes), run pre-release + manually on demand.
+
+**Graduate condition for testing layer:**
+- All unit + integration + contract tests pass on every commit (CI gate).
+- All behavioral tests pass in 3 consecutive nightly runs.
+- At least 1 full-stack E2E test runs successfully end-to-end (proves the wiring works).
+- Contract JSON schema is versioned in git; any drift fails CI loudly.
 
 ---
 
-## Build / Verification Plan
+## Build / Verification Plan (UPDATED)
 
 ### Phase 0: Critical Fix (Engine Init)
 1. Apply Component 0 fix.
 2. Run `python -c "from backend.memory.interface import MemoryInterface; m = MemoryInterface(None, 'test.db', b'\\x00'*32); print('OK')"`
 3. Verify `backend/native/iris_core.dll` is now actually loaded (check log).
+4. **NEW:** Run `pytest backend/tests/test_iris_core_smoke.py -v` — existing 9 tests must pass.
 
-### Phase 1: C++ Core + Python FFI
+### Phase 1: C++ Core + Python FFI + Unit/Contract
 1. Run `.\build_cpp_core.ps1` — compile new DLL.
-2. Run `python -m pytest backend/tests/test_iris_core_smoke.py -v`
-3. All smoke tests + new `test_caducean_v2_integration.py` must pass.
+2. Run `pytest -m unit backend/tests/test_iris_core_smoke.py -v` — new unit tests must pass.
+3. **NEW:** Run `pytest -m contract backend/tests/test_caducean_ffi_contract.py -v` — FFI struct/argtype contracts must hold.
 
-### Phase 2: Mycelium Modulation
+### Phase 2: Mycelium Modulation + Integration
 1. Apply Components 3 modifications.
-2. Run `python -m pytest backend/memory/tests/test_mycelium_*.py -v`
-3. All existing memory tests must pass + new modulation tests.
+2. Run `pytest backend/memory/tests/test_mycelium_*.py -v` — existing + new tests must pass.
+3. **NEW:** Run `pytest -m integration backend/tests/test_caducean_v2_integration.py -v`.
 
-### Phase 3: Agent Kernel + DER Loop
+### Phase 3: Agent Kernel + DER Loop + Behavioral
 1. Apply Components 4 modifications.
-2. Run `python -m pytest backend/agent/tests/ backend/tests/test_der_loop.py -v`
-3. All existing DER tests must pass.
+2. Run `pytest backend/agent/tests/ backend/tests/test_der_loop.py -v`.
+3. **NEW:** Run `pytest -m behavioral backend/tests/test_caducean_behavioral.py -v` — must complete in <5 min, all pass.
 
-### Phase 4: Tauri Shell + Frontend
+### Phase 4: Tauri Shell + Frontend + API Contract
 1. Apply Components 6, 7, 8 modifications.
 2. `cargo tauri dev` — verify app launches, debug panel populates.
-3. Test: `useCaducean` returns live values, sliders update C++ state.
+3. **NEW:** Run `pytest -m contract backend/tests/test_caducean_api_contract.py -v` — API schema frozen.
+4. **NEW:** Move `caducean_api_v2.json` schema into a generated typescript type via `json-schema-to-typescript` so frontend drift fails at build time.
 
-### Phase 5: Voice Kernel
+### Phase 5: Voice Kernel + Conversation E2E
 1. Apply Component 5 (ConversationKernel).
-2. Manual test: speak → verify phase transitions visible in debug panel.
-3. Test TTS chunk size changes when `force_magnitude` crosses 0.5.
+2. Run `pytest -m unit backend/tests/test_conversation_kernel.py -v` — unit tests for kernel logic.
+3. **NEW:** Run `pytest -m integration backend/tests/test_caducean_v2_integration.py::test_voice_phase_transitions -v` (integration with mock VAD).
 
-### Phase 6: Full Integration
-1. `python -m pytest backend/tests/ backend/memory/tests/ backend/agent/tests/ -v`
-2. All 250+ existing tests + new v2 tests must pass.
+### Phase 6: Full E2E (Manual + Automated)
+1. `pytest backend/tests/ backend/memory/tests/ backend/agent/tests/ -v` — all unit/integration/contract pass.
+2. `bash backend/tests/e2e/run_e2e.sh` — full-stack E2E suite runs end-to-end.
 3. Manual e2e: wake word → speak → IRIS responds → debug panel shows live state.
 
 ---

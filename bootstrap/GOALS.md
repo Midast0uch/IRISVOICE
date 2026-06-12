@@ -2046,16 +2046,34 @@ Without it, self-coding would be the rambling baseline.
     Test: Manual — debug panel shows live values; sliders update C++ state (verify via /api/caducean/state)
     Landmark: frontend_caducean_hook_wired
 
-  [19.7] Phase 7 — ConversationKernel (voice-first phase-driven turn-taking)
+  [19.7] Phase 7 — ConversationKernel (THIN WRAPPER, not a new system)
     Status: NOT STARTED
-    New: `backend/agent/conversation_kernel.py`
+    New: `backend/agent/conversation_kernel.py` (~150 lines, no new state machines)
+    Mod: `backend/iris_gateway.py` (3 minimal touches, see plan Section 5)
     What to build:
-      a) Polls ffi_caducean_get_direction_signal() every 100ms (internal, not via WS)
-      b) ξ ∈ [0, π) → AGENT_SPEAK; ξ ∈ [π, 2π) → AGENT_LISTEN
-      c) VAD events → send EXPAND/COMPRESS actions to Caducean
-      d) TTS chunk size = clamp(force_magnitude * 300, 20, 200) tokens
-      e) Interrupt during AGENT_SPEAK → record anomaly, force target_u=-1
-    Test: Manual — speak, verify phase transitions in debug panel; interrupt mid-TTS.
+      a) ConversationKernel constructor takes references to EXISTING singletons:
+         voice_handler (VoiceCommandHandler), tts_manager (TTSManager),
+         audio_pipeline (AudioPipeline), get_caducean_state callable
+      b) Registers as additional observer on EXISTING callbacks:
+         voice_handler.set_state_callback(kernel._on_voice_state)
+         voice_handler.set_audio_level_callback(kernel._on_audio_level)
+      c) Exposes only two read-only methods to the existing pipeline:
+         get_tts_chunk_size() — returns int scaled by force_magnitude
+         should_halt_on_violation() — returns bool, calls existing audio_pipeline.interrupt()
+      d) Minimal modifications to iris_gateway:
+         - set_voice_handler(): instantiate kernel, pass to existing references
+         - _speak_response(): replace hardcoded chunk thresholds with kernel.get_tts_chunk_size()
+         - _speak_response(): add 1-line check for should_halt_on_violation()
+    What is NOT built (consolidation discipline):
+      - NO new VAD — reuses existing VoiceCommandHandler energy-based VAD
+      - NO new TTS — reuses existing TTSManager.synthesize_stream()
+      - NO new state machine — reads existing VoiceState enum
+      - NO new event loop — hooks into existing asyncio loop
+      - NO new interrupt path — uses existing audio_pipeline.interrupt()
+    Test:
+      - Full test_domain2_voice.py (38 tests) must pass unchanged
+      - New test_conversation_kernel.py consolidation tests verify no duplication
+      - Behavioral tests: speak, verify phase transitions in debug panel; interrupt mid-TTS
     Landmark: conversation_kernel_wired
 
   Graduate condition:

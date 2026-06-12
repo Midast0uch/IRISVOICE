@@ -153,18 +153,24 @@ The `CoupledTrajectoryRegistry` (new in v2) is a Python singleton that maintains
 
 ### 3.5 Phase-Driven Voice Kernel (ConversationKernel) — NEW in v2
 
-The voice pipeline is the primary interface per CLAUDE.md. v2 makes the kernel **phase-driven** rather than heuristic:
+> **Architectural principle (consolidation, not greenfield):** The voice pipeline is the **richest communication layer** in the backend. `iris_gateway._on_voice_result → _process_voice_transcription → _speak_response` is a complete wake-word → STT → agent → TTS pipeline. `VoiceCommandHandler` already provides energy-based VAD, audio-level callbacks, and a `VoiceState` enum. `TTSManager.synthesize_stream()` already supports streaming and interrupt. **ConversationKernel is a thin orchestrator that adds Caducean phase-awareness to decisions these classes already make.** No new VAD, no new TTS, no new state machine, no new event loop.
 
-| Caducean state | Voice Kernel action |
-|----------------|---------------------|
-| `ξ ∈ [0, π)` | **AGENT_SPEAK** — synthesize and stream TTS |
-| `ξ ∈ [π, 2π)` | **AGENT_LISTEN** — VAD active, expect user input |
-| `force_magnitude > 0.5` | **Large TTS chunks** (confident, uninterrupted) |
-| `force_magnitude < 0.1` | **Small TTS chunks** (easily interruptible) |
-| User voice during AGENT_SPEAK | **Interrupt** — record anomaly, force `target_u = -1` |
-| `recommendation == 3` | **Halt TTS**, surface violation indicator |
+The voice pipeline is the primary interface per CLAUDE.md. v2 makes it **phase-aware** rather than phase-replacing:
 
-The same physics that governs coding agent loops now governs human conversation. The voice is no longer a separate domain with its own state machine.
+| Caducean state | Existing class behavior (unchanged) | ConversationKernel addition |
+|----------------|--------------------------------------|------------------------------|
+| `target_u = +1.0` AND `ξ ∈ [0, π)` | `_speak_response()` streams TTS | Read `force_magnitude`, scale chunk size |
+| `target_u = -1.0` OR `ξ ∈ [π, 2π)` | `VoiceCommandHandler` is recording | Send COMPRESS to Caducean on user speech start |
+| User voice during agent speech | `_speak_response` checks `interrupted` event | Force `target_u = -1.0` via `ffi_caducean_set_params` |
+| `recommendation == 3` (TOPO_VIOLATION) | (no existing behavior) | Halt TTS via existing `audio_pipeline.interrupt()` |
+
+**Wiring (3 minimal touches, no rewiring):**
+
+1. `iris_gateway.set_voice_handler()` (existing, ~line 1479): instantiate `ConversationKernel` with references to the already-wired `voice_handler`, `tts_manager`, `audio_pipeline`, and a `get_caducean_state` callable.
+2. `_speak_response()` (existing, ~line 1925): replace the hardcoded `FIRST_CHUNK_THRESHOLD = 1` / `NORMAL_CHUNK_THRESHOLD = 8` constants with `conversation_kernel.get_tts_chunk_size()`. Add one line: `if conversation_kernel.should_halt_on_violation(): break`.
+3. `_on_voice_state` and `_on_audio_level` callbacks (already wired in `set_voice_handler`): ConversationKernel registers as an additional observer. Single source of truth for state.
+
+**The same physics that governs coding agent loops now informs human conversation — but the voice pipeline keeps its existing structure.**
 
 ---
 
@@ -273,26 +279,36 @@ The same physics that governs coding agent loops now governs human conversation.
 7. → TopologyLayer.run_topology_maintenance()  (unchanged)
 ```
 
-### 5.3 Voice Turn-Taking
+### 5.3 Voice Turn-Taking (consolidated with existing pipeline)
 
 ```
-1. User says wake word → STT → process_text_message()
-2. ConversationKernel created (or resumed) for session
-3. Backend polls ffi_caducean_get_direction_signal() every 100ms (internal)
-4. Current state: ξ=0.5π, u=0.3, target_u=+1
-   → AGENT_SPEAK mode
-   → force_magnitude=0.4 → TTS chunk=120 tokens
-   → Start synthesizing response
-5. User starts speaking mid-response
-   → VAD detects voice
-   → ConversationKernel sends action=1 (COMPRESS) to Caducean
-   → Caducean state updates: u decreases, ξ advances into [π, 2π)
-   → Next poll: target_u=-1, AGENT_LISTEN mode
-   → TTS halted at chunk boundary
-6. User finishes sentence
-   → ConversationKernel sends action=0 (EXPAND) to Caducean
-   → Phase advances back to [0, π) on next cycle
-   → AGENT_SPEAK resumes
+1. User says wake word
+   → Porcupine detects → AudioEngine → VoiceCommandHandler.start_recording()
+   → (existing) State transitions to RECORDING
+   → (NEW) ConversationKernel._on_voice_state callback fires
+   → ffi_caducean_update(session_id, action=1, balance)  # COMPRESS
+   → Orb animates "listening" (existing WS broadcast)
+
+2. User speaks, then stops
+   → VAD detects silence
+   → Whisper transcription runs
+   → _on_voice_result fires → iris_gateway._process_voice_transcription()
+   → process_text_message(from_voice=True) → voice_first mode → 1-step agent response
+   → (NEW) ConversationKernel sees RECORDING→IDLE transition
+   → ffi_caducean_update(session_id, action=0, balance)  # EXPAND
+
+3. Agent response streams through _speak_response()
+   → (MODIFIED) chunk size = conversation_kernel.get_tts_chunk_size()
+   → (MODIFIED) per-chunk check: should_halt_on_violation()?
+   → TTSManager.synthesize_stream() plays audio
+   → Orb animates "speaking" (existing WS broadcast)
+
+4. User barges in mid-speech
+   → VAD detects voice → audio_level > 0.5
+   → (existing) AudioEngine triggers interrupt path
+   → (NEW) ConversationKernel._on_audio_level callback fires
+   → ffi_caducean_set_params(session_id, a, b, s)  # force target_u = -1
+   → TTS halts at next chunk boundary (existing interrupt path)
 ```
 
 ---
@@ -317,6 +333,36 @@ The same physics that governs coding agent loops now governs human conversation.
 - Cross-project landmark bridge with Caducean state
 - ConvStreamKernel for TTS chunking driven by `force_magnitude`
 - PiN auto-anchor triggered by Caducean state (e.g., "preserve this decision — we're in compress mode")
+
+---
+
+## 8. Testing Strategy — Four Layers
+
+Caducean v2 introduces the **mitochondrial governor** — the part of the system that quietly controls memory behavior across long sessions. This is exactly the kind of change where "all tests pass" can mask a regression. The testing strategy is layered to catch failures at the right granularity:
+
+| Layer | What it proves | Where it runs | Speed |
+|-------|----------------|---------------|-------|
+| **Unit** | Code runs, fields exist, types correct | Every commit | <1s each |
+| **Integration** | Components connect, data flows across boundaries | Every PR | 1–10s each |
+| **Contract** | FFI struct shape, HTTP API schema, return codes | Every commit (frozen JSON) | <1s each |
+| **Behavioral** | Physics actually behaves correctly over 1000+ steps | Nightly | 10s–5min each |
+| **Full E2E** | Tauri + Python + C++ + Mycelium + Voice all wire up | Pre-release + manual | Minutes |
+
+**Why behavioral tests are non-negotiable for v2:**
+
+The most dangerous failure mode is one where every code path is "correct" but the physics contract is broken. Example: a Mycelium decay multiplier that always returns 1.0 regardless of `u`. The unit test for `decay_multiplier` would pass. The integration test for "edge score after maintenance" would pass (modulo the multiplier being 1.0). But the *behavioral* assertion "explore mode retains more edges than compress mode over 1000 cycles" would fail loudly.
+
+Behavioral tests assert on the *statistical outcome of the physics* — they are the only way to prove v2 actually does what v2 claims to do.
+
+**Why contract tests are non-negotiable for FFI:**
+
+`ctypes.Structure` silently corrupts memory when field order drifts. A change to the C++ struct layout without a matching Python update produces garbage values, not crashes. The contract test freezes the field order as an explicit manifest — any drift fails CI before the corruption ever reaches production.
+
+**Why full-stack E2E catches what unit tests miss:**
+
+A unit test confirms `useCaducean` calls `invoke('caducean_get_state', { sessionId })`. A full-stack E2E test confirms the chain `JS invoke → Rust Tauri command → HTTP GET /api/caducean/state?session_id=X → Python FastAPI → ctypes → C++ → response → JSON serialize → HTTP response → Rust deserializes → invoke returns → React setState → DOM update` all work. Every layer is testable in isolation; only the chain is testable as a system.
+
+See `docs/plans/Cadv2plan.md` Component 9 for the full test list and the orchestration script (`backend/tests/e2e/run_e2e.sh`).
 
 ---
 
