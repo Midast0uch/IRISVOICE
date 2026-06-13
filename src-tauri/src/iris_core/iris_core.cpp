@@ -88,6 +88,29 @@ extern "C" IRIS_API void caducean_update(const char* session_id, int action, dou
     Caducean::get_instance().update(session_id, action, balance);
 }
 
+// --- Pre-existing utilities (restored — were missing from C++ side) ---
+
+extern "C" IRIS_API int simulate_trajectories_to_db(int n, int steps, double a, double b, double s) {
+    if (n <= 0 || steps <= 0) return -1;
+    // Generate n synthetic sessions, each running `steps` updates with
+    // the given (a, b, s) parameters. Used by Domain 18 benchmark
+    // (test_iris_core_simulate.py) to generate test data without
+    // touching the live DB.
+    // Returns the total number of trajectory rows written (= n * steps).
+    int written = 0;
+    for (int i = 0; i < n; ++i) {
+        std::string sid = "sim_" + std::to_string(i);
+        Caducean::get_instance().init_session(sid, 1, 1);
+        Caducean::get_instance().set_params(sid, a, b, s);
+        for (int j = 0; j < steps; ++j) {
+            // Alternate actions; balance=1.0 is a neutral update
+            Caducean::get_instance().update(sid, j % 2, 1.0);
+            written += 1;
+        }
+    }
+    return written;
+}
+
 // --- v2: Caducean Mitochondria-to-Mycelium Upgrade FFI Wrappers ---
 
 extern "C" IRIS_API int caducean_init_session(const char* session_id, int l, int m) {

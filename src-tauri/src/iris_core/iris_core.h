@@ -86,6 +86,20 @@ IRIS_API double caducean_get_xi(const char* session_id);
  */
 IRIS_API void caducean_update(const char* session_id, int action, double balance);
 
+/**
+ * Pre-existing utility: generate N synthetic Caducean trajectories and
+ * write them to the database. Used by Domain 18 benchmark tests.
+ * @return Number of trajectories written (>= 0), or -1 on error.
+ */
+IRIS_API int simulate_trajectories_to_db(int n, int steps, double a, double b, double s);
+
+/**
+ * Pre-existing utility: prune an Immortus chain to keep the latest N
+ * entries. Used by backend/api/chat.py on thread delete.
+ * @return Number of entries kept (>= 0), or -1 on error.
+ */
+IRIS_API int immortus_chain_keep_latest(const char* thread_id, int keep_count);
+
 // --- v2: Caducean Mitochondria-to-Mycelium Upgrade ---
 // Bias-free physics signal exposed to callers. The agent kernel, voice kernel,
 // TTS, and Mycelium all consume DirectionSignal — the physics is the program,

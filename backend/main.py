@@ -2069,10 +2069,20 @@ async def api_caducean_state(session_id: str = Query(...)):
                 "s": 0.35,
                 "c_eff": 1.0,
             }
+        # FROZEN contract: x and y are integers (accumulator counts).
+        # ffi_caducean_get_state() returns them as floats (c_double)
+        # for FFI uniformity; coerce here to match the API contract.
         return {
             "session_id": session_id,
             "engine_live": engine_live,
-            **state,
+            "x": int(state.get("x", 0)),
+            "y": int(state.get("y", 0)),
+            "xi": float(state.get("xi", 0.0)),
+            "u": float(state.get("u", 0.0)),
+            "a": float(state.get("a", 2.0)),
+            "b": float(state.get("b", 2.0)),
+            "s": float(state.get("s", 0.35)),
+            "c_eff": float(state.get("c_eff", 1.0)),
         }
     except Exception as e:
         logger.warning(f"[caducean] state endpoint failed: {e}")
