@@ -5,6 +5,7 @@ mod commands;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Listener, Manager, PhysicalSize, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::ShellExt;
 
 fn main() {
     // Shared handle so the exit handler can kill the sidecar
@@ -47,9 +48,19 @@ fn main() {
             #[cfg(not(debug_assertions))]
             match app.shell().sidecar("iris-backend") {
                 Ok(cmd) => {
-                    match cmd.spawn() {
+                    let res: Result<
+                        (
+                            tauri::async_runtime::Receiver<
+                                tauri_plugin_shell::process::CommandEvent,
+                            >,
+                            tauri_plugin_shell::process::CommandChild,
+                        ),
+                        tauri_plugin_shell::Error,
+                    > = cmd.spawn();
+                    match res {
                         Ok((_rx, child)) => {
-                            println!("[Tauri] Backend sidecar started (pid={})", child.pid());
+                            let pid: u32 = child.pid();
+                            println!("[Tauri] Backend sidecar started (pid={})", pid);
                             *sidecar_child.lock().unwrap() = Some(child);
                         }
                         Err(e) => {
@@ -95,7 +106,8 @@ fn main() {
                 // Kill the backend sidecar so it doesn't linger after the UI closes
                 if let Ok(mut guard) = sidecar_child_exit.lock() {
                     if let Some(child) = guard.take() {
-                        println!("[Tauri] Stopping backend sidecar (pid={})", child.pid());
+                        let pid: u32 = child.pid();
+                        println!("[Tauri] Stopping backend sidecar (pid={})", pid);
                         child.kill().ok();
                     }
                 }

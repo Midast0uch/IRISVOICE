@@ -32,7 +32,14 @@ const nextConfig = {
     // graph from scratch (120s+ cold start). With it, only changed modules
     // are recompiled — typically < 5s after the first run.
     // Key was renamed from turbopackPersistentCaching in Next.js 16.
-    turbopackFileSystemCacheForDev: true,
+    //
+    // 2026-06-13: DISABLED because C:\ is a Toshiba HDD (not the PNY SSD on
+    // Disk 1), and Turbopack's persistent cache does thousands of small
+    // file writes per second which the HDD cannot keep up with (1-4s
+    // stalls, "Slow filesystem detected" warnings, frontend hangs on first
+    // request). Cold recompile is 120s+ but the project actually works.
+    // Re-enable when project is moved to the SSD.
+    turbopackFileSystemCacheForDev: false,
   },
   compiler: {
     removeConsole: { exclude: ['error'] },
