@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod commands;
+
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Listener, Manager, PhysicalSize, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
@@ -12,6 +14,13 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
+        // v2: register Caducean commands (thin HTTP proxies to Python FastAPI)
+        .invoke_handler(tauri::generate_handler![
+            commands::caducean::caducean_get_state,
+            commands::caducean::caducean_get_direction_signal,
+            commands::caducean::caducean_set_params,
+            commands::caducean::caducean_health,
+        ])
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
 

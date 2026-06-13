@@ -1996,3 +1996,180 @@ async def handle_memory_message(client_id: str, session_id: str, message: dict):
         await ws_manager.send_to_client(
             client_id, {"type": "memory/error", "payload": {"error": str(e)}}
         )
+
+
+# ── v2: Caducean Mitochondria-to-Mycelium Endpoints (Phase 5) ───────
+#
+# These endpoints are thin pass-throughs to backend/gateway/iris_ffi.py.
+# The Tauri Rust shell calls these via the caducean.rs commands; the
+# frontend calls them indirectly via Tauri invoke() (not directly).
+#
+# Contract: see backend/tests/contracts/caducean_api_v2.json and
+# backend/tests/test_caducean_api_contract.py for the FROZEN schema.
+#
+# Design notes:
+#   - GET endpoints take session_id as query param
+#   - POST endpoints take JSON body
+#   - 404 on missing session, 422 on schema violation (FastAPI default)
+#   - 503 if C++ engine not live (for /state and /direction reads)
+#   - 200 with {ok: false} if /params update failed (engine down)
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/caducean/state")
+async def api_caducean_state(session_id: str = Query(...)):
+    """Return full Caducean state for a session.
+
+    Response shape (FROZEN):
+      {
+        "session_id": str,
+        "engine_live": bool,
+        "x": int, "y": int,
+        "xi": float, "u": float,
+        "a": float, "b": float, "s": float, "c_eff": float
+      }
+    """
+    try:
+        from backend.gateway.iris_ffi import ffi_caducean_get_state
+
+        state = ffi_caducean_get_state(session_id)
+        # Also check if engine is live for the frontend health indicator
+        engine_live = False
+        try:
+            from backend.memory.interface import MemoryInterface
+
+            # Check if any MemoryInterface has the engine live (cheap heuristic)
+            from backend.gateway.iris_ffi import _engine
+
+            engine_live = (
+                _engine is not None and getattr(_engine, "_ffi", None) is not None
+            )
+        except Exception:
+            pass
+        if not state:
+            # Empty dict = engine not live or session unknown
+            return {
+                "session_id": session_id,
+                "engine_live": engine_live,
+                "x": 0,
+                "y": 0,
+                "xi": 0.0,
+                "u": 0.0,
+                "a": 2.0,
+                "b": 2.0,
+                "s": 0.35,
+                "c_eff": 1.0,
+            }
+        return {
+            "session_id": session_id,
+            "engine_live": engine_live,
+            **state,
+        }
+    except Exception as e:
+        logger.warning(f"[caducean] state endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/caducean/direction")
+async def api_caducean_direction(
+    session_id: str = Query(...),
+    balance: float = Query(1.0, ge=0.1, le=3.0),
+):
+    """Return the bias-free DirectionSignal for a session.
+
+    Response shape (FROZEN — matches IrisDirectionSignal C struct):
+      {
+        "session_id": str,
+        "target_u": float,        // +1.0 or -1.0
+        "force_magnitude": float, // |F(u)| in [0, ~6]
+        "u_current": float,       // in [-1, 1]
+        "phase": float,           // xi in [0, 2pi)
+        "balance": float          // EML-derived urgency in [0.1, 3.0]
+      }
+    """
+    try:
+        from backend.gateway.iris_ffi import ffi_caducean_get_direction_signal
+
+        sig = ffi_caducean_get_direction_signal(session_id, balance)
+        return {
+            "session_id": session_id,
+            "target_u": sig.target_u,
+            "force_magnitude": sig.force_magnitude,
+            "u_current": sig.u_current,
+            "phase": sig.phase,
+            "balance": sig.balance,
+        }
+    except Exception as e:
+        logger.warning(f"[caducean] direction endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/caducean/params")
+async def api_caducean_params(body: dict = {}):
+    """Update Duffing potential constants and walk speed for a session.
+
+    Request body (FROZEN):
+      {
+        "session_id": str,    // required
+        "a": float,            // clamped to [1, 4] in C++
+        "b": float,            // clamped to [1, 4] in C++
+        "s": float             // clamped to [0.1, 0.8] in C++
+      }
+
+    Response (FROZEN):
+      {"ok": bool, "session_id": str, "applied": {"a": float, "b": float, "s": float}}
+    """
+    session_id = body.get("session_id")
+    a = body.get("a")
+    b = body.get("b")
+    s = body.get("s")
+    if not session_id or not isinstance(session_id, str):
+        raise HTTPException(status_code=422, detail="session_id (str) required")
+    for name, val in (("a", a), ("b", b), ("s", s)):
+        if not isinstance(val, (int, float)):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name} must be a number, got {type(val).__name__}",
+            )
+    try:
+        from backend.gateway.iris_ffi import (
+            ffi_caducean_set_params,
+            ffi_caducean_get_state,
+        )
+
+        ok = ffi_caducean_set_params(session_id, float(a), float(b), float(s))
+        if not ok:
+            return {"ok": False, "session_id": session_id, "applied": None}
+        # Read back to confirm clamping
+        new_state = ffi_caducean_get_state(session_id)
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "applied": {
+                "a": new_state.get("a", a),
+                "b": new_state.get("b", b),
+                "s": new_state.get("s", s),
+            },
+        }
+    except Exception as e:
+        logger.warning(f"[caducean] params endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/caducean/health")
+async def api_caducean_health():
+    """v2 health check — used by CaduceanDebugPanel to show engine state.
+
+    Response (FROZEN):
+      {"engine_live": bool, "engine_initialized_at": str | None}
+    """
+    try:
+        from backend.gateway.iris_ffi import _engine
+
+        engine_live = _engine is not None and getattr(_engine, "_ffi", None) is not None
+        return {
+            "engine_live": engine_live,
+            "engine_initialized_at": None,  # placeholder for future
+        }
+    except Exception as e:
+        return {"engine_live": False, "engine_initialized_at": None, "error": str(e)}
