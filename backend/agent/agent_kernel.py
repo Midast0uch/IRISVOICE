@@ -3754,18 +3754,58 @@ Respond with a JSON object:
                 elif not step_success:
                     _action = 2
                 _eml_score, _ex, _ey = ffi_calculate_eml(_session)
-                _balance = max(0.1, min(2.0, _eml_score))
+                # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
+                # Note: the v2 baseline divisor is 2.3418 per the field theory
+                # (see docs/cad_v2_architecture.md §2.2). The current EML
+                # returns a raw score, not a balance; the kernel clamps to
+                # the safe range defensively. The TrajectoryController may
+                # override the constant via ffi_caducean_set_params.
+                _balance = max(0.1, min(3.0, _eml_score))
                 ffi_caducean_update(_session, _action, _balance)
+
+                # v2: fetch recommendation code AFTER the update so we can
+                # detect TOPO_VIOLATION (3) and persist the new column.
+                from backend.gateway.iris_ffi import (
+                    ffi_caducean_recommend,
+                    ffi_caducean_get_state,
+                )
+
+                _rec = ffi_caducean_recommend(_session)
+                _state_snapshot = ffi_caducean_get_state(_session)
+                _xi = _state_snapshot.get("xi", 0.0)
+                _u = _state_snapshot.get("u", 0.0)
 
                 get_trajectory_recorder(self._memory_interface).record(
                     session_id=_session,
                     step_num=item.step_number,
                     x=_ex,
                     y=_ey,
+                    xi=_xi,
+                    u=_u,
                     action=_action,
                     outcome="success" if step_success else "failure",
                     eml_after=_eml_score,
+                    recommendation=_rec,
                 )
+
+                # v2: handle TOPO_VIOLATION (rec=3) by recording the anomaly
+                # to the Mycelium QuorumSensor and halting the loop.
+                if _rec == 3:
+                    try:
+                        self._memory_interface.mycelium_record_anomaly(
+                            _session, "update_velocity_anomaly"
+                        )
+                    except Exception as _anom_exc:  # never block on this
+                        logger.warning(
+                            "[agent_kernel] mycelium_record_anomaly failed: %s",
+                            _anom_exc,
+                        )
+                    from .exceptions import TopologyViolationException
+
+                    raise TopologyViolationException(
+                        session_id=_session,
+                        direction_signal=None,  # full signal in DebugPanel
+                    )
 
                 ffi_immortus_chain_append(
                     thread_id=_session,

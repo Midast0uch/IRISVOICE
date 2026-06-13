@@ -29,15 +29,18 @@ _REFIT_MILESTONES = (100, 500, 1000)
 
 def _fire_features(row: Dict[str, Any], time_since_last: float) -> np.ndarray:
     """Build feature vector from a trajectory record + time delta."""
-    return np.array([
-        float(row.get("x", 0.5)),
-        float(row.get("y", 0.5)),
-        float(row.get("xi", 0.0)),
-        float(row.get("u", 0.0)),
-        float(row.get("eml_after", 1.0)),
-        min(1.0, time_since_last / 3600.0),  # normalized to hours
-        1.0,  # bias
-    ], dtype=np.float64)
+    return np.array(
+        [
+            float(row.get("x", 0.5)),
+            float(row.get("y", 0.5)),
+            float(row.get("xi", 0.0)),
+            float(row.get("u", 0.0)),
+            float(row.get("eml_after", 1.0)),
+            min(1.0, time_since_last / 3600.0),  # normalized to hours
+            1.0,  # bias
+        ],
+        dtype=np.float64,
+    )
 
 
 class TrajectoryController:
@@ -61,9 +64,7 @@ class TrajectoryController:
 
     def _trajectory_count(self) -> int:
         try:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) FROM caducean_trajectories"
-            )
+            cur = self._conn.execute("SELECT COUNT(*) FROM caducean_trajectories")
             row = cur.fetchone()
             return row[0] if row else 0
         except Exception as exc:
@@ -75,9 +76,12 @@ class TrajectoryController:
             rows = self._conn.execute(
                 "SELECT * FROM caducean_trajectories ORDER BY ts"
             ).fetchall()
-            cols = [d[0] for d in self._conn.execute(
-                "SELECT * FROM caducean_trajectories LIMIT 0"
-            ).description]
+            cols = [
+                d[0]
+                for d in self._conn.execute(
+                    "SELECT * FROM caducean_trajectories LIMIT 0"
+                ).description
+            ]
             return [dict(zip(cols, row)) for row in rows]
         except Exception as exc:
             logger.warning("[TrajectoryController] get_rows failed: %s", exc)
@@ -167,9 +171,10 @@ class TrajectoryController:
             should = eml > 1.5 or eml < 0.7
             return should, None, 0.5
 
-        features = np.array([x, y, xi, u, eml,
-                             min(1.0, time_since_last / 3600.0), 1.0],
-                            dtype=np.float64)
+        features = np.array(
+            [x, y, xi, u, eml, min(1.0, time_since_last / 3600.0), 1.0],
+            dtype=np.float64,
+        )
         raw = float(np.dot(features, self._coeffs))
         prob = float(1.0 / (1.0 + np.exp(-raw)))
         should = prob >= 0.35
@@ -178,3 +183,92 @@ class TrajectoryController:
     def target_category(self) -> Optional[str]:
         """Return the last-computed target category, or None if not fitted."""
         return self._target_category
+
+    # ── v2: Caducean Duffing parameter tuning ──────────────────────────
+    #
+    # When the adaptive safety net fires TOPO_VIOLATION, the engine
+    # parameters (a, b, s) may need adjustment to recover stability.
+    # The rule (per plan §3.3 and the architecture doc):
+    #   violation_count > 0:
+    #     new_a = clamp(prev_a + 0.10 * violation_count, 1.0, 4.0)
+    #     new_b = clamp(prev_b + 0.05 * violation_count, 1.0, 4.0)
+    #     new_s = clamp(prev_s - 0.01 * violation_count, 0.1, 0.8)
+    # Rationale:
+    #   a,b ∈ [1, 4]: below 1 flattens wells (no attractors); above 4
+    #     creates chaotic deep wells (instability). Gate 1 baseline = 2.0.
+    #   s ∈ [0.1, 0.8]: below 0.1 essentially static; above 0.8 chaotic
+    #     exploration.
+
+    def tune_dffing_params(
+        self,
+        session_id: str,
+        lookback: int = 100,
+    ) -> Optional[Tuple[float, float, float]]:
+        """v2: tune (a, b, s) for a session based on recent TOPO_VIOLATIONs.
+
+        Reads the last `lookback` trajectory rows for `session_id`, counts
+        rows where recommendation == 3 (TOPO_VIOLATION), and calls
+        ffi_caducean_set_params with adjusted values clamped to safe
+        ranges. Persists tuned values by calling set_params (which the
+        C++ side applies per-session).
+
+        Returns (new_a, new_b, new_s) on success, None if no engine
+        available or insufficient data.
+
+        The tuned values are NOT persisted to disk in v2 (decision in
+        the plan: log to file is simpler, table is more robust). We log
+        to irisvoice.log for v2; a caducean_session_params table can be
+        added in v3 if needed.
+        """
+        try:
+            from backend.gateway.iris_ffi import (
+                ffi_caducean_set_params,
+                ffi_caducean_get_state,
+            )
+        except Exception:
+            return None
+
+        try:
+            # Count recent TOPO_VIOLATIONs for this session.
+            rows = self._conn.execute(
+                "SELECT recommendation FROM caducean_trajectories "
+                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                (session_id, lookback),
+            ).fetchall()
+            violation_count = sum(1 for r in rows if r[0] == 3)
+            if violation_count == 0:
+                # No violations — engine is well-tuned, no action needed.
+                return None
+
+            # Fetch current params (or use defaults if session unknown).
+            state = ffi_caducean_get_state(session_id)
+            cur_a = state.get("a", 2.0)
+            cur_b = state.get("b", 2.0)
+            cur_s = state.get("s", 0.35)
+
+            # Apply the v2 update rule with explicit clamp.
+            new_a = max(1.0, min(4.0, cur_a + 0.10 * violation_count))
+            new_b = max(1.0, min(4.0, cur_b + 0.05 * violation_count))
+            new_s = max(0.1, min(0.8, cur_s - 0.01 * violation_count))
+
+            # Push to the engine.
+            ok = ffi_caducean_set_params(session_id, new_a, new_b, new_s)
+            if not ok:
+                return None
+
+            # Log the tuning (v2: log to file; v3: persist to table).
+            logger.info(
+                "[TrajectoryController] tuned %s: violations=%d a=%.2f->%.2f b=%.2f->%.2f s=%.2f->%.2f",
+                session_id,
+                violation_count,
+                cur_a,
+                new_a,
+                cur_b,
+                new_b,
+                cur_s,
+                new_s,
+            )
+            return (new_a, new_b, new_s)
+        except Exception as exc:
+            logger.warning("[TrajectoryController] tune_dffing_params failed: %s", exc)
+            return None

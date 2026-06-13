@@ -17,9 +17,9 @@ import json
 
 
 class ReviewVerdict(Enum):
-    PASS   = "pass"    # step approved as-is
+    PASS = "pass"  # step approved as-is
     REFINE = "refine"  # step approved with modification
-    VETO   = "veto"    # step rejected — Director must queue alternative
+    VETO = "veto"  # step rejected — Director must queue alternative
 
 
 @dataclass
@@ -28,19 +28,20 @@ class QueueItem:
     One item in the Director's broadcast queue.
     Richer than PlanStep — carries DER-specific orchestration fields.
     """
+
     step_id: str
     step_number: int
     description: str
-    tool: Optional[str]                = None
-    params: Dict[str, Any]             = field(default_factory=dict)
-    depends_on: List[str]              = field(default_factory=list)
-    critical: bool                     = True
-    objective_anchor: str              = ""   # overall task goal — never changes
-    coordinate_signal: str             = ""   # Mycelium coordinate region targeted
-    veto_count: int                    = 0
+    tool: Optional[str] = None
+    params: Dict[str, Any] = field(default_factory=dict)
+    depends_on: List[str] = field(default_factory=list)
+    critical: bool = True
+    objective_anchor: str = ""  # overall task goal — never changes
+    coordinate_signal: str = ""  # Mycelium coordinate region targeted
+    veto_count: int = 0
     refined_description: Optional[str] = None  # set by Reviewer on REFINE
-    depth_layer: int                   = 1     # trailing crystallizer depth level
-    gap_analysis: Optional[str]        = None  # trailing Director gap description
+    depth_layer: int = 1  # trailing crystallizer depth level
+    gap_analysis: Optional[str] = None  # trailing Director gap description
 
 
 @dataclass
@@ -54,13 +55,14 @@ class DirectorQueue:
     - Add new items when the graph reveals gaps
     - Remove items when the graph shows they're no longer needed
     """
+
     objective: str
-    items: List[QueueItem]   = field(default_factory=list)
+    items: List[QueueItem] = field(default_factory=list)
     completed_ids: List[str] = field(default_factory=list)
-    vetoed_ids: List[str]    = field(default_factory=list)
-    cycle_count: int         = 0
-    max_cycles: int          = 40   # DER_MAX_CYCLES
-    max_veto_per_item: int   = 2    # DER_MAX_VETO_PER_ITEM
+    vetoed_ids: List[str] = field(default_factory=list)
+    cycle_count: int = 0
+    max_cycles: int = 40  # DER_MAX_CYCLES
+    max_veto_per_item: int = 2  # DER_MAX_VETO_PER_ITEM
 
     def next_ready(self, session_id: str = "default") -> Optional[QueueItem]:
         """
@@ -81,12 +83,21 @@ class DirectorQueue:
         if not ready_items:
             return None
 
-        # Caducean modulation: EXPAND=0, CONTRACT=1, MAINTAIN=2
+        # Caducean modulation: EXPAND=0, CONTRACT=1, MAINTAIN=2, TOPO_VIOLATION=3
         try:
             from backend.gateway.iris_ffi import ffi_caducean_recommend
+
             rec = ffi_caducean_recommend(session_id)
         except Exception:
             rec = 2  # MAINTAIN on error
+
+        if rec == 3:  # TOPO_VIOLATION — stop the line
+            from .exceptions import TopologyViolationException
+
+            raise TopologyViolationException(
+                session_id=session_id,
+                direction_signal=None,  # could fetch via ffi_caducean_get_direction_signal
+            )
 
         if rec == 1:  # CONTRACT — return only critical items
             critical = [i for i in ready_items if i.critical]
@@ -135,12 +146,12 @@ class Reviewer:
     produce VETO.
     """
 
-    REVIEWER_MAX_TOKENS  = 200
+    REVIEWER_MAX_TOKENS = 200
     REVIEWER_TEMPERATURE = 0.0  # deterministic — reviewer must be consistent
 
     def __init__(self, adapter, memory_interface):
         self.adapter = adapter
-        self.memory  = memory_interface
+        self.memory = memory_interface
 
     def review(
         self,
@@ -156,7 +167,7 @@ class Reviewer:
         try:
             # Fast path: graph immature or no coordinate data →
             # fall back to heuristic checks instead of always-PASS.
-            if not is_mature or not hasattr(context_package, 'gradient_warnings'):
+            if not is_mature or not hasattr(context_package, "gradient_warnings"):
                 return self._heuristic_review(item, completed_steps)
 
             prompt = self._build_review_prompt(
@@ -198,10 +209,18 @@ class Reviewer:
 
             # Rule 1: destructive operations — these should never auto-execute
             _DESTRUCTIVE = [
-                "delete all", "drop table", "drop database",
-                "rm -rf", "format disk", "truncate table",
-                "destroy all", "wipe all", "overwrite all",
-                "factory reset", "nuke", "purge all",
+                "delete all",
+                "drop table",
+                "drop database",
+                "rm -rf",
+                "format disk",
+                "truncate table",
+                "destroy all",
+                "wipe all",
+                "overwrite all",
+                "factory reset",
+                "nuke",
+                "purge all",
             ]
             for kw in _DESTRUCTIVE:
                 if kw in desc_lower:
@@ -232,10 +251,13 @@ class Reviewer:
         Compact review prompt — stays under 300 tokens.
         Only needs: current step, last 3 completed, dangers, contracts.
         """
-        completed_summary = "\n".join(
-            f"- Step {s.step_number}: {s.description} [done]"
-            for s in completed_steps[-3:]
-        ) or "None"
+        completed_summary = (
+            "\n".join(
+                f"- Step {s.step_number}: {s.description} [done]"
+                for s in completed_steps[-3:]
+            )
+            or "None"
+        )
 
         return (
             f"OBJECTIVE: {item.objective_anchor}\n\n"
@@ -256,12 +278,12 @@ class Reviewer:
     def _parse_verdict(self, raw: str) -> tuple:
         """Parse model response. Falls back to PASS on any parse failure."""
         try:
-            m = re.search(r'\{[\s\S]+?\}', raw)
+            m = re.search(r"\{[\s\S]+?\}", raw)
             if not m:
                 return ReviewVerdict.PASS, None
             data = json.loads(m.group())
-            v       = data.get("verdict", "pass").lower()
-            reason  = data.get("reason", "") or None
+            v = data.get("verdict", "pass").lower()
+            reason = data.get("reason", "") or None
             refined = data.get("refined", "") or None
 
             if v == "veto":
