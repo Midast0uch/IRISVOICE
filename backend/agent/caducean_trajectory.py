@@ -23,21 +23,28 @@ _recorders: Dict[int, "CaduceanTrajectoryRecorder"] = {}
 
 _SQL_CREATE = """
 CREATE TABLE IF NOT EXISTS caducean_trajectories (
-    id          INTEGER PRIMARY KEY,
-    ts          REAL,
-    session_id  TEXT,
-    step_num    INTEGER,
-    x           REAL,
-    y           REAL,
-    xi          REAL,
-    u           REAL,
-    action      INTEGER,
-    outcome     TEXT,
-    eml_after   REAL
+    id              INTEGER PRIMARY KEY,
+    ts              REAL,
+    session_id      TEXT,
+    step_num        INTEGER,
+    x               REAL,
+    y               REAL,
+    xi              REAL,
+    u               REAL,
+    action          INTEGER,
+    outcome         TEXT,
+    eml_after       REAL,
+    recommendation  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_ct_session ON caducean_trajectories(session_id);
 CREATE INDEX IF NOT EXISTS idx_ct_ts      ON caducean_trajectories(ts);
 """
+
+# Idempotent ALTER TABLE for existing DBs that predate the v2 column.
+# Wrapped in try/except by callers — error means column already exists.
+_SQL_ADD_RECOMMENDATION_COLUMN = (
+    "ALTER TABLE caducean_trajectories ADD COLUMN recommendation INTEGER"
+)
 
 
 class CaduceanTrajectoryRecorder:
@@ -58,6 +65,13 @@ class CaduceanTrajectoryRecorder:
             self._conn.commit()
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] ensure_table failed: %s", exc)
+        # v2: idempotent ALTER TABLE for existing DBs (pre-v2 schemas).
+        # Error = column already exists — safe to ignore.
+        try:
+            self._conn.execute(_SQL_ADD_RECOMMENDATION_COLUMN)
+            self._conn.commit()
+        except Exception:
+            pass  # column already exists — expected on v2+ fresh installs
 
     def record(
         self,
@@ -65,18 +79,36 @@ class CaduceanTrajectoryRecorder:
         step_num: int,
         x: float,
         y: float,
+        xi: float,
+        u: float,
         action: int,
         outcome: str,
         eml_after: float,
+        recommendation: int = 2,  # default CONTINUE
     ) -> None:
-        """Write one transition record. <2ms on WAL-mode SSD."""
+        """Write one transition record. <2ms on WAL-mode SSD.
+
+        v2: now takes xi, u, recommendation as required params (previously
+        hardcoded to 0.0). The agent kernel calls this after every update.
+        """
         try:
             self._conn.execute(
                 "INSERT INTO caducean_trajectories "
-                "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (time.time(), session_id, step_num, x, y, 0.0, 0.0,
-                 action, outcome, eml_after),
+                "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after, recommendation) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    time.time(),
+                    session_id,
+                    step_num,
+                    x,
+                    y,
+                    xi,
+                    u,
+                    action,
+                    outcome,
+                    eml_after,
+                    recommendation,
+                ),
             )
             self._conn.commit()
             CaduceanTrajectoryRecorder._eml_cache = float(eml_after)
@@ -85,9 +117,7 @@ class CaduceanTrajectoryRecorder:
 
     def trajectory_count(self) -> int:
         try:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) FROM caducean_trajectories"
-            )
+            cur = self._conn.execute("SELECT COUNT(*) FROM caducean_trajectories")
             row = cur.fetchone()
             return row[0] if row else 0
         except Exception as exc:
@@ -102,15 +132,19 @@ class CaduceanTrajectoryRecorder:
             if session_id:
                 rows = self._conn.execute(
                     "SELECT * FROM caducean_trajectories WHERE session_id = ? "
-                    "ORDER BY ts", (session_id,)
+                    "ORDER BY ts",
+                    (session_id,),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
                     "SELECT * FROM caducean_trajectories ORDER BY ts"
                 ).fetchall()
-            cols = [d[0] for d in self._conn.execute(
-                "SELECT * FROM caducean_trajectories LIMIT 0"
-            ).description]
+            cols = [
+                d[0]
+                for d in self._conn.execute(
+                    "SELECT * FROM caducean_trajectories LIMIT 0"
+                ).description
+            ]
             return [dict(zip(cols, row)) for row in rows]
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] get_trajectories failed: %s", exc)
@@ -129,8 +163,6 @@ def get_trajectory_recorder(memory_interface: Any) -> CaduceanTrajectoryRecorder
         episodic = getattr(memory_interface, "episodic", None)
         conn = episodic.db if episodic is not None else None
         if conn is None:
-            raise RuntimeError(
-                "MemoryInterface must have an active SQLite connection"
-            )
+            raise RuntimeError("MemoryInterface must have an active SQLite connection")
         _recorders[key] = CaduceanTrajectoryRecorder(conn)
     return _recorders[key]

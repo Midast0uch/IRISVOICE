@@ -125,6 +125,53 @@ class MemoryInterface:
         logger.info("[MemoryInterface] Initialized with encrypted storage")
 
     # ═══════════════════════════════════════════════════════════════════════
+    # v2: Caducean Mitochondria-to-Mycelium public accessors
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def is_caducean_engine_live(self) -> bool:
+        """Public accessor for the Phase 0 init flag.
+
+        Returns True if the C++ Caducean engine is loaded and initialised.
+        Returns False if the Python fallback is active (DLL missing or init failed).
+
+        Used by:
+          - FastAPI /api/caducean/health (Phase 5)
+          - CaduceanDebugPanel (Phase 6) to show engine state
+        """
+        return self._caducean_engine_initialized
+
+    def mycelium_record_anomaly(self, session_id: str, signal_type: str) -> bool:
+        """Record a Caducean anomaly to the QuorumSensor.
+
+        v2 entry point used by agent_kernel when caducean_recommend() returns
+        3 (TOPO_VIOLATION). Writes to the existing quorum_log table via
+        _quorum_sensor.record_signal(); runs the existing reorganization check.
+
+        Returns True on success, False if Mycelium is not yet initialised.
+        """
+        try:
+            if not hasattr(self, "_mycelium") or self._mycelium is None:
+                return False
+            return self._mycelium.record_anomaly(session_id, signal_type)
+        except Exception as exc:
+            logger.warning("[MemoryInterface] mycelium_record_anomaly failed: %s", exc)
+            return False
+
+    def get_caducean_state(self, session_id: str) -> Optional[Dict[str, float]]:
+        """Read the latest Caducean (x, y, xi, u, recommendation) for a session.
+
+        Returns None if no trajectory rows exist for the session.
+        Used by Mycelium scorer/resonance to modulate decay/retrieval multipliers.
+        """
+        try:
+            return self._mycelium.get_latest_u(
+                session_id
+            )  # returns dict with u, xi, etc.
+        except Exception as exc:
+            logger.warning("[MemoryInterface] get_caducean_state failed: %s", exc)
+            return None
+
+    # ═══════════════════════════════════════════════════════════════════════
     # Task Context Assembly (Called before every task)
     # ═══════════════════════════════════════════════════════════════════════
 

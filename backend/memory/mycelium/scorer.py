@@ -28,14 +28,20 @@ logger = logging.getLogger(__name__)
 
 # Fixed space order for condense and expand passes (Req 7.10)
 _SPACE_ORDER: List[str] = [
-    "domain", "style", "conduct", "chrono", "capability", "context", "toolpath",
+    "domain",
+    "style",
+    "conduct",
+    "chrono",
+    "capability",
+    "context",
+    "toolpath",
 ]
 
 # Outcome score deltas (Req 7.1)
 _OUTCOME_DELTAS = {
-    "hit":     0.05,
+    "hit": 0.05,
     "partial": 0.02,
-    "miss":   -0.08,
+    "miss": -0.08,
 }
 
 
@@ -48,6 +54,7 @@ def _pack_coords(coords: List[float]) -> bytes:
 # ---------------------------------------------------------------------------
 # EdgeScorer
 # ---------------------------------------------------------------------------
+
 
 class EdgeScorer:
     """
@@ -94,12 +101,12 @@ class EdgeScorer:
 
             self._store.update_edge_score(edge_id, delta)
 
-    def apply_decay(self) -> int:
+    def apply_decay(self, session_id: Optional[str] = None) -> int:
         """
         Apply time-based score decay to all edges and delete those below
         PRUNE_THRESHOLD (0.08) (Req 7.3–7.5).
 
-        Decay formula:  score -= effective_decay_rate * days_idle
+        Decay formula:  score -= effective_decay_rate * caducean_multiplier * days_idle
         where days_idle = (now - last_traversed) / 86400.
 
         Toolpath edges use TOOLPATH_DECAY_RATE (0.02); all others use their
@@ -109,11 +116,34 @@ class EdgeScorer:
         Decay writes use a direct UPDATE to avoid bumping traversal_count
         (decay is not a traversal).
 
+        v2: When session_id is provided, the Caducean attentional velocity (u)
+        modulates the effective decay rate:
+          u > 0  (explore)  -> decay_multiplier = 0.5  (preserve learning)
+          u < 0  (compress) -> decay_multiplier = 1.8  (prune unreinforced faster)
+          u ≈ 0  (neutral)  -> decay_multiplier = 1.0  (default)
+        Read once at start of pass — no per-edge DB hit.
+
         Returns:
             Number of edges deleted (pruned) during this pass.
         """
         now = time.time()
         pruned = 0
+
+        # v2: read Caducean state once at pass start (no per-edge SQL)
+        caducean_multiplier = 1.0
+        if session_id is not None:
+            try:
+                latest = self._store.get_latest_u(session_id)
+                if latest is not None:
+                    u = latest.get("u", 0.0)
+                    if u > 0.0:
+                        caducean_multiplier = 0.5  # explore — preserve
+                    elif u < 0.0:
+                        caducean_multiplier = 1.8  # compress — prune
+                    # else: u ≈ 0 → multiplier = 1.0 (no modulation)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[scorer] caducean modulation unavailable: %s", exc)
+                caducean_multiplier = 1.0  # safe default
 
         # Fetch all edges joined to their from_node space_id in one round-trip
         cursor = self._store._conn.execute(
@@ -136,7 +166,8 @@ class EdgeScorer:
             effective_rate = (
                 TOOLPATH_DECAY_RATE if space_id == "toolpath" else decay_rate
             )
-            new_score = score - effective_rate * days_idle
+            # v2: modulate by Caducean velocity (read once at pass start, applied per-edge)
+            new_score = score - effective_rate * caducean_multiplier * days_idle
 
             if new_score < PRUNE_THRESHOLD:
                 self._store.delete_edge(edge_id)
@@ -156,6 +187,7 @@ class EdgeScorer:
 # ---------------------------------------------------------------------------
 # MapManager
 # ---------------------------------------------------------------------------
+
 
 class MapManager:
     """
@@ -223,7 +255,7 @@ class MapManager:
             if node_a.node_id in merged:
                 continue
 
-            for node_b in nodes[i + 1:]:
+            for node_b in nodes[i + 1 :]:
                 if node_b.node_id in merged:
                     continue
 
@@ -345,8 +377,12 @@ class MapManager:
                 continue
 
             # Shift 20% toward each cluster center
-            coords_a = [orig[d] + 0.20 * (hit_center[d] - orig[d]) for d in range(n_dims)]
-            coords_b = [orig[d] + 0.20 * (miss_center[d] - orig[d]) for d in range(n_dims)]
+            coords_a = [
+                orig[d] + 0.20 * (hit_center[d] - orig[d]) for d in range(n_dims)
+            ]
+            coords_b = [
+                orig[d] + 0.20 * (miss_center[d] - orig[d]) for d in range(n_dims)
+            ]
 
             # Create two child nodes
             node_a = self._store.upsert_node(
@@ -414,6 +450,5 @@ class MapManager:
             return None
 
         return [
-            sum(c[d] for c in coord_lists) / len(coord_lists)
-            for d in range(n_dims)
+            sum(c[d] for c in coord_lists) / len(coord_lists) for d in range(n_dims)
         ]

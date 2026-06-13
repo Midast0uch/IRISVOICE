@@ -36,6 +36,7 @@ def _short_uuid() -> str:
 # EpisodeIndexer
 # ---------------------------------------------------------------------------
 
+
 class EpisodeIndexer:
     """
     Links episodic memories to the coordinate state active at storage time (Req 11.1–11.4).
@@ -82,6 +83,7 @@ class EpisodeIndexer:
             if coordinate_hash is None:
                 # Simple hash of node_ids for index lookups
                 import hashlib
+
                 raw = ",".join(sorted(node_ids or []))
                 coordinate_hash = hashlib.md5(raw.encode()).hexdigest()[:24]
 
@@ -133,6 +135,7 @@ class EpisodeIndexer:
 # ---------------------------------------------------------------------------
 # ResonanceScorer
 # ---------------------------------------------------------------------------
+
 
 class ResonanceScorer:
     """
@@ -203,11 +206,29 @@ class ResonanceScorer:
             # Load current session's active nodes per space
             session_nodes_by_space = self._load_session_nodes_by_space(session_id)
 
+            # v2: read Caducean state once at retrieval start (no per-candidate SQL).
+            # Modulate retrieval selectivity based on attentional velocity.
+            caducean_resonance_mod = 1.0
+            try:
+                if hasattr(self._store, "get_latest_u"):
+                    latest = self._store.get_latest_u(session_id)
+                    if latest is not None:
+                        u = latest.get("u", 0.0)
+                        if u > 0.0:
+                            caducean_resonance_mod = 0.5  # creativity surge
+                        elif u < 0.0:
+                            caducean_resonance_mod = 1.8  # focus lock
+                        # else: u ≈ 0 → no modulation
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[resonance] caducean modulation unavailable: %s", exc)
+                caducean_resonance_mod = 1.0
+
             for candidate in candidates:
                 self._score_candidate(
                     candidate,
                     session_nodes_by_space,
                     current_landmark_id,
+                    caducean_resonance_mod=caducean_resonance_mod,
                 )
 
             # Sort by final_score DESC, suppressed items last
@@ -221,7 +242,9 @@ class ResonanceScorer:
             return candidates
 
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[resonance] augment_retrieval failed, using cosine fallback: %s", exc)
+            logger.debug(
+                "[resonance] augment_retrieval failed, using cosine fallback: %s", exc
+            )
             # Fallback: annotate with defaults and return cosine-sorted order
             for candidate in candidates:
                 candidate.setdefault("resonance_score", 0.0)
@@ -250,9 +273,7 @@ class ResonanceScorer:
         """
         lines: List[str] = []
 
-        visible_successes = [
-            c for c in successes if not c.get("suppressed", False)
-        ]
+        visible_successes = [c for c in successes if not c.get("suppressed", False)]
         if visible_successes:
             lines.append("Past successes:")
             for ep in visible_successes:
@@ -314,8 +335,16 @@ class ResonanceScorer:
         candidate: Dict[str, Any],
         session_nodes_by_space: Dict[str, List[List[float]]],
         current_landmark_id: Optional[str],
+        caducean_resonance_mod: float = 1.0,
     ) -> None:
-        """Annotate a single candidate with resonance scores in-place."""
+        """Annotate a single candidate with resonance scores in-place.
+
+        v2: caducean_resonance_mod modulates the final_score, scaling
+        the resonance_multiplier contribution based on attentional velocity:
+          u > 0 (creativity) -> 0.5x (broader, more diverse retrieval)
+          u < 0 (focus)      -> 1.8x (strict, exact matches preferred)
+          u ≈ 0              -> 1.0x (default)
+        """
         cosine = candidate.get("cosine_score", 0.0)
 
         # Retrieve episode index record
@@ -337,7 +366,9 @@ class ResonanceScorer:
             for nid in ep_node_ids:
                 node = self._store.get_node_by_id(nid)
                 if node and node.space_id in RESONANCE_SPACES:
-                    ep_nodes_by_space.setdefault(node.space_id, []).append(node.coordinates)
+                    ep_nodes_by_space.setdefault(node.space_id, []).append(
+                        node.coordinates
+                    )
 
             for space_id in RESONANCE_SPACES:
                 ep_coords = ep_nodes_by_space.get(space_id, [])
@@ -369,7 +400,13 @@ class ResonanceScorer:
                     suppressed = True
             # Failure episodes are NEVER suppressed (Req 11.9)
 
-        final_score = cosine * (1.0 + resonance_multiplier) * channel_weight
+        # v2: modulate by Caducean velocity (creativity surge / focus lock)
+        final_score = (
+            cosine
+            * (1.0 + resonance_multiplier)
+            * channel_weight
+            * caducean_resonance_mod
+        )
 
         candidate["resonance_score"] = resonance_multiplier
         candidate["resonance_multiplier"] = resonance_multiplier
@@ -392,8 +429,16 @@ class ResonanceScorer:
         row = cursor.fetchone()
         if row is None:
             return None
-        keys = ["idx_id", "episode_id", "session_id", "node_ids", "space_ids",
-                "landmark_id", "coordinate_hash", "source_channel"]
+        keys = [
+            "idx_id",
+            "episode_id",
+            "session_id",
+            "node_ids",
+            "space_ids",
+            "landmark_id",
+            "coordinate_hash",
+            "source_channel",
+        ]
         return dict(zip(keys, row))
 
     @staticmethod
@@ -406,6 +451,7 @@ class ResonanceScorer:
         """
         try:
             from .kyudo import CHANNEL_WEIGHTS  # noqa: PLC0415
+
             return CHANNEL_WEIGHTS.get(source_channel, 1.0)
         except ImportError:
             return 1.0
@@ -414,6 +460,7 @@ class ResonanceScorer:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
 
 def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
     """Compute cosine similarity between two float vectors of equal length."""
@@ -460,7 +507,10 @@ def _coverage_ratio(
     for space_id in session_spaces:
         ep_coords = ep_nodes_by_space.get(space_id, [])
         sess_coords = sess_nodes_by_space[space_id]
-        if ep_coords and _space_overlap(ep_coords, sess_coords) > RESONANCE_OVERLAP_THRESHOLD:
+        if (
+            ep_coords
+            and _space_overlap(ep_coords, sess_coords) > RESONANCE_OVERLAP_THRESHOLD
+        ):
             covered += 1
 
     return covered / len(session_spaces)

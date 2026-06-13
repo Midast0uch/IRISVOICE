@@ -37,12 +37,14 @@ logger = logging.getLogger(__name__)
 # ContextPackage — DER Director context (Req 14.1)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ContextPackage:
     """
     Assembled Mycelium context delivered to the Director before every cycle.
     All fields are strings — None-safe (empty string on missing data).
     """
+
     mycelium_path: str
     topology_path: str
     manifest: Dict[str, Any]
@@ -59,9 +61,13 @@ class ContextPackage:
 
     def get_system_zone_content(self) -> str:
         parts = [
-            self.active_contracts, self.gradient_warnings,
-            self.causal_context, self.tier1_directives,
-            self.mycelium_path, self.topology_path, self.ambient_signals,
+            self.active_contracts,
+            self.gradient_warnings,
+            self.causal_context,
+            self.tier1_directives,
+            self.mycelium_path,
+            self.topology_path,
+            self.ambient_signals,
         ]
         return "\n".join(p for p in parts if p)
 
@@ -79,7 +85,7 @@ class ContextPackage:
     def topology_primitive(self) -> str:
         if not self.topology_path:
             return "unknown"
-        m = re.search(r'primitives:\[([a-z_]+)\]', self.topology_path)
+        m = re.search(r"primitives:\[([a-z_]+)\]", self.topology_path)
         return m.group(1) if m else "unknown"
 
 
@@ -87,14 +93,15 @@ class ContextPackage:
 # Module-level constants (Req 12.1)
 # ---------------------------------------------------------------------------
 
-GRAPH_MATURITY_THRESHOLD: int = 3       # distinct spaces with ≥ 1 confident node
-DISTILLATION_IDLE_THRESHOLD: int = 600   # seconds idle before maintenance is allowed
-DISTILLATION_MAX_INTERVAL: int = 14400   # seconds max between forced maintenance passes
+GRAPH_MATURITY_THRESHOLD: int = 3  # distinct spaces with ≥ 1 confident node
+DISTILLATION_IDLE_THRESHOLD: int = 600  # seconds idle before maintenance is allowed
+DISTILLATION_MAX_INTERVAL: int = 14400  # seconds max between forced maintenance passes
 
 
 # ---------------------------------------------------------------------------
 # MyceliumInterface
 # ---------------------------------------------------------------------------
+
 
 class MyceliumInterface:
     """
@@ -153,10 +160,13 @@ class MyceliumInterface:
         self._is_mature_logged: bool = False
         self._maintenance_needed: bool = False
         self._last_task_class: Optional[str] = None
-        self._crystallisation_suspended: bool = False  # set True during QuorumReorganization
+        self._crystallisation_suspended: bool = (
+            False  # set True during QuorumReorganization
+        )
 
         # Topology layer (Task 11.3) — eagerly instantiated
         from .topology import TopologyLayer  # noqa: PLC0415
+
         self._topology_layer: TopologyLayer = TopologyLayer(conn, self._store)
 
         # Context token tracking (Task 10.2)
@@ -165,14 +175,18 @@ class MyceliumInterface:
 
         # Kyudo security layer (Task 9.2) — eagerly instantiated
         from .kyudo import (  # noqa: PLC0415
-            QuorumSensor, RagIngestionBridge, CellWall,
-            TaskClassifier, PredictiveLoader,
+            QuorumSensor,
+            RagIngestionBridge,
+            CellWall,
+            TaskClassifier,
+            PredictiveLoader,
             CHANNEL_WEIGHTS,
         )
-        self._quorum_sensor:     QuorumSensor     = QuorumSensor()
-        self._rag_bridge:        RagIngestionBridge = RagIngestionBridge()
-        self._cell_wall:         CellWall         = CellWall()
-        self._task_classifier:   TaskClassifier   = TaskClassifier()
+
+        self._quorum_sensor: QuorumSensor = QuorumSensor()
+        self._rag_bridge: RagIngestionBridge = RagIngestionBridge()
+        self._cell_wall: CellWall = CellWall()
+        self._task_classifier: TaskClassifier = TaskClassifier()
         self._predictive_loader: PredictiveLoader = PredictiveLoader()
         self._channel_weights = CHANNEL_WEIGHTS
 
@@ -235,15 +249,22 @@ class MyceliumInterface:
         try:
             import uuid
             import time as _time
+
             self._conn.execute(
                 "INSERT INTO mycelium_plan_stats VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    str(uuid.uuid4())[:12], session_id, task_class, strategy,
-                    total_steps, steps_completed, tokens_used,
-                    avg_step_duration_ms, outcome,
+                    str(uuid.uuid4())[:12],
+                    session_id,
+                    task_class,
+                    strategy,
+                    total_steps,
+                    steps_completed,
+                    tokens_used,
+                    avg_step_duration_ms,
+                    outcome,
                     1 if graph_mature else 0,
-                    _time.time()
-                )
+                    _time.time(),
+                ),
             )
             self._conn.commit()
         except Exception:
@@ -337,8 +358,11 @@ class MyceliumInterface:
             self._is_mature_cached = True
             if not self._is_mature_logged:
                 mature_space_list = [
-                    s for s in SPACES
-                    if any(n.confidence >= 0.6 for n in self._store.get_nodes_by_space(s))
+                    s
+                    for s in SPACES
+                    if any(
+                        n.confidence >= 0.6 for n in self._store.get_nodes_by_space(s)
+                    )
                 ]
                 logger.info(
                     "[interface] Graph mature: %d spaces qualified: %s",
@@ -417,6 +441,7 @@ class MyceliumInterface:
         partial_profile = ""
         try:
             from .spaces import RENDER_ORDER  # noqa: PLC0415
+
             target_spaces = space_subset if space_subset else list(RENDER_ORDER.keys())
             ordered_spaces = sorted(
                 (s for s in target_spaces if s in RENDER_ORDER),
@@ -439,23 +464,28 @@ class MyceliumInterface:
             avg_tokens = (self._total_context_chars / self._context_task_count) / 4
             logger.info(
                 "[interface] avg_context_tokens_per_task=%.1f over %d tasks",
-                avg_tokens, self._context_task_count,
+                avg_tokens,
+                self._context_task_count,
             )
 
         # Step 6 — append topology context
         topology_suffix = ""
         try:
             active_nodes = []
-            for space_id in (space_subset or []):
+            for space_id in space_subset or []:
                 active_nodes.extend(self._store.get_nodes_by_space(space_id))
-            topo_ctx = self._topology_layer.get_topology_context(session_id, active_nodes)
+            topo_ctx = self._topology_layer.get_topology_context(
+                session_id, active_nodes
+            )
             topology_suffix = self._topology_layer.encode_topology_context(topo_ctx)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[interface] TopologyLayer failed: %s", exc)
 
         # Assemble final context: zone header + coordinate path + partial profile
         zone_header = self._cell_wall.render_zone_headers()
-        coordinate_path = f"{encoding} | {topology_suffix}" if topology_suffix else encoding
+        coordinate_path = (
+            f"{encoding} | {topology_suffix}" if topology_suffix else encoding
+        )
         if partial_profile:
             return f"{zone_header}\n{coordinate_path}\n{partial_profile}"
         return f"{zone_header}\n{coordinate_path}"
@@ -516,8 +546,12 @@ class MyceliumInterface:
         """
         try:
             for episode in episodes:
-                text = getattr(episode, "task_text", None) or episode.get("task_text", "")
-                outcome = getattr(episode, "outcome", None) or episode.get("outcome", "")
+                text = getattr(episode, "task_text", None) or episode.get(
+                    "task_text", ""
+                )
+                outcome = getattr(episode, "outcome", None) or episode.get(
+                    "outcome", ""
+                )
                 if text and outcome in ("hit", "success"):
                     results = self._extractor.extract_from_statement(text)
                     for space_id, coords, confidence, label in results:
@@ -585,7 +619,10 @@ class MyceliumInterface:
         """
         try:
             from .kyudo import ChannelViolation  # noqa: PLC0415
-            ingested = self._rag_bridge.ingest(content, source_type, session_id, metadata)
+
+            ingested = self._rag_bridge.ingest(
+                content, source_type, session_id, metadata
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[interface] ingest_rag_content bridge failed: %s", exc)
             return
@@ -598,7 +635,8 @@ class MyceliumInterface:
                 if not self._cell_wall.can_write_space(ingested.channel, space_id):
                     logger.debug(
                         "[interface] RAG channel %s blocked from writing space '%s'",
-                        ingested.channel.name, space_id,
+                        ingested.channel.name,
+                        space_id,
                     )
                     continue
                 self._store.upsert_node(space_id, coords, label, confidence)
@@ -626,9 +664,60 @@ class MyceliumInterface:
         try:
             if self._quorum_sensor.check_threshold():
                 from .kyudo import QuorumReorganization  # noqa: PLC0415
+
                 QuorumReorganization().fire(self, session_id)
         except Exception as exc:  # noqa: BLE001
             logger.error("[interface] quorum reorganization failed: %s", exc)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # v2: Caducean Mitochondria-to-Mycelium public accessors
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def record_anomaly(self, session_id: str, signal_type: str) -> bool:
+        """Record a Caducean anomaly to the QuorumSensor.
+
+        v2 entry point — called from agent_kernel when caducean_recommend()
+        returns 3 (TOPO_VIOLATION). Delegates to _quorum_sensor.record_signal()
+        which writes to the existing quorum_log table. Runs the reorganization
+        check afterwards (mirrors the v1 pattern in ingest_conduct_outcomes).
+
+        Returns True on success. All exceptions swallowed — never blocks the
+        agent loop. The physics violation has already been raised by the kernel.
+        """
+        try:
+            self._quorum_sensor.record_signal(signal_type=signal_type)
+            self._check_quorum_and_reorganize(session_id)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[interface] record_anomaly failed: %s", exc)
+            return False
+
+    def get_latest_u(self, session_id: str) -> Optional[Dict[str, float]]:
+        """Read the latest Caducean (x, y, xi, u, recommendation) for a session.
+
+        Returns None if no trajectory rows exist. Used by scorer.py and
+        resonance.py to modulate decay/retrieval multipliers based on the
+        current attentional velocity. Read once at the start of each pass
+        (not per-edge) — no hot-path DB calls.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT x, y, xi, u, recommendation FROM caducean_trajectories "
+                "WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "x": float(row[0]),
+                "y": float(row[1]),
+                "xi": float(row[2]),
+                "u": float(row[3]),
+                "recommendation": int(row[4]) if row[4] is not None else 2,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[interface] get_latest_u failed: %s", exc)
+            return None
 
     def crystallize_landmark(
         self,
@@ -729,10 +818,10 @@ class MyceliumInterface:
     # Maintenance
     # ------------------------------------------------------------------
 
-    def run_maintenance(self) -> None:
+    def run_maintenance(self, session_id: Optional[str] = None) -> None:
         """
         Full five-step maintenance sequence (Req 12.9):
-          1. Edge decay (EdgeScorer.apply_decay)
+          1. Edge decay (EdgeScorer.apply_decay) — v2: Caducean-modulated if session_id given
           2. Condense nodes (MapManager.run_condense)
           3. Expand nodes (MapManager.run_expand)
           4. Landmark edge decay (LandmarkIndex.apply_landmark_decay)
@@ -742,10 +831,14 @@ class MyceliumInterface:
         Sync — callers that need non-blocking execution should use
         asyncio.to_thread(mycelium.run_maintenance).
         Sets _last_distillation_at to now.
+
+        v2: session_id is optional. If provided, edge decay is modulated by
+        the Caducean attentional velocity (u). If None, decay uses default
+        rate (backward compatible with v1 callers).
         """
         logger.info("[interface] Running Mycelium maintenance pass")
         try:
-            pruned = self._scorer.apply_decay()
+            pruned = self._scorer.apply_decay(session_id=session_id)
             logger.debug("[interface] maintenance: pruned %d edges", pruned)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[interface] maintenance: apply_decay failed: %s", exc)
@@ -764,15 +857,23 @@ class MyceliumInterface:
 
         try:
             lm_pruned = self._lm_index.apply_landmark_decay()
-            logger.debug("[interface] maintenance: landmark edges pruned: %d", lm_pruned)
+            logger.debug(
+                "[interface] maintenance: landmark edges pruned: %d", lm_pruned
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[interface] maintenance: apply_landmark_decay failed: %s", exc)
+            logger.warning(
+                "[interface] maintenance: apply_landmark_decay failed: %s", exc
+            )
 
         try:
             rendered = self._renderer.render_dirty_sections()
-            logger.debug("[interface] maintenance: rendered %d profile sections", rendered)
+            logger.debug(
+                "[interface] maintenance: rendered %d profile sections", rendered
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[interface] maintenance: render_dirty_sections failed: %s", exc)
+            logger.warning(
+                "[interface] maintenance: render_dirty_sections failed: %s", exc
+            )
 
         # Step 6 — Topology maintenance (v2.0, MUST run after v1.5 sequence)
         try:
@@ -842,19 +943,20 @@ class MyceliumInterface:
             pass
 
         return {
-            "is_mature":                   self.is_mature(),
-            "node_count":                  node_count,
-            "landmark_count":              landmark_count,
-            "threat_level":                threat_level,
-            "prediction_cache_hit_rate":   prediction_cache_hit_rate,
-            "avg_spaces_navigated":        avg_spaces_navigated,
+            "is_mature": self.is_mature(),
+            "node_count": node_count,
+            "landmark_count": landmark_count,
+            "threat_level": threat_level,
+            "prediction_cache_hit_rate": prediction_cache_hit_rate,
+            "avg_spaces_navigated": avg_spaces_navigated,
             "whiteboard_broadcast_tokens": whiteboard_broadcast_tokens,
-            "failure_warning_tokens":      failure_warning_tokens,
+            "failure_warning_tokens": failure_warning_tokens,
             "avg_context_tokens_per_task": (
                 (self._total_context_chars / self._context_task_count / 4)
-                if self._context_task_count > 0 else 0.0
+                if self._context_task_count > 0
+                else 0.0
             ),
-            "last_task_class":             self._last_task_class,
+            "last_task_class": self._last_task_class,
         }
 
     # ------------------------------------------------------------------
