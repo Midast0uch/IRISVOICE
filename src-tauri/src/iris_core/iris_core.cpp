@@ -88,6 +88,66 @@ extern "C" IRIS_API void caducean_update(const char* session_id, int action, dou
     Caducean::get_instance().update(session_id, action, balance);
 }
 
+// --- v2: Caducean Mitochondria-to-Mycelium Upgrade FFI Wrappers ---
+
+extern "C" IRIS_API int caducean_init_session(const char* session_id, int l, int m) {
+    if (!session_id) return 1;
+    Caducean::get_instance().init_session(session_id, l, m);
+    return 0;
+}
+
+extern "C" IRIS_API int caducean_get_direction_signal(const char* session_id, double balance, IrisDirectionSignal* out) {
+    if (!session_id || !out) return 1;
+    DirectionSignal sig = Caducean::get_instance().get_direction_signal(session_id, balance);
+    out->target_u = sig.target_u;
+    out->force_magnitude = sig.force_magnitude;
+    out->u_current = sig.u_current;
+    out->phase = sig.phase;
+    out->balance = sig.balance;
+    return 0;
+}
+
+extern "C" IRIS_API int caducean_set_params(const char* session_id, double a, double b, double s) {
+    if (!session_id) return 1;
+    Caducean::get_instance().set_params(session_id, a, b, s);
+    return 0;
+}
+
+extern "C" IRIS_API int caducean_get_state(const char* session_id,
+                                             double* out_x, double* out_y,
+                                             double* out_xi, double* out_u,
+                                             double* out_a, double* out_b, double* out_s,
+                                             double* out_c_eff) {
+    if (!session_id) return 1;
+    SessionState s = Caducean::get_instance().get_state(session_id);
+    if (out_x)     *out_x     = static_cast<double>(s.x);
+    if (out_y)     *out_y     = static_cast<double>(s.y);
+    if (out_xi)    *out_xi    = s.xi;
+    if (out_u)     *out_u     = s.u;
+    if (out_a)     *out_a     = s.a;
+    if (out_b)     *out_b     = s.b;
+    if (out_s)     *out_s     = s.s;
+    if (out_c_eff) *out_c_eff = s.c_eff;
+    return 0;
+}
+
+extern "C" IRIS_API double caducean_calculate_eml(const char* session_id, double* out_x, double* out_y) {
+    if (!session_id) return 0.0;
+    SessionState s = Caducean::get_instance().get_state(session_id);
+    // O(1) field-theory formula from SessionState (x, y) accumulators.
+    // This is the v2 path that bypasses SQL — pure field-theory arithmetic.
+    const double Ne = static_cast<double>(s.x);
+    const double Nt = static_cast<double>(s.y);
+    const double L  = std::min(Ne, Nt);
+    const double V  = Ne + Nt + 1.0;
+    const double x_eml = (Ne / (1.0 + Nt)) * (1.0 - L / V);
+    const double y_eml = (Nt / (1.0 + Ne)) * (L / V) + 1e-5;
+    const double eml  = std::exp(x_eml) - std::log(y_eml);
+    if (out_x) *out_x = Ne;
+    if (out_y) *out_y = Nt;
+    return eml;
+}
+
 // --- EML Calculation ---
 
 extern "C" IRIS_API double calculate_eml(const char* session_id, double* out_x, double* out_y) {

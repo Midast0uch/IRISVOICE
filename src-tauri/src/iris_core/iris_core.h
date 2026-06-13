@@ -86,6 +86,67 @@ IRIS_API double caducean_get_xi(const char* session_id);
  */
 IRIS_API void caducean_update(const char* session_id, int action, double balance);
 
+// --- v2: Caducean Mitochondria-to-Mycelium Upgrade ---
+// Bias-free physics signal exposed to callers. The agent kernel, voice kernel,
+// TTS, and Mycelium all consume DirectionSignal — the physics is the program,
+// the labels are the user interface.
+
+/**
+ * DirectionSignal C-compatible struct for FFI.
+ * MUST stay binary-compatible with backend/gateway/iris_ffi.py::IrisDirectionSignal.
+ * Field order is FROZEN — see Caducean v2 contract test test_caducean_ffi_contract.py.
+ */
+typedef struct {
+    double target_u;          // +1.0 (expansion attractor) or -1.0 (compression attractor)
+    double force_magnitude;   // |F(u)| = |a*u - b*u^3|
+    double u_current;         // current attentional velocity
+    double phase;             // current xi in [0, 2pi)
+    double balance;           // EML-derived urgency in [0.1, 3.0]
+} IrisDirectionSignal;
+
+/**
+ * Initialize a Caducean session with specific winding numbers (l, m).
+ * Recomputes the effective cycle speed c_eff = (1/sqrt(2)) * sqrt(l^2 + m^2).
+ * Idempotent: re-initializing updates l, m and recomputes c_eff.
+ * @return 0 on success, 1 on error.
+ */
+IRIS_API int caducean_init_session(const char* session_id, int l, int m);
+
+/**
+ * Get the bias-free DirectionSignal for a session.
+ * Returns a default signal (target_u=+1, balance=1.0) if session not found.
+ * @return 0 on success, 1 on error (e.g. NULL out pointer).
+ */
+IRIS_API int caducean_get_direction_signal(const char* session_id, double balance, IrisDirectionSignal* out);
+
+/**
+ * Dynamically update the double-well potential constants and walk speed.
+ * Bounds: a, b clamped to [1.0, 4.0]; s clamped to [0.1, 0.8].
+ * @return 0 on success.
+ */
+IRIS_API int caducean_set_params(const char* session_id, double a, double b, double s);
+
+/**
+ * Get a full SessionState snapshot for a session (debug / health check).
+ * Returned as 9 doubles: x, y, xi, u, a, b, s, c_eff, _padding.
+ * (Padding aligns to 8 doubles for FFI stability.)
+ */
+IRIS_API int caducean_get_state(const char* session_id, double* out_x, double* out_y,
+                                 double* out_xi, double* out_u,
+                                 double* out_a, double* out_b, double* out_s,
+                                 double* out_c_eff);
+
+/**
+ * v2: O(1) EML calculation directly from SessionState (x, y) accumulators.
+ * This is the v2 path that bypasses SQL — pure field-theory formula:
+ *   Ne = x, Nt = y, L = min(x,y), V = x + y + 1
+ *   x_eml = (Ne/(1+Nt)) * (1 - L/V)
+ *   y_eml = (Nt/(1+Ne)) * (L/V) + 1e-5
+ *   EML = exp(x_eml) - log(y_eml)
+ * @return EML score (double), or 0.0 if session not found.
+ */
+IRIS_API double caducean_calculate_eml(const char* session_id, double* out_x, double* out_y);
+
 // --- EML Calculation ---
 
 /**
