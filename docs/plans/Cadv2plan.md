@@ -144,6 +144,25 @@ To prevent overcoding, the following are explicit non-goals:
 
 ### Failure Mode Analysis (what breaks if v2 has a bug?)
 
+#### Caducean State Dict Contract (v1 → v2 invariants)
+
+The `_get_caducean_state()` method (called by `auto_research.py` and `skill_simulator.py`) returns a dict with these keys. **All defaults MUST remain safe** — the Phase 0 fix made the engine live, but any consumer that does `.get(key, default)` must continue to work with the v2 values, not crash.
+
+| Key | Type | Default | Consumer(s) | v2 change |
+|-----|------|---------|-------------|-----------|
+| `eml` | float | `1.0` | `skill_simulator`, `auto_research` | Real value from C++ O(1) formula |
+| `x` | int | `0` | `skill_simulator` | Real accumulator |
+| `y` | int | `0` | `skill_simulator` | Real accumulator |
+| `xi` | float | `0.0` | (debug only) | Real phase |
+| `u` | float | `0.0` | `auto_research` (variant prediction) | Real velocity |
+| `target_u` | float | `+1.0` | NEW v2 — for bias-free consumers | From DirectionSignal |
+| `force_magnitude` | float | `0.0` | NEW v2 — for TTS chunk sizing | From DirectionSignal |
+| `balance` | float | `1.0` | NEW v2 — for next-update balance | From C++ |
+
+**Invariant:** All `.get(key, default)` calls in existing code MUST work without modification. v2 does not change the dict shape — only the values.
+
+#### Consumer failure mode table
+
 | Consumer | What it reads | If v2 returns bad value | Mitigation |
 |----------|---------------|--------------------------|------------|
 | `agent_kernel.py` | `ffi_caducean_update` return code | DER loop diverges | v2 keeps same signature, same return codes; behavioral tests assert invariant |
@@ -168,6 +187,24 @@ Phase 0 — the engine init fix — is already committed on `feat/caducean-v2-mi
 - **Change:** 1 file (`backend/memory/interface.py`), 1 try/except block (~30 lines)
 - **Verification:** `Engine initialized: True` in smoke test; 415+ existing tests pass; zero regressions
 - **Impact:** Free upgrade for `agent_kernel`, `auto_research`, `skill_simulator` (they get real values instead of safe defaults). Zero effect on tools, skills, MCP, audio.
+
+#### Phase 0 Follow-up: Make the flag consumable
+
+The `_caducean_engine_initialized` flag is set but currently unconsumed. Add a public accessor:
+
+```python
+# In MemoryInterface:
+def is_caducean_engine_live(self) -> bool:
+    """Public accessor for Phase 0's init flag. Used by:
+      - FastAPI /api/caducean/health (Phase 5)
+      - CaduceanDebugPanel (Phase 6) to show engine state
+    Returns True if C++ engine is loaded and initialised.
+    Returns False if Python fallback is active.
+    """
+    return self._caducean_engine_initialized
+```
+
+This is a 5-line addition. Zero behavior change for existing callers.
 
 ---
 
@@ -221,14 +258,16 @@ except Exception as _e:
 - In `update()`:
   - Shift history: `xi_prev2 = xi_prev1; xi_prev1 = xi;`
   - Advance phase: `xi = fmod(xi + balance * s * c_eff, 2.0 * M_PI)`
-- Rewrite `recommend()` with **Adaptive Safety Net**:
+- Rewrite `recommend()` with **Adaptive Safety Net** (NOTE: current C++ `recommend()` only returns 0, 1, or 2 — v2 **ADDS** the return code 3 for TOPO_VIOLATION):
   ```cpp
+  // Existing: returns 0 (EXPAND), 1 (COMPRESS), 2 (CONTINUE)
+  // v2 ADD: returns 3 (TOPO_VIOLATION) when adaptive safety net fires
   double Q = std::abs(state.x - state.y) / (state.x + state.y + 1.0);
   double diff1 = std::remainder(state.xi - state.xi_prev1, 2.0 * M_PI);
   double diff2 = std::remainder(state.xi_prev1 - state.xi_prev2, 2.0 * M_PI);
   double phase_accel = std::abs(diff1 - diff2);
-  if (Q > 0.8 && phase_accel > 0.05) return 3; // TOPO_VIOLATION
-  // else: existing stable-orbit / force-based logic
+  if (Q > 0.8 && phase_accel > 0.05) return 3; // NEW IN V2: TOPO_VIOLATION
+  // else: existing stable-orbit / force-based logic (unchanged)
   ```
 - Implement `get_direction_signal()`:
   ```cpp
@@ -304,7 +343,7 @@ except Exception as _e:
 
 #### [MODIFY] [interface.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/memory/interface.py)
 - **Component 0 fix** goes here (see above).
-- Add `mycelium_record_anomaly(session_id, signal_type)` to expose the anomaly sensor to the agent kernel.
+- Add `mycelium_record_anomaly(session_id, signal_type)` to expose the anomaly sensor to the agent kernel. **Uses existing `quorum_log` table** (no new schema).
 - New method to read the latest Caducean `u` for a session:
   ```python
   def get_caducean_state(self, session_id: str) -> Optional[Dict[str, float]]:
@@ -312,7 +351,7 @@ except Exception as _e:
   ```
 
 #### [MODIFY] [mycelium/interface.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/memory/mycelium/interface.py)
-- Add `record_anomaly(session_id, signal_type)` → delegate to `_quorum_sensor.record_signal` + `_check_quorum_and_reorganize`.
+- Add `record_anomaly(session_id, signal_type)` → delegate to `_quorum_sensor.record_signal(signal_type)` + `_check_quorum_and_reorganize()`. **Writes to the existing `quorum_log` table** (already used by `QuorumSensor`). No new table or column needed.
 - Add `get_latest_u(session_id)` → read last row from `caducean_trajectories` table.
 
 #### [MODIFY] [mycelium/scorer.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/memory/mycelium/scorer.py)
@@ -329,56 +368,107 @@ except Exception as _e:
   - `u == 0` → no change
 
 #### [NEW] [backend/migrations/003_caducean_trajectories.sql](file:///C:/Users/midas/Desktop/IRISVOICE/backend/migrations/003_caducean_trajectories.sql)
+**NOTE: The `caducean_trajectories` table ALREADY EXISTS** in `backend/agent/caducean_trajectory.py` (see `initialize_db()`). The existing columns are:
 ```sql
 CREATE TABLE IF NOT EXISTS caducean_trajectories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
-    step INTEGER NOT NULL,
+    step_num INTEGER NOT NULL,
     x INTEGER NOT NULL,
     y INTEGER NOT NULL,
     xi REAL NOT NULL,
     u REAL NOT NULL,
-    balance REAL NOT NULL,
-    recommendation INTEGER NOT NULL,  -- 0=EXPAND, 1=COMPRESS, 2=CONTINUE, 3=TOPO_VIOLATION
-    created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
-);
-CREATE INDEX IF NOT EXISTS idx_caducean_session_step
-    ON caducean_trajectories(session_id, step);
+    action INTEGER,
+    outcome TEXT,
+    eml_after REAL
+)
 ```
 
-Add migration call in `MemoryInterface.__init__` (idempotent).
+**What v2 needs to add: ONE column** — `recommendation INTEGER` (stores 0, 1, 2, or 3).
+
+**v2 changes to `_run_migrations()` in `backend/gateway/iris_ffi.py` (around line 240):**
+```python
+def _run_migrations(self):
+    # ... existing migrations ...
+    # v2: add recommendation column to caducean_trajectories (idempotent)
+    try:
+        self._db.execute("ALTER TABLE caducean_trajectories ADD COLUMN recommendation INTEGER")
+    except Exception:
+        pass  # column already exists — idempotent
+```
+
+**Why this approach:**
+- The migration system (`_run_migrations()` in `iris_ffi.py`) does NOT load `.sql` files from disk — schema is hardcoded in Python and in the C++ `DBManager`. A standalone `.sql` file would be dead code.
+- The existing `caducean_trajectories` table has 10 of the 11 columns we need.
+- `ALTER TABLE ... ADD COLUMN` is the correct idempotent operation: wrapped in try/except, the second call on a machine that already has the column simply no-ops.
+- The runtime Python `initialize_db()` in `caducean_trajectory.py` will also be updated to include `recommendation` in the CREATE TABLE for fresh installs.
 
 ---
 
 ### Component 4: Agent Kernel & DER Loop (`backend/agent`)
 
 #### [MODIFY] [der_loop.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/agent/der_loop.py)
+- **NOTE:** `der_loop.py` already calls `ffi_caducean_recommend()` today (line 84-93 uses `rec == 1` to restrict to critical items). v2 is **additive**, not replacement.
 - In `DirectorQueue.next_ready()`:
-  - Fetch `ffi_caducean_get_direction_signal(session_id)` once at top.
-  - If `target_u == -1.0` (attractor → COMPRESS): restrict `ready_items` to `critical=True` only.
-  - If `recommendation == 3` (TOPO_VIOLATION): raise `TopologyViolationException(session_id, direction_signal)`.
+  - **EXISTING (unchanged):** fetch `ffi_caducean_recommend(session_id)`; if `rec == 1` restrict to `critical=True` only.
+  - **NEW IN V2:** if `rec == 3` (TOPO_VIOLATION): raise `TopologyViolationException(session_id, direction_signal)`.
+  - **OPTIONAL v3 candidate:** migrate from `rec` (recommendation code) to the bias-free `ffi_caducean_get_direction_signal(session_id).target_u` for queue decisions. Current code uses the recommendation code directly, which is functionally equivalent and avoids an FFI round-trip per cycle. Defer until v3.
 
 #### [MODIFY] [agent_kernel.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/agent/agent_kernel.py)
-- In the Caducean update step:
+- In the Caducean update step (currently at line 3756-3758, NOT 3860 as originally noted — line numbers shifted in prior sessions):
   - Compute `balance = clamp(EML / 2.34, 0.1, 3.0)` (use the O(1) EML value from C++).
   - After `ffi_caducean_update(session_id, action, balance)`, check `ffi_caducean_recommend(session_id)`:
-    - If `== 3` (TOPO_VIOLATION): call `memory.mycelium_record_anomaly(session_id, "update_velocity_anomaly")` and raise.
-  - Persist trajectory row to `caducean_trajectories` table (fire-and-forget, try/except wrapped).
+    - If `== 3` (TOPO_VIOLATION — NEW IN V2): call `memory.mycelium_record_anomaly(session_id, "update_velocity_anomaly")` and raise.
+  - Persist trajectory row to `caducean_trajectories` table including the new `recommendation` column (fire-and-forget, try/except wrapped).
 
 #### [MODIFY] [trajectory_controller.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/agent/trajectory_controller.py)
 - After task completion, read `caducean_trajectories` for the session.
-- If budget cap hit OR `TOPO_VIOLATION` count > threshold: compute adjustments to `a, b, s`:
-  - `a += 0.1 * violation_count` (steeper potential well → faster recovery)
-  - `b += 0.05 * violation_count` (deeper walls → less drift)
-  - `s -= 0.01 * violation_count` (slower walk → less overshoot)
-- Call `ffi_caducean_set_params(session_id, a, b, s)`.
+- If budget cap hit OR `TOPO_VIOLATION` count > threshold: compute adjustments to `a, b, s` **with explicit clamp ranges** (these are the safe operating bounds for the Duffing potential — outside them, the engine can enter non-physical regimes):
+  ```python
+  # Update rule (v2 — explicit bounds)
+  violation_count = count of rec==3 in last N=100 steps
+  if violation_count > 0:
+      new_a = clamp(prev_a + 0.10 * violation_count, 1.0, 4.0)  # potential steepness
+      new_b = clamp(prev_b + 0.05 * violation_count, 1.0, 4.0)  # wall depth
+      new_s = clamp(prev_s - 0.01 * violation_count, 0.1, 0.8)  # walk speed
+      ffi_caducean_set_params(session_id, new_a, new_b, new_s)
+  ```
+- **Persist tuned values** to a new `caducean_session_params` table OR log them to `irisvoice.log` (decision deferred — logging is simpler, table is more robust). Default: log to file.
+- **Why these bounds:**
+  - `a, b ∈ [1.0, 4.0]`: the original Duffing parameters from Gate 1 are `a=2.0, b=2.0`. Going below 1.0 flattens the wells (no attractors); going above 4.0 creates chaotic deep wells (instability).
+  - `s ∈ [0.1, 0.8]`: walk speed. Below 0.1 = essentially static; above 0.8 = chaotic exploration.
 
 #### [NEW] [coupled_registry.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/agent/coupled_registry.py)
 - `class CoupledTrajectoryRegistry`:
-  - Maintains `Dict[session_id, Dict[other_session_id, phase_delta]]`.
-  - On each `caducean_update(session_id)`: scan registry for other active sessions.
-  - If `c_eff1 / c_eff2` is rational (within 0.01 of p/q with small p,q): at phase alignment, exchange angular momentum (transfer ±0.1 to u between sessions → nucleus/barrier differentiation).
-  - If irrational: apply destructive interference (`-= 0.05` to both `u` values).
+  - Maintains `Dict[session_id, SessionState]` of active sessions.
+  - On each `caducean_update(session_id)`: scan registry for other active sessions; apply coupling.
+  - **Rationality test** (with explicit tolerance):
+    ```python
+    c1 = math.sqrt(l1**2 + m1**2) / math.sqrt(2)
+    c2 = math.sqrt(l2**2 + m2**2) / math.sqrt(2)
+    ratio = c1 / c2
+    is_rational = any(abs(ratio - p/q) < 0.01
+                      for p in range(1, 10) for q in range(1, 10))
+    ```
+    Rational → coherent coupling. Irrational → destructive interference.
+  - **Phase alignment check** (only exchange momentum at alignment, not every step):
+    ```python
+    if abs(xi1 - xi2) < 0.1:  # within ~6° of each other
+        # Rational case: transfer angular momentum → nucleus/barrier
+        u1_new = clamp(u1 + 0.10, -1.0, 1.0)  # barrier (expansion-biased)
+        u2_new = clamp(u2 - 0.10, -1.0, 1.0)  # nucleus (compression-biased)
+    # No alignment: no transfer this step
+    ```
+  - **Irrational case:** destructive interference at every step (no alignment needed):
+    ```python
+    else:
+        u1_new = u1 - 0.05
+        u2_new = u2 - 0.05
+    ```
+  - **Constraints:**
+    - Transfer amount `0.10` is small enough to not destabilize either session
+    - Destructive amount `0.05` is small enough to not kill momentum
+    - All updates clamped to `u ∈ [-1, 1]` (Lyapunov bound)
 - Singleton accessed by `get_coupled_registry()`.
 
 ---
@@ -397,6 +487,12 @@ Add migration call in `MemoryInterface.__init__` (idempotent).
     ```
   - **NOT** a new event loop, NOT a new VAD, NOT a new TTS — only adds Caducean state to the decisions that existing classes already make.
   - **Hook into existing callbacks** (no rewiring):
+    - **Strategy:** `VoiceCommandHandler.set_state_callback` and `set_audio_level_callback` accept a single callable. To register multiple observers without modifying `audio/voice_command.py`:
+      - **Option (b) — wrap the existing callback in `iris_gateway`:**
+        - The existing `_on_audio_level` callback in `iris_gateway` is the registered observer.
+        - `ConversationKernel` is instantiated in `set_voice_handler()` and stored as `self._conversation_kernel`.
+        - The existing `_on_audio_level` is wrapped: `(level) => { existing_handler(level); kernel._on_audio_level(level); }` — both called in order.
+      - **Result:** zero changes to `audio/voice_command.py`, one wrapping line in `iris_gateway.py`.
     - `voice_handler.set_state_callback(self._on_voice_state)` — observe IDLE→RECORDING→PROCESSING transitions
     - `voice_handler.set_audio_level_callback(self._on_audio_level)` — observe RMS for VAD-fire signal
     - (Optional) hook into the existing `_on_audio_level` RMS path in `iris_gateway` — ConversationKernel reads the same level for phase updates
@@ -408,15 +504,28 @@ Add migration call in `MemoryInterface.__init__` (idempotent).
     | User voice during agent speech | `_speak_response` checks `interrupted` event | `force target_u = -1.0` via `ffi_caducean_set_params` |
     | `recommendation == 3` | (no existing behavior) | Halt TTS via `audio_pipeline.interrupt()` + `engine.interrupt_speech()` |
   - **Methods (thin wrappers, no parallel logic):**
+  - **Language choice:** All FFI calls (`ffi_caducean_update`, `ffi_caducean_get_direction_signal`, `ffi_caducean_recommend`) are **synchronous ctypes calls**. The C++ engine uses a per-session mutex internally, so concurrent calls from different threads to the SAME session_id are serialized safely. The ConversationKernel methods are **synchronous Python** — no asyncio bridge needed. Callbacks (`_on_voice_state`, `_on_audio_level`) may be invoked from the audio thread, but the ctypes calls themselves are thread-safe per session_id.
+  - **`balance` value source:** For voice-initiated `ffi_caducean_update` calls, the `balance` parameter must be in `[0.1, 3.0]`. Source:
+    ```python
+    def _get_current_balance(self) -> float:
+        """Fetch current balance from C++. Fall back to 1.0 if unavailable."""
+        try:
+            _, _, bal = ffi_calculate_eml(self._session_id)  # 3rd return is balance
+            return clamp(bal, 0.1, 3.0)
+        except Exception:
+            return 1.0  # safe default — same as the v1 stub behavior
+    ```
+    `self._current_balance` is updated by calling this method at the top of each callback (cheap, no DB hit since O(1) EML is in C++).
     ```python
     def _on_voice_state(self, state: VoiceState, message: str) -> None:
         """Fires on every VoiceCommandHandler state transition. Updates Caducean
         with EXPAND when transitioning to IDLE (user turn complete) and COMPRESS
         when entering RECORDING (user turn started)."""
+        bal = self._get_current_balance()
         if state == VoiceState.RECORDING:
-            ffi_caducean_update(self._session_id, 1, self._current_balance)
+            ffi_caducean_update(self._session_id, 1, bal)
         elif state == VoiceState.IDLE and self._was_speaking:
-            ffi_caducean_update(self._session_id, 0, self._current_balance)
+            ffi_caducean_update(self._session_id, 0, bal)
 
     def _on_audio_level(self, level: float) -> None:
         """Already wired in iris_gateway. We read the same level for force_magnitude
@@ -453,6 +562,7 @@ Add migration call in `MemoryInterface.__init__` (idempotent).
 
 #### [MODIFY] [backend/main.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/main.py) — lifespan
 - After the existing `iris_gateway.set_voice_handler(voice_handler)` call (~line in `lifespan`), add: `iris_gateway.set_caducean_session(session_id)`. This wires the active session_id into the kernel — frontend generates the session_id via the existing WS handshake (Option C from our decision matrix).
+- **Note:** The active session_id is ALREADY tracked inside `iris_gateway` (it flows through `process_text_message(from_voice=True)` and other entry points). The new `set_caducean_session()` simply stores it as `self._caducean_session_id`. `ConversationKernel` reads this attribute in its callbacks — no new parameter passing through the call chain.
 
 #### [MODIFY] [backend/agent/agent_kernel.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/agent/agent_kernel.py) — voice-first mode
 - The existing `voice_first` mode (`DER_TOKEN_BUDGETS["voice_first"] = 15000` and `task_class == "voice_first"` single-step) is **unchanged**. The Caducean v2 integration is at the *physics* layer — agent_kernel is unaware. The existing mode detection in `_process_voice_transcription(from_voice=True)` continues to work.
@@ -687,6 +797,21 @@ All endpoints: simple pass-through, no business logic. CORS already configured.
 
 ## Build / Verification Plan (UPDATED)
 
+### Done Criteria (one line per phase)
+
+| Phase | Done when... |
+|-------|--------------|
+| **Phase 0** | Engine init returns True; 415+ existing tests pass; `_caducean_engine_initialized` is True. **STATUS: DONE (commit `dbc4384f`)** |
+| **Phase 1** | DLL compiles clean via `build_cpp_core.ps1`; 6 new smoke tests pass; no existing tests regress; `recommend()` returns 3 on chaotic input. |
+| **Phase 2** | All FFI contract tests pass; Python fallback updated to return mock DirectionSignal; 3 new FFI bindings registered. |
+| **Phase 3** | Memory tests pass; `recommendation` column added to `caducean_trajectories`; scorer/resonance read `u` correctly; new behavioral test asserts `decay_multiplier ∈ {0.5, 1.0, 1.8}` based on `u`. |
+| **Phase 4** | DER tests pass; `TOPO_VIOLATION` raised on chaotic input; trajectory persisted with new column; coupled registry differentiates roles in 1000-step test (one session's `mean(u) > 0`, other's `< 0`). |
+| **Phase 5** | Tauri commands register; FastAPI endpoints return correct JSON; API contract tests pass against frozen schema. |
+| **Phase 6** | `useCaducean` hook returns live values; debug panel shows state; sliders update C++ via `caducean_set_params`. |
+| **Phase 7** | Existing 38 voice tests still pass; new ConversationKernel tests pass; manual e2e shows phase transitions in debug panel. |
+
+---
+
 ### Phase 0: Critical Fix (Engine Init)
 1. Apply Component 0 fix.
 2. Run `python -c "from backend.memory.interface import MemoryInterface; m = MemoryInterface(None, 'test.db', b'\\x00'*32); print('OK')"`
@@ -727,6 +852,32 @@ All endpoints: simple pass-through, no business logic. CORS already configured.
 ---
 
 ## Risk Mitigation
+
+### System-Level Rollback (kill switch)
+
+**The entire v2 stack can be disabled with a single environment variable, no code changes required.**
+
+The `ffi_init_engine()` call in `MemoryInterface.__init__` is wrapped in an env-var check:
+
+```python
+# In MemoryInterface.__init__:
+self._caducean_engine_initialized: bool = False
+if os.environ.get("IRIS_CADUCEAN_V2_DISABLED", "0") == "1":
+    logger.warning("[MemoryInterface] Caducean v2 DISABLED via env var — using Python fallback")
+else:
+    try:
+        from backend.gateway.iris_ffi import ffi_init_engine
+        ok = ffi_init_engine(db_path, biometric_key.hex())
+        self._caducean_engine_initialized = bool(ok)
+    except Exception as _cad_err:
+        logger.warning(f"[MemoryInterface] Caducean engine init failed: {_cad_err}")
+```
+
+**Use case:** If v2 destabilizes the system in production-like usage, set `IRIS_CADUCEAN_V2_DISABLED=1` in the environment and restart the backend. All Caducean calls fall through to the Python stub fallback (`MAINTAIN` = 2), restoring v1 behavior. No git revert, no rebuild.
+
+**This is the kill switch for the entire v2 stack — one env var, zero code changes.**
+
+### Phase-Level Risks
 
 | Risk | Mitigation |
 |------|------------|
