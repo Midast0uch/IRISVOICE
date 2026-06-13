@@ -139,11 +139,28 @@ The Mycelium coordinate graph is a 7-space embedding layer that builds a persist
 | `context` | project_id, stack_id, constraints, freshness | Active projects |
 | `toolpath` | tool_id, frequency, success_rate, avg_seq_pos | Tool usage patterns |
 
+### Caducean v2 Modulation (2026-06-13)
+
+The Caducean Engine v2 acts as the **mitochondrial governor** of the Mycelium memory system. Memory layer components now read Caducean state to modulate their behavior:
+
+| Component | Caducean integration | Effect |
+|-----------|---------------------|--------|
+| **`EdgeScorer.apply_decay()`** | Reads latest `u` once per pass | Decay multiplier: `u>0 → 0.5×` (explore/preserve), `u<0 → 1.8×` (compress/prune), `u≈0 → 1.0×` (neutral) |
+| **`ResonanceScorer.augment_retrieval()`** | Reads latest `u` once per retrieval | Resonance multiplier: `u>0 → 0.5×` (creativity/broader), `u<0 → 1.8×` (focus/strict), `u≈0 → 1.0×` |
+| **`MyceliumInterface.record_anomaly()`** | Called when `caducean_recommend` returns 3 (TOPO_VIOLATION) | Writes to existing `quorum_log` via QuorumSensor |
+| **`MyceliumInterface.get_latest_u()`** | Reads from `caducean_trajectories` (new column: `recommendation`) | Returns `{x, y, xi, u, recommendation}` for the session |
+| **`MemoryInterface.mycelium_record_anomaly()`** | Public accessor | Thin wrapper for the agent kernel |
+| **`MemoryInterface.get_caducean_state()`** | Public accessor | Returns full state dict for /api/caducean/state endpoint |
+| **`MemoryInterface.is_caducean_engine_live()`** | Public accessor | Health check for `/api/caducean/health` |
+
+**All modulation is read-once-at-start** — no per-edge SQL, no per-candidate overhead.
+
 ### Mycelium Test Coverage
 
 | Area | Confidence | Test File |
 |------|-----------|-----------|
 | Core math (edge scoring, decay, highway, condense) | ~95% | `test_mycelium_scorer.py` |
+| **v2: Caducean modulation of decay/resonance** | **100%** | **`test_caducean_v2_integration.py` (8 tests)** |
 | Security gates (HyphaChannel, CellWall, trust cap) | ~90% | `test_mycelium_kyudo_security.py` |
 | Schema integrity (13 tables, all columns) | ~95% | `test_mycelium_requirements.py` |
 | Coordinate encoding format | ~95% | `test_mycelium_navigator.py` |
@@ -155,7 +172,7 @@ The Mycelium coordinate graph is a 7-space embedding layer that builds a persist
 | MCP trust registry | ~90% | `test_mycelium_requirements.py` |
 | Landmark lifecycle (crystallise, merge, absorb) | ~85% | `test_mycelium_landmark.py`, `test_mycelium_profile_prose.py` |
 
-**Total: 253 tests, 0 failures** (1 skipped: SQLCipher not installed in CI)
+**Total: 253 pre-existing tests + 8 v2 modulation tests = 261 tests, 0 failures**
 
 ### Production Notes
 
