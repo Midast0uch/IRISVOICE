@@ -33,25 +33,20 @@ _DEFAULT_PRE_KYUDO_CHANNEL: int = 1
 class MemoryInterface:
     """
     Single access boundary for all memory operations.
-    
+
     This class is the ONLY entry point for:
     - Task context assembly (local and remote)
     - Episode storage
     - Semantic memory updates
     - Session management
-    
+
     Nothing else in the codebase touches memory storage directly.
     """
-    
-    def __init__(
-        self,
-        adapter: Any,
-        db_path: str,
-        biometric_key: bytes
-    ):
+
+    def __init__(self, adapter: Any, db_path: str, biometric_key: bytes):
         """
         Initialize MemoryInterface with all storage components.
-        
+
         Args:
             adapter: Model adapter for compression and inference
             db_path: Path to the encrypted SQLite database
@@ -68,8 +63,12 @@ class MemoryInterface:
         # WAL mode allows concurrent readers — no contention with episodic/semantic.
         self._mycelium = None
         try:
-            from backend.memory.db import open_encrypted_memory, initialise_mycelium_schema
+            from backend.memory.db import (
+                open_encrypted_memory,
+                initialise_mycelium_schema,
+            )
             from backend.memory.mycelium import MyceliumInterface
+
             _mycelium_conn = open_encrypted_memory(db_path, biometric_key)
             initialise_mycelium_schema(_mycelium_conn)
             self._mycelium = MyceliumInterface(_mycelium_conn)
@@ -80,7 +79,9 @@ class MemoryInterface:
             self.semantic._mycelium = self._mycelium
             logger.info("[MemoryInterface] Mycelium coordinate layer initialised")
         except Exception as _myc_err:
-            logger.warning("[MemoryInterface] Mycelium init failed (non-fatal): %s", _myc_err)
+            logger.warning(
+                "[MemoryInterface] Mycelium init failed (non-fatal): %s", _myc_err
+            )
 
         # Write lock: serializes all Mycelium writes across concurrent sessions.
         # Two DER loops can share the same MemoryInterface (CLAUDE.md spec).
@@ -90,27 +91,56 @@ class MemoryInterface:
         # Maintenance schedule: run_maintenance() every N completed tasks
         # GOALS.md [5.4]: five-step sequence fires every MAINTENANCE_INTERVAL tasks.
         self._task_completion_count: int = 0
-        self._MAINTENANCE_INTERVAL: int = 5   # every 5 completed DER tasks
+        self._MAINTENANCE_INTERVAL: int = 5  # every 5 completed DER tasks
+
+        # Caducean Engine v2 — Phase 0 critical fix (GOALS.md Domain 19, Phase 0)
+        # Previously the C++ engine was loaded by ctypes lazily but never
+        # initialised, so every Caducean call fell through to the Python
+        # fallback returning MAINTAIN (2). This call activates the live engine
+        # (or, if the DLL is missing, leaves the fallback in place — fully
+        # backward compatible). The init function is idempotent.
+        # Wrapped in try/except so a failure here cannot block backend startup.
+        self._caducean_engine_initialized: bool = False
+        try:
+            from backend.gateway.iris_ffi import ffi_init_engine
+
+            ok = ffi_init_engine(db_path, biometric_key.hex())
+            self._caducean_engine_initialized = bool(ok)
+            if ok:
+                logger.info(
+                    "[MemoryInterface] Caducean C++ engine initialised "
+                    "(ffi_init_engine returned True)"
+                )
+            else:
+                logger.warning(
+                    "[MemoryInterface] Caducean engine init returned False — "
+                    "Python fallback active"
+                )
+        except Exception as _cad_err:
+            logger.warning(
+                "[MemoryInterface] Caducean engine init failed (non-fatal): %s",
+                _cad_err,
+            )
 
         logger.info("[MemoryInterface] Initialized with encrypted storage")
-    
+
     # ═══════════════════════════════════════════════════════════════════════
     # Task Context Assembly (Called before every task)
     # ═══════════════════════════════════════════════════════════════════════
-    
+
     def get_task_context(self, task: str, session_id: str) -> str:
         """
         Assemble full context for a local task.
-        
+
         Includes:
         - Semantic header (user profile)
         - Episodic context (similar past tasks)
         - Working history (conversation)
-        
+
         Args:
             task: Task description
             session_id: Session identifier
-        
+
         Returns:
             Context string ready for model prompt
         """
@@ -131,109 +161,104 @@ class MemoryInterface:
 
         episodic = self.episodic.assemble_episodic_context(task)
 
-        context = self.context.assemble_for_task(
-            session_id, task, header, episodic
-        )
+        context = self.context.assemble_for_task(session_id, task, header, episodic)
 
         logger.debug(f"[MemoryInterface] Assembled context ({len(context)} chars)")
         return context
-    
+
     def get_task_context_for_remote(
-        self,
-        task_summary: str,
-        tool_sequence: List[Dict[str, Any]]
+        self, task_summary: str, tool_sequence: List[Dict[str, Any]]
     ) -> str:
         """
         Assemble context for a Torus peer worker.
-        
+
         PRIVACY CRITICAL: Returns ONLY task-relevant data.
         NO semantic header (personal data stays local).
         NO user preferences.
         NO episodic memory with personal details.
-        
+
         TORUS: This is the ONLY context method callable with a remote TaskMessage.
-        
+
         Args:
             task_summary: Task description
             tool_sequence: Current tool sequence
-        
+
         Returns:
             Privacy-safe context string
         """
         # Find similar tool patterns (not full episodes)
         similar = self.episodic.retrieve_similar(task_summary, limit=2, min_score=0.6)
-        
+
         # Extract only tool hints (no personal data)
         tool_hints = []
         for ep in similar:
-            if ep.get('tool_sequence'):
+            if ep.get("tool_sequence"):
                 tool_hints.append(f"- Approach: {ep['tool_sequence']}")
-        
+
         # Build privacy-safe context
         context_parts = [f"TASK: {task_summary}"]
-        
+
         if tool_hints:
             context_parts.append("\nRELEVANT TOOL PATTERNS:")
             context_parts.extend(tool_hints)
-        
+
         context = "\n".join(context_parts)
-        
+
         # Log for audit trail (content hash only for privacy)
         content_hash = hashlib.sha256(context.encode()).hexdigest()[:16]
-        logger.info(f"[MemoryInterface] Remote context generated (hash: {content_hash})")
-        
+        logger.info(
+            f"[MemoryInterface] Remote context generated (hash: {content_hash})"
+        )
+
         return context
-    
+
     # ═══════════════════════════════════════════════════════════════════════
     # Session Management (Called during task execution)
     # ═══════════════════════════════════════════════════════════════════════
-    
+
     def append_to_session(
-        self,
-        session_id: str,
-        content: str,
-        zone: str = "working_history"
+        self, session_id: str, content: str, zone: str = "working_history"
     ) -> None:
         """
         Append content to working memory.
-        
+
         Triggers compression if working_history exceeds threshold.
-        
+
         Args:
             session_id: Session identifier
             content: Content to append
             zone: Target zone (default: working_history)
         """
         self.context.append(session_id, content, zone)
-    
+
     def update_tool_state(self, session_id: str, tool_output: str) -> None:
         """
         Update the live tool output zone.
-        
+
         Does not trigger compression.
-        
+
         Args:
             session_id: Session identifier
             tool_output: Current tool output
         """
         self.context.append(session_id, tool_output, zone="active_tool_state")
-    
+
     def get_assembled_context(self, session_id: str) -> str:
         """
         Get current rendered context for a session.
-        
+
         Args:
             session_id: Session identifier
-        
+
         Returns:
             Current context string
         """
         return self.context.render(session_id)
-    
+
     def clear_session(self, session_id: str) -> None:
         """
         Clear working memory for a session after completion.
-        
+
         Args:
             session_id: Session identifier
         """
@@ -243,22 +268,24 @@ class MemoryInterface:
             try:
                 self._mycelium.clear_session(session_id)
             except Exception as _myc_err:
-                logger.debug("[MemoryInterface] Mycelium clear_session failed: %s", _myc_err)
+                logger.debug(
+                    "[MemoryInterface] Mycelium clear_session failed: %s", _myc_err
+                )
         logger.debug(f"[MemoryInterface] Cleared session {session_id[:8]}")
-    
+
     # ═══════════════════════════════════════════════════════════════════════
     # Episode Storage (Called after task completion)
     # ═══════════════════════════════════════════════════════════════════════
-    
+
     def store_episode(self, episode: Episode) -> str:
         """
         Persist a completed task episode with embedding.
-        
+
         Called by AgentKernel after every task completion.
-        
+
         Args:
             episode: Episode to store
-        
+
         Returns:
             Episode ID
         """
@@ -269,21 +296,21 @@ class MemoryInterface:
         if self._mycelium is not None:
             try:
                 from backend.memory.mycelium.store import MemoryPath
+
                 # Retrieve the current session's path for outcome recording
                 # (empty path is safe — record_path_outcome handles empty node list)
                 empty_path = MemoryPath(
-                    nodes=[], cumulative_score=score,
-                    token_encoding="", spaces_covered=[],
-                    traversal_id=""
+                    nodes=[],
+                    cumulative_score=score,
+                    token_encoding="",
+                    spaces_covered=[],
+                    traversal_id="",
                 )
                 myc_outcome = (
-                    "hit" if score >= 0.8
-                    else "partial" if score >= 0.5
-                    else "miss"
+                    "hit" if score >= 0.8 else "partial" if score >= 0.5 else "miss"
                 )
                 self._mycelium.record_outcome(
-                    empty_path, myc_outcome,
-                    episode.session_id, episode.task_summary
+                    empty_path, myc_outcome, episode.session_id, episode.task_summary
                 )
                 self._mycelium.crystallize_landmark(
                     session_id=episode.session_id,
@@ -292,27 +319,29 @@ class MemoryInterface:
                     task_entry_label=episode.task_summary,
                 )
             except Exception as _myc_err:
-                logger.debug("[MemoryInterface] Mycelium episode wiring failed: %s", _myc_err)
+                logger.debug(
+                    "[MemoryInterface] Mycelium episode wiring failed: %s", _myc_err
+                )
 
         logger.info(
             f"[MemoryInterface] Stored episode {episode_id[:8]}... "
             f"(score: {score}, type: {episode.outcome_type})"
         )
         return episode_id
-    
+
     def _score_outcome(self, ep: Episode) -> float:
         """
         Calculate outcome score for an episode.
-        
+
         Formula:
         - 0.50 base for success
         - +0.30 if user confirmed
         - +0.10 if not user corrected
         - +0.10 if fast (<5s)
-        
+
         Args:
             ep: Episode to score
-        
+
         Returns:
             Score from 0.0 to 1.0
         """
@@ -320,27 +349,22 @@ class MemoryInterface:
         score += 0.30 if ep.user_confirmed else 0.0
         score += 0.10 if not ep.user_corrected else 0.0
         score += 0.10 if ep.duration_ms < 5000 else 0.0
-        
+
         return min(round(score, 2), 1.0)
-    
+
     # ═══════════════════════════════════════════════════════════════════════
     # Semantic Memory Updates (Called by distillation/UI)
     # ═══════════════════════════════════════════════════════════════════════
-    
-    def update_preference(
-        self,
-        key: str,
-        value: str,
-        source: str = "user_set"
-    ) -> int:
+
+    def update_preference(self, key: str, value: str, source: str = "user_set") -> int:
         """
         Update a user preference in semantic memory.
-        
+
         Args:
             key: Preference key
             value: Preference value
             source: 'user_set' for UI-driven, 'auto_learned' for distillation
-        
+
         Returns:
             New version number
         """
@@ -349,77 +373,75 @@ class MemoryInterface:
             key,
             value,
             confidence=1.0 if source == "user_set" else 0.7,
-            source=source
+            source=source,
         )
-        
+
         # Also update display memory for UI
-        display_name = key.replace('_', ' ').title()
+        display_name = key.replace("_", " ").title()
         self.semantic.update_user_display(
-            f"user_preferences.{key}",
-            display_name,
-            source=source
+            f"user_preferences.{key}", display_name, source=source
         )
-        
+
         logger.debug(f"[MemoryInterface] Updated preference {key} -> v{version}")
         return version
-    
+
     def get_user_profile_display(self) -> List[Dict[str, Any]]:
         """
         Get user-facing memory entries for UI display.
-        
+
         Non-technical users see and can edit these.
-        
+
         Returns:
             List of display entry dictionaries
         """
         return self.semantic.get_display_entries()
-    
+
     def forget_preference(self, key: str) -> bool:
         """
         Remove a user-facing memory entry.
-        
+
         Called from UI 'forget' action.
-        
+
         Args:
             key: Preference key
-        
+
         Returns:
             True if deleted, False if not found
         """
         # Delete from display memory
         self.semantic.delete_display_entry(f"user_preferences.{key}")
-        
+
         # Delete from semantic storage
         deleted = self.semantic.delete("user_preferences", key)
-        
+
         if deleted:
             logger.info(f"[MemoryInterface] Forgot preference: {key}")
-        
+
         return deleted
-    
+
     # ═══════════════════════════════════════════════════════════════════════
     # Statistics & Health
     # ═══════════════════════════════════════════════════════════════════════
-    
+
     def get_memory_stats(self) -> Dict[str, Any]:
         """
         Get comprehensive memory system statistics.
-        
+
         Returns:
             Dictionary with episodic and semantic stats
         """
         return {
             "episodic": self.episodic.get_stats(),
-            "semantic": self.semantic.get_stats()
+            "semantic": self.semantic.get_stats(),
         }
-    
+
     def get_session_stats(self, session_id: str) -> Dict[str, Any]:
         """
         Get working memory statistics for a session.
-        
+
         Args:
             session_id: Session identifier
-        
+
         Returns:
             Session statistics
         """
@@ -476,14 +498,20 @@ class MemoryInterface:
             return
         try:
             from backend.memory.mycelium.store import MemoryPath
+
             empty_path = MemoryPath(
-                nodes=[], cumulative_score=0.0,
-                token_encoding="", spaces_covered=[],
-                traversal_id=""
+                nodes=[],
+                cumulative_score=0.0,
+                token_encoding="",
+                spaces_covered=[],
+                traversal_id="",
             )
             self._mycelium_write(
                 self._mycelium.record_outcome,
-                empty_path, outcome, session_id, task,
+                empty_path,
+                outcome,
+                session_id,
+                task,
             )
         except Exception:
             pass
@@ -535,7 +563,8 @@ class MemoryInterface:
             return
         self._mycelium_write(
             self._mycelium.ingest_statement,
-            text=statement, session_id=session_id,
+            text=statement,
+            session_id=session_id,
         )
 
     def mycelium_record_plan_stats(
@@ -566,8 +595,7 @@ class MemoryInterface:
             graph_mature=graph_mature,
         )
 
-    def get_task_context_package(self, task: str, session_id: str,
-                                   space_subset=None):
+    def get_task_context_package(self, task: str, session_id: str, space_subset=None):
         """
         Assemble a ContextPackage for the DER Director.
         Returns (ContextPackage, True) when Mycelium is mature.
