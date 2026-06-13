@@ -281,6 +281,15 @@ async def lifespan(app: FastAPI):
             logger.error(f"    [x] [IRIS GATEWAY] Failed to wire voice handler: {e}")
             raise
 
+        # v2 (Phase 7): wire the active session_id for the ConversationKernel.
+        # The kernel reads this via session_id_getter() in iris_gateway.
+        # Default to "session_iris" if no other ID is set (matches the
+        # legacy hardcoded behavior in ws_manager.py).
+        try:
+            iris_gateway._caducean_session_id = "session_iris"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[main] could not set default session_id: {exc}")
+
         # ==========================================================================
         # WAKE WORD CALLBACK REGISTRATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================

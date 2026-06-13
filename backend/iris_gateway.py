@@ -1481,6 +1481,31 @@ class IRISGateway:
         self._voice_handler = voice_handler
         voice_handler.set_command_result_callback(self._on_voice_result)
 
+        # v2 (Phase 7): Instantiate ConversationKernel — thin wrapper
+        # on the existing voice pipeline. The kernel adds Caducean
+        # phase-awareness to decisions the existing classes already make.
+        # No new VAD, no new TTS, no new state machine (see plan §Component 5).
+        try:
+            from backend.agent.conversation_kernel import (
+                ConversationKernel,
+                set_conversation_kernel,
+            )
+
+            audio_pipeline = getattr(self, "_audio_pipeline", None)
+            kernel = ConversationKernel(
+                voice_handler=voice_handler,
+                tts_manager=getattr(self, "_tts_manager", None),
+                audio_pipeline=audio_pipeline,
+                session_id_getter=lambda: getattr(self, "_caducean_session_id", None),
+            )
+            kernel.register_callbacks()
+            set_conversation_kernel(kernel)
+            logger.info("[iris_gateway] ConversationKernel instantiated and wired")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[iris_gateway] ConversationKernel setup failed (non-fatal): %s", exc
+            )
+
         # Broadcast real-time audio levels during recording so the IrisOrb
         # can animate its pulse in sync with the user's voice.
         # The callback is called from the VAD background thread every ~100 ms.
@@ -1952,8 +1977,32 @@ class IRISGateway:
 
         # Dynamic chunking: synthesise first sentence immediately for instant
         # voice onset, then use larger chunks for stable continuous playback.
-        FIRST_CHUNK_THRESHOLD = 1
-        NORMAL_CHUNK_THRESHOLD = 8
+        # v2 (Phase 7): if ConversationKernel is active, scale the chunk
+        # thresholds by force_magnitude from Caducean. Same physics signal
+        # that gates every other phase-driven decision in v2.
+        # When kernel is inactive, fall back to the v1 hardcoded defaults.
+        _first_chunk_threshold = 1
+        _normal_chunk_threshold = 8
+        try:
+            from backend.agent.conversation_kernel import get_conversation_kernel
+
+            _ck = get_conversation_kernel()
+            if _ck is not None:
+                # chunk size is in tokens; convert to words (~0.75 words/token)
+                # then subtract a small "first chunk" bonus for instant onset.
+                _ck_tokens = _ck.get_tts_chunk_size()
+                _ck_words = max(1, int(_ck_tokens * 0.75))
+                _first_chunk_threshold = 1  # always 1 word for instant onset
+                _normal_chunk_threshold = max(2, _ck_words)
+                logger.debug(
+                    "[_speak_response] Caducean-modulated TTS chunks: first=1, normal=%d (tokens=%d)",
+                    _normal_chunk_threshold,
+                    _ck_tokens,
+                )
+        except Exception as _ck_exc:  # noqa: BLE001
+            logger.debug("[_speak_response] kernel modulation unavailable: %s", _ck_exc)
+        FIRST_CHUNK_THRESHOLD = _first_chunk_threshold
+        NORMAL_CHUNK_THRESHOLD = _normal_chunk_threshold
 
         # ── Notify frontend: TTS is starting ──
         # Must happen regardless of native vs fallback player path.
@@ -2053,8 +2102,40 @@ class IRISGateway:
                     _target = FIRST_CHUNK_THRESHOLD
                     is_first_chunk = True
                     _speaking_broadcasted = False
+                    # v2 (Phase 7): If ConversationKernel is active, mark
+                    # speaking so on_audio_level() can detect barge-in.
+                    # No-op if kernel is None (backward compatible with v1).
+                    try:
+                        from backend.agent.conversation_kernel import (
+                            get_conversation_kernel,
+                        )
+
+                        _ck = get_conversation_kernel()
+                        if _ck is not None:
+                            _ck.mark_speaking(True)
+                    except Exception:  # noqa: BLE001
+                        pass
                     while True:
                         item = input_source.get()
+                        # v2 (Phase 7): halt on Caducean TOPO_VIOLATION (rec=3).
+                        # The kernel's should_halt_on_violation() calls
+                        # audio_pipeline.interrupt() internally, so the
+                        # existing interrupt path takes over. We just
+                        # break out of the synthesis loop here.
+                        try:
+                            from backend.agent.conversation_kernel import (
+                                get_conversation_kernel,
+                            )
+
+                            _ck = get_conversation_kernel()
+                            if _ck is not None and _ck.should_halt_on_violation():
+                                logger.info(
+                                    "[_speak_response] TOPO_VIOLATION — halting TTS"
+                                )
+                                _ck.mark_speaking(False)
+                                break
+                        except Exception:  # noqa: BLE001
+                            pass
                         if item is None:
                             if (
                                 _pending
@@ -2138,6 +2219,18 @@ class IRISGateway:
             except Exception as exc:
                 self._logger.error(f"[Voice] TTS Producer error: {exc}")
             finally:
+                # v2 (Phase 7): mark speaking=False on any exit path so
+                # the kernel's on_audio_level() stops checking for barge-in.
+                try:
+                    from backend.agent.conversation_kernel import (
+                        get_conversation_kernel,
+                    )
+
+                    _ck = get_conversation_kernel()
+                    if _ck is not None:
+                        _ck.mark_speaking(False)
+                except Exception:  # noqa: BLE001
+                    pass
                 if not _native:
                     asyncio.run_coroutine_threadsafe(audio_queue.put(None), loop)
 
