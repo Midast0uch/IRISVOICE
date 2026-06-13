@@ -70,6 +70,107 @@ We will modify the C++ core, Python FFI, memory interface, Mycelium memory, agen
 
 ---
 
+## Scope & Impact Analysis
+
+> **Read this section before deciding what to build.** The goal is to add Caducean v2 capabilities **without overcoding or breaking decoupled systems**. This section documents exactly which files are touched, which are not, and why the architecture is safe.
+
+### The Architectural Property
+
+**Caducean is a pure signal producer, not a side-effecting orchestrator.** It exposes `DirectionSignal(target_u, force_magnitude, u_current, phase, balance)` and `recommend() → {0, 1, 2, 3}`. Callers (agent kernel, Mycelium, voice pipeline, frontend) consume the signal and decide what to do. Caducean does not push state to other systems; it does not run on its own threads; it does not own queues or events.
+
+This property is what makes the impact scope tractable: **v2 cannot break what it doesn't touch.** Existing consumers that already opted in (`agent_kernel`, `auto_research`, `skill_simulator`) get better data for free. Systems that didn't opt in stay unaffected.
+
+### Files INVENTORY (where Caducean lives today)
+
+A grep across `backend/` shows Caducean is referenced in **8 Python files**, all in the agent layer:
+
+```
+backend/agent/agent_kernel.py              ← the governor
+backend/agent/auto_research.py             ← reads state for skill variant prediction
+backend/agent/caducean_trajectory.py       ← the in-memory recorder
+backend/agent/der_loop.py                  ← reads ξ in queue selection
+backend/agent/skill_simulator.py           ← reads eml, x, y as features
+backend/agent/trajectory_controller.py     ← tunes (a, b, s) based on history
+backend/benchmarks/live_benchmark.py       ← reads state for measurement
+backend/gateway/iris_ffi.py                ← the FFI bridge (C++ + Python fallback)
+```
+
+**Caducean is NOT referenced in:**
+- `backend/agent/tool_bridge.py` (no Caducean awareness — confirmed by grep)
+- `backend/integrations/mcp_bridge.py` (no Caducean awareness)
+- `backend/security/mcp_security.py` (no Caducean awareness)
+- `backend/agent/skills/*` (no Caducean awareness in any of the 5 skill files)
+- `backend/audio/*` (no Caducean awareness — Phase 7 will add a thin wrapper)
+
+### Files TOUCHED in v2 (12 files, all deliberate)
+
+| File | Component | Type of change | Risk |
+|------|-----------|----------------|------|
+| `backend/memory/interface.py` | 0, 3 | `ffi_init_engine()` call (Phase 0 — DONE); add `mycelium_record_anomaly()`, `get_caducean_state()` | Low — additive + one bug fix |
+| `backend/memory/mycelium/interface.py` | 3 | Add `record_anomaly()`, `get_latest_u()` | Low — additive |
+| `backend/memory/mycelium/scorer.py` | 3 | Read `u` in `apply_decay()` — one DB read per pass, multiplier 0.5/1.0/1.8 | Low — read-once-at-start |
+| `backend/memory/mycelium/resonance.py` | 3 | Read `u` in `augment_retrieval()` — multiplier 0.5/1.8 | Low — read-once-at-start |
+| `backend/migrations/003_caducean_trajectories.sql` | 3 | NEW — add `caducean_trajectories` table | Low — pure addition |
+| `backend/agent/der_loop.py` | 4 | Fetch DirectionSignal in `next_ready()`; restrict queue on `target_u=-1`; raise on `recommendation=3` | Medium — core change to DER queue |
+| `backend/agent/agent_kernel.py` | 4 | Compute `balance = clamp(EML/2.34)`; handle `TOPO_VIOLATION`; persist trajectory row | Medium — touches hot path |
+| `backend/agent/trajectory_controller.py` | 4 | Tune `a, b, s` based on violation count, clamped | Low — additive |
+| `backend/agent/coupled_registry.py` | 4 | NEW — singleton for multi-session coupling | Low — pure addition |
+| `backend/agent/conversation_kernel.py` | 5 | NEW — thin wrapper on existing voice pipeline | Low — see Component 5 for consolidation rationale |
+| `backend/iris_gateway.py` | 5 | 3 minimal touches (instantiate kernel; replace 2 hardcoded constants; 1-line halt check) | Low |
+| `src-tauri/src/commands/caducean.rs` | 6 | NEW — 3 Tauri commands proxying to FastAPI | Low |
+| `src-tauri/src/iris_core/caducean.{h,cpp}` | 1 | Add fields + methods (winding numbers, phase history, DirectionSignal, adaptive safety net) | Medium — physics change, signature compatible |
+| `src-tauri/src/iris_core/iris_core.{h,cpp}` | 1 | Add 3 FFI exports; O(1) EML formula | Medium — validated in Gate 2 |
+| `backend/gateway/iris_ffi.py` | 2 | Add `IrisDirectionSignal` struct; 3 new FFI bindings; update fallback | Low — additive |
+| `backend/main.py` | 7 | Add 3 FastAPI endpoints (`/api/caducean/*`); 1 lifespan line for session wiring | Low |
+| `app/hooks/useCaducean.ts` | 8 | NEW — React hook, 500ms polling via Tauri `invoke()` | Low |
+| `app/components/VoiceInterface.tsx` | 8 | Consume hook; map `target_u`/`force_magnitude` to TTS chunk size | Low |
+| `app/components/CaduceanDebugPanel.tsx` | 8 | NEW — dev-only debug panel | Low |
+
+### Files INTENTIONALLY NOT TOUCHED in v2 (zero changes)
+
+To prevent overcoding, the following are explicit non-goals:
+
+| File | Why not touched |
+|------|-----------------|
+| `backend/agent/tool_bridge.py` | Tools don't need it. The DER loop already mediates between the engine and tool calls. Grep confirms no Caducean references. |
+| `backend/integrations/mcp_bridge.py` | MCP servers are stateless request/response — no phase awareness needed. |
+| `backend/security/mcp_security.py` | Security is about allow/deny, not phase. Caducean adds no new attack surface. |
+| `backend/agent/skills/SKILL.md`, `creator.py`, `__init__.py`, `loader.py`, `skill_hub.py` | Skill creation is an atomic operation — phase doesn't change the skill content. |
+| `backend/audio/voice_command.py` | VoiceCommandHandler is reused as-is in Phase 7. Caducean wraps it, doesn't replace it. |
+| `backend/audio/pipeline.py` | AudioPipeline is reused as-is. The barge-in interrupt path already exists. |
+| `backend/agent/tts.py` | TTSManager is reused as-is. v2 only modulates chunk size, not engine choice. |
+| `backend/agent/caducean_trajectory.py` | Already records trajectory. v2 adds one column (recommendation) — modified as part of the schema migration, not as new logic. |
+| `backend/benchmarks/live_benchmark.py` | Reads Caducean state. Doesn't need to know about v2 internals. |
+
+### Failure Mode Analysis (what breaks if v2 has a bug?)
+
+| Consumer | What it reads | If v2 returns bad value | Mitigation |
+|----------|---------------|--------------------------|------------|
+| `agent_kernel.py` | `ffi_caducean_update` return code | DER loop diverges | v2 keeps same signature, same return codes; behavioral tests assert invariant |
+| `der_loop.py` | `ffi_caducean_get_xi`, `recommend` | Queue restricted incorrectly | Contract tests assert `recommend` only returns {0, 1, 2, 3}; v2 adds `3` (TOPO_VIOLATION) which is also a contract |
+| `skill_simulator.py` | `eml, x, y` dict | ML predictions degrade | Reads with `dict.get("eml", 1.0)` — falls back to safe default if missing |
+| `auto_research.py` | `caducean_state` dict | Variant scoring degrades | Same — safe defaults |
+| `caducean_trajectory.py` | All updates, stores history | Trajectory table missing rows | v2 wraps in try/except — fail-soft, log warning |
+| Mycelium `scorer.py` | `get_latest_u()` | Decay multiplier always 1.0 | v2 reads once at start of pass; if missing, uses 1.0 (current behavior) |
+| Mycelium `resonance.py` | `get_latest_u()` | Resonance unchanged | Same — safe default |
+| `tool_bridge.py` | **Does not read Caducean** | **No effect** | Unchanged |
+| `mcp_bridge.py` | **Does not read Caducean** | **No effect** | Unchanged |
+| `mcp_security.py` | **Does not read Caducean** | **No effect** | Unchanged |
+| `skills/*` | **Does not read Caducean** | **No effect** | Unchanged |
+| `audio/*` | **Does not read Caducean** (today) | **No effect** | Phase 7 adds thin wrapper; still no direct Caducean call from audio files |
+
+**The architectural property:** Caducean v2 is an **upstream producer**, not a **downstream consumer** of any other system. It only **adds** behavior to existing consumers that already opted in (`agent_kernel`, `auto_research`, `skill_simulator`). It cannot break systems that don't read it.
+
+### Phase 0 Already Verified (commit `dbc4384f`)
+
+Phase 0 — the engine init fix — is already committed on `feat/caducean-v2-mitochondria-mycelium`:
+
+- **Change:** 1 file (`backend/memory/interface.py`), 1 try/except block (~30 lines)
+- **Verification:** `Engine initialized: True` in smoke test; 415+ existing tests pass; zero regressions
+- **Impact:** Free upgrade for `agent_kernel`, `auto_research`, `skill_simulator` (they get real values instead of safe defaults). Zero effect on tools, skills, MCP, audio.
+
+---
+
 ### Component 0: Critical Engine Initialization Fix (P0 — Block everything)
 
 #### [MODIFY] [backend/memory/interface.py](file:///C:/Users/midas/Desktop/IRISVOICE/backend/memory/interface.py)

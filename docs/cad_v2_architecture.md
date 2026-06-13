@@ -336,7 +336,19 @@ The voice pipeline is the primary interface per CLAUDE.md. v2 makes it **phase-a
 
 ---
 
-## 8. Testing Strategy — Four Layers
+## 8. The "Don't Overcode" Rule — Scope Discipline
+
+**Architectural property:** Caducean is a pure signal producer, not a side-effecting orchestrator. It exposes `DirectionSignal(target_u, force_magnitude, u_current, phase, balance)` and `recommend() → {0, 1, 2, 3}`. Callers consume the signal and decide what to do.
+
+This property bounds the v2 impact scope to the 12 files listed in `docs/plans/Cadv2plan.md` § "Scope & Impact Analysis". **Tools, skills, MCP servers, and the audio pipeline (except for a thin wrapper in Phase 7) are zero changes in v2.** They are decoupled from Caducean today (grep confirms zero references) and stay decoupled.
+
+The architectural property that protects against regression: **v2 cannot break what it doesn't touch.** Existing consumers that already opted in (`agent_kernel`, `auto_research`, `skill_simulator`) get better data for free. Systems that didn't opt in stay unaffected.
+
+See `docs/plans/Cadv2plan.md` § "Scope & Impact Analysis" for the full file-by-file breakdown, failure mode table, and out-of-scope list.
+
+---
+
+## 9. Testing Strategy — Four Layers
 
 Caducean v2 introduces the **mitochondrial governor** — the part of the system that quietly controls memory behavior across long sessions. This is exactly the kind of change where "all tests pass" can mask a regression. The testing strategy is layered to catch failures at the right granularity:
 
