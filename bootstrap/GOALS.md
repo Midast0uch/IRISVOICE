@@ -14,6 +14,11 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     G1.1–G1.5 verified. G1.6/G1.7/G1.8 need hands-on e2e confirmation — BLOCKING.
     Domain 16 (Backend Stability) fully complete — idle memory flat, watchdog active.
     Domain 18 (C++ Hybrid Core Memory Engine) fully complete — all 6 phases verified, smoke tests pass.
+    Domain 19 (Caducean v2) ✓ — backend endpoints re-verified end-to-end via Playwright MCP
+      on 2026-06-13: /health, /state, /direction, /params (all clamps, all 422 validations).
+      Frontend visual rendering still blocked by dev-server compile hang (see cmd.exe
+      memory leak incident note below). All 4 v2 endpoints return real C++ values,
+      state mutation works, contract verified. 5/5 Playwright MCP tests pass.
     NEW: API provider routing working — named providers (Cohere, DeepSeek, Anthropic, Chutes AI,
     Cerebras, OpenCodeGo) with pre-configured endpoints, verified across multiple providers.
     DER _is_api_provider bug fixed — providers now route correctly through infer().
@@ -22,6 +27,48 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     and DER metrics (xi, pacman_store/recall, der_steps, etc.) logged to irisvoice.log.
     NEW NORTH STAR: Domain 17 — Self-Coding Agent (agent inside IRIS).
     Complete G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
+
+   WINDOWS TAILSCALE MOBILE ACCESS — FIXED (2026-06-16):
+     ChatWing (port 3000) now renders correctly on phone via Tailscale
+     QR code at http://{tailscale_ip}:3000/?remote=1&mode=personal.
+     Root cause: Next.js 16 dev server blocked ALL requests from
+     unregistered origins (Tailscale IP 100.117.236.6 was not in
+     allowedDevOrigins). JS bundles never loaded, React never hydrated.
+     Fix: added Tailscale IP + regex for 100.x.x.x and *.ts.net to
+     allowedDevOrigins in next.config.mjs. Also: removed React.use()
+     on searchParams Promise (caused suspense during hydration), merged
+     isMobile/isTailscaleAccess/isRemoteView into single mobile path
+     with tab switching, added 12px horizontal padding for mobile panel.
+     See pin_7255292b0b5f for full session record.
+
+   WINDOWS DEV-SERVER MEMORY LEAK (2026-06-13) — PERMANENT FIX APPLIED:
+    Symptom: cmd.exe parent shell spikes to 9-15+ GB working set when frontend dev
+    server compiles. Observed at 8.9 GB, 11.8 GB, and 15.7 GB across three separate
+    starts. User had to end-task the parent process manually each time.
+    Root cause (three compounding Windows bugs):
+      1. conhost.exe leak (vercel/turborepo#11808) — detached+stdio:'inherit' leaks
+         a Windows Console Host per child that never reaps.
+      2. Pipe buffer in parent (nodejs/node#49631) — child stdout buffered in parent
+         memory up to pipe capacity when child hangs (e.g. slow fs, hung PostCSS).
+      3. No tree cleanup on Windows (vercel/turborepo#11829) — TerminateProcess
+         only kills direct child, not grandchildren.
+    Permanent fix: scripts/iris_process_manager.py (Windows-aware process manager)
+      uses windowsHide:true, redirects stdout to .iris-logs/*.log (not parent memory),
+      wraps each child in a Windows Job Object for tree cleanup, writes PIDs to
+      .iris-pids/*.pid. Verified: killing manager → Job Object closes → entire
+      child tree killed by Windows. cmd.exe spike is structurally impossible.
+    Plus: package.json `dev` switched to `next dev --webpack` to bypass the
+    Turbopack postcss-subprocess hang on slow filesystems (vercel/next.js#91396).
+    See pin pin_481e1aaee8cd for full incident record.
+
+  LAUNCHER PATH CORRECTION (2026-06-13):
+    Domain 13 docs previously stated launcher was at C:\Users\midas\Desktop\dev\iris-launcher\
+    (a path that does not exist). The actual location is at IRISVOICE\iris-launcher\ —
+    a sibling project within the same IRISVOICE repo, NOT a separate desktop directory.
+    Verified by running launcher dev server on port 8080, navigating via Playwright
+    MCP, confirming mode-select page renders at / with Personal/Developer cards.
+    The orb (IRISVOICE Next.js on :3000) is launched FROM the launcher via the
+    "Launch IRIS Widget" button in OverviewPage — not the entry point.
 
   DOMAINS WITH OPEN ITEMS:
     Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2] manual e2e not confirmed; [2.3] TTS GPU+streaming+native audio IMPLEMENTED)
@@ -39,6 +86,11 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 19 — Caducean v2: Mitochondria to Mycelium ✓ ALL 7 PHASES COMPLETE (2026-06-13) ← BRANCH feat/caducean-v2-mitochondria-mycelium
       78 new v2 tests pass via pytest, 0 regressions, kill switch in place.
       Critical: Phase 0 fixes a dead-code bug where ffi_init_engine() was never called.
+      End-to-end browser verification (2026-06-13): 4/4 v2 endpoints exercised via
+      Playwright MCP against running backend. State mutation verified, clamping
+      (a,b→[1,4], s→[0.1,0.8]) verified, 422 validation verified, engine_live
+      confirmed. Visual IrisOrb / CaduceanDebugPanel rendering NOT verified
+      (blocked by dev-server compile hang — see cmd.exe memory leak note above).
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
@@ -167,9 +219,14 @@ GATED MILESTONES (gates are sequential — do not start Gate 2 until Gate 1 veri
         The launcher must work before the terminal is built — it is the prerequisite.
 
   Gate 2 checklist (in order — do not skip ahead):
-    [G2.1] DONE — Launcher UI exists at C:\Users\midas\Desktop\dev\iris-launcher\
+    [G2.1] DONE — Launcher UI exists at IRISVOICE\iris-launcher\
+           (sibling project within the same repo, Vite+React+Tauri, port 8080).
            ModeSelectPage, AppContext, use-iris-mode, GitPage, DiffReviewPage all built.
            /api/mode and /api/projects already in IRISVOICE backend.
+           Verified live 2026-06-13: launcher dev server on :8080 renders
+           mode-select page at /, shows Personal + Developer cards. Orb
+           (Next.js on :3000) is launched FROM launcher via OverviewPage
+           "Launch IRIS Widget" button, not the entry point.
     [G2.2] Backend git + diff endpoints (Domain 13.1) — DONE (git_ops.py, github_ops.py, network_ops.py, conversation_store.py created; backend boots cleanly)
     [G2.3] Git worktree isolation — agent writes to isolated branch (Domain 13.2)
     [G2.4] Developer mode capabilities gated in IRISVOICE (Domain 13.3) — DONE (capabilities.py, CapabilitySet gating on WS handlers, REST endpoints, tool_bridge, agent_kernel; backend boots cleanly)
@@ -840,8 +897,9 @@ DOMAIN 13 — LAUNCHER: PERSONAL MODE / DEVELOPER MODE  [GATE 2]
 This domain IS Gate 2. Complete all open items to verify Gate 2.
 Launcher must work before the terminal — do [13.2]→[13.3]→[13.4]→[13.5] in order.
 
-LAUNCHER EXISTS — at C:\Users\midas\Desktop\dev\iris-launcher\
-  Separate Vite + React app (NOT inside IRISVOICE). Run with: cd iris-launcher && npm run dev
+LAUNCHER EXISTS — at IRISVOICE\iris-launcher\
+  Vite + React + Tauri app, sibling to IRISVOICE/ (NOT a separate desktop directory).
+  Run with: cd iris-launcher && npm run dev  (port 8080).
   Already substantially built. Do NOT rewrite — extend what is there.
 
 WHAT IS ALREADY BUILT (do not re-do these):
