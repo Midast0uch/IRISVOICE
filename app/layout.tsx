@@ -1,10 +1,11 @@
 import React from "react"
 import type { Metadata, Viewport } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
-import './globals.css'
+import Script from "next/script"
 
-const geist = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
-const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
+// NOTE: CSS is served as a static file from public/globals.css (via <link> in head)
+// to avoid Turbopack's PostCSS pipeline timeout. The source is css-src/globals.css
+// and must be re-compiled with `npx @tailwindcss/cli -i css-src/globals.css -o public/globals.css`.
+
 import { NavigationProvider } from "@/contexts/NavigationContext"
 import { BrandColorProvider } from "@/contexts/BrandColorContext"
 import { TransitionProvider } from "@/contexts/TransitionContext"
@@ -57,13 +58,21 @@ export default function RootLayout({
           page isn't blank white. Tauri keeps transparent background so the
           desktop shows through the glass UI.
         */}
-        <script
+        <Script
+          id="tauri-detection"
+          strategy="afterInteractive"
           dangerouslySetInnerHTML={{
             __html: `(function(){try{if(!window.__TAURI_INTERNALS__)document.documentElement.classList.add('in-browser');}catch(e){document.documentElement.classList.add('in-browser');}})();`
           }}
         />
-      </head>
-      <body className={`${geist.variable} ${geistMono.variable} font-sans antialiased text-foreground`}>
+        {/* Space Grotesk (UI) + JetBrains Mono (data) — geometric, futuristic, dark-mode optimized */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+        {/* Pre-compiled Tailwind CSS — see note at top of file */}
+        <link rel="stylesheet" href="/globals.css" />
+        {/* Pre-compiled Tailwind CSS — see note at top of file */}</head>
+      <body className={`font-sans antialiased text-foreground`}>
         <BrandColorProvider>
           <TransitionProvider>
             <NavigationProvider>
@@ -82,3 +91,4 @@ export default function RootLayout({
     </html>
   )
 }
+

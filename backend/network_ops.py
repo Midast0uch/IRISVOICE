@@ -2,15 +2,74 @@
 
 import subprocess
 import logging
+import socket
+import os
 
 logger = logging.getLogger("irisvoice")
 
 
-def get_tailscale_status() -> dict:
-    """Return Tailscale status if available."""
+TAILSCALE_BINARY = "tailscale"
+
+
+def _find_tailscale() -> str | None:
+    """Return the Tailscale binary path, or None if not installed."""
+    import shutil
+    path = shutil.which(TAILSCALE_BINARY)
+    if path:
+        return path
+    # Common install paths on Windows
+    win_paths = [
+        r"C:\Program Files\Tailscale\tailscale.exe",
+        r"C:\Program Files (x86)\Tailscale\tailscale.exe",
+    ]
+    for p in win_paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _tailscale_service_running() -> bool:
+    """Check if the Tailscale Windows service is running."""
     try:
         result = subprocess.run(
-            ["tailscale", "status", "--json"],
+            ["sc", "query", "Tailscale"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+        return "RUNNING" in result.stdout
+    except Exception:
+        return False
+
+
+def get_tailscale_status() -> dict:
+    """Return Tailscale status if available.
+
+    Returns a dict with:
+        installed: bool
+        service_running: bool
+        connected: bool
+        raw: dict  # raw tailscale status JSON when connected
+    """
+    binary = _find_tailscale()
+    if not binary:
+        return {
+            "installed": False,
+            "service_running": False,
+            "connected": False,
+            "raw": {},
+        }
+
+    service_running = _tailscale_service_running()
+    if not service_running:
+        return {
+            "installed": True,
+            "service_running": False,
+            "connected": False,
+            "raw": {},
+        }
+
+    try:
+        result = subprocess.run(
+            [binary, "status", "--json"],
             capture_output=True,
             text=True,
             check=False,
@@ -18,46 +77,119 @@ def get_tailscale_status() -> dict:
         )
         if result.returncode == 0:
             import json
-            return json.loads(result.stdout)
+            raw = json.loads(result.stdout)
+            ips = raw.get("TailscaleIPs", []) or []
+            connected = len(ips) > 0
+            return {
+                "installed": True,
+                "service_running": True,
+                "connected": connected,
+                "raw": raw,
+            }
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     except Exception as e:
         logger.debug(f"[network_ops] tailscale status error: {e}")
-    return {"TailscaleIPs": [], "Self": {"DNSName": ""}, "Peer": []}
+
+    return {
+        "installed": True,
+        "service_running": True,
+        "connected": False,
+        "raw": {},
+    }
+
+
+def get_local_ip() -> str:
+    """Return the local IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0)
+        s.connect(("8.8.8.8", 1))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return "127.0.0.1"
 
 
 def get_iris_urls(ip: str | None = None) -> dict:
     """Return local and Tailscale URLs for IRIS."""
-    import socket
-
-    local_ip = ip or "127.0.0.1"
-    if not ip:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(0)
-            s.connect(("8.8.8.8", 1))
-            local_ip = s.getsockname()[0]
-            s.close()
-        except Exception:
-            pass
+    local_ip = ip or get_local_ip()
 
     tailscale_name = ""
+    tailscale_ip = None
     try:
         ts = get_tailscale_status()
-        self_info = ts.get("Self", {})
-        tailscale_name = self_info.get("DNSName", "").rstrip(".")
+        if ts.get("connected"):
+            raw = ts.get("raw", {})
+            self_info = raw.get("Self", {}) or {}
+            tailscale_name = self_info.get("DNSName", "").rstrip(".")
+            ips = raw.get("TailscaleIPs", []) or []
+            tailscale_ip = ips[0] if ips else None
     except Exception:
         pass
 
     urls = {
-        "local": f"http://{local_ip}:3000",
+        "local": f"http://{local_ip}:8080",
         "backend": f"http://{local_ip}:8000",
-        "launcher": f"http://{local_ip}:3000/launcher",
+        "launcher": f"http://{local_ip}:8080",
+        "chat": f"http://{local_ip}:3000",
+        "api": f"http://{local_ip}:8000",
     }
+    if tailscale_ip:
+        urls["tailscale"] = f"http://{tailscale_ip}:8080"
     if tailscale_name:
-        urls["tailscale"] = f"http://{tailscale_name}:3000"
+        urls["tailscale_magicdns"] = f"http://{tailscale_name}:8080"
+    # Widget (spotlight chat) via Tailscale — ?remote=1 forces mobile-optimized view, ?mode=personal disables developer terminal
+    if tailscale_ip:
+        urls["widget_tailscale"] = f"http://{tailscale_ip}:3000/?remote=1&mode=personal"
+    if tailscale_name:
+        urls["widget_magicdns"] = f"http://{tailscale_name}:3000/?remote=1&mode=personal"
 
     return urls
+
+
+def get_formatted_network_status() -> dict:
+    """Return formatted network status matching the frontend TailscalePage contract."""
+    ts = get_tailscale_status()
+    raw = ts.get("raw", {})
+
+    # Tailscale IPs
+    tailscale_ips = raw.get("TailscaleIPs", []) or []
+    ip = tailscale_ips[0] if tailscale_ips else None
+
+    # Self info
+    self_info = raw.get("Self", {}) or {}
+    machine_name = self_info.get("HostName", "") or self_info.get("DNSName", "").rstrip(".")
+    dns_name = self_info.get("DNSName", "")
+    tailnet_name = ""
+    if dns_name:
+        parts = dns_name.rstrip(".").split(".")
+        if len(parts) >= 2:
+            tailnet_name = ".".join(parts[1:])
+
+    connected = ts.get("connected", False) or bool(ip)
+
+    # Determine the human-readable status
+    if not ts.get("installed"):
+        detected_state = "not_installed"
+    elif not ts.get("service_running"):
+        detected_state = "stopped"
+    elif connected:
+        detected_state = "connected"
+    else:
+        detected_state = "not_connected"
+
+    return {
+        "_detected_state": detected_state,
+        "tailscale": {
+            "connected": connected,
+            "ip": ip,
+            "machine_name": machine_name,
+            "tailnet_name": tailnet_name,
+        },
+        "urls": get_iris_urls(),
+    }
 
 
 def generate_qr_png(data: str, size: int = 256) -> bytes:

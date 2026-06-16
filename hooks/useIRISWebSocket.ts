@@ -118,10 +118,14 @@ const RECONNECT_MAX_DELAY = 30_000   // 30 s ceiling
 const STABILITY_THRESHOLD = 10_000  // reset backoff counter after 10 s of uptime
 
 export function useIRISWebSocket(
-  url: string = "ws://127.0.0.1:8000/ws/iris",
+  url?: string,
   autoConnect: boolean = true,
   onNativeAudioResponse?: (payload: Record<string, unknown>) => void
 ): UseIRISWebSocketReturn {
+  // Compute WebSocket URL based on page hostname (works on localhost AND Tailscale)
+  const resolvedUrl = url ?? (typeof window !== 'undefined'
+    ? `ws://${window.location.hostname}:8000/ws/iris`
+    : "ws://127.0.0.1:8000/ws/iris")
   // Connection state
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected")
   const [lastError, setLastError] = useState<string | null>(null)
@@ -272,7 +276,7 @@ export function useIRISWebSocket(
     // and can silently fail due to CORS on the internal fetch.
 
     try {
-      const ws = new WebSocket(url)
+      const ws = new WebSocket(resolvedUrl)
 
        ws.onopen = () => {
          if (process.env.NODE_ENV !== 'production') {
@@ -352,7 +356,7 @@ export function useIRISWebSocket(
       setLastError("Failed to create connection")
       scheduleReconnect()
     }
-  }, [url, autoConnect, scheduleReconnect])
+  }, [resolvedUrl, autoConnect, scheduleReconnect])
 
   // Handle incoming messages
   const handleMessage = useCallback((message: Record<string, unknown>) => {

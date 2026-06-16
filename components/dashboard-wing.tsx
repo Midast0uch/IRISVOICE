@@ -59,6 +59,7 @@ interface DashboardWingProps {
   onOpenChat?: () => void
   isChatOpen?: boolean
   initialSubApp?: string | null
+  isRemoteView?: boolean
 }
 
 export function DashboardWing({
@@ -74,6 +75,7 @@ export function DashboardWing({
   onOpenChat,
   isChatOpen = false,
   initialSubApp,
+  isRemoteView = false,
 }: DashboardWingProps) {
   const { voiceState } = useNavigation()
   const { getThemeConfig } = useBrandColor()
@@ -106,6 +108,7 @@ export function DashboardWing({
   };
 
   const getSpotlightTransform = () => {
+    if (isRemoteView) return 'rotateY(0deg) rotateX(0deg)'; // Flat on mobile
     if (isInDashboardSpotlight) return 'rotateY(0deg) rotateX(0deg)'; // Flat when spotlighted
     if (isSolo) return 'rotateY(-15deg) rotateX(2deg)'; // Solo balanced: angled
     if (isInChatSpotlight) return 'rotateY(-15deg) rotateX(2deg)';
@@ -188,57 +191,63 @@ export function DashboardWing({
       {isOpen && (
         <motion.div
           className="fixed"
-          initial={{ x: 120, opacity: 0, scale: 0.95 }}
-          animate={{ 
+          initial={isRemoteView ? {} : { x: 120, opacity: 0, scale: 0.95 }}
+          animate={isRemoteView ? {} : { 
             x: 0, 
             opacity: getSpotlightOpacity(), 
             scale: 1 
           }}
-          exit={{ x: 120, opacity: 0, scale: 0.95 }}
-          transition={{ 
+          exit={isRemoteView ? {} : { x: 120, opacity: 0, scale: 0.95 }}
+          transition={isRemoteView ? { duration: 0 } : { 
             type: "spring", 
             stiffness: 280, 
             damping: 25,
             mass: 0.8
           }}
           style={{
-            right: 252,
-            top: '6vh',
-            width: getSpotlightWidth(),
-            height: '88vh',
-            maxHeight: 'calc(100vh - 24px)',
+            left: isRemoteView ? 0 : undefined,
+            right: isRemoteView ? 0 : 252,
+            top: isRemoteView ? 0 : '6vh',
+            width: isRemoteView ? '100vw' : getSpotlightWidth(),
+            height: isRemoteView ? '100dvh' : '88vh',
+            maxHeight: isRemoteView ? '100dvh' : 'calc(100vh - 24px)',
             overflow: 'hidden',
-            perspective: '800px',
+            perspective: isRemoteView ? 'none' : '800px',
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),
             pointerEvents: getSpotlightPointerEvents() as any,
+            touchAction: 'manipulation',
+            willChange: 'auto',
           }}
         >
           {/* HUD Glass Panel Container */}
-          <motion.div 
-            className="h-full overflow-hidden flex flex-col relative"
-            animate={{
-              transform: getSpotlightTransform()
-            }}
-            transition={{
-              type: "spring",
-              stiffness: 280,
-              damping: 25,
-              mass: 0.8
-            }}
-            style={{
-              transformOrigin: 'right center',
-              transformStyle: 'preserve-3d',
-              background: 'linear-gradient(225deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%)',
-              boxShadow: `
-                inset 0 1px 1px rgba(255,255,255,0.05),
-                inset 0 -1px 1px rgba(0,0,0,0.5),
-                0 0 0 1px rgba(0,0,0,0.8),
-                -20px 0 60px rgba(0,0,0,0.5)
-              `,
-              borderRadius: '12px',
-              border: `1px solid ${glowColor}20`,
-            }}
+            <motion.div 
+              className="h-full overflow-hidden flex flex-col relative"
+              animate={isRemoteView ? {} : {
+                transform: getSpotlightTransform()
+              }}
+              transition={isRemoteView ? { duration: 0 } : {
+                type: "spring",
+                stiffness: 280,
+                damping: 25,
+                mass: 0.8
+              }}
+              style={{
+                transformOrigin: 'right center',
+                transformStyle: isRemoteView ? 'flat' : 'preserve-3d',
+                transform: isRemoteView ? 'rotateY(0deg) rotateX(0deg)' : undefined,
+                background: 'linear-gradient(225deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%)',
+                boxShadow: isRemoteView ? 'none' : `
+                  inset 0 1px 1px rgba(255,255,255,0.05),
+                  inset 0 -1px 1px rgba(0,0,0,0.5),
+                  0 0 0 1px rgba(0,0,0,0.8),
+                  -20px 0 60px rgba(0,0,0,0.5)
+                `,
+                borderRadius: isRemoteView ? '0px' : '12px',
+                border: isRemoteView ? 'none' : `1px solid ${glowColor}20`,
+                touchAction: 'manipulation',
+                willChange: 'auto',
+              }}
           >
             {/* HUD Effects Overlay */}
             <div 
@@ -271,7 +280,7 @@ export function DashboardWing({
 
 
             {/* IrisApertureIcon — centered on full panel width, embedded on top border */}
-            {onSpotlightToggle && (
+            {onSpotlightToggle && !isRemoteView && (
               <div className="absolute left-1/2 -translate-x-1/2 top-0 -translate-y-1/2 z-50">
                 <button
                   onClick={onSpotlightToggle}
@@ -306,6 +315,25 @@ export function DashboardWing({
 
             {/* Dashboard Content - Fully delegated to DarkGlassDashboard */}
             <div className="flex-1 overflow-hidden relative z-10 flex flex-col">
+              {/* Mobile header with back button */}
+              {isRemoteView && onOpenChat && (
+                <div className="flex items-center gap-3 px-4 py-3 border-b flex-shrink-0" style={{ borderColor: `${glowColor}15` }}>
+                  <button
+                    onClick={onClose}
+                    className="flex items-center gap-2 min-h-[44px] min-w-[44px] px-3 py-2 rounded-lg transition-all"
+                    style={{
+                      color: glowColor,
+                      backgroundColor: `${glowColor}10`,
+                    }}
+                  >
+                    <ArrowLeft size={20} />
+                    <span className="text-sm font-medium">Chat</span>
+                  </button>
+                  <span className="text-sm font-semibold tracking-wide" style={{ color: fontColor, opacity: 0.7 }}>
+                    Dashboard
+                  </span>
+                </div>
+              )}
               <div className="flex-1 overflow-hidden">
                 <DarkGlassDashboard
                   fieldValues={fieldValues}

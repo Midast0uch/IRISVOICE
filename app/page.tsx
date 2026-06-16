@@ -111,6 +111,16 @@ export default function Home() {
   // Tailscale/mobile network access: show only chat in spotlight
   const isTailscaleAccess = useTailscaleAccess()
 
+  // URL param ?remote=1 (set by Tailscale QR codes) — forces mobile-optimized view.
+  // Read via useState+useEffect so there's no hydration mismatch (no use()).
+  const [isRemoteView, setIsRemoteView] = useState(false)
+  useEffect(() => {
+    try {
+      const p = new URLSearchParams(window.location.search)
+      setIsRemoteView(p.get('remote') === '1')
+    } catch {}
+  }, [])
+
   // In Tauri the window dynamically expands to fit wings. The orb must stay
   // centered in the fixed 680px "home" column (to the right of the chat panel).
   // In browser mode the viewport is already wide enough so no offset is needed.
@@ -169,52 +179,61 @@ export default function Home() {
     handleGoBack()
   }
 
-  // Mobile: simplified full-screen chat
-  if (isMobile) {
+  // Mobile / Tailscale / Remote: simplified full-screen chat
+  if (isMobile || isTailscaleAccess || isRemoteView) {
+    const remoteFlag = isRemoteView || isMobile || isTailscaleAccess
+    // On mobile, UI state is IDLE (ChatWing is force-rendered). openDashboard()
+    // requires UI_STATE_CHAT_OPEN which never happens, so use openDashboardSolo().
+    const handleDashboardClick = uiLayoutState === UILayoutState.UI_STATE_IDLE
+      ? openDashboardSolo
+      : openDashboard
+    const showChat = !isDashboardOpen && !isBothOpen
+    const showDashboard = isDashboardOpen || isBothOpen
     return (
-      <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden">
-        <Suspense fallback={null}>
-          <LazyChatWing
-            isOpen={true}
-            onClose={() => {}}
-            onDashboardClick={openDashboard}
-            onDashboardClose={closeChat}
-            sendMessage={sendMessage}
-            spotlightState={spotlightState}
-            onSpotlightToggle={toggleChatSpotlight}
-            isDashboardOpen={false}
-            uiState={uiLayoutState}
-            onOpenBrowserUrl={browseTo}
-          />
-        </Suspense>
-      </main>
-    )
-  }
-
-  // Tailscale/mobile network: chat-only spotlight, no orb/control center
-  if (isTailscaleAccess) {
-    return (
-      <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden">
-        <Suspense fallback={null}>
-          <LazyChatWing
-            isOpen={true}
-            onClose={() => {}}
-            onDashboardClick={openDashboard}
-            onDashboardClose={closeChat}
-            sendMessage={sendMessage}
-            spotlightState={SpotlightState.CHAT_SPOTLIGHT}
-            onSpotlightToggle={toggleChatSpotlight}
-            isDashboardOpen={false}
-            uiState={uiLayoutState}
-            onOpenBrowserUrl={browseTo}
-          />
-        </Suspense>
+      <main suppressHydrationWarning className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden">
+        {showChat && (
+          <Suspense fallback={null}>
+            <LazyChatWing
+              isOpen={true}
+              onClose={() => {}}
+              onDashboardClick={handleDashboardClick}
+              onDashboardClose={closeChat}
+              sendMessage={sendMessage}
+              spotlightState={isTailscaleAccess ? SpotlightState.CHAT_SPOTLIGHT : spotlightState}
+              onSpotlightToggle={toggleChatSpotlight}
+              isDashboardOpen={false}
+              uiState={uiLayoutState}
+              onOpenBrowserUrl={browseTo}
+              isRemoteView={remoteFlag}
+            />
+          </Suspense>
+        )}
+        {showDashboard && (
+          <Suspense fallback={null}>
+            <DashboardWing
+              isOpen={true}
+              onClose={() => {
+                setPendingSubApp(null)
+                closeDashboard()
+              }}
+              sendMessage={sendMessage}
+              spotlightState={spotlightState}
+              onSpotlightToggle={toggleDashboardSpotlight}
+              isSolo={true}
+              uiState={uiLayoutState}
+              onOpenChat={closeDashboard}
+              isChatOpen={false}
+              initialSubApp={pendingSubApp}
+              isRemoteView={remoteFlag}
+            />
+          </Suspense>
+        )}
       </main>
     )
   }
 
   return (
-    <main className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ perspective: '1200px' }}>
+    <main suppressHydrationWarning className="bg-transparent w-full h-screen max-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ perspective: '1200px' }}>
       {/* Backdrop Blur - renders when wings are open */}
       <BackdropBlur uiState={uiLayoutState} />
       

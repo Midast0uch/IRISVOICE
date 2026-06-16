@@ -1,50 +1,27 @@
 const isProd = process.env.NODE_ENV === 'production';
 
+// On Windows + slow project drives (e.g. Desktop under OneDrive / antivirus
+// real-time scan), Next.js dev compilation in .next can hang for minutes and
+// balloon to 1-15 GB. The fix is to relocate the cache off the slow drive
+// using a directory junction (see scripts/setup_fast_next_cache.py /
+// start-iris.bat) so .next resolves to a fast local path.
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // distDir/output only apply to production builds (next build).
-  // Dev mode (Turbopack) must not use static export — it needs a live server.
-  ...(isProd ? { distDir: 'dist', output: 'export' } : {}),
-  compress: true,
-  productionBrowserSourceMaps: false,
-  typescript: {
-    ignoreBuildErrors: false,
-  },
-  images: {
-    unoptimized: true,
-  },
-  experimental: {
-    // optimizePackageImports enables barrel-import tree-shaking so only used
-    // icons/components are bundled instead of the entire library.
-    // framer-motion, rxjs, and lodash are heavy; tree-shaking them cuts
-    // cold-start parse time significantly.
-    optimizePackageImports: [
-      'lucide-react',
-      'framer-motion',
-      'motion-dom',
-      'motion-utils',
-      'rxjs',
-      'lodash',
-      'zod',
-    ],
-    // Persist Turbopack's compiled module graph across server restarts.
-    // Without this, every `npm run dev` restart re-compiles the full module
-    // graph from scratch (120s+ cold start). With it, only changed modules
-    // are recompiled — typically < 5s after the first run.
-    // Key was renamed from turbopackPersistentCaching in Next.js 16.
-    //
-    // 2026-06-13: DISABLED because C:\ is a Toshiba HDD (not the PNY SSD on
-    // Disk 1), and Turbopack's persistent cache does thousands of small
-    // file writes per second which the HDD cannot keep up with (1-4s
-    // stalls, "Slow filesystem detected" warnings, frontend hangs on first
-    // request). Cold recompile is 120s+ but the project actually works.
-    // Re-enable when project is moved to the SSD.
-    turbopackFileSystemCacheForDev: false,
-  },
-  compiler: {
-    removeConsole: { exclude: ['error'] },
-  },
+  // Allow dev access from 127.0.0.1 (used by phone via Tailscale / QR code)
+  allowedDevOrigins: [
+    // Local development
+    '127.0.0.1', 'localhost', '0.0.0.0',
+    // Current Tailscale IP (stable while tailnet is unchanged)
+    '100.117.236.6',
+    // Any Tailscale IP (100.x.x.x) or MagicDNS hostname (*.ts.net)
+    /^100\.\d+\.\d+\.\d+$/,
+    /\.ts\.net$/,
+  ],
 
+  // Backend lives on :8000; let the browser reach it through the same origin
+  // so we don't have to fight CORS, and so production builds don't need a
+  // separate API base URL.
   async rewrites() {
     return [
       {
@@ -71,9 +48,10 @@ const nextConfig = {
   webpack: (config, { isServer, dev }) => {
     config.watchOptions = {
       ...config.watchOptions,
-      // Exclude backend Python files, session data, and model weights.
-      // The [/\\] character class matches both / (Unix) and \ (Windows).
-      ignored: /[/\\](node_modules|\.git|\.next|dist|backend|models)[/\\]/,
+      // Exclude backend Python files, session data, model weights, and
+      // everything outside the app source tree. The [/\\] character class
+      // matches both / (Unix) and \ (Windows).
+      ignored: /[/\\](node_modules|\.git|\.next|dist|backend|models|llama\.cpp|llama-cpp-turboquant|.iris-logs|.iris-pids|.iris-worktree|.mcm|.venv|venv|tests|e2e|benchmarks|research|specs|verification|hooks|pyinstaller_hooks|app|public|components|lib|contexts|integrations|stores|styles)[/\\]/,
     };
 
     // Prevent webpack from trying to process model weight files as JS assets.
@@ -93,19 +71,32 @@ const nextConfig = {
       };
     }
 
+    // Note: do NOT set config.devtool in dev — Next.js will revert it with
+    // a warning ("severe performance regressions"). Next.js picks an
+    // appropriate devtool automatically.
+
     return config;
   },
 
   // Turbopack configuration (used by default in Next.js 16 dev).
   //
-  // Turbopack is lazy — it only compiles what is actually imported.  It also
-  // respects .gitignore for file watching.  Both together mean the 18 GB+
-  // models/ and backend/voice/pretrained_models/ directories are never
-  // touched at startup, giving near-instant first compile regardless of
-  // which worktree the project is opened from.
+  // NOTE: Turbopack is completely disabled because its PostCSS pipeline
+  // (evaluate_webpack_loader) has a hardcoded reference to app/globals.css
+  // that always triggers CSS processing. Even with an empty file, the
+  // sandboxed loader process times out, causing an infinite retry loop
+  // that balloons memory to 12+ GB (uncapped by --max-old-space-size=512).
+  // Webpack handles the same CSS file in < 1 second with no memory issue.
   //
-  // The webpack: callback below still runs for `next build` (production).
-  turbopack: {},
+  // History: see docs/OPTIMIZATION_LOG.md — June 2026.
+  // See also app/layout.tsx note at top.
+  turbo: false,
+  experimental: {
+    // Next 16.2.1+ has a memory regression in Turbopack's server-side fast
+    // refresh path that compounds with route navigation; dev server can grow
+    // from 200 MB to 8+ GB while idle. Disable until the upstream fix lands.
+    // See vercel/next.js#91396 and Discussion #94471.
+    turbopackServerFastRefresh: false,
+  },
 };
 
 export default nextConfig;

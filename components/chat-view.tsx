@@ -132,6 +132,8 @@ interface ChatWingProps {
   isDashboardOpen?: boolean
   // Browser passthrough — called when user clicks a URL in chat
   onOpenBrowserUrl?: (url: string) => void
+  // Remote/mobile view: full-screen flat rendering for phone access via Tailscale
+  isRemoteView?: boolean
 }
 
 export function ChatWing({
@@ -146,6 +148,7 @@ export function ChatWing({
   onSpotlightToggle,
   isDashboardOpen = false,
   onOpenBrowserUrl,
+  isRemoteView = false,
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
@@ -1004,39 +1007,53 @@ ${message.text}`;
   const isInDashboardSpotlight = spotlightState === SpotlightState.DASHBOARD_SPOTLIGHT;
   const isBalanced = spotlightState === SpotlightState.BALANCED;
 
-  // Spotlight dynamic styles
+  // Spotlight dynamic styles — overridden for remote/mobile view
   const getSpotlightWidth = () => {
+    if (isRemoteView) return 'calc(100vw - 24px)';
     if (isInChatSpotlight) return 680; // Spotlight width (2×)
     if (isInDashboardSpotlight) return 360; // Background width (2×)
     return 510; // Balanced width (2×)
   };
 
   const getSpotlightTransform = () => {
+    if (isRemoteView) return 'rotateY(0deg) rotateX(0deg)';
     if (isInChatSpotlight) return 'rotateY(0deg) rotateX(0deg)';
     if (isInDashboardSpotlight) return 'rotateY(15deg) rotateX(2deg)';
     return 'rotateY(15deg) rotateX(2deg)';
   };
 
   const getSpotlightOpacity = () => {
+    if (isRemoteView) return 1.0;
     if (isInDashboardSpotlight) return 0.3;
     return 1.0;
   };
 
   const getSpotlightFilter = () => {
+    if (isRemoteView) return 'none';
     if (isInDashboardSpotlight) return 'saturate(0.6) blur(2px)';
     return 'none';
   };
 
   const getSpotlightZIndex = () => {
+    if (isRemoteView) return 20;
     if (isInChatSpotlight) return 20;
     if (isInDashboardSpotlight) return 5;
     return 10;
   };
 
   const getSpotlightPointerEvents = () => {
+    if (isRemoteView) return 'auto';
     if (isInDashboardSpotlight) return 'none';
     return 'auto';
   };
+
+  // Remote/mobile view: minimized centered panel with horizontal padding, no offset, no tilt
+  const getOuterLeft = () => isRemoteView ? '12px' : 252;
+  const getOuterTop = () => isRemoteView ? '16px' : '6vh';
+  const getOuterHeight = () => isRemoteView ? 'calc(100dvh - 32px)' : '88vh';
+  const getOuterMaxHeight = () => isRemoteView ? 'calc(100dvh - 32px)' : 'calc(100vh - 24px)';
+  const getOuterPerspective = () => isRemoteView ? 'none' : '800px';
+  const getInnerBorderRadius = () => isRemoteView ? '16px' : '12px';
 
   return (
     <AnimatePresence>
@@ -1044,57 +1061,66 @@ ${message.text}`;
         <motion.div
           ref={chatOuterRef}
           className="fixed"
-          initial={{ x: -120, opacity: 0, scale: 0.95 }}
-          animate={{
+          initial={isRemoteView ? {} : { x: -120, opacity: 0, scale: 0.95 }}
+          animate={isRemoteView ? {} : {
             x: 0,
             opacity: getSpotlightOpacity(),
             scale: 1
           }}
-          exit={{ x: -120, opacity: 0, scale: 0.95 }}
-          transition={{ 
+          exit={isRemoteView ? {} : { x: -120, opacity: 0, scale: 0.95 }}
+          transition={isRemoteView ? { duration: 0 } : { 
             type: "spring", 
             stiffness: 280, 
             damping: 25,
             mass: 0.8
           }}
           style={{
-            left: 252,
-            top: '6vh',
+            left: getOuterLeft(),
+            top: getOuterTop(),
             width: getSpotlightWidth(),
-            height: '88vh',
-            maxHeight: 'calc(100vh - 24px)',
+            height: getOuterHeight(),
+            maxHeight: getOuterMaxHeight(),
             overflow: 'hidden',
-            perspective: '800px',
+            perspective: getOuterPerspective(),
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),
             pointerEvents: getSpotlightPointerEvents() as any,
+            touchAction: 'manipulation',
           }}
         >
           {/* HUD Glass Panel Container */}
-          <motion.div
-            ref={chatPanelRef}
-            className="h-full overflow-hidden flex flex-col relative"
-            animate={{
-              transform: getSpotlightTransform()
-            }}
-            transition={{
-              type: "spring",
-              stiffness: 280,
-              damping: 25,
-              mass: 0.8
-            }}
+            <motion.div
+              ref={chatPanelRef}
+              className="h-full overflow-hidden flex flex-col relative"
+              animate={isRemoteView ? {} : {
+                transform: getSpotlightTransform()
+              }}
+              transition={isRemoteView ? { duration: 0 } : {
+                type: "spring",
+                stiffness: 280,
+                damping: 25,
+                mass: 0.8
+              }}
             style={{
               transformOrigin: 'left center',
-              transformStyle: 'preserve-3d',
+              transformStyle: isRemoteView ? 'flat' : 'preserve-3d',
+              transform: isRemoteView ? 'rotateY(0deg) rotateX(0deg)' : undefined,
               background: 'linear-gradient(135deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%)',
-              boxShadow: `
+              boxShadow: isRemoteView ? `
+                inset 0 1px 1px rgba(255,255,255,0.05),
+                inset 0 -1px 1px rgba(0,0,0,0.5),
+                0 0 0 1px rgba(0,0,0,0.8),
+                0 8px 32px rgba(0,0,0,0.5)
+              ` : `
                 inset 0 1px 1px rgba(255,255,255,0.05),
                 inset 0 -1px 1px rgba(0,0,0,0.5),
                 0 0 0 1px rgba(0,0,0,0.8),
                 20px 0 60px rgba(0,0,0,0.5)
               `,
-              borderRadius: '12px',
-              border: `1px solid ${glowColor}20`,
+              borderRadius: getInnerBorderRadius(),
+              border: isRemoteView ? `1px solid ${glowColor}20` : `1px solid ${glowColor}20`,
+              touchAction: 'manipulation',
+              willChange: 'auto',
             }}
           >
             {/* HUD Effects Overlay */}
@@ -1127,9 +1153,9 @@ ${message.text}`;
               }}
             />
 
-            {/* 48px Header */}
+            {/* 48px Header (60px on mobile for larger touch targets) */}
             <div 
-              className="h-12 px-3 flex items-center flex-shrink-0 border-b relative z-30"
+              className={isRemoteView ? "h-[60px] px-4 flex items-center flex-shrink-0 border-b relative z-30" : "h-12 px-3 flex items-center flex-shrink-0 border-b relative z-30"}
               style={{ borderColor: `${glowColor}15`, position: 'relative' }}
             >
               {/* Global error line */}
@@ -1169,7 +1195,7 @@ ${message.text}`;
                     }
                     closeDropdowns();
                   }}
-                  className="p-1.5 rounded-lg transition-all duration-150"
+                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-lg transition-all duration-150"}
                   style={{
                     color: isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)',
                     backgroundColor: isDashboardOpen ? `${glowColor}15` : 'transparent'
@@ -1184,7 +1210,7 @@ ${message.text}`;
                   }}
                   title={isDashboardOpen ? "Close Dashboard" : "Open Dashboard"}
                 >
-                  <BarChart3 size={14} />
+                  <BarChart3 size={isRemoteView ? 20 : 14} />
                 </button>
               </div>
 
@@ -1196,7 +1222,7 @@ ${message.text}`;
                       onSpotlightToggle();
                       closeDropdowns();
                     }}
-                    className="p-1.5 rounded-full transition-all duration-150 border"
+                    className={isRemoteView ? "p-2.5 rounded-full transition-all duration-150 border min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-full transition-all duration-150 border"}
                     style={{
                       color: isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)',
                       backgroundColor: isInChatSpotlight ? `${glowColor}20` : 'transparent',
@@ -1217,18 +1243,18 @@ ${message.text}`;
                       isActive={isInChatSpotlight}
                       glowColor={glowColor}
                       fontColor={fontColor}
-                      size={14}
+                      size={isRemoteView ? 18 : 14}
                     />
                   </button>
                 </div>
               )}
 
               {/* Right section: Notifications + History + Close */}
-              <div className="flex items-center gap-0.5 flex-1 justify-end">
+              <div className="flex items-center gap-1 flex-1 justify-end">
                 {/* Notifications */}
                 <button
                   onClick={() => showNotifications ? closeDropdowns() : openNotifications()}
-                  className="p-2 rounded-lg transition-all duration-150 relative"
+                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 relative min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150 relative"}
                   style={{
                     color: showNotifications ? glowColor : unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)',
                     backgroundColor: showNotifications ? `${glowColor}15` : 'transparent'
@@ -1257,7 +1283,7 @@ ${message.text}`;
                 {/* History */}
                 <button
                   onClick={() => showHistory ? closeDropdowns() : openHistory()}
-                  className="p-2 rounded-lg transition-all duration-150"
+                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150"}
                   style={{
                     color: showHistory ? glowColor : 'rgba(255,255,255,0.75)',
                     backgroundColor: showHistory ? `${glowColor}15` : 'transparent'
@@ -1272,7 +1298,7 @@ ${message.text}`;
                   }}
                   title="Conversation History"
                 >
-                  <History size={16} />
+                  <History size={isRemoteView ? 20 : 16} />
                 </button>
 
                 {/* Close */}
@@ -1281,7 +1307,7 @@ ${message.text}`;
                     onClose();
                     closeDropdowns();
                   }}
-                  className="p-2 rounded-lg transition-all duration-150"
+                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150"}
                   style={{ color: 'rgba(255,255,255,0.75)' }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
@@ -1293,7 +1319,7 @@ ${message.text}`;
                   }}
                   title="Close Chat"
                 >
-                  <X size={16} />
+                  <X size={isRemoteView ? 20 : 16} />
                 </button>
               </div>
             </div>
@@ -1531,8 +1557,8 @@ ${message.text}`;
               )}
             </AnimatePresence>
 
-            {/* Messages Area — or Developer Workspace in developer mode */}
-            {isDeveloper ? (
+            {/* Messages Area — or Developer Workspace in developer mode (never on remote/mobile) */}
+            {isDeveloper && !isRemoteView ? (
               <Suspense fallback={
                 <div className="flex-1 flex items-center justify-center">
                   <span className="text-xs text-white/20">Loading workspace...</span>
@@ -2176,7 +2202,7 @@ ${message.text}`;
 
             {/* Input Area - Command Line Style with Drag & Drop */}
             <div
-              className="px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"
+              className={isRemoteView ? "px-4 pb-4 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t" : "px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"}
               style={{ borderColor: 'rgba(255,255,255,0.05)' }}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
@@ -2241,7 +2267,7 @@ ${message.text}`;
                 )}
               </AnimatePresence>
 
-              <div className="relative flex items-end gap-6" style={{ marginRight: '4px' }}>
+              <div className={isRemoteView ? "relative flex items-end gap-6 px-1" : "relative flex items-end gap-6"} style={{ marginRight: '4px' }}>
                 <div className="flex-1 relative">
                   <textarea
                     ref={inputRef as any}
@@ -2264,7 +2290,7 @@ ${message.text}`;
                     onBlur={() => setIsInputFocused(false)}
                     placeholder={voiceState === 'listening' ? 'Listening...' : 'Type command or drop file...'}
                     disabled={voiceState === 'listening'}
-                    className="w-full bg-transparent border-0 border-b py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
+                    className={isRemoteView ? "w-full bg-transparent border-0 border-b py-3 pr-2 text-[16px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] scrollbar-hide" : "w-full bg-transparent border-0 border-b py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"}
                     rows={1}
                     style={{
                       borderColor: isDraggingFile ? glowColor : inputText ? glowColor : `${glowColor}30`,
@@ -2286,20 +2312,20 @@ ${message.text}`;
                 </div>
 
                 {/* Compact Action Group */}
-                <div className="flex items-center gap-0.5 mb-2">
+                <div className={isRemoteView ? "flex items-center gap-1 mb-2" : "flex items-center gap-0.5 mb-2"}>
                   {/* Send button */}
                   <motion.button
                     onClick={handleSendMessage}
                     disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
-                    className="p-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                    className={isRemoteView ? "p-2.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"}
                     style={{
                       color: glowColor,
                     }}
-                    whileHover={inputText.trim() ? { scale: 1.1 } : {}}
-                    whileTap={inputText.trim() ? { scale: 0.9 } : {}}
+                    whileHover={isRemoteView ? undefined : (inputText.trim() ? { scale: 1.1 } : {})}
+                    whileTap={isRemoteView ? undefined : (inputText.trim() ? { scale: 0.9 } : {})}
                     title="Send message"
                   >
-                    <Send size={18} />
+                    <Send size={isRemoteView ? 22 : 18} />
                   </motion.button>
 
                   {/* Upload + hidden file input */}
@@ -2313,15 +2339,15 @@ ${message.text}`;
                   <motion.button
                     onClick={() => fileInputRef.current?.click()}
                     disabled={voiceState === 'listening'}
-                    className="p-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                    className={isRemoteView ? "p-2.5 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"}
                     style={{
                       color: `${fontColor}60`,
                     }}
-                    whileHover={{ scale: 1.1, color: fontColor }}
-                    whileTap={{ scale: 0.9 }}
+                    whileHover={isRemoteView ? undefined : { scale: 1.1, color: fontColor }}
+                    whileTap={isRemoteView ? undefined : { scale: 0.9 }}
                     title="Upload file"
                   >
-                    <Plus size={18} />
+                    <Plus size={isRemoteView ? 22 : 18} />
                   </motion.button>
 
                   {/* Conversation chips */}
