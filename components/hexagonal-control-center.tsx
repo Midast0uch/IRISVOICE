@@ -33,6 +33,8 @@ const SECTIONS: Record<string, { id: string; label: string }[]> = {
   [MAIN_CATEGORY_IDS.AGENT]: [
     { id: SECTION_IDS.AGENT_MODEL_SELECTION, label: "Models" },
     { id: SECTION_IDS.AGENT_INFERENCE_MODE, label: "Inference" },
+    { id: SECTION_IDS.AGENT_LOCAL_MODEL, label: "Local Model" },
+    { id: SECTION_IDS.AGENT_SWARM_SETUP, label: "Swarm" },
     { id: SECTION_IDS.AGENT_IDENTITY, label: "Identity" },
     { id: SECTION_IDS.AGENT_MEMORY, label: "Memory" },
   ],
@@ -65,7 +67,7 @@ const SECTIONS: Record<string, { id: string; label: string }[]> = {
 
 // Node positioning angles (6 nodes in a hexagonal pattern)
 const MAIN_NODE_ANGLES = [-90, -30, 30, 90, 150, 210]
-const SECTION_ANGLES = [-90, 0, 90, 180]
+const SECTION_ANGLES = [-90, -30, 30, 90, 150, 210]
 
 export default function HexagonalControlCenter() {
   const nav = useNavigation()

@@ -31,6 +31,8 @@ const CATEGORY_TO_SECTIONS: Record<string, string[]> = {
   [MAIN_CATEGORY_IDS.AGENT]: [
     SECTION_IDS.AGENT_MODEL_SELECTION,
     SECTION_IDS.AGENT_INFERENCE_MODE,
+    SECTION_IDS.AGENT_LOCAL_MODEL,
+    SECTION_IDS.AGENT_SWARM_SETUP,
     SECTION_IDS.AGENT_IDENTITY,
     SECTION_IDS.AGENT_MEMORY,
   ],
@@ -570,6 +572,19 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
       // Clear corrupted data and start fresh
       localStorage.removeItem(STORAGE_KEY)
       restoredState = { ...initialState }
+    }
+
+    // Step 2: Check URL for mode param — override level if developer mode
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const mode = params.get("mode")
+      if (mode === "developer" && restoredState.level === 1) {
+        restoredState.level = 2  // Expand to control center
+      } else if (mode === "personal" && restoredState.level > 1) {
+        restoredState.level = 1  // Collapse to orb only
+      }
+    } catch (e) {
+      // Ignore URL parsing errors
     }
 
     // Step 2: Restore card values (merge into existing restoredState)
