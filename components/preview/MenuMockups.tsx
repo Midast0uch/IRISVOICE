@@ -913,12 +913,12 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
-  // Arch (∩): peak at very top, feet cut short from bottom
+  // Arch (∩): peak at very top, feet cut short from bottom, vertically centered in dock
   const pad = 6
-  const footY = 28  // feet at y=28 — ~1/4 of arc cut from bottom
-  // Cubic bezier peak formula: peakY = 0.125*sY + 0.375*c1Y + 0.375*c2Y + 0.125*eY
-  // To get peak at y=0 with sY=eY=28, c1Y=c2Y: 0 = 0.25*28 + 0.75*cY → cY = -9.33
-  const cpY = -10  // control points above dock → peak reaches very top
+  // Shifted down by 8px from top to center in 44px dock
+  const footY = 36  // feet at y=36 (8px from bottom)
+  // Peak formula: peakY = 0.25*footY + 0.75*cpY → 0.25*36 + 0.75*(-2) = 7.5 ≈ top region
+  const cpY = -2  // control points slightly above dock → peak reaches near top
   const archPath = `M ${pad} ${footY} C ${pad} ${cpY}, ${btnW - pad} ${cpY}, ${btnW - pad} ${footY}`
 
   return (
