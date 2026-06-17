@@ -22,13 +22,15 @@ function HexNode({
   glowColor,
   icon: Icon,
   isActive,
+  onHover,
   onClick,
   size = 40,
 }: {
   glowColor: string
   icon: ElementType
   isActive: boolean
-  onClick: () => void
+  onHover: (hovering: boolean) => void
+  onClick?: () => void
   size?: number
 }) {
   return (
@@ -47,14 +49,8 @@ function HexNode({
         flexShrink: 0,
       }}
       onClick={onClick}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.transform = isActive ? 'scale(1.08) rotate(3deg) translateY(-2px)' : 'scale(1.05) rotate(3deg) translateY(-2px)'
-        e.currentTarget.style.opacity = '1'
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.transform = isActive ? 'scale(1.08)' : 'scale(1)'
-        e.currentTarget.style.opacity = isActive ? '1' : '0.8'
-      }}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
     >
       {/* Outer glow */}
       <div
@@ -210,7 +206,7 @@ function useParticles(count: number, minDist: number, maxDist: number, seed = 42
 
 // ── Mockup 1: Radial Hex (PRIMARY) ───────────────────────────────────
 function MockupRadialHex({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const positions = useRadialPositions(6, 108)
 
   return (
@@ -229,8 +225,8 @@ function MockupRadialHex({ glowColor }: { glowColor: string }) {
           <HexNode
             glowColor={glowColor}
             icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+            isActive={hoveredId === cat.id}
+            onHover={(v) => setHoveredId(v ? cat.id : null)}
           />
         </div>
       ))}
@@ -240,7 +236,7 @@ function MockupRadialHex({ glowColor }: { glowColor: string }) {
 
 // ── Mockup 2: Radial Compact (tighter ring) ──────────────────────────
 function MockupRadialCompact({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const positions = useRadialPositions(6, 82)
 
   return (
@@ -259,8 +255,8 @@ function MockupRadialCompact({ glowColor }: { glowColor: string }) {
           <HexNode
             glowColor={glowColor}
             icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+            isActive={hoveredId === cat.id}
+            onHover={(v) => setHoveredId(v ? cat.id : null)}
             size={36}
           />
         </div>
@@ -271,7 +267,7 @@ function MockupRadialCompact({ glowColor }: { glowColor: string }) {
 
 // ── Mockup 3: Orbital (varying distances + rings) ────────────────────
 function MockupOrbital({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const angles = [0, 60, 120, 180, 240, 300]
   const radii = [88, 106, 120, 88, 106, 120]
   const [mounted, setMounted] = useState(false)
@@ -312,8 +308,8 @@ function MockupOrbital({ glowColor }: { glowColor: string }) {
             <HexNode
               glowColor={glowColor}
               icon={cat.icon}
-              isActive={activeId === cat.id}
-              onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+              isActive={hoveredId === cat.id}
+              onHover={(v) => setHoveredId(v ? cat.id : null)}
             />
           </div>
         )
@@ -324,7 +320,7 @@ function MockupOrbital({ glowColor }: { glowColor: string }) {
 
 // ── Mockup 4: Orbital Stacked (two orbit layers) ─────────────────────
 function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const innerPos = useRadialPositions(3, 85)
   const outerPos = useRadialPositions(3, 130, -Math.PI / 2 + Math.PI / 3)
   const particles = useParticles(30, 105, 145, 113)
@@ -375,8 +371,8 @@ function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
           <HexNode
             glowColor={glowColor}
             icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+            isActive={hoveredId === cat.id}
+            onHover={(v) => setHoveredId(v ? cat.id : null)}
             size={36}
           />
         </div>
@@ -396,8 +392,8 @@ function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
           <HexNode
             glowColor={glowColor}
             icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+            isActive={hoveredId === cat.id}
+            onHover={(v) => setHoveredId(v ? cat.id : null)}
           />
         </div>
       ))}
@@ -407,7 +403,7 @@ function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
 
 // ── Mockup 5: Dock ───────────────────────────────────────────────────
 function MockupDock({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -428,13 +424,13 @@ function MockupDock({ glowColor }: { glowColor: string }) {
             <HexNode
               glowColor={glowColor}
               icon={cat.icon}
-              isActive={activeId === cat.id}
-              onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+              isActive={hoveredId === cat.id}
+              onHover={(v) => setHoveredId(v ? cat.id : null)}
             />
             <span
               style={{
                 fontSize: '7px',
-                color: activeId === cat.id ? '#ffffff' : '#475569',
+                color: hoveredId === cat.id ? '#ffffff' : '#475569',
                 letterSpacing: '0.08em',
                 textTransform: 'uppercase' as const,
                 fontWeight: 600,
@@ -452,9 +448,10 @@ function MockupDock({ glowColor }: { glowColor: string }) {
 
 // ── Mockup 6: Radial Arc (top half-circle) ───────────────────────────
 function MockupRadialArc({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
+  const particles = useParticles(30, 55, 130, 99)
 
   const positions = useMemo(() => {
     if (!mounted) return Array.from({ length: 6 }, () => ({ x: 0, y: 0 }))
@@ -481,6 +478,19 @@ function MockupRadialArc({ glowColor }: { glowColor: string }) {
           clipPath: 'inset(0 0 50% 0)',
         }}
       />
+      {/* Particles around the arc */}
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+        {particles.map((p, i) => (
+          <div key={i} className="absolute rounded-full" style={{
+            left: `calc(50% + ${p.x}px)`,
+            top: `calc(50% + ${p.y}px)`,
+            width: p.size, height: p.size,
+            background: glowColor,
+            opacity: p.opacity,
+            boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
+          }} />
+        ))}
+      </div>
       {mounted && CATEGORIES.map((cat, i) => (
         <div
           key={cat.id}
@@ -494,8 +504,8 @@ function MockupRadialArc({ glowColor }: { glowColor: string }) {
           <HexNode
             glowColor={glowColor}
             icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+            isActive={hoveredId === cat.id}
+            onHover={(v) => setHoveredId(v ? cat.id : null)}
           />
         </div>
       ))}
@@ -505,9 +515,10 @@ function MockupRadialArc({ glowColor }: { glowColor: string }) {
 
 // ── Mockup 7: Concentric (inner 3 + outer 3) ────────────────────────
 function MockupConcentric({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const innerPos = useRadialPositions(3, 65)
   const outerPos = useRadialPositions(3, 115, Math.PI / 6)
+  const particles = useParticles(30, 50, 130, 55)
 
   return (
     <div className="relative" style={{ width: 300, height: 300 }}>
@@ -527,6 +538,19 @@ function MockupConcentric({ glowColor }: { glowColor: string }) {
           }}
         />
       ))}
+      {/* Particles around the rings */}
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+        {particles.map((p, i) => (
+          <div key={i} className="absolute rounded-full" style={{
+            left: `calc(50% + ${p.x}px)`,
+            top: `calc(50% + ${p.y}px)`,
+            width: p.size, height: p.size,
+            background: glowColor,
+            opacity: p.opacity,
+            boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
+          }} />
+        ))}
+      </div>
       {/* Inner ring */}
       {CATEGORIES.slice(0, 3).map((cat, i) => (
         <div
@@ -541,8 +565,8 @@ function MockupConcentric({ glowColor }: { glowColor: string }) {
           <HexNode
             glowColor={glowColor}
             icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+            isActive={hoveredId === cat.id}
+            onHover={(v) => setHoveredId(v ? cat.id : null)}
             size={36}
           />
         </div>
@@ -561,8 +585,8 @@ function MockupConcentric({ glowColor }: { glowColor: string }) {
           <HexNode
             glowColor={glowColor}
             icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+            isActive={hoveredId === cat.id}
+            onHover={(v) => setHoveredId(v ? cat.id : null)}
           />
         </div>
       ))}
@@ -636,7 +660,7 @@ function StructuralFrame({ cx, cy, r, color }: { cx: number; cy: number; r: numb
 // Lissajous curve in PrototypeOrbBreathing has asymmetric visual mass;
 // smaller orb relative to container reduces perceived offset.
 function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const positions = useRadialPositions(6, 115)
   const particles = useParticles(40, 95, 135, 42)
   const c = 160 // center of 320px container
@@ -680,8 +704,8 @@ function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
           zIndex: 3,
         }}>
           <HexNode glowColor={glowColor} icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)} />
+            isActive={hoveredId === cat.id}
+            onHover={(v) => setHoveredId(v ? cat.id : null)} />
         </div>
       ))}
     </div>
@@ -691,7 +715,7 @@ function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
 // ── Mockup 10: Hybrid Polish — Concentric (3 rings + ring nodes) ────
 // Uses 180px orb (same as other mockups) for consistent visual centering.
 function MockupHybridPolish({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const particles = useParticles(45, 90, 150, 77)
   const c = 160 // center of 320px container
   const ORB_SIZE = 180
@@ -751,8 +775,8 @@ function MockupHybridPolish({ glowColor }: { glowColor: string }) {
               zIndex: 3,
             }}>
               <RingNode glowColor={glowColor} icon={cat.icon}
-                isActive={activeId === cat.id}
-                onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+                isActive={hoveredId === cat.id}
+                onHover={(v) => setHoveredId(v ? cat.id : null)}
                 size={ring.count === 1 ? 38 : ring.count === 2 ? 34 : 30} />
             </div>
           )
@@ -764,8 +788,8 @@ function MockupHybridPolish({ glowColor }: { glowColor: string }) {
 
 /** Ring-shaped node — concentric design. Small circle with liquid-metal border + icon. */
 function RingNode({
-  glowColor, icon: Icon, isActive, onClick, size = 32,
-}: { glowColor: string; icon: ElementType; isActive: boolean; onClick: () => void; size?: number }) {
+  glowColor, icon: Icon, isActive, onHover, onClick, size = 32,
+}: { glowColor: string; icon: ElementType; isActive: boolean; onHover: (hovering: boolean) => void; onClick?: () => void; size?: number }) {
   return (
     <button
       className="relative flex items-center justify-center cursor-pointer"
@@ -778,6 +802,8 @@ function RingNode({
         flexShrink: 0,
       }}
       onClick={onClick}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
     >
       {/* Neon glow ring */}
       <div className="absolute pointer-events-none" style={{
@@ -823,8 +849,8 @@ function RingNode({
 
 /** Liquid-metal styled hex node — adds specular sheen + neon edge to the base hex */
 function LiquidHexNode({
-  glowColor, icon: Icon, isActive, onClick, size = 40,
-}: { glowColor: string; icon: ElementType; isActive: boolean; onClick: () => void; size?: number }) {
+  glowColor, icon: Icon, isActive, onHover, onClick, size = 40,
+}: { glowColor: string; icon: ElementType; isActive: boolean; onHover: (hovering: boolean) => void; onClick?: () => void; size?: number }) {
   return (
     <button
       className="relative flex items-center justify-center cursor-pointer"
@@ -838,6 +864,8 @@ function LiquidHexNode({
         flexShrink: 0,
       }}
       onClick={onClick}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
     >
       {/* Neon edge bloom */}
       <div className="absolute pointer-events-none" style={{
@@ -882,33 +910,35 @@ function LiquidHexNode({
 
 // ── Mockup 11: Dock Redesign (compact, tall arcs reaching top) ───────
 function MockupDockRedesign({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const btnW = 32 // 1.5x smaller (was 48)
-  const arcH = 48 // taller arc — reaches top of dock bar
-  // Arc goes from bottom corners → curves UP to reach top of dock
-  // Control point is well above, creating a tall U-shape
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const btnW = 36 // slightly wider than icon (16px) so arc envelops it
+  const arcH = 24 // arc height proportional to icon — smaller, tighter
+  // Arc goes from bottom-left → curves UP slightly → bottom-right
+  // Control point is just above endpoints, creating a gentle cradle
   const arcPath = (w: number, h: number) => {
-    return `M 2 ${h} Q ${w / 2} ${-h * 0.8} ${w - 2} ${h}`
+    return `M 2 ${h} Q ${w / 2} ${-h * 0.4} ${w - 2} ${h}`
   }
 
   return (
     <div className="flex flex-col items-center gap-3">
-      {/* Orb — smaller to match compact dock */}
-      <div style={{ width: 120, height: 120 }}>
+      {/* Orb — centered above dock */}
+      <div style={{ width: 120, height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
       </div>
-      {/* Dock bar — compact with tall arcs reaching top */}
+      {/* Dock bar — compact with arcs enveloping icons */}
       <div className="flex items-end gap-1.5 px-3 py-2 rounded-lg" style={{
         background: 'rgba(255,255,255,0.03)',
         border: '1px solid rgba(255,255,255,0.06)',
       }}>
         {CATEGORIES.map((cat) => {
-          const isActive = activeId === cat.id
+          const isActive = hoveredId === cat.id
           return (
-            <button key={cat.id} onClick={() => setActiveId(isActive ? null : cat.id)}
+            <button key={cat.id}
+              onMouseEnter={() => setHoveredId(cat.id)}
+              onMouseLeave={() => setHoveredId(null)}
               className="flex flex-col items-center cursor-pointer"
               style={{ background: 'none', border: 'none', padding: '1px 2px', gap: 2 }}>
-              {/* Arc segment — tall curve reaching top of dock */}
+              {/* Arc segment — proportional to icon, envelops it */}
               <div className="relative" style={{ width: btnW, height: arcH }}>
                 <svg width={btnW} height={arcH} viewBox={`0 0 ${btnW} ${arcH}`}>
                   <defs>
@@ -921,19 +951,20 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                   {isActive && <path d={arcPath(btnW, arcH)} fill="none"
                     stroke={glowColor} strokeWidth="6" style={{ filter: 'blur(5px)', opacity: 0.3 }} />}
                   <path d={arcPath(btnW, arcH)} fill="none"
-                    stroke={`url(#dock-arc-${cat.id})`} strokeWidth="4"
+                    stroke={`url(#dock-arc-${cat.id})`} strokeWidth="3"
                     strokeLinecap="round" style={{ cursor: 'pointer' }} />
                   <path d={arcPath(btnW, arcH)} fill="none"
                     stroke={isActive ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.1)'}
                     strokeWidth="0.5" />
                 </svg>
               </div>
-              {/* Icon sits at bottom of arc curve */}
+              {/* Icon inside arc curve */}
               <cat.icon style={{
-                width: 12, height: 12,
+                width: 14, height: 14,
                 color: isActive ? '#ffffff' : '#64748b',
                 filter: isActive ? `drop-shadow(0 0 3px ${glowColor})` : 'none',
                 transition: 'color 0.2s, filter 0.2s',
+                marginTop: -arcH + 4, // pull icon up into the arc's curve
               }} strokeWidth={1.5} />
               {/* Label */}
               <span style={{
