@@ -915,9 +915,8 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const dockH = 44 // same as original Dock
   // Arch (∩): peak below top, feet near bottom, vertically centered in dock
   const pad = 6
-  const footY = 40  // feet at y=40 (4px from dock bottom)
-  // Peak formula: peakY = 0.25*footY + 0.75*cpY → 0.25*40 + 0.75*4 = 13
-  const cpY = 4  // control points inside dock → peak at y=13, clear of top
+  const footY = 36  // feet shifted up 4px
+  const cpY = 0  // peak at y=9, clear of top
   const archPath = `M ${pad} ${footY} C ${pad} ${cpY}, ${btnW - pad} ${cpY}, ${btnW - pad} ${footY}`
 
   return (
@@ -974,15 +973,14 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                       strokeWidth="0.5" />
                   </svg>
                 </div>
-                {/* Icon nestled under the arch, shifted up */}
+                {/* Icon nestled under the arch */}
                 <div style={{
                   position: 'relative',
                   width: btnW,
                   height: dockH,
                   display: 'flex',
-                  alignItems: 'flex-start',
+                  alignItems: 'center',
                   justifyContent: 'center',
-                  paddingTop: 4,
                 }}>
                   <cat.icon style={{
                     width: 14, height: 14,
