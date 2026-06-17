@@ -908,15 +908,16 @@ function LiquidHexNode({
   )
 }
 
-// ── Mockup 11: Dock Redesign (U-arcs inside dock, ends reach bottom) ───────
+// ── Mockup 11: Dock Redesign (tight U-arcs inside dock) ───────
 function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
-  // U-arc: peak at top, both ends reach toward bottom of dock
-  const arcEndY = dockH - 3  // ends 3px from dock bottom
-  const arcPeakY = 4         // peak 4px from dock top
-  const arcPath = `M 2 ${arcEndY} Q ${btnW / 2} ${arcPeakY} ${btnW - 2} ${arcEndY}`
+  // Tight U-arc: cubic bezier — peak barely touches top, ends near bottom, steep sides
+  const arcEndY = 39       // ends 5px from dock bottom
+  // C cp1x cp1y, cp2x cp2y, endX endY
+  // cp1 and cp2 pulled inward (narrow) and upward (steep sides, peak at top)
+  const arcPath = `M 2 ${arcEndY} C ${btnW * 0.15} 6, ${btnW * 0.85} 6, ${btnW - 2} ${arcEndY}`
 
   return (
     <div className="flex flex-col items-center gap-5">
