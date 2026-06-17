@@ -919,12 +919,24 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const dockParticles = useMemo(() => {
     if (!mounted) return []
     const rng = mulberry32(77)
-    return Array.from({ length: 20 }, () => ({
-      x: (rng() - 0.5) * 260, // spread across dock width (~280px)
-      y: (rng() - 0.5) * (dockH - 8), // stay within dock height with 4px inset
+    // Base particles spread across dock
+    const base = Array.from({ length: 16 }, () => ({
+      x: (rng() - 0.5) * 240,
+      y: (rng() - 0.5) * (dockH - 12),
       size: 1 + rng() * 2,
-      opacity: 0.1 + rng() * 0.3,
+      opacity: 0.1 + rng() * 0.25,
     }))
+    // Extra particles near Customize (+73px) and Monitor (+115px)
+    const extras = Array.from({ length: 8 }, (_, i) => {
+      const cx = i < 4 ? 73 : 115 // Customize or Monitor position
+      return {
+        x: cx + (rng() - 0.5) * 30,
+        y: (rng() - 0.5) * (dockH - 12),
+        size: 1.5 + rng() * 2,
+        opacity: 0.2 + rng() * 0.3,
+      }
+    })
+    return [...base, ...extras]
   }, [mounted])
   // Arch (∩): peak below top, feet near bottom, vertically centered in dock
   const pad = 6
@@ -1020,6 +1032,13 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
               }} />
             ))}
           </div>
+          {/* Glowing shimmer at top of dock */}
+          <div className="absolute pointer-events-none" style={{
+            top: 0, left: 0, right: 0,
+            height: 3,
+            background: `linear-gradient(90deg, transparent 0%, ${hexToRgba(glowColor, 0.15)} 20%, ${hexToRgba(glowColor, 0.4)} 50%, ${hexToRgba(glowColor, 0.15)} 80%, transparent 100%)`,
+            borderRadius: '12px 12px 0 0',
+          }} />
         </div>
         {/* Labels below dock bar */}
         <div className="flex items-center gap-0.5 px-3" style={{ marginTop: 2 }}>
