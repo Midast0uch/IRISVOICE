@@ -913,7 +913,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
-  const particles = useParticles(20, 10, 120, 77)
+  const particles = useParticles(15, 5, 45, 77)
   // Arch (∩): peak below top, feet near bottom, vertically centered in dock
   const pad = 6
   const footY = 36  // feet shifted up 4px
