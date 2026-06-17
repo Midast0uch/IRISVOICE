@@ -2,17 +2,17 @@
 
 import React, { useState, useEffect, useMemo } from 'react'
 import type { ElementType } from 'react'
-import { Mic, Settings, Zap, Shield, Palette, BarChart3 } from 'lucide-react'
+import { Mic, Bot, Workflow, Cpu, Palette, Activity } from 'lucide-react'
 import { PrototypeOrbBreathing } from './PrototypeOrbBreathing'
 
 // ── Shared category data ─────────────────────────────────────────────
 const CATEGORIES = [
   { id: 'voice', label: 'Voice', icon: Mic },
-  { id: 'agent', label: 'Agent', icon: Settings },
-  { id: 'automate', label: 'Automate', icon: Zap },
-  { id: 'system', label: 'System', icon: Shield },
+  { id: 'agent', label: 'Agent', icon: Bot },
+  { id: 'automate', label: 'Automate', icon: Workflow },
+  { id: 'system', label: 'System', icon: Cpu },
   { id: 'customize', label: 'Customize', icon: Palette },
-  { id: 'monitor', label: 'Monitor', icon: BarChart3 },
+  { id: 'monitor', label: 'Monitor', icon: Activity },
 ] as const
 
 // ── Hex node (40px) — glassmorphic hex ───────────────────────────────
@@ -174,6 +174,40 @@ function useRadialPositions(count: number, radius: number, startAngle = -Math.PI
   }, [mounted, count, radius, startAngle])
 }
 
+// ── Seeded particle generator (deterministic, client-side only) ──────
+// Uses a mulberry32 PRNG seeded with a constant so particles are identical
+// on every render. No Math.random() — prevents SSR hydration mismatch.
+function mulberry32(seed: number) {
+  return function () {
+    let t = (seed += 0x6d2b79f5)
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+type Particle = { x: number; y: number; size: number; opacity: number }
+
+function useParticles(count: number, minDist: number, maxDist: number, seed = 42): Particle[] {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+
+  return useMemo(() => {
+    if (!mounted) return []
+    const rng = mulberry32(seed)
+    return Array.from({ length: count }, (_, i) => {
+      const angle = (i / count) * Math.PI * 2 + (rng() - 0.5) * 0.5
+      const dist = minDist + rng() * (maxDist - minDist)
+      return {
+        x: Math.cos(angle) * dist,
+        y: Math.sin(angle) * dist,
+        size: 1 + rng() * 2.5,
+        opacity: 0.15 + rng() * 0.4,
+      }
+    })
+  }, [mounted, count, minDist, maxDist, seed])
+}
+
 // ── Mockup 1: Radial Hex (PRIMARY) ───────────────────────────────────
 function MockupRadialHex({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -291,31 +325,43 @@ function MockupOrbital({ glowColor }: { glowColor: string }) {
 // ── Mockup 4: Orbital Stacked (two orbit layers) ─────────────────────
 function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const innerPos = useRadialPositions(3, 72)
-  const outerPos = useRadialPositions(3, 120, -Math.PI / 2 + Math.PI / 3)
-  const [mounted, setMounted] = useState(false)
-  useEffect(() => { setMounted(true) }, [])
+  const innerPos = useRadialPositions(3, 85)
+  const outerPos = useRadialPositions(3, 130, -Math.PI / 2 + Math.PI / 3)
+  const particles = useParticles(30, 105, 145, 113)
+  const c = 170 // center of 340px container
+  const BIG_ORB = 180
 
   return (
-    <div className="relative" style={{ width: 300, height: 300 }}>
-      <Orb glowColor={glowColor} />
-      {/* Ring decorations */}
-      {[72, 120].map((r) => (
-        <div
-          key={r}
-          className="absolute rounded-full pointer-events-none"
-          style={{
-            left: '50%',
-            top: '50%',
-            width: r * 2,
-            height: r * 2,
-            transform: 'translate(-50%, -50%)',
-            border: `1px solid ${glowColor}10`,
-          }}
-        />
-      ))}
-      {/* Inner ring: Voice, Automate, Customize */}
-      {mounted && CATEGORIES.slice(0, 3).map((cat, i) => (
+    <div className="relative" style={{ width: 340, height: 340 }}>
+      {/* SVG: rotating dashed rings on both orbit layers */}
+      <svg width={340} height={340} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
+        <RotatingRing cx={c} cy={c} r={85} color={glowColor} speed={6} dash="12 6" strokeW={1.5} />
+        <RotatingRing cx={c} cy={c} r={130} color={glowColor} speed={9} dash="25 8" strokeW={2} />
+      </svg>
+      {/* Particles around rings */}
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+        {particles.map((p, i) => (
+          <div key={i} className="absolute rounded-full" style={{
+            left: `calc(50% + ${p.x}px)`,
+            top: `calc(50% + ${p.y}px)`,
+            width: p.size, height: p.size,
+            background: glowColor,
+            opacity: p.opacity,
+            boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
+          }} />
+        ))}
+      </div>
+      {/* Bigger Orb at center */}
+      <div className="absolute" style={{
+        left: '50%', top: '50%',
+        width: BIG_ORB, height: BIG_ORB,
+        transform: 'translate(-50%, -50%)',
+        zIndex: 2,
+      }}>
+        <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
+      </div>
+      {/* Inner ring: Voice, Agent, Automate (fast-access) */}
+      {CATEGORIES.slice(0, 3).map((cat, i) => (
         <div
           key={cat.id}
           className="absolute"
@@ -323,6 +369,7 @@ function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
             left: '50%',
             top: '50%',
             transform: `translate(calc(-50% + ${innerPos[i].x}px), calc(-50% + ${innerPos[i].y}px))`,
+            zIndex: 3,
           }}
         >
           <HexNode
@@ -334,8 +381,8 @@ function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
           />
         </div>
       ))}
-      {/* Outer ring: Agent, System, Monitor */}
-      {mounted && CATEGORIES.slice(3).map((cat, i) => (
+      {/* Outer ring: System, Customize, Monitor (secondary) */}
+      {CATEGORIES.slice(3).map((cat, i) => (
         <div
           key={cat.id}
           className="absolute"
@@ -343,6 +390,7 @@ function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
             left: '50%',
             top: '50%',
             transform: `translate(calc(-50% + ${outerPos[i].x}px), calc(-50% + ${outerPos[i].y}px))`,
+            zIndex: 3,
           }}
         >
           <HexNode
@@ -583,29 +631,50 @@ function StructuralFrame({ cx, cy, r, color }: { cx: number; cy: number; r: numb
   )
 }
 
-// ── Mockup 8: Orbital + Halo ─────────────────────────────────────────
-function MockupOrbitalHalo({ glowColor }: { glowColor: string }) {
+// ── Mockup 8: Orbital (bigger orb + particles + rotating rings) ──────
+function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const positions = useRadialPositions(6, 110)
-  const c = 160 // SVG center (320/2)
+  const positions = useRadialPositions(6, 130)
+  const particles = useParticles(40, 100, 150, 42)
+  const c = 170 // center of 340px container
+  const BIG_ORB = 220
 
   return (
-    <div className="relative" style={{ width: 320, height: 320 }}>
-      {/* SVG decorative layer — rings, bloom, shimmer */}
-      <svg width={320} height={320} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
-        <StructuralFrame cx={c} cy={c} r={120} color={glowColor} />
-        <RotatingRing cx={c} cy={c} r={128} color={glowColor} speed={6} />
-        <RotatingRing cx={c} cy={c} r={100} color={glowColor} speed={4} dash="45 15" strokeW={2} />
-        <NeonBloom cx={c} cy={c} r={130} color={glowColor} />
-        <CoreShimmer cx={c} cy={c} r={20} />
+    <div className="relative" style={{ width: 340, height: 340 }}>
+      {/* SVG: rotating rings only — no halo/bloom/shimmer */}
+      <svg width={340} height={340} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
+        <RotatingRing cx={c} cy={c} r={140} color={glowColor} speed={8} dash="20 5" strokeW={2} />
+        <RotatingRing cx={c} cy={c} r={120} color={glowColor} speed={5} dash="40 12" strokeW={1.5} />
       </svg>
-      {/* Orb */}
-      <Orb glowColor={glowColor} />
+      {/* Particles floating between orb and rings */}
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+        {particles.map((p, i) => (
+          <div key={i} className="absolute rounded-full" style={{
+            left: `calc(50% + ${p.x}px)`,
+            top: `calc(50% + ${p.y}px)`,
+            width: p.size, height: p.size,
+            background: glowColor,
+            opacity: p.opacity,
+            filter: `blur(${p.size > 2 ? 1 : 0}px)`,
+            boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
+          }} />
+        ))}
+      </div>
+      {/* Bigger Orb */}
+      <div className="absolute" style={{
+        left: '50%', top: '50%',
+        width: BIG_ORB, height: BIG_ORB,
+        transform: 'translate(-50%, -50%)',
+        zIndex: 2,
+      }}>
+        <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
+      </div>
       {/* Hex nodes */}
       {CATEGORIES.map((cat, i) => (
         <div key={cat.id} className="absolute" style={{
           left: '50%', top: '50%',
           transform: `translate(calc(-50% + ${positions[i].x}px), calc(-50% + ${positions[i].y}px))`,
+          zIndex: 3,
         }}>
           <HexNode glowColor={glowColor} icon={cat.icon}
             isActive={activeId === cat.id}
@@ -616,118 +685,49 @@ function MockupOrbitalHalo({ glowColor }: { glowColor: string }) {
   )
 }
 
-// ── Mockup 9: Arc-Segment Nodes ──────────────────────────────────────
-function MockupArcSegments({ glowColor }: { glowColor: string }) {
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const svgSize = 340
-  const c = svgSize / 2
-  const outerR = 130
-  const innerR = 110
-  const segmentAngle = 360 / 6
-  const gap = 3 // degrees gap between segments
-
-  const polarToXY = (cx: number, cy: number, r: number, angleDeg: number) => {
-    const rad = ((angleDeg - 90) * Math.PI) / 180
-    return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) }
-  }
-
-  const arcPath = (r: number, startDeg: number, endDeg: number) => {
-    const s = polarToXY(c, c, r, endDeg)
-    const e = polarToXY(c, c, r, startDeg)
-    const large = endDeg - startDeg > 180 ? 1 : 0
-    return `M ${s.x} ${s.y} A ${r} ${r} 0 ${large} 0 ${e.x} ${e.y}`
-  }
-
-  return (
-    <div className="relative" style={{ width: svgSize, height: svgSize }}>
-      <svg width={svgSize} height={svgSize} className="absolute inset-0">
-        <defs>
-          <linearGradient id="arc-lm" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="rgba(100,110,120,0.25)" />
-            <stop offset="40%" stopColor="rgba(200,210,220,0.15)" />
-            <stop offset="60%" stopColor="rgba(100,110,120,0.2)" />
-            <stop offset="100%" stopColor="rgba(80,90,100,0.25)" />
-          </linearGradient>
-          <linearGradient id="arc-lm-active" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="#ffffff" />
-            <stop offset="25%" stopColor={hexToRgba(glowColor, 0.7)} />
-            <stop offset="50%" stopColor="#101014" />
-            <stop offset="75%" stopColor="#ffffff" />
-            <stop offset="100%" stopColor={hexToRgba(glowColor, 0.7)} />
-          </linearGradient>
-        </defs>
-
-        {/* Structural rings */}
-        <StructuralFrame cx={c} cy={c} r={outerR + 20} color={glowColor} />
-        <NeonBloom cx={c} cy={c} r={outerR + 22} color={glowColor} />
-        <RotatingRing cx={c} cy={c} r={outerR + 15} color={glowColor} speed={8} dash="20 4" />
-
-        {/* Arc segments */}
-        {CATEGORIES.map((cat, i) => {
-          const start = i * segmentAngle + gap / 2
-          const end = (i + 1) * segmentAngle - gap / 2
-          const isSelected = activeId === cat.id
-          const midAngle = (start + end) / 2
-          const textR = (outerR + innerR) / 2
-          const textPos = polarToXY(c, c, textR, midAngle)
-
-          return (
-            <g key={cat.id}>
-              {/* Glow background */}
-              <path d={arcPath(outerR, start, end)} fill="none"
-                stroke={isSelected ? hexToRgba(glowColor, 0.12) : 'rgba(255,255,255,0.02)'}
-                strokeWidth={outerR - innerR}
-                style={{ filter: isSelected ? 'blur(8px)' : 'none' }} />
-              {/* Liquid metal body */}
-              <path d={arcPath(outerR, start, end)} fill="none"
-                stroke={isSelected ? 'url(#arc-lm-active)' : 'url(#arc-lm)'}
-                strokeWidth={outerR - innerR}
-                style={{ cursor: 'pointer', opacity: 0.95 }}
-                onClick={() => setActiveId(isSelected ? null : cat.id)} />
-              {/* Edge highlight */}
-              <path d={arcPath(outerR + 1, start, end)} fill="none"
-                stroke={isSelected ? glowColor : 'rgba(255,255,255,0.1)'}
-                strokeWidth="0.5" style={{ opacity: 0.6 }} />
-              {/* Category label */}
-              <text x={textPos.x} y={textPos.y}
-                fill={isSelected ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.4)'}
-                fontSize="9" fontWeight="600" textAnchor="middle" dominantBaseline="central"
-                style={{ textTransform: 'uppercase', letterSpacing: '0.05em', pointerEvents: 'none' }}>
-                {cat.label}
-              </text>
-            </g>
-          )
-        })}
-
-        <CoreShimmer cx={c} cy={c} r={18} />
-      </svg>
-      {/* Orb at center */}
-      <Orb glowColor={glowColor} />
-    </div>
-  )
-}
-
-// ── Mockup 10: Hybrid Polish ─────────────────────────────────────────
+// ── Mockup 10: Hybrid Polish (bigger orb + particles + rotating rings)
 function MockupHybridPolish({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const positions = useRadialPositions(6, 108)
-  const c = 160
+  const positions = useRadialPositions(6, 130)
+  const particles = useParticles(35, 95, 150, 77)
+  const c = 170
+  const BIG_ORB = 220
 
   return (
-    <div className="relative" style={{ width: 320, height: 320 }}>
-      {/* SVG decorative rings between orb and nodes */}
-      <svg width={320} height={320} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
-        <RotatingRing cx={c} cy={c} r={75} color={glowColor} speed={5} dash="12 6" strokeW={1.5} />
-        <RotatingRing cx={c} cy={c} r={95} color={glowColor} speed={7} dash="30 10" strokeW={2} />
-        <NeonBloom cx={c} cy={c} r={115} color={glowColor} />
+    <div className="relative" style={{ width: 340, height: 340 }}>
+      {/* SVG: rotating rings only */}
+      <svg width={340} height={340} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
+        <RotatingRing cx={c} cy={c} r={100} color={glowColor} speed={6} dash="14 7" strokeW={1.5} />
+        <RotatingRing cx={c} cy={c} r={135} color={glowColor} speed={9} dash="35 12" strokeW={2} />
       </svg>
-      {/* Orb */}
-      <Orb glowColor={glowColor} />
+      {/* Particles */}
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+        {particles.map((p, i) => (
+          <div key={i} className="absolute rounded-full" style={{
+            left: `calc(50% + ${p.x}px)`,
+            top: `calc(50% + ${p.y}px)`,
+            width: p.size, height: p.size,
+            background: glowColor,
+            opacity: p.opacity,
+            boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
+          }} />
+        ))}
+      </div>
+      {/* Bigger Orb */}
+      <div className="absolute" style={{
+        left: '50%', top: '50%',
+        width: BIG_ORB, height: BIG_ORB,
+        transform: 'translate(-50%, -50%)',
+        zIndex: 2,
+      }}>
+        <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
+      </div>
       {/* Hex nodes with liquid-metal visual treatment */}
       {CATEGORIES.map((cat, i) => (
         <div key={cat.id} className="absolute" style={{
           left: '50%', top: '50%',
           transform: `translate(calc(-50% + ${positions[i].x}px), calc(-50% + ${positions[i].y}px))`,
+          zIndex: 3,
         }}>
           <LiquidHexNode glowColor={glowColor} icon={cat.icon}
             isActive={activeId === cat.id}
@@ -797,14 +797,14 @@ function LiquidHexNode({
   )
 }
 
-// ── Mockup 11: Dock Redesign (arc-segment buttons) ───────────────────
+// ── Mockup 11: Dock Redesign (arc-segment buttons, icons below) ──────
 function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const btnW = 42
-  const btnH = 36
+  const btnW = 48
+  const arcH = 28
+  const totalH = 68 // arc + gap + icon + label
   const arcPath = (w: number, h: number) => {
-    const r = h * 1.8
-    return `M 0 ${h} Q ${w / 2} ${-h * 0.3} ${w} ${h}`
+    return `M 2 ${h} Q ${w / 2} ${-h * 0.15} ${w - 2} ${h}`
   }
 
   return (
@@ -813,8 +813,8 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
       <div style={{ width: ORB_SIZE, height: ORB_SIZE }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
       </div>
-      {/* Dock bar with arc-segment buttons */}
-      <div className="flex items-end gap-1.5 px-4 py-3 rounded-xl" style={{
+      {/* Dock bar with arc buttons + icons below */}
+      <div className="flex items-start gap-2 px-4 py-3 rounded-xl" style={{
         background: 'rgba(255,255,255,0.03)',
         border: '1px solid rgba(255,255,255,0.06)',
       }}>
@@ -822,34 +822,35 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
           const isActive = activeId === cat.id
           return (
             <button key={cat.id} onClick={() => setActiveId(isActive ? null : cat.id)}
-              className="relative flex flex-col items-center gap-1 cursor-pointer"
-              style={{ background: 'none', border: 'none', padding: '2px 4px' }}>
-              {/* Arc segment button shape */}
-              <svg width={btnW} height={btnH} viewBox={`0 0 ${btnW} ${btnH}`}>
-                <defs>
-                  <linearGradient id={`dock-arc-${cat.id}`} x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" stopColor={isActive ? '#ffffff' : 'rgba(100,110,120,0.25)'} />
-                    <stop offset="40%" stopColor={isActive ? hexToRgba(glowColor, 0.7) : 'rgba(200,210,220,0.15)'} />
-                    <stop offset="100%" stopColor={isActive ? '#101014' : 'rgba(80,90,100,0.25)'} />
-                  </linearGradient>
-                </defs>
-                {/* Glow */}
-                {isActive && <path d={arcPath(btnW, btnH)} fill="none"
-                  stroke={glowColor} strokeWidth="8" style={{ filter: 'blur(6px)', opacity: 0.3 }} />}
-                {/* Arc body */}
-                <path d={arcPath(btnW, btnH)} fill="none"
-                  stroke={`url(#dock-arc-${cat.id})`} strokeWidth="6"
-                  strokeLinecap="round" style={{ cursor: 'pointer' }} />
-                {/* Edge highlight */}
-                <path d={arcPath(btnW, btnH)} fill="none"
-                  stroke={isActive ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.1)'}
-                  strokeWidth="0.5" />
-              </svg>
-              {/* Icon centered on arc */}
-              <div className="absolute" style={{ top: 4, left: '50%', transform: 'translateX(-50%)' }}>
-                <cat.icon style={{ width: 14, height: 14, color: isActive ? '#ffffff' : '#64748b' }}
-                  strokeWidth={1.5} />
+              className="flex flex-col items-center cursor-pointer"
+              style={{ background: 'none', border: 'none', padding: '2px 4px', gap: 4 }}>
+              {/* Arc segment */}
+              <div className="relative" style={{ width: btnW, height: arcH }}>
+                <svg width={btnW} height={arcH} viewBox={`0 0 ${btnW} ${arcH}`}>
+                  <defs>
+                    <linearGradient id={`dock-arc-${cat.id}`} x1="0%" y1="0%" x2="0%" y2="100%">
+                      <stop offset="0%" stopColor={isActive ? '#ffffff' : 'rgba(100,110,120,0.25)'} />
+                      <stop offset="40%" stopColor={isActive ? hexToRgba(glowColor, 0.7) : 'rgba(200,210,220,0.15)'} />
+                      <stop offset="100%" stopColor={isActive ? '#101014' : 'rgba(80,90,100,0.25)'} />
+                    </linearGradient>
+                  </defs>
+                  {isActive && <path d={arcPath(btnW, arcH)} fill="none"
+                    stroke={glowColor} strokeWidth="8" style={{ filter: 'blur(6px)', opacity: 0.3 }} />}
+                  <path d={arcPath(btnW, arcH)} fill="none"
+                    stroke={`url(#dock-arc-${cat.id})`} strokeWidth="5"
+                    strokeLinecap="round" style={{ cursor: 'pointer' }} />
+                  <path d={arcPath(btnW, arcH)} fill="none"
+                    stroke={isActive ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.1)'}
+                    strokeWidth="0.5" />
+                </svg>
               </div>
+              {/* Icon below arc — centered */}
+              <cat.icon style={{
+                width: 16, height: 16,
+                color: isActive ? '#ffffff' : '#64748b',
+                filter: isActive ? `drop-shadow(0 0 4px ${glowColor})` : 'none',
+                transition: 'color 0.2s, filter 0.2s',
+              }} strokeWidth={1.5} />
               {/* Label */}
               <span style={{
                 fontSize: '7px', fontWeight: 600, textTransform: 'uppercase' as const,
@@ -879,9 +880,8 @@ const MOCKUPS = [
   { key: 'dock', title: 'Dock', badge: null, description: 'Orb above, hex nodes in a compact dock bar below. Clean, minimal, macOS-inspired.', Component: MockupDock },
   { key: 'radial-arc', title: 'Radial Arc', badge: null, description: 'Nodes spread across the top half-circle. Leaves the bottom open for other UI.', Component: MockupRadialArc },
   { key: 'concentric', title: 'Concentric', badge: null, description: 'Two rings of 3 — inner fast-access, outer secondary. Visual hierarchy.', Component: MockupConcentric },
-  { key: 'orbital-halo', title: 'Orbital + Halo', badge: 'NEW', description: 'Orbital layout with rotating dashed rings, neon edge bloom, and core shimmer engine — wheel-view language.', Component: MockupOrbitalHalo },
-  { key: 'arc-segments', title: 'Arc-Segment Nodes', badge: 'NEW', description: 'SVG arc segments replacing hex nodes — liquid metal fills, selected glow, text along arcs. Direct DualRingMechanism language.', Component: MockupArcSegments },
-  { key: 'hybrid-polish', title: 'Hybrid Polish', badge: 'NEW', description: 'Radial hex with liquid-metal hex nodes, specular highlights, neon edge bloom, and rotating decorative rings.', Component: MockupHybridPolish },
+  { key: 'orbital-halo', title: 'Orbital + Particles', badge: 'NEW', description: 'Bigger orb with radiating particles that blend into rotating dashed rings. Industrial feel without SVG overlays.', Component: MockupOrbitalParticles },
+  { key: 'hybrid-polish', title: 'Hybrid Polish', badge: 'NEW', description: 'Radial hex with liquid-metal hex nodes, specular highlights, and rotating decorative rings.', Component: MockupHybridPolish },
   { key: 'dock-redesign', title: 'Dock Redesign', badge: 'NEW', description: 'Dock layout with mini arc-segment buttons — liquid metal fills, glow on active. Clean, compact.', Component: MockupDockRedesign },
 ]
 
