@@ -944,6 +944,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
         <div
           className="flex items-center gap-0.5 px-3 rounded-xl"
           style={{
+            position: 'relative',
             height: dockH,
             background: 'rgba(255,255,255,0.03)',
             border: '1px solid rgba(255,255,255,0.06)',
