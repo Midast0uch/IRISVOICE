@@ -908,16 +908,15 @@ function LiquidHexNode({
   )
 }
 
-// ── Mockup 11: Dock Redesign (arcs reach top, icons nestled, same dock size) ───────
+// ── Mockup 11: Dock Redesign (U-arcs inside dock, ends reach bottom) ───────
 function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
-  const iconH = 18 // icon row height inside dock
-  const arcPeak = 12 // how far the arc peeks above the dock bar top
-  const arcH = iconH + arcPeak // total arc height = icon area + peek above
-  const dockPadY = 8 // matches original py-2 (8px top/bottom)
-  // Arc: starts at bottom of icon area, peaks above dock bar top
-  const arcPath = `M 2 ${iconH} Q ${btnW / 2} ${-arcPeak + 2} ${btnW - 2} ${iconH}`
+  const dockH = 44 // same as original Dock
+  // U-arc: peak at top, both ends reach toward bottom of dock
+  const arcEndY = dockH - 3  // ends 3px from dock bottom
+  const arcPeakY = 4         // peak 4px from dock top
+  const arcPath = `M 2 ${arcEndY} Q ${btnW / 2} ${arcPeakY} ${btnW - 2} ${arcEndY}`
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -925,14 +924,13 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
       <div style={{ width: ORB_SIZE, height: ORB_SIZE }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
       </div>
-      {/* Dock container — relative so arcs can extend above it */}
+      {/* Dock container */}
       <div style={{ position: 'relative' }}>
         {/* Dock bar — same visual size as original (rounded-xl, px-3 py-2) */}
         <div
           className="flex items-center gap-2 px-3 rounded-xl"
           style={{
-            paddingTop: dockPadY,
-            paddingBottom: dockPadY,
+            height: dockH,
             background: 'rgba(255,255,255,0.03)',
             border: '1px solid rgba(255,255,255,0.06)',
             overflow: 'visible',
@@ -942,48 +940,48 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
             const isActive = hoveredId === cat.id
             return (
               <div key={cat.id}
-                className="flex flex-col items-center gap-1.5"
+                className="flex flex-col items-center"
                 onMouseEnter={() => setHoveredId(cat.id)}
                 onMouseLeave={() => setHoveredId(null)}
-                style={{ cursor: 'pointer', position: 'relative', width: btnW }}>
-                {/* Arc — extends above dock bar, peak at top */}
+                style={{ cursor: 'pointer', position: 'relative', width: btnW, height: dockH }}>
+                {/* U-arc — overlays full dock height, peak at top, ends at bottom */}
                 <div style={{
                   position: 'absolute',
-                  top: -arcPeak,
+                  top: 0,
                   left: 0,
                   width: btnW,
-                  height: arcH,
+                  height: dockH,
                   pointerEvents: 'none',
                 }}>
-                  <svg width={btnW} height={arcH} viewBox={`0 0 ${btnW} ${arcH}`}>
+                  <svg width={btnW} height={dockH} viewBox={`0 0 ${btnW} ${dockH}`}>
                     <defs>
                       <linearGradient id={`dock-arc-${cat.id}`} x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" stopColor={isActive ? '#ffffff' : 'rgba(100,110,120,0.25)'} />
-                        <stop offset="40%" stopColor={isActive ? hexToRgba(glowColor, 0.7) : 'rgba(200,210,220,0.15)'} />
-                        <stop offset="100%" stopColor={isActive ? '#101014' : 'rgba(80,90,100,0.25)'} />
+                        <stop offset="0%" stopColor={isActive ? '#ffffff' : 'rgba(100,110,120,0.2)'} />
+                        <stop offset="50%" stopColor={isActive ? hexToRgba(glowColor, 0.6) : 'rgba(200,210,220,0.12)'} />
+                        <stop offset="100%" stopColor={isActive ? '#101014' : 'rgba(80,90,100,0.2)'} />
                       </linearGradient>
                     </defs>
                     {isActive && <path d={arcPath} fill="none"
-                      stroke={glowColor} strokeWidth="6" style={{ filter: 'blur(5px)', opacity: 0.3 }} />}
+                      stroke={glowColor} strokeWidth="6" style={{ filter: 'blur(5px)', opacity: 0.25 }} />}
                     <path d={arcPath} fill="none"
-                      stroke={`url(#dock-arc-${cat.id})`} strokeWidth="3"
+                      stroke={`url(#dock-arc-${cat.id})`} strokeWidth="2.5"
                       strokeLinecap="round" style={{ cursor: 'pointer' }} />
                     <path d={arcPath} fill="none"
-                      stroke={isActive ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.1)'}
+                      stroke={isActive ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.08)'}
                       strokeWidth="0.5" />
                   </svg>
                 </div>
-                {/* Icon nestled at base of arc curve */}
+                {/* Icon nestled inside the U curve, centered vertically */}
                 <div style={{
                   position: 'relative',
                   width: btnW,
-                  height: iconH,
+                  height: dockH,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}>
                   <cat.icon style={{
-                    width: 16, height: 16,
+                    width: 14, height: 14,
                     color: isActive ? '#ffffff' : '#64748b',
                     filter: isActive ? `drop-shadow(0 0 3px ${glowColor})` : 'none',
                     transition: 'color 0.2s, filter 0.2s',
