@@ -913,11 +913,13 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
-  // Arch (∩): peak near top, feet near bottom, tight inward curve
-  const pad = 6        // horizontal padding — keeps outer arcs (Voice/Monitor) inside dock
-  const footY = dockH - 8  // feet 8px from dock bottom — don't touch bottom edge
-  // Cubic bezier: CPs above viewBox → SVG clips peak at dock top
-  const archPath = `M ${pad} ${footY} C ${pad} -6, ${btnW - pad} -6, ${btnW - pad} ${footY}`
+  // Arch (∩): peak at very top, feet cut short from bottom
+  const pad = 6
+  const footY = 28  // feet at y=28 — ~1/4 of arc cut from bottom
+  // Cubic bezier peak formula: peakY = 0.125*sY + 0.375*c1Y + 0.375*c2Y + 0.125*eY
+  // To get peak at y=0 with sY=eY=28, c1Y=c2Y: 0 = 0.25*28 + 0.75*cY → cY = -9.33
+  const cpY = -10  // control points above dock → peak reaches very top
+  const archPath = `M ${pad} ${footY} C ${pad} ${cpY}, ${btnW - pad} ${cpY}, ${btnW - pad} ${footY}`
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -929,7 +931,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
       <div style={{ position: 'relative' }}>
         {/* Dock bar — same visual size as original (rounded-xl, px-3 py-2) */}
         <div
-          className="flex items-center gap-1 px-3 rounded-xl"
+          className="flex items-center gap-0.5 px-3 rounded-xl"
           style={{
             height: dockH,
             background: 'rgba(255,255,255,0.03)',
@@ -995,7 +997,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
           })}
         </div>
         {/* Labels below dock bar */}
-        <div className="flex items-center gap-1 px-3" style={{ marginTop: 2 }}>
+        <div className="flex items-center gap-0.5 px-3" style={{ marginTop: 2 }}>
           {CATEGORIES.map((cat) => {
             const isActive = hoveredId === cat.id
             return (
