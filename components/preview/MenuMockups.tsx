@@ -908,20 +908,16 @@ function LiquidHexNode({
   )
 }
 
-// ── Mockup 11: Dock Redesign (tight U-arcs inside dock) ───────
+// ── Mockup 11: Dock Redesign (tight arch arcs inside dock) ───────
 function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
-  // U opens UPWARD — endpoints at top, peak at bottom, icon sits in concavity above peak
-  // Two quadratic beziers meet at bottom-center peak
-  const pad = 4 // inward padding so arcs never overflow edges
-  const topY = 5       // endpoints near top of dock
-  const peakY = dockH - 5 // peak near bottom of dock
-  const peakX = btnW / 2
-  // Left side: top-left → bottom-center, control pulled inward for tight curve
-  // Right side: bottom-center → top-right, control pulled inward for tight curve
-  const arcPath = `M ${pad} ${topY} Q ${pad + 2} ${peakY} ${peakX} ${peakY} Q ${btnW - pad - 2} ${peakY} ${btnW - pad} ${topY}`
+  // Arch (∩): peak near top, feet near bottom, tight inward curve
+  const pad = 6        // horizontal padding — keeps outer arcs (Voice/Monitor) inside dock
+  const footY = dockH - 4  // feet 4px from dock bottom
+  // Cubic bezier: CPs above viewBox → SVG clips peak at dock top
+  const archPath = `M ${pad} ${footY} C ${pad} -6, ${btnW - pad} -6, ${btnW - pad} ${footY}`
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -938,7 +934,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
             height: dockH,
             background: 'rgba(255,255,255,0.03)',
             border: '1px solid rgba(255,255,255,0.06)',
-            overflow: 'visible',
+            overflow: 'hidden',
           }}
         >
           {CATEGORIES.map((cat) => {
@@ -949,7 +945,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                 onMouseEnter={() => setHoveredId(cat.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 style={{ cursor: 'pointer', position: 'relative', width: btnW, height: dockH }}>
-                {/* U-arc — opens upward, peak at bottom, icon in concavity */}
+                {/* Arch (∩) — SVG clips peak at top, feet at bottom */}
                 <div style={{
                   position: 'absolute',
                   top: 0,
@@ -958,7 +954,8 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                   height: dockH,
                   pointerEvents: 'none',
                 }}>
-                  <svg width={btnW} height={dockH} viewBox={`0 0 ${btnW} ${dockH}`}>
+                  <svg width={btnW} height={dockH} viewBox={`0 0 ${btnW} ${dockH}`}
+                    style={{ overflow: 'hidden' }}>
                     <defs>
                       <linearGradient id={`dock-arc-${cat.id}`} x1="0%" y1="0%" x2="0%" y2="100%">
                         <stop offset="0%" stopColor={isActive ? '#ffffff' : 'rgba(100,110,120,0.2)'} />
@@ -966,25 +963,24 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                         <stop offset="100%" stopColor={isActive ? '#101014' : 'rgba(80,90,100,0.2)'} />
                       </linearGradient>
                     </defs>
-                    {isActive && <path d={arcPath} fill="none"
+                    {isActive && <path d={archPath} fill="none"
                       stroke={glowColor} strokeWidth="4" style={{ filter: 'blur(4px)', opacity: 0.25 }} />}
-                    <path d={arcPath} fill="none"
+                    <path d={archPath} fill="none"
                       stroke={`url(#dock-arc-${cat.id})`} strokeWidth="2"
                       strokeLinecap="round" style={{ cursor: 'pointer' }} />
-                    <path d={arcPath} fill="none"
+                    <path d={archPath} fill="none"
                       stroke={isActive ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.08)'}
                       strokeWidth="0.5" />
                   </svg>
                 </div>
-                {/* Icon nestled in the concavity above the U peak */}
+                {/* Icon nestled under the arch, centered */}
                 <div style={{
                   position: 'relative',
                   width: btnW,
                   height: dockH,
                   display: 'flex',
-                  alignItems: 'flex-start',
+                  alignItems: 'center',
                   justifyContent: 'center',
-                  paddingTop: 10,
                 }}>
                   <cat.icon style={{
                     width: 14, height: 14,
@@ -996,6 +992,28 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                 </div>
               </div>
             )
+          })}
+        </div>
+        {/* Labels below dock bar */}
+        <div className="flex items-center gap-2 px-3" style={{ marginTop: 2 }}>
+          {CATEGORIES.map((cat) => {
+            const isActive = hoveredId === cat.id
+            return (
+              <div key={cat.id} style={{ width: btnW, textAlign: 'center' }}>
+                <span style={{
+                  fontSize: '7px', color: isActive ? '#ffffff' : '#475569',
+                  letterSpacing: '0.08em', textTransform: 'uppercase' as const,
+                  fontWeight: 600, transition: 'color 0.2s',
+                }}>
+                  {cat.label}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
           })}
         </div>
         {/* Labels below dock bar */}
