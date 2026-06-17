@@ -913,6 +913,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
+  const particles = useParticles(20, 10, 120, 77)
   // Arch (∩): peak below top, feet near bottom, vertically centered in dock
   const pad = 6
   const footY = 36  // feet shifted up 4px
@@ -993,6 +994,19 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
               </div>
             )
           })}
+          {/* Particles floating inside dock */}
+          <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl">
+            {particles.map((p, i) => (
+              <div key={i} className="absolute rounded-full" style={{
+                left: `calc(50% + ${p.x}px)`,
+                top: `calc(50% + ${p.y}px)`,
+                width: p.size, height: p.size,
+                background: glowColor,
+                opacity: p.opacity * 0.6,
+                boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
+              }} />
+            ))}
+          </div>
         </div>
         {/* Labels below dock bar */}
         <div className="flex items-center gap-0.5 px-3" style={{ marginTop: 2 }}>
