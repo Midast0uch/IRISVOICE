@@ -913,16 +913,15 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
-  // Arch (∩): peak at very top, feet cut short from bottom, vertically centered in dock
+  // Arch (∩): peak below top, feet near bottom, vertically centered in dock
   const pad = 6
-  // Shifted down by 8px from top to center in 44px dock
-  const footY = 36  // feet at y=36 (8px from bottom)
-  // Peak formula: peakY = 0.25*footY + 0.75*cpY → 0.25*36 + 0.75*(-2) = 7.5 ≈ top region
-  const cpY = -2  // control points slightly above dock → peak reaches near top
+  const footY = 40  // feet at y=40 (4px from dock bottom)
+  // Peak formula: peakY = 0.25*footY + 0.75*cpY → 0.25*40 + 0.75*4 = 13
+  const cpY = 4  // control points inside dock → peak at y=13, clear of top
   const archPath = `M ${pad} ${footY} C ${pad} ${cpY}, ${btnW - pad} ${cpY}, ${btnW - pad} ${footY}`
 
   return (
-    <div className="flex flex-col items-center gap-5">
+    <div className="flex flex-col items-center gap-2">
       {/* Orb — same size as original Dock mockup (ORB_SIZE = 180px) */}
       <div style={{ width: ORB_SIZE, height: ORB_SIZE }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
