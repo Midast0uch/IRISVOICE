@@ -913,11 +913,15 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
-  // Tight U-arc: cubic bezier — peak barely touches top, ends near bottom, steep sides
-  const arcEndY = 39       // ends 5px from dock bottom
-  // C cp1x cp1y, cp2x cp2y, endX endY
-  // cp1 and cp2 pulled inward (narrow) and upward (steep sides, peak at top)
-  const arcPath = `M 2 ${arcEndY} C ${btnW * 0.15} 6, ${btnW * 0.85} 6, ${btnW - 2} ${arcEndY}`
+  // U opens UPWARD — endpoints at top, peak at bottom, icon sits in concavity above peak
+  // Two quadratic beziers meet at bottom-center peak
+  const pad = 4 // inward padding so arcs never overflow edges
+  const topY = 5       // endpoints near top of dock
+  const peakY = dockH - 5 // peak near bottom of dock
+  const peakX = btnW / 2
+  // Left side: top-left → bottom-center, control pulled inward for tight curve
+  // Right side: bottom-center → top-right, control pulled inward for tight curve
+  const arcPath = `M ${pad} ${topY} Q ${pad + 2} ${peakY} ${peakX} ${peakY} Q ${btnW - pad - 2} ${peakY} ${btnW - pad} ${topY}`
 
   return (
     <div className="flex flex-col items-center gap-5">
@@ -945,7 +949,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                 onMouseEnter={() => setHoveredId(cat.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 style={{ cursor: 'pointer', position: 'relative', width: btnW, height: dockH }}>
-                {/* U-arc — overlays full dock height, peak at top, ends at bottom */}
+                {/* U-arc — opens upward, peak at bottom, icon in concavity */}
                 <div style={{
                   position: 'absolute',
                   top: 0,
@@ -963,23 +967,24 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                       </linearGradient>
                     </defs>
                     {isActive && <path d={arcPath} fill="none"
-                      stroke={glowColor} strokeWidth="6" style={{ filter: 'blur(5px)', opacity: 0.25 }} />}
+                      stroke={glowColor} strokeWidth="4" style={{ filter: 'blur(4px)', opacity: 0.25 }} />}
                     <path d={arcPath} fill="none"
-                      stroke={`url(#dock-arc-${cat.id})`} strokeWidth="2.5"
+                      stroke={`url(#dock-arc-${cat.id})`} strokeWidth="2"
                       strokeLinecap="round" style={{ cursor: 'pointer' }} />
                     <path d={arcPath} fill="none"
                       stroke={isActive ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.08)'}
                       strokeWidth="0.5" />
                   </svg>
                 </div>
-                {/* Icon nestled inside the U curve, centered vertically */}
+                {/* Icon nestled in the concavity above the U peak */}
                 <div style={{
                   position: 'relative',
                   width: btnW,
                   height: dockH,
                   display: 'flex',
-                  alignItems: 'center',
+                  alignItems: 'flex-start',
                   justifyContent: 'center',
+                  paddingTop: 10,
                 }}>
                   <cat.icon style={{
                     width: 14, height: 14,
