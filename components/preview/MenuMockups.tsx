@@ -911,36 +911,37 @@ function LiquidHexNode({
 // ── Mockup 11: Dock Redesign (compact, tall arcs reaching top) ───────
 function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const btnW = 36 // slightly wider than icon (16px) so arc envelops it
-  const arcH = 24 // arc height proportional to icon — smaller, tighter
-  // Arc goes from bottom-left → curves UP slightly → bottom-right
-  // Control point is just above endpoints, creating a gentle cradle
+  const btnW = 40
+  const arcH = 40 // arc height matches icon area — reaches top of dock container
+  // Arc curves from bottom of dock → up to top of dock container → back down
   const arcPath = (w: number, h: number) => {
-    return `M 2 ${h} Q ${w / 2} ${-h * 0.4} ${w - 2} ${h}`
+    return `M 2 ${h} Q ${w / 2} ${-h * 0.3} ${w - 2} ${h}`
   }
 
   return (
-    <div className="flex flex-col items-center gap-3">
-      {/* Orb — centered above dock */}
-      <div style={{ width: 120, height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div className="flex flex-col items-center gap-5">
+      {/* Orb — same size as original Dock mockup (ORB_SIZE = 180px) */}
+      <div style={{ width: ORB_SIZE, height: ORB_SIZE }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
       </div>
-      {/* Dock bar — compact with arcs enveloping icons */}
-      <div className="flex items-end gap-1.5 px-3 py-2 rounded-lg" style={{
-        background: 'rgba(255,255,255,0.03)',
-        border: '1px solid rgba(255,255,255,0.06)',
-      }}>
+      {/* Dock bar — same size as original Dock mockup (rounded-xl, px-3 py-2) */}
+      <div
+        className="flex items-center gap-2 px-3 py-2 rounded-xl"
+        style={{
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid rgba(255,255,255,0.06)',
+        }}
+      >
         {CATEGORIES.map((cat) => {
           const isActive = hoveredId === cat.id
           return (
-            <button key={cat.id}
+            <div key={cat.id} className="flex flex-col items-center"
               onMouseEnter={() => setHoveredId(cat.id)}
               onMouseLeave={() => setHoveredId(null)}
-              className="flex flex-col items-center cursor-pointer"
-              style={{ background: 'none', border: 'none', padding: '1px 2px', gap: 2 }}>
-              {/* Arc segment — proportional to icon, envelops it */}
+              style={{ gap: 1.5, cursor: 'pointer' }}>
+              {/* Arc segment — reaches top of dock container */}
               <div className="relative" style={{ width: btnW, height: arcH }}>
-                <svg width={btnW} height={arcH} viewBox={`0 0 ${btnW} ${arcH}`}>
+                <svg width={btnW} height={arcH} viewBox={`0 0 ${btnW} ${arcH}`} style={{ display: 'block' }}>
                   <defs>
                     <linearGradient id={`dock-arc-${cat.id}`} x1="0%" y1="0%" x2="0%" y2="100%">
                       <stop offset="0%" stopColor={isActive ? '#ffffff' : 'rgba(100,110,120,0.25)'} />
@@ -957,24 +958,27 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                     stroke={isActive ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.1)'}
                     strokeWidth="0.5" />
                 </svg>
+                {/* Icon centered inside the arc curve */}
+                <cat.icon style={{
+                  position: 'absolute',
+                  left: '50%', top: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  width: 16, height: 16,
+                  color: isActive ? '#ffffff' : '#64748b',
+                  filter: isActive ? `drop-shadow(0 0 3px ${glowColor})` : 'none',
+                  transition: 'color 0.2s, filter 0.2s',
+                  pointerEvents: 'none',
+                }} strokeWidth={1.5} />
               </div>
-              {/* Icon inside arc curve */}
-              <cat.icon style={{
-                width: 14, height: 14,
-                color: isActive ? '#ffffff' : '#64748b',
-                filter: isActive ? `drop-shadow(0 0 3px ${glowColor})` : 'none',
-                transition: 'color 0.2s, filter 0.2s',
-                marginTop: -arcH + 4, // pull icon up into the arc's curve
-              }} strokeWidth={1.5} />
-              {/* Label */}
+              {/* Label below */}
               <span style={{
-                fontSize: '6px', fontWeight: 600, textTransform: 'uppercase' as const,
-                letterSpacing: '0.08em', color: isActive ? '#ffffff' : '#475569',
-                transition: 'color 0.2s',
+                fontSize: '7px', color: isActive ? '#ffffff' : '#475569',
+                letterSpacing: '0.08em', textTransform: 'uppercase' as const,
+                fontWeight: 600, transition: 'color 0.2s',
               }}>
                 {cat.label}
               </span>
-            </button>
+            </div>
           )
         })}
       </div>
