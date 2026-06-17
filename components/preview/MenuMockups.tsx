@@ -915,7 +915,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const dockH = 44 // same as original Dock
   // Arch (∩): peak near top, feet near bottom, tight inward curve
   const pad = 6        // horizontal padding — keeps outer arcs (Voice/Monitor) inside dock
-  const footY = dockH - 4  // feet 4px from dock bottom
+  const footY = dockH - 8  // feet 8px from dock bottom — don't touch bottom edge
   // Cubic bezier: CPs above viewBox → SVG clips peak at dock top
   const archPath = `M ${pad} ${footY} C ${pad} -6, ${btnW - pad} -6, ${btnW - pad} ${footY}`
 
@@ -929,7 +929,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
       <div style={{ position: 'relative' }}>
         {/* Dock bar — same visual size as original (rounded-xl, px-3 py-2) */}
         <div
-          className="flex items-center gap-2 px-3 rounded-xl"
+          className="flex items-center gap-1 px-3 rounded-xl"
           style={{
             height: dockH,
             background: 'rgba(255,255,255,0.03)',
@@ -995,29 +995,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
           })}
         </div>
         {/* Labels below dock bar */}
-        <div className="flex items-center gap-2 px-3" style={{ marginTop: 2 }}>
-          {CATEGORIES.map((cat) => {
-            const isActive = hoveredId === cat.id
-            return (
-              <div key={cat.id} style={{ width: btnW, textAlign: 'center' }}>
-                <span style={{
-                  fontSize: '7px', color: isActive ? '#ffffff' : '#475569',
-                  letterSpacing: '0.08em', textTransform: 'uppercase' as const,
-                  fontWeight: 600, transition: 'color 0.2s',
-                }}>
-                  {cat.label}
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
-          })}
-        </div>
-        {/* Labels below dock bar */}
-        <div className="flex items-center gap-2 px-3" style={{ marginTop: 2 }}>
+        <div className="flex items-center gap-1 px-3" style={{ marginTop: 2 }}>
           {CATEGORIES.map((cat) => {
             const isActive = hoveredId === cat.id
             return (
