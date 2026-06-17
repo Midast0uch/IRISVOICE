@@ -921,7 +921,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const archPath = `M ${pad} ${footY} C ${pad} ${cpY}, ${btnW - pad} ${cpY}, ${btnW - pad} ${footY}`
 
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="flex flex-col items-center gap-1">
       {/* Orb — same size as original Dock mockup (ORB_SIZE = 180px) */}
       <div style={{ width: ORB_SIZE, height: ORB_SIZE }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
@@ -974,14 +974,15 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                       strokeWidth="0.5" />
                   </svg>
                 </div>
-                {/* Icon nestled under the arch, centered */}
+                {/* Icon nestled under the arch, shifted up */}
                 <div style={{
                   position: 'relative',
                   width: btnW,
                   height: dockH,
                   display: 'flex',
-                  alignItems: 'center',
+                  alignItems: 'flex-start',
                   justifyContent: 'center',
+                  paddingTop: 4,
                 }}>
                   <cat.icon style={{
                     width: 14, height: 14,
