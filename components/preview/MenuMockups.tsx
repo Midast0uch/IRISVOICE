@@ -913,7 +913,19 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const btnW = 40
   const dockH = 44 // same as original Dock
-  const particles = useParticles(15, 5, 45, 77)
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+  // Particles spread horizontally across the dock, not in a circle
+  const dockParticles = useMemo(() => {
+    if (!mounted) return []
+    const rng = mulberry32(77)
+    return Array.from({ length: 20 }, () => ({
+      x: (rng() - 0.5) * 260, // spread across dock width (~280px)
+      y: (rng() - 0.5) * (dockH - 8), // stay within dock height with 4px inset
+      size: 1 + rng() * 2,
+      opacity: 0.1 + rng() * 0.3,
+    }))
+  }, [mounted])
   // Arch (∩): peak below top, feet near bottom, vertically centered in dock
   const pad = 6
   const footY = 36  // feet shifted up 4px
@@ -996,13 +1008,13 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
           })}
           {/* Particles floating inside dock */}
           <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-xl">
-            {particles.map((p, i) => (
+            {dockParticles.map((p, i) => (
               <div key={i} className="absolute rounded-full" style={{
                 left: `calc(50% + ${p.x}px)`,
                 top: `calc(50% + ${p.y}px)`,
                 width: p.size, height: p.size,
                 background: glowColor,
-                opacity: p.opacity * 0.6,
+                opacity: p.opacity,
                 boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
               }} />
             ))}
