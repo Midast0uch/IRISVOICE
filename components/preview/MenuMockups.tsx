@@ -631,20 +631,23 @@ function StructuralFrame({ cx, cy, r, color }: { cx: number; cy: number; r: numb
   )
 }
 
-// ── Mockup 8: Orbital (bigger orb + particles + rotating rings) ──────
+// ── Mockup 8: Orbital (orb + particles + rotating rings) ─────────────
+// Uses 180px orb (same as other mockups) for consistent visual centering.
+// Lissajous curve in PrototypeOrbBreathing has asymmetric visual mass;
+// smaller orb relative to container reduces perceived offset.
 function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const positions = useRadialPositions(6, 140)
-  const particles = useParticles(40, 115, 160, 42)
-  const c = 175 // center of 350px container
-  const BIG_ORB = 260
+  const positions = useRadialPositions(6, 115)
+  const particles = useParticles(40, 95, 135, 42)
+  const c = 160 // center of 320px container
+  const ORB_SIZE = 180
 
   return (
-    <div className="relative" style={{ width: 350, height: 350 }}>
+    <div className="relative" style={{ width: 320, height: 320 }}>
       {/* SVG: rotating rings only — no halo/bloom/shimmer */}
-      <svg width={350} height={350} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
-        <RotatingRing cx={c} cy={c} r={150} color={glowColor} speed={8} dash="20 5" strokeW={2} />
-        <RotatingRing cx={c} cy={c} r={130} color={glowColor} speed={5} dash="40 12" strokeW={1.5} />
+      <svg width={320} height={320} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
+        <RotatingRing cx={c} cy={c} r={125} color={glowColor} speed={8} dash="20 5" strokeW={2} />
+        <RotatingRing cx={c} cy={c} r={105} color={glowColor} speed={5} dash="40 12" strokeW={1.5} />
       </svg>
       {/* Particles floating between orb and rings */}
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
@@ -660,10 +663,10 @@ function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
           }} />
         ))}
       </div>
-      {/* Bigger Orb — larger container reduces visual offset of Lissajous particles */}
+      {/* Standard 180px orb — matches other mockups for consistent centering */}
       <div className="absolute" style={{
         left: '50%', top: '50%',
-        width: BIG_ORB, height: BIG_ORB,
+        width: ORB_SIZE, height: ORB_SIZE,
         transform: 'translate(-50%, -50%)',
         zIndex: 2,
       }}>
@@ -686,26 +689,27 @@ function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
 }
 
 // ── Mockup 10: Hybrid Polish — Concentric (3 rings + ring nodes) ────
+// Uses 180px orb (same as other mockups) for consistent visual centering.
 function MockupHybridPolish({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const particles = useParticles(45, 100, 165, 77)
-  const c = 175 // center of 350px container
-  const BIG_ORB = 200
+  const particles = useParticles(45, 90, 150, 77)
+  const c = 160 // center of 320px container
+  const ORB_SIZE = 180
 
   // Ring radii and node counts: inner 1, middle 2, outer 3
   const RING_DEFS = [
-    { r: 90, count: 1, speed: 4, startAngle: -Math.PI / 2 },
-    { r: 125, count: 2, speed: 7, startAngle: -Math.PI / 2 + Math.PI / 2 },
-    { r: 160, count: 3, speed: 10, startAngle: -Math.PI / 2 },
+    { r: 80, count: 1, speed: 4, startAngle: -Math.PI / 2 },
+    { r: 115, count: 2, speed: 7, startAngle: -Math.PI / 2 + Math.PI / 2 },
+    { r: 150, count: 3, speed: 10, startAngle: -Math.PI / 2 },
   ]
 
   return (
-    <div className="relative" style={{ width: 350, height: 350 }}>
+    <div className="relative" style={{ width: 320, height: 320 }}>
       {/* SVG: 3 rotating dashed rings */}
-      <svg width={350} height={350} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
-        <RotatingRing cx={c} cy={c} r={90} color={glowColor} speed={4} dash="10 5" strokeW={1.5} />
-        <RotatingRing cx={c} cy={c} r={125} color={glowColor} speed={7} dash="20 6" strokeW={2} />
-        <RotatingRing cx={c} cy={c} r={160} color={glowColor} speed={10} dash="30 8" strokeW={2} />
+      <svg width={320} height={320} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
+        <RotatingRing cx={c} cy={c} r={80} color={glowColor} speed={4} dash="10 5" strokeW={1.5} />
+        <RotatingRing cx={c} cy={c} r={115} color={glowColor} speed={7} dash="20 6" strokeW={2} />
+        <RotatingRing cx={c} cy={c} r={150} color={glowColor} speed={10} dash="30 8" strokeW={2} />
       </svg>
       {/* Particles around rings */}
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
@@ -720,10 +724,10 @@ function MockupHybridPolish({ glowColor }: { glowColor: string }) {
           }} />
         ))}
       </div>
-      {/* Bigger Orb at center */}
+      {/* Standard 180px orb — matches other mockups for consistent centering */}
       <div className="absolute" style={{
         left: '50%', top: '50%',
-        width: BIG_ORB, height: BIG_ORB,
+        width: ORB_SIZE, height: ORB_SIZE,
         transform: 'translate(-50%, -50%)',
         zIndex: 2,
       }}>
@@ -876,25 +880,25 @@ function LiquidHexNode({
   )
 }
 
-// ── Mockup 11: Dock Redesign (arc-segment buttons, icons below) ──────
+// ── Mockup 11: Dock Redesign (compact, tall arcs reaching top) ───────
 function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const btnW = 56
-  const arcH = 44 // taller arc — curves down to envelop the icon below
-  // Arc goes from top-left → curves DOWN and around → top-right
-  // The control point is pulled down so the arc dips well below the icon
+  const btnW = 32 // 1.5x smaller (was 48)
+  const arcH = 48 // taller arc — reaches top of dock bar
+  // Arc goes from bottom corners → curves UP to reach top of dock
+  // Control point is well above, creating a tall U-shape
   const arcPath = (w: number, h: number) => {
-    return `M 2 4 Q ${w / 2} ${h + 4} ${w - 2} 4`
+    return `M 2 ${h} Q ${w / 2} ${-h * 0.8} ${w - 2} ${h}`
   }
 
   return (
-    <div className="flex flex-col items-center gap-5">
-      {/* Orb */}
-      <div style={{ width: ORB_SIZE, height: ORB_SIZE }}>
+    <div className="flex flex-col items-center gap-3">
+      {/* Orb — smaller to match compact dock */}
+      <div style={{ width: 120, height: 120 }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
       </div>
-      {/* Dock bar with arc buttons + icons below */}
-      <div className="flex items-start gap-2 px-4 py-3 rounded-xl" style={{
+      {/* Dock bar — compact with tall arcs reaching top */}
+      <div className="flex items-end gap-1.5 px-3 py-2 rounded-lg" style={{
         background: 'rgba(255,255,255,0.03)',
         border: '1px solid rgba(255,255,255,0.06)',
       }}>
@@ -903,8 +907,8 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
           return (
             <button key={cat.id} onClick={() => setActiveId(isActive ? null : cat.id)}
               className="flex flex-col items-center cursor-pointer"
-              style={{ background: 'none', border: 'none', padding: '2px 4px', gap: 4 }}>
-              {/* Arc segment — deep curve that envelops the icon below */}
+              style={{ background: 'none', border: 'none', padding: '1px 2px', gap: 2 }}>
+              {/* Arc segment — tall curve reaching top of dock */}
               <div className="relative" style={{ width: btnW, height: arcH }}>
                 <svg width={btnW} height={arcH} viewBox={`0 0 ${btnW} ${arcH}`}>
                   <defs>
@@ -915,26 +919,25 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                     </linearGradient>
                   </defs>
                   {isActive && <path d={arcPath(btnW, arcH)} fill="none"
-                    stroke={glowColor} strokeWidth="8" style={{ filter: 'blur(6px)', opacity: 0.3 }} />}
+                    stroke={glowColor} strokeWidth="6" style={{ filter: 'blur(5px)', opacity: 0.3 }} />}
                   <path d={arcPath(btnW, arcH)} fill="none"
-                    stroke={`url(#dock-arc-${cat.id})`} strokeWidth="5"
+                    stroke={`url(#dock-arc-${cat.id})`} strokeWidth="4"
                     strokeLinecap="round" style={{ cursor: 'pointer' }} />
                   <path d={arcPath(btnW, arcH)} fill="none"
                     stroke={isActive ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.1)'}
                     strokeWidth="0.5" />
                 </svg>
               </div>
-              {/* Icon below arc — centered, sits inside the arc curve */}
+              {/* Icon sits at bottom of arc curve */}
               <cat.icon style={{
-                width: 16, height: 16,
+                width: 12, height: 12,
                 color: isActive ? '#ffffff' : '#64748b',
-                filter: isActive ? `drop-shadow(0 0 4px ${glowColor})` : 'none',
+                filter: isActive ? `drop-shadow(0 0 3px ${glowColor})` : 'none',
                 transition: 'color 0.2s, filter 0.2s',
-                marginTop: -arcH + 16, // pull icon up into the arc curve
               }} strokeWidth={1.5} />
               {/* Label */}
               <span style={{
-                fontSize: '7px', fontWeight: 600, textTransform: 'uppercase' as const,
+                fontSize: '6px', fontWeight: 600, textTransform: 'uppercase' as const,
                 letterSpacing: '0.08em', color: isActive ? '#ffffff' : '#475569',
                 transition: 'color 0.2s',
               }}>
