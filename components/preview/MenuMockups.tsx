@@ -634,17 +634,17 @@ function StructuralFrame({ cx, cy, r, color }: { cx: number; cy: number; r: numb
 // ── Mockup 8: Orbital (bigger orb + particles + rotating rings) ──────
 function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const positions = useRadialPositions(6, 130)
-  const particles = useParticles(40, 100, 150, 42)
-  const c = 170 // center of 340px container
-  const BIG_ORB = 220
+  const positions = useRadialPositions(6, 140)
+  const particles = useParticles(40, 115, 160, 42)
+  const c = 175 // center of 350px container
+  const BIG_ORB = 260
 
   return (
-    <div className="relative" style={{ width: 340, height: 340 }}>
+    <div className="relative" style={{ width: 350, height: 350 }}>
       {/* SVG: rotating rings only — no halo/bloom/shimmer */}
-      <svg width={340} height={340} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
-        <RotatingRing cx={c} cy={c} r={140} color={glowColor} speed={8} dash="20 5" strokeW={2} />
-        <RotatingRing cx={c} cy={c} r={120} color={glowColor} speed={5} dash="40 12" strokeW={1.5} />
+      <svg width={350} height={350} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
+        <RotatingRing cx={c} cy={c} r={150} color={glowColor} speed={8} dash="20 5" strokeW={2} />
+        <RotatingRing cx={c} cy={c} r={130} color={glowColor} speed={5} dash="40 12" strokeW={1.5} />
       </svg>
       {/* Particles floating between orb and rings */}
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
@@ -660,7 +660,7 @@ function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
           }} />
         ))}
       </div>
-      {/* Bigger Orb */}
+      {/* Bigger Orb — larger container reduces visual offset of Lissajous particles */}
       <div className="absolute" style={{
         left: '50%', top: '50%',
         width: BIG_ORB, height: BIG_ORB,
@@ -685,22 +685,29 @@ function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
   )
 }
 
-// ── Mockup 10: Hybrid Polish (bigger orb + particles + rotating rings)
+// ── Mockup 10: Hybrid Polish — Concentric (3 rings + ring nodes) ────
 function MockupHybridPolish({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const positions = useRadialPositions(6, 130)
-  const particles = useParticles(35, 95, 150, 77)
-  const c = 170
-  const BIG_ORB = 220
+  const particles = useParticles(45, 100, 165, 77)
+  const c = 175 // center of 350px container
+  const BIG_ORB = 200
+
+  // Ring radii and node counts: inner 1, middle 2, outer 3
+  const RING_DEFS = [
+    { r: 90, count: 1, speed: 4, startAngle: -Math.PI / 2 },
+    { r: 125, count: 2, speed: 7, startAngle: -Math.PI / 2 + Math.PI / 2 },
+    { r: 160, count: 3, speed: 10, startAngle: -Math.PI / 2 },
+  ]
 
   return (
-    <div className="relative" style={{ width: 340, height: 340 }}>
-      {/* SVG: rotating rings only */}
-      <svg width={340} height={340} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
-        <RotatingRing cx={c} cy={c} r={100} color={glowColor} speed={6} dash="14 7" strokeW={1.5} />
-        <RotatingRing cx={c} cy={c} r={135} color={glowColor} speed={9} dash="35 12" strokeW={2} />
+    <div className="relative" style={{ width: 350, height: 350 }}>
+      {/* SVG: 3 rotating dashed rings */}
+      <svg width={350} height={350} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
+        <RotatingRing cx={c} cy={c} r={90} color={glowColor} speed={4} dash="10 5" strokeW={1.5} />
+        <RotatingRing cx={c} cy={c} r={125} color={glowColor} speed={7} dash="20 6" strokeW={2} />
+        <RotatingRing cx={c} cy={c} r={160} color={glowColor} speed={10} dash="30 8" strokeW={2} />
       </svg>
-      {/* Particles */}
+      {/* Particles around rings */}
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
         {particles.map((p, i) => (
           <div key={i} className="absolute rounded-full" style={{
@@ -713,7 +720,7 @@ function MockupHybridPolish({ glowColor }: { glowColor: string }) {
           }} />
         ))}
       </div>
-      {/* Bigger Orb */}
+      {/* Bigger Orb at center */}
       <div className="absolute" style={{
         left: '50%', top: '50%',
         width: BIG_ORB, height: BIG_ORB,
@@ -722,19 +729,91 @@ function MockupHybridPolish({ glowColor }: { glowColor: string }) {
       }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
       </div>
-      {/* Hex nodes with liquid-metal visual treatment */}
-      {CATEGORIES.map((cat, i) => (
-        <div key={cat.id} className="absolute" style={{
-          left: '50%', top: '50%',
-          transform: `translate(calc(-50% + ${positions[i].x}px), calc(-50% + ${positions[i].y}px))`,
-          zIndex: 3,
-        }}>
-          <LiquidHexNode glowColor={glowColor} icon={cat.icon}
-            isActive={activeId === cat.id}
-            onClick={() => setActiveId(activeId === cat.id ? null : cat.id)} />
-        </div>
-      ))}
+      {/* Ring nodes — circular ring-shaped markers on each orbit */}
+      {RING_DEFS.map((ring, ringIdx) => {
+        const positions = Array.from({ length: ring.count }, (_, i) => {
+          const angle = ring.startAngle + (i / ring.count) * Math.PI * 2
+          return { x: Math.cos(angle) * ring.r, y: Math.sin(angle) * ring.r }
+        })
+        return positions.map((pos, i) => {
+          // Assign categories across all rings: 1+2+3 = 6 total
+          const catIdx = RING_DEFS.slice(0, ringIdx).reduce((sum, r) => sum + r.count, 0) + i
+          const cat = CATEGORIES[catIdx]
+          if (!cat) return null
+          return (
+            <div key={`${ringIdx}-${i}`} className="absolute" style={{
+              left: '50%', top: '50%',
+              transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
+              zIndex: 3,
+            }}>
+              <RingNode glowColor={glowColor} icon={cat.icon}
+                isActive={activeId === cat.id}
+                onClick={() => setActiveId(activeId === cat.id ? null : cat.id)}
+                size={ring.count === 1 ? 38 : ring.count === 2 ? 34 : 30} />
+            </div>
+          )
+        })
+      })}
     </div>
+  )
+}
+
+/** Ring-shaped node — concentric design. Small circle with liquid-metal border + icon. */
+function RingNode({
+  glowColor, icon: Icon, isActive, onClick, size = 32,
+}: { glowColor: string; icon: ElementType; isActive: boolean; onClick: () => void; size?: number }) {
+  return (
+    <button
+      className="relative flex items-center justify-center cursor-pointer"
+      style={{
+        width: size, height: size,
+        border: 'none', background: 'none', padding: 0,
+        opacity: isActive ? 1 : 0.75,
+        transform: isActive ? 'scale(1.15)' : 'scale(1)',
+        transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+        flexShrink: 0,
+      }}
+      onClick={onClick}
+    >
+      {/* Neon glow ring */}
+      <div className="absolute pointer-events-none" style={{
+        inset: -5, borderRadius: '50%',
+        background: `radial-gradient(circle, ${hexToRgba(glowColor, 0.5)} 0%, transparent 70%)`,
+        filter: 'blur(5px)',
+        opacity: isActive ? 1 : 0.3,
+      }} />
+      {/* Liquid metal border ring */}
+      <div className="absolute pointer-events-none" style={{
+        inset: 0, borderRadius: '50%',
+        background: `conic-gradient(from 0deg,
+          #ffffff 0deg, ${glowColor} 60deg, #101014 150deg,
+          #ffffff 220deg, ${glowColor} 280deg, #101014 350deg) border-box`,
+        WebkitMask: 'linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0)',
+        WebkitMaskComposite: 'destination-out', maskComposite: 'exclude',
+        filter: `drop-shadow(0 0 2px ${glowColor})`,
+        zIndex: 2,
+      }} />
+      {/* Glassmorphic base */}
+      <div className="absolute inset-0 flex items-center justify-center overflow-hidden" style={{
+        borderRadius: '50%',
+        background: isActive
+          ? `radial-gradient(circle, ${hexToRgba(glowColor, 0.35)} 0%, #0a0a0c 75%)`
+          : `linear-gradient(135deg, #0a0a0c 0%, ${hexToRgba(glowColor, 0.12)} 100%)`,
+        boxShadow: '0 2px 6px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.15)',
+        zIndex: 3,
+      }}>
+        {/* Specular sweep */}
+        <div className="absolute inset-0 pointer-events-none" style={{
+          borderRadius: '50%',
+          background: 'linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 50%, rgba(255,255,255,0.04) 100%)',
+          zIndex: 4,
+        }} />
+        <div className="relative z-10 flex items-center justify-center pointer-events-none">
+          <Icon style={{ width: size * 0.42, height: size * 0.42, color: isActive ? '#ffffff' : '#94a3b8',
+            filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' }} strokeWidth={1.5} />
+        </div>
+      </div>
+    </button>
   )
 }
 
@@ -800,11 +879,12 @@ function LiquidHexNode({
 // ── Mockup 11: Dock Redesign (arc-segment buttons, icons below) ──────
 function MockupDockRedesign({ glowColor }: { glowColor: string }) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const btnW = 48
-  const arcH = 28
-  const totalH = 68 // arc + gap + icon + label
+  const btnW = 56
+  const arcH = 44 // taller arc — curves down to envelop the icon below
+  // Arc goes from top-left → curves DOWN and around → top-right
+  // The control point is pulled down so the arc dips well below the icon
   const arcPath = (w: number, h: number) => {
-    return `M 2 ${h} Q ${w / 2} ${-h * 0.15} ${w - 2} ${h}`
+    return `M 2 4 Q ${w / 2} ${h + 4} ${w - 2} 4`
   }
 
   return (
@@ -824,7 +904,7 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
             <button key={cat.id} onClick={() => setActiveId(isActive ? null : cat.id)}
               className="flex flex-col items-center cursor-pointer"
               style={{ background: 'none', border: 'none', padding: '2px 4px', gap: 4 }}>
-              {/* Arc segment */}
+              {/* Arc segment — deep curve that envelops the icon below */}
               <div className="relative" style={{ width: btnW, height: arcH }}>
                 <svg width={btnW} height={arcH} viewBox={`0 0 ${btnW} ${arcH}`}>
                   <defs>
@@ -844,12 +924,13 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
                     strokeWidth="0.5" />
                 </svg>
               </div>
-              {/* Icon below arc — centered */}
+              {/* Icon below arc — centered, sits inside the arc curve */}
               <cat.icon style={{
                 width: 16, height: 16,
                 color: isActive ? '#ffffff' : '#64748b',
                 filter: isActive ? `drop-shadow(0 0 4px ${glowColor})` : 'none',
                 transition: 'color 0.2s, filter 0.2s',
+                marginTop: -arcH + 16, // pull icon up into the arc curve
               }} strokeWidth={1.5} />
               {/* Label */}
               <span style={{
