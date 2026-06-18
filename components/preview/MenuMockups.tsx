@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import type { ElementType } from 'react'
 import { Mic, Palette, Activity } from 'lucide-react'
-import { IconRobot, IconTopologyStar3, IconServerCog } from '@tabler/icons-react'
+import { IconRobot, IconTopologyStar3, IconBasketCog } from '@tabler/icons-react'
 import { PrototypeOrbBreathing } from './PrototypeOrbBreathing'
 
 // ── Shared category data ─────────────────────────────────────────────
@@ -11,7 +11,7 @@ const CATEGORIES = [
   { id: 'voice', label: 'Voice', icon: Mic },
   { id: 'agent', label: 'Agent', icon: IconRobot },
   { id: 'automate', label: 'Automate', icon: IconTopologyStar3 },
-  { id: 'system', label: 'System', icon: IconServerCog },
+  { id: 'system', label: 'System', icon: IconBasketCog },
   { id: 'customize', label: 'Customize', icon: Palette },
   { id: 'monitor', label: 'Monitor', icon: Activity },
 ] as const
