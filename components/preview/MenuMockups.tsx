@@ -134,12 +134,14 @@ function HexNode({
   )
 }
 
-// ── Orb component (no labels, no glitch text) ────────────────────────
+// ── Orb component (no labels, no glitch text by default) ─────────────
 // Positioned absolutely at the center of the parent container.
 // Both the Orb and the hex nodes use the same coordinate origin
 // (left:50%, top:50% of the parent) so they are always aligned.
+// showLabels: when true, enables PrototypeOrbBreathing's built-in glitch text.
+// onClick: forwarded for orb click → glitch text transitions.
 const ORB_SIZE = 180
-function Orb({ glowColor }: { glowColor: string }) {
+function Orb({ glowColor, showLabels = false, onClick }: { glowColor: string; showLabels?: boolean; onClick?: () => void }) {
   return (
     <div
       className="absolute"
@@ -150,9 +152,11 @@ function Orb({ glowColor }: { glowColor: string }) {
         height: ORB_SIZE,
         transform: 'translate(-50%, -50%)',
         zIndex: 0,
+        cursor: onClick ? 'pointer' : undefined,
       }}
+      onClick={onClick}
     >
-      <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
+      <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={showLabels} />
     </div>
   )
 }
@@ -288,12 +292,12 @@ function MockupOrbital({ glowColor }: { glowColor: string }) {
         </defs>
         {CATEGORIES.map((cat, i) => {
           const angle = (i / 6) * Math.PI * 2 - Math.PI / 2
-          const tx = c + Math.cos(angle) * r
-          const ty = c + Math.sin(angle) * r
+          const tx = Math.round((c + Math.cos(angle) * r) * 100) / 100
+          const ty = Math.round((c + Math.sin(angle) * r) * 100) / 100
           // Control point pulled slightly inward for petal shape
           const cpDist = r * 0.4
-          const cpx = c + Math.cos(angle) * cpDist
-          const cpy = c + Math.sin(angle) * cpDist
+          const cpx = Math.round((c + Math.cos(angle) * cpDist) * 100) / 100
+          const cpy = Math.round((c + Math.sin(angle) * cpDist) * 100) / 100
           return (
             <g key={cat.id}>
               <path
@@ -350,7 +354,7 @@ function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
   // Calculate 6 node positions forming a hexagon
   const positions = CATEGORIES.map((_, i) => {
     const angle = (i / 6) * Math.PI * 2 - Math.PI / 2
-    return { x: c + Math.cos(angle) * r, y: c + Math.sin(angle) * r, angle }
+    return { x: Math.round((c + Math.cos(angle) * r) * 100) / 100, y: Math.round((c + Math.sin(angle) * r) * 100) / 100, angle }
   })
 
   return (
@@ -462,6 +466,10 @@ function MockupDock({ glowColor }: { glowColor: string }) {
 }
 
 // ── Mockup 6: Radial Arc (top half-circle) ───────────────────────────
+// ── Mockup 6: Radial Arc + Arc Chords (enhanced) ────────────────────
+// Nodes on the top half-arc with chord lines between every pair.
+// Hover highlights all chords connected to the hovered node — fits the
+// arc style because chords of an arc are a natural geometric concept.
 function MockupRadialArc({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
@@ -469,11 +477,12 @@ function MockupRadialArc({ glowColor }: { glowColor: string }) {
   const particles = useParticles(30, 55, 130, 99)
 
   const positions = useMemo(() => {
-    if (!mounted) return Array.from({ length: 6 }, () => ({ x: 0, y: 0 }))
-    // Spread across top 180° arc
+    if (!mounted) return Array.from({ length: 6 }, () => ({ x: 0, y: 0, sx: 150, sy: 150 }))
     return Array.from({ length: 6 }, (_, i) => {
       const angle = Math.PI + (i / 5) * Math.PI // PI to 2PI = top half
-      return { x: Math.cos(angle) * 110, y: Math.sin(angle) * 110 }
+      const x = Math.cos(angle) * 110
+      const y = Math.sin(angle) * 110
+      return { x, y, sx: Math.round((150 + x) * 100) / 100, sy: Math.round((150 + y) * 100) / 100 }
     })
   }, [mounted])
 
@@ -493,6 +502,43 @@ function MockupRadialArc({ glowColor }: { glowColor: string }) {
           clipPath: 'inset(0 0 50% 0)',
         }}
       />
+      {/* SVG: Arc chord connections */}
+      <svg width={300} height={300} className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+        <defs>
+          <linearGradient id="arc-chord-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor={hexToRgba(glowColor, 0.05)} />
+            <stop offset="100%" stopColor={hexToRgba(glowColor, 0.5)} />
+          </linearGradient>
+        </defs>
+        {/* Chord lines between all pairs of arc nodes */}
+        {mounted && positions.map((p1, i) =>
+          positions.slice(i + 1).map((p2, j) => {
+            const idx = `arc-chord-${i}-${i + 1 + j}`
+            const isActive = hoveredId !== null && (hoveredId === CATEGORIES[i].id || hoveredId === CATEGORIES[i + 1 + j].id)
+            return (
+              <line
+                key={idx}
+                x1={p1.sx} y1={p1.sy}
+                x2={p2.sx} y2={p2.sy}
+                stroke={glowColor}
+                strokeWidth={isActive ? 1.2 : 0.5}
+                opacity={hoveredId ? (isActive ? 0.7 : 0.04) : 0.15}
+                style={{ transition: 'opacity 0.3s, stroke-width 0.3s' }}
+              />
+            )
+          })
+        )}
+        {/* Midpoint dots on active chords */}
+        {mounted && hoveredId && positions.map((p1, i) =>
+          positions.slice(i + 1).map((p2, j) => {
+            const isActive = hoveredId === CATEGORIES[i].id || hoveredId === CATEGORIES[i + 1 + j].id
+            if (!isActive) return null
+            const mx = Math.round(((p1.sx + p2.sx) / 2) * 100) / 100
+            const my = Math.round(((p1.sy + p2.sy) / 2) * 100) / 100
+            return <circle key={`arc-dot-${i}-${j}`} cx={mx} cy={my} r={1.5} fill={glowColor} opacity={0.6} />
+          })
+        )}
+      </svg>
       {/* Particles around the arc */}
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
         {particles.map((p, i) => (
@@ -525,6 +571,576 @@ function MockupRadialArc({ glowColor }: { glowColor: string }) {
         </div>
       ))}
     </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ── Radial Arc + Spokes: shared base ────────────────────────────────
+// All 9 transition variants share this layout. Only the node animation
+// on orb click differs between them.
+// ══════════════════════════════════════════════════════════════════════
+
+type NodePosition = { x: number; y: number; sx: number; sy: number; angle: number }
+type NodeStyleFn = (idx: number, pos: NodePosition) => React.CSSProperties
+
+function RadialArcBase({
+  glowColor,
+  nodeId,
+  isGlitchMode,
+  onOrbClick,
+  nodeStyle,
+  extraSVG,
+}: {
+  glowColor: string
+  nodeId: string
+  isGlitchMode: boolean
+  onOrbClick: () => void
+  nodeStyle: NodeStyleFn
+  extraSVG?: React.ReactNode
+}) {
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [mounted, setMounted] = useState(false)
+  const particles = useParticles(20, 55, 130, 88)
+
+  useEffect(() => { setMounted(true) }, [])
+
+  const positions = useMemo(() => {
+    if (!mounted) return Array.from({ length: 6 }, () => ({ x: 0, y: 0, sx: 123, sy: 123, angle: 0 }))
+    return Array.from({ length: 6 }, (_, i) => {
+      const angle = Math.PI + (i / 5) * Math.PI
+      const x = Math.cos(angle) * 90
+      const y = Math.sin(angle) * 90
+      return { x, y, sx: Math.round((123 + x) * 100) / 100, sy: Math.round((123 + y) * 100) / 100, angle }
+    })
+  }, [mounted])
+
+  const hasHover = hoveredId !== null
+
+  const arcPath = (a1: number, a2: number, r = 90) => {
+    const x1 = Math.round((123 + Math.cos(a1) * r) * 100) / 100
+    const y1 = Math.round((123 + Math.sin(a1) * r) * 100) / 100
+    const x2 = Math.round((123 + Math.cos(a2) * r) * 100) / 100
+    const y2 = Math.round((123 + Math.sin(a2) * r) * 100) / 100
+    return `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`
+  }
+
+  const fullArcPath = arcPath(Math.PI, 2 * Math.PI)
+
+  const activeArcPath = (() => {
+    if (!hoveredId) return null
+    const idx = CATEGORIES.findIndex(c => c.id === hoveredId)
+    if (idx < 0) return null
+    return arcPath(positions[Math.max(0, idx - 1)].angle, positions[Math.min(5, idx + 1)].angle)
+  })()
+
+  const labelOffsets: Record<number, { dx: number; dy: number; align: string }> = {
+    0: { dx: -15, dy: 2, align: 'right' },
+    1: { dx: -8, dy: -7, align: 'right' },
+    2: { dx: 0, dy: -11, align: 'center' },
+    3: { dx: 0, dy: -11, align: 'center' },
+    4: { dx: 8, dy: -7, align: 'left' },
+    5: { dx: 15, dy: 2, align: 'left' },
+  }
+
+  return (
+    <div className="relative" style={{ width: 246, height: 246 }}>
+      <Orb glowColor={glowColor} onClick={onOrbClick} showLabels={isGlitchMode} />
+      {/* SVG + particles: hidden instantly during glitch */}
+      {!isGlitchMode && (
+        <>
+          <svg width={246} height={246} className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+            <defs>
+              <linearGradient id={`arc-base-grad-${nodeId}`} x1="50%" y1="50%" x2="50%" y2="0%">
+                <stop offset="0%" stopColor={hexToRgba(glowColor, 0.05)} />
+                <stop offset="100%" stopColor={hexToRgba(glowColor, 0.6)} />
+              </linearGradient>
+            </defs>
+            {mounted && <path d={fullArcPath} fill="none" stroke={glowColor} strokeWidth={0.8} opacity={0.15} />}
+            {mounted && activeArcPath && (
+              <path d={activeArcPath} fill="none" stroke={glowColor} strokeWidth={2.5}
+                opacity={0.7} strokeLinecap="round" style={{ transition: 'opacity 0.3s' }} />
+            )}
+            {mounted && positions.map((pos, i) => {
+              const isActive = hoveredId === CATEGORIES[i].id
+              const hIdx = hasHover ? CATEGORIES.findIndex(c => c.id === hoveredId) : -1
+              const isNearby = hasHover && Math.abs(hIdx - i) === 1
+              return (
+                <line key={`${nodeId}-spoke-${i}`} x1={123} y1={123} x2={pos.sx} y2={pos.sy}
+                  stroke={glowColor}
+                  strokeWidth={isActive ? 1.5 : isNearby ? 0.8 : 0.4}
+                  opacity={hasHover ? (isActive ? 0.85 : isNearby ? 0.3 : 0.06) : 0}
+                  style={{ transition: 'opacity 0.4s ease, stroke-width 0.3s' }} />
+              )
+            })}
+            {mounted && hoveredId && (() => {
+              const idx = CATEGORIES.findIndex(c => c.id === hoveredId)
+              if (idx < 0) return null
+              const pos = positions[idx]
+              return <circle cx={Math.round(((123 + pos.sx) / 2) * 100) / 100} cy={Math.round(((123 + pos.sy) / 2) * 100) / 100}
+                r={2.5} fill={glowColor} opacity={0.8} style={{ animation: 'pulse 1.5s ease-in-out infinite' }} />
+            })()}
+            {mounted && hoveredId && (
+              <circle cx={123} cy={123} r={10} fill="none" stroke={glowColor}
+                strokeWidth={1} opacity={0.4} style={{ animation: 'pulse 2s ease-in-out infinite' }} />
+            )}
+            {extraSVG}
+          </svg>
+          <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
+            {particles.map((p, i) => (
+              <div key={i} className="absolute rounded-full" style={{
+                left: `calc(50% + ${p.x}px)`, top: `calc(50% + ${p.y}px)`,
+                width: p.size, height: p.size, background: glowColor, opacity: p.opacity,
+                boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
+              }} />
+            ))}
+          </div>
+        </>
+      )}
+      {/* Category nodes */}
+      {mounted && CATEGORIES.map((cat, i) => (
+        <div key={cat.id} className="absolute" style={{
+          left: '50%', top: '50%',
+          ...nodeStyle(i, positions[i]),
+        }}>
+          <HexNode glowColor={glowColor} icon={cat.icon}
+            isActive={!isGlitchMode && hoveredId === cat.id}
+            onHover={(v) => !isGlitchMode && setHoveredId(v ? cat.id : null)} />
+        </div>
+      ))}
+      {/* Category label */}
+      {mounted && hoveredId && !isGlitchMode && (() => {
+        const idx = CATEGORIES.findIndex(c => c.id === hoveredId)
+        if (idx < 0) return null
+        const pos = positions[idx]
+        const off = labelOffsets[idx]
+        const lx = Math.max(16, Math.min(230, pos.sx + off.dx))
+        const ly = Math.max(8, Math.min(238, pos.sy + off.dy))
+        return (
+          <div key={`${nodeId}-label`} className="absolute pointer-events-none" style={{
+            left: `${lx}px`, top: `${ly}px`,
+            transform: off.align === 'center' ? 'translate(-50%, -100%)' : off.align === 'right' ? 'translate(-100%, -100%)' : 'translate(0, -100%)',
+            zIndex: 10,
+          }}>
+            <span style={{
+              display: 'block', fontSize: '10px', fontWeight: 700,
+              letterSpacing: '0.14em', textTransform: 'uppercase' as const,
+              color: glowColor, textShadow: `0 0 12px ${glowColor}80, 0 0 4px ${glowColor}40`,
+              whiteSpace: 'nowrap', opacity: 0.9,
+              fontFamily: "'Courier New', Courier, monospace",
+              textAlign: off.align as any,
+            }}>
+              {CATEGORIES[idx].label}
+            </span>
+          </div>
+        )
+      })()}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ── GROUP A — 3 transitions ─────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+// ── A1: Magnet Pull ─────────────────────────────────────────────────
+// Nodes shrink and get pulled into the orb center sequentially.
+function MockupTransitionMagnet({ glowColor }: { glowColor: string }) {
+  const [isGlitch, setIsGlitch] = useState(false)
+  const [pullProgress, setPullProgress] = useState(0) // 0 = normal, 1 = fully pulled in
+
+  const handleOrbClick = () => {
+    if (isGlitch) {
+      // Reverse: nodes expand back from center
+      setIsGlitch(false)
+      setPullProgress(0)
+    } else {
+      setIsGlitch(true)
+      // Animate 0 → 1 over 500ms
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / 500)
+        setPullProgress(t)
+        if (t < 1) requestAnimationFrame(animate)
+      }
+      requestAnimationFrame(animate)
+    }
+  }
+
+  return (
+    <RadialArcBase glowColor={glowColor} nodeId="magnet" isGlitchMode={isGlitch}
+      onOrbClick={handleOrbClick}
+      nodeStyle={(i, pos) => {
+        // Each node shrinks and moves toward center, staggered by 80ms worth via pullProgress
+        const stagger = i / 5
+        const t = Math.max(0, Math.min(1, (pullProgress - stagger * 0.4) / 0.6))
+        const ease = t * t // ease-in
+        return {
+          transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px)) scale(${1 - ease * 0.8})`,
+          opacity: 1 - ease,
+          transition: isGlitch ? 'none' : 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease',
+        }
+      }}
+    />
+  )
+}
+
+// ── A2: Photon Burst ────────────────────────────────────────────────
+// Nodes flash white then explode outward with scale-up + fade.
+function MockupTransitionBurst({ glowColor }: { glowColor: string }) {
+  const [isGlitch, setIsGlitch] = useState(false)
+  const [burstPhase, setBurstPhase] = useState(0) // 0=normal, 0-0.3=flash, 0.3-1=burst
+
+  const handleOrbClick = () => {
+    if (isGlitch) {
+      setIsGlitch(false)
+      setBurstPhase(0)
+    } else {
+      setIsGlitch(true)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / 600)
+        setBurstPhase(t)
+        if (t < 1) requestAnimationFrame(animate)
+      }
+      requestAnimationFrame(animate)
+    }
+  }
+
+  return (
+    <RadialArcBase glowColor={glowColor} nodeId="burst" isGlitchMode={isGlitch}
+      onOrbClick={handleOrbClick}
+      nodeStyle={(i, pos) => {
+        const angle = Math.PI + (i / 5) * Math.PI
+        if (burstPhase <= 0.2) {
+          // Phase 1: flash — scale up slightly, go bright
+          const flash = burstPhase / 0.2
+          return {
+            transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px)) scale(${1 + flash * 0.3})`,
+            opacity: 1,
+            filter: `brightness(${1 + flash * 2})`,
+            transition: 'none',
+          }
+        }
+        // Phase 2: burst outward
+        const burst = (burstPhase - 0.2) / 0.8
+        const ease = 1 - (1 - burst) * (1 - burst) // ease-out
+        const dist = ease * 65
+        const dx = Math.cos(angle) * dist
+        const dy = Math.sin(angle) * dist
+        return {
+          transform: `translate(calc(-50% + ${pos.x + dx}px), calc(-50% + ${pos.y + dy}px)) scale(${1.3 - ease * 0.3})`,
+          opacity: 1 - ease,
+          filter: `brightness(${3 - ease * 2})`,
+          transition: 'none',
+        }
+      }}
+    />
+  )
+}
+
+// ── A3: Orbit Sweep ─────────────────────────────────────────────────
+// Nodes break formation and orbit around the orb before fading.
+function MockupTransitionOrbit({ glowColor }: { glowColor: string }) {
+  const [isGlitch, setIsGlitch] = useState(false)
+  const [orbitAngle, setOrbitAngle] = useState(0)
+
+  const handleOrbClick = () => {
+    if (isGlitch) {
+      setIsGlitch(false)
+      setOrbitAngle(0)
+    } else {
+      setIsGlitch(true)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / 700)
+        setOrbitAngle(t * Math.PI * 1.5) // 270° sweep
+        if (t < 1) requestAnimationFrame(animate)
+      }
+      requestAnimationFrame(animate)
+    }
+  }
+
+  return (
+    <RadialArcBase glowColor={glowColor} nodeId="orbit" isGlitchMode={isGlitch}
+      onOrbClick={handleOrbClick}
+      nodeStyle={(i, pos) => {
+        if (!isGlitch) return {
+          transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
+          opacity: 1,
+          filter: 'brightness(1)',
+          visibility: 'visible',
+          transition: 'transform 0.6s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, filter 0.3s ease',
+        }
+        const t = orbitAngle / (Math.PI * 1.5) // 0 to 1
+        const baseAngle = Math.PI + (i / 5) * Math.PI
+        const sweepAngle = baseAngle + orbitAngle
+        const r = 90 + orbitAngle * 12 // radius grows as they orbit
+        const x = Math.cos(sweepAngle) * r
+        const y = Math.sin(sweepAngle) * r
+        // Photon Burst flash effect in first 15%
+        const flashT = Math.min(1, t / 0.15)
+        const brightness = 1 + flashT * 2
+        const scale = 1 + flashT * 0.25
+        const done = t >= 1
+        return {
+          transform: `translate(calc(-50% + ${x}px), calc(-50% + ${y}px)) rotate(${orbitAngle * 180 / Math.PI}deg) scale(${scale})`,
+          opacity: done ? 0 : 1 - t,
+          filter: `brightness(${brightness})`,
+          visibility: done ? 'hidden' : 'visible',
+          transition: 'none',
+        }
+      }}
+    />
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ── GROUP B — 3 transitions ─────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+// ── B1: Pulse Wave ──────────────────────────────────────────────────
+// Expanding ring from orb center — nodes vanish as the ring passes.
+function MockupTransitionPulse({ glowColor }: { glowColor: string }) {
+  const [isGlitch, setIsGlitch] = useState(false)
+  const [waveRadius, setWaveRadius] = useState(0)
+
+  const handleOrbClick = () => {
+    if (isGlitch) {
+      setIsGlitch(false)
+      setWaveRadius(0)
+    } else {
+      setIsGlitch(true)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / 600)
+        setWaveRadius(t * 115) // expand to 115px (fits in 246px container)
+        if (t < 1) requestAnimationFrame(animate)
+      }
+      requestAnimationFrame(animate)
+    }
+  }
+
+  return (
+    <RadialArcBase glowColor={glowColor} nodeId="pulse" isGlitchMode={isGlitch}
+      onOrbClick={handleOrbClick}
+      extraSVG={isGlitch ? (
+        <circle cx={123} cy={123} r={waveRadius} fill="none"
+          stroke={glowColor} strokeWidth={2} opacity={0.6}
+          style={{ transition: 'none' }} />
+      ) : undefined}
+      nodeStyle={(i, pos) => {
+        if (!isGlitch) return {
+          transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
+          transition: 'opacity 0.3s ease',
+        }
+        // Each node sits at a known distance from center (~110px)
+        // It vanishes when the wave passes it
+        const dist = 90
+        const vanished = waveRadius > dist
+        return {
+          transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px)) scale(${vanished ? 0.5 : 1})`,
+          opacity: vanished ? 0 : 1,
+          transition: 'none',
+        }
+      }}
+    />
+  )
+}
+
+// ── B2: Gravity Drop ────────────────────────────────────────────────
+// Nodes lose grip and fall downward with acceleration.
+function MockupTransitionGravity({ glowColor }: { glowColor: string }) {
+  const [isGlitch, setIsGlitch] = useState(false)
+  const [dropT, setDropT] = useState(0)
+
+  const handleOrbClick = () => {
+    if (isGlitch) {
+      setIsGlitch(false)
+      setDropT(0)
+    } else {
+      setIsGlitch(true)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / 700)
+        setDropT(t)
+        if (t < 1) requestAnimationFrame(animate)
+      }
+      requestAnimationFrame(animate)
+    }
+  }
+
+  return (
+    <RadialArcBase glowColor={glowColor} nodeId="gravity" isGlitchMode={isGlitch}
+      onOrbClick={handleOrbClick}
+      nodeStyle={(i, pos) => {
+        if (!isGlitch) return {
+          transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
+          transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease',
+        }
+        // Stagger: outer nodes (0,5) drop first, inner (2,3) last
+        const distFromCenter = Math.abs(i - 2.5) / 2.5 // 0 for center nodes, 1 for outer
+        const stagger = distFromCenter * 0.3
+        const t = Math.max(0, Math.min(1, (dropT - stagger) / 0.7))
+        const gravity = t * t * 150 // accelerate downward
+        const fade = t > 0.7 ? (t - 0.7) / 0.3 : 0
+        return {
+          transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y + gravity}px)) rotate(${t * 30 * (i < 3 ? -1 : 1)}deg)`,
+          opacity: 1 - fade,
+          transition: 'none',
+        }
+      }}
+    />
+  )
+}
+
+// ── B3: Shatter ─────────────────────────────────────────────────────
+// Nodes crack and fragment into scatter pieces.
+function MockupTransitionShatter({ glowColor }: { glowColor: string }) {
+  const [isGlitch, setIsGlitch] = useState(false)
+  const [shatterT, setShatterT] = useState(0)
+  // Pre-computed random scatter directions for each node
+  const scatterDirs = useMemo(() =>
+    Array.from({ length: 6 }, (_, i) => ({
+      dx: Math.cos(Math.PI + (i / 5) * Math.PI + (Math.random() - 0.5)) * (65 + Math.random() * 50),
+      dy: Math.sin(Math.PI + (i / 5) * Math.PI + (Math.random() - 0.5)) * (65 + Math.random() * 50),
+      rot: (Math.random() - 0.5) * 360,
+    })), [])
+
+  const handleOrbClick = () => {
+    if (isGlitch) {
+      setIsGlitch(false)
+      setShatterT(0)
+    } else {
+      setIsGlitch(true)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / 500)
+        setShatterT(t)
+        if (t < 1) requestAnimationFrame(animate)
+      }
+      requestAnimationFrame(animate)
+    }
+  }
+
+  return (
+    <RadialArcBase glowColor={glowColor} nodeId="shatter" isGlitchMode={isGlitch}
+      onOrbClick={handleOrbClick}
+      nodeStyle={(i, pos) => {
+        if (!isGlitch) return {
+          transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
+          transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease',
+        }
+        const s = scatterDirs[i]
+        const t = shatterT
+        const ease = t * t
+        return {
+          transform: `translate(calc(-50% + ${pos.x + s.dx * ease}px), calc(-50% + ${pos.y + s.dy * ease + t * t * 32}px)) rotate(${s.rot * ease}deg) scale(${1 - t * 0.6})`,
+          opacity: 1 - t,
+          transition: 'none',
+        }
+      }}
+    />
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ── GROUP C — Spiral Dissolve (kept) ────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+function MockupTransitionSpiral({ glowColor }: { glowColor: string }) {
+  const [isGlitch, setIsGlitch] = useState(false)
+  const [spiralT, setSpiralT] = useState(0)
+  const [enterT, setEnterT] = useState(1) // 1 = fully entered (no animation)
+
+  const handleOrbClick = () => {
+    if (isGlitch) {
+      // Enter: nodes fly back in with Photon Burst flash
+      setIsGlitch(false)
+      setSpiralT(0)
+      setEnterT(0)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / 600)
+        setEnterT(t)
+        if (t < 1) requestAnimationFrame(animate)
+      }
+      requestAnimationFrame(animate)
+    } else {
+      // Exit: nodes spiral out with Photon Burst flash
+      setIsGlitch(true)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / 700)
+        setSpiralT(t)
+        if (t < 1) requestAnimationFrame(animate)
+      }
+      requestAnimationFrame(animate)
+    }
+  }
+
+  return (
+    <RadialArcBase glowColor={glowColor} nodeId="spiral" isGlitchMode={isGlitch}
+      onOrbClick={handleOrbClick}
+      nodeStyle={(i, pos) => {
+        if (!isGlitch) {
+          // Enter animation: reverse spiral back to position with Photon Burst flash
+          const baseAngle = Math.PI + (i / 5) * Math.PI
+          const reversed = 1 - enterT // 1 at start (spiral), 0 at end (normal)
+          // Position: from spiral back to normal
+          const spiralAngle = baseAngle + Math.PI / 2 // the +90° from exit
+          const spiralR = 50
+          const dx = Math.cos(spiralAngle) * spiralR * reversed
+          const dy = Math.sin(spiralAngle) * spiralR * reversed
+          const rot = 90 * reversed
+          // Photon Burst flash: peak at 15%, then settle
+          let brightness: number, scale: number
+          if (enterT < 0.15) {
+            // Flash phase: ramp up
+            const flash = enterT / 0.15
+            brightness = 1 + flash * 2
+            scale = 1 + flash * 0.25
+          } else {
+            // Settle phase: ramp down to normal
+            const settle = (enterT - 0.15) / 0.85
+            brightness = 3 - settle * 2
+            scale = 1.25 - settle * 0.25
+          }
+          return {
+            transform: `translate(calc(-50% + ${pos.x + dx}px), calc(-50% + ${pos.y + dy}px)) rotate(${rot}deg) scale(${scale})`,
+            opacity: enterT,
+            filter: `brightness(${brightness})`,
+            visibility: 'visible',
+            transition: 'none',
+          }
+        }
+        // Exit animation: spiral out with Photon Burst flash
+        const baseAngle = Math.PI + (i / 5) * Math.PI
+        const angle = baseAngle + spiralT * Math.PI / 2 // +90°
+        const extraR = spiralT * 50
+        const dx = Math.cos(angle) * extraR
+        const dy = Math.sin(angle) * extraR
+        // Photon Burst flash effect in first 15%
+        const flashT = Math.min(1, spiralT / 0.15)
+        const brightness = 1 + flashT * 2
+        const scale = 1 + flashT * 0.25
+        const done = spiralT >= 1
+        return {
+          transform: `translate(calc(-50% + ${pos.x + dx}px), calc(-50% + ${pos.y + dy}px)) rotate(${spiralT * 90}deg) scale(${scale})`,
+          opacity: done ? 0 : 1 - spiralT,
+          filter: `brightness(${brightness})`,
+          visibility: done ? 'hidden' : 'visible',
+          transition: 'none',
+        }
+      }}
+    />
   )
 }
 
@@ -752,8 +1368,8 @@ function MockupHybridPolish({ glowColor }: { glowColor: string }) {
     for (let t = 0; t <= 1; t += 0.02) {
       const angle = t * Math.PI * 2.5
       const r = 145 - t * 70
-      const x = c + Math.cos(angle) * r
-      const y = c + Math.sin(angle) * r
+      const x = Math.round((c + Math.cos(angle) * r) * 100) / 100
+      const y = Math.round((c + Math.sin(angle) * r) * 100) / 100
       points.push(`${t === 0 ? 'M' : 'L'} ${x} ${y}`)
     }
     return points.join(' ')
@@ -1101,7 +1717,14 @@ const MOCKUPS = [
   { key: 'orbital', title: 'Iris Bloom', badge: 'NEW', description: 'Curved petal paths radiate from the orb to each node. Organic, flower-like, flows from the core.', Component: MockupOrbital },
   { key: 'orbital-stacked', title: 'Constellation', badge: 'NEW', description: 'All nodes connected by thin lines forming a geometric star web. Hover reveals connection highlights.', Component: MockupOrbitalStacked },
   { key: 'dock', title: 'Dock', badge: null, description: 'Orb above, hex nodes in a compact dock bar below. Clean, minimal, macOS-inspired.', Component: MockupDock },
-  { key: 'radial-arc', title: 'Radial Arc', badge: null, description: 'Nodes spread across the top half-circle. Leaves the bottom open for other UI.', Component: MockupRadialArc },
+  { key: 'radial-arc', title: 'Radial Arc', badge: null, description: 'Nodes spread across the top half-circle with chord connections. Hover lights up all chords from that node. Leaves the bottom open for other UI.', Component: MockupRadialArc },
+  { key: 'radial-arc-spokes', title: 'A1 — Magnet Pull', badge: 'A', description: 'Nodes shrink and get pulled into the orb center sequentially — like gravity consuming them.', Component: MockupTransitionMagnet },
+  { key: 'radial-arc-burst', title: 'A2 — Photon Burst', badge: 'A', description: 'Nodes flash white then explode outward with scale + brightness — energetic burst exit.', Component: MockupTransitionBurst },
+  { key: 'radial-arc-orbit', title: 'A3 — Orbit Sweep', badge: 'A', description: 'Nodes break formation and orbit around the orb in a sweeping arc before fading — flowing orbital motion.', Component: MockupTransitionOrbit },
+  { key: 'radial-arc-pulse', title: 'B1 — Pulse Wave', badge: 'B', description: 'Expanding ring from orb center — nodes vanish as the ring passes each one.', Component: MockupTransitionPulse },
+  { key: 'radial-arc-gravity', title: 'B2 — Gravity Drop', badge: 'B', description: 'Nodes lose grip and fall downward with acceleration — physics-based drop.', Component: MockupTransitionGravity },
+  { key: 'radial-arc-shatter', title: 'B3 — Shatter', badge: 'B', description: 'Nodes crack and scatter into fragments — destructive, dramatic exit.', Component: MockupTransitionShatter },
+  { key: 'radial-arc-web', title: 'C — Spiral Dissolve', badge: '★ PICK', description: 'Nodes spiral outward (+60r, +90°) and fade, then spiral back to original positions.', Component: MockupTransitionSpiral },
   { key: 'concentric', title: 'Concentric', badge: null, description: 'Two rings of 3 — inner fast-access, outer secondary. Visual hierarchy.', Component: MockupConcentric },
   { key: 'orbital-halo', title: 'Orbital + Particles', badge: 'NEW', description: 'Bigger orb with radiating particles that blend into rotating dashed rings. Industrial feel without SVG overlays.', Component: MockupOrbitalParticles },
   { key: 'hybrid-polish', title: 'Vortex Spiral', badge: 'NEW', description: 'Logarithmic spiral that tightens as it approaches the orb. Nodes draw inward — gravity into the core.', Component: MockupHybridPolish },

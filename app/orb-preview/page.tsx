@@ -9,6 +9,7 @@ import { PrototypeOrbShellsDepth } from '@/components/preview/PrototypeOrbShells
 import { PrototypeOrbBreathing } from '@/components/preview/PrototypeOrbBreathing'
 import { CadenceBreathDemo } from '@/components/preview/CadenceBreathDemo'
 import { HexGridPreview } from '@/components/preview/HexGridPreview'
+import { MenuMockups } from '@/components/preview/MenuMockups'
 
 const THEMES = [
   { name: 'Cyan', color: '#00d4ff' },
@@ -363,7 +364,7 @@ export default function OrbPreviewPage() {
       </section>
 
       {/* Section 3: Cadence Detection Demo */}
-      <section className="flex flex-col items-center gap-8 mt-12 px-6 w-full max-w-6xl">
+      <section id="cadence-section" className="flex flex-col items-center gap-8 mt-12 px-6 w-full max-w-6xl">
         <div className="flex flex-col items-center gap-2">
           <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-widest">
             Cadence Detection — Live Microphone Demo
@@ -377,7 +378,15 @@ export default function OrbPreviewPage() {
         <CadenceBreathDemo glowColor={theme.color} />
       </section>
 
-      {/* Section 4: Hex Grid Preview (unchanged) */}
+      {/* Section 4: Category Menu Mockups */}
+      <section className="flex flex-col items-center gap-4 mt-12">
+        <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-widest">
+          Category Menu Mockups — Pick a Winner
+        </h2>
+        <MenuMockups glowColor={theme.color} />
+      </section>
+
+      {/* Section 5: Hex Grid Preview (unchanged) */}
       <section className="flex flex-col items-center gap-4 mt-8">
         <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-widest">
           Honeycomb Category Nodes — Hex Grid

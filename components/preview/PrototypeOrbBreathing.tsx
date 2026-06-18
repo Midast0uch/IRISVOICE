@@ -10,6 +10,7 @@ interface PrototypeOrbBreathingProps {
   breathMode: BreathMode
   breathLevel: number // 0..1
   isBreathing: boolean
+  showLabels?: boolean
 }
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789→↑←'
@@ -49,6 +50,7 @@ export function PrototypeOrbBreathing({
   breathMode,
   breathLevel,
   isBreathing,
+  showLabels = true,
 }: PrototypeOrbBreathingProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rafRef = useRef<number>(0)
@@ -465,7 +467,7 @@ export function PrototypeOrbBreathing({
           />
         </div>
         <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
-          {LABELS.map((label, i) => (
+          {showLabels && LABELS.map((label, i) => (
             <div
               key={i}
               className="absolute"
