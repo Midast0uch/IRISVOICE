@@ -1033,11 +1033,11 @@ function MockupDockRedesign({ glowColor }: { glowColor: string }) {
             ))}
           </div>
           {/* Glowing shimmer at top of dock — pulses gently */}
-          <style>{`@keyframes dock-shimmer-pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }`}</style>
+          <style>{`@keyframes dock-shimmer-pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }`}</style>
           <div className="absolute pointer-events-none" style={{
             top: 0, left: 0, right: 0,
             height: 3,
-            background: `linear-gradient(90deg, transparent 0%, ${hexToRgba(glowColor, 0.15)} 20%, ${hexToRgba(glowColor, 0.4)} 50%, ${hexToRgba(glowColor, 0.15)} 80%, transparent 100%)`,
+            background: `linear-gradient(90deg, transparent 0%, ${hexToRgba(glowColor, 0.3)} 15%, ${hexToRgba(glowColor, 0.8)} 50%, ${hexToRgba(glowColor, 0.3)} 85%, transparent 100%)`,
             borderRadius: '12px 12px 0 0',
             animation: 'dock-shimmer-pulse 3s ease-in-out infinite',
           }} />
