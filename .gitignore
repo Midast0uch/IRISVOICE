@@ -49,6 +49,7 @@ next-env.d.ts
 /bootstrap/*.db
 /bootstrap/*.db-shm
 /bootstrap/*.db-wal
+.mcm/
 
 # Session state files contain API keys
 /backend/sessions/
