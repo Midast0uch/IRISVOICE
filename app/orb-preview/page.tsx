@@ -274,7 +274,7 @@ export default function OrbPreviewPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 max-w-6xl w-full px-6">
           {VARIANTS.map((v) => {
-            const isWinner = v.key === 'rotating'
+            const isWinner = v.key === 'rotating' || v.key === 'radial-arc-web'
             return (
             <div
               key={v.key}
