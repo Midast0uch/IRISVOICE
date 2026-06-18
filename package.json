@@ -219,11 +219,12 @@
     "typescript": "5.9.3"
   },
   "scripts": {
-    "dev": "next dev -H 0.0.0.0",
-    "dev:frontend": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "start:prod": "next build && next start",
+    "dev": "node node_modules/next/dist/bin/next dev -H 0.0.0.0",
+    "dev:frontend": "node node_modules/next/dist/bin/next dev --webpack",
+    "dev:turbopack": "node node_modules/next/dist/bin/next dev -H 0.0.0.0",
+    "build": "node node_modules/next/dist/bin/next build",
+    "start": "node node_modules/next/dist/bin/next start",
+    "start:prod": "node node_modules/next/dist/bin/next build && node node_modules/next/dist/bin/next start",
     "lint": "eslint .",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:preservation": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/preservation-property.test.js",
@@ -231,7 +232,10 @@
     "tauri": "tauri",
     "dev:backend": "python start-backend.py",
     "dev:tauri": "npx tauri dev",
-    "dev:tauri:nowatch": "npx tauri dev -- --no-watch"
+    "dev:tauri:nowatch": "npx tauri dev -- --no-watch",
+    "iris:start": "python scripts/iris_process_manager.py start",
+    "iris:stop": "python scripts/iris_process_manager.py stop",
+    "iris:status": "python scripts/iris_process_manager.py status"
   },
   "optionalDependencies": {
     "@tailwindcss/oxide-win32-x64-msvc": "^4.2.4",

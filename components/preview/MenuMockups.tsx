@@ -2,13 +2,14 @@
 
 import React, { useState, useEffect, useMemo } from 'react'
 import type { ElementType } from 'react'
-import { Mic, Bot, Workflow, Cpu, Palette, Activity } from 'lucide-react'
+import { Mic, Workflow, Cpu, Palette, Activity } from 'lucide-react'
+import { IconRobot } from '@tabler/icons-react'
 import { PrototypeOrbBreathing } from './PrototypeOrbBreathing'
 
 // ── Shared category data ─────────────────────────────────────────────
 const CATEGORIES = [
   { id: 'voice', label: 'Voice', icon: Mic },
-  { id: 'agent', label: 'Agent', icon: Bot },
+  { id: 'agent', label: 'Agent', icon: IconRobot },
   { id: 'automate', label: 'Automate', icon: Workflow },
   { id: 'system', label: 'System', icon: Cpu },
   { id: 'customize', label: 'Customize', icon: Palette },
