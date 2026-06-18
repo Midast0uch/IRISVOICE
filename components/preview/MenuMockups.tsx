@@ -267,43 +267,61 @@ function MockupRadialCompact({ glowColor }: { glowColor: string }) {
 }
 
 // ── Mockup 3: Orbital (varying distances + rings) ────────────────────
+// ── Mockup 3: Iris Bloom (petal-shaped radial layout) ────────────────
 function MockupOrbital({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const angles = [0, 60, 120, 180, 240, 300]
-  const radii = [88, 106, 120, 88, 106, 120]
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
+  const c = 160
+  const r = 125
 
   return (
-    <div className="relative" style={{ width: 300, height: 300 }}>
+    <div className="relative" style={{ width: 320, height: 320 }}>
       <Orb glowColor={glowColor} />
-      {/* Decorative rings */}
-      {[88, 106, 120].map((r) => (
-        <div
-          key={r}
-          className="absolute rounded-full pointer-events-none"
-          style={{
-            left: '50%',
-            top: '50%',
-            width: r * 2,
-            height: r * 2,
-            transform: 'translate(-50%, -50%)',
-            border: `1px solid ${glowColor}12`,
-          }}
-        />
-      ))}
-      {/* Nodes */}
+      {/* Petal paths — curved strokes from orb center to node tips */}
+      <svg width={320} height={320} className="absolute inset-0 pointer-events-none">
+        <defs>
+          <linearGradient id={`petal-grad`} x1="50%" y1="50%" x2="50%" y2="0%">
+            <stop offset="0%" stopColor={hexToRgba(glowColor, 0.6)} />
+            <stop offset="100%" stopColor={hexToRgba(glowColor, 0.05)} />
+          </linearGradient>
+        </defs>
+        {CATEGORIES.map((cat, i) => {
+          const angle = (i / 6) * Math.PI * 2 - Math.PI / 2
+          const tx = c + Math.cos(angle) * r
+          const ty = c + Math.sin(angle) * r
+          // Control point pulled slightly inward for petal shape
+          const cpDist = r * 0.4
+          const cpx = c + Math.cos(angle) * cpDist
+          const cpy = c + Math.sin(angle) * cpDist
+          return (
+            <g key={cat.id}>
+              <path
+                d={`M ${c} ${c} Q ${cpx} ${cpy} ${tx} ${ty}`}
+                fill="none"
+                stroke={`url(#petal-grad)`}
+                strokeWidth={hoveredId === cat.id ? 2.5 : 1.5}
+                strokeLinecap="round"
+                opacity={hoveredId && hoveredId !== cat.id ? 0.2 : 0.7}
+                style={{ transition: 'opacity 0.3s, stroke-width 0.3s' }}
+              />
+              {/* Small node connector dot at petal tip */}
+              <circle cx={tx} cy={ty} r={2} fill={glowColor} opacity={0.4} />
+            </g>
+          )
+        })}
+      </svg>
+      {/* Category nodes at petal tips */}
       {mounted && CATEGORIES.map((cat, i) => {
-        const angle = (angles[i] * Math.PI) / 180
-        const r = radii[i]
+        const angle = (i / 6) * Math.PI * 2 - Math.PI / 2
         return (
           <div
             key={cat.id}
             className="absolute"
             style={{
-              left: '50%',
-              top: '50%',
-              transform: `translate(calc(-50% + ${Math.cos(angle) * r}px), calc(-50% + ${Math.sin(angle) * r}px))`,
+              left: `${((c + Math.cos(angle) * r) / 320) * 100}%`,
+              top: `${((c + Math.sin(angle) * r) / 320) * 100}%`,
+              transform: 'translate(-50%, -50%)',
             }}
           >
             <HexNode
@@ -311,6 +329,7 @@ function MockupOrbital({ glowColor }: { glowColor: string }) {
               icon={cat.icon}
               isActive={hoveredId === cat.id}
               onHover={(v) => setHoveredId(v ? cat.id : null)}
+              size={38}
             />
           </div>
         )
@@ -320,81 +339,76 @@ function MockupOrbital({ glowColor }: { glowColor: string }) {
 }
 
 // ── Mockup 4: Orbital Stacked (two orbit layers) ─────────────────────
+// ── Mockup 4: Constellation (geometric star pattern with connecting lines) ──
 function MockupOrbitalStacked({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const innerPos = useRadialPositions(3, 85)
-  const outerPos = useRadialPositions(3, 130, -Math.PI / 2 + Math.PI / 3)
-  const particles = useParticles(30, 105, 145, 113)
-  const c = 170 // center of 340px container
-  const BIG_ORB = 180
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+  const c = 160
+  const r = 130
+
+  // Calculate 6 node positions forming a hexagon
+  const positions = CATEGORIES.map((_, i) => {
+    const angle = (i / 6) * Math.PI * 2 - Math.PI / 2
+    return { x: c + Math.cos(angle) * r, y: c + Math.sin(angle) * r, angle }
+  })
 
   return (
-    <div className="relative" style={{ width: 340, height: 340 }}>
-      {/* SVG: rotating dashed rings on both orbit layers */}
-      <svg width={340} height={340} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
-        <RotatingRing cx={c} cy={c} r={85} color={glowColor} speed={6} dash="12 6" strokeW={1.5} />
-        <RotatingRing cx={c} cy={c} r={130} color={glowColor} speed={9} dash="25 8" strokeW={2} />
+    <div className="relative" style={{ width: 320, height: 320 }}>
+      <Orb glowColor={glowColor} />
+      {/* SVG: constellation lines connecting all nodes */}
+      <svg width={320} height={320} className="absolute inset-0 pointer-events-none">
+        <defs>
+          <radialGradient id={`constellation-fade`} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor={hexToRgba(glowColor, 0.3)} />
+            <stop offset="100%" stopColor={hexToRgba(glowColor, 0.05)} />
+          </radialGradient>
+        </defs>
+        {/* Connect every node to every other node (complete graph) */}
+        {positions.map((p1, i) =>
+          positions.slice(i + 1).map((p2, j) => {
+            const idx = `${i}-${i + 1 + j}`
+            const isActive = hoveredId && (hoveredId === CATEGORIES[i].id || hoveredId === CATEGORIES[i + 1 + j].id)
+            return (
+              <line
+                key={idx}
+                x1={p1.x} y1={p1.y}
+                x2={p2.x} y2={p2.y}
+                stroke={glowColor}
+                strokeWidth={isActive ? 1 : 0.5}
+                opacity={hoveredId ? (isActive ? 0.6 : 0.08) : 0.2}
+                style={{ transition: 'opacity 0.3s, stroke-width 0.3s' }}
+              />
+            )
+          })
+        )}
+        {/* Small dots at midpoints of each line */}
+        {positions.map((p1, i) =>
+          positions.slice(i + 1).map((p2, j) => {
+            const mx = (p1.x + p2.x) / 2
+            const my = (p1.y + p2.y) / 2
+            return (
+              <circle key={`dot-${i}-${j}`} cx={mx} cy={my} r={1} fill={glowColor} opacity={0.4} />
+            )
+          })
+        )}
       </svg>
-      {/* Particles around rings */}
-      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
-        {particles.map((p, i) => (
-          <div key={i} className="absolute rounded-full" style={{
-            left: `calc(50% + ${p.x}px)`,
-            top: `calc(50% + ${p.y}px)`,
-            width: p.size, height: p.size,
-            background: glowColor,
-            opacity: p.opacity,
-            boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
-          }} />
-        ))}
-      </div>
-      {/* Bigger Orb at center */}
-      <div className="absolute" style={{
-        left: '50%', top: '50%',
-        width: BIG_ORB, height: BIG_ORB,
-        transform: 'translate(-50%, -50%)',
-        zIndex: 2,
-      }}>
-        <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
-      </div>
-      {/* Inner ring: Voice, Agent, Automate (fast-access) */}
-      {CATEGORIES.slice(0, 3).map((cat, i) => (
+      {/* Category nodes */}
+      {mounted && positions.map((pos, i) => (
         <div
-          key={cat.id}
+          key={CATEGORIES[i].id}
           className="absolute"
           style={{
-            left: '50%',
-            top: '50%',
-            transform: `translate(calc(-50% + ${innerPos[i].x}px), calc(-50% + ${innerPos[i].y}px))`,
-            zIndex: 3,
+            left: `${(pos.x / 320) * 100}%`,
+            top: `${(pos.y / 320) * 100}%`,
+            transform: 'translate(-50%, -50%)',
           }}
         >
           <HexNode
             glowColor={glowColor}
-            icon={cat.icon}
-            isActive={hoveredId === cat.id}
-            onHover={(v) => setHoveredId(v ? cat.id : null)}
-            size={36}
-          />
-        </div>
-      ))}
-      {/* Outer ring: System, Customize, Monitor (secondary) */}
-      {CATEGORIES.slice(3).map((cat, i) => (
-        <div
-          key={cat.id}
-          className="absolute"
-          style={{
-            left: '50%',
-            top: '50%',
-            transform: `translate(calc(-50% + ${outerPos[i].x}px), calc(-50% + ${outerPos[i].y}px))`,
-            zIndex: 3,
-          }}
-        >
-          <HexNode
-            glowColor={glowColor}
-            icon={cat.icon}
-            isActive={hoveredId === cat.id}
-            onHover={(v) => setHoveredId(v ? cat.id : null)}
+            icon={CATEGORIES[i].icon}
+            isActive={hoveredId === CATEGORIES[i].id}
+            onHover={(v) => setHoveredId(v ? CATEGORIES[i].id : null)}
           />
         </div>
       ))}
@@ -715,41 +729,56 @@ function MockupOrbitalParticles({ glowColor }: { glowColor: string }) {
 
 // ── Mockup 10: Hybrid Polish — Concentric (3 rings + ring nodes) ────
 // Uses 180px orb (same as other mockups) for consistent visual centering.
+// ── Mockup 9: Vortex Spiral (logarithmic spiral inward to orb) ─────────
 function MockupHybridPolish({ glowColor }: { glowColor: string }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const particles = useParticles(45, 90, 150, 77)
-  const c = 160 // center of 320px container
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+  const c = 160
   const ORB_SIZE = 180
 
-  // Ring radii and node counts: inner 1, middle 2, outer 3
-  const RING_DEFS = [
-    { r: 80, count: 1, speed: 4, startAngle: -Math.PI / 2 },
-    { r: 115, count: 2, speed: 7, startAngle: -Math.PI / 2 + Math.PI / 2 },
-    { r: 150, count: 3, speed: 10, startAngle: -Math.PI / 2 },
-  ]
+  // Logarithmic spiral: r = a * e^(b*theta)
+  // 6 nodes spiral inward from outer to inner
+  const spiralNodes = CATEGORIES.map((_, i) => {
+    const t = i / 5 // 0 to 1
+    const angle = t * Math.PI * 2.5 // 2.5 turns
+    const r = 145 - t * 70 // radius decreases from 145 to 75
+    return { x: Math.cos(angle) * r, y: Math.sin(angle) * r, angle, r, t }
+  })
+
+  // Generate spiral path points for the visible curve
+  const spiralPath = (() => {
+    const points: string[] = []
+    for (let t = 0; t <= 1; t += 0.02) {
+      const angle = t * Math.PI * 2.5
+      const r = 145 - t * 70
+      const x = c + Math.cos(angle) * r
+      const y = c + Math.sin(angle) * r
+      points.push(`${t === 0 ? 'M' : 'L'} ${x} ${y}`)
+    }
+    return points.join(' ')
+  })()
 
   return (
     <div className="relative" style={{ width: 320, height: 320 }}>
-      {/* SVG: 3 rotating dashed rings */}
+      {/* Spiral path */}
       <svg width={320} height={320} className="absolute inset-0 pointer-events-none" style={{ zIndex: 0 }}>
-        <RotatingRing cx={c} cy={c} r={80} color={glowColor} speed={4} dash="10 5" strokeW={1.5} />
-        <RotatingRing cx={c} cy={c} r={115} color={glowColor} speed={7} dash="20 6" strokeW={2} />
-        <RotatingRing cx={c} cy={c} r={150} color={glowColor} speed={10} dash="30 8" strokeW={2} />
+        <defs>
+          <linearGradient id={`spiral-grad`} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor={hexToRgba(glowColor, 0.05)} />
+            <stop offset="100%" stopColor={hexToRgba(glowColor, 0.4)} />
+          </linearGradient>
+        </defs>
+        <path
+          d={spiralPath}
+          fill="none"
+          stroke={`url(#spiral-grad)`}
+          strokeWidth={1.2}
+          strokeLinecap="round"
+          opacity={0.6}
+        />
       </svg>
-      {/* Particles around rings */}
-      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
-        {particles.map((p, i) => (
-          <div key={i} className="absolute rounded-full" style={{
-            left: `calc(50% + ${p.x}px)`,
-            top: `calc(50% + ${p.y}px)`,
-            width: p.size, height: p.size,
-            background: glowColor,
-            opacity: p.opacity,
-            boxShadow: `0 0 ${p.size * 2}px ${glowColor}`,
-          }} />
-        ))}
-      </div>
-      {/* Standard 180px orb — matches other mockups for consistent centering */}
+      {/* Orb at center */}
       <div className="absolute" style={{
         left: '50%', top: '50%',
         width: ORB_SIZE, height: ORB_SIZE,
@@ -758,31 +787,27 @@ function MockupHybridPolish({ glowColor }: { glowColor: string }) {
       }}>
         <PrototypeOrbBreathing glowColor={glowColor} breathMode="D" breathLevel={0} isBreathing={false} showLabels={false} />
       </div>
-      {/* Ring nodes — circular ring-shaped markers on each orbit */}
-      {RING_DEFS.map((ring, ringIdx) => {
-        const positions = Array.from({ length: ring.count }, (_, i) => {
-          const angle = ring.startAngle + (i / ring.count) * Math.PI * 2
-          return { x: Math.cos(angle) * ring.r, y: Math.sin(angle) * ring.r }
-        })
-        return positions.map((pos, i) => {
-          // Assign categories across all rings: 1+2+3 = 6 total
-          const catIdx = RING_DEFS.slice(0, ringIdx).reduce((sum, r) => sum + r.count, 0) + i
-          const cat = CATEGORIES[catIdx]
-          if (!cat) return null
-          return (
-            <div key={`${ringIdx}-${i}`} className="absolute" style={{
-              left: '50%', top: '50%',
-              transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
-              zIndex: 3,
-            }}>
-              <RingNode glowColor={glowColor} icon={cat.icon}
-                isActive={hoveredId === cat.id}
-                onHover={(v) => setHoveredId(v ? cat.id : null)}
-                size={ring.count === 1 ? 38 : ring.count === 2 ? 34 : 30} />
-            </div>
-          )
-        })
-      })}
+      {/* Spiral nodes */}
+      {mounted && spiralNodes.map((node, i) => (
+        <div
+          key={CATEGORIES[i].id}
+          className="absolute"
+          style={{
+            left: `${((c + node.x) / 320) * 100}%`,
+            top: `${((c + node.y) / 320) * 100}%`,
+            transform: 'translate(-50%, -50%)',
+            zIndex: 3,
+          }}
+        >
+          <HexNode
+            glowColor={glowColor}
+            icon={CATEGORIES[i].icon}
+            isActive={hoveredId === CATEGORIES[i].id}
+            onHover={(v) => setHoveredId(v ? CATEGORIES[i].id : null)}
+            size={node.t < 0.3 ? 40 : node.t < 0.7 ? 34 : 30}
+          />
+        </div>
+      ))}
     </div>
   )
 }
@@ -1073,13 +1098,13 @@ interface MenuMockupsProps {
 const MOCKUPS = [
   { key: 'radial-hex', title: 'Radial Hex', badge: 'PRIMARY', description: 'Classic hex circle around the orb. The main layout — balanced, familiar, proven.', Component: MockupRadialHex },
   { key: 'radial-compact', title: 'Radial Compact', badge: null, description: 'Tighter ring, smaller nodes. Same radial feel but more compact — less visual weight.', Component: MockupRadialCompact },
-  { key: 'orbital', title: 'Orbital', badge: null, description: 'Nodes at varying distances with decorative rings. Depth and layered feel.', Component: MockupOrbital },
-  { key: 'orbital-stacked', title: 'Orbital Stacked', badge: null, description: 'Two orbit layers — inner 3 + outer 3. Inner items feel closer, outer items recede.', Component: MockupOrbitalStacked },
+  { key: 'orbital', title: 'Iris Bloom', badge: 'NEW', description: 'Curved petal paths radiate from the orb to each node. Organic, flower-like, flows from the core.', Component: MockupOrbital },
+  { key: 'orbital-stacked', title: 'Constellation', badge: 'NEW', description: 'All nodes connected by thin lines forming a geometric star web. Hover reveals connection highlights.', Component: MockupOrbitalStacked },
   { key: 'dock', title: 'Dock', badge: null, description: 'Orb above, hex nodes in a compact dock bar below. Clean, minimal, macOS-inspired.', Component: MockupDock },
   { key: 'radial-arc', title: 'Radial Arc', badge: null, description: 'Nodes spread across the top half-circle. Leaves the bottom open for other UI.', Component: MockupRadialArc },
   { key: 'concentric', title: 'Concentric', badge: null, description: 'Two rings of 3 — inner fast-access, outer secondary. Visual hierarchy.', Component: MockupConcentric },
   { key: 'orbital-halo', title: 'Orbital + Particles', badge: 'NEW', description: 'Bigger orb with radiating particles that blend into rotating dashed rings. Industrial feel without SVG overlays.', Component: MockupOrbitalParticles },
-  { key: 'hybrid-polish', title: 'Hybrid Polish', badge: 'NEW', description: 'Radial hex with liquid-metal hex nodes, specular highlights, and rotating decorative rings.', Component: MockupHybridPolish },
+  { key: 'hybrid-polish', title: 'Vortex Spiral', badge: 'NEW', description: 'Logarithmic spiral that tightens as it approaches the orb. Nodes draw inward — gravity into the core.', Component: MockupHybridPolish },
   { key: 'dock-redesign', title: 'Dock Redesign', badge: 'NEW', description: 'Dock layout with mini arc-segment buttons — liquid metal fills, glow on active. Clean, compact.', Component: MockupDockRedesign },
 ]
 
