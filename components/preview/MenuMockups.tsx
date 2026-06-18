@@ -1050,13 +1050,23 @@ function MockupTransitionShatter({ glowColor }: { glowColor: string }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// ── GROUP C — Spiral Dissolve (kept) ────────────────────────────────
+// ── GROUP C — Spiral Dissolve (WINNER) + random Gravity/Magnet ──────
 // ══════════════════════════════════════════════════════════════════════
+
+type WinTransition = 'spiral' | 'gravity' | 'magnet'
 
 function MockupTransitionSpiral({ glowColor }: { glowColor: string }) {
   const [isGlitch, setIsGlitch] = useState(false)
   const [spiralT, setSpiralT] = useState(0)
   const [enterT, setEnterT] = useState(1) // 1 = fully entered (no animation)
+  const [transitionType, setTransitionType] = useState<WinTransition>('spiral')
+
+  // Pick a random transition, different from the current one
+  const pickRandomTransition = (current: WinTransition): WinTransition => {
+    const options: WinTransition[] = ['spiral', 'gravity', 'magnet']
+    const filtered = options.filter(t => t !== current)
+    return filtered[Math.floor(Math.random() * filtered.length)]
+  }
 
   const handleOrbClick = () => {
     if (isGlitch) {
@@ -1073,7 +1083,8 @@ function MockupTransitionSpiral({ glowColor }: { glowColor: string }) {
       }
       requestAnimationFrame(animate)
     } else {
-      // Exit: nodes spiral out with Photon Burst flash
+      // Exit: randomly pick a transition type
+      setTransitionType(pickRandomTransition(transitionType))
       setIsGlitch(true)
       let start: number | null = null
       const animate = (ts: number) => {
@@ -1086,33 +1097,54 @@ function MockupTransitionSpiral({ glowColor }: { glowColor: string }) {
     }
   }
 
+  // Photon Burst flash helper: peak at 15%, then settle
+  const photonFlash = (t: number) => {
+    if (t < 0.15) {
+      const flash = t / 0.15
+      return { brightness: 1 + flash * 2, scale: 1 + flash * 0.25 }
+    }
+    const settle = (t - 0.15) / 0.85
+    return { brightness: 3 - settle * 2, scale: 1.25 - settle * 0.25 }
+  }
+
   return (
     <RadialArcBase glowColor={glowColor} nodeId="spiral" isGlitchMode={isGlitch}
       onOrbClick={handleOrbClick}
       nodeStyle={(i, pos) => {
         if (!isGlitch) {
-          // Enter animation: reverse spiral back to position with Photon Burst flash
-          const baseAngle = Math.PI + (i / 5) * Math.PI
-          const reversed = 1 - enterT // 1 at start (spiral), 0 at end (normal)
-          // Position: from spiral back to normal
-          const spiralAngle = baseAngle + Math.PI / 2 // the +90° from exit
-          const spiralR = 50
-          const dx = Math.cos(spiralAngle) * spiralR * reversed
-          const dy = Math.sin(spiralAngle) * spiralR * reversed
-          const rot = 90 * reversed
-          // Photon Burst flash: peak at 15%, then settle
-          let brightness: number, scale: number
-          if (enterT < 0.15) {
-            // Flash phase: ramp up
-            const flash = enterT / 0.15
-            brightness = 1 + flash * 2
-            scale = 1 + flash * 0.25
-          } else {
-            // Settle phase: ramp down to normal
-            const settle = (enterT - 0.15) / 0.85
-            brightness = 3 - settle * 2
-            scale = 1.25 - settle * 0.25
+          // Enter animation: reverse current transition back to position with Photon Burst flash
+          const { brightness, scale } = photonFlash(enterT)
+          const reversed = 1 - enterT
+
+          let dx = 0, dy = 0, rot = 0
+          if (transitionType === 'spiral') {
+            const baseAngle = Math.PI + (i / 5) * Math.PI
+            const spiralAngle = baseAngle + Math.PI / 2
+            dx = Math.cos(spiralAngle) * 50 * reversed
+            dy = Math.sin(spiralAngle) * 50 * reversed
+            rot = 90 * reversed
+          } else if (transitionType === 'gravity') {
+            // Reverse: nodes float up from below
+            const gravity = reversed * 150
+            dy = gravity
+            rot = reversed * 30 * (i < 3 ? -1 : 1)
+          } else if (transitionType === 'magnet') {
+            // Reverse: nodes expand from center back to position
+            const shrink = reversed * 0.8
+            const pullX = pos.x * reversed
+            const pullY = pos.y * reversed
+            dx = -pullX
+            dy = -pullY
+            // Scale back from 0.2 to 1
+            return {
+              transform: `translate(calc(-50% + ${pos.x * (1 - reversed * 0.8)}px), calc(-50% + ${pos.y * (1 - reversed * 0.8)}px)) scale(${1 - shrink})`,
+              opacity: enterT,
+              filter: `brightness(${brightness})`,
+              visibility: 'visible',
+              transition: 'none',
+            }
           }
+
           return {
             transform: `translate(calc(-50% + ${pos.x + dx}px), calc(-50% + ${pos.y + dy}px)) rotate(${rot}deg) scale(${scale})`,
             opacity: enterT,
@@ -1121,19 +1153,54 @@ function MockupTransitionSpiral({ glowColor }: { glowColor: string }) {
             transition: 'none',
           }
         }
-        // Exit animation: spiral out with Photon Burst flash
-        const baseAngle = Math.PI + (i / 5) * Math.PI
-        const angle = baseAngle + spiralT * Math.PI / 2 // +90°
-        const extraR = spiralT * 50
-        const dx = Math.cos(angle) * extraR
-        const dy = Math.sin(angle) * extraR
-        // Photon Burst flash effect in first 15%
+
+        // Exit animation: apply current transition type with Photon Burst flash
         const flashT = Math.min(1, spiralT / 0.15)
         const brightness = 1 + flashT * 2
         const scale = 1 + flashT * 0.25
         const done = spiralT >= 1
+
+        let dx = 0, dy = 0, rot = 0
+        if (transitionType === 'spiral') {
+          const baseAngle = Math.PI + (i / 5) * Math.PI
+          const angle = baseAngle + spiralT * Math.PI / 2
+          const extraR = spiralT * 50
+          dx = Math.cos(angle) * extraR
+          dy = Math.sin(angle) * extraR
+          rot = spiralT * 90
+        } else if (transitionType === 'gravity') {
+          // Nodes fall downward with acceleration
+          const distFromCenter = Math.abs(i - 2.5) / 2.5
+          const stagger = distFromCenter * 0.3
+          const t = Math.max(0, Math.min(1, (spiralT - stagger) / 0.7))
+          const gravity = t * t * 150
+          rot = t * 30 * (i < 3 ? -1 : 1)
+          // For gravity, we need the base position + gravity offset
+          // But spiralT is used for the animation progress, and we need to apply gravity to the original position
+          // The issue is that the base position is pos.x, pos.y, and gravity adds to dy
+          return {
+            transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y + gravity}px)) rotate(${rot}deg) scale(${scale})`,
+            opacity: done ? 0 : 1 - spiralT,
+            filter: `brightness(${brightness})`,
+            visibility: done ? 'hidden' : 'visible',
+            transition: 'none',
+          }
+        } else if (transitionType === 'magnet') {
+          // Nodes shrink and get pulled into center
+          const stagger = i / 5
+          const t = Math.max(0, Math.min(1, (spiralT - stagger * 0.4) / 0.6))
+          const ease = t * t
+          return {
+            transform: `translate(calc(-50% + ${pos.x * (1 - ease * 0.8)}px), calc(-50% + ${pos.y * (1 - ease * 0.8)}px)) scale(${1 - ease * 0.8})`,
+            opacity: 1 - ease,
+            filter: `brightness(${brightness})`,
+            visibility: done ? 'hidden' : 'visible',
+            transition: 'none',
+          }
+        }
+
         return {
-          transform: `translate(calc(-50% + ${pos.x + dx}px), calc(-50% + ${pos.y + dy}px)) rotate(${spiralT * 90}deg) scale(${scale})`,
+          transform: `translate(calc(-50% + ${pos.x + dx}px), calc(-50% + ${pos.y + dy}px)) rotate(${rot}deg) scale(${scale})`,
           opacity: done ? 0 : 1 - spiralT,
           filter: `brightness(${brightness})`,
           visibility: done ? 'hidden' : 'visible',
@@ -1724,7 +1791,7 @@ const MOCKUPS = [
   { key: 'radial-arc-pulse', title: 'B1 — Pulse Wave', badge: 'B', description: 'Expanding ring from orb center — nodes vanish as the ring passes each one.', Component: MockupTransitionPulse },
   { key: 'radial-arc-gravity', title: 'B2 — Gravity Drop', badge: 'B', description: 'Nodes lose grip and fall downward with acceleration — physics-based drop.', Component: MockupTransitionGravity },
   { key: 'radial-arc-shatter', title: 'B3 — Shatter', badge: 'B', description: 'Nodes crack and scatter into fragments — destructive, dramatic exit.', Component: MockupTransitionShatter },
-  { key: 'radial-arc-web', title: 'C — Spiral Dissolve', badge: '★ PICK', description: 'Nodes spiral outward (+60r, +90°) and fade, then spiral back to original positions.', Component: MockupTransitionSpiral },
+  { key: 'radial-arc-web', title: 'C — Random Rotate', badge: '★ PICK', description: 'Winner. Each click randomly picks one of: Spiral Dissolve, Gravity Drop, or Magnet Pull. Enter: nodes reverse the transition with Photon Burst flash (brightness 1→3→1, scale 1→1.25→1).', Component: MockupTransitionSpiral },
   { key: 'concentric', title: 'Concentric', badge: null, description: 'Two rings of 3 — inner fast-access, outer secondary. Visual hierarchy.', Component: MockupConcentric },
   { key: 'orbital-halo', title: 'Orbital + Particles', badge: 'NEW', description: 'Bigger orb with radiating particles that blend into rotating dashed rings. Industrial feel without SVG overlays.', Component: MockupOrbitalParticles },
   { key: 'hybrid-polish', title: 'Vortex Spiral', badge: 'NEW', description: 'Logarithmic spiral that tightens as it approaches the orb. Nodes draw inward — gravity into the core.', Component: MockupHybridPolish },
