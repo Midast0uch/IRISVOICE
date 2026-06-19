@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { ArrowLeft } from "lucide-react"
 import { useManualDragWindow } from "@/hooks/useManualDragWindow"
-import { DualRingMechanism } from "./DualRingMechanism"
+import { HexPatternRingMechanism } from "./HexPatternRingMechanism"
 import { SidePanel } from "./SidePanel"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
@@ -304,7 +304,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
               }}
             />
 
-            <DualRingMechanism
+            <HexPatternRingMechanism
               items={cardStack}
               selectedIndex={selectedIndex}
               onSelect={handleSelect}
@@ -629,38 +629,40 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 />
               </motion.div>
 
-              {/* 2. LIQUID METAL RING - Phase 112: Flowing Mercury */}
-              <motion.div
-                className="absolute inset-0 rounded-full pointer-events-none"
-                style={{
-                  border: "2px solid transparent",
-                  background: `conic-gradient(from 0deg, 
-                    #ffffff 0deg, 
-                    ${glowColor} 45deg, 
-                    #101014 120deg, 
-                    #ffffff 180deg, 
-                    ${glowColor} 225deg, 
-                    #101014 300deg, 
-                    #ffffff 360deg) border-box`,
-                  WebkitMask: "linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0)",
-                  WebkitMaskComposite: "destination-out",
-                  maskComposite: "exclude",
-                  filter: "drop-shadow(0 0 2px rgba(255,255,255,0.6))",
-                  zIndex: 2
-                }}
-                animate={{ rotate: 360 }}
-                transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
-              />
-
-              {/* 3. GLASSMORPHIC BASE & 4. CONVEX HIGHLIGHT - Phase 113: Inverted Groove */}
+              {/* 2. HEX PATTERN NEON EDGE — matches ring segment neon edge */}
               <div
                 className="absolute inset-0 rounded-full pointer-events-none"
                 style={{
-                  background: `linear-gradient(135deg, rgba(30, 32, 40, 0.75) 0%, color-mix(in srgb, ${glowColor}, transparent 65%) 100%)`,
+                  border: `1.5px solid ${glowColor}`,
+                  filter: `drop-shadow(0 0 6px ${glowColor}) drop-shadow(0 0 12px ${glowColor})`,
+                  zIndex: 2
+                }}
+              />
+
+              {/* 3. HEX PATTERN BASE — hex-active gradient + honeycomb texture */}
+              <div
+                className="absolute inset-0 rounded-full pointer-events-none"
+                style={{
+                  background: `linear-gradient(135deg, ${glowColor}40 0%, rgba(10,10,12,0.7) 50%, ${glowColor}1a 100%)`,
                   backdropFilter: "blur(12px)",
                   WebkitBackdropFilter: "blur(12px)",
                   boxShadow: "0 4px 12px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.2)",
                   zIndex: 2
+                }}
+              />
+              {/* 3.1 HEX PATTERN TEXTURE OVERLAY — honeycomb SVG pattern as CSS background */}
+              <div
+                className="absolute inset-0 rounded-full pointer-events-none"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(
+                    `<svg xmlns='http://www.w3.org/2000/svg' width='8' height='9.24'>
+                      <polygon points='4,0 8,2.31 8,6.93 4,9.24 0,6.93 0,2.31'
+                        fill='none' stroke='${glowColor}' stroke-width='0.4' opacity='0.4'/>
+                    </svg>`
+                  )}")`,
+                  backgroundRepeat: 'repeat',
+                  opacity: 0.4,
+                  zIndex: 3
                 }}
               />
 

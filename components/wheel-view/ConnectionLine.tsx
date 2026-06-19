@@ -94,6 +94,16 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
           <filter id="line-glow-blur-hot">
             <feGaussianBlur in="SourceGraphic" stdDeviation="4" />
           </filter>
+
+          {/* Hex pattern texture for connection line */}
+          <pattern id="line-hex-pattern" x="0" y="0" width="8" height="9.24" patternUnits="userSpaceOnUse">
+            <polygon
+              points="4,0 8,2.31 8,6.93 4,9.24 0,6.93 0,2.31"
+              fill="none"
+              stroke={hexToRgba(glowColor, 0.4)}
+              strokeWidth="0.4"
+            />
+          </pattern>
         </defs>
 
         {/* 1. Brand Color Saturation Layer (Backlight) - Phase 64 */}
@@ -109,7 +119,7 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
           style={{ filter: `blur(2px)` }}
         />
 
-        {/* 2. Neon Edge Bloom Overlay (Atmospheric) */}
+        {/* 2. Neon Edge Bloom — matches hex pattern segment neon edge */}
         <line
           x1="0"
           y1={containerHeight / 2}
@@ -118,8 +128,10 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
           stroke={glowColor}
           strokeWidth={lineHeight * 6}
           strokeLinecap="round"
-          filter="url(#line-glow-blur-hot)"
-          opacity="0.6" // Restored Vibrancy (Phase 64)
+          style={{
+            filter: `drop-shadow(0 0 6px ${glowColor}) drop-shadow(0 0 12px ${glowColor})`,
+            opacity: 0.6
+          }}
         />
 
         {/* 3. Main High-Intensity Energy Beam - Reduced to atmospheric guide (Phase 73) */}
@@ -150,6 +162,18 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
             opacity: 0.95,
             filter: `drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 5px white)`,
           }}
+        />
+
+        {/* 5. Hex Pattern Texture Overlay — matches ring segment hex pattern */}
+        <line
+          x1="0"
+          y1={containerHeight / 2}
+          x2={lineWidth}
+          y2={containerHeight / 2}
+          stroke="url(#line-hex-pattern)"
+          strokeWidth={lineHeight * 1.5}
+          strokeLinecap="round"
+          style={{ opacity: 0.3 }}
         />
       </svg>
     </motion.div>
