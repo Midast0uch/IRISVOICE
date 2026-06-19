@@ -7,7 +7,7 @@ import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { useManualDragWindow } from "@/hooks/useManualDragWindow"
 import { useCadenceDetection } from "@/hooks/useCadenceDetection"
-import { useUILayoutState, UILayoutState } from "@/hooks/useUILayoutState"
+import { UILayoutState } from "@/hooks/useUILayoutState"
 import type { XurOrbProps } from "./types"
 import { OrbCanvas } from "./orb/OrbCanvas"
 import {
@@ -69,7 +69,6 @@ export function XurOrb({
   } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   const cadence = useCadenceDetection()
-  const { openChat } = useUILayoutState()
 
   // ── State ────────────────────────────────────────────────────────
   const [animationMode, setAnimationMode] = useState<AnimationMode>('C')
@@ -225,10 +224,9 @@ export function XurOrb({
         startVoiceCommand()
       }
     } else if (action === 'chat') {
-      openChat()
       onChatClick?.()
     }
-  }, [triggerAnimation, onMenuClick, onChatClick, isVoiceActive, startVoiceCommand, endVoiceCommand, openChat])
+  }, [triggerAnimation, onMenuClick, onChatClick, isVoiceActive, startVoiceCommand, endVoiceCommand])
 
   const handleCategorySelect = useCallback((categoryId: string) => {
     onCategorySelect?.(categoryId)

@@ -1,9 +1,16 @@
 "use client"
 
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react"
 import { CATEGORIES } from "./categories"
 import { HexNode } from "./HexNode"
 import { hexToRgba } from "../utils/hexToRgba"
+import {
+  type WinTransition,
+  pickRandomTransition,
+  photonFlash,
+  WIN_DURATION_MS,
+  ENTER_DURATION_MS,
+} from "./WinTransitionEngine"
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -14,13 +21,13 @@ export interface RadialArcNodesProps {
   glowColor: string
   isVisible: boolean
   onCategorySelect: (id: string) => void
+  /** Optional external node style override. When not provided, internal
+   *  WinTransitionEngine enter/exit animations are used. */
   nodeStyle?: NodeStyleFn
   extraSVG?: React.ReactNode
 }
 
 // ── Seeded particle generator (deterministic, client-side only) ──────
-// Uses a mulberry32 PRNG so particles are identical on every render.
-// No Math.random() — prevents SSR hydration mismatch.
 
 function mulberry32(seed: number) {
   return function () {
@@ -53,14 +60,6 @@ function useParticles(count: number, minDist: number, maxDist: number, seed = 42
   }, [mounted, count, minDist, maxDist, seed])
 }
 
-// ── Default node style (visible, positioned on arc) ──────────────────
-
-const defaultNodeStyle: NodeStyleFn = (_idx, pos) => ({
-  transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
-  opacity: 1,
-  transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease',
-})
-
 // ── RadialArcNodes ───────────────────────────────────────────────────
 
 /**
@@ -69,12 +68,14 @@ const defaultNodeStyle: NodeStyleFn = (_idx, pos) => ({
  * Extracted from the C-Random Rotate winner in MenuMockups.tsx.
  * Renders an SVG arc with 6 hex category nodes positioned on a semicircle.
  *
- * Key differences from the prototype's RadialArcBase:
- * - NO Orb component inside — XurOrb renders the orb separately
- * - NO state machine for transitions — enter/exit transitions come from
- *   XurOrb via the `nodeStyle` prop
- * - Accepts `onCategorySelect` for hex node clicks
- * - Accepts `isVisible` to control show/hide
+ * Uses WinTransitionEngine internally for enter/exit animations:
+ * - When isVisible goes false→true: nodes enter with a random transition
+ *   (spiral/gravity/magnet) + Photon Burst flash
+ * - When isVisible goes true→false: nodes exit with a random transition
+ * - Each transition picks a different type than the previous one
+ *
+ * If an external `nodeStyle` is provided, it overrides the internal
+ * transition animations (for XurOrb to control if needed).
  *
  * Container: 246×246, same as prototype.
  */
@@ -82,15 +83,64 @@ export function RadialArcNodes({
   glowColor,
   isVisible,
   onCategorySelect,
-  nodeStyle = defaultNodeStyle,
+  nodeStyle,
   extraSVG,
 }: RadialArcNodesProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
   const particles = useParticles(20, 55, 130, 88)
 
+  // ── WinTransitionEngine state ────────────────────────────────────
+  const [exitT, setExitT] = useState(0)       // 0 = not exiting, 1 = fully exited
+  const [enterT, setEnterT] = useState(1)     // 1 = fully entered (no animation)
+  const [isExiting, setIsExiting] = useState(false)
+  const [transitionType, setTransitionType] = useState<WinTransition>('spiral')
+  const rafRef = useRef<number>(0)
+  const prevVisibleRef = useRef(isVisible)
+
   useEffect(() => { setMounted(true) }, [])
 
+  // ── Trigger enter/exit when isVisible changes ────────────────────
+  useEffect(() => {
+    if (prevVisibleRef.current === isVisible) return
+    prevVisibleRef.current = isVisible
+
+    if (isVisible) {
+      // Enter: nodes fly back in with Photon Burst flash
+      setTransitionType(t => pickRandomTransition(t))
+      setExitT(0)
+      setIsExiting(false)
+      setEnterT(0)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / ENTER_DURATION_MS)
+        setEnterT(t)
+        if (t < 1) rafRef.current = requestAnimationFrame(animate)
+      }
+      rafRef.current = requestAnimationFrame(animate)
+    } else {
+      // Exit: randomly pick a transition type, animate nodes out
+      setTransitionType(t => pickRandomTransition(t))
+      setIsExiting(true)
+      setExitT(0)
+      let start: number | null = null
+      const animate = (ts: number) => {
+        if (!start) start = ts
+        const t = Math.min(1, (ts - start) / WIN_DURATION_MS)
+        setExitT(t)
+        if (t < 1) rafRef.current = requestAnimationFrame(animate)
+      }
+      rafRef.current = requestAnimationFrame(animate)
+    }
+  }, [isVisible])
+
+  // Cleanup rAF
+  useEffect(() => {
+    return () => cancelAnimationFrame(rafRef.current)
+  }, [])
+
+  // ── Positions ────────────────────────────────────────────────────
   const positions = useMemo<NodePosition[]>(() => {
     if (!mounted) return Array.from({ length: 6 }, () => ({ x: 0, y: 0, sx: 123, sy: 123, angle: 0 }))
     return Array.from({ length: 6 }, (_, i) => {
@@ -129,10 +179,116 @@ export function RadialArcNodes({
     5: { dx: 15, dy: 2, align: 'left' },
   }
 
+  // ── Internal node style with WinTransitionEngine ─────────────────
+  const internalNodeStyle = useCallback((i: number, pos: NodePosition): React.CSSProperties => {
+    // If fully entered and not exiting, show at rest position
+    if (enterT >= 1 && !isExiting) {
+      return {
+        transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
+        opacity: 1,
+        transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease',
+      }
+    }
+
+    if (isExiting) {
+      // Exit animation: apply current transition type with Photon Burst flash
+      const flashT = Math.min(1, exitT / 0.15)
+      const brightness = 1 + flashT * 2
+      const scale = 1 + flashT * 0.25
+      const done = exitT >= 1
+
+      if (transitionType === 'spiral') {
+        const baseAngle = Math.PI + (i / 5) * Math.PI
+        const angle = baseAngle + exitT * Math.PI / 2
+        const extraR = exitT * 50
+        const dx = Math.cos(angle) * extraR
+        const dy = Math.sin(angle) * extraR
+        const rot = exitT * 90
+        return {
+          transform: `translate(calc(-50% + ${pos.x + dx}px), calc(-50% + ${pos.y + dy}px)) rotate(${rot}deg) scale(${scale})`,
+          opacity: done ? 0 : 1 - exitT,
+          filter: `brightness(${brightness})`,
+          visibility: done ? 'hidden' as const : 'visible' as const,
+          transition: 'none',
+        }
+      } else if (transitionType === 'gravity') {
+        const distFromCenter = Math.abs(i - 2.5) / 2.5
+        const stagger = distFromCenter * 0.3
+        const t = Math.max(0, Math.min(1, (exitT - stagger) / 0.7))
+        const gravity = t * t * 150
+        const rot = t * 30 * (i < 3 ? -1 : 1)
+        return {
+          transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y + gravity}px)) rotate(${rot}deg) scale(${scale})`,
+          opacity: done ? 0 : 1 - exitT,
+          filter: `brightness(${brightness})`,
+          visibility: done ? 'hidden' as const : 'visible' as const,
+          transition: 'none',
+        }
+      } else {
+        // magnet
+        const stagger = i / 5
+        const t = Math.max(0, Math.min(1, (exitT - stagger * 0.4) / 0.6))
+        const ease = t * t
+        return {
+          transform: `translate(calc(-50% + ${pos.x * (1 - ease * 0.8)}px), calc(-50% + ${pos.y * (1 - ease * 0.8)}px)) scale(${1 - ease * 0.8})`,
+          opacity: 1 - ease,
+          filter: `brightness(${brightness})`,
+          visibility: done ? 'hidden' as const : 'visible' as const,
+          transition: 'none',
+        }
+      }
+    }
+
+    // Enter animation: reverse current transition back to position with Photon Burst flash
+    const { brightness, scale } = photonFlash(enterT)
+    const reversed = 1 - enterT
+
+    if (transitionType === 'spiral') {
+      const baseAngle = Math.PI + (i / 5) * Math.PI
+      const spiralAngle = baseAngle + Math.PI / 2
+      const dx = Math.cos(spiralAngle) * 50 * reversed
+      const dy = Math.sin(spiralAngle) * 50 * reversed
+      const rot = 90 * reversed
+      return {
+        transform: `translate(calc(-50% + ${pos.x + dx}px), calc(-50% + ${pos.y + dy}px)) rotate(${rot}deg) scale(${scale})`,
+        opacity: enterT,
+        filter: `brightness(${brightness})`,
+        visibility: 'visible' as const,
+        transition: 'none',
+      }
+    } else if (transitionType === 'gravity') {
+      const gravity = reversed * 150
+      const rot = reversed * 30 * (i < 3 ? -1 : 1)
+      return {
+        transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y + gravity}px)) rotate(${rot}deg) scale(${scale})`,
+        opacity: enterT,
+        filter: `brightness(${brightness})`,
+        visibility: 'visible' as const,
+        transition: 'none',
+      }
+    } else {
+      // magnet
+      const shrink = reversed * 0.8
+      return {
+        transform: `translate(calc(-50% + ${pos.x * (1 - reversed * 0.8)}px), calc(-50% + ${pos.y * (1 - reversed * 0.8)}px)) scale(${1 - shrink})`,
+        opacity: enterT,
+        filter: `brightness(${brightness})`,
+        visibility: 'visible' as const,
+        transition: 'none',
+      }
+    }
+  }, [enterT, exitT, isExiting, transitionType])
+
+  // Use external nodeStyle if provided, otherwise use internal WinTransitionEngine
+  const effectiveNodeStyle = nodeStyle ?? internalNodeStyle
+
+  // Nodes are visible during enter, at rest, and during exit (until fully gone)
+  const nodesVisible = isVisible || isExiting
+
   return (
-    <div className="relative" style={{ width: 246, height: 246, opacity: isVisible ? 1 : 0, transition: 'opacity 0.3s ease' }}>
+    <div className="relative" style={{ width: 246, height: 246, opacity: nodesVisible ? 1 : 0, transition: 'opacity 0.3s ease' }}>
       {/* SVG arc + spokes + hover ring */}
-      {isVisible && (
+      {nodesVisible && (
         <svg width={246} height={246} className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
           <defs>
             <linearGradient id="arc-base-grad-radial" x1="50%" y1="50%" x2="50%" y2="0%">
@@ -173,7 +329,7 @@ export function RadialArcNodes({
       )}
 
       {/* Particles */}
-      {isVisible && (
+      {nodesVisible && (
         <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
           {particles.map((p, i) => (
             <div key={i} className="absolute rounded-full" style={{
@@ -189,7 +345,7 @@ export function RadialArcNodes({
       {mounted && CATEGORIES.map((cat, i) => (
         <div key={cat.id} className="absolute" style={{
           left: '50%', top: '50%',
-          ...nodeStyle(i, positions[i]),
+          ...effectiveNodeStyle(i, positions[i]),
         }}>
           <HexNode
             glowColor={glowColor}
@@ -202,7 +358,7 @@ export function RadialArcNodes({
       ))}
 
       {/* Category label on hover */}
-      {mounted && hoveredId && isVisible && (() => {
+      {mounted && hoveredId && nodesVisible && (() => {
         const idx = CATEGORIES.findIndex(c => c.id === hoveredId)
         if (idx < 0) return null
         const pos = positions[idx]

@@ -11,6 +11,7 @@ import { CadenceBreathDemo } from '@/components/preview/CadenceBreathDemo'
 import { HexGridPreview } from '@/components/preview/HexGridPreview'
 import { MenuMockups } from '@/components/preview/MenuMockups'
 import { WheelRingStyles } from '@/components/preview/WheelRingStyles'
+import { HexPatternRingMechanism } from '@/components/wheel-view/HexPatternRingMechanism'
 import { XurOrb } from '@/components/iris/XurOrb'
 import { RadialArcNodes } from '@/components/iris/radial/RadialArcNodes'
 
@@ -447,6 +448,36 @@ export default function OrbPreviewPage() {
           </p>
         </div>
         <WheelRingStyles glowColor={theme.color} />
+      </section>
+
+      {/* Section 4.6: HexPatternRingMechanism — Production Wheel Ring */}
+      <section className="flex flex-col items-center gap-4 mt-12">
+        <div className="flex flex-col items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-widest">
+            HexPatternRingMechanism — Production Wheel Ring
+          </h2>
+          <p className="text-xs text-slate-500 text-center max-w-xl">
+            The production ring mechanism with hex pattern surface aesthetic.
+            Honeycomb SVG pattern overlay + neon edge outline on each segment.
+            Click a segment to select it. Replaces DualRingMechanism.
+          </p>
+        </div>
+        <div className="p-6 rounded-2xl border border-white/10 bg-black/20">
+          <HexPatternRingMechanism
+            items={[
+              { id: 'a', label: 'Alpha', fields: [] },
+              { id: 'b', label: 'Bravo', fields: [] },
+              { id: 'c', label: 'Charlie', fields: [] },
+              { id: 'd', label: 'Delta', fields: [] },
+              { id: 'e', label: 'Echo', fields: [] },
+              { id: 'f', label: 'Foxtrot', fields: [] },
+            ] as any}
+            selectedIndex={0}
+            onSelect={() => {}}
+            glowColor={theme.color}
+            orbSize={300}
+          />
+        </div>
       </section>
 
       {/* Section 5: Hex Grid Preview (unchanged) */}

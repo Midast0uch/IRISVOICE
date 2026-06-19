@@ -266,6 +266,7 @@ export default function Home() {
               <IrisOrb
                 onClick={handleSingleClick}
                 onDoubleClick={handleDoubleClick}
+                onChatClick={handleChatClick}
                 isExpanded={isExpanded}
                 centerLabel={orbState.label}
                 size={175}

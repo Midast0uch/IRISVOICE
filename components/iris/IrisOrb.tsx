@@ -26,6 +26,7 @@ export function IrisOrb(props: IrisOrbProps) {
     isExpanded,
     onClick,
     onDoubleClick,
+    onChatClick,
     centerLabel,
     size,
     glowColor,
@@ -39,6 +40,7 @@ export function IrisOrb(props: IrisOrbProps) {
       isExpanded={isExpanded}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
+      onChatClick={onChatClick}
       centerLabel={centerLabel}
       size={size}
       glowColor={glowColor}

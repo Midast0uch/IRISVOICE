@@ -20,6 +20,7 @@ export interface IrisOrbProps {
   isExpanded: boolean
   onClick: () => void
   onDoubleClick: () => void
+  onChatClick?: () => void
   centerLabel: string
   size: number
   glowColor?: string
