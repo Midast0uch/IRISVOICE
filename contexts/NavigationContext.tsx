@@ -448,6 +448,12 @@ interface NavigationContextValue {
   voiceState: "idle" | "listening" | "processing_conversation" | "processing_tool" | "speaking" | "error"
   isChatTyping: boolean
   audioLevel: number
+  // Cadence (spectral flux) during listening — from backend audio_envelope WS
+  cadenceLevel: number
+  // TTS audio level (RMS) during speaking — from backend audio_envelope WS
+  ttsAudioLevel: number
+  // Audio phase: "listening" | "speaking" | "idle"
+  audioPhase: "listening" | "speaking" | "idle"
   fieldValues: Record<string, any>
   fieldErrors: Record<string, string> // Map of "sectionId:fieldId" to error message
   lastTextResponse: { text: string; sender: "user" | "assistant"; thinking?: string } | null
@@ -485,6 +491,9 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     voiceState,
     isChatTyping,
     audioLevel,
+    cadenceLevel,
+    ttsAudioLevel,
+    audioPhase,
     fieldValues,
     fieldErrors,
     lastTextResponse,
@@ -823,6 +832,9 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     voiceState,
     isChatTyping,
     audioLevel,
+    cadenceLevel,
+    ttsAudioLevel,
+    audioPhase,
     fieldValues,
     fieldErrors,
     lastTextResponse,
@@ -883,6 +895,9 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     currentSection,
     voiceState,
     audioLevel,
+    cadenceLevel,
+    ttsAudioLevel,
+    audioPhase,
     fieldValues,
     fieldErrors,
     lastTextResponse,

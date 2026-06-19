@@ -63,6 +63,12 @@ interface UseIRISWebSocketReturn {
   currentSection: string | null
   voiceState: VoiceState
   audioLevel: number
+  // Cadence (spectral flux) during listening — from backend audio_envelope WS
+  cadenceLevel: number
+  // TTS audio level (RMS) during speaking — from backend audio_envelope WS
+  ttsAudioLevel: number
+  // Audio phase: "listening" | "speaking" | "idle"
+  audioPhase: "listening" | "speaking" | "idle"
   lastTextResponse: TextResponseMessage | null
   // Agent state
   agentStatus: Record<string, unknown> | null
@@ -139,6 +145,12 @@ export function useIRISWebSocket(
   const [currentSection, setCurrentSection] = useState<string | null>(null)
   const [voiceState, setVoiceState] = useState<VoiceState>("idle")
   const [audioLevel, setAudioLevel] = useState<number>(0)
+  // Cadence (spectral flux) during listening — from backend audio_envelope WS
+  const [cadenceLevel, setCadenceLevel] = useState<number>(0)
+  // TTS audio level (RMS) during speaking — from backend audio_envelope WS
+  const [ttsAudioLevel, setTtsAudioLevel] = useState<number>(0)
+  // Audio phase: "listening" | "speaking" | "idle"
+  const [audioPhase, setAudioPhase] = useState<"listening" | "speaking" | "idle">("idle")
   const [lastTextResponse, setLastTextResponse] = useState<TextResponseMessage | null>(null)
   // True while a text_message is being processed — drives ChatView typing indicator
   // independently of voiceState so the IrisOrb never animates for typed messages.
@@ -630,13 +642,36 @@ export function useIRISWebSocket(
          break
        }
 
-       case "audio_level": {
-        // Audio level update during listening
-        if (typeof payload.level === 'number') {
-          setAudioLevel(payload.level)
-        }
-        break
-      }
+        case "audio_level": {
+         // Audio level update during listening (legacy — old IrisOrb.tsx)
+         if (typeof payload.level === 'number') {
+           setAudioLevel(payload.level)
+         }
+         break
+       }
+
+       case "audio_envelope": {
+         // Consolidated audio envelope: { rms, cadence, phase }
+         // Used by XurOrb for cadence-driven breathing at all levels.
+         const rms = typeof payload.rms === 'number' ? payload.rms : 0
+         const cadence = typeof payload.cadence === 'number' ? payload.cadence : 0
+         const phase = typeof payload.phase === 'string' ? payload.phase : "idle"
+         setAudioPhase(phase as "listening" | "speaking" | "idle")
+         if (phase === "listening") {
+           setAudioLevel(rms)
+           setCadenceLevel(cadence)
+           setTtsAudioLevel(0)
+         } else if (phase === "speaking") {
+           setTtsAudioLevel(rms)
+           setCadenceLevel(rms)  // TTS cadence = RMS (no spectral flux for playback)
+           setAudioLevel(0)
+         } else {
+           setAudioLevel(0)
+           setCadenceLevel(0)
+           setTtsAudioLevel(0)
+         }
+         break
+       }
 
       case "text_response": {
         // Text response from LFM2-8B-A1B model
@@ -1260,6 +1295,9 @@ export function useIRISWebSocket(
     currentSection,
     voiceState,
     audioLevel,
+    cadenceLevel,
+    ttsAudioLevel,
+    audioPhase,
     lastTextResponse,
     // Agent state
     agentStatus,
