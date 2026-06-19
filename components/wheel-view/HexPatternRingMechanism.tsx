@@ -259,16 +259,22 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
         </g>
       </motion.g>
 
-      {/* 9. Core Shimmer Engine (White Bright Light Halo) */}
+      {/* 9. Core Shimmer Engine (White Bright Light Halo) — surrounds the center button */}
       <g style={{ pointerEvents: 'none' }}>
-        <motion.circle cx={center} cy={center} r={orbSize * 0.11} fill="none"
-          stroke="white" strokeWidth="6" initial={{ opacity: 0.1 }}
+        {/* Soft glare layer — pulsing, larger radius for visible halo around button */}
+        <motion.circle cx={center} cy={center} r={orbSize * 0.13} fill="none"
+          stroke="white" strokeWidth="8" initial={{ opacity: 0.1 }}
           animate={{ opacity: [0.1, 0.35, 0.1], scale: [1, 1.1, 1] }}
           transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
           style={{ filter: "blur(12px)", originX: "50%", originY: "50%" }} />
-        <circle cx={center} cy={center} r={orbSize * 0.11} fill="none"
+        {/* Sharp halo ring — sits just outside the 64px button (32px radius) */}
+        <circle cx={center} cy={center} r={orbSize * 0.12} fill="none"
           stroke="white" strokeWidth="2"
           style={{ opacity: 0.9, filter: "drop-shadow(0 0 10px white) drop-shadow(0 0 15px white)" }} />
+        {/* Inner glow ring — fills the gap between button edge and sharp halo */}
+        <circle cx={center} cy={center} r={orbSize * 0.115} fill="none"
+          stroke={glowColor} strokeWidth="1"
+          style={{ opacity: 0.5, filter: `drop-shadow(0 0 4px ${glowColor})` }} />
       </g>
 
       {/* 10. Outer Interactive Ring — HEX PATTERN SURFACE */}
