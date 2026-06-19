@@ -129,7 +129,12 @@ export function RadialArcNodes({
         if (!start) start = ts
         const t = Math.min(1, (ts - start) / WIN_DURATION_MS)
         setExitT(t)
-        if (t < 1) rafRef.current = requestAnimationFrame(animate)
+        if (t < 1) {
+          rafRef.current = requestAnimationFrame(animate)
+        } else {
+          // Exit complete — hide SVG arc, particles, and spokes
+          setIsExiting(false)
+        }
       }
       rafRef.current = requestAnimationFrame(animate)
     }
