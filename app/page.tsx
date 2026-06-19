@@ -5,7 +5,7 @@ import { motion } from "framer-motion"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { IrisOrb } from "@/components/iris/IrisOrb"
-import { ChatActivationText } from "@/components/chat-activation-text"
+import { ChatActivationGlitch } from "@/components/iris/radial/ChatActivationGlitch"
 import { WheelView } from "@/components/wheel-view/WheelView"
 import { WheelViewErrorBoundary } from "@/components/wheel-view/WheelViewErrorBoundary"
 import { useUILayoutState, UILayoutState, SpotlightState } from "@/hooks/useUILayoutState"
@@ -275,7 +275,7 @@ export default function Home() {
                 wakeFlash={false}
               />
               <div className="mt-12">
-                <ChatActivationText
+                <ChatActivationGlitch
                   onClick={handleChatClick}
                   navigationLevel={state.level}
                   uiState={uiLayoutState}
