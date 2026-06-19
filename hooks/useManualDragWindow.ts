@@ -4,14 +4,22 @@
  * Shared hook for dragging the native app window by tracking mouse position deltas
  * and calling Tauri's setPosition() API. Falls back gracefully in browser/dev mode.
  *
- * Used by: IrisOrb, WheelView
+ * Supports optional double-click detection (500ms timer) for components that need
+ * it (e.g. XurOrb: single-click navigates, double-click activates voice).
+ * When `onDoubleClickAction` is not provided, single clicks fire immediately
+ * (backward compatible with WheelView and other existing consumers).
+ *
+ * Used by: XurOrb, WheelView
  */
 import { useRef, useCallback, useEffect } from "react"
 import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window"
 
 export function useManualDragWindow(
   elementRef: React.RefObject<HTMLElement | null>,
-  onClickAction?: () => void
+  onClickAction?: () => void,
+  onDoubleClickAction?: () => void,
+  onDoubleClickFlash?: (show: boolean) => void,
+  onPressUpdate?: (pressed: boolean) => void
 ) {
   const isDragging = useRef(false)
   const dragStartPos = useRef({ x: 0, y: 0 })
@@ -20,12 +28,18 @@ export function useManualDragWindow(
   const isDraggingThisElement = useRef(false)
   const mouseDownTarget = useRef<EventTarget | null>(null)
 
+  // Double-click detection state (only used when onDoubleClickAction is provided)
+  const clickCount = useRef<number>(0)
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
     if (e.button !== 0) return
 
     const currentElement = elementRef.current
     const target = e.target as Node
     if (!(currentElement && currentElement.contains(target))) return
+
+    if (onPressUpdate) onPressUpdate(true)
 
     isDragging.current = true
     isDraggingThisElement.current = true
@@ -43,7 +57,7 @@ export function useManualDragWindow(
 
     document.body.style.cursor = "grabbing"
     document.body.style.userSelect = "none"
-  }, [elementRef])
+  }, [elementRef, onPressUpdate])
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging.current || !isDraggingThisElement.current) return
@@ -73,9 +87,6 @@ export function useManualDragWindow(
     const downTarget = mouseDownTarget.current
 
     isDragging.current = false
-    isDraggingThisElement.current = false
-    mouseDownTarget.current = null
-    hasDragged.current = false
     document.body.style.cursor = "default"
     document.body.style.userSelect = ""
 
@@ -88,10 +99,44 @@ export function useManualDragWindow(
         downTargetNode &&
         currentElement.contains(downTargetNode)
       ) {
-        onClickAction()
+        // ── Double-click path (when onDoubleClickAction is provided) ──
+        // First click starts a 500ms timer. If a second click arrives
+        // within that window, fire onDoubleClickAction instead. If the
+        // timer expires, fire onClickAction (single click).
+        if (onDoubleClickAction) {
+          clickCount.current += 1
+
+          if (clickCount.current === 1) {
+            clickTimer.current = setTimeout(() => {
+              if (clickCount.current === 1) {
+                onClickAction()
+              }
+              clickCount.current = 0
+            }, 500)
+          } else if (clickCount.current === 2) {
+            if (clickTimer.current) {
+              clearTimeout(clickTimer.current)
+              clickTimer.current = null
+            }
+            onDoubleClickAction()
+            if (onDoubleClickFlash) {
+              onDoubleClickFlash(true)
+              setTimeout(() => onDoubleClickFlash(false), 500)
+            }
+            clickCount.current = 0
+          }
+        } else {
+          // ── Single-click path (backward compatible) ──
+          onClickAction()
+        }
       }
     }
-  }, [elementRef, onClickAction])
+
+    if (onPressUpdate) onPressUpdate(false)
+    isDraggingThisElement.current = false
+    mouseDownTarget.current = null
+    hasDragged.current = false
+  }, [elementRef, onClickAction, onDoubleClickAction, onDoubleClickFlash, onPressUpdate])
 
   useEffect(() => {
     window.addEventListener("mousemove", handleMouseMove)
@@ -99,6 +144,7 @@ export function useManualDragWindow(
     return () => {
       window.removeEventListener("mousemove", handleMouseMove)
       window.removeEventListener("mouseup", handleMouseUp)
+      if (clickTimer.current) clearTimeout(clickTimer.current)
     }
   }, [handleMouseMove, handleMouseUp])
 
