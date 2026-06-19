@@ -23,6 +23,7 @@ from typing import Optional, Callable, Dict, Any, List
 from enum import Enum
 
 from .engine import AudioEngine
+from .cadence_detector import CadenceDetector
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,13 @@ class VoiceCommandHandler:
         # Called with smoothed RMS level (0.0–1.0) every ~100 ms during recording.
         # Used by the gateway to broadcast audio_level WS events for orb animation.
         self._on_audio_level: Optional[Callable[[float], None]] = None
+        # Called with (rms, cadence, phase) every ~100 ms during recording.
+        # Used by the gateway to broadcast audio_envelope WS events for XurOrb.
+        # phase is "listening" during STT, "speaking" during TTS, "idle" otherwise.
+        self._on_audio_envelope: Optional[Callable[[float, float, str], None]] = None
+
+        # Cadence detector — spectral flux for speech rhythm tracking
+        self.cadence_detector = CadenceDetector(sample_rate=self.sample_rate)
 
         # Internal
         self._frame_listener_registered = False
@@ -119,6 +127,16 @@ class VoiceCommandHandler:
     def set_audio_level_callback(self, callback: Callable[[float], None]) -> None:
         """Register callback fired with smoothed RMS (0.0–1.0) every ~100 ms during recording."""
         self._on_audio_level = callback
+
+    def set_audio_envelope_callback(
+        self, callback: Callable[[float, float, str], None]
+    ) -> None:
+        """Register callback fired with (rms, cadence, phase) every ~100 ms during recording.
+
+        phase is "listening" during STT recording. The gateway uses this to
+        broadcast audio_envelope WS events for XurOrb's cadence breathing.
+        """
+        self._on_audio_envelope = callback
 
     def set_active_session(self, session_id: str) -> None:
         """Set the session_id that owns the current recording."""
@@ -531,6 +549,8 @@ class VoiceCommandHandler:
         _level_accum = 0.0
         _level_frame_count = 0
         _LEVEL_EMIT_EVERY = 3
+        # Cadence: reset spectral flux detector at recording start
+        self.cadence_detector.reset()
 
         while total_frames < max_frames and not self._stop_event.is_set():
             current_len = len(self._raw_frames)
@@ -550,7 +570,7 @@ class VoiceCommandHandler:
                 # Accumulate for audio_level broadcast (~100 ms cadence)
                 _level_accum += rms
                 _level_frame_count += 1
-                if _level_frame_count >= _LEVEL_EMIT_EVERY and self._on_audio_level:
+                if _level_frame_count >= _LEVEL_EMIT_EVERY:
                     # Normalise: divide by 2× threshold so speech ≈ 0.5, loud ≈ 1.0
                     level = min(
                         1.0,
@@ -558,10 +578,19 @@ class VoiceCommandHandler:
                         / _level_frame_count
                         / (self.VAD_ENERGY_THRESHOLD * 2),
                     )
-                    try:
-                        self._on_audio_level(level)
-                    except Exception:
-                        pass
+                    # Legacy callback (old IrisOrb.tsx still listens for audio_level)
+                    if self._on_audio_level:
+                        try:
+                            self._on_audio_level(level)
+                        except Exception:
+                            pass
+                    # New consolidated callback (XurOrb listens for audio_envelope)
+                    if self._on_audio_envelope:
+                        try:
+                            cadence = self.cadence_detector.process(frame)
+                            self._on_audio_envelope(level, cadence, "listening")
+                        except Exception:
+                            pass
                     _level_accum = 0.0
                     _level_frame_count = 0
 

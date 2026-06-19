@@ -1531,6 +1531,35 @@ class IRISGateway:
         if hasattr(voice_handler, "set_audio_level_callback"):
             voice_handler.set_audio_level_callback(_on_audio_level)
 
+        # Broadcast consolidated audio_envelope (rms + cadence + phase) for XurOrb.
+        # This carries richer data than the legacy audio_level message and covers
+        # both listening (STT) and speaking (TTS) phases in a single message type.
+        def _on_audio_envelope(rms: float, cadence: float, phase: str) -> None:
+            session_id = getattr(voice_handler, "_active_session_id", None)
+            if not session_id:
+                return
+            loop = self._main_loop
+            if loop and loop.is_running():
+                import asyncio as _asyncio
+
+                _asyncio.run_coroutine_threadsafe(
+                    self._ws_manager.broadcast_to_session(
+                        session_id,
+                        {
+                            "type": "audio_envelope",
+                            "payload": {
+                                "rms": rms,
+                                "cadence": cadence,
+                                "phase": phase,
+                            },
+                        },
+                    ),
+                    loop,
+                )
+
+        if hasattr(voice_handler, "set_audio_envelope_callback"):
+            voice_handler.set_audio_envelope_callback(_on_audio_envelope)
+
     async def _handle_voice(
         self, session_id: str, client_id: str, message: dict, auto_stop: bool = False
     ) -> None:
