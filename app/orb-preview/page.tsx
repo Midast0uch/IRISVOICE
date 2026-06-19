@@ -10,6 +10,7 @@ import { PrototypeOrbBreathing } from '@/components/preview/PrototypeOrbBreathin
 import { CadenceBreathDemo } from '@/components/preview/CadenceBreathDemo'
 import { HexGridPreview } from '@/components/preview/HexGridPreview'
 import { MenuMockups } from '@/components/preview/MenuMockups'
+import { WheelRingStyles } from '@/components/preview/WheelRingStyles'
 
 const THEMES = [
   { name: 'Cyan', color: '#00d4ff' },
@@ -384,6 +385,21 @@ export default function OrbPreviewPage() {
           Category Menu Mockups — Pick a Winner
         </h2>
         <MenuMockups glowColor={theme.color} />
+      </section>
+
+      {/* Section 4.5: Wheel Ring Surface Styles — hex node aesthetic on interactive rings */}
+      <section className="flex flex-col items-center gap-4 mt-12 px-6 w-full max-w-6xl">
+        <div className="flex flex-col items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-widest">
+            Wheel Ring Surface Styles — Hex Node Aesthetic
+          </h2>
+          <p className="text-xs text-slate-500 text-center max-w-xl">
+            4 surface treatments for the outer + inner interactive rings, matching the hex node styling from the menu mockups.
+            The wheel structure (decorative rings, ticks, energy beams) stays the same — only the segment surface changes.
+            Click a segment to select it.
+          </p>
+        </div>
+        <WheelRingStyles glowColor={theme.color} />
       </section>
 
       {/* Section 5: Hex Grid Preview (unchanged) */}
