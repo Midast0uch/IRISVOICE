@@ -7,7 +7,7 @@ import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { useManualDragWindow } from "@/hooks/useManualDragWindow"
 import { useCadenceDetection } from "@/hooks/useCadenceDetection"
-import { UILayoutState } from "@/hooks/useUILayoutState"
+import { useUILayoutState, UILayoutState } from "@/hooks/useUILayoutState"
 import type { XurOrbProps } from "./types"
 import { OrbCanvas } from "./orb/OrbCanvas"
 import {
@@ -69,6 +69,7 @@ export function XurOrb({
   } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   const cadence = useCadenceDetection()
+  const { openChat } = useUILayoutState()
 
   // ── State ────────────────────────────────────────────────────────
   const [animationMode, setAnimationMode] = useState<AnimationMode>('C')
@@ -224,9 +225,10 @@ export function XurOrb({
         startVoiceCommand()
       }
     } else if (action === 'chat') {
+      openChat()
       onChatClick?.()
     }
-  }, [triggerAnimation, onMenuClick, onChatClick, isVoiceActive, startVoiceCommand, endVoiceCommand])
+  }, [triggerAnimation, onMenuClick, onChatClick, isVoiceActive, startVoiceCommand, endVoiceCommand, openChat])
 
   const handleCategorySelect = useCallback((categoryId: string) => {
     onCategorySelect?.(categoryId)
@@ -285,6 +287,9 @@ export function XurOrb({
   }, [])
 
   // ── Visual scaling ───────────────────────────────────────────────
+  // Color does NOT change based on clicks or voice state — color changes
+  // only happen through the customize category in the side panel.
+  // Voice state affects scale/shape only, not color.
   const labelsVisible = !isWingsOpen && !menuOpen
 
   const orbRetreatScale = isWingsOpen ? 0.85 : 1.0
@@ -299,17 +304,6 @@ export function XurOrb({
           : isError ? 1.0
             : baseScale
   const finalScale = effectiveScale * orbRetreatScale
-
-  const activeColor = isError
-    ? "#ff0000"
-    : isSpeaking
-      ? `color-mix(in srgb, ${glowColor}, #ffffff 25%)`
-      : isListening
-        ? glowColor
-        : isProcessing
-          ? "#7000ff"
-          : glowColor
-  const effectiveGlowColor = isVoiceActive ? activeColor : glowColor
 
   // ── Text animation class + CSS variables (from PrototypeOrbShellsRotating) ──
   const getTextClass = () => {
@@ -382,7 +376,7 @@ export function XurOrb({
               className="absolute rounded-full pointer-events-none"
               style={{
                 inset: -60,
-                background: `radial-gradient(circle, ${effectiveGlowColor}22 0%, transparent 70%)`,
+                background: `radial-gradient(circle, ${glowColor}22 0%, transparent 70%)`,
               }}
             />
           )}
@@ -404,7 +398,7 @@ export function XurOrb({
             }}
           >
             <OrbCanvas
-              glowColor={effectiveGlowColor}
+              glowColor={glowColor}
               breathMode={cadence.breathMode}
               breathLevel={cadence.breathLevel}
               isBreathing={cadence.isBreathing}
@@ -440,7 +434,7 @@ export function XurOrb({
                     textTransform: 'uppercase' as const,
                     color: activeIdx === i ? '#e2e8f0' : '#475569',
                     textShadow: activeIdx === i
-                      ? `0 0 16px ${effectiveGlowColor}55, 0 0 4px ${effectiveGlowColor}88`
+                      ? `0 0 16px ${glowColor}55, 0 0 4px ${glowColor}88`
                       : '0 0 6px rgba(148,163,184,0.1)',
                     whiteSpace: 'nowrap',
                     opacity: activeIdx === i ? 1 : 0.4,
@@ -469,8 +463,8 @@ export function XurOrb({
             pointerEvents: menuOpen ? 'auto' : 'none',
           }}
         >
-          <RadialArcNodes
-            glowColor={effectiveGlowColor}
+            <RadialArcNodes
+            glowColor={glowColor}
             isVisible={menuOpen}
             onCategorySelect={handleCategorySelect}
           />
@@ -504,9 +498,9 @@ export function XurOrb({
                 transform: 'translateX(-50%)',
                 whiteSpace: 'nowrap',
                 fontSize: 10,
-                color: effectiveGlowColor,
+                color: glowColor,
                 fontFamily: "'Courier New', Courier, monospace",
-                textShadow: `0 0 8px ${effectiveGlowColor}80`,
+                textShadow: `0 0 8px ${glowColor}80`,
               }}
             >
               {feedbackMessage}
