@@ -227,16 +227,16 @@ export const WheelView: React.FC<WheelViewProps> = ({
     >
       <div
         className="relative flex items-center justify-start pointer-events-none"
-        style={{ width: 850, height: 750, paddingLeft: "40px", overflow: 'visible' }}
+        style={{ width: 595, height: 525, paddingLeft: "28px", overflow: 'visible' }}
       >
-        {/* Mechanics Stage: 600x600 provides room for 300px orb + 300px buffer safety (Phase 47: Enhanced) */}
+        {/* Mechanics Stage: 420x420 — 0.7x of original 600x600 */}
         {/* Clip overflow to prevent outer ring from spinning outside container bounds */}
         <div
           className="relative pointer-events-none flex items-center justify-center shrink-0"
-          style={{ width: 600, height: 600, overflow: 'hidden' }}
+          style={{ width: 420, height: 420, overflow: 'hidden' }}
         >
           {/* Centered Mechanims Layer - Absolute Visibility (Phase 50) */}
-          <div className="relative" style={{ width: 300, height: 300, overflow: 'visible' }}>
+          <div className="relative" style={{ width: 210, height: 210, overflow: 'visible' }}>
 
             {/* 1. AmbientGlowLayer (z-20) - Extreme Soft Pulse */}
             <motion.div
@@ -247,7 +247,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 width: '160%',
                 height: '160%',
                 background: `radial-gradient(circle, ${glowColor}0F 0%, transparent 70%)`,
-                filter: 'blur(60px)',
+                filter: 'blur(30px)',
                 zIndex: -20,
                 pointerEvents: 'none',
               }}
@@ -268,15 +268,15 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 position: 'absolute',
                 top: '50%',
                 left: '50%',
-                width: '98%', // Aligned precisely with structural frame (294px / 300px)
+                width: '98%',
                 height: '98%',
                 transform: 'translate(-50%, -50%)',
                 background: 'radial-gradient(circle at 50% 50%, #1C2026 0%, #0F1115 100%)',
                 borderRadius: '50%',
-                border: `1px solid ${glowColor}26`, // 15% brand opacity
+                border: `1px solid ${glowColor}26`,
                 boxShadow: `
-                  0 10px 40px rgba(0,0,0,0.6),
-                  inset 0 0 20px rgba(255,255,255,0.02)
+                  0 5px 20px rgba(0,0,0,0.6),
+                  inset 0 0 10px rgba(255,255,255,0.02)
                 `,
                 zIndex: -10,
                 pointerEvents: 'none',
@@ -289,15 +289,15 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 position: 'absolute',
                 top: '50%',
                 left: '50%',
-                width: '92%', // Tighter recessed groove (Phase 97)
+                width: '92%',
                 height: '92%',
                 transform: 'translate(-50%, -50%)',
                 background: 'transparent',
                 borderRadius: '50%',
                 boxShadow: `
-                  inset 0 8px 16px rgba(0,0,0,0.8),
-                  inset 0 -4px 8px rgba(255,255,255,0.03),
-                  0 0 10px rgba(0,0,0,0.4)
+                  inset 0 4px 8px rgba(0,0,0,0.8),
+                  inset 0 -2px 4px rgba(255,255,255,0.03),
+                  0 0 5px rgba(0,0,0,0.4)
                 `,
                 zIndex: 0,
                 pointerEvents: 'none',
@@ -310,7 +310,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
               onSelect={handleSelect}
               glowColor={glowColor}
               basePlateColor={`hsl(${basePlateColor.hue}, ${basePlateColor.saturation}%, ${basePlateColor.lightness}%)`}
-              orbSize={300}
+              orbSize={210}
               confirmSpinning={confirmSpinning}
               isVoiceActive={isVoiceActive}
               voiceIntensity={audioLevel}
@@ -322,10 +322,10 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 <motion.div
                   className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
                   style={{
-                    width: 100,
-                    height: 100,
+                    width: 70,
+                    height: 70,
                     background: `radial-gradient(circle, ${glowColor}40 0%, ${glowColor}20 50%, transparent 100%)`,
-                    filter: "blur(20px)",
+                    filter: "blur(10px)",
                     zIndex: 98
                   }}
                   initial={{ opacity: 0, scale: 0.8 }}
@@ -352,20 +352,20 @@ export const WheelView: React.FC<WheelViewProps> = ({
                       key={ringIndex}
                       className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
                       style={{
-                        width: 100 + ringIndex * 30,
-                        height: 100 + ringIndex * 30,
-                        border: `2px solid ${glowColor}`,
+                        width: 70 + ringIndex * 21,
+                        height: 70 + ringIndex * 21,
+                        border: `1px solid ${glowColor}`,
                         opacity: 0.3 - ringIndex * 0.1,
                         zIndex: 97 - ringIndex
                       }}
                       initial={{ scale: 1.0, opacity: 0 }}
                       animate={{
-                        scale: 1.0 + (audioLevel * 0.3), // Map 0.0-1.0 to 1.0-1.3
+                        scale: 1.0 + (audioLevel * 0.3),
                         opacity: (0.3 - ringIndex * 0.1) * audioLevel
                       }}
                       exit={{ scale: 1.0, opacity: 0 }}
                       transition={{
-                        duration: 0.016, // 60fps (1/60 = 0.016s)
+                        duration: 0.016,
                         ease: "linear"
                       }}
                     />
@@ -380,8 +380,8 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 <motion.div
                   className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
                   style={{
-                    width: 120,
-                    height: 120,
+                    width: 84,
+                    height: 84,
                     zIndex: 96
                   }}
                   initial={{ opacity: 0, rotate: 0 }}
@@ -401,13 +401,13 @@ export const WheelView: React.FC<WheelViewProps> = ({
                       key={angle}
                       className="absolute rounded-full"
                       style={{
-                        width: 8,
-                        height: 8,
+                        width: 6,
+                        height: 6,
                         background: glowColor,
-                        boxShadow: `0 0 10px ${glowColor}`,
+                        boxShadow: `0 0 5px ${glowColor}`,
                         top: '50%',
                         left: '50%',
-                        transform: `translate(-50%, -50%) rotate(${angle}deg) translateY(-60px)`
+                        transform: `translate(-50%, -50%) rotate(${angle}deg) translateY(-42px)`
                       }}
                     />
                   ))}
@@ -421,10 +421,10 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 <motion.div
                   className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none"
                   style={{
-                    width: 120,
-                    height: 120,
+                    width: 84,
+                    height: 84,
                     background: 'radial-gradient(circle, rgba(255, 50, 50, 0.4) 0%, rgba(255, 50, 50, 0.2) 50%, transparent 100%)',
-                    filter: "blur(20px)",
+                    filter: "blur(14px)",
                     zIndex: 95
                   }}
                   initial={{ opacity: 0, scale: 0.8 }}
@@ -446,25 +446,25 @@ export const WheelView: React.FC<WheelViewProps> = ({
             <AnimatePresence>
               {voiceState === 'error' && (
                 <motion.div
-                  className="absolute top-full left-1/2 -translate-x-1/2 mt-4 pointer-events-none"
+                  className="absolute top-full left-1/2 -translate-x-1/2 mt-2 pointer-events-none"
                   style={{
                     zIndex: 94,
-                    maxWidth: 250,
+                    maxWidth: 175,
                     textAlign: 'center'
                   }}
-                  initial={{ opacity: 0, y: -10 }}
+                  initial={{ opacity: 0, y: -5 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
+                  exit={{ opacity: 0, y: -5 }}
                   transition={{ duration: 0.3 }}
                 >
                   <div
-                    className="px-4 py-2 rounded-lg text-sm font-medium"
+                    className="px-3 py-1.5 rounded text-[11px] font-medium"
                     style={{
                       background: 'rgba(255, 50, 50, 0.15)',
                       border: '1px solid rgba(255, 50, 50, 0.4)',
                       color: '#ff6b6b',
-                      backdropFilter: 'blur(10px)',
-                      boxShadow: '0 4px 12px rgba(255, 50, 50, 0.2)'
+                      backdropFilter: 'blur(5px)',
+                      boxShadow: '0 2px 6px rgba(255, 50, 50, 0.2)'
                     }}
                   >
                     {Object.keys(fieldErrors).length > 0 
@@ -481,10 +481,10 @@ export const WheelView: React.FC<WheelViewProps> = ({
               style={{
                 left: '50%',
                 top: '50%',
-                marginLeft: -32,
-                marginTop: -32,
-                width: 64,
-                height: 64,
+                marginLeft: -23,
+                marginTop: -23,
+                width: 45,
+                height: 45,
                 zIndex: 100,
                 overflow: 'visible',
                 background: 'transparent',
@@ -566,9 +566,9 @@ export const WheelView: React.FC<WheelViewProps> = ({
               <motion.div
                 className="absolute rounded-full pointer-events-none"
                 style={{
-                  inset: isVoiceActive ? -40 : -32,
+                  inset: isVoiceActive ? -28 : -22,
                   background: `radial-gradient(circle, color-mix(in srgb, ${glowColor}, transparent 60%) 0%, transparent 70%)`,
-                  filter: "blur(24px)",
+                  filter: "blur(17px)",
                   zIndex: 0
                 }}
                 animate={{
@@ -587,11 +587,11 @@ export const WheelView: React.FC<WheelViewProps> = ({
               <motion.div
                 className="absolute rounded-full pointer-events-none"
                 style={{
-                  inset: -2,
+                  inset: -1,
                   background: `radial-gradient(circle, ${glowColor} 0%, transparent 80%)`,
-                  border: "1.5px solid",
+                  border: "1px solid",
                   borderColor: glowColor,
-                  filter: "blur(1.5px)",
+                  filter: "blur(1px)",
                   opacity: 0.8,
                   zIndex: 1
                 }}
@@ -601,9 +601,9 @@ export const WheelView: React.FC<WheelViewProps> = ({
               <motion.div
                 className="absolute rounded-full pointer-events-none"
                 style={{
-                  inset: -15,
+                  inset: -8,
                   background: `radial-gradient(circle, color-mix(in srgb, ${glowColor}, transparent 35%) 0%, transparent 75%)`,
-                  filter: "blur(12px)",
+                  filter: "blur(6px)",
                   opacity: 0.6,
                   zIndex: 1
                 }}
@@ -628,8 +628,8 @@ export const WheelView: React.FC<WheelViewProps> = ({
               <div
                 className="absolute inset-0 rounded-full pointer-events-none"
                 style={{
-                  border: `1.5px solid ${glowColor}`,
-                  filter: `drop-shadow(0 0 6px ${glowColor}) drop-shadow(0 0 12px ${glowColor})`,
+                  border: `1px solid ${glowColor}`,
+                  filter: `drop-shadow(0 0 3px ${glowColor}) drop-shadow(0 0 6px ${glowColor})`,
                   zIndex: 2
                 }}
               />
@@ -639,9 +639,9 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 className="absolute inset-0 rounded-full pointer-events-none"
                 style={{
                   background: `linear-gradient(135deg, ${glowColor}40 0%, rgba(10,10,12,0.7) 50%, ${glowColor}1a 100%)`,
-                  backdropFilter: "blur(12px)",
-                  WebkitBackdropFilter: "blur(12px)",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.2)",
+                  backdropFilter: "blur(6px)",
+                  WebkitBackdropFilter: "blur(6px)",
+                  boxShadow: "0 2px 6px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.2)",
                   zIndex: 2
                 }}
               />
@@ -674,7 +674,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
 
               {/* 5. CONTENT AREA */}
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ zIndex: 10 }}>
-                <span className="text-[10px] font-black uppercase tracking-[0.1em] text-white select-none" style={{ textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>
+                <span className="text-[7px] font-black uppercase tracking-[0.1em] text-white select-none" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.5)' }}>
                   {categoryId}
                 </span>
               </div>
@@ -692,7 +692,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
               onValueChange={handleValueChange}
               onConfirm={handleConfirm}
               lineRetracted={lineRetracted}
-              orbSize={300}
+              orbSize={210}
               onBrowseMarketplace={onBrowseMarketplace}
             />
           )}

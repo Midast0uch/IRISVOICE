@@ -36,14 +36,14 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
   }
 
   // Calculate line dimensions: anchor precisely to stationary structural frame
-  // Container layout: 40px paddingLeft + 600px Mechanics Stage
-  // Mechanics Stage center: 40 + 300 = 340px
-  // Structural Frame Radius: outerRadius + 30 = (orbSize * 0.39) + 30 = 117 + 30 = 147px
-  // Right edge of structural ring: 340 + 147 = 487px
-  const startX = 487 // Absolute anchor to structural ring edge relative to 850px container
+  // Container layout: 28px paddingLeft + 420px Mechanics Stage
+  // Mechanics Stage center: 28 + 210 = 238px
+  // Structural Frame Radius: outerRadius + 10.5 = (orbSize * 0.39) + 10.5 = 81.9 + 10.5 = 92.4px
+  // Right edge of structural ring: 238 + 92.4 = 330.4px
+  const startX = 330 // Absolute anchor to structural ring edge relative to 595px container
   const lineWidth = Math.max(0, panelOffset - startX)
-  const lineHeight = 1.8 // Thinner beam for refined aesthetic
-  const containerHeight = 60 // Expanded safety gutter for high-intensity blooms
+  const lineHeight = 1.2
+  const containerHeight = 30
 
   return (
     <motion.div

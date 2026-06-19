@@ -209,10 +209,9 @@ export const SidePanel: React.FC<SidePanelProps> = ({
     }
   }, [card.id, sendMessage])
 
-  // Calculate panel position: anchored at distance for distinct "beam of light" bridge (Phase 48)
-  // Calculate panel position: anchored for a precision 85px bridge from wheel edge (Phase 68)
-  // Wheel Edge (startX) = 438. 438 + 85 = 523.
-  const panelOffset = 523
+  // Calculate panel position: anchored for a precision bridge from wheel edge
+  // Wheel Edge (startX) = 330. 330 + 60 = 390.
+  const panelOffset = 390
 
   // Memoize field rendering function for performance (Requirement 12.3)
   const renderField = useCallback(
@@ -634,8 +633,8 @@ export const SidePanel: React.FC<SidePanelProps> = ({
         style={{
           left: panelOffset,
           top: "50%",
-          width: "155px", // Precision Stretch (Phase 59)
-          maxHeight: "680px", // High-Capacity Vertical (Phase 59)
+          width: "140px",
+          maxHeight: "480px",
           pointerEvents: "auto",
         }}
         initial={{ opacity: 0, x: -20, y: "-50%" }}
