@@ -11,6 +11,8 @@ import { CadenceBreathDemo } from '@/components/preview/CadenceBreathDemo'
 import { HexGridPreview } from '@/components/preview/HexGridPreview'
 import { MenuMockups } from '@/components/preview/MenuMockups'
 import { WheelRingStyles } from '@/components/preview/WheelRingStyles'
+import { XurOrb } from '@/components/iris/XurOrb'
+import { RadialArcNodes } from '@/components/iris/radial/RadialArcNodes'
 
 const THEMES = [
   { name: 'Cyan', color: '#00d4ff' },
@@ -337,6 +339,30 @@ export default function OrbPreviewPage() {
         </div>
       </section>
 
+      {/* Section 1.5: XurOrb — Production Prototype */}
+      <section className="flex flex-col items-center gap-6 mt-12">
+        <div className="flex flex-col items-center gap-2">
+          <h2 className="text-2xl font-bold tracking-wide text-white">
+            IRIS Orb v2 — Production Prototype
+          </h2>
+          <p className="text-sm text-white/60 max-w-md text-center">
+            XurOrb: OrbCanvas visual + GlitchText labels + cadence breathing.
+            Click orb to cycle C/D/A animation modes. Click MENU for radial arc hex nodes.
+            Click CHAT to open chat-wings. Double-click for voice.
+          </p>
+        </div>
+        <div className="p-6 rounded-2xl border-2 border-yellow-400/40 bg-black/40">
+          <XurOrb
+            isExpanded={true}
+            onClick={() => {}}
+            onDoubleClick={() => {}}
+            centerLabel=""
+            glowColor={theme.color}
+            wakeFlash={false}
+          />
+        </div>
+      </section>
+
       {/* Section 2: Voice Breath Glow — 4 breath options for Mockup B */}
       <section className="flex flex-col items-center gap-8 mt-12 px-6 w-full max-w-6xl">
         <div className="flex flex-col items-center gap-2">
@@ -385,6 +411,27 @@ export default function OrbPreviewPage() {
           Category Menu Mockups — Pick a Winner
         </h2>
         <MenuMockups glowColor={theme.color} />
+      </section>
+
+      {/* Section 5: Radial Arc Nodes — Level 2 Category Menu (C-Random Rotate Winner) */}
+      <section className="flex flex-col items-center gap-4 mt-12">
+        <div className="flex flex-col items-center gap-2">
+          <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-widest">
+            Radial Arc Nodes — Level 2 Category Menu (C-Random Rotate)
+          </h2>
+          <p className="text-xs text-slate-500 text-center max-w-xl">
+            The C-Random Rotate winner extracted as a standalone component.
+            6 hex category nodes on a semicircular arc with SVG spokes, hover ring, and particles.
+            Click a hex node to select a category.
+          </p>
+        </div>
+        <div className="p-6 rounded-2xl border border-white/10 bg-black/20">
+          <RadialArcNodes
+            glowColor={theme.color}
+            isVisible={true}
+            onCategorySelect={(id) => console.log("selected", id)}
+          />
+        </div>
       </section>
 
       {/* Section 4.5: Wheel Ring Surface Styles — hex node aesthetic on interactive rings */}
