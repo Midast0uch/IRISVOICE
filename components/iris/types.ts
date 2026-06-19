@@ -27,3 +27,30 @@ export interface IrisOrbProps {
   uiState?: UILayoutState
   onCallbacksReady?: (callbacks: { handleWakeDetected: () => void; handleNativeAudioResponse: (payload: Record<string, unknown>) => void }) => void
 }
+
+/**
+ * XurOrbProps — props for the XurOrb component (IrisOrb v2).
+ *
+ * Cadence data (breathMode, breathLevel, isBreathing) is NOT passed as props.
+ * XurOrb reads it internally via the useCadenceDetection() hook, which pulls
+ * voiceState, cadenceLevel, and ttsAudioLevel from useNavigation().
+ */
+export interface XurOrbProps {
+  isExpanded: boolean
+  onClick: () => void
+  onDoubleClick: () => void
+  /** Kept for shim compat, unused in XurOrb (glitch labels carry this info) */
+  centerLabel?: string
+  size?: number
+  wakeFlash: boolean
+  glowColor?: string
+  uiState?: UILayoutState
+  onCategorySelect?: (categoryId: string) => void
+  onMenuClick?: () => void
+  onChatClick?: () => void
+  onCallbacksReady?: (callbacks: {
+    handleWakeDetected: () => void
+    handleNativeAudioResponse: (payload: Record<string, unknown>) => void
+  }) => void
+}
+
