@@ -528,6 +528,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 filter: { duration: 0.15 }
               }}
               whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.92 }}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.preventDefault()
@@ -548,7 +549,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
                       }
                     }
                     clickCount.current = 0
-                  }, 500) // 500ms double-click window (same as IrisOrb)
+                  }, 250) // 250ms double-click window (faster = more responsive)
                 } else if (clickCount.current === 2) {
                   // Double click detected - clear timer and toggle voice
                   if (clickTimer.current) {
