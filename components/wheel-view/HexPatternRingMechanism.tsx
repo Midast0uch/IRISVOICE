@@ -64,7 +64,7 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
   }, [items])
 
   const outerRadius = orbSize * 0.39
-  const innerRadius = orbSize * 0.2575
+  const innerRadius = orbSize * 0.30
   const buffer = 300
   const center = (orbSize + buffer) / 2
 
@@ -123,6 +123,8 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
       </g>
     )
   }
+
+  const gapRadius = (outerRadius + innerRadius) / 2
 
   return (
     <svg
@@ -319,9 +321,13 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
                 style={{ cursor: "pointer", pointerEvents: "auto", opacity: 0.95 }}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => onSelect(index)} />
+              {/* Layer 2.5: Inner Highlight (top edge shimmer) */}
+              <path d={generateArcPath(outerRadius + 14.5, startAngle + 1, endAngle - 1)} fill="none"
+                stroke={isSelected ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.08)"}
+                strokeWidth="0.5" style={{ opacity: 0.7, pointerEvents: "none" }} />
               {/* Layer 3: Hex Pattern Texture Overlay */}
               <path d={path} fill="none" stroke="url(#hex-pattern)" strokeWidth="28"
-                style={{ pointerEvents: "none", opacity: isSelected ? 0.6 : 0.38 }} />
+                style={{ pointerEvents: "none", opacity: isSelected ? 0.4 : 0.22 }} />
               {/* Layer 4: Neon Edge Outline */}
               <path d={path} fill="none"
                 stroke={isSelected ? glowColor : hexToRgba(glowColor, 0.2)}
@@ -342,10 +348,10 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
         animate={{ opacity: 1, scale: 1 }}
         transition={{ type: "spring", stiffness: 100, damping: 20, delay: 0.4 }}
       >
-        <circle cx={center} cy={center} r={orbSize * 0.33} fill="none"
+        <circle cx={center} cy={center} r={gapRadius} fill="none"
           stroke={hexToRgba(glowColor, 0.4)} strokeWidth="2.7" strokeDasharray="45 15"
           className="ring-middle-anim" style={{ pointerEvents: "none" }} />
-        <motion.circle cx={center} cy={center} r={orbSize * 0.33} fill="none"
+        <motion.circle cx={center} cy={center} r={gapRadius} fill="none"
           stroke="white" strokeWidth="2.2" pathLength="1" strokeDasharray="0.02 0.48"
           animate={{ rotate: -360 }} transition={{ duration: 3.5, repeat: Infinity, ease: "linear" }}
           style={{ pointerEvents: "none", filter: "drop-shadow(0 0 8px white)", opacity: 0.85, originX: "50%", originY: "50%" }} />
@@ -393,7 +399,7 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
                   pointerEvents: "none",
                   filter: isSelected ? `drop-shadow(0 0 6px ${glowColor}) drop-shadow(0 0 12px ${glowColor})` : "none",
                 }} />
-              {renderSegmentText(innerRadius, startAngle, endAngle, item.id, item.label, isSelected, 9.5)}
+              {renderSegmentText(innerRadius, startAngle, endAngle, item.id, item.label, isSelected, 8.5)}
             </g>
           )
         })}
