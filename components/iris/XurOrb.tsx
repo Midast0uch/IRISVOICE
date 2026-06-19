@@ -108,10 +108,12 @@ export function XurOrb({
     uiState === UILayoutState.UI_STATE_BOTH_OPEN
 
   // Sync menuOpen with navigation level — menu is only open at level 2.
-  // When navigating back to level 1 or forward to level 3, menu closes.
+  // When navigating forward to level 3 (WheelView), menu closes.
+  // Don't close when navLevel is 1 — that's the idle state before the
+  // menu's own state has been dispatched to the navigation system.
   const navLevel = state.level
   useEffect(() => {
-    if (navLevel !== 2 && menuOpen) {
+    if (navLevel > 2 && menuOpen) {
       setMenuOpen(false)
     }
   }, [navLevel, menuOpen])

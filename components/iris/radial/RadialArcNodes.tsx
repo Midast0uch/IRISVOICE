@@ -105,6 +105,9 @@ export function RadialArcNodes({
     if (prevVisibleRef.current === isVisible) return
     prevVisibleRef.current = isVisible
 
+    // Cancel any in-flight animation before starting a new one
+    cancelAnimationFrame(rafRef.current)
+
     if (isVisible) {
       // Enter: nodes fly back in with Photon Burst flash
       setTransitionType(t => pickRandomTransition(t))
