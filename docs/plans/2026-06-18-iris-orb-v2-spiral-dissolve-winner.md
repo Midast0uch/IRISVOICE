@@ -1496,9 +1496,15 @@ style={{
 
 The `hexToRgba` function is already defined locally in ConnectionLine.tsx (line 30-36) — no new import needed.
 
-### Step 22.3: Add core halo labeling — center button shows selected card label
+### Step 22.3: Add core halo labeling + hex pattern surface to center button
 
-**Current behavior** (WheelView.tsx line 678-681):
+The center button (tactile core) is a 5-layer `<motion.button>` in WheelView.tsx (lines 479-683). It currently uses a liquid metal aesthetic. We need to:
+1. Update the content area to show the selected card label (labeling)
+2. Replace the liquid metal surface layers with hex pattern surface aesthetic
+
+#### Step 22.3a: Core halo labeling — center button shows selected card label
+
+**Current behavior** (WheelView.tsx line 677-682):
 ```tsx
 {/* 5. CONTENT AREA */}
 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ zIndex: 10 }}>
@@ -1538,6 +1544,117 @@ The `hexToRgba` function is already defined locally in ConnectionLine.tsx (line 
 - Animation: fade (opacity 0→1) + scale (0.8→1.0) over 300ms with easeOut
 
 **Import needed**: `AnimatePresence` is already imported in WheelView (used for SidePanel). `motion` is already imported. No new imports.
+
+#### Step 22.3b: Replace liquid metal surface with hex pattern surface
+
+The center button has 5 layers. Layers 0, 1, 4, 5 stay the same. Layers 2 and 3 change:
+
+**Layer 2 — Replace Liquid Metal Ring with Hex Pattern Neon Edge:**
+
+Current (lines 632-653):
+```tsx
+{/* 2. LIQUID METAL RING - Phase 112: Flowing Mercury */}
+<motion.div
+  className="absolute inset-0 rounded-full pointer-events-none"
+  style={{
+    border: "2px solid transparent",
+    background: `conic-gradient(from 0deg, #ffffff 0deg, ${glowColor} 45deg, #101014 120deg, ...) border-box`,
+    WebkitMask: "linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0)",
+    WebkitMaskComposite: "destination-out",
+    maskComposite: "exclude",
+    filter: "drop-shadow(0 0 2px rgba(255,255,255,0.6))",
+    zIndex: 2
+  }}
+  animate={{ rotate: 360 }}
+  transition={{ duration: 6, repeat: Infinity, ease: "linear" }}
+/>
+```
+
+New:
+```tsx
+{/* 2. HEX PATTERN NEON EDGE — matches ring segment neon edge */}
+<div
+  className="absolute inset-0 rounded-full pointer-events-none"
+  style={{
+    border: `1.5px solid ${glowColor}`,
+    filter: `drop-shadow(0 0 6px ${glowColor}) drop-shadow(0 0 12px ${glowColor})`,
+    zIndex: 2
+  }}
+/>
+```
+
+No rotation — the neon edge is static (matches the ring segment's selected edge style). The kinetic shimmer from layer 1.2 already provides rotational motion.
+
+**Layer 3 — Replace Glassmorphic Base with Hex Pattern Base:**
+
+Current (lines 655-665):
+```tsx
+{/* 3. GLASSMORPHIC BASE & 4. CONVEX HIGHLIGHT - Phase 113: Inverted Groove */}
+<div
+  className="absolute inset-0 rounded-full pointer-events-none"
+  style={{
+    background: `linear-gradient(135deg, rgba(30, 32, 40, 0.75) 0%, color-mix(in srgb, ${glowColor}, transparent 65%) 100%)`,
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.2)",
+    zIndex: 2
+  }}
+/>
+```
+
+New:
+```tsx
+{/* 3. HEX PATTERN BASE — honeycomb texture + hex-active gradient */}
+<div
+  className="absolute inset-0 rounded-full pointer-events-none"
+  style={{
+    background: `linear-gradient(135deg, ${hexToRgba(glowColor, 0.25)} 0%, rgba(10,10,12,0.7) 50%, ${hexToRgba(glowColor, 0.1)} 100%)`,
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.2)",
+    zIndex: 2
+  }}
+/>
+{/* 3.1 HEX PATTERN TEXTURE OVERLAY — honeycomb SVG pattern */}
+<div
+  className="absolute inset-0 rounded-full pointer-events-none"
+  style={{
+    backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(
+      `<svg xmlns='http://www.w3.org/2000/svg' width='8' height='9.24'><polygon points='4,0 8,2.31 8,6.93 4,9.24 0,6.93 0,2.31' fill='none' stroke='${glowColor}' stroke-width='0.4' opacity='0.4'/></svg>`
+    )}")`,
+    backgroundRepeat: 'repeat',
+    opacity: 0.4,
+    zIndex: 3
+  }}
+/>
+```
+
+**Note on `hexToRgba`**: WheelView.tsx does NOT currently import `hexToRgba`. Add a local helper or import from DualRingMechanism's pattern. The simplest approach is a local function:
+
+```ts
+// Add near top of WheelView.tsx (after imports)
+function hexToRgba(color: string, alpha: number): string {
+  if (color.startsWith('hsl')) {
+    return color.replace('hsl(', 'hsla(').replace(')', `, ${alpha})`)
+  }
+  const r = parseInt(color.slice(1, 3), 16)
+  const g = parseInt(color.slice(3, 5), 16)
+  const b = parseInt(color.slice(5, 7), 16)
+  return `rgba(${r},${g},${b},${alpha})`
+}
+```
+
+**What stays the same (all functionality preserved):**
+- Layer 0: Atmospheric Brand Pulse (radial gradient, pulsing)
+- Layer 1: Neon Core + Edge Bloom + Kinetic Shimmer (conic gradient rotating 4s)
+- Layer 4: Invisible clickable surface
+- Layer 5: Content Area (now with card label — see Step 22.3a)
+- `whileHover={{ scale: 1.05 }}`, `whileTap={{ scale: 0.94 }}`
+- Single click (500ms window): cancel voice or navigate back
+- Double click: toggle voice command
+- Voice reactivity: scale modulates with audioLevel, boxShadow grows with voiceIntensity
+- Error state: red glow + pulse
+- Listening state: pulsing scale animation
 
 ### Verify:
 
@@ -1672,6 +1789,12 @@ git commit -m "feat(orb-preview): add HexPatternRingMechanism production preview
 - [ ] **Center button shows selected card label (e.g. "Microphone") not just category name**
 - [ ] **Card label fades + scales in (0.8→1.0, 300ms) when segment is clicked**
 - [ ] **Center button falls back to categoryId when no card is selected**
+- [ ] **Center button surface uses hex pattern texture (honeycomb overlay visible)**
+- [ ] **Center button neon edge matches ring segment neon edge (glowColor + drop-shadow)**
+- [ ] **Center button liquid metal conic gradient is GONE — replaced with hex pattern**
+- [ ] **Center button click handlers work: single click → back/cancel, double click → voice**
+- [ ] **Center button voice reactivity works: scale modulates with audioLevel**
+- [ ] **Center button error state works: red glow + pulse**
 
 ### Functional:
 - [ ] Click segment → spring rotation centers it at 12 o'clock

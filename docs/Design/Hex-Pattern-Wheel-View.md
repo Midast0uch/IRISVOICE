@@ -345,15 +345,66 @@ When the selected card changes, the label transitions with a **fade + scale** an
 - **Mode**: `wait` — old label fully exits before new label enters
 - **Key**: `activeCard?.id ?? categoryId` — ensures re-mount on card change
 
-#### Center Button Stack (5 layers, unchanged except content area)
+#### Center Button Stack (5 layers — hex pattern surface)
 
-| Layer | Description | z-index |
-|-------|-------------|---------|
-| 1 | Atmospheric Brand Pulse (radial gradient) | 1 |
-| 2 | Neon Core + Edge Bloom (glowColor) | 2 |
-| 3 | Liquid Metal Ring (gradient border) | 3 |
-| 4 | Glassmorphic Base (backdrop blur) | 4 |
-| 5 | **Content Area** (card label / categoryId) | 10 |
+| Layer | Description | z-index | Changed? |
+|-------|-------------|---------|----------|
+| 0 | Atmospheric Brand Pulse (radial gradient, pulsing) | 0 | No |
+| 1 | Neon Core + Edge Bloom + Kinetic Shimmer (conic gradient, 4s rotation) | 1 | No |
+| 2 | **Hex Pattern Neon Edge** (glowColor border + drop-shadow) | 2 | **YES — replaces liquid metal conic gradient** |
+| 3 | **Hex Pattern Base** (hex-active gradient + honeycomb SVG overlay) | 2-3 | **YES — replaces glassmorphic base** |
+| 4 | Invisible clickable surface | 5 | No |
+| 5 | **Content Area** (card label / categoryId with fade+scale) | 10 | **YES — shows card label** |
+
+#### Layer 2: Hex Pattern Neon Edge (replaces Liquid Metal Ring)
+
+```tsx
+{/* 2. HEX PATTERN NEON EDGE — matches ring segment neon edge */}
+<div
+  className="absolute inset-0 rounded-full pointer-events-none"
+  style={{
+    border: `1.5px solid ${glowColor}`,
+    filter: `drop-shadow(0 0 6px ${glowColor}) drop-shadow(0 0 12px ${glowColor})`,
+    zIndex: 2
+  }}
+/>
+```
+
+No rotation — the neon edge is static. The kinetic shimmer from layer 1.2 already provides rotational motion. This matches the ring segment's selected edge style exactly.
+
+#### Layer 3: Hex Pattern Base (replaces Glassmorphic Base)
+
+```tsx
+{/* 3. HEX PATTERN BASE — hex-active gradient + honeycomb texture */}
+<div
+  className="absolute inset-0 rounded-full pointer-events-none"
+  style={{
+    background: `linear-gradient(135deg, ${hexToRgba(glowColor, 0.25)} 0%, rgba(10,10,12,0.7) 50%, ${hexToRgba(glowColor, 0.1)} 100%)`,
+    backdropFilter: "blur(12px)",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.5), inset 0 1px 2px rgba(255,255,255,0.2)",
+    zIndex: 2
+  }}
+/>
+{/* 3.1 HEX PATTERN TEXTURE OVERLAY — honeycomb SVG pattern as CSS background */}
+<div
+  className="absolute inset-0 rounded-full pointer-events-none"
+  style={{
+    backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(
+      `<svg xmlns='http://www.w3.org/2000/svg' width='8' height='9.24'>
+        <polygon points='4,0 8,2.31 8,6.93 4,9.24 0,6.93 0,2.31'
+          fill='none' stroke='${glowColor}' stroke-width='0.4' opacity='0.4'/>
+      </svg>`
+    )}")`,
+    backgroundRepeat: 'repeat',
+    opacity: 0.4,
+    zIndex: 3
+  }}
+/>
+```
+
+The honeycomb pattern is applied as a CSS `background-image` using an inline SVG data URI — this avoids needing an SVG element inside the HTML button. The pattern matches the ring segment's `<pattern id="hex-pattern">` exactly (same polygon points, same 8×9.24 tile, same 0.4 stroke width).
+
+**Note**: `hexToRgba` must be added as a local helper in WheelView.tsx (it's not currently imported there). See plan Step 22.3b for the function definition.
 
 #### Center Button Interactions
 
@@ -574,7 +625,7 @@ Each step is a separate commit. If any step breaks the build, `git revert` that 
 | File | Status | Purpose |
 |------|--------|---------|
 | `components/wheel-view/HexPatternRingMechanism.tsx` | **NEW** | Production ring mechanism with hex pattern surface |
-| `components/wheel-view/WheelView.tsx` | **MODIFIED** | Import swap (DualRingMechanism → HexPatternRingMechanism) |
+| `components/wheel-view/WheelView.tsx` | **MODIFIED** | Import swap + center button hex pattern surface (layers 2+3) + core halo labeling (layer 5) |
 | `components/wheel-view/ConnectionLine.tsx` | **MODIFIED** | Hex pattern texture overlay + neon edge matching ring segments |
 | `components/wheel-view/DualRingMechanism.tsx` | **DELETED** | Replaced by HexPatternRingMechanism |
 | `components/wheel-view/SidePanel.tsx` | Unchanged | Field panel (uses glowColor — auto-matches) |
