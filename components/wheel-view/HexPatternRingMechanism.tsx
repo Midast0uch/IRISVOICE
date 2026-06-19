@@ -64,7 +64,7 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
   }, [items])
 
   const outerRadius = orbSize * 0.39
-  const innerRadius = orbSize * 0.30
+  const innerRadius = orbSize * 0.2575
   const buffer = 300
   const center = (orbSize + buffer) / 2
 
@@ -328,6 +328,18 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
               {/* Layer 3: Hex Pattern Texture Overlay */}
               <path d={path} fill="none" stroke="url(#hex-pattern)" strokeWidth="28"
                 style={{ pointerEvents: "none", opacity: isSelected ? 0.4 : 0.22 }} />
+              {/* Layer 3.5: Inner Shadow (depth) */}
+              <path d={path} fill="none"
+                stroke="rgba(0,0,0,0.3)"
+                strokeWidth={20}
+                style={{ pointerEvents: "none" }} />
+              {/* Layer 3.6: Active Radial Glow Fill (selected only) */}
+              {isSelected && (
+                <path d={path} fill="none"
+                  stroke={hexToRgba(glowColor, 0.15)}
+                  strokeWidth={18}
+                  style={{ filter: "blur(2px)", pointerEvents: "none" }} />
+              )}
               {/* Layer 4: Neon Edge Outline */}
               <path d={path} fill="none"
                 stroke={isSelected ? glowColor : hexToRgba(glowColor, 0.2)}
@@ -390,7 +402,19 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
                 onClick={() => onSelect(globalIndex)} />
               {/* Layer 3: Hex Pattern Texture Overlay */}
               <path d={path} fill="none" stroke="url(#hex-pattern)" strokeWidth="22"
-                style={{ pointerEvents: "none", opacity: isSelected ? 0.6 : 0.38 }} />
+                style={{ pointerEvents: "none", opacity: isSelected ? 0.4 : 0.22 }} />
+              {/* Layer 3.5: Inner Shadow (depth) */}
+              <path d={path} fill="none"
+                stroke="rgba(0,0,0,0.3)"
+                strokeWidth={14}
+                style={{ pointerEvents: "none" }} />
+              {/* Layer 3.6: Active Radial Glow Fill (selected only) */}
+              {isSelected && (
+                <path d={path} fill="none"
+                  stroke={hexToRgba(glowColor, 0.15)}
+                  strokeWidth={12}
+                  style={{ filter: "blur(2px)", pointerEvents: "none" }} />
+              )}
               {/* Layer 4: Neon Edge Outline */}
               <path d={path} fill="none"
                 stroke={isSelected ? glowColor : hexToRgba(glowColor, 0.2)}

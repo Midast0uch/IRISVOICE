@@ -253,7 +253,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
               }}
               animate={{
                 scale: [1, 1.1, 1],
-                opacity: [0.7, 1, 0.7]
+                opacity: [0.3, 0.5, 0.3]
               }}
               transition={{
                 duration: 8,
@@ -271,7 +271,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 width: '98%',
                 height: '98%',
                 transform: 'translate(-50%, -50%)',
-                background: `radial-gradient(circle at 50% 50%, hsl(${basePlateColor.hue}, ${basePlateColor.saturation}%, ${basePlateColor.lightness}%) 0%, hsl(${basePlateColor.hue}, ${Math.max(basePlateColor.saturation - 10, 0)}%, ${Math.max(basePlateColor.lightness - 5, 0)}%) 100%)`,
+                background: `radial-gradient(circle at 50% 50%, hsl(${basePlateColor.hue}, ${Math.max(basePlateColor.saturation - 15, 0)}%, ${Math.min(basePlateColor.lightness, 8)}%) 0%, hsl(${basePlateColor.hue}, ${Math.max(basePlateColor.saturation - 20, 0)}%, ${Math.max(basePlateColor.lightness - 4, 4)}%) 100%)`,
                 borderRadius: '50%',
                 border: `1px solid ${glowColor}26`,
                 boxShadow: `
