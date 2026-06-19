@@ -23,10 +23,13 @@ import { RadialArcNodes } from "./radial/RadialArcNodes"
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789→↑←'
 
+// Label positions are relative to orb center, scaled to container size.
+// Base values are for 180px container; we scale by size/180 at render time.
+const LABEL_BASE = 68
 const LABELS = [
-  { final: '→ Chat ←', x: 0, y: 68, swirl: '180deg', action: 'chat' as const },
-  { final: '↑ Menu', x: 0, y: -68, swirl: '-120deg', action: 'menu' as const },
-  { final: '↑↑ Voice', x: -68, y: 30, swirl: '240deg', action: 'voice' as const },
+  { final: '→ Chat ←', x: 0, y: LABEL_BASE, swirl: '180deg', action: 'chat' as const },
+  { final: '↑ Menu', x: 0, y: -LABEL_BASE, swirl: '-120deg', action: 'menu' as const },
+  { final: '↑↑ Voice', x: -LABEL_BASE, y: 30, swirl: '240deg', action: 'voice' as const },
 ]
 
 const CANVAS_SIZE = 90
@@ -66,6 +69,7 @@ export function XurOrb({
     endVoiceCommand,
     cancelVoiceCommand,
     handleSelectMain,
+    state,
   } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   const cadence = useCadenceDetection()
@@ -102,6 +106,15 @@ export function XurOrb({
   const isWingsOpen =
     uiState === UILayoutState.UI_STATE_CHAT_OPEN ||
     uiState === UILayoutState.UI_STATE_BOTH_OPEN
+
+  // Sync menuOpen with navigation level — menu is only open at level 2.
+  // When navigating back to level 1 or forward to level 3, menu closes.
+  const navLevel = state.level
+  useEffect(() => {
+    if (navLevel !== 2 && menuOpen) {
+      setMenuOpen(false)
+    }
+  }, [navLevel, menuOpen])
 
   // ── Label scramble function (from PrototypeOrbShellsRotating) ─────
   const scramble = useCallback((idx: number, finalText: string) => {
@@ -341,8 +354,8 @@ export function XurOrb({
         ref={orbRef}
         className="relative flex items-center justify-center cursor-pointer pointer-events-auto"
         style={{
-          width: CONTAINER_SIZE,
-          height: CONTAINER_SIZE,
+          width: size,
+          height: size,
           perspective: '900px',
           transformStyle: 'preserve-3d',
           overflow: 'visible',
@@ -392,8 +405,8 @@ export function XurOrb({
           <div
             className="relative"
             style={{
-              width: `${CANVAS_SIZE}px`,
-              height: `${CANVAS_SIZE}px`,
+              width: `${Math.min(size * 0.5, 90)}px`,
+              height: `${Math.min(size * 0.5, 90)}px`,
               zIndex: 2,
               animation: 'xurFloat 4s ease-in-out infinite',
             }}
@@ -410,14 +423,18 @@ export function XurOrb({
 
           {/* Glitch labels — → Chat ← / ↑ Menu / ↑↑ Voice */}
           <div className="absolute inset-0" style={{ zIndex: 1 }}>
-            {LABELS.map((label, i) => (
+            {LABELS.map((label, i) => {
+              const scale = size / 180
+              const lx = label.x * scale
+              const ly = label.y * scale
+              return (
               <div
                 key={i}
                 className="absolute"
                 style={{
                   left: '50%',
                   top: '50%',
-                  transform: `translate(-50%, -50%) translate(${label.x}px, ${label.y}px)`,
+                  transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)`,
                   pointerEvents: labelsVisible ? 'auto' : 'none',
                   opacity: labelsVisible ? 1 : 0,
                   transition: 'opacity 0.3s ease',
@@ -449,7 +466,8 @@ export function XurOrb({
                   {displayTexts[i] || ''}
                 </span>
               </div>
-            ))}
+              )
+            })}
           </div>
         </div>
 
