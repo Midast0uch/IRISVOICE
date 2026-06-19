@@ -181,7 +181,7 @@ export function getSplitComplementary(hue: number): [number, number] {
 
 // === PRESET BRAND COLORS ===
 export const PRESET_COLORS = [
-  { name: 'Cyan-Blue', hue: 210, saturation: 80, lightness: 55, theme: 'aether' as const },
+  { name: 'Bright Cyan', hue: 190, saturation: 100, lightness: 50, theme: 'aether' as const },
   { name: 'Ember Orange', hue: 24, saturation: 85, lightness: 55, theme: 'ember' as const },
   { name: 'Aurum Gold', hue: 45, saturation: 90, lightness: 55, theme: 'aurum' as const },
   { name: 'Corporate Blue', hue: 220, saturation: 70, lightness: 50, theme: 'aether' as const },

@@ -536,27 +536,23 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 clickCount.current += 1
 
                 if (clickCount.current === 1) {
-                  // First click - wait to see if there's a second click
+                  // Single click — navigate back immediately
                   clickTimer.current = setTimeout(() => {
                     if (clickCount.current === 1) {
-                      // Single click confirmed
                       if (isVoiceActive) {
-                        // Turn off voice mode
                         endVoiceCommand()
                       } else {
-                        // Navigate back
                         onBackToCategories()
                       }
                     }
                     clickCount.current = 0
-                  }, 250) // 250ms double-click window (faster = more responsive)
+                  }, 180) // Short window just to catch accidental double-click
                 } else if (clickCount.current === 2) {
-                  // Double click detected - clear timer and toggle voice
+                  // Double click — toggle voice
                   if (clickTimer.current) {
                     clearTimeout(clickTimer.current)
                     clickTimer.current = null
                   }
-                  // Toggle voice command
                   if (isVoiceActive) {
                     endVoiceCommand()
                   } else {

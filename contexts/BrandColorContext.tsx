@@ -97,14 +97,14 @@ const DEFAULT_THEME: ThemeType = 'aether'
 
 // Basic HSL defaults (kept for backwards compatibility)
 const THEME_DEFAULTS: Record<ThemeType, BrandColorState> = {
-  aether: { hue: 210, saturation: 40, lightness: 55 }, // Cyan-Blue (reduced saturation)
+  aether: { hue: 190, saturation: 100, lightness: 50 }, // Bright Cyan #00d4ff
   ember: { hue: 30, saturation: 70, lightness: 50 },   // Copper/Orange
   aurum: { hue: 45, saturation: 90, lightness: 55 },   // Gold
   verdant: { hue: 145, saturation: 80, lightness: 45 }, // Forest Green
 }
 
 const BASE_PLATE_THEME_DEFAULTS: Record<ThemeType, BasePlateColorState> = {
-  aether: { hue: 220, saturation: 15, lightness: 12 },
+  aether: { hue: 190, saturation: 25, lightness: 12 }, // Cyan base plate
   ember: { hue: 15, saturation: 20, lightness: 10 },
   aurum: { hue: 35, saturation: 25, lightness: 12 },
   verdant: { hue: 150, saturation: 15, lightness: 10 },
@@ -114,25 +114,25 @@ const BASE_PLATE_THEME_DEFAULTS: Record<ThemeType, BasePlateColorState> = {
 export const PRISM_THEMES: Record<ThemeType, ThemeConfig> = {
   aether: {
     name: 'Aether',
-    description: 'Cool, ethereal blues/purples',
-    mood: 'Calm, airy, futuristic',
-    hue: 210,
-    saturation: 40,
-    lightness: 55,
+    description: 'Bright cyan, electric futuristic',
+    mood: 'Energetic, electric, futuristic',
+    hue: 190,
+    saturation: 100,
+    lightness: 50,
     gradient: {
-      from: 'hsl(220, 40%, 15%)',
-      to: 'hsl(190, 40%, 55%)',
+      from: 'hsl(190, 100%, 15%)',
+      to: 'hsl(190, 100%, 50%)',
       angle: 135
     },
     shimmer: {
-      primary: 'hsl(200, 40%, 70%)',
-      secondary: 'hsl(260, 40%, 65%)',
-      accent: 'hsl(180, 40%, 60%)'
+      primary: 'hsl(190, 100%, 60%)',
+      secondary: 'hsl(180, 80%, 55%)',
+      accent: 'hsl(200, 100%, 70%)'
     },
     orbs: [
-      { color: 'hsl(200, 100%, 60%)', size: 80, blur: 40, x: -30, y: -20 },
-      { color: 'hsl(260, 80%, 65%)', size: 60, blur: 30, x: 40, y: 30 },
-      { color: 'hsl(180, 90%, 55%)', size: 50, blur: 25, x: -20, y: 40 }
+      { color: 'hsl(190, 100%, 50%)', size: 80, blur: 40, x: -30, y: -20 },
+      { color: 'hsl(180, 80%, 55%)', size: 60, blur: 30, x: 40, y: 30 },
+      { color: 'hsl(200, 100%, 70%)', size: 50, blur: 25, x: -20, y: 40 }
     ],
     text: {
       primary: 'rgba(255, 255, 255, 0.95)',
