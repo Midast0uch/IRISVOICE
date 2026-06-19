@@ -210,8 +210,8 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   }, [card.id, sendMessage])
 
   // Calculate panel position: anchored for a precision bridge from wheel edge
-  // Wheel Edge (startX) = 330. 330 + 60 = 390.
-  const panelOffset = 390
+  // Wheel Edge (startX) = 352. 352 + 60 = 412.
+  const panelOffset = 412
 
   // Memoize field rendering function for performance (Requirement 12.3)
   const renderField = useCallback(

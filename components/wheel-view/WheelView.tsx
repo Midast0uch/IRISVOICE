@@ -262,7 +262,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
               }}
             />
 
-            {/* 2. BasePlateLayer (z-10) - Industrial Foundation (Phase 99: Gunmetal Skin) */}
+            {/* 2. BasePlateLayer (z-10) - Theme-aware Industrial Foundation */}
             <div
               style={{
                 position: 'absolute',
@@ -271,7 +271,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 width: '98%',
                 height: '98%',
                 transform: 'translate(-50%, -50%)',
-                background: 'radial-gradient(circle at 50% 50%, #1C2026 0%, #0F1115 100%)',
+                background: `radial-gradient(circle at 50% 50%, hsl(${basePlateColor.hue}, ${basePlateColor.saturation}%, ${basePlateColor.lightness}%) 0%, hsl(${basePlateColor.hue}, ${Math.max(basePlateColor.saturation - 10, 0)}%, ${Math.max(basePlateColor.lightness - 5, 0)}%) 100%)`,
                 borderRadius: '50%',
                 border: `1px solid ${glowColor}26`,
                 boxShadow: `
