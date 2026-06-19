@@ -2100,12 +2100,29 @@ class IRISGateway:
                             level = min(1.0, rms * 5.0)
                             import asyncio as _asyncio
 
+                            # Legacy audio_level (old IrisOrb.tsx)
                             _asyncio.run_coroutine_threadsafe(
                                 self._ws_manager.broadcast_to_session(
                                     session_id,
                                     {
                                         "type": "audio_level",
                                         "payload": {"level": level},
+                                    },
+                                ),
+                                self._main_loop,
+                            )
+                            # New consolidated audio_envelope (XurOrb)
+                            # TTS cadence = RMS (no spectral flux for playback)
+                            _asyncio.run_coroutine_threadsafe(
+                                self._ws_manager.broadcast_to_session(
+                                    session_id,
+                                    {
+                                        "type": "audio_envelope",
+                                        "payload": {
+                                            "rms": level,
+                                            "cadence": level,
+                                            "phase": "speaking",
+                                        },
                                     },
                                 ),
                                 self._main_loop,
@@ -2260,6 +2277,28 @@ class IRISGateway:
                         _ck.mark_speaking(False)
                 except Exception:  # noqa: BLE001
                     pass
+                # Send final audio_envelope with zero values so XurOrb
+                # stops breathing when TTS playback ends.
+                if session_id and self._main_loop and self._main_loop.is_running():
+                    try:
+                        import asyncio as _asyncio
+
+                        _asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.broadcast_to_session(
+                                session_id,
+                                {
+                                    "type": "audio_envelope",
+                                    "payload": {
+                                        "rms": 0.0,
+                                        "cadence": 0.0,
+                                        "phase": "idle",
+                                    },
+                                },
+                            ),
+                            self._main_loop,
+                        )
+                    except Exception:
+                        pass
                 if not _native:
                     asyncio.run_coroutine_threadsafe(audio_queue.put(None), loop)
 
