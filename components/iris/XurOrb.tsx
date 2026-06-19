@@ -65,7 +65,7 @@ export function XurOrb({
     startVoiceCommand,
     endVoiceCommand,
     cancelVoiceCommand,
-    dispatch,
+    handleSelectMain,
   } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   const cadence = useCadenceDetection()
@@ -230,8 +230,11 @@ export function XurOrb({
 
   const handleCategorySelect = useCallback((categoryId: string) => {
     onCategorySelect?.(categoryId)
-    dispatch({ type: "EXPAND_TO_MAIN" })
-  }, [onCategorySelect, dispatch])
+    // handleSelectMain aggregates cards for the category and dispatches
+    // SELECT_MAIN (level 3 → WheelView) with the correct card data.
+    // It also sends the select_category WS message to the backend.
+    handleSelectMain(categoryId)
+  }, [onCategorySelect, handleSelectMain])
 
   // ── Window drag + double-click ───────────────────────────────────
   const { handleMouseDown } = useManualDragWindow(
