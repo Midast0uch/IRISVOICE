@@ -528,13 +528,9 @@ export const WheelView: React.FC<WheelViewProps> = ({
                 filter: { duration: 0.15 }
               }}
               whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.94 }}
               onMouseDown={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.preventDefault()
-                e.stopPropagation()
-                e.stopPropagation()
                 
                 clickCount.current += 1
 

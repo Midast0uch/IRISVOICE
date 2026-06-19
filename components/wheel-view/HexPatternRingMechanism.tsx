@@ -3,6 +3,7 @@
 import React, { useMemo, useCallback } from "react"
 import { motion } from 'framer-motion'
 import type { Card } from "@/types/navigation"
+import { ENERGY_CYCLE } from '@/lib/timing-config'
 
 interface HexPatternRingMechanismProps {
   items: Card[]
@@ -270,22 +271,22 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
         </g>
       </motion.g>
 
-      {/* 9. Core Shimmer Engine (White Bright Light Halo) — surrounds the center button */}
+      {/* 9. Core Shimmer Engine (White Bright Light Halo) — bright white, surrounds center button */}
       <g style={{ pointerEvents: 'none' }}>
-        {/* Soft glare layer — pulsing, larger radius for visible halo around button */}
-        <motion.circle cx={center} cy={center} r={orbSize * 0.13} fill="none"
-          stroke="white" strokeWidth="8" initial={{ opacity: 0.1 }}
-          animate={{ opacity: [0.1, 0.35, 0.1], scale: [1, 1.1, 1] }}
+        {/* Soft glare layer — pulsing white, large radius for visible halo */}
+        <motion.circle cx={center} cy={center} r={orbSize * 0.14} fill="none"
+          stroke="white" strokeWidth="10" initial={{ opacity: 0.15 }}
+          animate={{ opacity: [0.15, 0.4, 0.15], scale: [1, 1.1, 1] }}
           transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-          style={{ filter: "blur(12px)", originX: "50%", originY: "50%" }} />
-        {/* Sharp halo ring — sits just outside the 64px button (32px radius) */}
-        <circle cx={center} cy={center} r={orbSize * 0.12} fill="none"
-          stroke="white" strokeWidth="2"
-          style={{ opacity: 0.9, filter: "drop-shadow(0 0 10px white) drop-shadow(0 0 15px white)" }} />
-        {/* Inner glow ring — fills the gap between button edge and sharp halo */}
+          style={{ filter: "blur(14px)", transformOrigin: `${center}px ${center}px` }} />
+        {/* Sharp halo ring — bright white, just outside the 64px button */}
+        <circle cx={center} cy={center} r={orbSize * 0.125} fill="none"
+          stroke="white" strokeWidth="2.5"
+          style={{ opacity: 1, filter: "drop-shadow(0 0 8px white) drop-shadow(0 0 16px white)" }} />
+        {/* Inner sharp ring — white, hugging the button edge */}
         <circle cx={center} cy={center} r={orbSize * 0.115} fill="none"
-          stroke={glowColor} strokeWidth="1"
-          style={{ opacity: 0.5, filter: `drop-shadow(0 0 4px ${glowColor})` }} />
+          stroke="white" strokeWidth="1"
+          style={{ opacity: 0.7, filter: "drop-shadow(0 0 4px white)" }} />
       </g>
 
       {/* 10. Outer Interactive Ring — HEX PATTERN SURFACE */}
@@ -413,6 +414,32 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
           animate={{ rotate: -360 }} transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
           style={{ pointerEvents: "none", filter: "drop-shadow(0 0 8px white)", opacity: 0.85, transformOrigin: `${center}px ${center}px` }} />
       </motion.g>
+
+      {/* 14. Structural Energy Circuit */}
+      <motion.circle cx={center} cy={center} r={outerRadius + 29} fill="none"
+        stroke={hexToRgba(glowColor, 0.4)} strokeWidth="1.5" style={{ pointerEvents: "none" }} />
+
+      {/* 15. Particle Chase Relay (Alpha + Beta) — synced to ENERGY_CYCLE */}
+      <motion.circle cx={center} cy={center} r={outerRadius + 29} fill="none"
+        stroke="white" strokeWidth="3" strokeLinecap="round" pathLength="1"
+        initial={{ strokeDasharray: "0.08 0.92", strokeDashoffset: 0.75, opacity: 0.35 }}
+        animate={{ strokeDashoffset: [0.75, -0.25], opacity: [0.35, 0.95, 0.95, 0.35] }}
+        transition={{
+          strokeDashoffset: { duration: ENERGY_CYCLE.duration / 4, repeat: Infinity, ease: "linear" },
+          opacity: { duration: ENERGY_CYCLE.duration, repeat: Infinity, ease: "linear",
+            times: [0, ENERGY_CYCLE.segments.s2Wheel.start, ENERGY_CYCLE.segments.s2Wheel.end, 1.0] }
+        }}
+        style={{ pointerEvents: "none", filter: `blur(0.5px) drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 6px white)` }} />
+      <motion.circle cx={center} cy={center} r={outerRadius + 29} fill="none"
+        stroke="white" strokeWidth="3" strokeLinecap="round" pathLength="1"
+        initial={{ strokeDasharray: "0.08 0.92", strokeDashoffset: 0.25, opacity: 0.35 }}
+        animate={{ strokeDashoffset: [0.25, -0.75], opacity: [0.35, 0.95, 0.95, 0.35] }}
+        transition={{
+          strokeDashoffset: { duration: ENERGY_CYCLE.duration / 4, repeat: Infinity, ease: "linear" },
+          opacity: { duration: ENERGY_CYCLE.duration, repeat: Infinity, ease: "linear",
+            times: [0, ENERGY_CYCLE.segments.s2Wheel.start, ENERGY_CYCLE.segments.s2Wheel.end, 1.0] }
+        }}
+        style={{ pointerEvents: "none", filter: `blur(0.5px) drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 6px white)` }} />
 
       {/* CRITICAL: Local <style jsx> — 3x SLOWER than globals.css (production speeds) */}
       <style jsx>{`
