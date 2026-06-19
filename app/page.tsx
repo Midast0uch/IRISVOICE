@@ -22,8 +22,6 @@ import { useTailscaleAccess } from "@/hooks/useTailscaleAccess"
 // A proper fix would require adding explicit type exports to each component
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const LazyChatWing = lazy(() => import("@/components/chat-view") as any)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const LazyHexagonalControlCenter = lazy(() => import("@/components/hexagonal-control-center") as any)
 
 export default function Home() {
   const { state, handleExpandToMain, handleGoBack, handleCollapseToIdle, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand } = useNavigation()
@@ -284,11 +282,6 @@ export default function Home() {
             </div>
           </motion.div>
         </div>
-      )}
-      {state.level === 2 && (
-        <Suspense fallback={<div className="text-white/50">Loading...</div>}>
-          <LazyHexagonalControlCenter key="level-2" />
-        </Suspense>
       )}
       {state.level === 3 && state.selectedMain && (
         <Suspense fallback={<div className="text-white/50">Loading...</div>}>
