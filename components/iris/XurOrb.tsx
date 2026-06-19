@@ -226,6 +226,7 @@ export function XurOrb({
   // Label click handlers — cycle animation + trigger action
   const handleLabelClick = useCallback((action: 'chat' | 'menu' | 'voice', e: React.MouseEvent) => {
     e.stopPropagation()
+    e.preventDefault()
     triggerAnimation()
     if (action === 'menu') {
       setMenuOpen((prev) => !prev)
@@ -240,6 +241,12 @@ export function XurOrb({
       onChatClick?.()
     }
   }, [triggerAnimation, onMenuClick, onChatClick, isVoiceActive, startVoiceCommand, endVoiceCommand])
+
+  // Stop mousedown propagation on labels so the drag handler doesn't
+  // intercept label clicks (which would fire handleOrbClick and cancel voice)
+  const handleLabelMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+  }, [])
 
   const handleCategorySelect = useCallback((categoryId: string) => {
     onCategorySelect?.(categoryId)
@@ -439,6 +446,7 @@ export function XurOrb({
                   opacity: labelsVisible ? 1 : 0,
                   transition: 'opacity 0.3s ease',
                 }}
+                onMouseDown={handleLabelMouseDown}
                 onClick={(e) => handleLabelClick(label.action, e)}
               >
                 <span

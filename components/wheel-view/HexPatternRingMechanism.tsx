@@ -405,9 +405,10 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
         animate={{ opacity: 1, scale: 1 }}
         transition={{ type: "spring", stiffness: 100, damping: 20, delay: 0.6 }}
       >
+        {/* Dashed ring — neon white */}
         <circle cx={center} cy={center} r={orbSize * 0.185} fill="none"
-          stroke={hexToRgba(glowColor, 0.4)} strokeWidth="2.7" strokeDasharray="15 35"
-          className="ring-inner-anim" style={{ pointerEvents: "none" }} />
+          stroke="white" strokeWidth="2.7" strokeDasharray="15 35"
+          className="ring-inner-anim" style={{ pointerEvents: "none", opacity: 0.5, filter: "drop-shadow(0 0 6px white)" }} />
         {/* 3-prong white beam — rotating counter-clockwise */}
         <motion.circle cx={center} cy={center} r={orbSize * 0.185} fill="none"
           stroke="white" strokeWidth="2.2" pathLength="1" strokeDasharray="0.02 0.98"
