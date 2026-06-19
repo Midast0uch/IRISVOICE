@@ -42,7 +42,7 @@ export const ConnectionLine: React.FC<ConnectionLineProps> = ({
   // Right edge of structural ring: 340 + 147 = 487px
   const startX = 487 // Absolute anchor to structural ring edge relative to 850px container
   const lineWidth = Math.max(0, panelOffset - startX)
-  const lineHeight = 3.2 // Kinetic-Level Visibility (Phase 63)
+  const lineHeight = 1.8 // Thinner beam for refined aesthetic
   const containerHeight = 60 // Expanded safety gutter for high-intensity blooms
 
   return (

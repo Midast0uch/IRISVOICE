@@ -3,7 +3,6 @@
 import React, { useMemo, useCallback } from "react"
 import { motion } from 'framer-motion'
 import type { Card } from "@/types/navigation"
-import { ENERGY_CYCLE } from '@/lib/timing-config'
 
 interface HexPatternRingMechanismProps {
   items: Card[]
@@ -226,16 +225,19 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
           style={{ pointerEvents: "none", filter: "drop-shadow(0 0 6px white)", opacity: 0.7, originX: "50%", originY: "50%" }} />
       </motion.g>
 
-      {/* 8. Barrier Kinetic Glider + Orbital Ticks */}
+      {/* 8. Barrier Kinetic Glider + Orbital Ticks — matches winner preview */}
       <motion.g
         style={{ pointerEvents: "none" }}
         initial={{ opacity: 0, scale: 1.1 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ type: "spring", stiffness: 100, damping: 20, delay: 0.2 }}
       >
+        {/* Barrier dashed ring — white, faster CW */}
         <motion.circle cx={center} cy={center} r={outerRadius + 23} fill="none"
-          stroke={hexToRgba(glowColor, 0.45)} strokeWidth="2.7" strokeDasharray="18.57 4"
-          className="ring-outer-anim" style={{ pointerEvents: "none" }} />
+          stroke="white" strokeWidth="2.7" strokeDasharray="18.57 4"
+          animate={{ rotate: 360 }} transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
+          style={{ pointerEvents: "none", opacity: 0.6, filter: "drop-shadow(0 0 4px white)", transformOrigin: `${center}px ${center}px` }} />
+        {/* Orbital ticks — 12 dual-layer, thick bloom + bright neon core */}
         <g className="ring-outer-anim">
           {Array.from({ length: 12 }).map((_, i) => {
             const angle = (i * 360) / 12
@@ -246,13 +248,22 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
             const tickColor = isWhiteTick ? "white" : glowColor
             return (
               <g key={`tick-lite-${i}`}>
+                {/* Bloom layer — thick, low opacity, heavy blur */}
                 <line x1={innerPoint.x} y1={innerPoint.y} x2={outerPoint.x} y2={outerPoint.y}
-                  stroke={tickColor} strokeWidth={isWhiteTick ? "3.5" : "2.5"}
-                  style={{ pointerEvents: "none", opacity: isWhiteTick ? 0.45 : 0.35, filter: isWhiteTick ? "blur(3px)" : "blur(2px)" }} />
+                  stroke={tickColor}
+                  strokeWidth={isWhiteTick ? 6.5 : 5.2}
+                  style={{ pointerEvents: "none", opacity: isWhiteTick ? 0.3 : 0.2, filter: isWhiteTick ? "drop-shadow(0 0 5px white)" : `drop-shadow(0 0 4px ${glowColor})` }} />
+                {/* Core layer — bright neon line */}
                 <line x1={innerPoint.x} y1={innerPoint.y} x2={outerPoint.x} y2={outerPoint.y}
-                  stroke={isWhiteTick ? "white" : hexToRgba(glowColor, 0.6)}
-                  strokeWidth={isWhiteTick ? "2.2" : "1.8"}
-                  style={{ pointerEvents: "none", filter: isWhiteTick ? "drop-shadow(0 0 5px white)" : "none" }} />
+                  stroke={isWhiteTick ? "white" : glowColor}
+                  strokeWidth={isWhiteTick ? 2.8 : 2.2}
+                  style={{
+                    pointerEvents: "none",
+                    opacity: isWhiteTick ? 0.75 : 0.6,
+                    filter: isWhiteTick
+                      ? `drop-shadow(0 0 6px white) drop-shadow(0 0 12px ${glowColor})`
+                      : `drop-shadow(0 0 4px ${glowColor})`,
+                  }} />
               </g>
             )
           })}
@@ -387,7 +398,7 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
         })}
       </motion.g>
 
-      {/* 13. Core Kinetic Glider */}
+      {/* 13. Core Kinetic Glider — 3-prong white beam rotating CCW */}
       <motion.g
         initial={{ opacity: 0, scale: 1.1 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -396,37 +407,12 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
         <circle cx={center} cy={center} r={orbSize * 0.185} fill="none"
           stroke={hexToRgba(glowColor, 0.4)} strokeWidth="2.7" strokeDasharray="15 35"
           className="ring-inner-anim" style={{ pointerEvents: "none" }} />
+        {/* 3-prong white beam — rotating counter-clockwise */}
         <motion.circle cx={center} cy={center} r={orbSize * 0.185} fill="none"
           stroke="white" strokeWidth="2.2" pathLength="1" strokeDasharray="0.02 0.98"
-          animate={{ rotate: 360 }} transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
-          style={{ pointerEvents: "none", filter: "drop-shadow(0 0 8px white)", opacity: 0.85, originX: "50%", originY: "50%" }} />
+          animate={{ rotate: -360 }} transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
+          style={{ pointerEvents: "none", filter: "drop-shadow(0 0 8px white)", opacity: 0.85, transformOrigin: `${center}px ${center}px` }} />
       </motion.g>
-
-      {/* 14. Structural Energy Circuit */}
-      <motion.circle cx={center} cy={center} r={outerRadius + 29} fill="none"
-        stroke={hexToRgba(glowColor, 0.4)} strokeWidth="1.5" style={{ pointerEvents: "none" }} />
-
-      {/* 15. Particle Chase Relay (Alpha + Beta) */}
-      <motion.circle cx={center} cy={center} r={outerRadius + 29} fill="none"
-        stroke="white" strokeWidth="3" strokeLinecap="round" pathLength="1"
-        initial={{ strokeDasharray: "0.08 0.92", strokeDashoffset: 0.75, opacity: 0.35 }}
-        animate={{ strokeDashoffset: [0.75, -0.25], opacity: [0.35, 0.95, 0.95, 0.35] }}
-        transition={{
-          strokeDashoffset: { duration: ENERGY_CYCLE.duration / 4, repeat: Infinity, ease: "linear" },
-          opacity: { duration: ENERGY_CYCLE.duration, repeat: Infinity, ease: "linear",
-            times: [0, ENERGY_CYCLE.segments.s2Wheel.start, ENERGY_CYCLE.segments.s2Wheel.end, 1.0] }
-        }}
-        style={{ pointerEvents: "none", filter: `blur(0.5px) drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 6px white)` }} />
-      <motion.circle cx={center} cy={center} r={outerRadius + 29} fill="none"
-        stroke="white" strokeWidth="3" strokeLinecap="round" pathLength="1"
-        initial={{ strokeDasharray: "0.08 0.92", strokeDashoffset: 0.25, opacity: 0.35 }}
-        animate={{ strokeDashoffset: [0.25, -0.75], opacity: [0.35, 0.95, 0.95, 0.35] }}
-        transition={{
-          strokeDashoffset: { duration: ENERGY_CYCLE.duration / 4, repeat: Infinity, ease: "linear" },
-          opacity: { duration: ENERGY_CYCLE.duration, repeat: Infinity, ease: "linear",
-            times: [0, ENERGY_CYCLE.segments.s2Wheel.start, ENERGY_CYCLE.segments.s2Wheel.end, 1.0] }
-        }}
-        style={{ pointerEvents: "none", filter: `blur(0.5px) drop-shadow(0 0 15px ${glowColor}) drop-shadow(0 0 6px white)` }} />
 
       {/* CRITICAL: Local <style jsx> — 3x SLOWER than globals.css (production speeds) */}
       <style jsx>{`
