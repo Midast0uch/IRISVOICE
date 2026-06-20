@@ -7,9 +7,9 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 ### 🎤 Voice & Audio
 - **Wake Word Detection**: Custom wake words using Picovoice Porcupine with automatic file discovery
 - **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
-- **End-to-End Audio Processing**: LFM 2.5 audio model handles complete audio pipeline
+- **End-to-End Audio Processing**: Porcupine (wake words) → faster-whisper (STT) → Agent Kernel → Pocket-TTS (TTS)
 - **Voice Commands**: Natural language voice interaction with double-click activation
-- **Text-to-Speech**: F5-TTS (zero-shot voice cloning from TOMV2.wav, GPU-accelerated via CUDA) or Piper (fast built-in)
+- **Text-to-Speech**: Pocket-TTS (~100M int8 quantized, zero-shot voice cloning from a user-provided reference WAV) with built-in speaker presets
 - **Streaming LLM→TTS**: IRIS starts speaking as soon as the first sentence is ready — no waiting for the full LLM response
 - **Native C++ Audio Layer**: Optional low-latency ring-buffer playback via PortAudio (<5ms chunk-to-speaker, <2ms inter-chunk gap)
 - **Instant Interrupt**: Sub-5ms TTS cancellation via atomic flag in the C++ audio callback
@@ -190,9 +190,6 @@ venv\Scripts\activate
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Install F5-TTS for voice cloning (optional — uses Piper built-in if skipped)
-pip install f5-tts
-
 # Set up environment variables
 # Create .env file with:
 # PICOVOICE_ACCESS_KEY=your_access_key_here
@@ -301,10 +298,16 @@ npm run dev:tauri
 
 3. **Install TTS** (one-time)
    ```bash
-   # F5-TTS for zero-shot voice cloning (optional — falls back to Piper if skipped)
-   pip install f5-tts
-   # Place TOMV2.wav at IRISVOICE/data/TOMV2.wav for voice cloning
-   # F5-TTS model weights (~800 MB) download automatically on first "Cloned Voice" use
+   # Pocket-TTS is installed automatically via requirements.txt
+   # Cloned Voice model weights download automatically on first use
+   ```
+
+4. **Provide a voice reference for cloning** (optional — skip to use built-in voices)
+   ```bash
+   # Record or export a 6–30 second WAV of the voice you want IRIS to use
+   # Save it as data/TOMV2.wav (or data/voice_clone_ref.wav)
+   # See data/VOICE_CLONE_README.md for full guidance
+   # This file is gitignored — you must supply your own
    ```
 
 4. **Configure Environment**
@@ -390,13 +393,13 @@ npm run dev:tauri
 │  │  LFM 2.5    │           │  - App Launch   │            │
 │  │  (tool calls│           │  - Vision       │            │
 │  └─────────────┘           └─────────────────┘            │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │                   Voice Pipeline                     │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
-│  │  │ Porcupine│  │   STT    │  │   TTS            │  │  │
-│  │  │ Wake Word│  │ (Whisper)│  │(F5-TTS / Piper)  │  │  │
-│  │  └──────────┘  └──────────┘  └──────────────────┘  │  │
-│  └──────────────────────────────────────────────────────┘  │
+  │  ┌──────────────────────────────────────────────────────┐  │
+  │  │                   Voice Pipeline                     │  │
+  │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
+  │  │  │ Porcupine│  │   STT    │  │   TTS            │  │  │
+  │  │  │ Wake Word│  │ (Whisper)│  │  (Pocket-TTS)    │  │  │
+  │  │  └──────────┘  └──────────┘  └──────────────────┘  │  │
+  │  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────┬────────────────────────────────┘
                              │  FFI (ctypes)
 ┌────────────────────────────▼────────────────────────────────┐
@@ -436,9 +439,10 @@ npm run dev:tauri
 - **State Manager**: Settings persistence and synchronization
 - **Session Manager**: Multi-client session handling
 - **Agent Kernel**: AI agent orchestration
-- **Model Router**: Routes requests between GGUF LLM and LFM instruct (tool calls)
+- **Model Router**: Routes requests between GGUF brain model and tool-calling model
+- **Streaming Utilities** (`backend/agent/streaming.py`): chunk batching, provider-agnostic chunk parsing, safe iteration with silence/total timeouts
 - **Tool Bridge**: MCP tool execution
-- **Voice Pipeline**: End-to-end audio processing
+- **Voice Pipeline**: End-to-end audio processing (Porcupine → faster-whisper → Agent Kernel → Pocket-TTS)
 - **C++ Hybrid Core Memory Engine** (`iris_core.dll`): Replaces the Python memory hot path with compiled C++ — **~570× faster** Caducean attention decisions (87 ns vs ~50 μs in pure Python), eliminates SQLite `database is locked` errors via a dedicated single-writer thread, and removes ReDoS risk entirely via Google RE2. All backed by transparent Python fallback if the DLL is unavailable.
 
 ### Model Architecture
@@ -843,11 +847,12 @@ IRISVOICE/
 │   │   ├── agent_kernel.py
 │   │   ├── model_router.py
 │   │   ├── vps_gateway.py
+│   │   ├── streaming.py  # Streaming chunk batching, safe iteration, chunk parsing
 │   │   └── personality.py
-│   ├── voice/           # Voice pipeline
-│   │   ├── audio_engine.py
-│   │   ├── voice_pipeline.py
-│   │   └── porcupine_detector.py
+│   ├── audio/           # Audio pipeline (Porcupine + faster-whisper)
+│   │   ├── engine.py    # AudioEngine — frame ingest, VAD, listener dispatch
+│   │   ├── voice_command.py
+│   │   └── tts_normalizer.py
 │   ├── tools/           # MCP tool integration
 │   │   └── vision_system.py
 │   ├── performance/     # Performance optimizers

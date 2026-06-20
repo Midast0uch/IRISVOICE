@@ -1,5 +1,166 @@
 # IRIS Changelog
 
+## [Unreleased] — Monitor Dashboard + TTS Cleanup + Voice Reference Gitignore — 2026-06-20
+
+### feat: Monitor dashboard — structured panels with live backend data
+
+Built a full Monitor category in the dashboard wing with three sub-tabs
+(Analytics | Logs | Diagnostics) that stream live data from the backend.
+
+#### Frontend (`components/dashboard/`)
+- **`MonitorTabContainer.tsx`** — Animated sub-tab bar with Analytics/Logs/Diagnostics
+  buttons. The "Analytics" tab shows a pulsing "Live" indicator inline (eliminates
+  duplicate "Analytics" label in the panel header).
+- **`MonitorAnalyticsPanel.tsx`** — 2×2 grid of big-number cards (Total Tokens,
+  Total Calls, Est. Cost, Avg Latency) followed by Model Breakdown (with
+  distribution bars), Latency Distribution (3-column grid), and Recent Activity.
+  Uses a shared `AnalyticsSection` card wrapper with the same gradient
+  background, hover glow sweep, top accent line, and pulsing icon as the big-number
+  cards. `rounded-md` (6px) + `p-5` for non-pill proportions and proper edge
+  breathing room. `min-w-0` + `truncate` everywhere to prevent clipping.
+  Framer-motion `motion.div` rows use inline `paddingLeft`/`paddingRight` style
+  overrides — Tailwind `px-*` was being overridden by framer-motion's internal
+  styles.
+- **`MonitorLogsPanel.tsx`** — Structured log display (timestamp/level/source/message
+  per line) with per-section independently scrollable content area. Level filter
+  chips (ALL/ERROR/WARNING/INFO/DEBUG) with color coding. Search input with
+  clear button. Auto-scroll toggle. Color bar on the left of each log line
+  matching the level. Per-level counters (XE, XW) in the header. Color-coded
+  sections: green for system, red for error stream.
+- **`MonitorDiagnosticsPanel.tsx`** — 11 structured health checks with status
+  icons, colored dots, component labels, messages, latency, and status badges
+  (OK/WARN/ERR/IDLE). Auto-detects component type and shows the appropriate
+  icon (Database, Brain, Cpu, Wifi, etc.). Pulse animation on healthy status dots.
+  Counters in header: X ERR / X WARN / X OK badges. Issues section: separate
+  red cards for errors, yellow for warnings. Debug info: monospace key:value
+  pairs with purple accent.
+
+#### Backend (`backend/monitor/`, `backend/iris_gateway.py`)
+- **`backend/monitor/store.py`** — Isolated SQLite analytics store at
+  `data/monitor.db` (WAL mode, `check_same_thread=False`, threading lock —
+  safe for concurrent writes, completely separate from the memory DB at
+  `bootstrap/coordinates.db`).
+- **`backend/monitor/analytics.py`** — AnalyticsManager wired to the store
+  with per-model breakdown, latency distribution, recent activity.
+- **`backend/monitor/logs.py`** — Structured LogManager singleton with
+  source/level filtering and 10k-entry ring buffer.
+- **`backend/monitor/diagnostics.py`** — `DiagnosticsManager` with
+  comprehensive health checks (memory DB, monitor DB, log manager,
+  WebSocket, agent kernel, audio engine, LFM/Pocket-TTS, MCP, system,
+  llama-server, GPU).
+- **`backend/iris_gateway.py`** — Analytics branch sends structured
+  `monitor_analytics_data` WS messages. Logs branch sends structured
+  `update_field` messages with JSON arrays. Diagnostics branch sends
+  structured health check data.
+
+#### Backend health checks (real, not mocked)
+- **Memory DB** — opens `bootstrap/coordinates.db` in read-only mode,
+  reports size in MB and first table name
+- **Monitor DB** — opens `data/monitor.db`, counts records, reports
+  schema status and file size
+- **Log Manager** — verifies singleton is active, counts entries
+- **WebSocket** — counts active connections via `get_websocket_manager().get_connection_count()`
+- **Agent Kernel** — counts active `AgentKernel` instances
+- **Audio Engine** — checks if running
+- **TTS Engine** — reports the actual TTS engine name (replaces the dead
+  LFM model check — see cleanup below)
+- **MCP** — checks for registered tools
+- **System** — CPU and memory usage
+- **Llama Server** — checks if `llama-server.exe` process is running
+- **GPU** — `nvidia-smi` info
+
+### chore(cleanup): remove dead LFM voice code + unused TTS fallbacks
+
+**LFM Audio Manager was config-only dead code.** Its own docstring stated:
+> "This class only holds wake phrase / TTS voice configuration state."
+
+The `AudioEngine` wrapper at `backend/voice/audio_engine.py` called
+`process_audio_stream()` on the LFM manager — but that method never existed
+on the class. The real voice pipeline uses Porcupine (wake words) and
+faster-whisper (STT) in `backend/audio/engine.py`. The LFM system was
+truly dead.
+
+**Piper TTS and pyttsx3 fallbacks were unreachable.** The code in
+`backend/agent/tts.py` called `_load_piper()`, `_stream_piper()`, and
+`_synthesize_pyttsx()` in the fallback path — but **none of these methods
+were defined on the class**. They would have raised `AttributeError` if
+Pocket-TTS had ever failed and triggered the fallback.
+
+**F5-TTS was never wired up.** The "F5TTS_NATIVE_RATE" backward-compat
+alias and a few docstring mentions existed, but no F5-TTS code was
+actually present in the TTS module. Pocket-TTS was always the sole
+working engine.
+
+#### Files removed
+- `backend/agent/lfm_audio_manager.py` — config-only class
+- `backend/voice/audio_engine.py` — wrapper calling non-existent methods
+- `backend/voice/voice_pipeline.py` — orchestrator for the dead wrapper
+
+#### Files simplified
+- `backend/agent/tts.py` — removed Piper/pyttsx3 fallback path, the
+  "Built-in" voice option, `_select_engine()`, and all related constants
+  (`PIPER_NATIVE_RATE`, `PYTTSX_NATIVE_RATE`, `PIPER_MODEL_DIR`,
+  `PIPER_MODEL_ONNX`, `F5TTS_NATIVE_RATE`). Synthesize path now goes
+  directly to Pocket-TTS and logs a clear error if Pocket-TTS is
+  unavailable.
+- `backend/agent/__init__.py` — removed `LFMAudioManager`/
+  `get_lfm_audio_manager` exports.
+- `backend/monitor/diagnostics.py` — replaced `_check_lfm_model`
+  (always returned "idle: Model manager unavailable") with
+  `_check_tts_engine` that reports the actual TTS engine.
+- `requirements.txt` — removed `piper-tts>=1.4.0` and `pyttsx3>=2.90`.
+  Uninstalled both packages.
+- `backend/tests/test_domain2_voice.py` — replaced `test_piper_importable`
+  with `test_pocket_tts_importable`, removed f5-tts dependency test.
+- `backend/tests/test_voice_pipeline.py` — removed "Built-in" voice
+  check, removed f5-tts requirements test.
+- `components/dashboard/MonitorDiagnosticsPanel.tsx` — updated component
+  icon/label maps: `lfm_model` → `tts_engine`.
+
+#### `backend/agent/streaming.py` (note)
+This is **NOT dead code** — it's an active utility module extracted
+from `agent_kernel.py` to keep the kernel file focused. It provides:
+- `chunk_batcher()` — async generator that batches streaming tokens and
+  sends them as one WS message every interval (default 0.15s)
+- `extract_chunk_text()` — provider-agnostic chunk parser handling
+  OpenAI/LiteLLM chunk shape
+- `safe_stream()` — wraps a streaming iterator with silence timeout
+  (no chunks for N seconds) and total timeout to prevent UI hangs
+- `stream_and_collect()` — drains a streaming response, collecting full text
+
+### chore(gitignore): voice reference audio is user-supplied
+
+The reference audio file for Pocket-TTS voice cloning
+(`data/TOMV2.wav`) is now gitignored. Users must provide their own
+WAV file for voice cloning.
+
+- `.gitignore` — added `data/TOMV2.wav`, `data/voice_clone_ref.wav`,
+  `data/*_ref.wav`, `data/*_clone.wav`, `data/*_reference*`
+- `data/TOMV2.wav` — removed from git tracking (`git rm --cached`)
+- `data/VOICE_CLONE_README.md` (new) — instructions for users on how
+  to record and place their own reference audio (mono, 16/24-bit PCM,
+  16-24kHz, 6-30 seconds, clean recording)
+- `README.md` — updated TTS section to direct users to provide their
+  own reference file instead of assuming a default exists
+
+### docs: README updated to reflect cleanup
+
+- Voice & Audio section: removed "LFM 2.5 audio model handles complete
+  audio pipeline" claim; replaced with accurate Porcupine → faster-whisper
+  → Pocket-TTS flow
+- TTS section: removed F5-TTS and Piper references; Pocket-TTS is the
+  sole engine
+- Architecture diagram: updated voice pipeline block to show Pocket-TTS
+  instead of "F5-TTS / Piper"
+- Project structure: removed `backend/voice/` (files deleted); added
+  `backend/agent/streaming.py` and `backend/audio/` to the tree
+- Model Router description: updated to reference "tool-calling model"
+  instead of "LFM instruct"
+- Streaming Utilities: documented `backend/agent/streaming.py` as a
+  backend component
+
+---
+
 ## [Unreleased] — Caducean v2 Mitochondria-to-Mycelium — 2026-06-13
 
 ### feat: Domain 19 v2 — Caducean Engine as Mycelium mitochondrial governor
