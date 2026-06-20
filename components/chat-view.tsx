@@ -2360,7 +2360,7 @@ ${message.text}`;
                   className="flex items-center gap-2 flex-shrink-0"
                   style={{
                     borderBottom: `1px solid ${inputText ? glowColor : `${glowColor}30`}`,
-                    transform: 'translateY(-6px)',
+                    transform: 'translateY(-6.5px)',
                   }}
                 >
 
