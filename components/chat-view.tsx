@@ -2372,7 +2372,7 @@ ${message.text}`;
                     style={{
                       color: inputText.trim() ? glowColor : 'rgba(255,255,255,0.7)',
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                      border: `1px solid ${glowColor}40`,
+                      border: `1px solid ${fontColor}80`,
                       borderRadius: '9999px',
                       boxShadow: inputText.trim() ? `0 0 12px ${glowColor}30, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
                     }}
@@ -2403,7 +2403,7 @@ ${message.text}`;
                     style={{
                       color: uploadHovered ? glowColor : 'rgba(255,255,255,0.7)',
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                      border: `1px solid ${glowColor}40`,
+                      border: `1px solid ${fontColor}80`,
                       borderRadius: '9999px',
                       boxShadow: uploadHovered ? `0 0 12px ${glowColor}30, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
                     }}
@@ -2422,8 +2422,8 @@ ${message.text}`;
                     className="flex items-center justify-center w-[32px] h-[32px]"
                     style={{
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                      border: `1px solid ${glowColor}40`,
-                      borderRadius: '9999px',
+                      border: `1px solid ${fontColor}80`,
+                      borderRadius: '6px',
                       boxShadow: '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
                     }}
                   >
