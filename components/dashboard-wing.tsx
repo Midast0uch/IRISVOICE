@@ -58,6 +58,7 @@ interface DashboardWingProps {
   uiState?: UILayoutState
   onOpenChat?: () => void
   isChatOpen?: boolean
+  isBothOpen?: boolean
   initialSubApp?: string | null
   isRemoteView?: boolean
 }
@@ -74,6 +75,7 @@ export function DashboardWing({
   uiState,
   onOpenChat,
   isChatOpen = false,
+  isBothOpen = false,
   initialSubApp,
   isRemoteView = false,
 }: DashboardWingProps) {
@@ -85,6 +87,15 @@ export function DashboardWing({
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+
+  // Window width for responsive both-open layout
+  const [windowWidth, setWindowWidth] = useState(1280);
+  useEffect(() => {
+    setWindowWidth(window.innerWidth);
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // Get theme colors from BrandColorContext for real-time updates
   const brandTheme = getThemeConfig()
@@ -107,12 +118,22 @@ export function DashboardWing({
     return 560; // Balanced width (2×)
   };
 
+  const getOuterRight = () => {
+    if (isRemoteView) return 0;
+    if (isBothOpen) {
+      // Mirror the chat wing: keep the orb as a centered divider with equal gaps.
+      // Orb scale is 0.825 when both open -> radius ~72px. Extra room for 15deg tilt.
+      return windowWidth / 2 - 180 - getSpotlightWidth();
+    }
+    return 252;
+  };
+
   const getSpotlightTransform = () => {
     if (isRemoteView) return 'rotateY(0deg) rotateX(0deg)'; // Flat on mobile
     if (isInDashboardSpotlight) return 'rotateY(0deg) rotateX(0deg)'; // Flat when spotlighted
     if (isSolo) return 'rotateY(-15deg) rotateX(2deg)'; // Solo balanced: angled
     if (isInChatSpotlight) return 'rotateY(-15deg) rotateX(2deg)';
-    return 'rotateY(-15deg) rotateX(2deg)';
+    return 'rotateY(-15deg) rotateX(2deg)'; // Both open: same inward tilt as solo
   };
 
   const getSpotlightOpacity = () => {
@@ -206,7 +227,7 @@ export function DashboardWing({
           }}
           style={{
             left: isRemoteView ? 0 : undefined,
-            right: isRemoteView ? 0 : 252,
+            right: isRemoteView ? 0 : getOuterRight(),
             top: isRemoteView ? 0 : '6vh',
             width: isRemoteView ? '100vw' : getSpotlightWidth(),
             height: isRemoteView ? '100dvh' : '88vh',

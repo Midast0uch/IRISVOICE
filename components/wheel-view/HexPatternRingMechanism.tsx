@@ -323,7 +323,7 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
                 onClick={() => onSelect(index)} />
               {/* Layer 3: Hex Pattern Texture Overlay */}
               <path d={path} fill="none" stroke="url(#hex-pattern)" strokeWidth="28"
-                style={{ cursor: "pointer", pointerEvents: "auto", opacity: isSelected ? 0.35 : 0.18 }}
+                style={{ cursor: "pointer", pointerEvents: "auto", opacity: isSelected ? 0.45 : 0.28 }}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => onSelect(index)} />
               {/* Layer 4: Neon Edge Outline */}
@@ -388,7 +388,7 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
                 onClick={() => onSelect(globalIndex)} />
               {/* Layer 3: Hex Pattern Texture Overlay */}
               <path d={path} fill="none" stroke="url(#hex-pattern)" strokeWidth="22"
-                style={{ cursor: "pointer", pointerEvents: "auto", opacity: isSelected ? 0.35 : 0.18 }}
+                style={{ cursor: "pointer", pointerEvents: "auto", opacity: isSelected ? 0.45 : 0.28 }}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => onSelect(globalIndex)} />
               {/* Layer 4: Neon Edge Outline */}

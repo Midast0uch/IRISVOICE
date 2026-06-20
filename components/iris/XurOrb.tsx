@@ -69,6 +69,8 @@ export function XurOrb({
     endVoiceCommand,
     cancelVoiceCommand,
     handleSelectMain,
+    handleExpandToMain,
+    handleGoBack,
     state,
   } = useNavigation()
   const { getThemeConfig } = useBrandColor()
@@ -113,8 +115,17 @@ export function XurOrb({
   // menu's own state has been dispatched to the navigation system.
   const navLevel = state.level
   useEffect(() => {
+    // Forward to WheelView (level 3+): close menu
     if (navLevel > 2 && menuOpen) {
       setMenuOpen(false)
+    }
+    // Back to idle (level 1): close menu if open
+    else if (navLevel === 1 && menuOpen) {
+      setMenuOpen(false)
+    }
+    // At menu level (level 2): open menu if closed (e.g., after wheel-view back)
+    else if (navLevel === 2 && !menuOpen) {
+      setMenuOpen(true)
     }
   }, [navLevel, menuOpen])
 
@@ -210,11 +221,14 @@ export function XurOrb({
       return
     }
     triggerAnimation()
-    if (menuOpen) {
+    // Sync menuOpen with navigation level
+    if (state.level > 1 && menuOpen) {
       setMenuOpen(false)
+    } else if (state.level === 1 && !menuOpen) {
+      setMenuOpen(true)
     }
     onClick()
-  }, [isVoiceActive, cancelVoiceCommand, isWingsOpen, onClick, menuOpen, triggerAnimation])
+  }, [isVoiceActive, cancelVoiceCommand, isWingsOpen, onClick, menuOpen, triggerAnimation, state.level])
 
   const handleDoubleClick = useCallback(() => {
     if (isVoiceActive) {
@@ -231,7 +245,14 @@ export function XurOrb({
     e.preventDefault()
     triggerAnimation()
     if (action === 'menu') {
-      setMenuOpen((prev) => !prev)
+      // Sync menuOpen with navigation: opening menu = nav level 2, closing = level 1
+      const willOpen = !menuOpen
+      setMenuOpen(willOpen)
+      if (willOpen && state.level === 1) {
+        handleExpandToMain()
+      } else if (!willOpen && state.level > 1) {
+        handleGoBack()
+      }
       onMenuClick?.()
     } else if (action === 'voice') {
       if (isVoiceActive) {
@@ -242,7 +263,7 @@ export function XurOrb({
     } else if (action === 'chat') {
       onChatClick?.()
     }
-  }, [triggerAnimation, onMenuClick, onChatClick, isVoiceActive, startVoiceCommand, endVoiceCommand])
+  }, [triggerAnimation, onMenuClick, onChatClick, isVoiceActive, startVoiceCommand, endVoiceCommand, state.level, menuOpen, handleExpandToMain, handleGoBack])
 
   // Stop mousedown propagation on labels so the drag handler doesn't
   // intercept label clicks (which would fire handleOrbClick and cancel voice)
@@ -368,8 +389,9 @@ export function XurOrb({
           perspective: '900px',
           transformStyle: 'preserve-3d',
           overflow: 'visible',
-          zIndex: 0,
+          zIndex: 100,
           background: 'transparent',
+          position: 'relative',
         }}
         onMouseDown={handleMouseDown}
         onDoubleClick={(e) => {

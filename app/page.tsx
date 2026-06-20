@@ -236,26 +236,77 @@ export default function Home() {
       <BackdropBlur uiState={uiLayoutState} />
       
       {(state.level !== 3 || isChatOpen || isBothOpen) && (
-        /* Positioning wrapper: in Tauri, pins the orb to the center of its 680px home column */
+        /* Positioning wrapper:
+           - Only chat open: orb visible to the right of chat wing
+           - Only dashboard open: orb centered
+           - Both open: orb in the middle (on top of wings), still visible
+           - Tauri mode: pinned to center of 680px home column */
         <div
-          className={chatPanelWidth === 0 ? "absolute inset-0 flex items-center justify-center" : "fixed"}
-          style={chatPanelWidth > 0 ? {
-            left: chatPanelWidth + 340,
-            top: '50%',
-            transform: 'translateX(-50%) translateY(-50%)',
-            zIndex: (isChatOpen || isBothOpen) ? 5 : 0,
-            pointerEvents: (isChatOpen || isBothOpen) ? 'none' : 'auto',
-          } : {
-            zIndex: (isChatOpen || isBothOpen) ? 5 : 0,
-            pointerEvents: (isChatOpen || isBothOpen) ? 'none' : 'auto',
-          }}
+          className={(() => {
+            // Only chat open in browser mode: use fixed positioning to the right
+            if (chatPanelWidth === 0 && isChatOpen && !isDashboardOpen && !isBothOpen) {
+              return "fixed"
+            }
+            return "absolute inset-0 flex items-center justify-center"
+          })()}
+          style={(() => {
+            const wingsOpen = isChatOpen || isBothOpen
+            const bothOpen = isBothOpen || (isChatOpen && isDashboardOpen)
+            if (chatPanelWidth > 0) {
+              // Tauri mode: pinned to center of home column
+              return {
+                left: chatPanelWidth + 340,
+                top: '50%',
+                transform: 'translateX(-50%) translateY(-50%)',
+                zIndex: bothOpen ? 100 : wingsOpen ? 5 : 0,
+                pointerEvents: wingsOpen ? 'none' : 'auto',
+              }
+            }
+            // Browser mode: only chat open — position RIGHT NEXT to chat wing (close, not far)
+            if (isChatOpen && !isDashboardOpen && !isBothOpen) {
+              // Chat wing is at left:252, width varies (360/510/680)
+              const chatWidth = isChatSpotlight ? 680 : isDashboardSpotlight ? 360 : 510
+              // Position orb right next to chat wing with a small gap
+              const chatRight = 252 + chatWidth
+              const orbCenterX = chatRight + 120
+              return {
+                left: orbCenterX,
+                top: '50%',
+                transform: 'translateX(-50%) translateY(-50%)',
+                zIndex: 25,
+                pointerEvents: 'none',
+              }
+            }
+            // Browser mode: only dashboard open — position RIGHT NEXT to dashboard wing (close, not far)
+            if (isDashboardOpen && !isChatOpen && !isBothOpen) {
+              // Dashboard wing is at right:252, width varies (360/560/760)
+              const dashWidth = isDashboardSpotlight ? 760 : isChatSpotlight ? 360 : 560
+              const screenRight = typeof window !== 'undefined' ? window.innerWidth : 1280
+              // Position orb right next to dashboard wing with a small gap
+              const dashLeft = screenRight - 252 - dashWidth
+              const orbCenterX = dashLeft - 120
+              return {
+                left: orbCenterX,
+                top: '50%',
+                transform: 'translateX(-50%) translateY(-50%)',
+                zIndex: 25,
+                pointerEvents: 'none',
+              }
+            }
+            // Default: centered (no wings, dashboard only, or both open)
+            // When both wings are open, orb is on top (zIndex 100) so it stays visible
+            return {
+              zIndex: bothOpen ? 100 : wingsOpen ? 5 : 0,
+              pointerEvents: wingsOpen ? 'none' : 'auto',
+            }
+          })()}
         >
           <motion.div
             className="flex items-center justify-center"
             animate={{
-              scale: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.85 : 1,
-              filter: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 'blur(2px)' : 'blur(0px)',
-              opacity: uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.6 : 1,
+              scale: (isBothOpen || (isChatOpen && isDashboardOpen)) ? 0.825 : uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.7 : 1,
+              filter: (isBothOpen || (isChatOpen && isDashboardOpen)) ? 'blur(0px)' : uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 'blur(1px)' : 'blur(0px)',
+              opacity: 1,
             }}
             transition={{
               duration: 0.4,
@@ -272,6 +323,7 @@ export default function Home() {
                 size={175}
                 glowColor={glowColor}
                 wakeFlash={false}
+                uiState={uiLayoutState}
               />
               <div className="mt-12">
                 <ChatActivationGlitch
@@ -331,6 +383,7 @@ export default function Home() {
           uiState={uiLayoutState}
           onOpenChat={isDashboardOpen ? openChatFromDashboard : undefined}
           isChatOpen={isChatOpen || isBothOpen}
+          isBothOpen={isBothOpen}
           initialSubApp={pendingSubApp}
         />
       </Suspense>

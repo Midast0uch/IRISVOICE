@@ -226,7 +226,16 @@ export function ChatWing({
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-  
+
+  // Window width for responsive both-open layout
+  const [windowWidth, setWindowWidth] = useState(1280);
+  useEffect(() => {
+    setWindowWidth(window.innerWidth);
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   // TTS state
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [currentTtsMessageId, setCurrentTtsMessageId] = useState<string | null>(null);
@@ -1019,7 +1028,7 @@ ${message.text}`;
     if (isRemoteView) return 'rotateY(0deg) rotateX(0deg)';
     if (isInChatSpotlight) return 'rotateY(0deg) rotateX(0deg)';
     if (isInDashboardSpotlight) return 'rotateY(15deg) rotateX(2deg)';
-    return 'rotateY(15deg) rotateX(2deg)';
+    return 'rotateY(15deg) rotateX(2deg)'; // Both open: same inward tilt as solo
   };
 
   const getSpotlightOpacity = () => {
@@ -1048,7 +1057,15 @@ ${message.text}`;
   };
 
   // Remote/mobile view: minimized centered panel with horizontal padding, no offset, no tilt
-  const getOuterLeft = () => isRemoteView ? '12px' : 252;
+  const getOuterLeft = () => {
+    if (isRemoteView) return '12px';
+    if (isDashboardOpen) {
+      // Mirror the dashboard wing: keep the orb as a centered divider with equal gaps.
+      // Orb scale is 0.825 when both open -> radius ~72px. Extra room for 15deg tilt.
+      return windowWidth / 2 - 180 - getSpotlightWidth();
+    }
+    return 252;
+  };
   const getOuterTop = () => isRemoteView ? '16px' : '6vh';
   const getOuterHeight = () => isRemoteView ? 'calc(100dvh - 32px)' : '88vh';
   const getOuterMaxHeight = () => isRemoteView ? 'calc(100dvh - 32px)' : 'calc(100vh - 24px)';
