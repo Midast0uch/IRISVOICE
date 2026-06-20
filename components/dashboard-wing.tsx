@@ -62,7 +62,6 @@ interface DashboardWingProps {
   initialSubApp?: string | null
   isRemoteView?: boolean
   orbDiameter?: number
-  orbCenterX?: number | null
 }
 
 export function DashboardWing({
@@ -81,7 +80,6 @@ export function DashboardWing({
   initialSubApp,
   isRemoteView = false,
   orbDiameter = 175,
-  orbCenterX = null,
 }: DashboardWingProps) {
   const { voiceState } = useNavigation()
   const { getThemeConfig } = useBrandColor()
@@ -140,12 +138,14 @@ export function DashboardWing({
   const getOuterRight = () => {
     if (isRemoteView) return 0;
     if (isBothOpen) {
-      // Position so the tilted inner edge sits at proper distance from orb.
+      // DASHBOARD SPOTLIGHT: pin dashboard to right edge so it's fully visible within frame.
+      if (isInDashboardSpotlight) return 0;
+      // CHAT SPOTLIGHT: dashboard is blurred background — shift closer to right edge.
+      if (isInChatSpotlight) return 80;
+      // BALANCED: both wings meet at center with tilt formula.
       const width = getSpotlightWidth();
       const extension = getTiltExtension(width, BOTH_OPEN_TILT);
-      const orbCx = orbCenterX ?? windowWidth / 2;
-      // Right-side wing: position from the right edge toward center
-      return windowWidth - orbCx - ORB_RADIUS - ORB_WING_GAP - extension - width;
+      return windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
     }
     return 252;
   };

@@ -108,16 +108,6 @@ export default function Home() {
     return Math.max(MIN_ORB, Math.min(MAX_ORB, available))
   }
 
-  // In spotlight mode, shift the orb slightly toward the blurred wing.
-  // This pulls the spotlight wing inward (toward center) reducing off-screen spill.
-  const SPOTLIGHT_SHIFT = 100
-  const getOrbCenterX = (): number | null => {
-    if (!isBothOpen) return null
-    if (isChatSpotlight) return windowWidth / 2 + SPOTLIGHT_SHIFT
-    if (isDashboardSpotlight) return windowWidth / 2 - SPOTLIGHT_SHIFT
-    return null // balanced — orb at 50vw
-  }
-
   const orbDiameter = getOrbDiameter()
   const ORB_RADIUS = orbDiameter / 2
 
@@ -360,7 +350,36 @@ export default function Home() {
                 pointerEvents: 'none',
               }
             }
-            // Default: centered (no wings, dashboard only, or both open)
+            // BOTH OPEN IN SPOTLIGHT: position orb in the gap between spotlight wing and blurred wing
+            if (isBothOpen && (isChatSpotlight || isDashboardSpotlight)) {
+              if (isChatSpotlight) {
+                // Chat at left=0 (width=680), dashboard at right=80 (blurred, width=360)
+                // Orb sits in the gap between them
+                const chatRight = 0 + 680
+                const dashLeft = windowWidth - 80 - 360
+                const orbCenterX = (chatRight + dashLeft) / 2
+                return {
+                  left: orbCenterX,
+                  top: '50%',
+                  transform: 'translateX(-50%) translateY(-50%)',
+                  zIndex: 100,
+                  pointerEvents: 'none',
+                }
+              } else {
+                // Dashboard at right=0 (width=680), chat at left=80 (blurred, width=360)
+                const chatRight = 80 + 360
+                const dashLeft = windowWidth - 0 - 680
+                const orbCenterX = (chatRight + dashLeft) / 2
+                return {
+                  left: orbCenterX,
+                  top: '50%',
+                  transform: 'translateX(-50%) translateY(-50%)',
+                  zIndex: 100,
+                  pointerEvents: 'none',
+                }
+              }
+            }
+            // Default: centered (no wings, dashboard only, or balanced both open)
             // When both wings are open, orb is on top (zIndex 100) so it stays visible
             return {
               zIndex: bothOpen ? 100 : wingsOpen ? 5 : 0,
@@ -380,15 +399,7 @@ export default function Home() {
               ease: [0.22, 1, 0.36, 1],
             }}
           >
-            <div
-              className="flex flex-col items-center justify-center relative"
-              style={getOrbCenterX() != null ? {
-                position: 'absolute',
-                left: getOrbCenterX()!,
-                top: '50%',
-                transform: 'translate(-50%, -50%)',
-              } : undefined}
-            >
+            <div className="flex flex-col items-center justify-center relative">
               <IrisOrb
                 onClick={handleSingleClick}
                 onDoubleClick={handleDoubleClick}
@@ -441,7 +452,6 @@ export default function Home() {
           uiState={uiLayoutState}
           onOpenBrowserUrl={browseTo}
           orbDiameter={orbDiameter}
-          orbCenterX={getOrbCenterX()}
         />
       </Suspense>
 
@@ -463,7 +473,6 @@ export default function Home() {
           isBothOpen={isBothOpen}
           initialSubApp={pendingSubApp}
           orbDiameter={orbDiameter}
-          orbCenterX={getOrbCenterX()}
         />
       </Suspense>
     </main>
