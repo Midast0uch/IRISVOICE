@@ -2358,7 +2358,7 @@ ${message.text}`;
                   <motion.button
                     onClick={handleSendMessage}
                     disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
-                    className={isRemoteView ? "p-2.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"}
+                    className={isRemoteView ? "p-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 min-h-[36px] min-w-[36px] flex items-center justify-center" : "p-1.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"}
                     style={{
                       color: glowColor,
                     }}
@@ -2366,7 +2366,7 @@ ${message.text}`;
                     whileTap={isRemoteView ? undefined : (inputText.trim() ? { scale: 0.9 } : {})}
                     title="Send message"
                   >
-                    <Send size={isRemoteView ? 22 : 18} />
+                    <Send size={isRemoteView ? 18 : 15} />
                   </motion.button>
 
                   {/* Upload + hidden file input */}
@@ -2380,7 +2380,7 @@ ${message.text}`;
                   <motion.button
                     onClick={() => fileInputRef.current?.click()}
                     disabled={voiceState === 'listening'}
-                    className={isRemoteView ? "p-2.5 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"}
+                    className={isRemoteView ? "p-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0 min-h-[36px] min-w-[36px] flex items-center justify-center" : "p-1.5 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"}
                     style={{
                       color: `${fontColor}60`,
                     }}
@@ -2388,7 +2388,7 @@ ${message.text}`;
                     whileTap={isRemoteView ? undefined : { scale: 0.9 }}
                     title="Upload file"
                   >
-                    <Plus size={isRemoteView ? 22 : 18} />
+                    <Plus size={isRemoteView ? 18 : 15} />
                   </motion.button>
 
                   {/* Conversation chips */}

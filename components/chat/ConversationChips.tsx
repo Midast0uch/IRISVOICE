@@ -200,25 +200,24 @@ export function ConversationChips({
 
   return (
     <div className="relative flex-shrink-0">
-      {/* Trigger button */}
+      {/* Trigger button — minimal, no container chrome */}
       <motion.button
         ref={triggerRef}
         onClick={hasChips ? handleToggle : undefined}
-        className="flex items-center gap-1.5 px-2.5 py-1.5 transition-all duration-150 flex-shrink-0 rounded-md"
+        className="flex items-center gap-1 px-1 py-1 transition-all duration-150 flex-shrink-0"
         style={{
-          color: isOpen ? glowColor : hasChips ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.3)',
-          background: isOpen ? `${glowColor}20` : 'rgba(14,14,24,0.85)',
-          border: `1px solid ${isOpen ? `${glowColor}60` : hasChips ? `${glowColor}30` : 'rgba(255,255,255,0.08)'}`,
-          boxShadow: isOpen ? `0 0 10px ${glowColor}20` : 'none',
+          color: isOpen ? glowColor : hasChips ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.25)',
+          background: 'transparent',
+          border: 'none',
           cursor: hasChips ? 'pointer' : 'default',
-          opacity: hasChips ? 1 : 0.6,
+          opacity: hasChips ? 1 : 0.5,
         }}
         whileHover={hasChips ? { scale: 1.05 } : {}}
         whileTap={hasChips ? { scale: 0.95 } : {}}
         title={hasChips ? `Conversation history (${chips.length})` : 'No conversation history yet'}
       >
-        <AlignJustify size={14} />
-        <span className="text-[11px] font-mono leading-none">
+        <AlignJustify size={13} />
+        <span className="text-[10px] font-mono leading-none">
           {chips.length}
         </span>
       </motion.button>
