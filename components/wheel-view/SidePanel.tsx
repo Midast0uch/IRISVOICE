@@ -7,7 +7,7 @@ import { ENERGY_CYCLE } from '@/lib/timing-config'
 import { Check, Palette, ChevronRight } from "lucide-react"
 import { ConnectionLine } from "./ConnectionLine"
 // Explicitly import from wheel-view fields barrel export to avoid conflict with general fields
-import { ToggleField, SliderField, DropdownField, TextField, ColorField } from "./fields"
+import { ToggleField, SliderField, DropdownField, TextField, ColorField, MonitorInfoField } from "./fields"
 import type { Card, FieldConfig, FieldValue } from "@/types/navigation"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
@@ -297,16 +297,26 @@ export const SidePanel: React.FC<SidePanelProps> = ({
 
         case "text": {
           const isMonitor = card.id === 'analytics-card' || card.id === 'logs-card' || card.id === 'diagnostics-card'
+          if (isMonitor) {
+            return (
+              <MonitorInfoField
+                key={field.id}
+                id={field.id}
+                label={field.label}
+                value={(fieldValue as string) ?? ""}
+                glowColor={glowColor}
+              />
+            )
+          }
           return (
             <TextField
               key={field.id}
               id={field.id}
               label={field.label}
               value={(fieldValue as string) ?? ""}
-              placeholder={isMonitor ? undefined : field.placeholder}
-              onChange={isMonitor ? undefined : (value) => onValueChange(field.id, value)}
+              placeholder={field.placeholder}
+              onChange={(value) => onValueChange(field.id, value)}
               glowColor={glowColor}
-              readOnly={isMonitor}
             />
           )
         }

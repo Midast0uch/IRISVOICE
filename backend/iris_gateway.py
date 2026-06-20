@@ -3719,24 +3719,72 @@ class IRISGateway:
                 self._logger.info(f"[Session: {session_id}] Logs pushed to UI")
 
             elif section_id == "analytics":
-                # ── Gather usage stats ──────────────────────────────────
-                stats = [
-                    f"Active sessions: {len(_agent_kernel_instances)}",
-                    f"Current provider: {kernel._model_provider}",
-                    f"Reasoning model: {kernel._selected_reasoning_model or 'None'}",
-                    f"Tool model: {kernel._selected_tool_execution_model or 'None'}",
-                    f"Swarm enabled: {getattr(kernel, '_swarm_enabled', False)}",
-                    f"Endpoint: {kernel._lmstudio_endpoint}",
-                ]
-                await self._ws_manager.send_to_client(
-                    client_id,
-                    {
-                        "type": "update_field",
-                        "section_id": "analytics",
-                        "field_id": "usage_stats",
-                        "value": "\n".join(stats),
-                    },
-                )
+                # ── Gather usage stats from AnalyticsManager ─────────────
+                try:
+                    from backend.monitor.analytics import get_analytics_manager
+
+                    analytics = get_analytics_manager()
+                    all_data = analytics.get_all_analytics()
+
+                    # Send structured analytics data to frontend
+                    await self._ws_manager.send_to_client(
+                        client_id,
+                        {
+                            "type": "monitor_analytics_data",
+                            "payload": all_data,
+                        },
+                    )
+
+                    # Also send a text summary for backward compat (usage_stats field)
+                    stats = all_data.get("stats", {})
+                    models = all_data.get("models", [])
+                    summary_lines = [
+                        f"Total calls: {stats.get('total_calls', 0)}",
+                        f"Total tokens: {stats.get('total_tokens', 0):,}",
+                        f"  Prompt: {stats.get('total_prompt_tokens', 0):,}",
+                        f"  Completion: {stats.get('total_completion_tokens', 0):,}",
+                        f"  Audio: {stats.get('total_audio_tokens', 0):,}",
+                        f"Estimated cost: ${stats.get('estimated_cost', 0):.4f}",
+                        f"Avg latency: {stats.get('avg_latency_ms', 0):.1f} ms",
+                        f"Session duration: {stats.get('session_duration_minutes', 0):.1f} min",
+                        f"Models used: {len(models)}",
+                    ]
+                    for m in models[:5]:
+                        summary_lines.append(
+                            f"  {m['model']}: {m['total_tokens']:,} tokens ({m['percentage']}%)"
+                        )
+
+                    await self._ws_manager.send_to_client(
+                        client_id,
+                        {
+                            "type": "update_field",
+                            "section_id": "analytics",
+                            "field_id": "usage_stats",
+                            "value": "\n".join(summary_lines),
+                        },
+                    )
+                except Exception as analytics_err:
+                    self._logger.warning(
+                        f"[Session: {session_id}] Analytics manager error: {analytics_err}"
+                    )
+                    # Fallback to old behavior
+                    stats = [
+                        f"Active sessions: {len(_agent_kernel_instances)}",
+                        f"Current provider: {kernel._model_provider}",
+                        f"Reasoning model: {kernel._selected_reasoning_model or 'None'}",
+                        f"Tool model: {kernel._selected_tool_execution_model or 'None'}",
+                        f"Swarm enabled: {getattr(kernel, '_swarm_enabled', False)}",
+                        f"Endpoint: {kernel._lmstudio_endpoint}",
+                    ]
+                    await self._ws_manager.send_to_client(
+                        client_id,
+                        {
+                            "type": "update_field",
+                            "section_id": "analytics",
+                            "field_id": "usage_stats",
+                            "value": "\n".join(stats),
+                        },
+                    )
                 self._logger.info(f"[Session: {session_id}] Analytics pushed to UI")
 
         except Exception as e:

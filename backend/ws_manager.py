@@ -40,6 +40,7 @@ class WebSocketManager:
         self._state_manager = state_manager or get_state_manager()
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
         self._last_pong: Dict[str, datetime] = {}
+        self._last_activity: Dict[str, float] = {}
         
         logger.info(f"[WebSocketManager] Initialization complete (elapsed: {time.time() - start_time:.3f}s)")
     
@@ -167,7 +168,11 @@ class WebSocketManager:
             if client_id in self.active_connections:
                 del self.active_connections[client_id]
             return None
-    
+
+    def mark_liveness(self, client_id: str) -> None:
+        """Mark a client as active (received any inbound frame)."""
+        self._last_activity[client_id] = time.time()
+
     def disconnect(self, client_id: str):
         """Remove a client connection and dissociate from its session."""
         if client_id in self.active_connections:
@@ -190,6 +195,8 @@ class WebSocketManager:
             # Clean up pong tracking
             if client_id in self._last_pong:
                 del self._last_pong[client_id]
+            if client_id in self._last_activity:
+                del self._last_activity[client_id]
 
             logger.debug(f"Client {client_id} disconnected from session {session_id}. Total clients: {len(self.active_connections)}")
     

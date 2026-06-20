@@ -19,6 +19,7 @@ import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
+import { MonitorAnalyticsPanel } from '@/components/dashboard/MonitorAnalyticsPanel';
 import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
 import { IconRobot, IconTopologyStar3, IconBasketCog } from "@tabler/icons-react";
 import {
@@ -1142,13 +1143,17 @@ export function DarkGlassDashboard({
     <div className="flex-1 overflow-y-auto p-0">
        {!activeSubApp ? (
          <div className="w-full h-full pl-3 pr-3 py-4 space-y-2">
-           {/* DCP Stats — developer mode only, shown at top of Monitor tab */}
-           {activeTab === 'monitor' && irisMode === 'developer' && (
-             <div className="mb-2 rounded-lg border overflow-hidden" style={{ borderColor: `${glowColor}25`, background: 'rgba(255,255,255,0.015)' }}>
-               <DCPStatsPanel glowColor={glowColor} />
-             </div>
-           )}
-           {activeSections.map((section: any) => {
+            {/* DCP Stats — developer mode only, shown at top of Monitor tab */}
+            {activeTab === 'monitor' && irisMode === 'developer' && (
+              <div className="mb-2 rounded-lg border overflow-hidden" style={{ borderColor: `${glowColor}25`, background: 'rgba(255,255,255,0.015)' }}>
+                <DCPStatsPanel glowColor={glowColor} />
+              </div>
+            )}
+            {/* Monitor tab — render analytics panel instead of input fields */}
+            {activeTab === 'monitor' ? (
+              <MonitorAnalyticsPanel glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
+            ) : (
+              activeSections.map((section: any) => {
              const isExpanded = expandedSections.has(section.id);
              const sectionFields = section.fields || [];
              return (
@@ -1170,11 +1175,12 @@ export function DarkGlassDashboard({
                      </div>
                    </div>
                  )}
-               </div>
-             );
-           })}
-          </div>
-        ) : activeSubApp === 'browser' ? (
+                </div>
+              );
+            })
+            )}
+           </div>
+         ) : activeSubApp === 'browser' ? (
          <div className="w-full h-full p-4 md:px-10">
            <div className="w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
 

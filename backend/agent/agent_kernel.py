@@ -2025,6 +2025,13 @@ class AgentKernel:
             if not _reply:
                 raise RuntimeError("Empty response from API")
 
+            # Record usage with real API tokens if available
+            _elapsed = _perf_t.perf_counter() - _t0 if '_t0' in dir() else 0
+            _usage = _result.get("usage", {})
+            _ptok = _usage.get("prompt_tokens", max(1, sum(len(m.get("content", "")) for m in messages) // 4))
+            _ctok = _usage.get("completion_tokens", max(1, len(_reply) // 4))
+            self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
+
             thinking, clean = self._parse_thinking(_reply)
             return clean or "(I see.)", thinking
 
@@ -2164,6 +2171,13 @@ class AgentKernel:
 
             if not _reply:
                 raise RuntimeError("Empty response from LM Studio")
+
+            # Record usage with real API tokens if available
+            _usage = _result.get("usage", {})
+            _ptok = _usage.get("prompt_tokens", max(1, sum(len(m.get("content", "")) for m in messages) // 4))
+            _ctok = _usage.get("completion_tokens", max(1, len(_reply) // 4))
+            _elapsed_ns = _perf_t.perf_counter() - _t0 if '_t0' in dir() else 0
+            self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed_ns)
 
             thinking, clean = self._parse_thinking(_reply)
             return clean or "(I see.)", thinking

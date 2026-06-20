@@ -1857,15 +1857,31 @@ async def websocket_endpoint(
 
         while True:
             data = await websocket.receive_text()
-            message = json.loads(data)
+            logger.info(f"[WS] Received from {client_id}: {data[:200]}")
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                logger.warning(f"[WS] Invalid JSON from {client_id}: {data[:100]}")
+                continue
+
             msg_type = message.get("type", "")
 
             # Heartbeat hardening: treat any inbound frame as liveness
-            ws_manager.mark_liveness(client_id)
+            try:
+                ws_manager.mark_liveness(client_id)
+            except Exception:
+                pass  # never block the message loop
+            logger.info(f"[WS] Processing msg_type={msg_type} from {client_id}")
 
             if msg_type in _CONTROL_FRAMES:
                 # Control frames: handle immediately inline
-                await handle_message(client_id, active_session_id, message)
+                try:
+                    await handle_message(client_id, active_session_id, message)
+                except Exception as exc:
+                    logger.error(
+                        f"[WS] Error in control frame handler for {client_id}: {exc}",
+                        exc_info=True,
+                    )
             else:
                 # Long-running: dispatch to background task, preserving per-session order
                 async def _dispatch(msg: dict, sid: str, cid: str):
