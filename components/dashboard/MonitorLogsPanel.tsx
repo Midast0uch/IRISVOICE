@@ -1,9 +1,8 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { motion } from "framer-motion";
-import { AlertTriangle, Info, Bug, RefreshCw } from "lucide-react";
-import { Xur } from "@/components/Xur";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { AlertTriangle, Info, Bug, RefreshCw, Search, X, Filter, ArrowDown, Terminal } from "lucide-react";
 
 interface MonitorLogsPanelProps {
   glowColor?: string;
@@ -11,287 +10,410 @@ interface MonitorLogsPanelProps {
   sendMessage?: (type: string, payload?: any) => boolean;
 }
 
-// ── Log line parser ──────────────────────────────────────────────────────────
+type LogLevel = "ALL" | "INFO" | "WARNING" | "ERROR" | "DEBUG";
 
-interface ParsedLogLine {
+interface LogEntry {
   timestamp: string;
-  level: "ERROR" | "WARN" | "INFO" | "DEBUG" | "UNKNOWN";
-  text: string;
-  raw: string;
+  level: string;
+  source: string;
+  message: string;
 }
 
-function parseLogLine(line: string): ParsedLogLine {
-  // Try to extract timestamp and level from common log formats
-  // Format 1: "2024-01-15 10:30:45 - ERROR - message"
-  // Format 2: "[10:30:45] ERROR message"
-  // Format 3: "10:30:45 ERROR message"
-  const tsMatch = line.match(/^(\[?[\d:/\s-:]+\]?)/);
-  const levelMatch = line.match(/\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE|CRITICAL|FATAL)\b/i);
+// ── Log entry colors ─────────────────────────────────────────────────────────
 
-  const timestamp = tsMatch ? tsMatch[1].replace(/[\[\]]/g, "") : "";
-  const rawLevel = levelMatch ? levelMatch[1].toUpperCase() : "UNKNOWN";
-  const level = rawLevel === "WARNING" ? "WARN" : rawLevel === "TRACE" || rawLevel === "CRITICAL" || rawLevel === "FATAL" ? "ERROR" : (rawLevel as any);
-
-  // Remove timestamp and level from the text
-  let text = line;
-  if (tsMatch) text = text.replace(tsMatch[0], "").replace(/^[\s\-\]]+/, "");
-  if (levelMatch) text = text.replace(levelMatch[0], "").replace(/^[\s\-\]]+/, "");
-
-  return { timestamp, level, text: text || line, raw: line };
+function getLevelStyle(level: string) {
+  const lvl = level.toUpperCase();
+  if (lvl === "ERROR" || lvl === "CRITICAL" || lvl === "FATAL") {
+    return { color: "#ef4444", bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.15)" };
+  }
+  if (lvl === "WARN" || lvl === "WARNING") {
+    return { color: "#fbbf24", bg: "rgba(251,191,36,0.08)", border: "rgba(251,191,36,0.15)" };
+  }
+  if (lvl === "DEBUG" || lvl === "TRACE") {
+    return { color: "#a78bfa", bg: "rgba(167,139,250,0.08)", border: "rgba(167,139,250,0.15)" };
+  }
+  return { color: glowColorVal, bg: "rgba(34,197,94,0.06)", border: "rgba(34,197,94,0.12)" };
 }
 
-function getLevelColor(level: string, glowColor: string): string {
-  switch (level) {
-    case "ERROR":
-    case "CRITICAL":
-    case "FATAL":
-      return "#ef4444";
-    case "WARN":
-    case "WARNING":
-      return "#fbbf24";
-    case "INFO":
-      return glowColor;
-    case "DEBUG":
-    case "TRACE":
-      return "rgba(255,255,255,0.35)";
-    default:
-      return "rgba(255,255,255,0.5)";
+const glowColorVal = "#22c55e";
+
+// ── Format timestamp ──────────────────────────────────────────────────────────
+
+function formatTs(ts: string): string {
+  if (!ts) return "--:--:--";
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts.slice(11, 19) || ts.slice(-8) || "--:--:--";
+    return d.toTimeString().slice(0, 8);
+  } catch {
+    return ts.slice(-8) || "--:--:--";
   }
 }
 
-function getLevelIcon(level: string) {
-  switch (level) {
-    case "ERROR":
-    case "CRITICAL":
-    case "FATAL":
-      return AlertTriangle;
-    case "WARN":
-    case "WARNING":
-      return AlertTriangle;
-    case "INFO":
-      return Info;
-    case "DEBUG":
-    case "TRACE":
-      return Bug;
-    default:
-      return Info;
-  }
+// ── Single log line ───────────────────────────────────────────────────────────
+
+function LogLine({ entry, glowColor }: { entry: LogEntry; glowColor: string }) {
+  const style = useMemo(() => {
+    const lvl = entry.level.toUpperCase();
+    if (lvl.includes("ERROR") || lvl.includes("CRITICAL") || lvl.includes("FATAL")) {
+      return { color: "#f87171", bar: "#ef4444" };
+    }
+    if (lvl.includes("WARN")) {
+      return { color: "#fbbf24", bar: "#fbbf24" };
+    }
+    if (lvl.includes("DEBUG") || lvl.includes("TRACE")) {
+      return { color: "#a78bfa", bar: "#a78bfa" };
+    }
+    return { color: "rgba(255,255,255,0.7)", bar: glowColor };
+  }, [entry.level, glowColor]);
+
+  return (
+    <div
+      className="group flex items-start gap-2 py-1.5 px-3 hover:bg-white/[0.03] transition-colors border-b border-white/[0.02] min-w-0"
+    >
+      {/* Color bar */}
+      <div
+        className="w-[2px] self-stretch rounded-full flex-shrink-0 opacity-60 group-hover:opacity-100 transition-opacity"
+        style={{ background: style.bar }}
+      />
+
+      {/* Timestamp */}
+      <span className="text-[10px] text-white/30 tabular-nums flex-shrink-0 leading-tight pt-[1px]">
+        {formatTs(entry.timestamp)}
+      </span>
+
+      {/* Level badge */}
+      <span
+        className="text-[9px] font-bold uppercase tracking-wider flex-shrink-0 leading-tight pt-[1px] w-[44px]"
+        style={{ color: style.color }}
+      >
+        {entry.level}
+      </span>
+
+      {/* Source */}
+      {entry.source && (
+        <span className="text-[9px] text-white/25 uppercase tracking-wider flex-shrink-0 leading-tight pt-[1px] w-[50px] truncate">
+          {entry.source}
+        </span>
+      )}
+
+      {/* Message */}
+      <span className="text-[10px] text-white/60 leading-snug break-words min-w-0 flex-1 font-mono">
+        {entry.message}
+      </span>
+    </div>
+  );
 }
 
-// ── Log Section ──────────────────────────────────────────────────────────────
+// ── Log section (scrollable) ──────────────────────────────────────────────────
 
 function LogSection({
   title,
   icon: Icon,
-  logs,
+  entries,
   glowColor,
   loading,
   onRefresh,
+  emptyMsg,
+  defaultLevelFilter = "ALL" as LogLevel,
+  accentColor,
 }: {
   title: string;
   icon: any;
-  logs: string;
+  entries: LogEntry[];
   glowColor: string;
   loading: boolean;
   onRefresh: () => void;
+  emptyMsg: string;
+  defaultLevelFilter?: LogLevel;
+  accentColor?: string;
 }) {
+  const [search, setSearch] = useState("");
+  const [levelFilter, setLevelFilter] = useState<LogLevel>(defaultLevelFilter);
+  const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const lines = logs ? logs.split("\n").filter((l) => l.trim()) : [];
-  const parsed = lines.map(parseLogLine);
 
-  // Auto-scroll to bottom (latest logs)
+  // Filter entries
+  const filtered = useMemo(() => {
+    let result = entries;
+    if (levelFilter !== "ALL") {
+      result = result.filter((e) => {
+        const lvl = e.level.toUpperCase();
+        if (levelFilter === "INFO") return lvl.includes("INFO") || (!lvl.includes("ERROR") && !lvl.includes("WARN") && !lvl.includes("DEBUG"));
+        return lvl.includes(levelFilter);
+      });
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter(
+        (e) =>
+          e.message.toLowerCase().includes(q) ||
+          e.source.toLowerCase().includes(q) ||
+          e.level.toLowerCase().includes(q)
+      );
+    }
+    return result;
+  }, [entries, levelFilter, search]);
+
+  // Auto-scroll to bottom
   useEffect(() => {
-    if (scrollRef.current) {
+    if (autoScroll && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [logs]);
+  }, [filtered, autoScroll]);
+
+  // Count by level
+  const counts = useMemo(() => {
+    const c = { ERROR: 0, WARNING: 0, INFO: 0, DEBUG: 0 };
+    entries.forEach((e) => {
+      const lvl = e.level.toUpperCase();
+      if (lvl.includes("ERROR")) c.ERROR++;
+      else if (lvl.includes("WARN")) c.WARNING++;
+      else if (lvl.includes("DEBUG")) c.DEBUG++;
+      else c.INFO++;
+    });
+    return c;
+  }, [entries]);
+
+  const sectionColor = accentColor || glowColor;
 
   return (
     <div
-      className="rounded-lg border overflow-hidden flex flex-col"
+      className="rounded-md border overflow-hidden min-w-0 flex flex-col"
       style={{
-        borderColor: `${glowColor}12`,
-        background: "linear-gradient(180deg, rgba(3,4,10,0.8) 0%, rgba(6,7,14,0.6) 100%)",
+        borderColor: `${sectionColor}15`,
+        background: `linear-gradient(180deg, rgba(5,5,12,0.5) 0%, rgba(8,9,16,0.3) 100%)`,
       }}
     >
-      {/* Section header */}
+      {/* Header row */}
       <div
         className="flex items-center justify-between px-3 py-2 border-b flex-shrink-0"
-        style={{ borderColor: `${glowColor}08` }}
+        style={{ borderColor: `${sectionColor}10` }}
       >
-        <div className="flex items-center gap-1.5">
-          <Icon size={11} style={{ color: glowColor }} />
-          <span className="text-[10px] font-bold uppercase tracking-wider text-white/50">{title}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <Icon size={11} style={{ color: sectionColor }} />
+          <span className="text-[10px] font-bold uppercase tracking-wider text-white/60 truncate">
+            {title}
+          </span>
           <span
-            className="text-[9px] tabular-nums px-1.5 py-0.5 rounded-full"
-            style={{ background: `${glowColor}10`, color: `${glowColor}90` }}
+            className="text-[9px] tabular-nums px-1.5 py-0.5 rounded-full flex-shrink-0"
+            style={{ background: `${sectionColor}15`, color: sectionColor }}
           >
-            {parsed.length}
+            {filtered.length}
           </span>
         </div>
-        <button
-          onClick={onRefresh}
-          className="p-0.5 rounded hover:bg-white/5 transition-colors"
-          title="Refresh"
-        >
-          <RefreshCw size={10} className="text-white/30 hover:text-white/60" />
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {counts.ERROR > 0 && (
+            <span className="text-[8px] font-bold px-1 rounded" style={{ color: "#f87171", background: "rgba(239,68,68,0.1)" }}>
+              {counts.ERROR}E
+            </span>
+          )}
+          {counts.WARNING > 0 && (
+            <span className="text-[8px] font-bold px-1 rounded" style={{ color: "#fbbf24", background: "rgba(251,191,36,0.1)" }}>
+              {counts.WARNING}W
+            </span>
+          )}
+          <button
+            onClick={onRefresh}
+            className="p-1 rounded hover:bg-white/5 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw size={10} className="text-white/40 hover:text-white/70" />
+          </button>
+        </div>
       </div>
 
-      {/* Log content — terminal style */}
+      {/* Filter bar */}
+      <div
+        className="flex items-center gap-1.5 px-2 py-1.5 border-b flex-shrink-0"
+        style={{ borderColor: `${sectionColor}08` }}
+      >
+        {/* Level chips */}
+        {(["ALL", "ERROR", "WARNING", "INFO", "DEBUG"] as LogLevel[]).map((lvl) => {
+          const isActive = levelFilter === lvl;
+          const chipColor =
+            lvl === "ERROR" ? "#ef4444" :
+            lvl === "WARNING" ? "#fbbf24" :
+            lvl === "DEBUG" ? "#a78bfa" :
+            sectionColor;
+          return (
+            <button
+              key={lvl}
+              onClick={() => setLevelFilter(lvl)}
+              className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded transition-colors"
+              style={{
+                background: isActive ? `${chipColor}20` : "rgba(255,255,255,0.03)",
+                color: isActive ? chipColor : "rgba(255,255,255,0.4)",
+                border: `1px solid ${isActive ? chipColor + "40" : "rgba(255,255,255,0.05)"}`,
+              }}
+            >
+              {lvl}
+            </button>
+          );
+        })}
+
+        {/* Search */}
+        <div className="flex-1 min-w-0 relative ml-1">
+          <Search size={9} className="absolute left-1.5 top-1/2 -translate-y-1/2 text-white/25" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter..."
+            className="w-full bg-white/[0.03] border border-white/[0.05] rounded pl-5 pr-5 py-0.5 text-[9px] text-white/70 placeholder:text-white/20 focus:outline-none focus:border-white/10"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-white/5"
+            >
+              <X size={9} className="text-white/30" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Scrollable log area */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto scrollbar-hide max-h-[200px] min-h-[60px] relative"
-        style={{
-          background: "rgba(0,0,0,0.3)",
-        }}
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-hide"
+        style={{ maxHeight: "240px" }}
       >
-        {/* Scanline overlay */}
-        <div
-          className="absolute inset-0 pointer-events-none z-10"
-          style={{
-            background: `repeating-linear-gradient(
-              0deg,
-              transparent,
-              transparent 2px,
-              ${glowColor}02 2px,
-              ${glowColor}02 3px
-            )`,
-          }}
-        />
-
-        {loading && parsed.length === 0 ? (
-          <div className="flex items-center justify-center py-6">
-            <Xur size={20} color={glowColor} speed={1.5} />
+        {loading && entries.length === 0 ? (
+          <div className="flex items-center justify-center py-8">
+            <span className="text-[10px] text-white/30">Loading logs...</span>
           </div>
-        ) : parsed.length === 0 ? (
-          <div className="flex items-center justify-center py-6">
-            <span className="text-[10px] text-white/20 italic">No logs available</span>
+        ) : filtered.length === 0 ? (
+          <div className="flex items-center justify-center py-8">
+            <span className="text-[10px] text-white/30 italic">{emptyMsg}</span>
           </div>
         ) : (
-          <div className="font-mono text-[10px] leading-relaxed p-2 space-y-0.5 relative z-20">
-            {parsed.map((line, i) => {
-              const LevelIcon = getLevelIcon(line.level);
-              const color = getLevelColor(line.level, glowColor);
-              return (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ duration: 0.15, delay: Math.min(i * 0.01, 0.3) }}
-                  className="flex items-start gap-1.5 py-0.5"
-                >
-                  {/* Line number */}
-                  <span className="text-white/15 tabular-nums select-none w-[24px] flex-shrink-0 text-right">
-                    {i + 1}
-                  </span>
-
-                  {/* Level icon */}
-                  <LevelIcon
-                    size={9}
-                    style={{ color, marginTop: 2, flexShrink: 0 }}
-                  />
-
-                  {/* Timestamp */}
-                  {line.timestamp && (
-                    <span className="text-white/25 tabular-nums flex-shrink-0">{line.timestamp}</span>
-                  )}
-
-                  {/* Log text */}
-                  <span
-                    className="break-all whitespace-pre-wrap"
-                    style={{ color }}
-                  >
-                    {line.text}
-                  </span>
-                </motion.div>
-              );
-            })}
-          </div>
+          filtered.map((entry, i) => (
+            <LogLine key={`${entry.timestamp}-${i}`} entry={entry} glowColor={glowColor} />
+          ))
         )}
+      </div>
+
+      {/* Footer with auto-scroll toggle */}
+      <div
+        className="flex items-center justify-between px-2 py-1 border-t flex-shrink-0"
+        style={{ borderColor: `${sectionColor}08` }}
+      >
+        <button
+          onClick={() => setAutoScroll(!autoScroll)}
+          className="flex items-center gap-1 text-[8px] uppercase tracking-wider font-bold transition-colors"
+          style={{ color: autoScroll ? sectionColor : "rgba(255,255,255,0.3)" }}
+        >
+          <ArrowDown size={8} className={autoScroll ? "" : "opacity-40"} />
+          Auto-scroll {autoScroll ? "ON" : "OFF"}
+        </button>
+        <span className="text-[8px] text-white/25 tabular-nums">
+          {entries.length} total
+        </span>
       </div>
     </div>
   );
 }
 
-// ── Main Panel ───────────────────────────────────────────────────────────────
+// ── Main Logs Panel ───────────────────────────────────────────────────────────
 
-export function MonitorLogsPanel({ glowColor = "#00d4ff", fontColor = "white", sendMessage }: MonitorLogsPanelProps) {
-  const [systemLogs, setSystemLogs] = useState("");
-  const [errorLogs, setErrorLogs] = useState("");
+export function MonitorLogsPanel({
+  glowColor = "#22c55e",
+  fontColor,
+  sendMessage,
+}: MonitorLogsPanelProps) {
+  const [systemLogs, setSystemLogs] = useState<LogEntry[]>([]);
+  const [errorLogs, setErrorLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   const requestData = useCallback(() => {
-    setLoading(true);
     if (sendMessage) {
-      sendMessage("confirm_card", { section_id: "logs", values: {} });
+      sendMessage("confirm_card", {
+        section_id: "logs",
+        card_id: "logs_refresh",
+        action: "refresh",
+        values: {},
+      });
     }
   }, [sendMessage]);
 
-  // Listen for update_field messages for logs
+  // Handle incoming field updates
   useEffect(() => {
-    const handler = (e: Event) => {
-      const ce = e as CustomEvent;
-      const { type, payload } = ce.detail || {};
+    const handler = (event: any) => {
+      const detail = event.detail;
+      if (!detail) return;
+      if (detail.type !== "update_field") return;
+      const payload = detail.payload || {};
+      const fieldId = payload.field_id;
+      const value = payload.value;
 
-      if (type === "update_field") {
-        const p = payload || {};
-        if (p.section_id === "logs" || p.field_id === "system_logs") {
-          if (p.field_id === "system_logs") {
-            setSystemLogs(p.value || "");
+      if (fieldId === "system_logs" && value) {
+        try {
+          const parsed = typeof value === "string" ? JSON.parse(value) : value;
+          if (Array.isArray(parsed)) {
+            setSystemLogs(parsed);
             setLoading(false);
-          } else if (p.field_id === "error_logs") {
-            setErrorLogs(p.value || "");
           }
+        } catch {
+          // Fallback: treat as raw text, wrap in single entry
+          const lines = (value as string).split("\n").filter((l: string) => l.trim());
+          setSystemLogs(
+            lines.map((l: string) => ({
+              timestamp: "",
+              level: l.toUpperCase().includes("ERROR") ? "ERROR" : "INFO",
+              source: "system",
+              message: l,
+            }))
+          );
+          setLoading(false);
+        }
+      }
+      if (fieldId === "error_logs" && value) {
+        try {
+          const parsed = typeof value === "string" ? JSON.parse(value) : value;
+          if (Array.isArray(parsed)) {
+            setErrorLogs(parsed);
+          }
+        } catch {
+          // ignore parse errors for error logs
         }
       }
     };
-
-    window.addEventListener("iris:ws_message", handler as EventListener);
-    return () => window.removeEventListener("iris:ws_message", handler as EventListener);
+    window.addEventListener("iris:ws_message", handler);
+    return () => window.removeEventListener("iris:ws_message", handler);
   }, []);
 
-  // Auto-request on mount + refresh every 15s
+  // Request on mount
   useEffect(() => {
     requestData();
-    const interval = setInterval(requestData, 15000);
-    return () => clearInterval(interval);
   }, [requestData]);
 
   return (
-    <div className="w-full h-full overflow-y-auto overflow-x-hidden p-2 space-y-2 scrollbar-hide antialiased">
-      {/* Minimal refresh */}
-      <div className="flex justify-end">
-        <button
-          onClick={requestData}
-          className="p-0.5 rounded hover:bg-white/5 transition-colors"
-          title="Refresh"
-        >
-          <RefreshCw size={10} className="text-white/40 hover:text-white/70" />
-        </button>
-      </div>
-
-      {/* System Logs */}
+    <div className="w-full h-full flex flex-col gap-2 p-2 overflow-hidden antialiased">
+      {/* System Output */}
       <LogSection
         title="System Output"
-        icon={Info}
-        logs={systemLogs}
+        icon={Terminal}
+        entries={systemLogs}
         glowColor={glowColor}
         loading={loading}
         onRefresh={requestData}
+        emptyMsg="No system output recorded"
+        defaultLevelFilter="ALL"
       />
 
-      {/* Error Logs */}
+      {/* Error Stream */}
       <LogSection
         title="Error Stream"
         icon={AlertTriangle}
-        logs={errorLogs || systemLogs}
-        glowColor={glowColor}
+        entries={errorLogs}
+        glowColor="#ef4444"
         loading={loading}
         onRefresh={requestData}
+        emptyMsg="No errors or warnings — all systems nominal"
+        defaultLevelFilter="ALL"
+        accentColor="#ef4444"
       />
     </div>
   );
 }
-
-export default MonitorLogsPanel;

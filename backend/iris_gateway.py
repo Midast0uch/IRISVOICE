@@ -3677,46 +3677,74 @@ class IRISGateway:
                 self._logger.info(f"[Session: {session_id}] Diagnostics pushed to UI")
 
             elif section_id == "logs":
-                # ── Read backend logs ───────────────────────────────────
-                log_lines = []
+                # ── Read structured logs from LogManager ──────────────
+                import json
                 try:
-                    from pathlib import Path
+                    from backend.monitor.logs import get_log_manager
 
-                    project_dir = Path(__file__).parent.parent.resolve()
-                    err_file = project_dir / "backend_test.err"
-                    if err_file.exists():
-                        with open(
-                            err_file, "r", encoding="utf-8", errors="ignore"
-                        ) as f:
-                            tail = f.readlines()[-30:]
-                        log_lines.extend([l.strip() for l in tail if l.strip()])
-                    else:
-                        log_lines.append("No backend_test.err found.")
+                    log_mgr = get_log_manager()
+
+                    # System logs (INFO + DEBUG)
+                    system_logs = log_mgr.get_logs(source="system", limit=50)
+                    # Also pull in voice/mcp/agent as system context
+                    for src in ("voice", "mcp", "agent"):
+                        system_logs.extend(log_mgr.get_logs(source=src, limit=15))
+                    system_logs.sort(key=lambda l: l.get("timestamp", ""), reverse=True)
+                    system_logs = system_logs[:50]
+
+                    # Error / warning logs (across all sources)
+                    error_logs = []
+                    for src in ("system", "voice", "mcp", "agent"):
+                        error_logs.extend(log_mgr.get_logs(source=src, level="ERROR", limit=25))
+                        error_logs.extend(log_mgr.get_logs(source=src, level="WARNING", limit=15))
+                    error_logs.sort(key=lambda l: l.get("timestamp", ""), reverse=True)
+                    error_logs = error_logs[:40]
+
+                    # If LogManager is empty, fall back to reading the err file
+                    if not system_logs:
+                        from pathlib import Path
+                        project_dir = Path(__file__).parent.parent.resolve()
+                        err_file = project_dir / "backend_test.err"
+                        if err_file.exists():
+                            with open(err_file, "r", encoding="utf-8", errors="ignore") as f:
+                                tail = f.readlines()[-30:]
+                            for line in tail:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                lvl = "ERROR" if any(k in line.upper() for k in ("ERROR", "EXCEPTION", "TRACEBACK", "FAILED")) else "INFO"
+                                system_logs.append({
+                                    "timestamp": "",
+                                    "level": lvl,
+                                    "source": "system",
+                                    "message": line,
+                                })
+                            if not error_logs:
+                                error_logs = [l for l in system_logs if l["level"] == "ERROR"]
+
                 except Exception as e:
-                    log_lines.append(f"Error reading logs: {e}")
+                    system_logs = [{"timestamp": "", "level": "ERROR", "source": "system", "message": f"LogManager unavailable: {e}"}]
+                    error_logs = []
 
-                log_text = "\n".join(log_lines[-20:])
                 await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "update_field",
                         "section_id": "logs",
                         "field_id": "system_logs",
-                        "value": log_text,
+                        "value": json.dumps(system_logs),
                     },
                 )
-
-                # Error logs — same file for now, could be filtered
                 await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "update_field",
                         "section_id": "logs",
                         "field_id": "error_logs",
-                        "value": log_text,
+                        "value": json.dumps(error_logs),
                     },
                 )
-                self._logger.info(f"[Session: {session_id}] Logs pushed to UI")
+                self._logger.info(f"[Session: {session_id}] Logs pushed to UI ({len(system_logs)} system, {len(error_logs)} errors)")
 
             elif section_id == "analytics":
                 # ── Gather usage stats from AnalyticsManager ─────────────
