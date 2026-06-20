@@ -207,7 +207,7 @@ export function ConversationChips({
         onClick={hasChips ? handleToggle : undefined}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
-        className="relative flex items-center px-1 py-1 transition-all duration-150 flex-shrink-0"
+        className="relative flex items-center justify-center w-full h-full transition-all duration-150 flex-shrink-0"
         style={{
           color: isOpen ? glowColor : hasChips ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.25)',
           background: 'transparent',
@@ -219,14 +219,17 @@ export function ConversationChips({
         whileTap={hasChips ? { scale: 0.95 } : {}}
         title={hasChips ? `Conversation history (${chips.length})` : 'No conversation history yet'}
       >
-        <AlignJustify size={13} />
+        <AlignJustify size={16} />
       </motion.button>
 
-      {/* Hover pill — shows chip count, positioned to the right of the icon */}
+      {/* Hover pill — shows chip count, positioned above and slightly right */}
       {hasChips && hovered && (
         <span
-          className="absolute top-1/2 -translate-y-1/2 left-full ml-1 text-[8px] font-semibold tracking-wide whitespace-nowrap px-1.5 py-px pointer-events-none z-50"
+          className="absolute text-[8px] font-semibold tracking-wide whitespace-nowrap px-1.5 py-px pointer-events-none z-50"
           style={{
+            bottom: 'calc(100% + 4px)',
+            left: '50%',
+            transform: 'translateX(-20%)',
             background: isOpen ? `${glowColor}25` : 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
             border: `1px solid ${isOpen ? `${glowColor}50` : `${glowColor}15`}`,
             borderRadius: '9999px',

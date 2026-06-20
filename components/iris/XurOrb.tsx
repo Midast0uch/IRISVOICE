@@ -107,7 +107,8 @@ export function XurOrb({
   const isError = voiceState === "error"
   const isWingsOpen =
     uiState === UILayoutState.UI_STATE_CHAT_OPEN ||
-    uiState === UILayoutState.UI_STATE_BOTH_OPEN
+    uiState === UILayoutState.UI_STATE_BOTH_OPEN ||
+    uiState === UILayoutState.UI_STATE_DASHBOARD_OPEN
 
   // Sync menuOpen with navigation level — menu is only open at level 2.
   // When navigating forward to level 3 (WheelView), menu closes.

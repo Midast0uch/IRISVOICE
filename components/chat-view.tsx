@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink } from 'lucide-react';
-import { IconArrowBigRightLines, IconRowInsertTop } from '@tabler/icons-react';
+import { Icon } from '@iconify/react';
+import { IconArrowBigRightLines } from '@tabler/icons-react';
 import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
 import { useBrandColor } from "@/contexts/BrandColorContext";
@@ -263,6 +264,7 @@ export function ChatWing({
   // Conversation chips — input focus state (chips slide away on focus)
   const { isDeveloper } = useLauncherMode()
   const [isInputFocused, setIsInputFocused] = useState(false)
+  const [uploadHovered, setUploadHovered] = useState(false)
 
   // Suggestion pills — populated from text_response WS payload, cleared on send or dismiss
   const [currentSuggestions, setCurrentSuggestions] = useState<Suggestion[]>([])
@@ -2309,7 +2311,7 @@ ${message.text}`;
                 )}
               </AnimatePresence>
 
-              <div className={isRemoteView ? "relative flex items-end gap-6 px-1" : "relative flex items-end gap-6"} style={{ marginRight: '4px' }}>
+                <div className={isRemoteView ? "relative flex items-end gap-2 px-1" : "relative flex items-end gap-2"} style={{ marginRight: '4px' }}>
                 <div className="flex-1 relative">
                   <textarea
                     ref={inputRef as any}
@@ -2332,7 +2334,7 @@ ${message.text}`;
                     onBlur={() => setIsInputFocused(false)}
                     placeholder={voiceState === 'listening' ? 'Listening...' : 'Type command or drop file...'}
                     disabled={voiceState === 'listening'}
-                    className={isRemoteView ? "w-full bg-transparent border-0 border-b py-3 pr-2 text-[16px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] scrollbar-hide" : "w-full bg-transparent border-0 border-b py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"}
+                    className={isRemoteView ? "w-full bg-transparent border-0 py-3 pr-2 text-[16px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] scrollbar-hide" : "w-full bg-transparent border-0 py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"}
                     rows={1}
                     style={{
                       borderColor: isDraggingFile ? glowColor : inputText ? glowColor : `${glowColor}30`,
@@ -2353,58 +2355,78 @@ ${message.text}`;
                   )}
                 </div>
 
-                {/* Action Bar — pill container with dividers */}
-                <div className={isRemoteView ? "flex items-center gap-1 mb-2" : "flex items-center justify-center mb-2"}>
+                {/* Pill icons — bottom border matches textarea glow line */}
+                <div
+                  className="flex items-center gap-2 flex-shrink-0"
+                  style={{
+                    borderBottom: `1px solid ${inputText ? glowColor : `${glowColor}30`}`,
+                    transform: 'translateY(-6px)',
+                  }}
+                >
+
+                  {/* Send pill — glows when text is entered */}
+                  <motion.button
+                    onClick={handleSendMessage}
+                    disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
+                    className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                    style={{
+                      color: inputText.trim() ? glowColor : 'rgba(255,255,255,0.7)',
+                      background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                      border: `1px solid ${glowColor}40`,
+                      borderRadius: '9999px',
+                      boxShadow: inputText.trim() ? `0 0 12px ${glowColor}30, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+                    }}
+                    whileHover={{ scale: 1.08 }}
+                    whileTap={{ scale: 0.92 }}
+                    title="Send message"
+                  >
+                    <IconArrowBigRightLines size={16} />
+                  </motion.button>
+
+                  {/* Divider */}
+                  <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
+
+                  {/* Upload pill — glows on hover */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    onChange={handleFileInputChange}
+                    className="hidden"
+                    accept="*/*"
+                  />
+                  <motion.button
+                    onClick={() => fileInputRef.current?.click()}
+                    onMouseEnter={() => setUploadHovered(true)}
+                    onMouseLeave={() => setUploadHovered(false)}
+                    disabled={voiceState === 'listening'}
+                    className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                    style={{
+                      color: uploadHovered ? glowColor : 'rgba(255,255,255,0.7)',
+                      background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                      border: `1px solid ${glowColor}40`,
+                      borderRadius: '9999px',
+                      boxShadow: uploadHovered ? `0 0 12px ${glowColor}30, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+                    }}
+                    whileHover={{ scale: 1.08 }}
+                    whileTap={{ scale: 0.92 }}
+                    title="Upload file"
+                  >
+                    <Icon icon="material-symbols:arrow-upload-progress" size={18} />
+                  </motion.button>
+
+                  {/* Divider */}
+                  <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
+
+                  {/* Conversation chips pill */}
                   <div
-                    className="flex items-center gap-0"
+                    className="flex items-center justify-center w-[32px] h-[32px]"
                     style={{
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                      border: `1px solid ${glowColor}15`,
-                      padding: '5px 14px',
+                      border: `1px solid ${glowColor}40`,
                       borderRadius: '9999px',
-                      boxShadow: `0 1px 16px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.03)`,
+                      boxShadow: '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
                     }}
                   >
-                    {/* Send button */}
-                    <motion.button
-                      onClick={handleSendMessage}
-                      disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
-                      className="p-1.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                      style={{ color: glowColor }}
-                      whileHover={inputText.trim() ? { scale: 1.1 } : {}}
-                      whileTap={inputText.trim() ? { scale: 0.9 } : {}}
-                      title="Send message"
-                    >
-                      <IconArrowBigRightLines size={16} />
-                    </motion.button>
-
-                    {/* Divider */}
-                    <div className="w-px h-4 mx-1" style={{ background: `${glowColor}40` }} />
-
-                    {/* Upload + hidden file input */}
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      onChange={handleFileInputChange}
-                      className="hidden"
-                      accept="*/*"
-                    />
-                    <motion.button
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={voiceState === 'listening'}
-                      className="p-1.5 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                      style={{ color: glowColor }}
-                      whileHover={{ scale: 1.1 }}
-                      whileTap={{ scale: 0.9 }}
-                      title="Upload file"
-                    >
-                      <IconRowInsertTop size={15} />
-                    </motion.button>
-
-                    {/* Divider */}
-                    <div className="w-px h-4 mx-1" style={{ background: `${glowColor}40` }} />
-
-                    {/* Conversation chips */}
                     <ConversationChips
                       chips={conversationChips}
                       glowColor={glowColor}
