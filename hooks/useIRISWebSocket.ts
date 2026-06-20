@@ -956,7 +956,11 @@ export function useIRISWebSocket(
       case "local_model_loading":
       case "gguf_download_progress":
       case "model_pin_updated":
-      case "hf_models_list": {
+      case "hf_models_list":
+      // ── Monitor analytics ─────────────────────────────────────────────────
+      case "monitor_analytics_data":
+      // ── Field updates for side panel cards ─────────────────────────────────
+      case "update_field": {
         // Forward to any panel that listens on iris:ws_message
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:ws_message', {

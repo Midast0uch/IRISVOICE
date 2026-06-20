@@ -234,7 +234,7 @@ export function MonitorAnalyticsPanel({ glowColor = "#00d4aa", fontColor = "whit
     return (
       <div className="w-full h-full flex items-center justify-center p-8">
         <div className="flex flex-col items-center gap-3">
-          <Xur size={48} color={glowColor} speed={1.2} />
+          <Xur size={28} color={glowColor} speed={1.2} />
           <span className="text-[11px] text-white/40">Loading analytics...</span>
         </div>
       </div>

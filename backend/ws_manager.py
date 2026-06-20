@@ -173,6 +173,16 @@ class WebSocketManager:
         """Mark a client as active (received any inbound frame)."""
         self._last_activity[client_id] = time.time()
 
+    async def flush_pending(self, session_id: str, client_id: str) -> None:
+        """Flush any buffered undelivered messages for a session/client.
+
+        Currently a no-op — the pending delivery queue is not yet implemented.
+        This method is called after get_state() for guaranteed delivery of
+        any state change events that were buffered while the client was
+        disconnected.
+        """
+        pass
+
     def disconnect(self, client_id: str):
         """Remove a client connection and dissociate from its session."""
         if client_id in self.active_connections:

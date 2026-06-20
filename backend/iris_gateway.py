@@ -1408,7 +1408,7 @@ class IRISGateway:
             # ── Monitor cards: analytics / logs / diagnostics ──────────────
             # These cards show system status.  When confirmed we push live
             # data back into the card fields via update_field messages.
-            elif section_id in ("analytics", "logs", "diagnostics") and values:
+            elif section_id in ("analytics", "logs", "diagnostics") and values is not None:
                 await self._handle_monitor_card(
                     session_id, client_id, section_id, values
                 )
