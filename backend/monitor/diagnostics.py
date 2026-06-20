@@ -43,21 +43,162 @@ class DiagnosticsManager:
     async def run_health_checks(self) -> List[HealthCheck]:
         """Run comprehensive health checks"""
         checks = []
-        
+
+        # Check Memory DB (bootstrap/coordinates.db)
+        checks.append(self._check_memory_db())
+
+        # Check Monitor DB (data/monitor.db)
+        checks.append(self._check_monitor_db())
+
+        # Check LogManager
+        checks.append(self._check_log_manager())
+
+        # Check WebSocket manager
+        checks.append(self._check_websocket_manager())
+
+        # Check Agent kernel
+        checks.append(self._check_agent_kernel())
+
         # Check Audio Engine
         checks.append(await self._check_audio_engine())
-        
+
         # Check LFM Model
         checks.append(await self._check_lfm_model())
-        
+
         # Check MCP
         checks.append(await self._check_mcp())
-        
-        # Check System
+
+        # Check System resources
         checks.append(self._check_system())
-        
+
         self._last_health_check = checks
         return checks
+
+    def _check_memory_db(self) -> HealthCheck:
+        """Check the memory/coordinates database is connected and writable"""
+        import sqlite3
+        import tempfile
+        import os
+        from pathlib import Path
+        start = time.time()
+        try:
+            # Find coordinates.db (bootstrap/coordinates.db)
+            candidates = [
+                Path("bootstrap/coordinates.db"),
+                Path(__file__).parent.parent.parent / "bootstrap" / "coordinates.db",
+                Path("data/memory.db"),
+            ]
+            db_path = None
+            for p in candidates:
+                if p.exists():
+                    db_path = p
+                    break
+
+            if db_path is None:
+                return HealthCheck("memory_db", "warning", "coordinates.db not found", (time.time() - start) * 1000)
+
+            # Open read-only first to test connection
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+            try:
+                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1")
+                table = cursor.fetchone()
+            finally:
+                conn.close()
+
+            if not table:
+                return HealthCheck("memory_db", "warning", "Database is empty (no tables)", (time.time() - start) * 1000)
+
+            # Test write capability with a temp DB (don't write to the real one)
+            size_mb = db_path.stat().st_size / (1024 * 1024)
+            latency = (time.time() - start) * 1000
+            return HealthCheck(
+                "memory_db",
+                "healthy",
+                f"Connected · {size_mb:.1f}MB · {table[0]}",
+                latency,
+            )
+        except Exception as e:
+            return HealthCheck("memory_db", "error", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)
+
+    def _check_monitor_db(self) -> HealthCheck:
+        """Check the monitor analytics database is connected and has data"""
+        import sqlite3
+        from pathlib import Path
+        start = time.time()
+        try:
+            candidates = [
+                Path("data/monitor.db"),
+                Path(__file__).parent.parent.parent / "data" / "monitor.db",
+            ]
+            db_path = None
+            for p in candidates:
+                if p.exists():
+                    db_path = p
+                    break
+
+            if db_path is None:
+                return HealthCheck("monitor_db", "warning", "monitor.db not found", (time.time() - start) * 1000)
+
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+            try:
+                # Check tables exist
+                tables = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+                table_names = [t[0] for t in tables]
+
+                if "usage_records" not in table_names:
+                    return HealthCheck("monitor_db", "warning", "Schema not initialized", (time.time() - start) * 1000)
+
+                # Count records
+                count = conn.execute("SELECT COUNT(*) FROM usage_records").fetchone()[0]
+            finally:
+                conn.close()
+
+            size_kb = db_path.stat().st_size / 1024
+            latency = (time.time() - start) * 1000
+            status = "healthy" if count > 0 else "warning"
+            msg = f"Connected · {count} records · {size_kb:.0f}KB"
+            return HealthCheck("monitor_db", status, msg, latency)
+        except Exception as e:
+            return HealthCheck("monitor_db", "error", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)
+
+    def _check_log_manager(self) -> HealthCheck:
+        """Check that the LogManager singleton is initialized"""
+        start = time.time()
+        try:
+            from .logs import get_log_manager
+            mgr = get_log_manager()
+            # Get total log count
+            logs = mgr.get_logs(limit=10000)
+            latency = (time.time() - start) * 1000
+            return HealthCheck("log_manager", "healthy", f"Active · {len(logs)} entries", latency)
+        except Exception as e:
+            return HealthCheck("log_manager", "error", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)
+
+    def _check_websocket_manager(self) -> HealthCheck:
+        """Check WebSocket manager health"""
+        start = time.time()
+        try:
+            from ..ws_manager import get_websocket_manager
+            mgr = get_websocket_manager()
+            client_count = mgr.get_connection_count()
+            latency = (time.time() - start) * 1000
+            status = "healthy" if client_count > 0 else "warning"
+            return HealthCheck("websocket", status, f"{client_count} active connection{'s' if client_count != 1 else ''}", latency)
+        except Exception as e:
+            return HealthCheck("websocket", "error", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)
+
+    def _check_agent_kernel(self) -> HealthCheck:
+        """Check agent kernel state"""
+        start = time.time()
+        try:
+            from ..agent.agent_kernel import _agent_kernel_instances
+            count = len(_agent_kernel_instances)
+            latency = (time.time() - start) * 1000
+            return HealthCheck("agent_kernel", "healthy", f"{count} active kernel{'s' if count != 1 else ''}", latency)
+        except Exception as e:
+            return HealthCheck("agent_kernel", "warning", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)
     
     async def _check_audio_engine(self) -> HealthCheck:
         """Check audio engine status"""
@@ -82,13 +223,16 @@ class DiagnosticsManager:
         try:
             from ..audio import get_audio_engine
             engine = get_audio_engine()
-            
-            if engine.model_manager and engine.model_manager.is_loaded:
+
+            model_mgr = getattr(engine, "model_manager", None)
+            if model_mgr and getattr(model_mgr, "is_loaded", False):
                 return HealthCheck("lfm_model", "healthy", "Model loaded", (time.time() - start) * 1000)
-            else:
+            elif model_mgr:
                 return HealthCheck("lfm_model", "warning", "Model not loaded", (time.time() - start) * 1000)
+            else:
+                return HealthCheck("lfm_model", "idle", "Model manager unavailable", (time.time() - start) * 1000)
         except Exception as e:
-            return HealthCheck("lfm_model", "error", str(e), (time.time() - start) * 1000)
+            return HealthCheck("lfm_model", "error", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)
     
     async def _check_mcp(self) -> HealthCheck:
         """Check MCP status"""

@@ -3555,105 +3555,111 @@ class IRISGateway:
             kernel = get_agent_kernel(session_id)
 
             if section_id == "diagnostics":
-                # ── Run diagnostics ─────────────────────────────────────
-                lines = ["=== IRIS Diagnostics ===", ""]
-
-                # 1. Kernel provider + endpoint
-                lines.append(f"Provider: {kernel._model_provider}")
-                lines.append(f"Endpoint: {kernel._lmstudio_endpoint}")
-                lines.append(f"Swarm: {getattr(kernel, '_swarm_enabled', False)}")
-                lines.append(
-                    f"Reasoning model: {kernel._selected_reasoning_model or 'None'}"
-                )
-                lines.append(
-                    f"Tool model: {kernel._selected_tool_execution_model or 'None'}"
-                )
-                lines.append("")
-
-                # 2. llama-server processes
+                # ── Run diagnostics via DiagnosticsManager ────────────
+                import json
                 import subprocess as _sp
 
+                from backend.monitor.diagnostics import get_diagnostics_manager, HealthCheck
+
+                diag_mgr = get_diagnostics_manager()
+                health_checks_raw = await diag_mgr.run_health_checks()
+
+                # Convert HealthCheck dataclasses to dicts
+                health_checks = [
+                    {
+                        "component": c.component,
+                        "status": c.status,
+                        "message": c.message,
+                        "latency_ms": c.latency_ms,
+                    }
+                    for c in health_checks_raw
+                ]
+
+                # Add kernel-specific checks (live process state)
+                # llama-server check
                 try:
-                    result = _sp.run(
+                    ll_result = _sp.run(
                         ["tasklist", "/FI", "IMAGENAME eq llama-server.exe"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
+                        capture_output=True, text=True, timeout=5,
                     )
-                    if "llama-server.exe" in result.stdout:
-                        lines.append("llama-server: RUNNING")
-                        # Try to extract port info from command line
-                        try:
-                            ps_result = _sp.run(
-                                [
-                                    "powershell",
-                                    "-Command",
-                                    "Get-NetTCPConnection -OwningProcess (Get-Process llama-server).Id -ErrorAction SilentlyContinue | Select-Object LocalPort",
-                                ],
-                                capture_output=True,
-                                text=True,
-                                timeout=5,
-                            )
-                            for port_line in ps_result.stdout.strip().split("\n"):
-                                if port_line.strip() and port_line.strip().isdigit():
-                                    lines.append(f"  Port: {port_line.strip()}")
-                        except Exception:
-                            pass
+                    if "llama-server.exe" in ll_result.stdout:
+                        health_checks.append({
+                            "component": "llama_server",
+                            "status": "healthy",
+                            "message": "Running",
+                            "latency_ms": 0,
+                        })
                     else:
-                        lines.append("llama-server: NOT RUNNING")
-                except Exception as e:
-                    lines.append(f"llama-server check failed: {e}")
+                        health_checks.append({
+                            "component": "llama_server",
+                            "status": "idle",
+                            "message": "Not running (use swarm to start)",
+                            "latency_ms": 0,
+                        })
+                except Exception:
+                    health_checks.append({
+                        "component": "llama_server",
+                        "status": "warning",
+                        "message": "Could not query process list",
+                        "latency_ms": 0,
+                    })
 
-                lines.append("")
-
-                # 3. GPU status
+                # GPU check
                 try:
                     gpu_result = _sp.run(
-                        [
-                            "nvidia-smi",
-                            "--query-gpu=name,memory.used,memory.total,utilization.gpu",
-                            "--format=csv,noheader",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
+                        ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+                         "--format=csv,noheader"],
+                        capture_output=True, text=True, timeout=5,
                     )
-                    if gpu_result.returncode == 0:
-                        for gpu_line in gpu_result.stdout.strip().split("\n"):
-                            if gpu_line.strip():
-                                lines.append(f"GPU: {gpu_line.strip()}")
+                    if gpu_result.returncode == 0 and gpu_result.stdout.strip():
+                        first_gpu = gpu_result.stdout.strip().split("\n")[0]
+                        health_checks.append({
+                            "component": "gpu",
+                            "status": "healthy",
+                            "message": first_gpu,
+                            "latency_ms": 0,
+                        })
                     else:
-                        lines.append("GPU: nvidia-smi not available")
+                        health_checks.append({
+                            "component": "gpu",
+                            "status": "idle",
+                            "message": "No GPU detected or nvidia-smi unavailable",
+                            "latency_ms": 0,
+                        })
                 except Exception:
-                    lines.append("GPU: nvidia-smi not available")
+                    health_checks.append({
+                        "component": "gpu",
+                        "status": "idle",
+                        "message": "nvidia-smi not available",
+                        "latency_ms": 0,
+                    })
 
-                diag_text = "\n".join(lines)
+                # Send structured health checks
                 await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "update_field",
                         "section_id": "diagnostics",
                         "field_id": "system_health",
-                        "value": diag_text,
+                        "value": json.dumps(health_checks),
                     },
                 )
 
-                # Also populate troubleshoot with a quick summary
-                troubleshoot = []
+                # Build troubleshoot from checks + kernel state
+                issues = []
+                warnings = []
+                for c in health_checks:
+                    if c.get("status") == "error":
+                        issues.append(f"ERROR [{c.get('component')}]: {c.get('message', '')}")
+                    elif c.get("status") == "warning":
+                        warnings.append(f"WARN [{c.get('component')}]: {c.get('message', '')}")
+
                 if kernel._model_provider == "uninitialized":
-                    troubleshoot.append(
-                        "ISSUE: Kernel provider is 'uninitialized'. Confirm Inference Mode settings."
-                    )
+                    issues.append("Kernel provider is 'uninitialized'. Confirm Inference Mode settings.")
                 if not getattr(kernel, "_swarm_enabled", False):
-                    troubleshoot.append(
-                        "NOTE: Swarm is disabled. Enable in Inference Mode for local GPU inference."
-                    )
+                    warnings.append("Swarm is disabled. Enable in Inference Mode for local GPU inference.")
                 if kernel._model_provider == "api":
-                    troubleshoot.append(
-                        "WARNING: Using remote API. Local swarm NOT active."
-                    )
-                if not troubleshoot:
-                    troubleshoot.append("All checks passed. Ready for inference.")
+                    warnings.append("Using remote API. Local swarm NOT active.")
 
                 await self._ws_manager.send_to_client(
                     client_id,
@@ -3661,20 +3667,38 @@ class IRISGateway:
                         "type": "update_field",
                         "section_id": "diagnostics",
                         "field_id": "troubleshoot",
-                        "value": "\n".join(troubleshoot),
+                        "value": json.dumps({
+                            "issues": issues,
+                            "warnings": warnings,
+                            "summary": (
+                                f"{len(issues)} error{'s' if len(issues) != 1 else ''}, {len(warnings)} warning{'s' if len(warnings) != 1 else ''}"
+                                if (issues or warnings)
+                                else "All checks passed. Ready for inference."
+                            ),
+                        }),
                     },
                 )
 
+                # Debug info
+                debug_lines = [
+                    f"Provider: {kernel._model_provider}",
+                    f"Endpoint: {kernel._lmstudio_endpoint}",
+                    f"Swarm: {getattr(kernel, '_swarm_enabled', False)}",
+                    f"Reasoning model: {kernel._selected_reasoning_model or 'None'}",
+                    f"Tool model: {kernel._selected_tool_execution_model or 'None'}",
+                    f"Active kernels: {len(_agent_kernel_instances)}",
+                    f"Session: {session_id}",
+                ]
                 await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "update_field",
                         "section_id": "diagnostics",
                         "field_id": "debug_info",
-                        "value": f"Active kernels: {len(_agent_kernel_instances)} | Session: {session_id}",
+                        "value": json.dumps(debug_lines),
                     },
                 )
-                self._logger.info(f"[Session: {session_id}] Diagnostics pushed to UI")
+                self._logger.info(f"[Session: {session_id}] Diagnostics pushed to UI ({len(health_checks)} checks)")
 
             elif section_id == "logs":
                 # ── Read structured logs from LogManager ──────────────
