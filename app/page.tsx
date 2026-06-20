@@ -70,9 +70,9 @@ export default function Home() {
     return 510
   }
   const getDashboardWidth = () => {
-    if (isDashboardSpotlight) return 760
+    if (isDashboardSpotlight) return 680
     if (isChatSpotlight) return 360
-    return 560
+    return 510
   }
 
   // Tilt extension: how far the tilted inner edge visually extends toward the orb
@@ -89,8 +89,12 @@ export default function Home() {
   // Compute orb diameter so the wings' tilted edges barely touch it (0px visual gap)
   // and the wings never overflow the frame.
   const BOTH_OPEN_TILT = 15
-  const ORB_WING_GAP = 0
+  // Balanced: wings pulled in slightly (-2px overlap = "just a tad bit closer")
+  // Spotlight: wings moved away (+4px gap = proper spacing, no overlap)
+  const isAnySpotlight = isChatSpotlight || isDashboardSpotlight
+  const ORB_WING_GAP = isAnySpotlight ? 4 : -2
   const MIN_ORB = 60
+  // Keep orb at full size in spotlight mode — wings adjust position instead.
   const MAX_ORB = 400
 
   const getOrbDiameter = () => {
@@ -100,7 +104,6 @@ export default function Home() {
     const dashW = getDashboardWidth()
     const chatExt = getTiltExtension(chatW, BOTH_OPEN_TILT)
     const dashExt = getTiltExtension(dashW, BOTH_OPEN_TILT)
-    // available space = windowWidth - chat_width - dashboard_width - 2*max_ext - 2*gap
     const available = windowWidth - chatW - dashW - chatExt - dashExt - 2 * ORB_WING_GAP
     return Math.max(MIN_ORB, Math.min(MAX_ORB, available))
   }

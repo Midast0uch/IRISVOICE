@@ -118,10 +118,10 @@ export function DashboardWing({
   const ORB_WING_GAP = 0; // tilted wing edge barely touching orb edge
 
   const getSpotlightWidth = () => {
-    if (isInDashboardSpotlight) return 760; // Spotlight width (2×)
-    if (isSolo) return 560; // Solo balanced width (2×)
-    if (isInChatSpotlight) return 360; // Background width when chat is spotlighted (2×)
-    return 560; // Balanced width (2×)
+    if (isInDashboardSpotlight) return 680; // Spotlight width (matches chat)
+    if (isSolo) return 510; // Solo balanced width (matches chat)
+    if (isInChatSpotlight) return 360; // Background width when chat is spotlighted
+    return 510; // Balanced width (matches chat)
   };
 
   // How far the tilted inner edge visually extends toward the orb due to perspective.
@@ -138,12 +138,11 @@ export function DashboardWing({
   const getOuterRight = () => {
     if (isRemoteView) return 0;
     if (isBothOpen) {
-      // Mirror the chat wing: equal visual gap from orb, accounting for tilt.
+      // Position so the tilted inner edge sits at proper distance from orb.
+      // Spotlight wing may go slightly off-screen — clipped by window overflow.
       const width = getSpotlightWidth();
       const extension = getTiltExtension(width, BOTH_OPEN_TILT);
-      const desired = windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
-      // Clamp to prevent overflow outside the frame
-      return Math.max(0, desired);
+      return windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
     }
     return 252;
   };

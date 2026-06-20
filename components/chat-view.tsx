@@ -1079,12 +1079,11 @@ ${message.text}`;
   const getOuterLeft = () => {
     if (isRemoteView) return '12px';
     if (isDashboardOpen) {
-      // Mirror the dashboard wing: equal visual gap from orb, accounting for tilt.
+      // Position so the tilted inner edge sits at proper distance from orb.
+      // Spotlight wing may go slightly off-screen — clipped by window overflow.
       const width = getSpotlightWidth() as number;
       const extension = getTiltExtension(width, BOTH_OPEN_TILT);
-      const desired = windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
-      // Clamp to prevent overflow outside the frame
-      return Math.max(0, desired);
+      return windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
     }
     return 252;
   };
