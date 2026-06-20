@@ -321,25 +321,11 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
                 style={{ cursor: "pointer", pointerEvents: "auto", opacity: 0.95 }}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={() => onSelect(index)} />
-              {/* Layer 2.5: Inner Highlight (top edge shimmer) */}
-              <path d={generateArcPath(outerRadius + 14.5, startAngle + 1, endAngle - 1)} fill="none"
-                stroke={isSelected ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.08)"}
-                strokeWidth="0.5" style={{ opacity: 0.7, pointerEvents: "none" }} />
               {/* Layer 3: Hex Pattern Texture Overlay */}
               <path d={path} fill="none" stroke="url(#hex-pattern)" strokeWidth="28"
-                style={{ pointerEvents: "none", opacity: isSelected ? 0.4 : 0.22 }} />
-              {/* Layer 3.5: Inner Shadow (depth) */}
-              <path d={path} fill="none"
-                stroke="rgba(0,0,0,0.3)"
-                strokeWidth={20}
-                style={{ pointerEvents: "none" }} />
-              {/* Layer 3.6: Active Radial Glow Fill (selected only) */}
-              {isSelected && (
-                <path d={path} fill="none"
-                  stroke={hexToRgba(glowColor, 0.15)}
-                  strokeWidth={18}
-                  style={{ filter: "blur(2px)", pointerEvents: "none" }} />
-              )}
+                style={{ cursor: "pointer", pointerEvents: "auto", opacity: isSelected ? 0.35 : 0.18 }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => onSelect(index)} />
               {/* Layer 4: Neon Edge Outline */}
               <path d={path} fill="none"
                 stroke={isSelected ? glowColor : hexToRgba(glowColor, 0.2)}
@@ -391,8 +377,8 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
             <g key={`inner-${item.id}-${index}`}>
               {/* Layer 1: Glow Background */}
               <path d={path} fill="none"
-                stroke={isSelected ? hexToRgba(glowColor, 0.15) : "rgba(255, 255, 255, 0.02)"}
-                strokeWidth="22" style={{ filter: isSelected ? "blur(6px)" : "none" }} />
+                stroke={isSelected ? hexToRgba(glowColor, 0.12) : "rgba(255, 255, 255, 0.02)"}
+                strokeWidth="22" style={{ filter: isSelected ? "blur(8px)" : "none" }} />
               {/* Layer 2: Base Metal Body (hex-active / hex-idle) */}
               <path d={path} fill="none"
                 stroke={isSelected ? "url(#hex-active)" : "url(#hex-idle)"}
@@ -402,19 +388,9 @@ export const HexPatternRingMechanism: React.FC<HexPatternRingMechanismProps> = (
                 onClick={() => onSelect(globalIndex)} />
               {/* Layer 3: Hex Pattern Texture Overlay */}
               <path d={path} fill="none" stroke="url(#hex-pattern)" strokeWidth="22"
-                style={{ pointerEvents: "none", opacity: isSelected ? 0.4 : 0.22 }} />
-              {/* Layer 3.5: Inner Shadow (depth) */}
-              <path d={path} fill="none"
-                stroke="rgba(0,0,0,0.3)"
-                strokeWidth={14}
-                style={{ pointerEvents: "none" }} />
-              {/* Layer 3.6: Active Radial Glow Fill (selected only) */}
-              {isSelected && (
-                <path d={path} fill="none"
-                  stroke={hexToRgba(glowColor, 0.15)}
-                  strokeWidth={12}
-                  style={{ filter: "blur(2px)", pointerEvents: "none" }} />
-              )}
+                style={{ cursor: "pointer", pointerEvents: "auto", opacity: isSelected ? 0.35 : 0.18 }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => onSelect(globalIndex)} />
               {/* Layer 4: Neon Edge Outline */}
               <path d={path} fill="none"
                 stroke={isSelected ? glowColor : hexToRgba(glowColor, 0.2)}
