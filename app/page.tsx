@@ -108,6 +108,16 @@ export default function Home() {
     return Math.max(MIN_ORB, Math.min(MAX_ORB, available))
   }
 
+  // In spotlight mode, shift the orb slightly toward the blurred wing.
+  // This pulls the spotlight wing inward (toward center) reducing off-screen spill.
+  const SPOTLIGHT_SHIFT = 100
+  const getOrbCenterX = (): number | null => {
+    if (!isBothOpen) return null
+    if (isChatSpotlight) return windowWidth / 2 + SPOTLIGHT_SHIFT
+    if (isDashboardSpotlight) return windowWidth / 2 - SPOTLIGHT_SHIFT
+    return null // balanced — orb at 50vw
+  }
+
   const orbDiameter = getOrbDiameter()
   const ORB_RADIUS = orbDiameter / 2
 
@@ -370,7 +380,15 @@ export default function Home() {
               ease: [0.22, 1, 0.36, 1],
             }}
           >
-            <div className="flex flex-col items-center justify-center relative">
+            <div
+              className="flex flex-col items-center justify-center relative"
+              style={getOrbCenterX() != null ? {
+                position: 'absolute',
+                left: getOrbCenterX()!,
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
+              } : undefined}
+            >
               <IrisOrb
                 onClick={handleSingleClick}
                 onDoubleClick={handleDoubleClick}
@@ -423,6 +441,7 @@ export default function Home() {
           uiState={uiLayoutState}
           onOpenBrowserUrl={browseTo}
           orbDiameter={orbDiameter}
+          orbCenterX={getOrbCenterX()}
         />
       </Suspense>
 
@@ -444,6 +463,7 @@ export default function Home() {
           isBothOpen={isBothOpen}
           initialSubApp={pendingSubApp}
           orbDiameter={orbDiameter}
+          orbCenterX={getOrbCenterX()}
         />
       </Suspense>
     </main>

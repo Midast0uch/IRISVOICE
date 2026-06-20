@@ -135,6 +135,7 @@ interface ChatWingProps {
   // Remote/mobile view: full-screen flat rendering for phone access via Tailscale
   isRemoteView?: boolean
   orbDiameter?: number
+  orbCenterX?: number | null
 }
 
 export function ChatWing({
@@ -151,6 +152,7 @@ export function ChatWing({
   onOpenBrowserUrl,
   isRemoteView = false,
   orbDiameter = 175,
+  orbCenterX = null,
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
@@ -1080,10 +1082,10 @@ ${message.text}`;
     if (isRemoteView) return '12px';
     if (isDashboardOpen) {
       // Position so the tilted inner edge sits at proper distance from orb.
-      // Spotlight wing may go slightly off-screen — clipped by window overflow.
       const width = getSpotlightWidth() as number;
       const extension = getTiltExtension(width, BOTH_OPEN_TILT);
-      return windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
+      const orbCx = orbCenterX ?? windowWidth / 2;
+      return orbCx - ORB_RADIUS - ORB_WING_GAP - extension - width;
     }
     return 252;
   };
