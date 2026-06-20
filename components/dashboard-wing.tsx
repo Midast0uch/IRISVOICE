@@ -115,7 +115,7 @@ export function DashboardWing({
   // Both-open layout constants
   const BOTH_OPEN_TILT = 15; // degrees
   const ORB_RADIUS = orbDiameter / 2; // dynamic from parent
-  const ORB_WING_GAP = 0; // tilted wing edge barely touching orb edge
+  const ORB_WING_GAP = -20; // negative = wings pulled closer to orb
 
   const getSpotlightWidth = () => {
     if (isInDashboardSpotlight) return 680; // Spotlight width (matches chat)
