@@ -69,11 +69,10 @@ class TestTTSManagerPaths:
         assert OUTPUT_SAMPLE_RATE == 24_000
 
     def test_available_voices_list(self):
-        """AVAILABLE_VOICES must include both Cloned Voice and Built-in."""
+        """AVAILABLE_VOICES must include Cloned Voice."""
         from backend.agent.tts import AVAILABLE_VOICES
 
         assert "Cloned Voice" in AVAILABLE_VOICES
-        assert "Built-in" in AVAILABLE_VOICES
 
 
 # ---------------------------------------------------------------------------
@@ -385,15 +384,6 @@ class TestRequirements:
             if not line.strip().startswith("#")
         )
         assert found, "faster-whisper not found in requirements.txt"
-
-    def test_f5tts_referenced_in_requirements(self, req_lines):
-        """requirements.txt must list f5-tts as a dependency."""
-        found = any(
-            line.strip().startswith("f5-tts")
-            for line in req_lines
-            if not line.strip().startswith("#")
-        )
-        assert found, "f5-tts not found in requirements.txt"
 
 
 # ---------------------------------------------------------------------------

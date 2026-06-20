@@ -372,7 +372,6 @@ class AudioEngine:
         Process incoming audio frame.
         - Porcupine wake word detection (lightweight, <1ms per frame)
         - Notifies registered frame listeners (used by VoiceCommandHandler for buffering)
-        No longer streams every frame to lfm_audio_manager.
         """
         try:
             # Wake word detection — gated on user toggle, Porcupine state, and TTS

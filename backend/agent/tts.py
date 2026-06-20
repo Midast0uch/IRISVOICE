@@ -1,14 +1,11 @@
 """
 TTS Manager — Pocket-TTS (voice cloning) for IRIS.
-Primary engine : Pocket-TTS (~100M int8 quantized, ~100 MB RAM)
+Sole engine : Pocket-TTS (~100M int8 quantized, ~100 MB RAM)
   - Zero-shot voice cloning from reference audio (TOMV2.wav)
   - True streaming inference (generate_audio_stream — yields chunk-by-chunk)
   - Text normalizer wired in: strips markdown, expands symbols, removes
     code blocks so TTS never reads out "$", "%", "->", "**bold**" etc.
   - 24 kHz native output
-
-Fallback        : Piper en_US-ryan-high (fast CPU, ~65 MB, no cloning)
-Final fallback  : pyttsx3 (Windows SAPI5 — zero download, instant)
 
 Setup           : pip install pocket-tts
                   Place TOMV2.wav at IRISVOICE/data/TOMV2.wav
@@ -43,10 +40,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 TTS_NATIVE_RATE: int = 24_000  # Pocket-TTS native output sample rate
-F5TTS_NATIVE_RATE: int = TTS_NATIVE_RATE  # backward compat alias
-PIPER_NATIVE_RATE: int = 22_050  # Piper ryan-high native rate
 OUTPUT_SAMPLE_RATE: int = TTS_NATIVE_RATE  # pipeline rate
-PYTTSX_NATIVE_RATE: int = 22_050
 SAMPLE_RATE: int = OUTPUT_SAMPLE_RATE  # legacy alias
 
 # Paths (relative to this file: backend/agent/tts.py)
@@ -55,10 +49,6 @@ _BACKEND_DIR = _THIS_DIR.parent  # backend/
 _PROJECT_DIR = _BACKEND_DIR.parent  # IRISVOICE/
 
 REFERENCE_AUDIO = _PROJECT_DIR / "data" / "TOMV2.wav"
-
-# Piper TTS — fast CPU engine (RTF ~0.04x). Used as fallback.
-PIPER_MODEL_DIR = _BACKEND_DIR / "voice" / "piper_models"
-PIPER_MODEL_ONNX = PIPER_MODEL_DIR / "en_US-ryan-high.onnx"
 
 AVAILABLE_VOICES: List[str] = [
     "Cloned Voice",
@@ -70,7 +60,6 @@ AVAILABLE_VOICES: List[str] = [
     "cosette",
     "eponine",
     "azelma",
-    "Built-in",
 ]
 
 
@@ -147,24 +136,14 @@ class TTSManager:
     """
     Singleton TTS manager.
 
-    Engine priority (automatic — not user-selected):
-      1. Pocket-TTS — PRIMARY
-            Zero-shot voice cloning from TOMV2.wav.
-            CPU-based, int8 quantized, ~100 MB RAM (lazy load).
-            Always tried first unless user forces "Built-in".
-      2. Piper en_US-ryan-high — FALLBACK
-            Fast CPU engine, RTF ~0.04x, ~65 MB model (auto-downloaded).
-            Used when Pocket-TTS is not installed, fails to load, or stream errors.
-      3. pyttsx3 (SAPI5 on Windows) — LAST RESORT
-            Zero download, always available on Windows.
-
-    Voice setting "Built-in" skips Pocket-TTS and goes directly to Piper.
-    This is the only way to bypass Pocket-TTS (e.g. for testing or low-resource mode).
-
-    All engines produce float32 audio at OUTPUT_SAMPLE_RATE (24 kHz).
+    Engine: Pocket-TTS (sole engine)
+      - Zero-shot voice cloning from TOMV2.wav
+      - CPU-based, int8 quantized, ~100 MB RAM (lazy load)
+      - True streaming inference (yields chunk-by-chunk)
+      - 24 kHz native output
 
     Text is normalised before synthesis (markdown stripped, symbols
-    expanded to spoken words) via backend/voice/tts_normalizer.py.
+    expanded to spoken words).
 
     IMPORTANT — first-time setup:
       pip install pocket-tts
@@ -183,24 +162,15 @@ class TTSManager:
         if TTSManager._initialized:
             return
 
-        # Engine selection is deferred to first synthesize_stream() call
-        # via _select_engine().  Avoids importing heavy deps at startup.
-        self._engine_selected = False
-
         self.config: Dict[str, Any] = {
             "tts_enabled": True,
-            # Pocket-TTS is the primary TTS engine (voice cloning).
-            # "Cloned Voice" = Pocket-TTS primary (default).
-            # "Built-in"     = force Piper (skips Pocket-TTS).
-            # In both cases Piper → pyttsx3 are available as automatic fallbacks.
             "tts_voice": "Cloned Voice",  # Pocket-TTS voice cloning
             "speaking_rate": 1.0,
         }
 
-        # Engine instances (lazy-loaded)
+        # Engine instance (lazy-loaded)
         self._pocket_tts_model = None  # Pocket-TTS model instance
         self._voice_state = None  # cached voice embedding from TOMV2.wav
-        self._piper = None  # PiperVoice instance
         self._lock = threading.Lock()  # guards init only, NOT inference
 
         TTSManager._initialized = True
@@ -213,66 +183,23 @@ class TTSManager:
     # Public API
     # ------------------------------------------------------------------
 
-    AVAILABLE_VOICES = AVAILABLE_VOICES
-
     def _log_preflight(self) -> None:
-        """Log TTS preflight status at startup.
-
-        Pocket-TTS is always the primary engine.  Piper is the fallback.
-        "Built-in" voice setting forces Piper directly (skips Pocket-TTS).
-        """
-        force_builtin = self.config.get("tts_voice") == "Built-in"
-
-        if not force_builtin:
-            # Pocket-TTS primary path
-            issues = []
-            if not REFERENCE_AUDIO.exists():
-                issues.append(
-                    f"Reference audio not found at {REFERENCE_AUDIO}. "
-                    "Place TOMV2.wav at IRISVOICE/data/TOMV2.wav to enable voice cloning."
-                )
-            if issues:
-                logger.warning(
-                    "[TTSManager] Pocket-TTS primary — preflight issues:\n"
-                    + "\n".join(f"  - {i}" for i in issues)
-                    + "\n  Will fall back to Piper."
-                )
-            else:
-                logger.info(
-                    f"[TTSManager] Pocket-TTS primary — reference audio OK at {REFERENCE_AUDIO}"
-                )
-            # Always log Piper status as fallback
-            if PIPER_MODEL_ONNX.exists():
-                logger.info(f"[TTSManager] Piper fallback ready at {PIPER_MODEL_ONNX}")
-            else:
-                logger.warning(
-                    f"[TTSManager] Piper fallback model not found at {PIPER_MODEL_ONNX} — "
-                    "will fall back to pyttsx3 if Pocket-TTS also fails"
-                )
-        else:
-            # User explicitly selected "Built-in" → Piper only
-            logger.info(
-                "[TTSManager] Voice set to 'Built-in' — using Piper directly (Pocket-TTS skipped)"
+        """Log TTS preflight status at startup."""
+        if not REFERENCE_AUDIO.exists():
+            logger.warning(
+                f"[TTSManager] Reference audio not found at {REFERENCE_AUDIO}. "
+                "Place TOMV2.wav at IRISVOICE/data/TOMV2.wav to enable voice cloning."
             )
-            if PIPER_MODEL_ONNX.exists():
-                logger.info(f"[TTSManager] Piper engine at {PIPER_MODEL_ONNX}")
-            else:
-                logger.warning(
-                    f"[TTSManager] Piper model not found at {PIPER_MODEL_ONNX} — "
-                    "will fall back to pyttsx3"
-                )
+        else:
+            logger.info(
+                f"[TTSManager] Pocket-TTS — reference audio OK at {REFERENCE_AUDIO}"
+            )
 
     def update_config(self, **kwargs) -> None:
         """Update TTS configuration."""
-        voice_changed = "tts_voice" in kwargs and kwargs[
-            "tts_voice"
-        ] != self.config.get("tts_voice")
         for key, value in kwargs.items():
             if key in self.config:
                 self.config[key] = value
-        if voice_changed:
-            # Force engine re-selection on next synthesize_stream.
-            self._engine_selected = False
         logger.info(f"[TTSManager] Config updated: {kwargs}")
 
     def get_config(self) -> Dict[str, Any]:
@@ -281,24 +208,13 @@ class TTSManager:
 
     def get_voice_info(self) -> Dict[str, Any]:
         """Return available voice information."""
-        use_cloned = self.config.get("tts_voice") == "Cloned Voice"
-        if use_cloned:
-            _mode = "GPU" if True else "CPU"  # Pocket-TTS loads on any device
-            engine_name = f"Pocket-TTS (~100M, zero-shot voice cloning, int8)"
-            engine_ready = self._pocket_tts_model is not None
-            model_path_exists = True  # installed via pip
-        else:
-            engine_name = "Piper en_US-ryan-high (CPU)"
-            engine_ready = self._piper is not None
-            model_path_exists = PIPER_MODEL_ONNX.exists()
-
         return {
             "available_voices": AVAILABLE_VOICES,
-            "current_voice": self.config.get("tts_voice", "Built-in"),
+            "current_voice": self.config.get("tts_voice", "Cloned Voice"),
             "config": self.get_config(),
-            "model": engine_name,
-            "model_ready": engine_ready,
-            "model_path_exists": model_path_exists,
+            "model": "Pocket-TTS (~100M, zero-shot voice cloning, int8)",
+            "model_ready": self._pocket_tts_model is not None,
+            "model_path_exists": True,  # installed via pip
             "reference_audio": str(REFERENCE_AUDIO),
             "reference_audio_exists": REFERENCE_AUDIO.exists(),
             "sample_rate": OUTPUT_SAMPLE_RATE,
@@ -318,27 +234,11 @@ class TTSManager:
             return np.concatenate(chunks)
         return None
 
-    def _select_engine(self) -> None:
-        """Resolve which engine to use on first call (no-op after that).
-
-        Pocket-TTS is always the primary.  Selecting "Built-in" forces Piper.
-        """
-        if self._engine_selected:
-            return
-        self._engine_selected = True
-        force_builtin = self.config.get("tts_voice") == "Built-in"
-        logger.info(
-            f"[TTSManager] Engine priority: "
-            f"{'Piper/pyttsx3 (Built-in selected — Pocket-TTS skipped)' if force_builtin else 'Pocket-TTS (primary) → Piper (fallback) → pyttsx3 (last resort)'}"
-        )
-
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """Stream synthesis — yields float32 arrays at OUTPUT_SAMPLE_RATE Hz.
 
         Text is normalised before synthesis (strips markdown / expands symbols).
-        Pocket-TTS path: streaming yields chunks during generation (true streaming).
-        Piper path:  native per-sentence streaming via piper.synthesize().
-        pyttsx3:     one full chunk as last resort.
+        Pocket-TTS: streaming yields chunks during generation (true streaming).
 
         Lock discipline: self._lock held only during model load, not inference.
         """
@@ -352,53 +252,27 @@ class TTSManager:
         if not normalized:
             return
 
-        self._select_engine()
-
-        # --- Pocket-TTS: primary engine (voice cloning) -----------------------
-        force_builtin = self.config.get("tts_voice") == "Built-in"
-        if not force_builtin:
-            with self._lock:
-                loaded = self._load_pocket_tts()
-                pocket = self._pocket_tts_model
-                voice = self._voice_state
-
-            if loaded and pocket is not None and voice is not None:
-                try:
-                    for chunk in self._stream_pocket(pocket, voice, normalized):
-                        yield chunk
-                    return
-                except Exception as exc:
-                    logger.warning(
-                        f"[TTSManager] Pocket-TTS stream failed, falling back to Piper: {exc}",
-                        exc_info=True,
-                    )
-            else:
-                logger.info(
-                    "[TTSManager] Pocket-TTS unavailable — falling back to Piper"
-                )
-
-        # --- Piper path: fallback engine ------------------------------------
+        # --- Pocket-TTS: sole engine (zero-shot voice cloning) ----------------
         with self._lock:
-            piper_loaded = self._load_piper()
-            piper = self._piper
+            loaded = self._load_pocket_tts()
+            pocket = self._pocket_tts_model
+            voice = self._voice_state
 
-        if piper_loaded and piper is not None:
+        if loaded and pocket is not None and voice is not None:
             try:
-                for chunk in self._stream_piper(piper, normalized):
+                for chunk in self._stream_pocket(pocket, voice, normalized):
                     yield chunk
                 return
             except Exception as exc:
-                logger.warning(
-                    f"[TTSManager] Piper stream failed, falling back to pyttsx3: {exc}"
+                logger.error(
+                    f"[TTSManager] Pocket-TTS stream failed: {exc}",
+                    exc_info=True,
                 )
-
-        # --- pyttsx3 last-resort fallback ------------------------------------
-        try:
-            result = self._synthesize_pyttsx(normalized)
-            if result is not None:
-                yield result
-        except Exception as exc:
-            logger.error(f"[TTSManager] pyttsx3 stream error: {exc}")
+        else:
+            logger.error(
+                "[TTSManager] Pocket-TTS unavailable. Run: pip install pocket-tts "
+                "and place TOMV2.wav at IRISVOICE/data/TOMV2.wav"
+            )
 
     # ------------------------------------------------------------------
     # Text normalization

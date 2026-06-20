@@ -34,8 +34,9 @@ function getComponentIcon(name: string) {
   if (n.includes("websocket") || n.includes("ws")) return Wifi;
   if (n.includes("agent") || n.includes("kernel")) return Brain;
   if (n.includes("audio") || n.includes("mic") || n.includes("voice")) return Mic;
+  if (n.includes("tts")) return Mic;
   if (n.includes("mcp")) return Network;
-  if (n.includes("llama") || n.includes("model") || n.includes("lfm")) return Cpu;
+  if (n.includes("llama") || n.includes("model")) return Cpu;
   if (n.includes("gpu")) return Zap;
   if (n.includes("system") || n.includes("platform")) return Server;
   if (n.includes("store")) return HardDrive;
@@ -52,7 +53,7 @@ function getComponentLabel(name: string): string {
     websocket: "WebSocket",
     agent_kernel: "Agent Kernel",
     audio_engine: "Audio Engine",
-    lfm_model: "LFM Model",
+    tts_engine: "TTS Engine",
     llama_server: "Llama Server",
     mcp_servers: "MCP Servers",
     gpu: "GPU",

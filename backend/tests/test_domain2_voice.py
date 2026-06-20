@@ -3,7 +3,7 @@ Domain 2 — Voice Pipeline verification tests.
 
 Covers [2.1] Wake word (Porcupine wiring + graceful disable),
        [2.2] STT (faster-whisper importable, gateway wiring, callback chain),
-       [2.3] TTS (Piper fallback when F5-TTS absent, speak path wired),
+       [2.3] TTS (Pocket-TTS speak path wired),
        [2.4] Voice-first DER mode (budget enforced, single-step limit),
        Linux compatibility (sounddevice, platform-aware .ppn selection).
 
@@ -169,18 +169,18 @@ class TestSTTWiring:
 
 
 # ---------------------------------------------------------------------------
-# [2.3] TTS — Piper fallback + speak path wired
+# [2.3] TTS — Pocket-TTS speak path wired
 # ---------------------------------------------------------------------------
 
 class TestTTSWiring:
-    """TTS produces output and falls back to Piper when F5-TTS is not installed."""
+    """TTS produces output via Pocket-TTS, speak path is wired correctly."""
 
-    def test_piper_importable(self):
-        """Piper TTS must be installed as the built-in fallback."""
+    def test_pocket_tts_importable(self):
+        """Pocket-TTS must be installed as the sole TTS engine."""
         import importlib.util
-        spec = importlib.util.find_spec("piper")
+        spec = importlib.util.find_spec("pocket_tts")
         assert spec is not None, \
-            "piper not installed — run: pip install piper-tts"
+            "pocket_tts not installed — run: pip install pocket-tts"
 
     def test_tts_enabled_by_default(self):
         """TTSManager.config['tts_enabled'] defaults to True."""
@@ -188,20 +188,6 @@ class TestTTSWiring:
         mgr = get_tts_manager()
         assert mgr.config.get("tts_enabled", True) is True, \
             "TTS must be enabled by default"
-
-    def test_tts_select_engine_does_not_raise_when_f5_missing(self):
-        """_select_engine() falls back to Piper gracefully when f5_tts is absent."""
-        from backend.agent.tts import get_tts_manager
-        mgr = get_tts_manager()
-        # Force Cloned Voice mode even if f5_tts is missing
-        original_voice = mgr.config.get("tts_voice", "Built-in Piper")
-        mgr.config["tts_voice"] = "Cloned Voice"
-        try:
-            mgr._select_engine()  # must not raise even without f5_tts
-        except Exception as e:
-            assert False, f"_select_engine raised with Cloned Voice + no f5_tts: {e}"
-        finally:
-            mgr.config["tts_voice"] = original_voice
 
     def test_tts_synthesize_returns_none_when_disabled(self):
         """synthesize() returns None when tts_enabled=False (no audio produced)."""
@@ -239,18 +225,16 @@ class TestTTSWiring:
         assert '"speaking"' in src or "'speaking'" in src, \
             "Gateway must broadcast speaking state during TTS playback"
 
-    def test_f5tts_not_required_at_startup(self):
-        """f5_tts absence must not crash backend at import time."""
-        # We already know f5_tts may not be installed — verify the module
-        # never imports it at the top level
+    def test_no_dead_tts_imports(self):
+        """Piper and pyttsx3 must not be imported in tts.py — removed engines."""
         src = open("backend/agent/tts.py", encoding="utf-8").read()
         lines = src.split("\n")
-        module_level_f5 = any(
-            "import f5" in l.lower() and not l.startswith(" ") and not l.startswith("\t")
-            for l in lines
-        )
-        assert not module_level_f5, \
-            "f5_tts must not be imported at module level in tts.py"
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("#") or not stripped:
+                continue
+            if "import piper" in line.lower() or "import pyttsx" in line.lower():
+                assert False, f"Dead TTS engine imported: {line}"
 
 
 # ---------------------------------------------------------------------------

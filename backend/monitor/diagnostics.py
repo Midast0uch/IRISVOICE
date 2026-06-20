@@ -62,8 +62,8 @@ class DiagnosticsManager:
         # Check Audio Engine
         checks.append(await self._check_audio_engine())
 
-        # Check LFM Model
-        checks.append(await self._check_lfm_model())
+        # Check TTS engine
+        checks.append(await self._check_tts_engine())
 
         # Check MCP
         checks.append(await self._check_mcp())
@@ -217,22 +217,16 @@ class DiagnosticsManager:
         except Exception as e:
             return HealthCheck("audio_engine", "error", str(e), (time.time() - start) * 1000)
     
-    async def _check_lfm_model(self) -> HealthCheck:
-        """Check LFM model status"""
+    async def _check_tts_engine(self) -> HealthCheck:
+        """Check TTS engine availability"""
         start = time.time()
         try:
-            from ..audio import get_audio_engine
-            engine = get_audio_engine()
-
-            model_mgr = getattr(engine, "model_manager", None)
-            if model_mgr and getattr(model_mgr, "is_loaded", False):
-                return HealthCheck("lfm_model", "healthy", "Model loaded", (time.time() - start) * 1000)
-            elif model_mgr:
-                return HealthCheck("lfm_model", "warning", "Model not loaded", (time.time() - start) * 1000)
-            else:
-                return HealthCheck("lfm_model", "idle", "Model manager unavailable", (time.time() - start) * 1000)
+            from ..agent.tts import get_tts_manager
+            tts = get_tts_manager()
+            engine_name = tts.current_engine if hasattr(tts, "current_engine") else "unknown"
+            return HealthCheck("tts_engine", "healthy", engine_name, (time.time() - start) * 1000)
         except Exception as e:
-            return HealthCheck("lfm_model", "error", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)
+            return HealthCheck("tts_engine", "error", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)
     
     async def _check_mcp(self) -> HealthCheck:
         """Check MCP status"""

@@ -27,7 +27,7 @@ numpy>=1.24.0
 scipy>=1.11.0
 pvporcupine>=4.0.0       # wake word detection; v4+ required for .ppn v4 model files.
 sounddevice>=0.5.0       # cross-platform audio I/O via PortAudio (lazy-loaded at runtime)
-# PyTorch (CPU is sufficient — F5-TTS and Piper both run on CPU)
+# PyTorch (CPU is sufficient — Pocket-TTS runs on CPU)
 # For GPU acceleration of the local LLM only, install the CUDA variant:
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 torch>=2.0.0
@@ -36,20 +36,17 @@ psutil>=5.9.0
 # STT Pipeline — faster-whisper direct integration (tiny/int8, ~40 MB, CPU)
 faster-whisper>=1.0.0    # direct STT: CPU int8, ~40 MB model, ~80ms per 3s clip
 
-# TTS Pipeline — auto-selects engine based on user setting:
-#   "Cloned Voice" -> Pocket-TTS (zero-shot voice cloning + streaming, CPU, ~100 MB)
-#   "Built-in"     -> Piper  (fast CPU, RTF ~0.04x, ~65 MB)
-#   Last resort    -> pyttsx3 (Windows SAPI5, always available)
+# TTS Pipeline — Pocket-TTS (sole engine)
+#   Zero-shot voice cloning + streaming inference, CPU, ~100 MB
+#   "Cloned Voice" -> voice cloning from TOMV2.wav reference audio
+#   Other voices   -> built-in Pocket-TTS speaker presets
 #
 # Pocket-TTS setup:
 #   pip install pocket-tts
 #   For voice cloning: accept terms at https://huggingface.co/kyutai/pocket-tts
 #   Place TOMV2.wav at IRISVOICE/data/TOMV2.wav
 #   Voice cloning model weights download on first "Cloned Voice" use.
-# Piper setup: model auto-downloaded to backend/voice/piper_models/ on first run.
 git+https://github.com/danneauxs/Pocket-TTS-Spokenword.git
-piper-tts>=1.4.0         # fast CPU TTS fallback (en_US-ryan-high, RTF ~0.04x)
-pyttsx3>=2.90            # SAPI5 built-in last-resort fallback (Windows only)
 
 # Local GGUF inference — llama-cpp-python server mode on port 8082
 # For CUDA GPU acceleration (recommended — RTX 3070 / CUDA 12.4):
