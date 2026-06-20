@@ -20,6 +20,7 @@ import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
+import { IconRobot, IconTopologyStar3, IconBasketCog } from "@tabler/icons-react";
 import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
@@ -46,13 +47,12 @@ interface DarkGlassDashboardProps {
 const ACCENT_COLOR = '#00d4aa';
 
 const MAIN_NODES_DATA = [
-  { id: 'voice', label: 'Voice', icon: MicVocal },
-  { id: 'agent', label: 'Agent', icon: Brain },
-  { id: 'automate', label: 'Automate', icon: Workflow },
-  { id: 'system', label: 'System', icon: Settings },
+  { id: 'voice', label: 'Voice', icon: Mic },
+  { id: 'agent', label: 'Agent', icon: IconRobot },
+  { id: 'automate', label: 'Automate', icon: IconTopologyStar3 },
+  { id: 'system', label: 'System', icon: IconBasketCog },
   { id: 'customize', label: 'Customize', icon: Palette },
-  { id: 'monitor', label: 'Monitor', icon: BarChart3 },
-
+  { id: 'monitor', label: 'Monitor', icon: Activity },
 ];
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -994,7 +994,7 @@ export function DarkGlassDashboard({
               >
                 <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
                 {isExpanded && (
-                  <span className="ml-2.5 text-[10px] font-semibold tracking-wider whitespace-nowrap" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.35)' }}>
+                  <span className="ml-3 text-[10px] font-semibold tracking-wider whitespace-nowrap" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.35)' }}>
                     {node.label}
                   </span>
                 )}
