@@ -54,6 +54,60 @@ export default function Home() {
     browserUrl,
   } = useUILayoutState()
 
+  // Window width for dynamic orb sizing (Tauri widget resizes to fit content)
+  const [windowWidth, setWindowWidth] = useState(1920)
+  useEffect(() => {
+    setWindowWidth(window.innerWidth)
+    const handleResize = () => setWindowWidth(window.innerWidth)
+    window.addEventListener("resize", handleResize)
+    return () => window.removeEventListener("resize", handleResize)
+  }, [])
+
+  // Compute wing widths based on spotlight state (mirrors getSpotlightWidth in each wing)
+  const getChatWidth = () => {
+    if (isChatSpotlight) return 680
+    if (isDashboardSpotlight) return 360
+    return 510
+  }
+  const getDashboardWidth = () => {
+    if (isDashboardSpotlight) return 760
+    if (isChatSpotlight) return 360
+    return 560
+  }
+
+  // Tilt extension: how far the tilted inner edge visually extends toward the orb
+  const getTiltExtension = (width: number, angleDeg: number) => {
+    const rad = (angleDeg * Math.PI) / 180
+    const sin = Math.sin(rad)
+    const cos = Math.cos(rad)
+    const perspective = 800
+    const z = width * sin
+    const scale = perspective / (perspective - z)
+    return width * (cos * scale - 1)
+  }
+
+  // Compute orb diameter so the wings' tilted edges barely touch it (0px visual gap)
+  // and the wings never overflow the frame.
+  const BOTH_OPEN_TILT = 15
+  const ORB_WING_GAP = 0
+  const MIN_ORB = 60
+  const MAX_ORB = 400
+
+  const getOrbDiameter = () => {
+    const baseSize = 175
+    if (!isBothOpen) return baseSize
+    const chatW = getChatWidth()
+    const dashW = getDashboardWidth()
+    const chatExt = getTiltExtension(chatW, BOTH_OPEN_TILT)
+    const dashExt = getTiltExtension(dashW, BOTH_OPEN_TILT)
+    // available space = windowWidth - chat_width - dashboard_width - 2*max_ext - 2*gap
+    const available = windowWidth - chatW - dashW - chatExt - dashExt - 2 * ORB_WING_GAP
+    return Math.max(MIN_ORB, Math.min(MAX_ORB, available))
+  }
+
+  const orbDiameter = getOrbDiameter()
+  const ORB_RADIUS = orbDiameter / 2
+
   // Track which sub-app to open when the dashboard is triggered from WheelView
   const [pendingSubApp, setPendingSubApp] = useState<string | null>(null);
   const pendingSubAppRef = useRef<string | null>(null);
@@ -304,7 +358,7 @@ export default function Home() {
           <motion.div
             className="flex items-center justify-center"
             animate={{
-              scale: (isBothOpen || (isChatOpen && isDashboardOpen)) ? 0.825 : uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.7 : 1,
+              scale: (isBothOpen || (isChatOpen && isDashboardOpen)) ? 1.0 : uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.7 : 1,
               filter: (isBothOpen || (isChatOpen && isDashboardOpen)) ? 'blur(0px)' : uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 'blur(1px)' : 'blur(0px)',
               opacity: 1,
             }}
@@ -320,7 +374,7 @@ export default function Home() {
                 onChatClick={handleChatClick}
                 isExpanded={isExpanded}
                 centerLabel={orbState.label}
-                size={175}
+                size={orbDiameter}
                 glowColor={glowColor}
                 wakeFlash={false}
                 uiState={uiLayoutState}
@@ -365,6 +419,7 @@ export default function Home() {
           isDashboardOpen={isBothOpen}
           uiState={uiLayoutState}
           onOpenBrowserUrl={browseTo}
+          orbDiameter={orbDiameter}
         />
       </Suspense>
 
@@ -385,6 +440,7 @@ export default function Home() {
           isChatOpen={isChatOpen || isBothOpen}
           isBothOpen={isBothOpen}
           initialSubApp={pendingSubApp}
+          orbDiameter={orbDiameter}
         />
       </Suspense>
     </main>

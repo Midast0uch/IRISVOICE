@@ -134,6 +134,7 @@ interface ChatWingProps {
   onOpenBrowserUrl?: (url: string) => void
   // Remote/mobile view: full-screen flat rendering for phone access via Tailscale
   isRemoteView?: boolean
+  orbDiameter?: number
 }
 
 export function ChatWing({
@@ -149,6 +150,7 @@ export function ChatWing({
   isDashboardOpen = false,
   onOpenBrowserUrl,
   isRemoteView = false,
+  orbDiameter = 175,
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
@@ -1017,6 +1019,11 @@ ${message.text}`;
   const isBalanced = spotlightState === SpotlightState.BALANCED;
 
   // Spotlight dynamic styles — overridden for remote/mobile view
+  // Both-open layout constants
+  const BOTH_OPEN_TILT = 15; // degrees
+  const ORB_RADIUS = orbDiameter / 2; // dynamic from parent
+  const ORB_WING_GAP = 0; // tilted wing edge barely touching orb edge
+
   const getSpotlightWidth = () => {
     if (isRemoteView) return 'calc(100vw - 24px)';
     if (isInChatSpotlight) return 680; // Spotlight width (2×)
@@ -1024,11 +1031,23 @@ ${message.text}`;
     return 510; // Balanced width (2×)
   };
 
+  // How far the tilted inner edge visually extends toward the orb due to perspective.
+  const getTiltExtension = (width: number, angleDeg: number) => {
+    const rad = (angleDeg * Math.PI) / 180;
+    const sin = Math.sin(rad);
+    const cos = Math.cos(rad);
+    const perspective = 800;
+    const z = width * sin;
+    const scale = perspective / (perspective - z);
+    return width * (cos * scale - 1);
+  };
+
   const getSpotlightTransform = () => {
     if (isRemoteView) return 'rotateY(0deg) rotateX(0deg)';
     if (isInChatSpotlight) return 'rotateY(0deg) rotateX(0deg)';
     if (isInDashboardSpotlight) return 'rotateY(15deg) rotateX(2deg)';
-    return 'rotateY(15deg) rotateX(2deg)'; // Both open: same inward tilt as solo
+    if (isDashboardOpen) return `rotateY(${BOTH_OPEN_TILT}deg) rotateX(2deg)`; // Both open: tilted divider
+    return 'rotateY(15deg) rotateX(2deg)';
   };
 
   const getSpotlightOpacity = () => {
@@ -1060,9 +1079,12 @@ ${message.text}`;
   const getOuterLeft = () => {
     if (isRemoteView) return '12px';
     if (isDashboardOpen) {
-      // Mirror the dashboard wing: keep the orb as a centered divider with equal gaps.
-      // Orb scale is 0.825 when both open -> radius ~72px. Extra room for 15deg tilt.
-      return windowWidth / 2 - 180 - getSpotlightWidth();
+      // Mirror the dashboard wing: equal visual gap from orb, accounting for tilt.
+      const width = getSpotlightWidth() as number;
+      const extension = getTiltExtension(width, BOTH_OPEN_TILT);
+      const desired = windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
+      // Clamp to prevent overflow outside the frame
+      return Math.max(0, desired);
     }
     return 252;
   };

@@ -61,6 +61,7 @@ interface DashboardWingProps {
   isBothOpen?: boolean
   initialSubApp?: string | null
   isRemoteView?: boolean
+  orbDiameter?: number
 }
 
 export function DashboardWing({
@@ -78,6 +79,7 @@ export function DashboardWing({
   isBothOpen = false,
   initialSubApp,
   isRemoteView = false,
+  orbDiameter = 175,
 }: DashboardWingProps) {
   const { voiceState } = useNavigation()
   const { getThemeConfig } = useBrandColor()
@@ -110,7 +112,11 @@ export function DashboardWing({
   const isInChatSpotlight = spotlightState === SpotlightState.CHAT_SPOTLIGHT;
   const isBalanced = spotlightState === SpotlightState.BALANCED;
 
-  // Spotlight dynamic styles
+  // Both-open layout constants
+  const BOTH_OPEN_TILT = 15; // degrees
+  const ORB_RADIUS = orbDiameter / 2; // dynamic from parent
+  const ORB_WING_GAP = 0; // tilted wing edge barely touching orb edge
+
   const getSpotlightWidth = () => {
     if (isInDashboardSpotlight) return 760; // Spotlight width (2×)
     if (isSolo) return 560; // Solo balanced width (2×)
@@ -118,12 +124,26 @@ export function DashboardWing({
     return 560; // Balanced width (2×)
   };
 
+  // How far the tilted inner edge visually extends toward the orb due to perspective.
+  const getTiltExtension = (width: number, angleDeg: number) => {
+    const rad = (angleDeg * Math.PI) / 180;
+    const sin = Math.sin(rad);
+    const cos = Math.cos(rad);
+    const perspective = 800;
+    const z = width * sin;
+    const scale = perspective / (perspective - z);
+    return width * (cos * scale - 1);
+  };
+
   const getOuterRight = () => {
     if (isRemoteView) return 0;
     if (isBothOpen) {
-      // Mirror the chat wing: keep the orb as a centered divider with equal gaps.
-      // Orb scale is 0.825 when both open -> radius ~72px. Extra room for 15deg tilt.
-      return windowWidth / 2 - 180 - getSpotlightWidth();
+      // Mirror the chat wing: equal visual gap from orb, accounting for tilt.
+      const width = getSpotlightWidth();
+      const extension = getTiltExtension(width, BOTH_OPEN_TILT);
+      const desired = windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
+      // Clamp to prevent overflow outside the frame
+      return Math.max(0, desired);
     }
     return 252;
   };
@@ -133,7 +153,8 @@ export function DashboardWing({
     if (isInDashboardSpotlight) return 'rotateY(0deg) rotateX(0deg)'; // Flat when spotlighted
     if (isSolo) return 'rotateY(-15deg) rotateX(2deg)'; // Solo balanced: angled
     if (isInChatSpotlight) return 'rotateY(-15deg) rotateX(2deg)';
-    return 'rotateY(-15deg) rotateX(2deg)'; // Both open: same inward tilt as solo
+    if (isBothOpen) return `rotateY(-${BOTH_OPEN_TILT}deg) rotateX(2deg)`; // Both open: tilted divider
+    return 'rotateY(-15deg) rotateX(2deg)';
   };
 
   const getSpotlightOpacity = () => {
