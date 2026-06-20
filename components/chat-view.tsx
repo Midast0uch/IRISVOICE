@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink } from 'lucide-react';
+import { IconArrowBigRightLines, IconRowInsertTop } from '@tabler/icons-react';
 import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
 import { useBrandColor } from "@/contexts/BrandColorContext";
@@ -2352,53 +2353,65 @@ ${message.text}`;
                   )}
                 </div>
 
-                {/* Compact Action Group */}
-                <div className={isRemoteView ? "flex items-center gap-1 mb-2" : "flex items-center gap-0.5 mb-2"}>
-                  {/* Send button */}
-                  <motion.button
-                    onClick={handleSendMessage}
-                    disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
-                    className={isRemoteView ? "p-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 min-h-[36px] min-w-[36px] flex items-center justify-center" : "p-1.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"}
+                {/* Action Bar — pill container with dividers */}
+                <div className={isRemoteView ? "flex items-center gap-1 mb-2" : "flex items-center justify-center mb-2"}>
+                  <div
+                    className="flex items-center gap-0"
                     style={{
-                      color: glowColor,
+                      background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                      border: `1px solid ${glowColor}15`,
+                      padding: '5px 14px',
+                      borderRadius: '9999px',
+                      boxShadow: `0 1px 16px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.03)`,
                     }}
-                    whileHover={isRemoteView ? undefined : (inputText.trim() ? { scale: 1.1 } : {})}
-                    whileTap={isRemoteView ? undefined : (inputText.trim() ? { scale: 0.9 } : {})}
-                    title="Send message"
                   >
-                    <Send size={isRemoteView ? 18 : 15} />
-                  </motion.button>
+                    {/* Send button */}
+                    <motion.button
+                      onClick={handleSendMessage}
+                      disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
+                      className="p-1.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                      style={{ color: glowColor }}
+                      whileHover={inputText.trim() ? { scale: 1.1 } : {}}
+                      whileTap={inputText.trim() ? { scale: 0.9 } : {}}
+                      title="Send message"
+                    >
+                      <IconArrowBigRightLines size={16} />
+                    </motion.button>
 
-                  {/* Upload + hidden file input */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    onChange={handleFileInputChange}
-                    className="hidden"
-                    accept="*/*"
-                  />
-                  <motion.button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={voiceState === 'listening'}
-                    className={isRemoteView ? "p-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0 min-h-[36px] min-w-[36px] flex items-center justify-center" : "p-1.5 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"}
-                    style={{
-                      color: `${fontColor}60`,
-                    }}
-                    whileHover={isRemoteView ? undefined : { scale: 1.1, color: fontColor }}
-                    whileTap={isRemoteView ? undefined : { scale: 0.9 }}
-                    title="Upload file"
-                  >
-                    <Plus size={isRemoteView ? 18 : 15} />
-                  </motion.button>
+                    {/* Divider */}
+                    <div className="w-px h-4 mx-1" style={{ background: `${glowColor}40` }} />
 
-                  {/* Conversation chips */}
-                  <ConversationChips
-                    chips={conversationChips}
-                    glowColor={glowColor}
-                    onChipClick={handleChipClick}
-                    containerRef={messagesContainerRef}
-                  />
+                    {/* Upload + hidden file input */}
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={handleFileInputChange}
+                      className="hidden"
+                      accept="*/*"
+                    />
+                    <motion.button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={voiceState === 'listening'}
+                      className="p-1.5 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                      style={{ color: glowColor }}
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      title="Upload file"
+                    >
+                      <IconRowInsertTop size={15} />
+                    </motion.button>
 
+                    {/* Divider */}
+                    <div className="w-px h-4 mx-1" style={{ background: `${glowColor}40` }} />
+
+                    {/* Conversation chips */}
+                    <ConversationChips
+                      chips={conversationChips}
+                      glowColor={glowColor}
+                      onChipClick={handleChipClick}
+                      containerRef={messagesContainerRef}
+                    />
+                  </div>
                 </div>
               </div>
             </div>

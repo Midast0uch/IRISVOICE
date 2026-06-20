@@ -82,6 +82,7 @@ export function ConversationChips({
 }: ConversationChipsProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
+  const [hovered, setHovered] = useState(false)
   // Refs — set synchronously before setIsOpen so the re-render reads correct values
   const triggerRectRef = useRef<DOMRect | null>(null)
   const containerRectRef = useRef<DOMRect | null>(null)
@@ -204,7 +205,9 @@ export function ConversationChips({
       <motion.button
         ref={triggerRef}
         onClick={hasChips ? handleToggle : undefined}
-        className="flex items-center gap-1 px-1 py-1 transition-all duration-150 flex-shrink-0"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        className="relative flex items-center px-1 py-1 transition-all duration-150 flex-shrink-0"
         style={{
           color: isOpen ? glowColor : hasChips ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.25)',
           background: 'transparent',
@@ -217,10 +220,23 @@ export function ConversationChips({
         title={hasChips ? `Conversation history (${chips.length})` : 'No conversation history yet'}
       >
         <AlignJustify size={13} />
-        <span className="text-[10px] font-mono leading-none">
+      </motion.button>
+
+      {/* Hover pill — shows chip count, positioned to the right of the icon */}
+      {hasChips && hovered && (
+        <span
+          className="absolute top-1/2 -translate-y-1/2 left-full ml-1 text-[8px] font-semibold tracking-wide whitespace-nowrap px-1.5 py-px pointer-events-none z-50"
+          style={{
+            background: isOpen ? `${glowColor}25` : 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+            border: `1px solid ${isOpen ? `${glowColor}50` : `${glowColor}15`}`,
+            borderRadius: '9999px',
+            color: isOpen ? glowColor : 'rgba(255,255,255,0.7)',
+            boxShadow: isOpen ? `0 0 8px ${glowColor}30` : 'none',
+          }}
+        >
           {chips.length}
         </span>
-      </motion.button>
+      )}
 
       {/* Portal: renders outside any CSS transform at document.body */}
       {mounted && createPortal(overlay, document.body)}
