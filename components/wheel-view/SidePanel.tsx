@@ -583,10 +583,10 @@ export const SidePanel: React.FC<SidePanelProps> = ({
             onClick={() => {
               // Reset base plate to theme defaults
               const themeDefaults = {
-                aether: { hue: 190, saturation: 25, lightness: 15 },
-                ember: { hue: 15, saturation: 20, lightness: 15 },
-                aurum: { hue: 45, saturation: 20, lightness: 15 },
-                verdant: { hue: 150, saturation: 20, lightness: 15 },
+                aether: { hue: 190, saturation: 0, lightness: 0 },
+                ember: { hue: 30, saturation: 0, lightness: 0 },
+                aurum: { hue: 45, saturation: 0, lightness: 0 },
+                verdant: { hue: 145, saturation: 0, lightness: 0 },
               }
               const defaults = themeDefaults[theme]
               setBasePlateHue(defaults.hue)

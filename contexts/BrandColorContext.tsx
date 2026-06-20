@@ -104,10 +104,10 @@ const THEME_DEFAULTS: Record<ThemeType, BrandColorState> = {
 }
 
 const BASE_PLATE_THEME_DEFAULTS: Record<ThemeType, BasePlateColorState> = {
-  aether: { hue: 190, saturation: 25, lightness: 12 }, // Cyan base plate
-  ember: { hue: 15, saturation: 20, lightness: 10 },
-  aurum: { hue: 35, saturation: 25, lightness: 12 },
-  verdant: { hue: 150, saturation: 15, lightness: 10 },
+  aether: { hue: 190, saturation: 0, lightness: 0 }, // Pure black
+  ember: { hue: 30, saturation: 0, lightness: 0 },   // Pure black
+  aurum: { hue: 45, saturation: 0, lightness: 0 },   // Pure black
+  verdant: { hue: 145, saturation: 0, lightness: 0 }, // Pure black
 }
 
 // Complete Prism Glass theme specifications
