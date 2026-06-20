@@ -19,7 +19,7 @@ import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
-import { MonitorAnalyticsPanel } from '@/components/dashboard/MonitorAnalyticsPanel';
+import { MonitorTabContainer } from '@/components/dashboard/MonitorTabContainer';
 import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
 import { IconRobot, IconTopologyStar3, IconBasketCog } from "@tabler/icons-react";
 import {
@@ -1149,9 +1149,9 @@ export function DarkGlassDashboard({
                 <DCPStatsPanel glowColor={glowColor} />
               </div>
             )}
-            {/* Monitor tab — render analytics panel instead of input fields */}
+            {/* Monitor tab — render tabbed panel with Analytics | Logs | Diagnostics */}
             {activeTab === 'monitor' ? (
-              <MonitorAnalyticsPanel glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
+              <MonitorTabContainer glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
             ) : (
               activeSections.map((section: any) => {
              const isExpanded = expandedSections.has(section.id);
