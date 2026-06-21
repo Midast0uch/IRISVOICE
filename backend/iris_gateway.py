@@ -3894,6 +3894,17 @@ class IRISGateway:
                     self._api_keys_cache = _api_keys_section
                 _ak_current = _api_keys_section
 
+                # Fallback: if no keys in iris_config, read from environment
+                # (which loaded .env → .env.local via start-backend.py).
+                if not _ak_current:
+                    import os as _os
+                    _env_keys = {
+                        "picovoice_access_key": _os.environ.get("PICOVOICE_ACCESS_KEY", ""),
+                        "hf_token": _os.environ.get("HF_TOKEN", ""),
+                    }
+                    _ak_current = {k: v for k, v in _env_keys.items() if v}
+                    self._api_keys_cache = _ak_current
+
                 if values and isinstance(values, dict):
                     # ── Save API keys ──────────────────────────────────────
                     _saved_keys = {}
