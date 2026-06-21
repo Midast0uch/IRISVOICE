@@ -98,11 +98,31 @@ export function ApiKeysField({
       const detail = event.detail
       if (!detail || detail.type !== "update_field") return
       const payload = detail.payload || {}
+
+      // Load: backend sends current saved keys
+      if (payload.field_id === "api_keys_data" && payload.value) {
+        try {
+          const data = typeof payload.value === "string"
+            ? JSON.parse(payload.value)
+            : payload.value
+          const updated: Record<string, string> = {}
+          KEY_DEFINITIONS.forEach((k) => {
+            updated[k.id] = data[k.id] || ""
+          })
+          setKeys(updated)
+        } catch {
+          // ignore parse errors
+        }
+      }
+
+      // Save confirmation
       if (payload.field_id === "api_keys_saved") {
         setSaving(false)
         setSaved(true)
         setTimeout(() => setSaved(false), 2500)
       }
+
+      // Error
       if (payload.field_id === "api_keys_error") {
         setError(payload.value || "Failed to save keys")
         setSaving(false)

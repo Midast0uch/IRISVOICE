@@ -753,12 +753,24 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                 transition={{ duration: 0.2 }}
                 className="h-full"
               >
-               {/* Integration List Panel for integrations-card */}
-                {card.id === 'integrations-card' ? (
-                  <IntegrationListPanel onBrowseMarketplace={onBrowseMarketplace} />
-                ) : card.id === 'theme-card' ? (
-                  <ThemePanel />
-                ) : card.fields.length === 0 ? (
+                {/* Integration List Panel for integrations-card */}
+                 {card.id === 'integrations-card' ? (
+                   <IntegrationListPanel onBrowseMarketplace={onBrowseMarketplace} />
+                 ) : card.id === 'theme-card' ? (
+                   <ThemePanel />
+                 ) : card.id === 'api-keys-card' ? (
+                   <ApiKeysField
+                     id="api_keys_data"
+                     label="API Keys"
+                     value={(() => {
+                       // Read current value from the card fields
+                       const field = card.fields.find((f: any) => f.id === 'api_keys_data')
+                       return (field?.value as string) ?? ''
+                     })()}
+                     glowColor={glowColor}
+                     sendMessage={sendMessage}
+                   />
+                 ) : card.fields.length === 0 ? (
                   /* Empty state handling (Requirement 5.7, 15.2) */
                   <div className="py-6 text-center">
                     <span className="text-[10px] text-white/40 uppercase tracking-wider">
