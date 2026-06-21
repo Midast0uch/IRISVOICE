@@ -822,6 +822,22 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
     }
   ],
 
+  // api_keys section — saved from the Settings > System > API Keys form
+  api_keys: [
+    {
+      id: 'api-keys-card',
+      label: 'API Keys',
+      icon: 'Key',
+      fields: [
+        {
+          id: 'api_keys_data',
+          type: 'text',
+          label: 'Configured API Keys'
+        }
+      ]
+    }
+  ],
+
   // startup section - startup-card
   startup: [
     {

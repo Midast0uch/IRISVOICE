@@ -7,7 +7,7 @@ import { ENERGY_CYCLE } from '@/lib/timing-config'
 import { Check, Palette, ChevronRight } from "lucide-react"
 import { ConnectionLine } from "./ConnectionLine"
 // Explicitly import from wheel-view fields barrel export to avoid conflict with general fields
-import { ToggleField, SliderField, DropdownField, TextField, ColorField, MonitorInfoField } from "./fields"
+import { ToggleField, SliderField, DropdownField, TextField, ColorField, MonitorInfoField, ApiKeysField } from "./fields"
 import type { Card, FieldConfig, FieldValue } from "@/types/navigation"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
@@ -195,7 +195,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   // Auto-request monitor data when monitor cards are selected (once per card)
   const autoConfirmedRef = React.useRef<Set<string>>(new Set())
   useEffect(() => {
-    const monitorCards = ['analytics-card', 'logs-card', 'diagnostics-card']
+    const monitorCards = ['analytics-card', 'logs-card', 'diagnostics-card', 'api-keys-card']
     if (monitorCards.includes(card.id) && !autoConfirmedRef.current.has(card.id)) {
       autoConfirmedRef.current.add(card.id)
       const sectionId = CARD_TO_SECTION_ID[card.id]
@@ -297,6 +297,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
 
         case "text": {
           const isMonitor = card.id === 'analytics-card' || card.id === 'logs-card' || card.id === 'diagnostics-card'
+          const isApiKeys = card.id === 'api-keys-card'
           if (isMonitor) {
             return (
               <MonitorInfoField
@@ -305,6 +306,18 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                 label={field.label}
                 value={(fieldValue as string) ?? ""}
                 glowColor={glowColor}
+              />
+            )
+          }
+          if (isApiKeys) {
+            return (
+              <ApiKeysField
+                key={field.id}
+                id={field.id}
+                label={field.label}
+                value={(fieldValue as string) ?? ""}
+                glowColor={glowColor}
+                sendMessage={sendCardMessage}
               />
             )
           }
@@ -763,7 +776,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           </div>
 
           {/* Panel Footer - Protective Gutter (Phase 68) */}
-          {!['analytics-card', 'logs-card', 'diagnostics-card'].includes(card.id) && (
+          {!['analytics-card', 'logs-card', 'diagnostics-card', 'api-keys-card'].includes(card.id) && (
             <div className="px-7 py-4 border-t border-white/10">
               <button
                 onClick={onConfirm}
