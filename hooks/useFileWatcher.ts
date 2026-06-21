@@ -21,7 +21,7 @@ export function useFileWatcher(options: UseFileWatcherOptions = {}) {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const connect = useCallback(() => {
-    const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000'}/ws/files`
+    const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8090'}/ws/files`
     try {
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws

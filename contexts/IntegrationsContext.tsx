@@ -176,7 +176,7 @@ export function IntegrationsProvider({
   // @app.websocket("/ws/{client_id}") so bare "/ws" always gets a 403.
   // Use a dedicated "iris_integration" slot to avoid conflicting with the
   // primary "iris" connection opened by useIRISWebSocket.
-  const wsUrl = customWsUrl || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/iris_integration';
+  const wsUrl = customWsUrl || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8090/ws/iris_integration';
   
   // Deep link handling for OAuth callbacks
   useDeepLink({
