@@ -297,7 +297,6 @@ export const SidePanel: React.FC<SidePanelProps> = ({
 
         case "text": {
           const isMonitor = card.id === 'analytics-card' || card.id === 'logs-card' || card.id === 'diagnostics-card'
-          const isApiKeys = card.id === 'api-keys-card'
           if (isMonitor) {
             return (
               <MonitorInfoField
@@ -306,18 +305,6 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                 label={field.label}
                 value={(fieldValue as string) ?? ""}
                 glowColor={glowColor}
-              />
-            )
-          }
-          if (isApiKeys) {
-            return (
-              <ApiKeysField
-                key={field.id}
-                id={field.id}
-                label={field.label}
-                value={(fieldValue as string) ?? ""}
-                glowColor={glowColor}
-                sendMessage={sendCardMessage}
               />
             )
           }
@@ -758,7 +745,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                    <IntegrationListPanel onBrowseMarketplace={onBrowseMarketplace} />
                  ) : card.id === 'theme-card' ? (
                    <ThemePanel />
-                 ) : card.id === 'api-keys-card' ? (
+                 ) : card.id === 'api-keys-card' || card.id === 'api_keys_card' || (CARD_TO_SECTION_ID[card.id] === 'api_keys') ? (
                    <ApiKeysField
                      id="api_keys_data"
                      label="API Keys"
