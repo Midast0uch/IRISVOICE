@@ -4298,25 +4298,31 @@ class IRISGateway:
             # Get available audio devices
             devices = AudioPipeline.list_devices()
 
-            # Separate input and output devices
-            input_devices = [
-                {
-                    "index": d["index"],
-                    "name": d["name"],
-                    "sample_rate": d["sample_rate"],
-                }
-                for d in devices
-                if d["input"]
-            ]
-            output_devices = [
-                {
-                    "index": d["index"],
-                    "name": d["name"],
-                    "sample_rate": d["sample_rate"],
-                }
-                for d in devices
-                if d["output"]
-            ]
+            # Separate input and output devices (sorted alphabetically by name)
+            input_devices = sorted(
+                [
+                    {
+                        "index": d["index"],
+                        "name": d["name"],
+                        "sample_rate": d["sample_rate"],
+                    }
+                    for d in devices
+                    if d["input"]
+                ],
+                key=lambda x: x["name"].lower(),
+            )
+            output_devices = sorted(
+                [
+                    {
+                        "index": d["index"],
+                        "name": d["name"],
+                        "sample_rate": d["sample_rate"],
+                    }
+                    for d in devices
+                    if d["output"]
+                ],
+                key=lambda x: x["name"].lower(),
+            )
 
             self._logger.info(
                 f"[Session: {session_id}] Returning {len(input_devices)} input device(s) and {len(output_devices)} output device(s)",
