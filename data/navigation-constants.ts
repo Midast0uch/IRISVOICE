@@ -47,7 +47,6 @@ export const CARD_TO_SECTION_ID: Record<string, string> = {
   'startup-card': 'startup',
   'behavior-card': 'behavior',
   'notifications-card': 'notifications',
-  'api-keys-card': 'api_keys',
 
   // Monitor
   'analytics-card': 'analytics',
@@ -85,7 +84,6 @@ export const SECTION_TO_LABEL: Record<string, string> = {
   startup: 'Startup',
   behavior: 'Behavior',
   notifications: 'Notifications',
-  api_keys: 'API Keys',
   analytics: 'Analytics',
   logs: 'Logs',
   diagnostics: 'Diagnostics',
@@ -121,7 +119,6 @@ export const SECTION_TO_ICON: Record<string, string> = {
   startup: 'Rocket',
   behavior: 'Sliders',
   notifications: 'Bell',
-  api_keys: 'Key',
   analytics: 'BarChart3',
   logs: 'FileText',
   diagnostics: 'Stethoscope',

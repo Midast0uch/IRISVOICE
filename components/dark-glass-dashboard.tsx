@@ -167,7 +167,7 @@ function useSectionsData() {
       marketplace: ['updates'],
       agent: ['model_selection', 'inference_mode', 'local_model', 'swarm_setup', 'identity', 'memory'],
       automate: ['tools', 'vision', 'desktop_control', 'skills', 'profile'],
-      system: ['power', 'display', 'storage', 'network', 'api_keys'],
+      system: ['power', 'display', 'storage', 'network'],
       customize: ['theme', 'startup', 'behavior', 'notifications'],
       monitor: ['analytics', 'logs', 'diagnostics', 'updates'],
     };

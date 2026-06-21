@@ -7,7 +7,7 @@ import { ENERGY_CYCLE } from '@/lib/timing-config'
 import { Check, Palette, ChevronRight } from "lucide-react"
 import { ConnectionLine } from "./ConnectionLine"
 // Explicitly import from wheel-view fields barrel export to avoid conflict with general fields
-import { ToggleField, SliderField, DropdownField, TextField, ColorField, MonitorInfoField, ApiKeysField } from "./fields"
+import { ToggleField, SliderField, DropdownField, TextField, ColorField, MonitorInfoField } from "./fields"
 import type { Card, FieldConfig, FieldValue } from "@/types/navigation"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
@@ -195,7 +195,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   // Auto-request monitor data when monitor cards are selected (once per card)
   const autoConfirmedRef = React.useRef<Set<string>>(new Set())
   useEffect(() => {
-    const monitorCards = ['analytics-card', 'logs-card', 'diagnostics-card', 'api-keys-card']
+    const monitorCards = ['analytics-card', 'logs-card', 'diagnostics-card']
     if (monitorCards.includes(card.id) && !autoConfirmedRef.current.has(card.id)) {
       autoConfirmedRef.current.add(card.id)
       const sectionId = CARD_TO_SECTION_ID[card.id]
@@ -740,24 +740,12 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                 transition={{ duration: 0.2 }}
                 className="h-full"
               >
-                {/* Integration List Panel for integrations-card */}
-                 {card.id === 'integrations-card' ? (
-                   <IntegrationListPanel onBrowseMarketplace={onBrowseMarketplace} />
-                 ) : card.id === 'theme-card' ? (
-                   <ThemePanel />
-                 ) : card.id === 'api-keys-card' || card.id === 'api_keys_card' || (CARD_TO_SECTION_ID[card.id] === 'api_keys') ? (
-                   <ApiKeysField
-                     id="api_keys_data"
-                     label="API Keys"
-                     value={(() => {
-                       // Read current value from the card fields
-                       const field = card.fields.find((f: any) => f.id === 'api_keys_data')
-                       return (field?.value as string) ?? ''
-                     })()}
-                     glowColor={glowColor}
-                     sendMessage={sendMessage}
-                   />
-                 ) : card.fields.length === 0 ? (
+               {/* Integration List Panel for integrations-card */}
+                {card.id === 'integrations-card' ? (
+                  <IntegrationListPanel onBrowseMarketplace={onBrowseMarketplace} />
+                ) : card.id === 'theme-card' ? (
+                  <ThemePanel />
+                ) : card.fields.length === 0 ? (
                   /* Empty state handling (Requirement 5.7, 15.2) */
                   <div className="py-6 text-center">
                     <span className="text-[10px] text-white/40 uppercase tracking-wider">
@@ -775,7 +763,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           </div>
 
           {/* Panel Footer - Protective Gutter (Phase 68) */}
-          {!['analytics-card', 'logs-card', 'diagnostics-card', 'api-keys-card'].includes(card.id) && (
+          {!['analytics-card', 'logs-card', 'diagnostics-card'].includes(card.id) && (
             <div className="px-7 py-4 border-t border-white/10">
               <button
                 onClick={onConfirm}
