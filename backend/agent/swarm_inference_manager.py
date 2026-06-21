@@ -20,6 +20,22 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# ---------------------------------------------------------------------------
+# Port configuration — Swarm uses its OWN llama-server instances for
+# Director and Workers.  These are NOT the same as the brain/vision ports.
+# Override via environment variables.
+# ---------------------------------------------------------------------------
+
+def _env_int(key: str, default: int) -> int:
+    try:
+        return int(os.environ.get(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+SWARM_DIRECTOR_PORT: int = _env_int("IRIS_SWARM_DIRECTOR_PORT", 8081)
+SWARM_WORKERS_PORT: int = _env_int("IRIS_SWARM_WORKERS_PORT", 8082)
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +65,7 @@ class SwarmConfig:
 
 class SwarmInferenceManager:
     """
-    Manages two llama-server instances: Director (port 8081) and Workers (port 8082).
+    Manages two llama-server instances: Director (port IRIS_SWARM_DIRECTOR_PORT) and Workers (port IRIS_SWARM_WORKERS_PORT).
 
     Auto-detects available VRAM and picks GPU layer splits.
     """
@@ -123,7 +139,7 @@ class SwarmInferenceManager:
             if not cfg.use_api_director and cfg.director_model:
                 self.director_proc = self._start_llama_server(
                     model=cfg.director_model,
-                    port=8081,
+                    port=SWARM_DIRECTOR_PORT,
                     ctx_size=cfg.director_ctx,
                     gpu_layers=cfg.director_gpu_layers,
                     parallel=1,
@@ -137,7 +153,7 @@ class SwarmInferenceManager:
             # Start Workers
             self.workers_proc = self._start_llama_server(
                 model=cfg.worker_model,
-                port=8082,
+                port=SWARM_WORKERS_PORT,
                 ctx_size=cfg.worker_ctx,
                 gpu_layers=cfg.worker_gpu_layers,
                 parallel=4,
@@ -203,8 +219,8 @@ class SwarmInferenceManager:
                 worker_model=self.TURBOQUANT_PATH,
                 director_gpu_layers=99,
                 worker_gpu_layers=99,
-                director_endpoint="http://localhost:8081/v1",
-                workers_endpoint="http://localhost:8082/v1",
+                director_endpoint=f"http://localhost:{SWARM_DIRECTOR_PORT}/v1",
+                workers_endpoint=f"http://localhost:{SWARM_WORKERS_PORT}/v1",
                 use_api_director=False,
             )
 
@@ -218,7 +234,7 @@ class SwarmInferenceManager:
                 director_gpu_layers=0,
                 worker_gpu_layers=99,
                 director_endpoint="",  # Set by API provider in agent_kernel
-                workers_endpoint="http://localhost:8082/v1",
+                workers_endpoint=f"http://localhost:{SWARM_WORKERS_PORT}/v1",
                 use_api_director=True,
             )
 
@@ -233,8 +249,8 @@ class SwarmInferenceManager:
                 worker_model=self.TURBOQUANT_PATH,
                 director_gpu_layers=director_gpu,
                 worker_gpu_layers=99,
-                director_endpoint="http://localhost:8081/v1",
-                workers_endpoint="http://localhost:8082/v1",
+                director_endpoint=f"http://localhost:{SWARM_DIRECTOR_PORT}/v1",
+                workers_endpoint=f"http://localhost:{SWARM_WORKERS_PORT}/v1",
                 use_api_director=False,
             )
 

@@ -250,7 +250,7 @@ class LocalModelManager:
       - Registers atexit + SIGTERM cleanup to kill subprocess on backend exit
     """
 
-    PORT = 8082
+    PORT = int(os.environ.get("IRIS_LOCAL_MODEL_PORT", "8082"))
     ENDPOINT = f"http://127.0.0.1:{PORT}/v1"
 
     # ── Model scan directory resolution ─────────────────────────────────────

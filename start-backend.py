@@ -20,7 +20,9 @@ os.environ['PYTHONPATH'] = str(base_dir) + os.pathsep + os.environ.get('PYTHONPA
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
+# Load .env (defaults), then .env.local (secrets override)
 load_dotenv(base_dir / ".env")
+load_dotenv(base_dir / ".env.local", override=True)
 
 # Set HF_HUB_DISABLE_SYMLINKS_WARNING for HuggingFace
 os.environ.setdefault('HF_HUB_DISABLE_SYMLINKS_WARNING', '1')
@@ -28,9 +30,18 @@ os.environ.setdefault('HF_HUB_DISABLE_SYMLINKS_WARNING', '1')
 # Now import and run uvicorn
 import uvicorn
 
+# Read backend port from config (env var override: IRIS_BACKEND_PORT)
+try:
+    from backend.iris_config import load_config
+    _cfg = load_config()
+    BACKEND_PORT: int = _cfg.ports.backend_port
+except Exception as _exc:
+    print(f"   Warning: could not load port config ({_exc}), using default port 8090")
+    BACKEND_PORT = int(os.environ.get("IRIS_BACKEND_PORT", 8090))
+
 # ---------------------------------------------------------------------------
-# Port cleanup: kill any existing process holding port 8000 so we never
-# see "error while attempting to bind on address ('127.0.0.1', 8000)".
+# Port cleanup: kill any existing process holding our port so we never
+# see "error while attempting to bind on address".
 # ---------------------------------------------------------------------------
 def _kill_port(port: int) -> None:
     """Terminate any process listening on *port* (Windows + Unix)."""
@@ -66,7 +77,17 @@ def _kill_port(port: int) -> None:
         # a clear bind error rather than silently misbehaving.
         print(f"   Warning: could not clear port {port}: {exc}")
 
-_kill_port(8000)
+_kill_port(BACKEND_PORT)
+
+# After killing, verify port is free.  If still occupied, find the next free one.
+try:
+    from backend.utils.port_checker import resolve_ports as _resolve_ports
+    _resolved = _resolve_ports("0.0.0.0", {"backend": BACKEND_PORT})
+    if _resolved["backend"] != BACKEND_PORT:
+        print(f"   Port {BACKEND_PORT} still occupied after kill — falling back to {_resolved['backend']}")
+        BACKEND_PORT = _resolved["backend"]
+except Exception:
+    pass  # non-fatal: if port is really taken, uvicorn will fail with a clear error
 
 # Global flag for graceful shutdown
 shutdown_flag = False
@@ -84,7 +105,7 @@ async def run_server():
     config = uvicorn.Config(
         "backend.main:app",
         host=host,
-        port=8000,
+        port=BACKEND_PORT,
         reload=False,  # Disabled for Windows compatibility
         log_level="info"
     )
@@ -94,8 +115,8 @@ async def run_server():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    print(f"Starting uvicorn server on http://{host}:8000")
-    print(f"  (If tailscale is active, your phone can reach this at http://<machine>.<tailnet>.ts.net:8000)")
+    print(f"Starting uvicorn server on http://{host}:{BACKEND_PORT}")
+    print(f"  (If tailscale is active, your phone can reach this at http://<machine>.<tailnet>.ts.net:{BACKEND_PORT})")
     await server.serve()
 
 def main():

@@ -1,5 +1,67 @@
 # IRIS Changelog
 
+## [Unreleased] — Port Config + Secrets Cleanup — 2026-06-20
+
+### feat: Centralized port configuration with env-var overrides + port availability fallback
+
+All IRIS-owned ports are now centralized in `PortConfig` in `iris_config.py` and
+overridable via environment variables.  Port availability is checked at startup
+with automatic fallback to the next free port if the configured port is in use.
+
+#### New env vars
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `IRIS_BACKEND_PORT` | **8090** (was 8000) | FastAPI backend + WebSocket |
+| `IRIS_BRAIN_PORT` | **18182** (was 8082) | Brain llama-server |
+| `IRIS_VISION_PORT` | **18181** (was 8081) | Vision llama-server |
+| `IRIS_LMSTUDIO_URL` | `http://localhost:1234` | External LM Studio provider URL |
+| `IRIS_OLLAMA_URL` | `http://localhost:11434` | External Ollama provider URL |
+| `IRIS_SWARM_DIRECTOR_PORT` | 8081 | Swarm Director internal server |
+| `IRIS_SWARM_WORKERS_PORT` | 8082 | Swarm Workers internal server |
+| `IRIS_LOCAL_MODEL_PORT` | 8082 | Legacy subprocess model server |
+| `NEXT_PUBLIC_WS_URL` | `ws://hostname:8090/ws/iris` | Frontend WebSocket URL |
+
+**Breaking change:** The default backend port changed from 8000 to **8090**.
+Set `IRIS_BACKEND_PORT=8000` to restore the old default (or use `.env.local`).
+
+#### Files changed
+- **`backend/iris_config.py`** — Added `PortConfig` dataclass with env-var awareness
+  (`__post_init__` reads `IRIS_BACKEND_PORT`, `IRIS_BRAIN_PORT`, `IRIS_VISION_PORT`).
+  Added `_apply_env_overrides()` for provider URLs. Env vars always win over JSON.
+- **`backend/utils/port_checker.py`** (new) — `resolve_ports()` checks each port;
+  if taken, finds the next free one in a range of 20. Logs a clear warning.
+- **`backend/main.py`** — Lifespan startup runs port availability check for all 3
+  IRIS-owned ports. Logs the resolved ports.
+- **`start-backend.py`** — Backend port read from config (env-var fallback).
+  `_kill_port` + port_checker fallback if kill fails. New default: 8090.
+- **`backend/iris_gateway.py`** — Module-level constants `_VISION_PORT`,
+  `_BRAIN_PORT`, `_DEFAULT_LMSTUDIO_URL`, `_DEFAULT_OLLAMA_URL` replace
+  hardcoded strings. `_handle_set_vision_enabled` sends the configured vision port.
+- **`backend/agent/swarm_inference_manager.py`** — Swarm ports set via
+  `IRIS_SWARM_DIRECTOR_PORT` / `IRIS_SWARM_WORKERS_PORT` env vars.
+- **`backend/agent/local_model_manager.py`** — `PORT` class variable reads
+  `IRIS_LOCAL_MODEL_PORT` env var.
+- **`backend/tools/lfm_vl_provider.py`** — Vision port read from config via
+  `_VISION_PORT`. Server start uses `str(_VISION_PORT)`.
+- **`hooks/useIRISWebSocket.ts`** — Default WebSocket URL now uses port 8090
+  (was 8000). `NEXT_PUBLIC_WS_URL` env var overrides.
+- **`.env.example`** (new) — Template with placeholder values.
+- **`.env.local`** — Real API keys moved here (gitignored).
+- **`.env`** — Now contains only placeholder values (loaded first; `.env.local`
+  overrides).
+
+### chore(secrets): cleaned up .env — real keys moved to .env.local
+
+- Moved `PICOVOICE_ACCESS_KEY` and `HF_TOKEN` from `.env` to `.env.local`
+- `.env` now has placeholder values only
+- `start-backend.py` loads `.env`, then `.env.local` with `override=True`
+- `.gitignore` already excluded `.env` and `.env*.local`
+- Added pre-commit hook (`git/hooks/pre-commit`) to scan for secrets
+- Added documentation of how keys flow through load order
+
+---
+
 ## [Unreleased] — Monitor Dashboard + TTS Cleanup + Voice Reference Gitignore — 2026-06-20
 
 ### feat: Monitor dashboard — structured panels with live backend data

@@ -699,11 +699,20 @@ python -m pytest \
 
 ### Backend Configuration
 
-**Environment Variables** (`.env`):
+**Environment Variables** (`.env.local` — or `.env` for shared defaults):
 ```env
 # Server
 BACKEND_HOST=localhost
-BACKEND_PORT=8000
+BACKEND_PORT=8090
+
+# IRIS-owned ports (also overridable via env vars)
+# IRIS_BACKEND_PORT=8090   # FastAPI + WebSocket
+# IRIS_BRAIN_PORT=18182    # Brain llama-server
+# IRIS_VISION_PORT=18181   # Vision llama-server
+
+# Provider endpoints (external services IRIS connects to)
+# IRIS_LMSTUDIO_URL=http://localhost:1234
+# IRIS_OLLAMA_URL=http://localhost:11434
 
 # Picovoice (Wake Word)
 PICOVOICE_ACCESS_KEY=your_key_here

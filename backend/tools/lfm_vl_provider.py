@@ -17,11 +17,19 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Port — IRIS-owned vision port, env-var overridable.  Must match what the
+# iris_gateway's _handle_set_vision_enabled uses.
+# ---------------------------------------------------------------------------
+from backend.iris_config import load_config as _load_vl_config
+
+_VISION_PORT: int = _load_vl_config().ports.vision_port
+
 
 @dataclass
 class LFMVLConfig:
     """Configuration for LFM2.5-VL vision provider."""
-    base_url: str = "http://localhost:8081/v1"
+    base_url: str = f"http://localhost:{_VISION_PORT}/v1"
     temperature: float = 0.1
     min_p: float = 0.15
     repetition_penalty: float = 1.05
@@ -113,21 +121,25 @@ def _find_llama_server_binary() -> Optional[str]:
     return None
 
 
-def _ensure_vision_server_running(base_url: str = "http://localhost:8081") -> bool:
+def _ensure_vision_server_running(base_url: str = "") -> bool:
     """
     Check if llama-server is running. If not, try to spawn it.
     Returns True if server is reachable (either already running or successfully started).
     """
+    requested_port = _VISION_PORT
+
     try:
         import httpx
-        r = httpx.get(f"{base_url}/v1/models", timeout=2.0)
+        # Use the provided base_url, or construct one from the config port
+        check_url = base_url or f"http://localhost:{requested_port}/v1"
+        r = httpx.get(f"{check_url}/v1/models", timeout=2.0)
         if r.status_code == 200:
             return True
     except Exception:
         pass
 
     # Not running — try to auto-start
-    logger.info("[LFMVLProvider] Vision server not running on port 8081. Attempting auto-start...")
+    logger.info(f"[LFMVLProvider] Vision server not running on port {requested_port}. Attempting auto-start...")
 
     model_files = _find_vision_model()
     if not model_files:
@@ -144,7 +156,7 @@ def _ensure_vision_server_running(base_url: str = "http://localhost:8081") -> bo
         binary,
         "-m", model_path,
         "--mmproj", mmproj_path,
-        "--port", "8081",
+        "--port", str(requested_port),
         "--host", "127.0.0.1",
         "-c", "4096",
         "-np", "1",

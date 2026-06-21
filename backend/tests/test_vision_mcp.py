@@ -153,9 +153,9 @@ async def test_vision_get_context_returns_dict_without_hard_error():
 # ── Provider config ───────────────────────────────────────────────────────────
 
 def test_lfm_vl_config_defaults():
-    from backend.tools.lfm_vl_provider import LFMVLConfig
+    from backend.tools.lfm_vl_provider import LFMVLConfig, _VISION_PORT
     cfg = LFMVLConfig()
-    assert cfg.base_url == "http://localhost:8081/v1"
+    assert cfg.base_url == f"http://localhost:{_VISION_PORT}/v1"
     assert cfg.temperature == pytest.approx(0.1)
     assert cfg.min_p == pytest.approx(0.15)
     assert cfg.repetition_penalty == pytest.approx(1.05)

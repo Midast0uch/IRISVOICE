@@ -27,7 +27,8 @@ import asyncio
 def _server_running() -> bool:
     try:
         import httpx
-        r = httpx.get("http://localhost:8081/v1/models", timeout=2.0)
+        from backend.tools.lfm_vl_provider import _VISION_PORT
+        r = httpx.get(f"http://localhost:{_VISION_PORT}/v1/models", timeout=2.0)
         return r.status_code == 200
     except Exception:
         return False
@@ -35,7 +36,7 @@ def _server_running() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _server_running(),
-    reason="llama-server not running on port 8081 — vision server auto-starts on first use, or start manually via _ensure_vision_server_running()"
+    reason=f"llama-server not running on vision port — auto-starts on first use, or start manually via _ensure_vision_server_running()"
 )
 
 

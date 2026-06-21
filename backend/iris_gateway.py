@@ -30,6 +30,39 @@ from typing import Dict, Any, Optional, List, Union, Iterator, Callable
 from backend.utils.observability import get_turn_id, loud_error
 
 # ---------------------------------------------------------------------------
+# Port config accessor — read from env-var-aware config, cached after first
+# call so we don't re-load the JSON file on every reference.
+# ---------------------------------------------------------------------------
+
+_config_cache: "IRISConfig | None" = None
+
+
+def _get_port_config() -> "PortConfig":
+    """Return cached PortConfig, loading from iris_config if needed."""
+    # Import PortConfig lazily to avoid circular imports
+    from .iris_config import PortConfig as _PC
+
+    global _config_cache
+    if _config_cache is None:
+        _config_cache = load_config()
+    ports = _config_cache.ports
+    # Always apply env-var overrides (they may have changed since load)
+    return _PC(
+        backend_port=ports.backend_port,
+        brain_port=ports.brain_port,
+        vision_port=ports.vision_port,
+    )
+
+
+_BRAIN_PORT: int = _get_port_config().brain_port
+_VISION_PORT: int = _get_port_config().vision_port
+_BACKEND_PORT: int = _get_port_config().backend_port
+# Provider URL defaults (also env-var overridable via IRIS_LMSTUDIO_URL / IRIS_OLLAMA_URL)
+_DEFAULT_LMSTUDIO_URL: str = load_config().inference.lm_studio_url or "http://localhost:1234"
+_DEFAULT_OLLAMA_URL: str = load_config().inference.ollama_url or "http://localhost:11434"
+
+
+# ---------------------------------------------------------------------------
 # Pre-compiled regex patterns — used by _clean_for_speech and _speak_response.
 # Compiled once at import time to avoid re.compile() overhead on every call.
 # ---------------------------------------------------------------------------
@@ -1141,8 +1174,8 @@ class IRISGateway:
                     elif provider == "lmstudio":
                         # LM Studio / any OpenAI-compatible local server.
                         lms_endpoint = (
-                            values.get("lmstudio_endpoint", "http://localhost:1234")
-                            or "http://localhost:1234"
+                            values.get("lmstudio_endpoint", _DEFAULT_LMSTUDIO_URL)
+                            or _DEFAULT_LMSTUDIO_URL
                         )
                         kernel.configure_lmstudio(lms_endpoint)
                         kernel.configure_vps({"enabled": False})
@@ -1211,7 +1244,8 @@ class IRISGateway:
                                 cfg.inference.api_key = values.get("api_key", "")
                             elif provider == "lmstudio":
                                 cfg.inference.api_base_url = values.get(
-                                    "lmstudio_endpoint", "http://localhost:1234"
+                                    "lmstudio_endpoint",
+                    load_config().inference.lm_studio_url or "http://localhost:1234",
                                 )
                             elif provider in ("local", "iris_local"):
                                 # Local GGUF — endpoint is the in-process llama server
@@ -2850,8 +2884,8 @@ class IRISGateway:
             vps_url = ""
             openai_api_key = ""
             api_base_url = "https://api.openai.com/v1"
-            ollama_endpoint = "http://localhost:11434"
-            lmstudio_endpoint = "http://localhost:1234"
+            ollama_endpoint = _DEFAULT_OLLAMA_URL
+            lmstudio_endpoint = _DEFAULT_LMSTUDIO_URL
 
             if session_state:
                 # model_provider field lives in the 'model_selection' section.
@@ -2899,15 +2933,15 @@ class IRISGateway:
                 )
                 lmstudio_endpoint = (
                     session_state.get_field_value(
-                        "model_selection", "lmstudio_endpoint", "http://localhost:1234"
+                        "model_selection", "lmstudio_endpoint", _DEFAULT_LMSTUDIO_URL
                     )
-                    or "http://localhost:1234"
+                    or _DEFAULT_LMSTUDIO_URL
                 )
                 ollama_endpoint = (
                     session_state.get_field_value(
-                        "model_selection", "ollama_endpoint", "http://localhost:11434"
+                        "model_selection", "ollama_endpoint", _DEFAULT_OLLAMA_URL
                     )
-                    or "http://localhost:11434"
+                    or _DEFAULT_OLLAMA_URL
                 )
 
             self._logger.info(
@@ -6148,7 +6182,7 @@ class IRISGateway:
     async def _handle_set_vision_enabled(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
-        """Start or stop the LFM2.5-VL llama-server subprocess on port 8081."""
+        """Start or stop the LFM2.5-VL llama-server subprocess on vision_port."""
         payload = message.get("payload", message)
         enabled = bool(payload.get("enabled", False))
         try:
@@ -6173,7 +6207,7 @@ class IRISGateway:
                     "payload": {
                         "enabled": enabled,
                         "running": enabled,
-                        "port": 8081,
+                        "port": _VISION_PORT,
                         "status": status,
                     },
                 },
@@ -6187,7 +6221,7 @@ class IRISGateway:
                     "payload": {
                         "enabled": enabled,
                         "running": False,
-                        "port": 8081,
+                        "port": _VISION_PORT,
                         "error": str(e),
                     },
                 },

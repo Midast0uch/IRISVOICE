@@ -162,6 +162,36 @@ async def lifespan(app: FastAPI):
     app.state._started_at = _time.time()
     logger.info("IRIS Backend starting up...")
 
+    # ── Port availability check at startup ────────────────────────────
+    try:
+        from backend.iris_config import load_config as _pc_load
+        from backend.utils.port_checker import resolve_ports as _pc_resolve
+
+        _cfg = _pc_load()
+        _ports = _pc_resolve("0.0.0.0", {
+            "backend": _cfg.ports.backend_port,
+            "brain": _cfg.ports.brain_port,
+            "vision": _cfg.ports.vision_port,
+        })
+        for _name, _actual in _ports.items():
+            _expected = {
+                "backend": _cfg.ports.backend_port,
+                "brain": _cfg.ports.brain_port,
+                "vision": _cfg.ports.vision_port,
+            }
+            if _actual != _expected[_name]:
+                logger.warning(
+                    f"[Ports] {_name} was configured for port {_expected[_name]} "
+                    f"but it is in use — using port {_actual} instead"
+                )
+        logger.info(
+            f"[Ports] Backend → 0.0.0.0:{_ports['backend']} | "
+            f"Brain → 0.0.0.0:{_ports['brain']} | "
+            f"Vision → 0.0.0.0:{_ports['vision']}"
+        )
+    except Exception as _pc_exc:
+        logger.warning(f"[Ports] Port availability check unavailable: {_pc_exc}")
+
     try:
         # Prune stale UUID session directories older than 7 days.
         # Keeps session_iris* dirs — removes only auto-generated UUID dirs.

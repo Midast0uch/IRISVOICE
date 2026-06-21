@@ -31,6 +31,61 @@ logger = logging.getLogger("irisvoice")
 # ---------------------------------------------------------------------------
 _config_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Env-var helpers — read from os.environ at call time, always win.
+# Uses a single shot so we only call os.environ.get() once per key per
+# process (faster than reading config dicts in hot paths).
+# ---------------------------------------------------------------------------
+
+def _env_int(key: str, default: int) -> int:
+    """Read integer env var, fall back to *default*."""
+    try:
+        return int(os.environ.get(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _env_str(key: str, default: str) -> str:
+    """Read string env var, fall back to *default*."""
+    return os.environ.get(key, default)
+
+
+# ---------------------------------------------------------------------------
+# Port configuration — env-var aware defaults for IRIS-owned services.
+# These are separate from the InferenceConfig provider URLs (lm_studio etc.)
+# because IRIS-owned ports are things we bind to, not connect to.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PortConfig:
+    """Ports IRIS binds to. All overridable via environment variables.
+
+    Env-var overrides are applied in __post_init__ (after field defaults
+    AND after from_dict() construction), so they always win.
+    """
+
+    backend_port: int = 8090
+    brain_port: int = 18182
+    vision_port: int = 18181
+
+    def __post_init__(self) -> None:
+        """Apply env-var overrides on top of whatever constructor set."""
+        self.backend_port = _env_int("IRIS_BACKEND_PORT", self.backend_port)
+        self.brain_port = _env_int("IRIS_BRAIN_PORT", self.brain_port)
+        self.vision_port = _env_int("IRIS_VISION_PORT", self.vision_port)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PortConfig":
+        """Restore from dict, then __post_init__ applies env-var overrides."""
+        return cls(
+            backend_port=int(d.get("backend_port", 8090)),
+            brain_port=int(d.get("brain_port", 18182)),
+            vision_port=int(d.get("vision_port", 18181)),
+        )
+
 
 def with_modify_config(modifier_fn: Callable[["IRISConfig"], None]) -> "IRISConfig":
     """Atomically load config, apply *modifier_fn*, and save.
@@ -259,6 +314,7 @@ class IRISConfig:
     swarm_roles: SwarmRoleConfig = field(default_factory=SwarmRoleConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
+    ports: PortConfig = field(default_factory=PortConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -267,6 +323,7 @@ class IRISConfig:
             "swarm_roles": self.swarm_roles.to_dict(),
             "system": self.system.to_dict(),
             "tts": self.tts.to_dict(),
+            "ports": self.ports.to_dict(),
         }
 
     @classmethod
@@ -277,6 +334,7 @@ class IRISConfig:
             swarm_roles=SwarmRoleConfig.from_dict(raw.get("swarm_roles", {})),
             system=SystemConfig.from_dict(raw.get("system", raw)),
             tts=TTSConfig.from_dict(raw.get("tts", {})),
+            ports=PortConfig.from_dict(raw.get("ports", {})),
         )
 
 
@@ -285,19 +343,49 @@ class IRISConfig:
 # ---------------------------------------------------------------------------
 
 
+def _apply_env_overrides(cfg: IRISConfig) -> None:
+    """Override config fields from environment variables.
+
+    Runs AFTER JSON loading so env vars always win.
+    IRIS-owned ports already read env vars at PortConfig import time
+    via _env_int() — this handles the provider URLs.
+    """
+    # Provider endpoints (these are URLs IRIS connects to, not binds to)
+    lm_url = _env_str("IRIS_LMSTUDIO_URL", "")
+    if lm_url:
+        cfg.inference.lm_studio_url = lm_url
+    ollama_url = _env_str("IRIS_OLLAMA_URL", "")
+    if ollama_url:
+        cfg.inference.ollama_url = ollama_url
+
+
 def load_config() -> IRISConfig:
     """Load config from data/iris_config.json.
 
+    Environment variables partially override loaded fields:
+      IRIS_LMSTUDIO_URL     -> inference.lm_studio_url
+      IRIS_OLLAMA_URL       -> inference.ollama_url
+
+    IRIS-owned ports (backend/brain/vision) are set at PortConfig field
+    definition time via _env_int() — they never hit the JSON at all.
+
     If the file is missing or malformed, returns defaults.
     """
+    cfg: IRISConfig
     try:
         if _IRIS_CONFIG_PATH.exists():
             with open(_IRIS_CONFIG_PATH, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            return IRISConfig.from_dict(raw)
+            cfg = IRISConfig.from_dict(raw)
+        else:
+            cfg = IRISConfig()
     except Exception as exc:
         logger.warning(f"[Config] Failed to load {_IRIS_CONFIG_PATH}: {exc}")
-    return IRISConfig()
+        cfg = IRISConfig()
+
+    # Environment variables override even loaded JSON values.
+    _apply_env_overrides(cfg)
+    return cfg
 
 
 def save_config(cfg: IRISConfig) -> None:
