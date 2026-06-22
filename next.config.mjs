@@ -19,14 +19,14 @@ const nextConfig = {
     /\.ts\.net$/,
   ],
 
-  // Backend lives on :8000; let the browser reach it through the same origin
+  // Backend lives on :8090; let the browser reach it through the same origin
   // so we don't have to fight CORS, and so production builds don't need a
   // separate API base URL.
   async rewrites() {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8000/api/:path*',
+        destination: 'http://localhost:8090/api/:path*',
       },
     ];
   },

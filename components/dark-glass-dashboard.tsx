@@ -495,6 +495,7 @@ export function DarkGlassDashboard({
     selectCategory,
     selectSectionWs,
     updateCardValue: contextUpdateCardValue,
+    updateField: wsUpdateField,
     clearFieldError,
     confirmCard,
     sendMessage,
@@ -579,15 +580,19 @@ export function DarkGlassDashboard({
     }
   }, [openTab, closeTab, activeSubApp])
 
-  // Local write handler — updates our local store so FieldRow reflects changes instantly.
+  // Local write handler — updates our local store so FieldRow reflects changes instantly,
+  // AND sends the individual field change to the backend via WebSocket (live update).
+  // This means the backend always has the latest value, not just after pressing Apply.
   const localUpdateField = useCallback((sectionId: string, fieldId: string, value: any) => {
     setLocalFieldValues(prev => ({
       ...prev,
       [sectionId]: { ...(prev[sectionId] || {}), [fieldId]: value },
     }));
+    // Live-update the backend via WebSocket (optimistic — does not block UI)
+    if (wsUpdateField) wsUpdateField(sectionId, fieldId, value);
     // Also propagate to external store if provided via props
     if (propUpdateField) propUpdateField(sectionId, fieldId, value);
-  }, [propUpdateField]);
+  }, [propUpdateField, wsUpdateField]);
 
   // Listen for model-selected events from the ModelBrowserPanel
   useEffect(() => {

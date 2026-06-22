@@ -119,7 +119,14 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* Tauri widget: body is fully transparent — only the orb and labels render.
+     In-browser dev mode (.in-browser added by layout.tsx detection script):
+     body gets the dark background so the page isn't blank. */
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background: transparent;
+  }
+  .in-browser body {
+    @apply bg-background;
   }
 }

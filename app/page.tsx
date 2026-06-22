@@ -391,7 +391,7 @@ export default function Home() {
             className="flex items-center justify-center"
             animate={{
               scale: (isBothOpen || (isChatOpen && isDashboardOpen)) ? 1.0 : uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.7 : 1,
-              filter: (isBothOpen || (isChatOpen && isDashboardOpen)) ? 'blur(0px)' : uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 'blur(1px)' : 'blur(0px)',
+              filter: 'blur(0px)',
               opacity: 1,
             }}
             transition={{

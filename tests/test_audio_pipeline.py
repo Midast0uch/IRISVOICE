@@ -2,7 +2,7 @@
 Comprehensive Audio Pipeline Tests
 
 Tests the complete TTS synthesis pipeline:
-1. CosyVoice2-0.5B zero-shot voice cloning + streaming
+1. Pocket-TTS zero-shot voice cloning + streaming
 2. pyttsx3 fallback (Built-in voice)
 3. Audio normalization integration
 4. Gateway streaming playback
@@ -53,7 +53,7 @@ def create_test_text():
 # ---------------------------------------------------------------------------
 
 class TestTTSManager:
-    """Tests for TTSManager (CosyVoice2-0.5B)."""
+    """Tests for TTSManager (Pocket-TTS)."""
     
     def test_singleton_pattern(self):
         """Test that get_tts_manager() returns the same instance."""
@@ -72,9 +72,13 @@ class TestTTSManager:
     def test_update_config(self):
         """Test configuration updates."""
         manager = get_tts_manager()
-        manager.update_config(tts_voice="Built-in")
-        config = manager.get_config()
-        assert config['tts_voice'] == 'Built-in'
+        original_voice = manager.config.get("tts_voice", "Cloned Voice")
+        try:
+            manager.update_config(tts_voice="Built-in")
+            config = manager.get_config()
+            assert config['tts_voice'] == 'Built-in'
+        finally:
+            manager.update_config(tts_voice=original_voice)
     
     def test_synthesize_empty_text(self):
         """Test that empty text returns None."""
@@ -91,9 +95,13 @@ class TestTTSManager:
     def test_synthesize_disabled(self):
         """Test TTS disabled mode."""
         manager = get_tts_manager()
-        manager.update_config(tts_enabled=False)
-        result = manager.synthesize("Hello world")
-        assert result is None
+        original_enabled = manager.config.get("tts_enabled", True)
+        try:
+            manager.update_config(tts_enabled=False)
+            result = manager.synthesize("Hello world")
+            assert result is None
+        finally:
+            manager.update_config(tts_enabled=original_enabled)
     
     def test_voice_info(self):
         """Test voice information retrieval."""
@@ -272,7 +280,7 @@ def test_end_to_end_pipeline():
     
     Flow:
     1. Normalize text for speech
-    2. Synthesize via TTS manager (CosyVoice2 or Built-in)
+    2. Synthesize via TTS manager (Pocket-TTS or Built-in)
     3. Play through audio engine
     """
     print("\n=== Starting End-to-End Pipeline Test ===")
@@ -293,7 +301,7 @@ def test_end_to_end_pipeline():
     # Verify audio properties
     assert len(audio) > 0, "Audio should have samples"
     assert np.all(np.isfinite(audio)), "Audio values should be finite"
-    print(f"Audio sample rate: {24000} Hz (CosyVoice2 output, resampled to 16kHz)")
+    print(f"Audio sample rate: {24000} Hz (Pocket-TTS output, resampled to 16kHz)")
     
     # Step 3: Audio playback
     try:

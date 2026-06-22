@@ -461,6 +461,7 @@ interface NavigationContextValue {
   selectCategory: (category: string) => void
   selectSectionWs: (sectionId: string) => void
   sendMessage: (type: string, payload?: any) => boolean
+  updateField: (sectionId: string, fieldId: string, value: string | number | boolean) => void
   clearFieldError: (sectionId: string, fieldId: string) => void
   
   // Voice actions
@@ -501,6 +502,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     selectCategory,
     selectSection: selectSectionWs,
     sendMessage,
+    updateField,
     clearFieldError,
     sections, // This is the sections from WebSocket
     startVoiceCommand,
@@ -842,6 +844,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     selectCategory,
     selectSectionWs,
     sendMessage,
+    updateField,
     clearFieldError,
     
     // Voice actions
@@ -905,6 +908,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     selectCategory,
     selectSectionWs,
     sendMessage,
+    updateField,
     clearFieldError,
     
     // Voice actions

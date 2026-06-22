@@ -560,6 +560,7 @@ export function useIRISWebSocket(
         // Wake word detected — same visual feedback as double-click.
         // Backend already started recording via _handle_voice, so no need
         // to send voice_command_start (that would be a duplicate).
+        console.log('[IRIS WebSocket] wake_detected — activating listening state')
         setVoiceState("listening")
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:voice_state_change', {
@@ -611,13 +612,18 @@ export function useIRISWebSocket(
         }
         const content = typeof payload.content === 'string' ? payload.content : null
         if (content) {
+          const thinking = typeof payload.thinking === 'string' ? payload.thinking : undefined
           setLastTextResponse({
             text: content,
             sender: "assistant",
-            ...(payload.thinking && typeof payload.thinking === 'string'
-              ? { thinking: payload.thinking }
-              : {}),
+            ...(thinking ? { thinking } : {}),
           })
+          // Also dispatch CustomEvent so chat-view synchronous listener catches it
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('iris:text_response', {
+              detail: { text: content, sender: 'assistant', thinking }
+            }))
+          }
         }
         break
       }
@@ -693,7 +699,11 @@ export function useIRISWebSocket(
           // Dispatch CustomEvent for SidePanel and other listeners
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('iris:text_response', {
-              detail: { text: payload.text }
+              detail: {
+                text: payload.text,
+                sender,
+                thinking: typeof payload.thinking === 'string' ? payload.thinking : undefined,
+              }
             }))
           }
         }

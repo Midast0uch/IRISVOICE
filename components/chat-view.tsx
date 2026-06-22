@@ -218,13 +218,12 @@ export function ChatWing({
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
-  const lastProcessedResponseRef = useRef<typeof lastTextResponse>(null)
   const activeConversationIdRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const chatPanelRef = useRef<HTMLDivElement>(null)
   const chatOuterRef = useRef<HTMLDivElement>(null)
-  const { lastTextResponse, voiceState, isChatTyping, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
+  const { voiceState, isChatTyping, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
   
   // Notification system state
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -342,71 +341,60 @@ export function ChatWing({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
 
-  // Handle incoming WebSocket messages from the navigation context.
-  // Uses refs instead of state deps to prevent double-processing when
-  // activeConversationId updates cause the effect to re-run.
+  // Handle incoming WebSocket messages via the CustomEvent listener.
   useEffect(() => {
-    if (!lastTextResponse) return
-    // Deduplicate: skip if this exact response object was already processed
-    if (lastTextResponse === lastProcessedResponseRef.current) return
-    lastProcessedResponseRef.current = lastTextResponse
-
-    const isUserVoice = lastTextResponse.sender === "user"
-
-    // User voice transcriptions show as user bubbles (no TTS — server handles audio)
-    // Assistant responses show as assistant bubbles (client-side TTS highlighting)
-    const newMessage: Message = {
-      id: (Date.now() + 1).toString(),
-      text: lastTextResponse.text,
-      sender: lastTextResponse.sender,
-      timestamp: new Date(),
-      words: isUserVoice ? undefined : lastTextResponse.text.split(' '),
-      feedback: isUserVoice ? undefined : null,
-      thinking: lastTextResponse.thinking || undefined,
+    function handleTextResponse(e: Event) {
+      const { text, sender = 'assistant', thinking } = (e as CustomEvent).detail as {
+        text: string; sender?: 'user' | 'assistant' | 'error'; thinking?: string
+      }
+      if (!text) return
+      const isUserVoice = sender === "user"
+      const newMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text,
+        sender,
+        timestamp: new Date(),
+        words: isUserVoice ? undefined : text.split(' '),
+        feedback: isUserVoice ? undefined : null,
+        thinking: thinking || undefined,
+      }
+      const currentActiveId = activeConversationIdRef.current
+      if (currentActiveId) {
+        setConversations(prev => prev.map(conv =>
+          conv.id === currentActiveId
+            ? {
+                ...conv,
+                messages: [...conv.messages, newMessage],
+                lastMessagePreview: newMessage.text.substring(0, 60),
+                timestamp: new Date()
+              }
+            : conv
+        ))
+      } else {
+        const newId = Date.now().toString()
+        activeConversationIdRef.current = newId
+        setActiveConversationId(newId)
+        setConversations(prev => {
+          const newConv: Conversation = {
+            id: newId,
+            title: `Conversation ${prev.length + 1}`,
+            preview: newMessage.text.substring(0, 60),
+            messages: [newMessage],
+            timestamp: new Date(),
+            isPinned: false,
+            lastMessagePreview: newMessage.text.substring(0, 60)
+          }
+          return [...prev, newConv]
+        })
+      }
+      if (!isUserVoice) {
+        setCurrentTtsMessageId(newMessage.id)
+        setIsSpeaking(true)
+      }
     }
-
-    // Read active ID from ref (not closure) to avoid stale-closure double-trigger
-    const currentActiveId = activeConversationIdRef.current
-
-    if (currentActiveId) {
-      // Add to existing conversation
-      setConversations(prev => prev.map(conv =>
-        conv.id === currentActiveId
-          ? {
-              ...conv,
-              messages: [...conv.messages, newMessage],
-              lastMessagePreview: newMessage.text.substring(0, 60),
-              timestamp: new Date()
-            }
-          : conv
-      ))
-    } else {
-      // Create new conversation — set active ID BEFORE setConversations to
-      // ensure the ref is current when the state update lands
-      const newId = Date.now().toString()
-      activeConversationIdRef.current = newId
-      setActiveConversationId(newId)
-      setConversations(prev => {
-        const newConv: Conversation = {
-          id: newId,
-          title: `Conversation ${prev.length + 1}`,
-          preview: newMessage.text.substring(0, 60),
-          messages: [newMessage],
-          timestamp: new Date(),
-          isPinned: false,
-          lastMessagePreview: newMessage.text.substring(0, 60)
-        }
-        return [...prev, newConv]
-      })
-    }
-
-    // Only trigger client-side TTS word-highlight for assistant messages.
-    // Voice responses: TTS audio is played server-side via TTSManager.
-    if (!isUserVoice) {
-      setCurrentTtsMessageId(newMessage.id)
-      setIsSpeaking(true)
-    }
-  }, [lastTextResponse, isOpen])
+    window.addEventListener('iris:text_response', handleTextResponse)
+    return () => window.removeEventListener('iris:text_response', handleTextResponse)
+  }, [])
   
   // Handle voice command errors
   useEffect(() => {

@@ -159,6 +159,9 @@ def normalize_for_speech(text: str) -> str:
         text,
     )
 
+    # 11.5. Remove emojis
+    text = re.sub(r"[\U00010000-\U0010ffff]", "", text)
+
     # 12. Collapse whitespace BEFORE symbol substitution so symbol padding (double
     #     spaces) is not then collapsed away.
     text = re.sub(r"[ \t]+", " ", text)    # runs of spaces/tabs → single space
@@ -175,6 +178,9 @@ def normalize_for_speech(text: str) -> str:
     text = re.sub(r"\s*->\s*",   "  returns  ",                   text)
     text = re.sub(r"\s*=>\s*",   "  maps to  ",                   text)
     text = re.sub(r"\^", "", text)  # caret — just removed
+
+    # 13.5. Replace exclamation marks with periods
+    text = text.replace("!", ".")
 
     # 14. Mid-sentence periods: ". lowercase" → ", lowercase"
     #     A period followed by optional space then a lowercase letter

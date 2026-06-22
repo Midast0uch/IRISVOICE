@@ -18,22 +18,22 @@ import {
 import { RadialArcNodes } from "./radial/RadialArcNodes"
 
 // ── Label configuration (matches PrototypeOrbShellsRotating winner) ────
-// Positions are relative to orb center in a 180px container.
+// Positions are relative to orb center in a 120px container.
 // CHAT at bottom, MENU at top, VOICE at left — exactly as the winner.
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789→↑←'
 
 // Label positions are relative to orb center, scaled to container size.
-// Base values are for 180px container; we scale by size/180 at render time.
-const LABEL_BASE = 68
+// Base values are for 120px container; we scale by size/120 at render time.
+const LABEL_BASE = 45
 const LABELS = [
   { final: '→ Chat ←', x: 0, y: LABEL_BASE, swirl: '180deg', action: 'chat' as const },
   { final: '↑ Menu', x: 0, y: -LABEL_BASE, swirl: '-120deg', action: 'menu' as const },
-  { final: '↑↑ Voice', x: -LABEL_BASE, y: 30, swirl: '240deg', action: 'voice' as const },
+  { final: '↑↑ Voice', x: -LABEL_BASE, y: 20, swirl: '240deg', action: 'voice' as const },
 ]
 
 const CANVAS_SIZE = 90
-const CONTAINER_SIZE = 180
+const CONTAINER_SIZE = 120
 
 /**
  * XurOrb — the Spiral Dissolve Winner orb component.
@@ -237,14 +237,24 @@ export function XurOrb({
     } else {
       startVoiceCommand()
     }
-    onDoubleClick()
-  }, [isVoiceActive, startVoiceCommand, endVoiceCommand, onDoubleClick])
+    // Intentionally NOT calling onDoubleClick() here — that would fire
+    // the parent's handleDoubleClick (app/page.tsx) which also calls
+    // startVoiceCommand().  Since React hasn't re-rendered yet after
+    // the setVoiceState("listening") in startVoiceCommand(), the parent
+    // would still see voiceState === "idle" and fire a duplicate
+    // voice_command_start, killing the just-started recording.
+  }, [isVoiceActive, startVoiceCommand, endVoiceCommand])
 
   // Label click handlers — cycle animation + trigger action
   const handleLabelClick = useCallback((action: 'chat' | 'menu' | 'voice', e: React.MouseEvent) => {
     e.stopPropagation()
     e.preventDefault()
-    triggerAnimation()
+    // Only animate on chat/menu labels. Voice gets its own state change
+    // (scale + haze) from voiceState — the C/D/A click animation here
+    // was visually dominating and making users think voice didn't fire.
+    if (action !== 'voice') {
+      triggerAnimation()
+    }
     if (action === 'menu') {
       // Sync menuOpen with navigation: opening menu = nav level 2, closing = level 1
       const willOpen = !menuOpen
@@ -338,8 +348,10 @@ export function XurOrb({
   const labelsVisible = !isWingsOpen && !menuOpen
 
   const orbRetreatScale = isWingsOpen ? 0.85 : 1.0
-  const orbBlur = isWingsOpen ? 2 : 0
-  const orbOpacity = isWingsOpen ? 0.6 : 1.0
+  // Blur removed while wings are open — it made the orb look unfocused.
+  // Keep a subtle opacity dip so it reads as background without vanishing.
+  const orbBlur = 0
+  const orbOpacity = isWingsOpen ? 0.85 : 1.0
   const baseScale = isExpanded ? 1.1 : 1
   const effectiveScale = isPressed
     ? 0.92
@@ -381,6 +393,11 @@ export function XurOrb({
 
   return (
     <>
+      {/* onDoubleClick intentionally omitted — useManualDragWindow (above)
+          handles double-click via its mousedown/mouseup timer.
+          Duplicating it here as a React onDoubleClick would fire
+          handleDoubleClick twice, sending duplicate voice_command_start
+          messages and killing the just-started recording. */}
       <motion.div
         ref={orbRef}
         className="relative flex items-center justify-center cursor-pointer pointer-events-auto"
@@ -395,10 +412,6 @@ export function XurOrb({
           position: 'relative',
         }}
         onMouseDown={handleMouseDown}
-        onDoubleClick={(e) => {
-          e.preventDefault()
-          handleDoubleClick()
-        }}
         animate={{
           scale: finalScale,
           filter: `blur(${orbBlur}px)`,
@@ -437,8 +450,8 @@ export function XurOrb({
           <div
             className="relative"
             style={{
-              width: `${Math.min(size * 0.5, 90)}px`,
-              height: `${Math.min(size * 0.5, 90)}px`,
+              width: `${Math.min(size, 120)}px`,
+              height: `${Math.min(size, 120)}px`,
               zIndex: 2,
               animation: 'xurFloat 4s ease-in-out infinite',
             }}
@@ -456,7 +469,7 @@ export function XurOrb({
           {/* Glitch labels — → Chat ← / ↑ Menu / ↑↑ Voice */}
           <div className="absolute inset-0" style={{ zIndex: 1 }}>
             {LABELS.map((label, i) => {
-              const scale = size / 180
+              const scale = size / 120
               const lx = label.x * scale
               const ly = label.y * scale
               return (
@@ -470,6 +483,10 @@ export function XurOrb({
                   pointerEvents: labelsVisible ? 'auto' : 'none',
                   opacity: labelsVisible ? 1 : 0,
                   transition: 'opacity 0.3s ease',
+                  // Increased hit target — padding absorbs mis-clicks near text
+                  padding: '8px 10px',
+                  margin: '-8px -10px',
+                  cursor: 'pointer',
                 }}
                 onMouseDown={handleLabelMouseDown}
                 onClick={(e) => handleLabelClick(label.action, e)}
