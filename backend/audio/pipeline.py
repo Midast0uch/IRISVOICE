@@ -37,12 +37,24 @@ class AudioPipeline:
         sample_rate: int = 16000,
         frame_length: int = 512,
         channels: int = 1,
+        echo_cancellation: bool = True,
     ):
         self.input_device = input_device
         self.output_device = output_device
         self.sample_rate = sample_rate
         self.frame_length = frame_length
         self.channels = channels
+        # The config exposes echo_cancellation=True, but PortAudio's WASAPI
+        # backend on this machine does not actually provide echo cancellation
+        # (the flag is a documented no-op without a communications-mode device).
+        # Real echo avoidance is done in half-duplex: while TTS is playing, the
+        # input callback skips STT buffering and frame-listener forwarding so
+        # IRIS's own voice is not captured and fed back into STT. See
+        # set_tts_active() and _input_callback().
+        self.echo_cancellation = echo_cancellation
+        # Half-duplex gate: when True, incoming frames are dropped (TTS is
+        # playing through the headphones and would be captured by the mic).
+        self._tts_active: bool = False
 
         # Streams
         self._input_stream = None
@@ -126,6 +138,10 @@ class AudioPipeline:
             )
             self._input_stream.start()
             input_ok = True
+            logger.info(
+                "[AudioPipeline] Input stream started "
+                f"(half-duplex TTS gating: {'on' if self.echo_cancellation else 'off'})"
+            )
         except Exception as e:
             logger.error(f"[AudioPipeline] Input stream failed: {e}")
             self._input_stream = None
@@ -157,6 +173,19 @@ class AudioPipeline:
         self.cleanup()
         logger.info("[AudioPipeline] Stopped")
 
+    def set_tts_active(self, active: bool) -> None:
+        """Half-duplex gate: while TTS is playing, drop captured audio frames.
+
+        PortAudio's WASAPI backend on this machine has no real echo
+        cancellation, so when IRIS speaks through headphones the mic captures
+        its own TTS output. While ``active`` is True, ``_input_callback``
+        skips STT buffering and frame-listener forwarding so that feedback is
+        never transcribed or buffered. Porcupine wake-word detection is gated
+        separately in ``AudioEngine._process_audio_frame`` via the same flag
+        propagated through ``AudioEngine.set_tts_active``.
+        """
+        self._tts_active = bool(active)
+
     def _input_callback(self, indata, frames, time, status):
         """This is called (from a separate thread) for each audio block."""
         if status:
@@ -164,6 +193,14 @@ class AudioPipeline:
         if self._is_running:
             # The input data is a numpy array, take the first channel
             audio_frame = indata[:, 0].astype(np.float32)
+
+            # Half-duplex echo avoidance: while TTS is playing, drop the frame
+            # before it reaches STT buffers or frame listeners. The primary
+            # callback (AudioEngine._process_audio_frame) is still invoked so
+            # the engine's own _tts_active gate can suppress wake-word
+            # detection uniformly — but STT capture is blocked here.
+            if self._tts_active and self.echo_cancellation:
+                return
 
             # Buffer audio if buffering is enabled
             with self._buffer_lock:

@@ -267,8 +267,18 @@ class AudioEngine:
         - Reduces CPU load so the TTS synthesis thread is not starved of frames.
         Call set_tts_active(True) before the first sentence plays and
         set_tts_active(False) once playback finishes.
+
+        Also propagates to the pipeline so STT buffering and frame-listener
+        forwarding are blocked while TTS plays (half-duplex echo avoidance).
+        Without this, headphone users hear static feedback because the mic
+        captures IRIS's own TTS and feeds it back into STT.
         """
         self._tts_active = active
+        if self.pipeline is not None:
+            try:
+                self.pipeline.set_tts_active(active)
+            except Exception as exc:
+                logger.warning(f"[AudioEngine] pipeline.set_tts_active failed: {exc}")
 
     def interrupt_speech(self) -> None:
         """Signal any in-progress TTS playback to stop immediately.
@@ -327,6 +337,7 @@ class AudioEngine:
                 output_device=output_device,
                 sample_rate=self.config["sample_rate"],
                 frame_length=self.config["frame_length"],
+                echo_cancellation=self.config.get("echo_cancellation", True),
             )
 
             logger.info("[AudioEngine] Initialization complete")

@@ -27,6 +27,21 @@ load_dotenv(base_dir / ".env.local", override=True)
 # Set HF_HUB_DISABLE_SYMLINKS_WARNING for HuggingFace
 os.environ.setdefault('HF_HUB_DISABLE_SYMLINKS_WARNING', '1')
 
+# Ensure a CA bundle is configured for outbound HTTPS (httpx/requests).
+# This machine's OpenSSL ships with no system CA bundle (cafile=None on
+# Windows), which broke every cloud LLM call with CERTIFICATE_VERIFY_FAILED.
+# If .env.local didn't already set these, resolve the certifi bundle here.
+# Done before importing uvicorn/app so every outbound client picks it up.
+if not os.environ.get('SSL_CERT_FILE') or not os.environ.get('REQUESTS_CA_BUNDLE'):
+    try:
+        import certifi
+        _ca = certifi.where()
+        os.environ.setdefault('SSL_CERT_FILE', _ca)
+        os.environ.setdefault('REQUESTS_CA_BUNDLE', _ca)
+        print(f"   TLS CA bundle resolved via certifi: {_ca}")
+    except Exception as _ca_exc:
+        print(f"   WARNING: could not resolve certifi CA bundle ({_ca_exc})")
+
 # Now import and run uvicorn
 import uvicorn
 
