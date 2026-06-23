@@ -48,21 +48,17 @@ const ContentTypePatterns = {
   email: /(?:^From:|^To:|^Subject:|\S+@\S+\.\S+)/m
 };
 
-// Heuristic: does this message look like a web-research / search query?
-// If yes, route to crawler_query WS type instead of text_message.
-const CRAWLER_PATTERNS = [
-  /\b(search|look up|find|google|bing|lookup)\b/i,
-  /\b(latest|current|recent|today'?s?|right now|as of)\b/i,
-  /\b(news|headlines|article|report|prices?|stock|weather)\b/i,
-  /\b(what('?s| is) (the )?(price|cost|rate|score|status|news))\b/i,
-  /\b(show me|get me|fetch|retrieve|pull up)\b/i,
-]
-
-function isCrawlerQuery(text: string): boolean {
-  const t = text.trim()
-  if (t.length < 10) return false
-  return CRAWLER_PATTERNS.some(re => re.test(t))
-}
+// NOTE: chat messages are NO LONGER auto-routed to the web crawler.
+// The previous heuristic (CRAWLER_PATTERNS) matched common English words
+// like "current", "recent", "find", "show me" and misrouted normal
+// conversation to crawler_query — which then failed with "crawl4ai is not
+// installed" or tried to crawl the web for a conversational question.
+//
+// Web research is now opt-in via the Web toggle pill to the LEFT of the
+// text area. When webMode is true, handleSendMessage routes to
+// crawler_query; otherwise every message goes to /api/chat (the agent).
+// The agent can still decide to use web tools on its own — this toggle
+// only controls the explicit "research this on the web" intent.
 
 const ContentTypeLabels: Record<ContentType, string> = {
   markdown: 'Markdown Document',
@@ -214,6 +210,7 @@ export function ChatWing({
     }
   }, [activeConversationId])
   const [inputText, setInputText] = useState("")
+  const [webMode, setWebMode] = useState(false)  // explicit Web toggle — routes send to crawler_query
   const [justSent, setJustSent] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -552,9 +549,11 @@ export function ChatWing({
       }
     }
 
-    // Route to crawler if the query looks like a web-research request
-    if (isCrawlerQuery(userMessage.text)) {
-      // Web crawler queries still go through WebSocket (streaming results)
+    // Route to crawler ONLY when the user has explicitly enabled Web mode
+    // via the toggle pill. Previously a greedy regex auto-routed any message
+    // containing words like "current"/"recent"/"find" to the crawler.
+    if (webMode) {
+      // Web crawler queries go through WebSocket (streaming results)
       sendMessage?.("crawler_query", { query: userMessage.text })
       return
     }
@@ -2266,7 +2265,7 @@ ${message.text}`;
                             return [...prev, { id: newId, title: `Conversation ${prev.length + 1}`, preview: s.message.substring(0, 60), messages: [userMsg], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
                           })()
                     )
-                    const msgType = isCrawlerQuery(s.message) ? 'crawler_query' : 'text_message'
+                    const msgType = webMode ? 'crawler_query' : 'text_message'
                     sendMessage?.(msgType, msgType === 'crawler_query' ? { query: s.message } : { text: s.message })
                   }}
                   onDismiss={() => setCurrentSuggestions([])}
@@ -2300,6 +2299,32 @@ ${message.text}`;
               </AnimatePresence>
 
                 <div className={isRemoteView ? "relative flex items-end gap-2 px-1" : "relative flex items-end gap-2"} style={{ marginRight: '4px' }}>
+
+                {/* Web toggle — explicit opt-in for web research routing.
+                    Left of the text area. OFF by default; every message goes to
+                    the agent. ON routes the next send to crawler_query. */}
+                <motion.button
+                  type="button"
+                  onClick={() => setWebMode(v => !v)}
+                  disabled={voiceState === 'listening'}
+                  className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                  style={{
+                    color: webMode ? glowColor : 'rgba(255,255,255,0.5)',
+                    background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                    border: `1px solid ${webMode ? glowColor : `${fontColor}80`}`,
+                    borderRadius: '9999px',
+                    boxShadow: webMode ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+                    transform: 'translateY(-6.5px)',
+                  }}
+                  whileHover={{ scale: 1.08 }}
+                  whileTap={{ scale: 0.92 }}
+                  title={webMode ? 'Web mode ON — next send researches on the web' : 'Web mode OFF — chat with the agent'}
+                  aria-pressed={webMode}
+                  aria-label="Toggle web research mode"
+                >
+                  <Icon icon={webMode ? 'mdi:web' : 'mdi:web-off'} width={16} height={16} />
+                </motion.button>
+
                 <div className="flex-1 relative">
                   <textarea
                     ref={inputRef as any}

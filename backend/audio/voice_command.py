@@ -205,28 +205,25 @@ class VoiceCommandHandler:
                 "[VoiceCommand] New recording requested while already recording — cancelling previous take"
             )
             self.cancel_recording()
-            # The transcription thread checks _stop_event every ~15 ms (VAD poll
-            # interval).  Give it a short window to set is_recording=False before
-            # we continue; 50 ms is more than enough.
+            # The transcription thread checks _stop_event every frame (32 ms).
+            # Give it up to 500 ms to read its current frame, notice the event,
+            # and set is_recording = False.  The old 60 ms value was too tight
+            # and caused all subsequent voice commands to fail permanently
+            # with "didn't stop in time".
             import time as _t
 
-            for _ in range(4):  # up to 4 × 15 ms = 60 ms
+            for _ in range(50):  # up to 50 × 10 ms = 500 ms
                 if not self.is_recording:
                     break
-                _t.sleep(0.015)
+                _t.sleep(0.01)
             if self.is_recording:
-                # Still hasn't stopped — don't double-start, caller will retry
                 logger.warning(
-                    "[VoiceCommand] Previous recording thread didn't stop in time — skipping new start"
+                    "[VoiceCommand] Previous recording thread didn't stop in time after 500 ms — skipping new start"
                 )
                 return False
 
         try:
             logger.info("[VoiceCommand] Starting recording (faster-whisper)...")
-            # Play beep in parallel so recording setup doesn't wait for audio I/O
-            threading.Thread(
-                target=self._play_activation_beep, daemon=True, name="iris-beep"
-            ).start()
 
             self.is_recording = True
             self._recording_started_at = time.monotonic()
@@ -235,7 +232,14 @@ class VoiceCommandHandler:
             self._cancel_event.clear()  # clear any stale cancel from the previous take
             self._stop_event.clear()
 
-            # Register AudioEngine frame listener once (kept for lifetime of handler)
+            # Register AudioEngine frame listener once (kept for lifetime of handler).
+            # IMPORTANT: do NOT return early here.  The previous code returned True
+            # immediately after first-time registration, which meant the FIRST voice
+            # trigger registered the listener but never started the _run_transcription
+            # thread — so no VAD/Whisper ever ran on the first activation, the orb
+            # hung in RECORDING, and the next trigger raced against the dangling
+            # recording ("opens and closes right after").  Now we register (if
+            # needed) and fall through to start the transcription thread unconditionally.
             if not self._frame_listener_registered:
                 if self.audio_engine.pipeline:
                     self.audio_engine.register_frame_listener(self._capture_frame)
@@ -244,9 +248,16 @@ class VoiceCommandHandler:
                     logger.error("[VoiceCommand] AudioEngine pipeline not available")
                     self._set_state(VoiceState.ERROR, "Audio pipeline not ready")
                     self.is_recording = False
-                return (
-                    True  # recording IS in progress — this is a success, not a failure
-                )
+                    return False
+
+            # Play beep AFTER registering the listener but route it through
+            # set_tts_active so the half-duplex gate in AudioPipeline._input_callback
+            # drops the frames captured while the beep plays.  Otherwise the
+            # just-opened mic captures the 880 Hz confirmation tone and you hear
+            # static feedback at every voice trigger.
+            threading.Thread(
+                target=self._play_activation_beep, daemon=True, name="iris-beep"
+            ).start()
 
             # Start transcription thread (handles VAD + whisper in background)
             self._transcription_thread = threading.Thread(
@@ -679,15 +690,35 @@ class VoiceCommandHandler:
         threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
 
     def _play_activation_beep(self) -> None:
-        """Play a short 880 Hz confirmation beep via the AudioEngine pipeline."""
+        """Play a short 880 Hz confirmation beep via the AudioEngine pipeline.
+
+        Wraps playback in set_tts_active(True/False) so the half-duplex gate in
+        AudioPipeline._input_callback drops the frames captured while the beep
+        is audible.  Without this, the just-opened mic captures the beep and
+        the user hears static feedback at every voice trigger.
+        """
         try:
             sample_rate = 24000
             duration = 0.08
             t = np.linspace(0, duration, int(sample_rate * duration))
             beep = (0.25 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
             if self.audio_engine.pipeline:
-                self.audio_engine.pipeline.play_audio(beep)
+                # Engage the half-duplex gate for the beep + a small tail so the
+                # mic doesn't capture the trailing resonance of the tone.
+                self.audio_engine.set_tts_active(True)
+                try:
+                    self.audio_engine.pipeline.play_audio(beep)
+                finally:
+                    # 150 ms tail covers the 80 ms beep + output buffer drain.
+                    time.sleep(0.15)
+                    self.audio_engine.set_tts_active(False)
         except Exception as e:
+            # Always release the gate even if playback raised — otherwise the
+            # pipeline stays muted and the real recording captures nothing.
+            try:
+                self.audio_engine.set_tts_active(False)
+            except Exception:
+                pass
             logger.warning(f"[VoiceCommand] Beep failed: {e}")
 
     def _set_state(self, new_state: VoiceState, message: str = "") -> None:

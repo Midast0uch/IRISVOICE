@@ -847,6 +847,13 @@ export function DarkGlassDashboard({
 
   const applyCooldownRef = useRef(false);
 
+  // Snapshot of localFieldValues captured each time handleApplySettings runs to
+  // completion.  Used by handleCloseWithSave to detect unsaved changes and
+  // auto-save them before navigating away.  Without this, closing the dashboard
+  // via X / Escape / backdrop without clicking APPLY silently dropped every
+  // setting change (voice, model, theme, etc.).
+  const lastAppliedRef = useRef<Record<string, Record<string, any>> | null>(null);
+
   const handleApplySettings = useCallback(async () => {
     // Guard: prevent rapid re-clicks (2s cooldown on top of state guard)
     if (applyCooldownRef.current) return;
@@ -888,6 +895,9 @@ export function DarkGlassDashboard({
       // Keep the button disabled for at least 2s so the backend can process
       // and guard against duplicate subprocess/server launches.
       await new Promise(r => setTimeout(r, 2000));
+      // Record what we just persisted so handleCloseWithSave can detect whether
+      // there are further unsaved edits before the next close.
+      lastAppliedRef.current = JSON.parse(JSON.stringify(localFieldValues));
     } catch (error) {
       console.error("[DarkGlassDashboard] Apply failed:", error);
     } finally {
@@ -895,6 +905,72 @@ export function DarkGlassDashboard({
       setTimeout(() => { applyCooldownRef.current = false; }, 2000);
     }
   }, [sendMessage, activeSections, localFieldValues]);
+
+  // Close handler — auto-saves unsaved changes before navigating away.
+  // Fires handleApplySettings (without the cooldown guard, since this is the
+  // only chance to persist before unmount) if localFieldValues differs from
+  // the last successfully-applied snapshot.  Idempotent: if nothing changed,
+  // it just calls onClose.
+  const handleCloseWithSave = useCallback(async () => {
+    try {
+      const current = JSON.stringify(localFieldValues);
+      const last = lastAppliedRef.current ? JSON.stringify(lastAppliedRef.current) : null;
+      if (current !== last) {
+        // Bypass the cooldown — closing is a one-shot, and we must not skip the
+        // save just because the user clicked APPLY <2s ago (the backend already
+        // dedupes by section_id).
+        applyCooldownRef.current = false;
+        await handleApplySettings();
+      }
+    } catch (e) {
+      console.warn('[DarkGlassDashboard] save-on-close failed:', e);
+    } finally {
+      onClose?.();
+    }
+  }, [localFieldValues, handleApplySettings, onClose]);
+
+  // Ref mirror of localFieldValues so the unmount cleanup (which captures a
+  // stale closure) always reads the LATEST values.  Updated every render.
+  const localFieldValuesRef = useRef(localFieldValues);
+  localFieldValuesRef.current = localFieldValues;
+
+  // UNMOUNT save — the single chokepoint that catches EVERY close path
+  // (X button via handleCloseWithSave, Escape via dashboard-wing, backdrop
+  // click, navigation).  The dashboard unmounts on all of them because
+  // dashboard-wing renders it inside `{isOpen && (<DarkGlassDashboard .../>)}`.
+  // Without this, closing via Escape/backdrop silently dropped unsaved settings.
+  //
+  // React cleanup runs synchronously and can't await, so we fire HTTP POSTs
+  // directly (fire-and-forget) instead of awaiting handleApplySettings.  The
+  // HTTP /api/config/save path is more reliable than WebSocket during teardown
+  // because the WS may be mid-close.
+  const savedOnCloseRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      if (savedOnCloseRef.current) return;  // guard against double-invoke
+      const current = localFieldValuesRef.current;
+      const last = lastAppliedRef.current;
+      const isDirty = !last || JSON.stringify(current) !== JSON.stringify(last);
+      if (!isDirty) return;
+      savedOnCloseRef.current = true;
+      // Fire HTTP saves for every populated section (same shape as
+      // handleApplySettings).  keepalive:true lets the request outlive unmount.
+      try {
+        Object.entries(current).forEach(([sectionId, sectionValues]) => {
+          if (sectionValues && typeof sectionValues === 'object' && Object.keys(sectionValues).length > 0) {
+            fetch('/api/config/save', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ section_id: sectionId, card_id: sectionId, values: sectionValues }),
+              keepalive: true,
+            }).catch(() => { /* best-effort on close */ });
+          }
+        });
+      } catch (e) {
+        console.warn('[DarkGlassDashboard] unmount save failed:', e);
+      }
+    };
+  }, []);
 
   const handleBrowserNavigate = (url: string) => {
     const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
@@ -1075,7 +1151,7 @@ export function DarkGlassDashboard({
           {unreadCount > 0 && <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full" style={{ backgroundColor: glowColor }} />}
         </button>
         <button
-          onClick={onClose}
+          onClick={handleCloseWithSave}
           className="p-2 rounded-lg transition-all duration-150"
           style={{ color: 'rgba(255,255,255,0.75)' }}
           onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
