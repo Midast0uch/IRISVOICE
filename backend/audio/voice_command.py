@@ -832,17 +832,23 @@ class VoiceCommandHandler:
                 sound = (0.25 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
 
             if self.audio_engine.pipeline:
-                # Engage the half-duplex gate for the sound + a small tail so
-                # the mic doesn't capture the trailing resonance.
-                self.audio_engine.set_tts_active(True)
-                try:
-                    self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
-                finally:
-                    # 150 ms tail covers the 80 ms beep + output buffer drain.
-                    # Custom sounds may be longer, so add a small buffer.
-                    tail = max(0.15, len(sound) / sr + 0.1)
-                    time.sleep(tail)
-                    self.audio_engine.set_tts_active(False)
+                # Play the activation sound WITHOUT the half-duplex gate.
+                #
+                # Previously the gate (set_tts_active) was engaged here to
+                # prevent the mic from capturing the 880 Hz tone.  But when
+                # the output device is a loopback (Stereo Mix), the call to
+                # play_audio blocks for many seconds because the loopback
+                # device runs at a different sample rate than the source.
+                # This left the gate locked open for the entire duration,
+                # causing ALL captured frames to be silently dropped
+                # ("No audio captured — ignoring").
+                #
+                # The liquid-bubble-3000.wav is a soft ambient sound that
+                # does NOT cause the same feedback issues as a pure sine
+                # tone.  We play it without a gate; the mic captures 1
+                # second of bubble sound at most, which is inaudible in
+                # the VAD threshold.
+                self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
         except Exception as e:
             # Always release the gate even if playback raised — otherwise the
             # pipeline stays muted and the real recording captures nothing.
