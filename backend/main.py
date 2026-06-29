@@ -1798,14 +1798,30 @@ async def _on_wake_word_async(wake_word_name: str):
     """
     Called from AudioEngine when Porcupine detects the wake word.
     Routes to the main IRIS UI session (not integration sessions).
-    """
-    import time as _time
 
-    global _last_wake_word_time
-    now = _time.monotonic()
-    if now - _last_wake_word_time < _WAKE_WORD_COOLDOWN_SEC:
-        return  # debounce: Porcupine sometimes re-detects the same utterance
-    _last_wake_word_time = now
+    NOTE: Cooldown / debounce is handled in `_on_wake_word_sync` (the
+    thread-safe caller). The async handler MUST NOT re-check the cooldown
+    because `_last_wake_word_time` was just set a few ms ago by the sync
+    wrapper — re-checking would suppress the first (valid) detection.
+    """
+    # DIAGNOSTIC: log which input device is currently being used
+    try:
+        if hasattr(self, "_audio_engine") and self._audio_engine:
+            dev = self._audio_engine.config.get("input_device")
+            logger.info(
+                f"[WakeWord] Wake word '{wake_word_name}' DETECTED — "
+                f"input device: {dev}, firing voice_command_start"
+            )
+        else:
+            logger.info(
+                f"[WakeWord] Wake word '{wake_word_name}' DETECTED — "
+                f"no audio_engine on self, firing voice_command_start"
+            )
+    except Exception:
+        logger.exception("[WakeWord] diagnostic failed")
+        logger.info(
+            f"[WakeWord] Wake word '{wake_word_name}' DETECTED — firing voice_command_start"
+        )
 
     try:
         ws_manager = get_websocket_manager()
@@ -1838,7 +1854,11 @@ async def _on_wake_word_async(wake_word_name: str):
             )
             iris_gateway = get_iris_gateway()
             await iris_gateway._handle_voice(
-                session_id, client_id, {"type": "voice_command_start"}, auto_stop=True
+                session_id,
+                client_id,
+                {"type": "voice_command_start"},
+                auto_stop=True,
+                pre_speech_timeout_sec=3.0,
             )
         else:
             logger.warning(f"[WakeWord] Session {session_id} has no connected clients")

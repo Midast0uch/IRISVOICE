@@ -21,6 +21,7 @@ import logging
 import threading
 import time
 import wave
+import os
 
 import numpy as np
 import requests
@@ -551,7 +552,17 @@ class VoiceCommandHandler:
             # Concatenate all captured frames into one float32 array
             audio_np = np.concatenate(self._raw_frames, axis=0).astype(np.float32)
             duration = len(audio_np) / self.sample_rate
-            logger.info(f"[VoiceCommand] Transcribing {duration:.1f}s of audio...")
+            rms = float(np.sqrt(np.mean(audio_np ** 2)))
+            peak = float(np.max(np.abs(audio_np)))
+            logger.info(
+                f"[VoiceCommand] Transcribing {duration:.1f}s of audio "
+                f"(RMS={rms:.4f}, peak={peak:.4f})..."
+            )
+            if rms < 1e-4:
+                logger.warning(
+                    "[VoiceCommand] Audio RMS near zero — likely silence. "
+                    "Check input device selection (TTS feedback loop?)"
+                )
 
             self._set_state(VoiceState.PROCESSING, "Transcribing...")
 
@@ -769,27 +780,68 @@ class VoiceCommandHandler:
         threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
 
     def _play_activation_beep(self) -> None:
-        """Play a short 880 Hz confirmation beep via the AudioEngine pipeline.
+        """Play a short confirmation sound when voice command starts.
 
-        Wraps playback in set_tts_active(True/False) so the half-duplex gate in
-        AudioPipeline._input_callback drops the frames captured while the beep
-        is audible.  Without this, the just-opened mic captures the beep and
-        the user hears static feedback at every voice trigger.
+        Three modes (resolved once at call time):
+
+          1. ``activation_sound`` set to a WAV file path  → play that file
+          2. ``activation_sound`` set to "off" / "none"    → skip playback
+          3. default                                         → 880 Hz sine tone
+
+        Wraps playback in ``set_tts_active(True/False)`` so the half-duplex
+        gate in ``AudioPipeline._input_callback`` drops the frames captured
+        while the sound is audible.  Without this gate, the just-opened mic
+        captures the activation sound and the user hears static feedback at
+        every voice trigger.
         """
+        sound = None
+        sr = 24000
         try:
-            sample_rate = 24000
-            duration = 0.08
-            t = np.linspace(0, duration, int(sample_rate * duration))
-            beep = (0.25 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+            cfg = getattr(self.audio_engine, "config", {}) or {}
+            mode = (cfg.get("activation_sound") or "default").lower()
+
+            if mode in ("off", "none", "false", "disable", "disabled"):
+                # No activation sound at all — user explicitly disabled
+                return
+
+            if mode not in ("default", "beep"):
+                # Treat as a file path
+                path = mode
+                if not os.path.isabs(path):
+                    path = os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        path,
+                    )
+                if os.path.isfile(path):
+                    import soundfile as sf
+                    sound, sr = sf.read(path, dtype="float32")
+                    if sound.ndim > 1:
+                        sound = sound.mean(axis=1)  # stereo → mono
+                    logger.info(f"[VoiceCommand] Playing activation sound: {path}")
+                else:
+                    logger.warning(
+                        f"[VoiceCommand] activation_sound={path!r} not found, "
+                        "falling back to 880 Hz tone"
+                    )
+
+            if sound is None:
+                # Default: 880 Hz sine tone for 80 ms
+                sr = 24000
+                duration = 0.08
+                t = np.linspace(0, duration, int(sr * duration))
+                sound = (0.25 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+
             if self.audio_engine.pipeline:
-                # Engage the half-duplex gate for the beep + a small tail so the
-                # mic doesn't capture the trailing resonance of the tone.
+                # Engage the half-duplex gate for the sound + a small tail so
+                # the mic doesn't capture the trailing resonance.
                 self.audio_engine.set_tts_active(True)
                 try:
-                    self.audio_engine.pipeline.play_audio(beep)
+                    self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
                 finally:
                     # 150 ms tail covers the 80 ms beep + output buffer drain.
-                    time.sleep(0.15)
+                    # Custom sounds may be longer, so add a small buffer.
+                    tail = max(0.15, len(sound) / sr + 0.1)
+                    time.sleep(tail)
                     self.audio_engine.set_tts_active(False)
         except Exception as e:
             # Always release the gate even if playback raised — otherwise the
@@ -798,7 +850,7 @@ class VoiceCommandHandler:
                 self.audio_engine.set_tts_active(False)
             except Exception:
                 pass
-            logger.warning(f"[VoiceCommand] Beep failed: {e}")
+            logger.warning(f"[VoiceCommand] Activation sound failed: {e}")
 
     def _set_state(self, new_state: VoiceState, message: str = "") -> None:
         """Update internal state and fire the state-change callback."""

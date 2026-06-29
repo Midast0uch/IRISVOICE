@@ -90,7 +90,12 @@ class AudioEngine:
             "echo_cancellation": True,
             "sample_rate": 16000,
             "frame_length": 512,
-            "activation_sound": True,
+            # Sound played when voice command activates.
+            #   - "default" : built-in 880 Hz sine tone
+            #   - "beep"    : alias for default
+            #   - "off"     : no sound
+            #   - "<path>"  : path to a WAV file (absolute or relative to repo root)
+            "activation_sound": "liquid-bubble-3000.wav",
             "native_audio_enabled": True,
             "native_audio_model": "./models",
         }
@@ -316,11 +321,30 @@ class AudioEngine:
             if self.config.get("input_device") is None:
                 try:
                     devices = AudioPipeline.list_devices()
-                    first_input = next((d for d in devices if d.get("input")), None)
-                    if first_input:
-                        self.config["input_device"] = first_input.get("index")
+                    inputs = [d for d in devices if d.get("input")]
+                    # Skip virtual/loopback devices that route system audio back to a mic
+                    # — these cause audio feedback (TTS → loopback → wake word fires).
+                    _LOOPBACK_KEYWORDS = (
+                        "stereo mix",
+                        "what u hear",
+                        "cable output",
+                        "voicemeeter output",
+                        "voicemeeter aux",
+                        "vb-audio",
+                    )
+
+                    def is_real_mic(d):
+                        name = (d.get("name") or "").lower()
+                        return not any(kw in name for kw in _LOOPBACK_KEYWORDS)
+
+                    real_inputs = [d for d in inputs if is_real_mic(d)]
+                    # Prefer real mics over virtual loopback
+                    selected = real_inputs[0] if real_inputs else (inputs[0] if inputs else None)
+                    if selected:
+                        self.config["input_device"] = selected.get("index")
                         logger.info(
-                            f"[AudioEngine] Auto-selected input: {first_input['name']} (index {first_input['index']})"
+                            f"[AudioEngine] Auto-selected input: {selected['name']} (index {selected['index']})"
+                            + (" [real mic]" if is_real_mic(selected) else " [WARNING: virtual/loopback device]")
                         )
                 except Exception as device_err:
                     logger.error(

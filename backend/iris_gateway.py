@@ -327,6 +327,7 @@ class IRISGateway:
             elif msg_type in [
                 "voice_command_start",
                 "voice_command_end",
+                "voice_command_cancel",
                 "voice_command",
             ]:
                 await self._handle_voice(session_id, client_id, message)
@@ -1643,6 +1644,13 @@ class IRISGateway:
         msg_type = message.get("type")
         if msg_type == "voice_command":
             msg_type = "voice_command_start"
+
+        # DIAGNOSTIC: log every voice message with payload summary
+        payload_keys = list(message.get("payload", {}).keys()) if isinstance(message.get("payload"), dict) else []
+        self._logger.info(
+            f"[VoiceMSG] type={msg_type} session={session_id} client={client_id} "
+            f"auto_stop={auto_stop} payload_keys={payload_keys}"
+        )
 
         try:
             if msg_type == "voice_command_start":
