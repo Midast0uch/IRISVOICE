@@ -54,7 +54,7 @@
 │  │ (NEW: parakeet_      │◄─────┤ (iris_gateway + agent)       │  │
 │  │  service.py)         │ PCM  │                              │  │
 │  │                      │ 80ms │  - VoiceCommandHandler       │  │
-│  │ FastAPI + NeMo       │      │    (Porcupine — unchanged)   │  │
+ │  │ HF Transformers      │      │    (Porcupine — unchanged)   │  │
 │  │ CUDA fp16            │      │  - TTSManager (Pocket-TTS)   │  │
 │  │ Port 8765            │      │  - AudioEngine               │  │
 │  └──────────┬───────────┘      └──────────┬───────────────────┘  │
@@ -104,7 +104,7 @@
 
 | File | Purpose |
 |------|---------|
-| `backend/audio/parakeet_service.py` | FastAPI + NeMo ASR server, WS streaming endpoint, REST fallback, model lifecycle |
+| `backend/audio/parakeet_service.py` | FastAPI + HF Parakeet TDT ASR server, WS streaming endpoint, REST fallback, model lifecycle |
 | `backend/audio/parakeet_buffer.py` | Cache-aware streaming buffer (TDT-specific chunked inference) |
 | `hooks/useParakeetSTT.ts` | React hook: mic capture (Tauri + MediaRecorder) → 80 ms PCM → WS to Parakeet |
 | `tests/test_parakeet_service.py` | Unit tests for the ASR service (mocked model) |
@@ -119,7 +119,7 @@
 | `app/api/chat/route.ts` | After successful chat response, fire-and-forget POST to `http://localhost:8000/iris/speak` so the REST text path also produces TTS. |
 | `components/chat-view.tsx` | (a) `turn_id` dedup via `useRef<Set<string>>`. (b) New `iris:voice_final` listener. (c) Replace 200 ms word-tick with `tts_word` events. |
 | `hooks/useIRISWebSocket.ts` | Add `voice_audio_chunk` outgoing + `voice_result` incoming handlers. Expose `startParakeetSTT` / `stopParakeetSTT`. |
-| `requirements.txt` | Add `nemo_toolkit[asr]`, `fastapi`, `uvicorn[standard]`. Keep `faster-whisper` for fallback. |
+| `requirements.txt` | Add `transformers>=5.12.0`, `fastapi`, `uvicorn[standard]`. Keep `faster-whisper` for fallback. |
 | `app/page.tsx` | Comment-only: document that double-click triggers `startParakeetSTT()`. |
 | `data/irispulse-config.json` | Add `parakeet_service_url` (default `ws://localhost:8765/ws/stream`), `parakeet_enabled`, `parakeet_auto_start_dev`. |
 
@@ -146,7 +146,7 @@
 ### 4.1 `backend/audio/parakeet_service.py` (NEW)
 
 **Responsibilities:**
-- Load NeMo Parakeet TDT 0.6B v3 on CUDA fp16 at startup (lifespan hook)
+- Load HuggingFace Parakeet TDT 0.6B v3 on CUDA fp16 at startup (lifespan hook)
 - Expose `WebSocket /ws/stream` — binary PCM int16 mono 16 kHz → `{"type":"partial"|"final","text","confidence"}`
 - Expose `POST /transcribe` — full WAV/PCM body → `{"text","language","duration_s"}`
 - Expose `GET /healthz` — `{"model_loaded","device","vram_mb","uptime_s"}`
@@ -157,7 +157,7 @@
 
 ```python
 """
-Parakeet ASR Service — NVIDIA NeMo TDT 0.6B v3 on local RTX 3070.
+Parakeet ASR Service — HuggingFace Parakeet TDT 0.6B v3 on local GPU (RTX 3070).
 
 Sole ASR backend for both the Tauri widget and the web browser.
 WebSocket streaming: 80ms PCM int16 mono 16kHz chunks.
@@ -207,18 +207,19 @@ async def lifespan(app: FastAPI):
     cfg: ServiceConfig = app.state.config
     logger.info("Loading Parakeet model: %s on %s (%s)", cfg.model_name, cfg.device, cfg.precision)
 
-    # Lazy import — only fail if user actually starts the service
-    from nemo.collections.asr.models import ASRModel
-    model = ASRModel.from_pretrained(cfg.model_name)
-    model = model.to(cfg.device)
-    if cfg.precision == "fp16":
-        model = model.half()
-    elif cfg.precision == "int8":
-        # NeMo's quantize() is model-specific; this is a placeholder for the
-        # INT8 path — implementation lives in PR 1.
-        model = model  # TODO(PR7): add int8 quantize() call
+    # Lazy import via HuggingFace Transformers (NeMo is not Windows-compatible)
+    from transformers import AutoModelForTDT, AutoProcessor
+    torch_dtype = torch.float16 if cfg.precision == "fp16" else torch.float32
+    model = AutoModelForTDT.from_pretrained(
+        cfg.model_name,
+        torch_dtype=torch_dtype,
+        device_map=cfg.device if cfg.device == "cuda" else None,
+        low_cpu_mem_usage=True,
+    )
+    processor = AutoProcessor.from_pretrained(cfg.model_name)
     model.eval()
     app.state.model = model
+    app.state.processor = processor
     app.state.started_at = time.monotonic()
     logger.info("Parakeet model ready. VRAM: %.1f MB",
                 torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0)
@@ -350,7 +351,7 @@ if __name__ == "__main__":
 ### 4.2 `backend/audio/parakeet_buffer.py` (NEW)
 
 **Responsibilities:**
-- Wrap NeMo's TDT chunked inference with a per-connection state object
+- Receive audio chunks via WebSocket, accumulate into a per-connection ring buffer
 - Maintain a ring buffer of recent audio (left context)
 - Decode partial hypotheses on each new chunk
 - Flush final hypothesis on close
@@ -376,7 +377,7 @@ class ParakeetStreamingBuffer:
         ...
 ```
 
-The exact TDT decode logic is borrowed from NeMo's `examples/asr/asr_chunked_inference/rnnt/speech_to_text_streaming_infer_rnnt.py`. For PR 1, we stub the inference call with a mock; real NeMo integration lands in PR 1 follow-up (we want the file structure landed and tested first).
+The decoder receives accumulated audio context and returns a hypothesis. For PR 1, the decoder is a stub; real HuggingFace ParakeetForTDT integration lands in PR 1 follow-up (we want the file structure landed and tested first).
 
 ### 4.3 `backend/iris_gateway.py` — 3 patches
 
@@ -528,8 +529,8 @@ faster-whisper>=1.0.0
 pvporcupine>=2.2.0
 sounddevice>=0.4.6
 
-# NEW
-nemo_toolkit[asr]>=2.4.0
+# NEW (HuggingFace Transformers — NeMo does not support Windows)
+transformers>=5.12.0
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 ```
@@ -639,7 +640,7 @@ tests/e2e/test_porcupine_unchanged.py
 
 **Pre-flight**
 - [ ] `nvidia-smi` shows 3070 with <2 GB used
-- [ ] `pip install nemo_toolkit[asr]` succeeds
+- [ ] `pip install transformers>=5.12.0` succeeds
 - [ ] `python -m backend.audio.parakeet_service --device cuda` starts cleanly
 - [ ] `curl http://localhost:8765/healthz` returns `{"model_loaded": true, "device": "cuda"}`
 
@@ -743,7 +744,7 @@ tests/e2e/test_porcupine_unchanged.py
 
 | Risk | Mitigation |
 |------|-----------|
-| NeMo install is heavy (1.5 GB) and slow | Make import lazy; surface clear error if `nemo_toolkit[asr]` missing |
+| Transformers model download on first run is ~2 GB | Document the first-run time; cache in HF_HOME; import is lazy |
 | Parakeet model download on first run is ~2 GB | Document the first-run time; cache in HF_HOME; consider pre-downloading in `download_models.py` |
 | GPU OOM under concurrent streams | `max_concurrent_streams: int = 16` semaphore; return 503 with clear error |
 | Browser mic permission denied | Show toast + permission prompt, not silent fail |

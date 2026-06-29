@@ -7,7 +7,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 ### 🎤 Voice & Audio
 - **Wake Word Detection**: Custom wake words using Picovoice Porcupine with automatic file discovery
 - **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
-- **Parakeet ASR (GPU)**: NVIDIA Parakeet TDT 0.6B v3 running on RTX 3070 — shared WebSocket streaming service (`ws://localhost:8765/ws/stream`), REST `/transcribe` endpoint, Prometheus `/metrics`. Both Tauri (backend mic) and web (`getUserMedia`) clients stream PCM to the same service. Lazy NeMo import, graceful fallback to faster-whisper on CPU.
+- **Parakeet ASR (GPU)**: NVIDIA Parakeet TDT 0.6B v3 (requires NVIDIA GPU with 8 GB+ VRAM, e.g. RTX 3070) — shared WebSocket streaming service (`ws://localhost:8765/ws/stream`), REST `/transcribe` endpoint, Prometheus `/metrics`. Both Tauri (backend mic) and web (`getUserMedia`) clients stream PCM to the same service. Lazy HuggingFace Transformers import, graceful fallback to faster-whisper on CPU.
 - **End-to-End Audio Processing**: Porcupine (wake words) → Parakeet TDT 0.6B (GPU ASR) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS (TTS)
 - **Voice Commands**: Natural language voice interaction with double-click activation
 - **Text-to-Speech**: Pocket-TTS (~100M int8 quantized, zero-shot voice cloning from a user-provided reference WAV) with built-in speaker presets
@@ -865,7 +865,7 @@ IRISVOICE/
 │   │   ├── engine.py          # AudioEngine — frame ingest, VAD, listener dispatch
 │   │   ├── voice_command.py   # Voice command — Parakeet primary STT, faster-whisper fallback
 │   │   ├── parakeet_buffer.py # TDT streaming buffer (Hypothesis, ring buffer, decoder callback)
-│   │   ├── parakeet_service.py# FastAPI NeMo ASR service — 4 endpoints, lazy import, throttled decode
+│   │   ├── parakeet_service.py# FastAPI HuggingFace Parakeet TDT ASR service (4 endpoints, lazy import, throttled decode)
 │   │   └── tts_normalizer.py
 │   ├── tools/           # MCP tool integration
 │   │   └── vision_system.py
@@ -982,14 +982,11 @@ python -m pytest backend/agent/tests/ -v
 # C++ Hybrid Core smoke tests (9 tests — FFI, Caducean, EML, Ingestor, Immortus)
 python -m pytest backend/tests/test_iris_core_smoke.py -v
 
-# Parakeet ASR unit tests (33 pass, 0 fail — service buffer + gateway patches + voice_command)
-python -m pytest tests/test_parakeet_service.py tests/test_iris_gateway_patches.py tests/test_voice_command_parakeet.py -v
+# Parakeet ASR unit tests (53 pass, 10 skip — service, gateway, voice_command, Porcupine regression)
+python -m pytest backend/tests/test_parakeet_service.py backend/tests/test_iris_gateway_patches.py backend/tests/test_voice_command_parakeet.py backend/tests/test_porcupine_regression.py -v
 
 # Parakeet GPU integration tests (skip if no CUDA or service not running)
-python -m pytest tests/test_parakeet_integration.py -v
-
-# Porcupine regression tests (13 tests — API contract, silence, TTS suppression, thread safety)
-python -m pytest tests/test_porcupine_regression.py -v
+python -m pytest backend/tests/test_parakeet_integration.py -v
 
 # E2E voice-to-chat (Playwright — 8 tests: dedup, transcript, tts_word, WS routing)
 npx playwright test tests/e2e/test_voice_to_chat.spec.ts --config=playwright.e2e.config.ts

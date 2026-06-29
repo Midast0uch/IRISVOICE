@@ -1,20 +1,19 @@
 """
 Parakeet ASR Service — Unit tests.
 
-These tests run WITHOUT NeMo installed.  The heavy `nemo_toolkit` import
-in `parakeet_service.py` is lazy, so the test suite can import the module
-freely.  We mock the model and the decoder to exercise the FastAPI app
+These tests run WITHOUT a GPU.  The model load in `parakeet_service.py`
+is lazy (only happens in `_load_model`), so the test suite can import
+the module freely.  We mock the decoder to exercise the FastAPI app
 in isolation.
 
 GPU-gated integration tests live in
-`tests/integration/test_parakeet_real_audio.py` (PR 7).
+`tests/test_parakeet_integration.py` (PR 7).
 """
 
 from __future__ import annotations
 
 import asyncio
 import sys
-import types
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -42,34 +41,6 @@ except ImportError:
 pytestmark = pytest.mark.skipif(
     not _HAS_FASTAPI, reason="fastapi not installed"
 )
-
-
-# ---------------------------------------------------------------------------
-# Mock NeMo BEFORE importing the service
-# ---------------------------------------------------------------------------
-
-def _install_nemo_mock() -> None:
-    """
-    Install a fake `nemo` package so the lazy import in parakeet_service
-    succeeds in test environments.  Only installs once.
-    """
-    if "nemo" in sys.modules:
-        return
-    fake = types.ModuleType("nemo")
-    sub = types.ModuleType("nemo.collections")
-    asr = types.ModuleType("nemo.collections.asr")
-    models = types.ModuleType("nemo.collections.asr.models")
-    models.ASRModel = MagicMock()
-    sys.modules["nemo"] = fake
-    sys.modules["nemo.collections"] = sub
-    sys.modules["nemo.collections.asr"] = asr
-    sys.modules["nemo.collections.asr.models"] = models
-
-
-@pytest.fixture(autouse=True)
-def _ensure_nemo_mock():
-    _install_nemo_mock()
-    yield
 
 
 # ---------------------------------------------------------------------------
@@ -255,12 +226,14 @@ class TestParakeetServiceApp:
                 return Hypothesis(text="hello world", confidence=0.85)
             return None
 
-        # Patch _load_model to return a mock
+        # Patch _load_model to return mock model + processor
         mock_model = MagicMock()
-        with patch.object(parakeet_service, "_load_model", return_value=mock_model):
+        mock_processor = MagicMock()
+        with patch.object(parakeet_service, "_load_model",
+                          return_value=(mock_model, mock_processor)):
             app = parakeet_service.create_app(cfg)
 
-        # The lifespan will set app.state.decoder via make_ne_mo_decoder
+        # The lifespan will set app.state.decoder via make_hf_decoder
         # — we want to override that with our fake_decoder.  We do this
         # by manually invoking the lifespan via TestClient context, then
         # swapping the decoder.  But TestClient runs the lifespan on
@@ -459,7 +432,7 @@ class TestGracefulDegradation:
         # Patch must remain active for the entire TestClient lifetime
         # (the lifespan runs when entering the `with` block).
         with patch.object(parakeet_service, "_load_model",
-                          side_effect=RuntimeError("nemo not installed")):
+                          side_effect=RuntimeError("transformers not installed")):
             app = parakeet_service.create_app(cfg)
             with TestClient(app) as client:
                 resp = client.get("/healthz")
@@ -473,7 +446,7 @@ class TestGracefulDegradation:
 
         cfg = parakeet_service.ServiceConfig(device="cpu", precision="fp32")
         with patch.object(parakeet_service, "_load_model",
-                          side_effect=RuntimeError("nemo not installed")):
+                          side_effect=RuntimeError("transformers not installed")):
             app = parakeet_service.create_app(cfg)
             with TestClient(app) as client:
                 body_bytes = pcm_int16(tone(1.0))
@@ -491,7 +464,7 @@ class TestGracefulDegradation:
 
         cfg = parakeet_service.ServiceConfig(device="cpu", precision="fp32")
         with patch.object(parakeet_service, "_load_model",
-                          side_effect=RuntimeError("nemo not installed")):
+                          side_effect=RuntimeError("transformers not installed")):
             app = parakeet_service.create_app(cfg)
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/stream") as ws:
