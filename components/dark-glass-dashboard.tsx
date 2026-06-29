@@ -820,11 +820,17 @@ export function DarkGlassDashboard({
         if (spotlightState !== 'DASHBOARD_SPOTLIGHT') {
           onRequestSpotlight?.();
         }
+      } else if (action === 'test_output') {
+        // Test output device: send WS message to play test sound
+        sendMessage?.('test_audio', { type: 'output' });
+      } else if (action === 'test_input') {
+        // Test input device: send WS message to capture and report mic level
+        sendMessage?.('test_audio', { type: 'input' });
       }
     };
     window.addEventListener('iris:card_action', handler as EventListener);
     return () => window.removeEventListener('iris:card_action', handler as EventListener);
-  }, [handleSubAppChange, spotlightState, onRequestSpotlight]);
+  }, [handleSubAppChange, spotlightState, onRequestSpotlight, sendMessage]);
 
   // Navigate to a sub-app when initialSubApp is set from outside (e.g., Browse button in WheelView)
   useEffect(() => {

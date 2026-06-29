@@ -329,6 +329,7 @@ class IRISGateway:
                 "voice_command_end",
                 "voice_command_cancel",
                 "voice_command",
+                "test_audio",
             ]:
                 await self._handle_voice(session_id, client_id, message)
 
@@ -1781,6 +1782,42 @@ class IRISGateway:
                     session_id,
                     {"type": "listening_state", "payload": {"state": "idle"}},
                 )
+
+            elif msg_type == "test_audio":
+                subtask = message.get("payload", {}).get("type", "")
+                try:
+                    from .audio.engine import get_audio_engine
+                    engine = get_audio_engine()
+                except Exception:
+                    engine = None
+                if subtask == "output" and engine and engine.pipeline:
+                    # Play the activation sound as a test tone
+                    self._logger.info("[Test] Playing test output sound")
+                    try:
+                        import numpy as np
+                        sr = 24000
+                        t = np.linspace(0, 0.2, int(sr * 0.2))
+                        tone = (0.25 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+                        engine.pipeline.play_audio(tone, sample_rate=sr)
+                        await self._ws_manager.broadcast_to_session(
+                            session_id,
+                            {"type": "notification", "payload": {"text": "Playing test tone on output device"}},
+                        )
+                    except Exception as be:
+                        self._logger.warning(f"[Test] Output test failed: {be}")
+                elif subtask == "input" and engine and engine.pipeline:
+                    level = 0.0
+                    try:
+                        level = engine.pipeline.get_current_input_level()
+                    except Exception:
+                        pass
+                    self._logger.info(f"[Test] Current mic level: {level:.4f}")
+                    await self._ws_manager.broadcast_to_session(
+                        session_id,
+                        {"type": "notification", "payload": {"text": f"Mic level: {level:.4f}"}},
+                    )
+                else:
+                    self._logger.info(f"[Test] No audio pipeline for test_{subtask}")
 
         except Exception as e:
             self._logger.error(f"[Voice] Error in _handle_voice: {e}", exc_info=True)
