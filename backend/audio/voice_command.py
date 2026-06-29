@@ -832,23 +832,25 @@ class VoiceCommandHandler:
                 sound = (0.25 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
 
             if self.audio_engine.pipeline:
-                # Play the activation sound WITHOUT the half-duplex gate.
+                # Play activation sound DIRECTLY via sounddevice, bypassing
+                # the native C++ audio pipeline entirely.
                 #
-                # Previously the gate (set_tts_active) was engaged here to
-                # prevent the mic from capturing the 880 Hz tone.  But when
-                # the output device is a loopback (Stereo Mix), the call to
-                # play_audio blocks for many seconds because the loopback
-                # device runs at a different sample rate than the source.
-                # This left the gate locked open for the entire duration,
-                # causing ALL captured frames to be silently dropped
-                # ("No audio captured — ignoring").
+                # The native player has two problems:
+                #   1) It normalizes audio to 0.85 peak, making quiet files
+                #      sound harsh and staticky
+                #   2) The PortAudio buffer/stream setup for Headphones (WG1)
+                #      causes wait_done() to block for 30-40 seconds for a
+                #      1-second WAV, which delays the entire voice pipeline
                 #
-                # The liquid-bubble-3000.wav is a soft ambient sound that
-                # does NOT cause the same feedback issues as a pure sine
-                # tone.  We play it without a gate; the mic captures 1
-                # second of bubble sound at most, which is inaudible in
-                # the VAD threshold.
-                self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
+                # Using sd.play() directly preserves the original file's
+                # dynamics and completes in real-time.
+                import sounddevice as _sd
+                try:
+                    _sd.play(sound, sr, device=self.audio_engine.pipeline.output_device, blocking=True)
+                except Exception as _beep_err:
+                    # Fallback: play through pipeline's fallback path
+                    logger.warning(f"[VoiceCommand] Direct sd.play failed ({_beep_err}), using pipeline")
+                    self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
         except Exception as e:
             # Always release the gate even if playback raised — otherwise the
             # pipeline stays muted and the real recording captures nothing.
