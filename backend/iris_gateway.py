@@ -441,6 +441,36 @@ class IRISGateway:
                 # Frontend play-icon clicked — speak the supplied text via TTS
                 await self._handle_tts_play(session_id, client_id, message)
 
+            elif msg_type == "voice_result":
+                # Parakeet ASR final transcription → parrot to all clients in
+                # the same session (used for Tailscale multi-view, where a
+                # phone via Tailscale should see the Tauri client's transcript).
+                self._logger.info(
+                    "[Voice] voice_result relay from %s → session %s",
+                    client_id[:8], session_id,
+                )
+                if session_id:
+                    await self._ws_manager.broadcast_to_session(
+                        session_id,
+                        {
+                            "type": "voice_result",
+                            "turn_id": get_turn_id(),
+                            "payload": message.get("payload", {}),
+                        },
+                    )
+
+            elif msg_type == "voice_audio_chunk":
+                # PCM chunk from frontend → forward to Parakeet ASR service.
+                # The primary path is a direct WebSocket from the frontend to
+                # the Parakeet service at ws://localhost:8765/ws/stream.
+                # This handler is a secondary / monitor path — for now we
+                # just acknowledge receipt.
+                self._logger.debug(
+                    "[Voice] Audio chunk received from %s (%.0f bytes)",
+                    client_id[:8],
+                    len(message.get("payload", {}).get("chunk", b"") or b""),
+                )
+
             elif msg_type == "ping":
                 await self._ws_manager.send_to_client(
                     client_id, {"type": "pong", "payload": {}}
@@ -1595,12 +1625,20 @@ class IRISGateway:
             voice_handler.set_audio_envelope_callback(_on_audio_envelope)
 
     async def _handle_voice(
-        self, session_id: str, client_id: str, message: dict, auto_stop: bool = False
+        self,
+        session_id: str,
+        client_id: str,
+        message: dict,
+        auto_stop: bool = False,
+        pre_speech_timeout_sec: float | None = None
     ) -> None:
         """
         Handle voice_command_start / voice_command_end from double-click or wake word.
         Delegates audio capture + LFM2-Audio processing to VoiceCommandHandler/ModelManager.
         All 4 pillars run after transcription is received via _on_voice_result callback.
+
+        pre_speech_timeout_sec: For auto_stop mode, give up if speech doesn't start
+            within this many seconds. None = use VoiceCommandHandler default (0 = 30s max).
         """
         msg_type = message.get("type")
         if msg_type == "voice_command":
@@ -1644,7 +1682,10 @@ class IRISGateway:
                 # Delegate recording to the shared VoiceCommandHandler
                 if self._voice_handler:
                     self._voice_handler.set_active_session(session_id)
-                    success = self._voice_handler.start_recording(auto_stop=auto_stop)
+                    kw = {"auto_stop": auto_stop}
+                    if pre_speech_timeout_sec is not None:
+                        kw["pre_speech_timeout_sec"] = pre_speech_timeout_sec
+                    success = self._voice_handler.start_recording(**kw)
                     if not success:
                         self._logger.warning(
                             f"[Session: {session_id}] VoiceCommandHandler start_recording() failed — resetting orb to idle"
@@ -1786,6 +1827,35 @@ class IRISGateway:
         except Exception as e:
             self._logger.error(f"[Voice] _on_voice_result error: {e}", exc_info=True)
 
+    # ------------------------------------------------------------------ #
+    # Helper: build a text_response WS message with a unique turn_id.   #
+    # Every text_response MUST carry a turn_id so the frontend dedup     #
+    # logic can reject duplicates (Issue #2 from the audio pipeline      #
+    # audit).  Use this method everywhere we dispatch text_response.     #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _text_response(
+        text: str,
+        sender: str = "assistant",
+        *,
+        turn_id: str | None = None,
+        thinking: str | None = None,
+        suggestions: list[dict] | None = None,
+        **kw,
+    ) -> dict:
+        msg: dict = {
+            "type": "text_response",
+            "turn_id": turn_id or get_turn_id(),
+            "text": text,
+            "sender": sender,
+        }
+        if thinking is not None:
+            msg["thinking"] = thinking
+        if suggestions is not None:
+            msg["suggestions"] = suggestions
+        msg.update(kw)
+        return msg
+
     async def _process_voice_transcription(
         self, session_id: str, client_id: str, transcript: str, audio_context: str
     ) -> None:
@@ -1812,6 +1882,7 @@ class IRISGateway:
                 client_id,
                 {
                     "type": "text_response",
+                    "turn_id": get_turn_id(),
                     "payload": {"text": transcript, "sender": "user"},
                 },
             )
@@ -1959,6 +2030,7 @@ class IRISGateway:
                 client_id,
                 {
                     "type": "text_response",
+                    "turn_id": get_turn_id(),
                     "payload": {
                         "text": response,
                         "sender": "assistant",
@@ -2415,7 +2487,19 @@ class IRISGateway:
                     torch.cuda.empty_cache()
             except Exception:
                 pass
-            if session_id and self._main_loop and self._main_loop.is_running():
+            # ---- SPEAK RESPONSE END: BROADCAST IDLE OR AUTO-RELISTEN ----
+            #
+            # The orb on the frontend MUST receive a `listening_state: "idle"`
+            # signal so it unsticks.  We prefer session-scoped broadcast (which
+            # doesn't leak to unrelated clients), but fall back to a global
+            # broadcast when session_id is not available (e.g. tts_play button
+            # without an active conversation session).
+            #
+            _main_loop = self._main_loop
+            if _main_loop and not _main_loop.is_running():
+                _main_loop = None  # dead loop — fall through
+
+            if session_id and _main_loop:
                 import asyncio as _asyncio
 
                 # Conversation mode: auto-relisten unless interrupted or cancelled
@@ -2433,7 +2517,7 @@ class IRISGateway:
                                 "payload": {"state": "listening"},
                             },
                         ),
-                        self._main_loop,
+                        _main_loop,
                     )
                     # Give audio pipeline a moment to flush before recording
                     import time as _time
@@ -2450,8 +2534,26 @@ class IRISGateway:
                             session_id,
                             {"type": "listening_state", "payload": {"state": "idle"}},
                         ),
-                        self._main_loop,
+                        _main_loop,
                     )
+            elif _main_loop:
+                # Fallback: no session_id → broadcast idle to ALL connected
+                # clients so their orbs don't stay stuck in "speaking".
+                import asyncio as _asyncio
+
+                _asyncio.run_coroutine_threadsafe(
+                    self._ws_manager.broadcast(
+                        {"type": "listening_state", "payload": {"state": "idle"}}
+                    ),
+                    _main_loop,
+                )
+            else:
+                # No main_loop available at all — safe no-op.  The frontend
+                # unstick timer (chat-view.tsx) will clear the speaking state
+                # after the word-highlight interval completes.
+                self._logger.debug(
+                    "[Voice] No main loop to broadcast idle — relying on frontend timeout"
+                )
 
     async def _handle_tts_play(
         self, session_id: str, client_id: str, message: dict
@@ -6285,6 +6387,7 @@ class IRISGateway:
                 client_id,
                 {
                     "type": "text_response",
+                    "turn_id": get_turn_id(),
                     "text": "No query provided for web research.",
                     "sender": "assistant",
                 },
@@ -6340,6 +6443,7 @@ class IRISGateway:
             await send(
                 {
                     "type": "text_response",
+                    "turn_id": get_turn_id(),
                     "text": str(exc),
                     "sender": "assistant",
                 }
@@ -6383,6 +6487,7 @@ class IRISGateway:
         await send(
             {
                 "type": "text_response",
+                "turn_id": get_turn_id(),
                 "text": (
                     f"{summary or f'Found results for: {query}'} — see Dashboard →"
                 ),
@@ -6410,6 +6515,7 @@ class IRISGateway:
                 client_id,
                 {
                     "type": "text_response",
+                    "turn_id": get_turn_id(),
                     "text": "Developer CLI is only available in developer mode.",
                     "sender": "assistant",
                 },
@@ -6432,6 +6538,7 @@ class IRISGateway:
                 client_id,
                 {
                     "type": "text_response",
+                    "turn_id": get_turn_id(),
                     "text": f"Developer CLI error: {exc}",
                     "sender": "assistant",
                 },
@@ -6456,6 +6563,7 @@ class IRISGateway:
             client_id,
             {
                 "type": "text_response",
+                "turn_id": get_turn_id(),
                 "text": "CLI process aborted.",
                 "sender": "assistant",
             },
@@ -6496,6 +6604,7 @@ class IRISGateway:
                 client_id,
                 {
                     "type": "text_response",
+                    "turn_id": get_turn_id(),
                     "payload": {
                         "text": f"Terminal error: {exc}",
                         "sender": "assistant",

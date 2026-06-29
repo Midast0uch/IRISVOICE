@@ -216,6 +216,10 @@ export function ChatWing({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const activeConversationIdRef = useRef<string | null>(null)
+  // Tracks turn_id values already dispatched to prevent duplicate message
+  // insertion when both WS text_response and REST /api/chat deliver the same
+  // assistant reply (see PR 3 — Parakeet ASR pipeline).
+  const seenTurnIds = useRef<Set<string>>(new Set())
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const chatPanelRef = useRef<HTMLDivElement>(null)
@@ -339,15 +343,33 @@ export function ChatWing({
   }, [messages])
 
   // Handle incoming WebSocket messages via the CustomEvent listener.
+  // The event detail now carries turn_id from the backend _text_response helper
+  // (PR 2 Patch B).  We deduplicate by tracking seen turn_ids — this prevents
+  // double-insertion when both WS text_response and REST /api/chat deliver the
+  // same assistant reply.
   useEffect(() => {
     function handleTextResponse(e: Event) {
-      const { text, sender = 'assistant', thinking } = (e as CustomEvent).detail as {
-        text: string; sender?: 'user' | 'assistant' | 'error'; thinking?: string
+      const detail = (e as CustomEvent).detail as {
+        text: string; sender?: 'user' | 'assistant' | 'error'; thinking?: string; turn_id?: string
       }
+      const { text, sender = 'assistant', thinking } = detail
       if (!text) return
+
+      // Deduplicate by turn_id — skip if we've already recorded this turn.
+      const turnId = detail.turn_id
+      if (turnId && seenTurnIds.current.has(turnId)) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`[ChatView] Deduplicating replayed text_response turn=${turnId}`)
+        }
+        return
+      }
+      if (turnId) {
+        seenTurnIds.current.add(turnId)
+      }
+
       const isUserVoice = sender === "user"
       const newMessage: Message = {
-        id: (Date.now() + 1).toString(),
+        id: turnId ?? (Date.now() + 1).toString(),
         text,
         sender,
         timestamp: new Date(),
@@ -393,6 +415,69 @@ export function ChatWing({
     return () => window.removeEventListener('iris:text_response', handleTextResponse)
   }, [])
   
+  // Handle Parakeet ASR final transcription (iris:voice_final).
+  // When the user speaks via the web Parakeet hook (useParakeetSTT), the
+  // transcript arrives through the IRIS gateway's voice_result broadcast.
+  // We add it as a user message so the conversation thread shows what was
+  // heard before the assistant replies.
+  useEffect(() => {
+    function handleVoiceFinal(e: Event) {
+      const detail = (e as CustomEvent<{ text: string; confidence?: number; turn_id?: string }>).detail
+      if (!detail?.text) return
+
+      // Deduplicate by turn_id (same logic as text_response)
+      if (detail.turn_id && seenTurnIds.current.has(detail.turn_id)) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`[ChatView] Deduplicating voice_final turn=${detail.turn_id}`)
+        }
+        return
+      }
+      if (detail.turn_id) {
+        seenTurnIds.current.add(detail.turn_id)
+      }
+
+      const voiceMessage: Message = {
+        id: detail.turn_id ?? `voice-${Date.now()}`,
+        text: detail.text,
+        sender: "user",
+        timestamp: new Date(),
+        // No words array — user messages don't get TTS highlighting
+      }
+
+      const currentActiveId = activeConversationIdRef.current
+      if (currentActiveId) {
+        setConversations(prev => prev.map(conv =>
+          conv.id === currentActiveId
+            ? {
+                ...conv,
+                messages: [...conv.messages, voiceMessage],
+                lastMessagePreview: voiceMessage.text.substring(0, 60),
+                timestamp: new Date(),
+              }
+            : conv
+        ))
+      } else {
+        const newId = detail.turn_id ?? `voice-conv-${Date.now()}`
+        activeConversationIdRef.current = newId
+        setActiveConversationId(newId)
+        setConversations(prev => {
+          const newConv: Conversation = {
+            id: newId,
+            title: `Conversation ${prev.length + 1}`,
+            preview: voiceMessage.text.substring(0, 60),
+            messages: [voiceMessage],
+            timestamp: new Date(),
+            isPinned: false,
+            lastMessagePreview: voiceMessage.text.substring(0, 60),
+          }
+          return [...prev, newConv]
+        })
+      }
+    }
+    window.addEventListener('iris:voice_final', handleVoiceFinal)
+    return () => window.removeEventListener('iris:voice_final', handleVoiceFinal)
+  }, [])
+
   // Handle voice command errors
   useEffect(() => {
     if (voiceState === "error") {
@@ -451,11 +536,17 @@ export function ChatWing({
     return () => window.removeEventListener('iris:text_response', handler)
   }, [])
 
-  // Handle TTS word highlighting simulation (fallback when backend doesn't provide tts_word events).
-  // PERF: word index lives in ttsWordIndex state — a single number — so each 200 ms tick does
-  // NOT remap all conversations or trigger a localStorage write.  messages is NOT in deps;
-  // we snapshot the words array into a ref when speaking starts to avoid re-creating the
-  // interval on every message change.
+  // Handle TTS word highlighting.
+  //
+  // PRIMARY: backend tts_word events (via iris:tts_word CustomEvent) — the
+  // Pocket-TTS alignment produces real word-level indices.
+  // FALLBACK: 200 ms interval simulation when no tts_word events arrive
+  // within a 1-second window of speaking starting.
+  //
+  // PERF: word index lives in ttsWordIndex state — a single number — so each
+  // tick does NOT remap all conversations or trigger a localStorage write.
+  // messages is NOT in deps; we snapshot the words array into a closure when
+  // speaking starts to avoid re-creating the interval on every message change.
   useEffect(() => {
     if (!isSpeaking || !currentTtsMessageId) {
       setTtsWordIndex(-1);
@@ -464,15 +555,52 @@ export function ChatWing({
     const message = messages.find((m: Message) => m.id === currentTtsMessageId);
     if (!message?.words?.length) return;
 
-    const words = message.words; // stable snapshot — won't change while speaking
+    const words = message.words; // stable snapshot
     setTtsWordIndex(0);
     let wordIndex = 0;
+
+    // ── Backend tts_word event listener ──────────────────────────────────
+    // When the backend emits word indices through the IRIS gateway, use them
+    // directly instead of the 200ms fallback.  This keeps the visual highlight
+    // perfectly in sync with the actual audio.
+    let gotBackendEvent = false;
+    const ttlId = setTimeout(() => {
+      // If no backend tts_word event arrived within 1 second, fall back to the
+      // 200ms interval simulation (existing behavior).
+      if (!gotBackendEvent) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[ChatView] No tts_word event within 1s, using 200ms fallback');
+        }
+      }
+    }, 1000);
+
+    function onTtsWord(e: Event) {
+      const detail = (e as CustomEvent<{ word_index: number; total_words?: number; is_final: boolean }>).detail;
+      if (!detail || typeof detail.word_index !== 'number') return;
+      gotBackendEvent = true;
+      clearTimeout(ttlId);
+
+      wordIndex = detail.word_index;
+      setTtsWordIndex(wordIndex);
+
+      if (detail.is_final) {
+        setIsSpeaking(false);
+        setTtsWordIndex(-1);
+        clearInterval(interval);
+        window.removeEventListener('iris:tts_word', onTtsWord);
+      }
+    }
+    window.addEventListener('iris:tts_word', onTtsWord);
+
+    // ── Fallback interval ─────────────────────────────────────────────────
     const interval = setInterval(() => {
       wordIndex++;
       if (wordIndex >= words.length) {
         setIsSpeaking(false);
         setTtsWordIndex(-1);
         clearInterval(interval);
+        window.removeEventListener('iris:tts_word', onTtsWord);
+        clearTimeout(ttlId);
         return;
       }
       setTtsWordIndex(wordIndex);
@@ -480,6 +608,8 @@ export function ChatWing({
 
     return () => {
       clearInterval(interval);
+      clearTimeout(ttlId);
+      window.removeEventListener('iris:tts_word', onTtsWord);
       setTtsWordIndex(-1);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps

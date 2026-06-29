@@ -33,8 +33,25 @@ sounddevice>=0.5.0       # cross-platform audio I/O via PortAudio (lazy-loaded a
 torch>=2.0.0
 torchaudio>=2.0.0
 psutil>=5.9.0
-# STT Pipeline — faster-whisper direct integration (tiny/int8, ~40 MB, CPU)
-faster-whisper>=1.0.0    # direct STT: CPU int8, ~40 MB model, ~80ms per 3s clip
+# STT Pipeline — Parakeet TDT 0.6B v3 ASR (PRIMARY)
+#   NVIDIA NeMo model served by backend/audio/parakeet_service.py
+#   Runs on local GPU (RTX 3070 recommended), fp16 by default, ~1.2 GB VRAM
+#   25 languages with auto-detect, <300ms first-token latency
+#   Model weights download on first startup (set HF_HOME to control cache)
+#
+# Parakeet setup:
+#   pip install 'nemo_toolkit[asr]>=2.4.0'
+#   python -m backend.audio.parakeet_service --device cuda --port 8765
+#   Health check: curl http://localhost:8765/healthz
+#
+# NOTE: First install is ~1.5 GB of dependencies (NeMo pulls torch + transformers).
+#       Test suite mocks the NeMo import so it does NOT need to be installed.
+nemo_toolkit[asr]>=2.4.0  # Parakeet TDT 0.6B v3 — primary ASR for both Tauri and web
+onnxruntime-gpu>=1.18.0   # GPU inference (alternative path, PR 7 will wire)
+# STT Pipeline — faster-whisper direct integration (FALLBACK ONLY)
+#   Used by VoiceCommandHandler when the Parakeet service is unreachable.
+#   tiny/int8 on CPU, ~40 MB, ~80ms per 3s clip.  Lower accuracy than Parakeet.
+faster-whisper>=1.0.0
 
 # TTS Pipeline — Pocket-TTS (sole engine)
 #   Zero-shot voice cloning + streaming inference, CPU, ~100 MB

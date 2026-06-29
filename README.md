@@ -7,7 +7,8 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 ### 🎤 Voice & Audio
 - **Wake Word Detection**: Custom wake words using Picovoice Porcupine with automatic file discovery
 - **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
-- **End-to-End Audio Processing**: Porcupine (wake words) → faster-whisper (STT) → Agent Kernel → Pocket-TTS (TTS)
+- **Parakeet ASR (GPU)**: NVIDIA Parakeet TDT 0.6B v3 running on RTX 3070 — shared WebSocket streaming service (`ws://localhost:8765/ws/stream`), REST `/transcribe` endpoint, Prometheus `/metrics`. Both Tauri (backend mic) and web (`getUserMedia`) clients stream PCM to the same service. Lazy NeMo import, graceful fallback to faster-whisper on CPU.
+- **End-to-End Audio Processing**: Porcupine (wake words) → Parakeet TDT 0.6B (GPU ASR) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS (TTS)
 - **Voice Commands**: Natural language voice interaction with double-click activation
 - **Text-to-Speech**: Pocket-TTS (~100M int8 quantized, zero-shot voice cloning from a user-provided reference WAV) with built-in speaker presets
 - **Streaming LLM→TTS**: IRIS starts speaking as soon as the first sentence is ready — no waiting for the full LLM response
@@ -396,8 +397,9 @@ npm run dev:tauri
   │  ┌──────────────────────────────────────────────────────┐  │
   │  │                   Voice Pipeline                     │  │
   │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
-  │  │  │ Porcupine│  │   STT    │  │   TTS            │  │  │
-  │  │  │ Wake Word│  │ (Whisper)│  │  (Pocket-TTS)    │  │  │
+  │  │  │ Porcupine│  │ Parakeet │  │   TTS            │  │  │
+  │  │  │ Wake Word│  │ TDT 0.6B│  │  (Pocket-TTS)    │  │  │
+  │  │  │   (CPU)  │  │  (GPU)   │  │    (CPU)         │  │  │
   │  │  └──────────┘  └──────────┘  └──────────────────┘  │  │
   │  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────┬────────────────────────────────┘
@@ -442,7 +444,7 @@ npm run dev:tauri
 - **Model Router**: Routes requests between GGUF brain model and tool-calling model
 - **Streaming Utilities** (`backend/agent/streaming.py`): chunk batching, provider-agnostic chunk parsing, safe iteration with silence/total timeouts
 - **Tool Bridge**: MCP tool execution
-- **Voice Pipeline**: End-to-end audio processing (Porcupine → faster-whisper → Agent Kernel → Pocket-TTS)
+- **Voice Pipeline**: End-to-end audio processing (Porcupine → Parakeet TDT 0.6B (GPU) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS)
 - **C++ Hybrid Core Memory Engine** (`iris_core.dll`): Replaces the Python memory hot path with compiled C++ — **~570× faster** Caducean attention decisions (87 ns vs ~50 μs in pure Python), eliminates SQLite `database is locked` errors via a dedicated single-writer thread, and removes ReDoS risk entirely via Google RE2. All backed by transparent Python fallback if the DLL is unavailable.
 
 ### Model Architecture
@@ -845,7 +847,8 @@ IRISVOICE/
 │   ├── BrandColorContext.tsx
 │   └── TransitionContext.tsx
 ├── hooks/                # Custom React hooks
-│   ├── useIRISWebSocket.ts
+│   ├── useIRISWebSocket.ts    # WS → CustomEvent dispatcher (tts_word, voice_result)
+│   ├── useParakeetSTT.ts      # Web mic capture + WS streaming to Parakeet service
 │   ├── useAudioDevices.ts
 │   └── useNavigationSettings.ts
 ├── lib/                  # Utility libraries
@@ -858,9 +861,11 @@ IRISVOICE/
 │   │   ├── vps_gateway.py
 │   │   ├── streaming.py  # Streaming chunk batching, safe iteration, chunk parsing
 │   │   └── personality.py
-│   ├── audio/           # Audio pipeline (Porcupine + faster-whisper)
-│   │   ├── engine.py    # AudioEngine — frame ingest, VAD, listener dispatch
-│   │   ├── voice_command.py
+│   ├── audio/           # Audio pipeline (Porcupine + Parakeet ASR)
+│   │   ├── engine.py          # AudioEngine — frame ingest, VAD, listener dispatch
+│   │   ├── voice_command.py   # Voice command — Parakeet primary STT, faster-whisper fallback
+│   │   ├── parakeet_buffer.py # TDT streaming buffer (Hypothesis, ring buffer, decoder callback)
+│   │   ├── parakeet_service.py# FastAPI NeMo ASR service — 4 endpoints, lazy import, throttled decode
 │   │   └── tts_normalizer.py
 │   ├── tools/           # MCP tool integration
 │   │   └── vision_system.py
@@ -899,6 +904,7 @@ IRISVOICE/
 │   ├── LFM2.5-VL-450M/         # vision model (optional)
 │   └── wake_words/
 ├── tests/               # Test suites
+│   ├── e2e/             # Playwright E2E tests (voice_to_chat, dedup, tts_word)
 │   ├── integration/     # Integration tests
 │   ├── property/        # Property-based tests
 │   └── performance/     # Performance tests
@@ -927,6 +933,15 @@ npm run dev
 ```bash
 npm run dev:backend & npm run dev:frontend
 ```
+
+**Parakeet ASR service (separate terminal, requires NVIDIA GPU with CUDA):**
+```bash
+python backend/audio/parakeet_service.py
+# Listens on http://localhost:8765 with WebSocket streaming at ws://localhost:8765/ws/stream
+# Prometheus /metrics also on port 8765 (default) or custom PORT env var
+```
+
+The Parakeet service runs as a standalone FastAPI process on port 8765 (separate from the main backend). The voice pipeline (`voice_command.py`) tries Parakeet first and falls back to faster-whisper on CPU if the service is unreachable or `parakeet_service_url` is `None`. Both Tauri (backend mic) and web (`getUserMedia` via `useParakeetSTT.ts`) stream PCM to the same `ws://localhost:8765/ws/stream` endpoint.
 
 ### Code Style
 
@@ -966,6 +981,18 @@ python -m pytest backend/agent/tests/ -v
 
 # C++ Hybrid Core smoke tests (9 tests — FFI, Caducean, EML, Ingestor, Immortus)
 python -m pytest backend/tests/test_iris_core_smoke.py -v
+
+# Parakeet ASR unit tests (33 pass, 0 fail — service buffer + gateway patches + voice_command)
+python -m pytest tests/test_parakeet_service.py tests/test_iris_gateway_patches.py tests/test_voice_command_parakeet.py -v
+
+# Parakeet GPU integration tests (skip if no CUDA or service not running)
+python -m pytest tests/test_parakeet_integration.py -v
+
+# Porcupine regression tests (13 tests — API contract, silence, TTS suppression, thread safety)
+python -m pytest tests/test_porcupine_regression.py -v
+
+# E2E voice-to-chat (Playwright — 8 tests: dedup, transcript, tts_word, WS routing)
+npx playwright test tests/e2e/test_voice_to_chat.spec.ts --config=playwright.e2e.config.ts
 
 # With coverage
 python -m pytest backend/memory/tests/ --cov=backend.memory --cov-report=html
@@ -1136,7 +1163,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 **Server → Client:**
 - `initial_state` - Complete state on connection
 - `field_updated` - Field update confirmation
-- `text_response` - Agent text response
+- `text_response` - Agent text response (includes `turn_id` for dedup)
 - `agent_status` - Agent status update (includes inference mode, model selection)
 - `audio_level` - Voice activity level
 - `validation_error` - Field validation error
@@ -1147,6 +1174,10 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - `model_selection_updated` - Model selection change confirmed
 - `cleanup_report` - Cleanup analysis result
 - `cleanup_result` - Cleanup execution result
+- `voice_result` - Parakeet ASR final transcript routed to session (Tailscale multi-view)
+- `voice_audio_chunk` - PCM chunk acknowledgment from Parakeet service
+- `voice_final` - ASR transcript delivered as CustomEvent to chat-view (web mode)
+- `tts_word` - Word index + count for current TTS spoken word (highlighting sync)
 
 For complete message documentation, see the WebSocket section above and the backend OpenAPI docs at `/docs` when the server is running.
 
@@ -1227,6 +1258,6 @@ For issues and questions:
 
 ---
 
-**Version**: 4.8.0
-**Last Updated**: May 26, 2026
-**Status**: Production Ready ✅ (Domain 19 Complete)
+**Version**: 4.9.0
+**Last Updated**: June 29, 2026
+**Status**: Production Ready ✅ (Domain 19 + Parakeet GPU ASR)

@@ -15,10 +15,15 @@ Flow:
   5. _on_command_result callback → iris_gateway._on_voice_result → agent pipeline
 """
 
+import base64
+import io
 import logging
 import threading
 import time
+import wave
+
 import numpy as np
+import requests
 from typing import Optional, Callable, Dict, Any, List
 from enum import Enum
 
@@ -72,6 +77,9 @@ class VoiceCommandHandler:
 
         # Configuration
         self.sample_rate = 16000
+
+        # Parakeet ASR service URL (None = use faster-whisper directly)
+        self.parakeet_service_url: Optional[str] = "http://localhost:8765"
 
         # Session tracking
         self._active_session_id: str = "default"
@@ -395,9 +403,8 @@ class VoiceCommandHandler:
                     logger.info(
                         "[VoiceCommand] Loading faster-whisper tiny/int8 on CPU..."
                     )
-                    # Always use CPU for STT.  F5-TTS also runs on CPU so keeping
-                    # STT on CPU avoids any CUDA context serialisation; tiny/int8
-                    # transcribes a 3 s clip in ~80 ms on any modern CPU.
+                    # Always use CPU for STT.  tiny/int8 transcribes a 3 s clip
+                    # in ~80 ms on any modern CPU — no reason to occupy CUDA.
                     self._whisper = WhisperModel(
                         "tiny",
                         device="cpu",
@@ -437,6 +444,74 @@ class VoiceCommandHandler:
         threading.Thread(
             target=_do_warm_up, daemon=True, name="iris-stt-warmup"
         ).start()
+
+    # ------------------------------------------------------------------ #
+    # Parakeet ASR path (primary, fall back to faster-whisper on failure)
+    # ------------------------------------------------------------------ #
+
+    def _transcribe_via_parakeet_service(self, audio_np: np.ndarray) -> str:
+        """
+        Send ``audio_np`` (float32 PCM, self.sample_rate Hz, mono) to the
+        Parakeet ASR service via HTTP POST ``/transcribe``.
+
+        Returns the transcribed text on success, or empty string on any
+        failure (connection error, timeout, bad response).  The caller
+        falls through to faster-whisper when the return is empty.
+        """
+        if not self.parakeet_service_url:
+            return ""
+
+        url = f"{self.parakeet_service_url.rstrip('/')}/transcribe"
+
+        try:
+            # Convert float32 → 16-bit WAV bytes for the service
+            pcm_int16 = (audio_np * 32767.0).clip(-32768, 32767).astype(np.int16)
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(pcm_int16.tobytes())
+            wav_bytes = buf.getvalue()
+
+            audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+
+            resp = requests.post(
+                url,
+                json={
+                    "audio_base64": audio_b64,
+                    "encoding": "pcm_s16le",
+                    "sample_rate": self.sample_rate,
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("text", "").strip()
+            confidence = data.get("confidence", 0.0)
+
+            if text:
+                logger.info(
+                    "[VoiceCommand] Parakeet ASR: '%s' (confidence=%.3f)",
+                    text[:80], confidence,
+                )
+                return text
+
+            logger.warning("[VoiceCommand] Parakeet ASR returned empty text")
+        except requests.exceptions.ConnectionError:
+            logger.info(
+                "[VoiceCommand] Parakeet service not reachable at %s — "
+                "falling back to faster-whisper",
+                self.parakeet_service_url,
+            )
+        except requests.exceptions.Timeout:
+            logger.warning("[VoiceCommand] Parakeet ASR timed out after 30 s")
+        except requests.exceptions.HTTPError as exc:
+            logger.warning("[VoiceCommand] Parakeet ASR HTTP error: %s", exc)
+        except Exception as exc:
+            logger.warning("[VoiceCommand] Parakeet ASR unexpected error: %s", exc)
+
+        return ""
 
     def _run_transcription(self) -> None:
         """
@@ -480,19 +555,23 @@ class VoiceCommandHandler:
 
             self._set_state(VoiceState.PROCESSING, "Transcribing...")
 
-            whisper = self._get_whisper()
-            segments, _ = whisper.transcribe(
-                audio_np,
-                language="en",
-                beam_size=1,  # 3× faster than default beam_size=5; quality
-                # loss is negligible for conversational STT on tiny
-                best_of=1,  # no random sampling — deterministic, fastest path
-                condition_on_previous_text=False,  # prevents hallucination drift between clips
-                vad_filter=True,  # faster-whisper built-in VAD for clean segments
-                vad_parameters={"min_silence_duration_ms": 300},
-            )
-            transcript = " ".join(s.text.strip() for s in segments).strip()
-            logger.info(f"[VoiceCommand] Transcript: '{transcript[:100]}'")
+            # ── Primary path: Parakeet ASR service (GPU, RTX 3070) ─────────
+            transcript = self._transcribe_via_parakeet_service(audio_np)
+
+            # ── Fallback path: faster-whisper (CPU, tiny int8) ─────────────
+            if not transcript:
+                whisper = self._get_whisper()
+                segments, _ = whisper.transcribe(
+                    audio_np,
+                    language="en",
+                    beam_size=1,  # 3× faster; negligible quality loss for conversational STT
+                    best_of=1,  # deterministic, fastest path
+                    condition_on_previous_text=False,  # prevents hallucination drift
+                    vad_filter=True,
+                    vad_parameters={"min_silence_duration_ms": 300},
+                )
+                transcript = " ".join(s.text.strip() for s in segments).strip()
+                logger.info(f"[VoiceCommand] Transcript: '{transcript[:100]}'")
 
             self._on_transcription_complete(transcript)
 

@@ -710,7 +710,42 @@ export function useIRISWebSocket(
         break
       }
 
-      case "agent_status": {
+      // ── TTS word-highlight event ─────────────────────────────────────────
+      // Backend Pocket-TTS emits word-level indices during playback.
+      // chat-view.tsx listens for iris:tts_word to sync highlight with real
+      // TTS speed instead of the 200ms fallback interval.
+      case "tts_word": {
+        if (typeof window !== 'undefined' && typeof payload.word_index === 'number') {
+          window.dispatchEvent(new CustomEvent('iris:tts_word', {
+            detail: {
+              word_index: payload.word_index,
+              total_words: typeof payload.total_words === 'number' ? payload.total_words : undefined,
+              message_id: typeof payload.message_id === 'string' ? payload.message_id : undefined,
+              is_final: payload.word_index === (payload.total_words ?? 0) - 1 || payload.is_final === true,
+            }
+          }))
+        }
+        break
+      }
+
+      // ── Parakeet ASR voice result ─────────────────────────────────────────
+      // Backend broadcasts the final ASR transcript (from Parakeet service)
+      // to all clients in the session.  chat-view.tsx listens for
+      // iris:voice_final to show the user's spoken text as a message.
+      case "voice_result": {
+        if (typeof window !== 'undefined' && typeof payload.text === 'string') {
+          window.dispatchEvent(new CustomEvent('iris:voice_final', {
+            detail: {
+              text: payload.text,
+              confidence: typeof payload.confidence === 'number' ? payload.confidence : undefined,
+              turn_id: typeof payload.turn_id === 'string' ? payload.turn_id : undefined,
+            }
+          }))
+        }
+        break
+      }
+
+        case "agent_status": {
         // Agent kernel status response
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Agent status:", payload)

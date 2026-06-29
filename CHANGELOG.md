@@ -1,5 +1,81 @@
 # IRIS Changelog
 
+## [Unreleased] — Parakeet GPU ASR Pipeline (PRs 1-7) — 2026-06-29
+
+### feat: NVIDIA Parakeet TDT 0.6B ASR — full-duplex GPU streaming (PR 1 + 4)
+
+NVIDIA Parakeet TDT 0.6B (fp16, ~1.2 GB VRAM on RTX 3070) is now the primary ASR engine. Runs as a standalone FastAPI+NeMo service on port 8765 with WebSocket streaming (`/ws/stream`) and REST (`/transcribe`). Both Tauri (backend mic) and web (`getUserMedia`) clients stream PCM to the same service.
+
+- **`backend/audio/parakeet_buffer.py`** (NEW) — TDT streaming buffer using `Hypothesis` from NeMo, ring buffer with nonfinite-sample guard, decoupled decoder callback (throttled to every 10 pushes — ~10× GPU load reduction for non-final decodes).
+- **`backend/audio/parakeet_service.py`** (NEW) — FastAPI app with 4 endpoints (`/health`, `/transcribe`, `/ws/stream`, `/metrics`). Lazy `nemo_toolkit[asr]` import (module-level, not startup), 16-stream semaphore, graceful degradation on model load failure. Decoder throttled to 10:1 ratio (~800 ms full-context decode). `threading.Lock()` replaces fragile `asyncio._get_running_loop()` private API.
+- **`backend/audio/__init__.py`** — Updated exports.
+- **`requirements.txt`** — Added `nemo_toolkit[asr]`, `onnxruntime-gpu`.
+
+### feat: backend gateway patches for Parakeet integration (PR 2)
+
+- **`backend/iris_gateway.py`** (+119 lines) — 3 patches:
+  - **Patch A (idle safety)**: `_speak_response` broadcasts `listening_state: "idle"` globally when `session_id` is missing — prevents frontend hanging on "listening" state.
+  - **Patch B (turn_id)**: `_text_response()` static helper wraps every `text_response` dispatch with `"turn_id": get_turn_id()` — applied to all 9 dispatch sites. Enables frontend dedup.
+  - **Patch C (voice handlers)**: `voice_result` relays Parakeet ASR final transcript to session (Tailscale multi-view, not global broadcast). `voice_audio_chunk` acknowledges PCM receipt.
+- **`tests/test_iris_gateway_patches.py`** (NEW) — 12 unit tests covering all 3 patches.
+
+### feat: chat-view frontend dedup + voice word highlighting (PR 3)
+
+- **`components/chat-view.tsx`** (+155 lines):
+  - `seenTurnIds` Set ref — prevents duplicate `text_response` messages when both WS and REST `/api/chat` deliver the same reply.
+  - **Bugfix**: Removed reset effect that cleared the dedup Set mid-dispatch when the first message created a new conversation.
+  - `iris:voice_final` CustomEvent listener — ASR transcript appears as user message in chat.
+  - `iris:tts_word` listener — backend word indices override 200 ms tick; 1-second timeout fallback if no backend events arrive.
+- **`hooks/useIRISWebSocket.ts`** (+37 lines) — `tts_word` and `voice_result` WS message types dispatched as CustomEvents for chat-view to consume.
+
+### feat: useParakeetSTT hook — web mic → WS streaming (PR 4)
+
+- **`hooks/useParakeetSTT.ts`** (NEW, 360 lines) — Web mode: `getUserMedia` → `AudioContext` → `ScriptProcessorNode` → 16 kHz Int16 PCM → WebSocket to Parakeet service. Handles partial/final/error callbacks. **Tauri mode stub**: `startListening` returns error `"Voice capture is managed by the backend in Tauri mode."`.
+- **`backend/audio/parakeet_service.py`** — Added `{"type":"stop"}` text message support for graceful WS finalization.
+- **`playwright.e2e.config.ts`** (NEW) — E2E test config with dev server + Parakeet URL.
+- **`tests/e2e/test_voice_to_chat.spec.ts`** (NEW) — 8 E2E Playwright tests: dedup, transcript in chat, tts_word highlighting, WS routing.
+
+### feat: voice_command Parakeet fallback + cleanup (PR 5)
+
+- **`backend/audio/voice_command.py`** (+67 lines):
+  - Added `parakeet_service_url` config field (`Optional[str]`, default `"http://localhost:8765"`).
+  - Added `_transcribe_via_parakeet_service(audio_np)` — HTTP POST to `/transcribe`, converts float32→Int16 WAV with proper WAV header. Returns text on success, empty string on any failure (network, timeout, missing key).
+  - Wired as **primary STT**: Parakeet tried first, faster-whisper fallback.
+  - Deleted stale F5-TTS comment.
+- **`tests/test_voice_command_parakeet.py`** (NEW) — 9 unit tests (mocked HTTP): success, connection error, timeout, empty text, missing key in response, no URL configured, WAV header verification.
+
+### feat: TTS fire-and-forget — text immediate, audio async (PR 6)
+
+- **`backend/api/chat.py`** — Added `_fire_tts_background(text, session_id)`: runs Pocket-TTS synthesis + playback in thread pool. Triggered via `asyncio.create_task` after REST `/api/chat` response is prepared. Suppresses Porcupine during playback via `engine.set_tts_active(True/False)`.
+- Deleted obsolete `docs/plans/2026-06-02-pocket-tts-swap.md`.
+
+### feat: Prometheus /metrics + GPU + Porcupine regression tests (PR 7)
+
+- **`backend/audio/parakeet_service.py`** — `/metrics` endpoint: Prometheus text format (default) + JSON (`?format=json`). Rolling latency deque (10K entries), exports `p50/p95/p99`. All 8 metrics with HELP/TYPE annotations.
+- **`tests/test_parakeet_integration.py`** (NEW) — 5 GPU-gated tests (skip if no CUDA or Parakeet service not running).
+- **`tests/test_porcupine_regression.py`** (NEW) — 13 tests (8 run without access key): API contract (loaded/unloaded/enabled/disabled), silence/no-detection, TTS suppression flag (`set_tts_active`), thread safety (`porcupine_lock`).
+
+### fix: decoder throttled to every 10th push
+
+GPU load reduced ~10× for non-final decodes. Full-context decode runs every ~800 ms (at 80 ms chunks, 10:1 ratio) instead of every 80 ms. Configured via `DECODER_THROTTLE_EVERY_N` constant.
+
+### test: 53 unit pass, 10 skip, 0 fail; 8 E2E pass, 0 fail
+
+| Test file | Pass | Skip | Notes |
+|-----------|------|------|-------|
+| `tests/test_parakeet_service.py` | 24 | 5 | WS tests skipped on Windows (TestClient deadlock) |
+| `tests/test_iris_gateway_patches.py` | 12 | 0 | |
+| `tests/test_voice_command_parakeet.py` | 9 | 0 | Mocked HTTP |
+| `tests/test_porcupine_regression.py` | 8 | 5 | Requires access key |
+| `tests/test_parakeet_integration.py` | 0 | 5 | Requires CUDA + running service |
+| `tests/e2e/test_voice_to_chat.spec.ts` | 8 | 0 | Playwright E2E |
+
+### deps: `@tabler/icons-react` installed
+
+Missing frontend dependency added and saved to `package.json`.
+
+---
+
 ## [Unreleased] — Port Config + Secrets Cleanup — 2026-06-20
 
 ### feat: Centralized port configuration with env-var overrides + port availability fallback

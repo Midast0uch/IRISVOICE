@@ -216,6 +216,51 @@ async def _run_agent_kernel(
     return content, thinking, elapsed_ms
 
 
+# ── Fire-and-forget TTS ────────────────────────────────────────────────
+
+
+async def _fire_tts_background(text: str, session_id: str) -> None:
+    """Synthesize and play TTS for the assistant response.
+
+    Runs as a background asyncio task so the HTTP response returns
+    immediately — the user sees text while TTS audio catches up.
+    TTS errors are logged at DEBUG level and never break the response.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _sync_tts_playback, text)
+    except Exception as exc:
+        logger.debug("[ChatREST] Background TTS skipped: %s", exc)
+
+
+def _sync_tts_playback(text: str) -> None:
+    """Synchronous TTS synthesis + playback (runs in thread pool).
+
+    Sequence: suppress Porcupine → synthesize → play → release.
+    """
+    engine = None
+    try:
+        from backend.agent.tts import get_tts_manager
+        from backend.audio.pipeline import get_audio_pipeline
+        from backend.audio.engine import get_audio_engine
+
+        engine = get_audio_engine()
+        if engine:
+            engine.set_tts_active(True)
+
+        tts = get_tts_manager()
+        pipeline = get_audio_pipeline()
+
+        chunks = list(tts.synthesize_stream(text))
+        if chunks and pipeline:
+            pipeline.play_stream(chunks)
+    except Exception as exc:
+        logger.debug("[ChatREST] TTS background playback error: %s", exc)
+    finally:
+        if engine is not None:
+            engine.set_tts_active(False)
+
+
 # ── POST /api/chat ─────────────────────────────────────────────────────
 
 
@@ -322,6 +367,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     # ── 6. Record in Immortus chain (non-blocking) ─────────────────────
     _record_to_immortus(thread_id, request.text, content, turn_id)
+
+    # ── 7. Fire TTS in background (non-blocking) ───────────────────────
+    if content:
+        _ = asyncio.create_task(_fire_tts_background(content, thread_id))
 
     return ChatResponse(
         content=content,
