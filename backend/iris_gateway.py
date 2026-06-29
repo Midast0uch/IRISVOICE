@@ -5486,11 +5486,34 @@ class IRISGateway:
         so we look up by name here.
 
         If the value is already an int (or can't be matched), it is returned as-is.
+
+        NOTE: Loopback devices (Stereo Mix, CABLE Output, VoiceMeeter, "What U Hear")
+        are excluded from output resolution because they route audio BACK into the
+        capture bus instead of to the user's speakers, which causes:
+          - Audio feedback / static (user hears nothing or distorted output)
+          - Half-duplex gate on activation sound blocks the mic for 38+ seconds
+          - Wake word fires on its own TTS output repeatedly
         """
         if isinstance(device, int):
             return device
         if not isinstance(device, str) or device == "":
             return device
+
+        # ── Loopback device keywords to skip ──────────────────────────────
+        _LOOPBACK_KEYWORDS = (
+            "stereo mix",
+            "what u hear",
+            "cable output",
+            "cable input",
+            "voicemeeter output",
+            "voicemeeter aux",
+            "vb-audio",
+        )
+
+        def _is_loopback(name: str) -> bool:
+            n = name.lower()
+            return any(kw in n for kw in _LOOPBACK_KEYWORDS)
+
         try:
             devices = AudioPipeline.list_devices()
             # Exact match first
@@ -5498,6 +5521,8 @@ class IRISGateway:
                 if want_input and not d.get("input"):
                     continue
                 if not want_input and not d.get("output"):
+                    continue
+                if not want_input and _is_loopback(d.get("name", "")):
                     continue
                 if d["name"] == device:
                     return d["index"]
@@ -5508,6 +5533,8 @@ class IRISGateway:
                     continue
                 if not want_input and not d.get("output"):
                     continue
+                if not want_input and _is_loopback(d.get("name", "")):
+                    continue
                 if d["name"][:31].lower().rstrip() == key:
                     return d["index"]
             # Substring match (handles API-level name differences)
@@ -5516,6 +5543,8 @@ class IRISGateway:
                 if want_input and not d.get("input"):
                     continue
                 if not want_input and not d.get("output"):
+                    continue
+                if not want_input and _is_loopback(d.get("name", "")):
                     continue
                 name_lower = d["name"].lower()
                 if device_lower in name_lower or name_lower in device_lower:
