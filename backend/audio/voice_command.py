@@ -232,7 +232,7 @@ class VoiceCommandHandler:
                 return False
 
         try:
-            logger.info("[VoiceCommand] Starting recording (faster-whisper)...")
+            logger.info("[VoiceCommand] Starting recording (Parakeet primary, faster-whisper fallback)...")
 
             self.is_recording = True
             self._recording_started_at = time.monotonic()

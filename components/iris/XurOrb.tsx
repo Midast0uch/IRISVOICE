@@ -211,7 +211,10 @@ export function XurOrb({
 
   const handleOrbClick = useCallback(() => {
     if (isVoiceActive) {
-      cancelVoiceCommand()
+      // Single-click while listening ENDS the voice command and processes STT.
+      // Previously this called cancelVoiceCommand() which discarded the audio
+      // — the user never saw their transcript because it was thrown away.
+      endVoiceCommand()
       return
     }
     if (isWingsOpen) {

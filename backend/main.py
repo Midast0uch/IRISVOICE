@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -1770,25 +1771,31 @@ _WAKE_WORD_COOLDOWN_SEC: float = 5.0
 _main_event_loop: asyncio.AbstractEventLoop = None
 
 
-def _on_wake_word_sync(wake_word_name: str) -> None:
-    """Synchronous wrapper — called from the audio callback thread.
-
-    Checks cooldown BEFORE scheduling the async handler on the event loop.
-    This prevents Porcupine's audio-frame-level re-detections from queuing
-    multiple coroutines before the first one has a chance to run.
+def _on_wake_word_sync(wake_word_name: str):
     """
-    import time as _time
+    Called from the audio engine thread when Porcupine detects the wake word.
 
+    Synchronous wrapper that debounces (cooldown) and then schedules
+    ``_on_wake_word_async`` on the main event loop via
+    ``asyncio.run_coroutine_threadsafe``.
+
+    The lambda in ``set_wake_word_callback`` calls this function.
+    ``_on_wake_word_async`` does the actual routing to the IRIS Gateway.
+    """
     global _last_wake_word_time
-    now = _time.monotonic()
+    now = time.monotonic()
     if now - _last_wake_word_time < _WAKE_WORD_COOLDOWN_SEC:
+        logger.info(
+            f"[WakeWord] '{wake_word_name}' within cooldown ({_WAKE_WORD_COOLDOWN_SEC}s) — skipping"
+        )
         return
     _last_wake_word_time = now
+    logger.info(f"[WakeWord] '{wake_word_name}' PASSED cooldown — scheduling async handler")
 
-    # Schedule the async handler on the main event loop (stored at setup —
-    # do NOT call asyncio.get_running_loop() here; we're in the audio thread).
     if _main_event_loop is None:
+        logger.error("[WakeWord] _main_event_loop is None — cannot schedule async handler")
         return
+
     asyncio.run_coroutine_threadsafe(
         _on_wake_word_async(wake_word_name), _main_event_loop
     )
@@ -1796,34 +1803,19 @@ def _on_wake_word_sync(wake_word_name: str) -> None:
 
 async def _on_wake_word_async(wake_word_name: str):
     """
-    Called from AudioEngine when Porcupine detects the wake word.
-    Routes to the main IRIS UI session (not integration sessions).
+    Async half of the wake word callback.  Scheduled by ``_on_wake_word_sync``
+    on the main event loop.  Routes ``voice_command_start`` through the
+    IRIS Gateway.
 
-    NOTE: Cooldown / debounce is handled in `_on_wake_word_sync` (the
-    thread-safe caller). The async handler MUST NOT re-check the cooldown
-    because `_last_wake_word_time` was just set a few ms ago by the sync
-    wrapper — re-checking would suppress the first (valid) detection.
+    NOTE: Cooldown is handled in ``_on_wake_word_sync`` (the thread-safe
+    caller).  This function runs on the main event loop and should NOT
+    re-check ``_last_wake_word_time`` (it was just set a few ms ago).
     """
-    # DIAGNOSTIC: log which input device is currently being used
     try:
-        if hasattr(self, "_audio_engine") and self._audio_engine:
-            dev = self._audio_engine.config.get("input_device")
-            logger.info(
-                f"[WakeWord] Wake word '{wake_word_name}' DETECTED — "
-                f"input device: {dev}, firing voice_command_start"
-            )
-        else:
-            logger.info(
-                f"[WakeWord] Wake word '{wake_word_name}' DETECTED — "
-                f"no audio_engine on self, firing voice_command_start"
-            )
-    except Exception:
-        logger.exception("[WakeWord] diagnostic failed")
         logger.info(
-            f"[WakeWord] Wake word '{wake_word_name}' DETECTED — firing voice_command_start"
+            f"[WakeWord] 'hey iris' DETECTED — "  # noqa: suppress log noise
+            "firing voice_command_start via iris_gateway"
         )
-
-    try:
         ws_manager = get_websocket_manager()
 
         # Priority 1: canonical main-UI session for client "iris"
