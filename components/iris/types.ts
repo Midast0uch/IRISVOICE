@@ -24,9 +24,7 @@ export interface IrisOrbProps {
   centerLabel: string
   size: number
   glowColor?: string
-  wakeFlash: boolean
   uiState?: UILayoutState
-  onCallbacksReady?: (callbacks: { handleWakeDetected: () => void; handleNativeAudioResponse: (payload: Record<string, unknown>) => void }) => void
 }
 
 /**
@@ -35,6 +33,10 @@ export interface IrisOrbProps {
  * Cadence data (breathMode, breathLevel, isBreathing) is NOT passed as props.
  * XurOrb reads it internally via the useCadenceDetection() hook, which pulls
  * voiceState, cadenceLevel, and ttsAudioLevel from useNavigation().
+ *
+ * Wake word + native audio callbacks were removed (PR 2026-06-29): the
+ * backend now fires `voice_command_start` directly via WebSocket, so the
+ * frontend no longer needs a bridge callback.
  */
 export interface XurOrbProps {
   isExpanded: boolean
@@ -43,15 +45,10 @@ export interface XurOrbProps {
   /** Kept for shim compat, unused in XurOrb (glitch labels carry this info) */
   centerLabel?: string
   size?: number
-  wakeFlash: boolean
   glowColor?: string
   uiState?: UILayoutState
   onCategorySelect?: (categoryId: string) => void
   onMenuClick?: () => void
   onChatClick?: () => void
-  onCallbacksReady?: (callbacks: {
-    handleWakeDetected: () => void
-    handleNativeAudioResponse: (payload: Record<string, unknown>) => void
-  }) => void
 }
 

@@ -358,7 +358,6 @@ export default function OrbPreviewPage() {
             onDoubleClick={() => {}}
             centerLabel=""
             glowColor={theme.color}
-            wakeFlash={false}
           />
         </div>
       </section>

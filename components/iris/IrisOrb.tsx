@@ -7,15 +7,16 @@
  * The shim maps old props to XurOrbProps and passes them through.
  *
  * Key mappings:
- * - onCallbacksReady → passed through to XurOrb (wake word bridge)
- * - centerLabel → unused in v2 (glitch labels carry this info), mapped to undefined
- * - wakeFlash → combined with XurOrb's internal doubleClickFlash
+ * - centerLabel → unused in v2 (glitch labels carry this info), passed for compat
  * - uiState → used for wings-open state
  * - size → passed through
  * - glowColor → passed through
  *
  * The shim does NOT intercept clicks — XurOrb handles single/double click
  * internally via useManualDragWindow with the same 500ms timer pattern.
+ *
+ * Removed (PR 2026-06-29): onCallbacksReady + wakeFlash — wake word is
+ * now driven by the backend's WebSocket broadcast, no frontend bridge needed.
  */
 
 import { XurOrb } from "./XurOrb"
@@ -30,9 +31,7 @@ export function IrisOrb(props: IrisOrbProps) {
     centerLabel,
     size,
     glowColor,
-    wakeFlash,
     uiState,
-    onCallbacksReady,
   } = props
 
   return (
@@ -44,9 +43,7 @@ export function IrisOrb(props: IrisOrbProps) {
       centerLabel={centerLabel}
       size={size}
       glowColor={glowColor}
-      wakeFlash={wakeFlash}
       uiState={uiState}
-      onCallbacksReady={onCallbacksReady}
     />
   )
 }

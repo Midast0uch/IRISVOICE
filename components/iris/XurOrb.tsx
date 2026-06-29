@@ -45,7 +45,7 @@ const CONTAINER_SIZE = 120
  * - RadialArcNodes (6 hex category nodes) — level 2 menu when MENU clicked
  * - 3 animation modes (C-opening, D-burst, A-bloom) cycled C→D→A→C on clicks
  * - Cadence breathing at ALL navigation levels (via useCadenceDetection)
- * - Voice activation: VOICE label, double-click, wake word (onCallbacksReady)
+ * - Voice activation: VOICE label, double-click, wake word (driven by backend WS)
  * - Click interception: cancel voice, close wings, navigate back
  * - Transparent background — XurOrb is the only thing visible
  */
@@ -54,13 +54,11 @@ export function XurOrb({
   onClick,
   onDoubleClick,
   size = CONTAINER_SIZE,
-  wakeFlash,
   glowColor: glowColorProp,
   uiState = UILayoutState.UI_STATE_IDLE,
   onCategorySelect,
   onMenuClick,
   onChatClick,
-  onCallbacksReady,
 }: XurOrbProps) {
   // ── Context ──────────────────────────────────────────────────────
   const {
@@ -82,7 +80,6 @@ export function XurOrb({
   const [menuOpen, setMenuOpen] = useState(false)
   const [doubleClickFlash, setDoubleClickFlash] = useState(false)
   const [isPressed, setIsPressed] = useState(false)
-  const [feedbackMessage, setFeedbackMessage] = useState("")
 
   // ── Label scramble state (matches PrototypeOrbShellsRotating) ─────
   const [activeIdx, setActiveIdx] = useState(0)
@@ -299,31 +296,11 @@ export function XurOrb({
     setIsPressed
   )
 
-  // ── Wake word bridge ──────────────────────────────────────────────
-  const isListeningRef = useRef(isListening)
-  isListeningRef.current = isListening
-
-  const handleWakeDetected = useCallback(() => {
-    if (isListeningRef.current) return
-    startVoiceCommand()
-  }, [startVoiceCommand])
-
-  const handleNativeAudioResponse = useCallback((payload: Record<string, unknown>) => {
-    if (payload.debug_text && typeof payload.debug_text === 'string') {
-      setFeedbackMessage(payload.debug_text)
-      setTimeout(() => setFeedbackMessage(""), 5000)
-    }
-  }, [])
-
-  useEffect(() => {
-    onCallbacksReady?.({
-      handleWakeDetected,
-      handleNativeAudioResponse,
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Flash on voice state transition into listening
+  // Flash on voice state transition into listening.
+  // This is the SINGLE animation hook that fires for BOTH wake-word and
+  // double-click paths: the backend broadcasts `listening_state` and
+  // `useIRISWebSocket` calls `setVoiceState('listening')`. The orb flash
+  // here is the canonical "voice started" visual cue.
   const prevVoiceStateRef = useRef(voiceState)
   useEffect(() => {
     const prev = prevVoiceStateRef.current
@@ -539,9 +516,10 @@ export function XurOrb({
           />
         </div>
 
-        {/* Wake flash / double-click flash overlay */}
+        {/* Voice-active flash overlay (fires on any voiceState → listening transition:
+            wake word, double-click, VOICE label, optimistic startVoiceCommand). */}
         <AnimatePresence>
-          {(wakeFlash || doubleClickFlash) && (
+          {doubleClickFlash && (
             <motion.div
               initial={{ opacity: 0.8 }}
               animate={{ opacity: 0 }}
@@ -550,30 +528,6 @@ export function XurOrb({
               className="absolute rounded-full pointer-events-none"
               style={{ inset: 0, background: 'white' }}
             />
-          )}
-        </AnimatePresence>
-
-        {/* Feedback message (from native audio response) */}
-        <AnimatePresence>
-          {feedbackMessage && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 10 }}
-              className="absolute pointer-events-none"
-              style={{
-                bottom: -30,
-                left: '50%',
-                transform: 'translateX(-50%)',
-                whiteSpace: 'nowrap',
-                fontSize: 10,
-                color: glowColor,
-                fontFamily: "'Courier New', Courier, monospace",
-                textShadow: `0 0 8px ${glowColor}80`,
-              }}
-            >
-              {feedbackMessage}
-            </motion.div>
           )}
         </AnimatePresence>
       </motion.div>

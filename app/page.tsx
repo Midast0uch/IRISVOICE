@@ -408,7 +408,6 @@ export default function Home() {
                 centerLabel={orbState.label}
                 size={orbDiameter}
                 glowColor={glowColor}
-                wakeFlash={false}
                 uiState={uiLayoutState}
               />
               <div className="mt-12">
