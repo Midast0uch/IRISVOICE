@@ -633,6 +633,7 @@ export function DarkGlassDashboard({
     ],
     // Cerebras: https://inference-docs.cerebras.ai/models/overview
     cerebras: [
+      { label: 'Gemma 4 31B', value: 'gemma-4-31b' },
       { label: 'GPT OSS 120B', value: 'gpt-oss-120b' },
       { label: 'Z.ai GLM 4.7', value: 'zai-glm-4.7' },
     ],
