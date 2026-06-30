@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import math
+import numpy as np
 import os
 from pathlib import Path
 import queue
@@ -1556,9 +1557,10 @@ class IRISGateway:
         # can animate its pulse in sync with the user's voice.
         # The callback is called from the VAD background thread every ~100 ms.
         def _on_audio_level(level: float) -> None:
-            session_id = getattr(voice_handler, "_active_session_id", None)
-            if not session_id:
-                return
+            # FIX: Don't gate on _active_session_id — if the voice handler
+            # hasn't set one yet (e.g. during the first wake-word cycle),
+            # broadcast to "default" so the orb still pulses.
+            session_id = getattr(voice_handler, "_active_session_id", None) or "default"
             loop = self._main_loop
             if loop and loop.is_running():
                 import asyncio as _asyncio
@@ -1573,6 +1575,16 @@ class IRISGateway:
                     ),
                     loop,
                 )
+            else:
+                # FIX: Log when the main loop isn't available — this is a
+                # silent failure mode that was hiding audio level issues.
+                _diag_count = getattr(self, "_audio_level_no_loop_count", 0)
+                if _diag_count < 3:
+                    self._audio_level_no_loop_count = _diag_count + 1
+                    logger.warning(
+                        f"[AUDIO_LEVEL] Cannot broadcast: main loop "
+                        f"not running (level={level:.3f}, session={session_id})"
+                    )
 
         # Set the private attribute directly so that ConversationKernel sees it
         # and chains it without us having to call set_audio_level_callback first.
@@ -2164,12 +2176,21 @@ class IRISGateway:
         from .agent import get_tts_manager
         from .agent.tts import OUTPUT_SAMPLE_RATE as _TTS_SAMPLE_RATE
         from .audio.engine import get_audio_engine
+        import logging as _logging
 
+        _root_log = _logging.getLogger()
         engine = get_audio_engine()
         tts = get_tts_manager()
 
+        _root_log.info(
+            f"[TTS] _speak_response ENTRY: input_type={type(input_source).__name__}, "
+            f"session={session_id}, text_preview={str(input_source)[:80]!r}"
+        )
+
         if not engine.pipeline:
+            _root_log.error("[TTS] _speak_response: no engine.pipeline, aborting")
             return
+        _root_log.info(f"[TTS] engine.pipeline OK, tts manager loaded={tts.is_loaded()}")
 
         # 1. Internal state
         audio_queue: queue.Queue = queue.Queue(maxsize=4)  # Buffer a few chunks
@@ -2334,6 +2355,16 @@ class IRISGateway:
                         pass
                     while True:
                         item = input_source.get()
+                        # DIAG: log items coming into the producer
+                        if not hasattr(self, "_diag_producer_items"):
+                            self._diag_producer_items = 0
+                        self._diag_producer_items += 1
+                        if self._diag_producer_items <= 5 or self._diag_producer_items % 10 == 0:
+                            _root_log.info(
+                                f"[DIAG][producer] item#{self._diag_producer_items} "
+                                f"item_type={type(item).__name__} "
+                                f"item_preview={str(item)[:40]!r}"
+                            )
                         # v2 (Phase 7): halt on Caducean TOPO_VIOLATION (rec=3).
                         # The kernel's should_halt_on_violation() calls
                         # audio_pipeline.interrupt() internally, so the
@@ -2346,7 +2377,7 @@ class IRISGateway:
 
                             _ck = get_conversation_kernel()
                             if _ck is not None and _ck.should_halt_on_violation():
-                                logger.info(
+                                _root_log.info(
                                     "[_speak_response] TOPO_VIOLATION — halting TTS"
                                 )
                                 _ck.mark_speaking(False)
@@ -2387,7 +2418,9 @@ class IRISGateway:
                             if interrupted.is_set() or engine.is_speech_interrupted():
                                 break
                             chunk = " ".join(_pending)
+                            _diag_chunks = 0
                             for audio_chunk in tts.synthesize_stream(chunk):
+                                _diag_chunks += 1
                                 if audio_chunk is not None and len(audio_chunk) > 0:
                                     if _native:
                                         gained = np.clip(audio_chunk * 2.5, -0.99, 0.99)
@@ -2403,6 +2436,10 @@ class IRISGateway:
                                         audio_queue.put(audio_chunk)
                             _pending = []
                             _pending_words = 0
+                            _root_log.info(
+                                f"[TTS][producer] synthesized {_diag_chunks} audio chunks "
+                                f"for chunk of {len(chunk)} chars ({chunk[:50]!r})"
+                            )
                             if is_first_chunk:
                                 is_first_chunk = False
                                 _target = NORMAL_CHUNK_THRESHOLD
@@ -2663,33 +2700,67 @@ class IRISGateway:
     ) -> None:
         """
         Handle tts_play message sent when the user clicks the play icon in ChatView.
-        Runs TTS synthesis + playback in an executor so the event loop stays free.
+        Synthesises and plays the response text directly through the desktop audio
+        device, bypassing the streaming producer/consumer path used for live LLM
+        responses. This keeps the play-button path simple and robust.
         """
+        import asyncio
+        import logging as _logging
+
+        _root_log = _logging.getLogger()
         text = (message.get("payload") or {}).get("text", "").strip()
         if not text:
+            _root_log.warning("[TTS] tts_play received with empty text")
             return
-        import asyncio
 
-        loop = asyncio.get_running_loop()
+        _root_log.info(f"[TTS] tts_play requested ({len(text)} chars)")
+
+        def _play_directly() -> None:
+            """Run blocking TTS synthesis + playback in a thread executor."""
+            from .agent import get_tts_manager
+            from .agent.tts import OUTPUT_SAMPLE_RATE as _TTS_SAMPLE_RATE
+            from .audio.engine import get_audio_engine
+
+            engine = get_audio_engine()
+            if not engine or not engine.pipeline:
+                raise RuntimeError("Audio pipeline not available")
+
+            tts = get_tts_manager()
+            if not tts.is_loaded():
+                # Force-load if pre-warm was skipped or failed.
+                tts._load_pocket_tts()
+
+            audio_chunks: list = []
+            for chunk in tts.synthesize_stream(text):
+                if chunk is not None and len(chunk) > 0:
+                    audio_chunks.append(chunk)
+
+            if not audio_chunks:
+                raise RuntimeError("TTS produced no audio chunks")
+
+            _root_log.info(
+                f"[TTS] playing {len(audio_chunks)} audio chunks "
+                f"({sum(len(c) for c in audio_chunks)} samples)"
+            )
+            engine.pipeline.play_stream(audio_chunks, sample_rate=_TTS_SAMPLE_RATE)
+
         try:
             await self._ws_manager.send_to_client(
                 client_id,
-                {
-                    "type": "listening_state",
-                    "payload": {"state": "speaking"},
-                },
+                {"type": "listening_state", "payload": {"state": "speaking"}},
             )
-            await loop.run_in_executor(None, self._speak_response, text, session_id)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _play_directly)
         except Exception as e:
-            self._logger.error(f"[Voice] tts_play error: {e}")
+            _root_log.error(f"[TTS] tts_play failed: {e}", exc_info=True)
         finally:
-            await self._ws_manager.send_to_client(
-                client_id,
-                {
-                    "type": "listening_state",
-                    "payload": {"state": "idle"},
-                },
-            )
+            try:
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {"type": "listening_state", "payload": {"state": "idle"}},
+                )
+            except Exception as e:
+                _root_log.warning(f"[TTS] send idle state failed: {e}")
 
     async def _chat_heartbeat(self, client_id: str, interval: float = 5.0):
         """Send periodic chat_heartbeat messages to keep the TCP layer alive

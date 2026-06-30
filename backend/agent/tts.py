@@ -242,14 +242,24 @@ class TTSManager:
 
         Lock discipline: self._lock held only during model load, not inference.
         """
+        import logging as _logging
+
+        _root_log = _logging.getLogger()
+        _root_log.info(
+            f"[TTSManager] synthesize_stream ENTRY: {len(text)} chars, "
+            f"text={text[:80]!r}"
+        )
         if not self.config.get("tts_enabled", True):
+            _root_log.warning("[TTSManager] TTS disabled in config, returning empty")
             return
         if not text.strip():
+            _root_log.warning("[TTSManager] Empty text, returning empty")
             return
 
         # Normalise text before synthesis
         normalized = self._normalize(text)
         if not normalized:
+            _root_log.warning("[TTSManager] Normalized text is empty, returning empty")
             return
 
         # --- Pocket-TTS: sole engine (zero-shot voice cloning) ----------------
@@ -258,18 +268,31 @@ class TTSManager:
             pocket = self._pocket_tts_model
             voice = self._voice_state
 
+        _root_log.info(
+            f"[TTSManager] model state: loaded={loaded}, "
+            f"pocket={'OK' if pocket else 'None'}, voice={'OK' if voice else 'None'}"
+        )
+
         if loaded and pocket is not None and voice is not None:
+            _chunk_count = 0
+            _total_samples = 0
             try:
                 for chunk in self._stream_pocket(pocket, voice, normalized):
+                    _chunk_count += 1
+                    _total_samples += len(chunk) if chunk is not None else 0
                     yield chunk
+                _root_log.info(
+                    f"[TTSManager] _stream_pocket produced {_chunk_count} chunks, "
+                    f"{_total_samples} samples total"
+                )
                 return
             except Exception as exc:
-                logger.error(
+                _root_log.error(
                     f"[TTSManager] Pocket-TTS stream failed: {exc}",
                     exc_info=True,
                 )
         else:
-            logger.error(
+            _root_log.error(
                 "[TTSManager] Pocket-TTS unavailable. Run: pip install pocket-tts "
                 "and place TOMV2.wav at IRISVOICE/data/TOMV2.wav"
             )
@@ -329,7 +352,7 @@ class TTSManager:
 
             t0 = time.monotonic()
             self._pocket_tts_model = TTSModel.load_model(
-                variant=os.environ.get("POCKET_TTS_VARIANT", "english"),
+                language=os.environ.get("POCKET_TTS_LANGUAGE", "english"),
             )
             dt = time.monotonic() - t0
             logger.info(f"[TTSManager] Pocket-TTS model loaded in {dt:.1f}s")

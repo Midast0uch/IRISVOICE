@@ -247,10 +247,30 @@ class AudioPipeline:
         all_audio = np.concatenate(list(audio_chunks))
         audio_float = np.clip(all_audio.astype(np.float32) * 2.5, -0.99, 0.99)
         duration_ms = int(len(audio_float) / sr * 1000)
-        logger.info(
-            f"[AudioPipeline] play_stream fallback: {len(audio_float)} frames @ {sr}Hz ({duration_ms}ms)"
-        )
-        _sd().play(audio_float, samplerate=sr, device=self.output_device, blocking=True)
+        try:
+            out_dev = self.output_device
+            _sd().play(audio_float, samplerate=sr, device=out_dev, blocking=True)
+            logger.info(
+                f"[AudioPipeline] play_stream OK: {len(audio_float)} frames @ {sr}Hz "
+                f"({duration_ms}ms) → device={out_dev}"
+            )
+        except Exception as _play_err:
+            logger.error(
+                f"[AudioPipeline] play_stream FAILED on device={self.output_device}: "
+                f"{_play_err}",
+                exc_info=True,
+            )
+            # Try the default device as a last resort.
+            try:
+                logger.warning("[AudioPipeline] Retrying play_stream with default device")
+                _sd().play(audio_float, samplerate=sr, blocking=True)
+                logger.info("[AudioPipeline] play_stream OK on default device")
+            except Exception as _retry_err:
+                logger.error(
+                    f"[AudioPipeline] play_stream FAILED on default device too: {_retry_err}",
+                    exc_info=True,
+                )
+                raise
 
     def play_audio(self, audio_data: np.ndarray, sample_rate: int = None):
         """Play audio through the system default output device.

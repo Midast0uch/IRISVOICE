@@ -235,6 +235,8 @@
     "dev:backend": "python start-backend.py",
     "dev:tauri": "npx tauri dev",
     "dev:tauri:nowatch": "npx tauri dev -- --no-watch",
+    "start:all": "venv\\Scripts\\python.exe start_all.py",
+    "start:backend-only": "venv\\Scripts\\python.exe start_all.py --no-fe",
     "iris:start": "python scripts/iris_process_manager.py start",
     "iris:stop": "python scripts/iris_process_manager.py stop",
     "iris:status": "python scripts/iris_process_manager.py status"

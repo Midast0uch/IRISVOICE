@@ -1884,6 +1884,10 @@ async def _on_wake_word_async(wake_word_name: str):
             except Exception:
                 pass  # headless — no WS to notify
             iris_gateway = get_iris_gateway()
+            logger.info(
+                f"[WakeWord] Routing to iris_gateway._handle_voice "
+                f"(session={session_id}, client={client_id})"
+            )
             await iris_gateway._handle_voice(
                 session_id,
                 client_id,
@@ -1891,8 +1895,9 @@ async def _on_wake_word_async(wake_word_name: str):
                 auto_stop=True,
                 pre_speech_timeout_sec=3.0,
             )
+            logger.info(f"[WakeWord] _handle_voice returned for session={session_id}")
     except Exception as e:
-        logger.error(f"[WakeWord] Error routing wake word: {e}")
+        logger.error(f"[WakeWord] Error routing wake word: {e}", exc_info=True)
 
 
 # ============================================================================

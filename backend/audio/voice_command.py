@@ -731,6 +731,24 @@ class VoiceCommandHandler:
         AudioEngine frame listener — accumulates float32 PCM while recording.
         Called from the sounddevice callback thread; must never raise.
         """
+        # DIAGNOSTIC: Throttled RMS log so we can verify the mic is actually
+        # receiving audio. Logs every 30 frames (~1 s at 32 ms/frame) regardless
+        # of recording state — if we never see this, the input stream is dead.
+        if not hasattr(self, "_diag_frame_count"):
+            self._diag_frame_count = 0
+        self._diag_frame_count += 1
+        if self._diag_frame_count % 30 == 1:
+            try:
+                _rms = float(np.sqrt(np.mean(np.square(audio_frame))))
+                _peak = float(np.max(np.abs(audio_frame)))
+                logger.info(
+                    f"[DIAG][capture_frame] frame#{self._diag_frame_count} "
+                    f"shape={audio_frame.shape} rms={_rms:.5f} peak={_peak:.5f} "
+                    f"is_recording={self.is_recording} device_frames={len(self._raw_frames)}"
+                )
+            except Exception as _diag_exc:
+                logger.warning(f"[DIAG][capture_frame] log error: {_diag_exc}")
+
         if not self.is_recording:
             return
 
