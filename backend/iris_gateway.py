@@ -2718,42 +2718,93 @@ class IRISGateway:
 
         _root_log.info(f"[TTS] tts_play requested ({len(text)} chars)")
 
-        def _play_directly() -> None:
-            """Run blocking TTS synthesis + playback in a thread executor."""
-            from .agent import get_tts_manager
-            from .agent.tts import OUTPUT_SAMPLE_RATE as _TTS_SAMPLE_RATE
-            from .audio.engine import get_audio_engine
+        import numpy as np
 
-            engine = get_audio_engine()
-            if not engine or not engine.pipeline:
-                raise RuntimeError("Audio pipeline not available")
+        # ── Phase 1: Synthesize audio in thread executor ─────────────────
+        def _synthesize() -> list:
+            """Blocking TTS synthesis — returns list of float32 chunks."""
+            from .agent import get_tts_manager
 
             tts = get_tts_manager()
             if not tts.is_loaded():
-                # Force-load if pre-warm was skipped or failed.
                 tts._load_pocket_tts()
 
             audio_chunks: list = []
             for chunk in tts.synthesize_stream(text):
                 if chunk is not None and len(chunk) > 0:
                     audio_chunks.append(chunk)
-
-            if not audio_chunks:
-                raise RuntimeError("TTS produced no audio chunks")
-
-            _root_log.info(
-                f"[TTS] playing {len(audio_chunks)} audio chunks "
-                f"({sum(len(c) for c in audio_chunks)} samples)"
-            )
-            engine.pipeline.play_stream(audio_chunks, sample_rate=_TTS_SAMPLE_RATE)
+            return audio_chunks
 
         try:
             await self._ws_manager.send_to_client(
                 client_id,
                 {"type": "listening_state", "payload": {"state": "speaking"}},
             )
+
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _play_directly)
+            audio_chunks = await loop.run_in_executor(None, _synthesize)
+
+            if not audio_chunks:
+                raise RuntimeError("TTS produced no audio chunks")
+
+            # ── Calculate per-word timing ───────────────────────────────
+            from .agent.tts import OUTPUT_SAMPLE_RATE as _TTS_SAMPLE_RATE
+
+            sample_rate = _TTS_SAMPLE_RATE
+            total_samples = sum(len(c) for c in audio_chunks)
+            total_duration_s = total_samples / sample_rate
+            words = text.split()
+            word_count = len(words)
+            per_word_s = total_duration_s / word_count
+            _root_log.info(
+                f"[TTS] {word_count} words over {total_duration_s:.1f}s "
+                f"→ {per_word_s*1000:.0f}ms/word, "
+                f"audio {len(audio_chunks)} chunks ({total_samples} samples)"
+            )
+
+            # ── Phase 2: Start playback in thread executor (non-blocking) ─
+            def _play() -> None:
+                from .audio.engine import get_audio_engine
+
+                engine = get_audio_engine()
+                if not engine or not engine.pipeline:
+                    raise RuntimeError("Audio pipeline not available")
+                engine.pipeline.play_stream(audio_chunks, sample_rate=sample_rate)
+
+            playback_future = loop.run_in_executor(None, _play)
+
+            # ── Phase 3: Send word events while playback runs ───────────
+            for i in range(word_count):
+                await asyncio.sleep(per_word_s)
+                try:
+                    await self._ws_manager.send_to_client(
+                        client_id,
+                        {
+                            "type": "tts_word",
+                            "payload": {
+                                "word_index": i,
+                                "total_words": word_count,
+                                "is_final": False,
+                            },
+                        },
+                    )
+                except Exception as we:
+                    _root_log.debug(f"[TTS] word event {i} failed: {we}")
+            # Final word event
+            await self._ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "tts_word",
+                    "payload": {
+                        "word_index": word_count - 1,
+                        "total_words": word_count,
+                        "is_final": True,
+                    },
+                },
+            )
+            # Wait for actual playback to finish
+            await playback_future
+
         except Exception as e:
             _root_log.error(f"[TTS] tts_play failed: {e}", exc_info=True)
         finally:
