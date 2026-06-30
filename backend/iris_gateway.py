@@ -1631,7 +1631,7 @@ class IRISGateway:
         session_id: str,
         client_id: str,
         message: dict,
-        auto_stop: bool = False,
+        auto_stop: bool = True,
         pre_speech_timeout_sec: float | None = None
     ) -> None:
         """
@@ -1641,6 +1641,14 @@ class IRISGateway:
 
         pre_speech_timeout_sec: For auto_stop mode, give up if speech doesn't start
             within this many seconds. None = use VoiceCommandHandler default (0 = 30s max).
+
+        auto_stop is True by default (VAD-driven). When True:
+          - Recording auto-stops after `silence_timeout_sec` seconds of silence
+          - Then STT processes, agent responds, and conversation mode auto-relistens
+          - This enables the back-and-forth conversational flow
+
+          When False (only for backward compat):
+          - User must manually send voice_command_end to trigger STT
         """
         msg_type = message.get("type")
         if msg_type == "voice_command":
