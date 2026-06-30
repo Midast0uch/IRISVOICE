@@ -651,7 +651,8 @@ class VoiceCommandHandler:
         _level_frame_count = 0
         _LEVEL_EMIT_EVERY = 3
         # Cadence: reset spectral flux detector at recording start
-        self.cadence_detector.reset()
+        if hasattr(self, "cadence_detector"):
+            self.cadence_detector.reset()
 
         while total_frames < max_frames and not self._stop_event.is_set():
             current_len = len(self._raw_frames)
@@ -686,7 +687,7 @@ class VoiceCommandHandler:
                         except Exception:
                             pass
                     # New consolidated callback (XurOrb listens for audio_envelope)
-                    if self._on_audio_envelope:
+                    if hasattr(self, "_on_audio_envelope") and self._on_audio_envelope and hasattr(self, "cadence_detector"):
                         try:
                             cadence = self.cadence_detector.process(frame)
                             self._on_audio_envelope(level, cadence, "listening")

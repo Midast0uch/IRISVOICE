@@ -1853,25 +1853,36 @@ async def _on_wake_word_async(wake_word_name: str):
             # Priority 2: any active session that is not an integration session
             active_sessions = ws_manager.get_active_session_ids()
             if not active_sessions:
-                logger.warning("[WakeWord] Wake word detected but no active sessions")
-                return
-            session_id = next(
-                (s for s in active_sessions if "integration" not in s),
-                active_sessions[0],
-            )
+                # Priority 3: headless mode — no browser connected
+                session_id = "voice_headless"
+                client_id = "voice_headless_client"
+                logger.info(
+                    "[WakeWord] No active sessions — entering headless voice mode "
+                    f"(session={session_id}, client={client_id})"
+                )
+            else:
+                session_id = next(
+                    (s for s in active_sessions if "integration" not in s),
+                    active_sessions[0],
+                )
 
-        client_ids = ws_manager.get_clients_for_session(session_id)
-        client_id = client_ids[0] if client_ids else None
+        if "client_id" not in locals():
+            client_ids = ws_manager.get_clients_for_session(session_id)
+            client_id = client_ids[0] if client_ids else "voice_headless_client"
+
         if client_id:
             logger.info(
                 f"[WakeWord] '{wake_word_name}' -> triggering voice for session {session_id}"
             )
             # Notify frontend that wake word was detected — triggers the same
             # visual feedback as double-click (flash animation + listening state).
-            await ws_manager.send_to_client(
-                client_id,
-                {"type": "wake_detected", "payload": {"keyword": wake_word_name}},
-            )
+            try:
+                await ws_manager.send_to_client(
+                    client_id,
+                    {"type": "wake_detected", "payload": {"keyword": wake_word_name}},
+                )
+            except Exception:
+                pass  # headless — no WS to notify
             iris_gateway = get_iris_gateway()
             await iris_gateway._handle_voice(
                 session_id,
@@ -1880,8 +1891,6 @@ async def _on_wake_word_async(wake_word_name: str):
                 auto_stop=True,
                 pre_speech_timeout_sec=3.0,
             )
-        else:
-            logger.warning(f"[WakeWord] Session {session_id} has no connected clients")
     except Exception as e:
         logger.error(f"[WakeWord] Error routing wake word: {e}")
 

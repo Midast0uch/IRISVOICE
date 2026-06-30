@@ -1552,27 +1552,6 @@ class IRISGateway:
         # on the existing voice pipeline. The kernel adds Caducean
         # phase-awareness to decisions the existing classes already make.
         # No new VAD, no new TTS, no new state machine (see plan §Component 5).
-        try:
-            from backend.agent.conversation_kernel import (
-                ConversationKernel,
-                set_conversation_kernel,
-            )
-
-            audio_pipeline = getattr(self, "_audio_pipeline", None)
-            kernel = ConversationKernel(
-                voice_handler=voice_handler,
-                tts_manager=getattr(self, "_tts_manager", None),
-                audio_pipeline=audio_pipeline,
-                session_id_getter=lambda: getattr(self, "_caducean_session_id", None),
-            )
-            kernel.register_callbacks()
-            set_conversation_kernel(kernel)
-            logger.info("[iris_gateway] ConversationKernel instantiated and wired")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[iris_gateway] ConversationKernel setup failed (non-fatal): %s", exc
-            )
-
         # Broadcast real-time audio levels during recording so the IrisOrb
         # can animate its pulse in sync with the user's voice.
         # The callback is called from the VAD background thread every ~100 ms.
@@ -1595,7 +1574,36 @@ class IRISGateway:
                     loop,
                 )
 
+        # Set the private attribute directly so that ConversationKernel sees it
+        # and chains it without us having to call set_audio_level_callback first.
         if hasattr(voice_handler, "set_audio_level_callback"):
+            voice_handler._on_audio_level = _on_audio_level
+
+        kernel_ok = False
+        try:
+            from backend.agent.conversation_kernel import (
+                ConversationKernel,
+                set_conversation_kernel,
+            )
+
+            audio_pipeline = getattr(self, "_audio_pipeline", None)
+            kernel = ConversationKernel(
+                voice_handler=voice_handler,
+                tts_manager=getattr(self, "_tts_manager", None),
+                audio_pipeline=audio_pipeline,
+                session_id_getter=lambda: getattr(self, "_caducean_session_id", None),
+            )
+            kernel.register_callbacks()
+            set_conversation_kernel(kernel)
+            logger.info("[iris_gateway] ConversationKernel instantiated and wired")
+            kernel_ok = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[iris_gateway] ConversationKernel setup failed (non-fatal): %s", exc
+            )
+
+        # If ConversationKernel failed to register, fall back to registering directly.
+        if not kernel_ok and hasattr(voice_handler, "set_audio_level_callback"):
             voice_handler.set_audio_level_callback(_on_audio_level)
 
         # Broadcast consolidated audio_envelope (rms + cadence + phase) for XurOrb.
@@ -2164,7 +2172,7 @@ class IRISGateway:
             return
 
         # 1. Internal state
-        audio_queue: asyncio.Queue = asyncio.Queue(maxsize=4)  # Buffer a few chunks
+        audio_queue: queue.Queue = queue.Queue(maxsize=4)  # Buffer a few chunks
         interrupted = threading.Event()
         loop = self._main_loop or asyncio.get_event_loop()
 
@@ -2250,7 +2258,7 @@ class IRISGateway:
                         pass
                 if not native_ok:
                     # Push raw chunk — play_stream will apply gain/normalization
-                    asyncio.run_coroutine_threadsafe(audio_queue.put(audio_chunk), loop)
+                    audio_queue.put(audio_chunk)
 
                 # Broadcast audio level for orb speaking animation (throttled ~10 Hz)
                 import time as _time
@@ -2367,9 +2375,7 @@ class IRISGateway:
                                                     f"[Voice] Native push failed ({_push_err})"
                                                 )
                                         else:
-                                            asyncio.run_coroutine_threadsafe(
-                                                audio_queue.put(audio_chunk), loop
-                                            )
+                                            audio_queue.put(audio_chunk)
                             break
 
                         _pending.append(item)
@@ -2394,9 +2400,7 @@ class IRISGateway:
                                                 f"[Voice] Native push failed ({_push_err})"
                                             )
                                     else:
-                                        asyncio.run_coroutine_threadsafe(
-                                            audio_queue.put(audio_chunk), loop
-                                        )
+                                        audio_queue.put(audio_chunk)
                             _pending = []
                             _pending_words = 0
                             if is_first_chunk:
@@ -2463,7 +2467,7 @@ class IRISGateway:
                     except Exception:
                         pass
                 if not _native:
-                    asyncio.run_coroutine_threadsafe(audio_queue.put(None), loop)
+                    audio_queue.put(None)
 
         # 3. Suppress Porcupine while IRIS is speaking
         engine.set_tts_active(True)
@@ -2496,29 +2500,23 @@ class IRISGateway:
                     # model is cached, this loads in <5s.  If TTS still fails,
                     # system recovers and continues conversation without it.
                     _timeout = 300 if _first_chunk else 5
-                    _start = time.monotonic()
-                    chunk = None
-                    while time.monotonic() - _start < _timeout:
-                        try:
-                            chunk = audio_queue.get_nowait()
-                            break
-                        except asyncio.QueueEmpty:
-                            time.sleep(0.01)
+                    try:
+                        chunk = audio_queue.get(timeout=_timeout)
+                    except queue.Empty:
+                        chunk = None
                     if chunk is None:
                         self._logger.error(
                             f"[Voice] TTS audio queue timed out after {_timeout}s — skipping TTS, continuing conversation"
                         )
                         break
                     _first_chunk = False
-                    if chunk is None:
-                        break
 
                     if engine.is_speech_interrupted():
                         interrupted.set()
                         while not audio_queue.empty():
                             try:
                                 audio_queue.get_nowait()
-                            except asyncio.QueueEmpty:
+                            except queue.Empty:
                                 break
                         break
 
