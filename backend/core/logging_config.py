@@ -6,6 +6,7 @@ It sets up structured logging with JSON formatting, file rotation, and context i
 """
 
 import logging
+import logging.handlers
 import os
 import sys
 from pathlib import Path
@@ -75,14 +76,25 @@ def setup_backend_logging(
     # and Python's root logger has no handlers by default.
     _root = logging.getLogger()
     if not _root.handlers:
-        _handler = logging.StreamHandler(sys.stdout)
-        _handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
+        _fmt = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
+
+        # stdout handler — visible in terminal
+        _handler = logging.StreamHandler(sys.stdout)
+        _handler.setFormatter(_fmt)
         _root.addHandler(_handler)
+
+        # File handler — so module-level loggers (backend.iris_gateway, etc.)
+        # are captured in irisvoice.log alongside the structured logger output.
+        if enable_file_logging:
+            _file_handler = logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=10 * 1024 * 1024, backupCount=5
+            )
+            _file_handler.setFormatter(_fmt)
+            _root.addHandler(_file_handler)
+
         _root.setLevel(getattr(logging, log_level.upper()))
 
     logger.info(

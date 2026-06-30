@@ -519,6 +519,25 @@ class VoiceCommandHandler:
         Background thread: waits for end-of-speech (VAD or manual stop),
         then transcribes with faster-whisper and fires the result callback.
         """
+        # Watchdog: if this thread hangs for >60s, force-reset is_recording
+        # so subsequent wake words aren't permanently blocked.
+        _watchdog_fired = threading.Event()
+
+        def _watchdog_reset():
+            if not _watchdog_fired.is_set():
+                _watchdog_fired.set()
+                logger.error(
+                    "[VoiceCommand] WATCHDOG: transcription thread hung for 60s — "
+                    "force-resetting is_recording"
+                )
+                self.is_recording = False
+                self._set_state(VoiceState.ERROR, "Transcription timed out")
+                threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
+
+        _watchdog_timer = threading.Timer(60.0, _watchdog_reset)
+        _watchdog_timer.daemon = True
+        _watchdog_timer.start()
+
         try:
             logger.info("[VoiceCommand] Waiting for speech...")
 
@@ -617,6 +636,17 @@ class VoiceCommandHandler:
                 )
             self._set_state(VoiceState.ERROR, f"Transcription failed: {e}")
             threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
+        finally:
+            # Cancel watchdog if thread completed normally
+            _watchdog_timer.cancel()
+            # Belt-and-suspenders: ensure is_recording is always reset
+            # even if the thread is killed or a non-Exception is raised
+            if self.is_recording:
+                logger.warning(
+                    "[VoiceCommand] finally: is_recording was still True — "
+                    "resetting (thread may have been killed)"
+                )
+                self.is_recording = False
 
     def _vad_wait_for_speech_then_silence(self) -> None:
         """
