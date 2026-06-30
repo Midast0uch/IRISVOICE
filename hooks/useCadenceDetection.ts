@@ -1,6 +1,7 @@
 "use client"
 
 import { useNavigation } from "@/contexts/NavigationContext"
+import { useClientMicCadence } from "./useClientMicCadence"
 
 export interface CadenceData {
   /** Always "D" (the winner breathing mode) */
@@ -21,27 +22,47 @@ export interface CadenceData {
  *
  * Voice state → cadence mapping:
  *   idle:                     breathLevel 0,     not breathing
- *   listening:                cadenceLevel,       breathing (spectral flux from backend)
+ *   listening:                cadenceLevel,       breathing (backend spectral flux)
+ *                             or audioLevel,      breathing (backend RMS fallback)
+ *                             or clientCadence,   breathing (browser mic fallback)
  *   processing_conversation:  0.3,                breathing (gentle pulse)
  *   processing_tool:          0.2,                breathing (gentle pulse)
  *   speaking:                 ttsAudioLevel,      breathing (RMS from backend TTS)
  *   error:                    0,                  not breathing
  *
- * Client-side fallback (dev mode without backend):
- *   If cadenceLevel is 0 but voiceState is "listening", fall back to
- *   audioLevel (RMS) as a proxy for cadence so the orb still breathes.
+ * Priority chain for listening state:
+ *   1. Backend cadence (spectral flux from audio_envelope)
+ *   2. Backend RMS (audioLevel fallback)
+ *   3. Client-side mic cadence (useClientMicCadence — browser getUserMedia)
+ *
+ * This ensures the orb always breathes when listening, even if the
+ * backend input device is wrong or VAD isn't engaged.  The client-side
+ * fallback mirrors CadenceBreathDemo's spectral flux algorithm.
  */
 export function useCadenceDetection(): CadenceData {
   const { voiceState, cadenceLevel, ttsAudioLevel, audioLevel } = useNavigation()
 
+  // Client-side mic cadence: starts when listening begins, stops when it ends.
+  // Provides a fallback if the backend isn't sending audio_envelope messages.
+  const isListening = voiceState === "listening"
+  const clientCadence = useClientMicCadence(isListening)
+
   switch (voiceState) {
     case "listening": {
-      // Fallback: if backend cadence is 0 (not running), use RMS as proxy
-      const level = cadenceLevel > 0 ? cadenceLevel : audioLevel * 0.7
-      return { breathMode: "D", breathLevel: level, isBreathing: true }
+      // STT / user speaking: Mode C = big dramatic halo + shell expansion.
+      // Matches the orb-preview demo's "voice breath glow" Option C.
+      // Priority: backend cadence → backend RMS proxy → client mic cadence
+      const level = cadenceLevel > 0 ? cadenceLevel
+                   : audioLevel > 0 ? audioLevel * 0.7
+                   : clientCadence
+      return { breathMode: "C", breathLevel: level, isBreathing: true }
     }
-    case "speaking":
-      return { breathMode: "D", breathLevel: ttsAudioLevel, isBreathing: true }
+    case "speaking": {
+      // TTS / agent responding: Mode D = subtle contained pulse + faint halo.
+      // Matches the orb-preview demo's winning Option D.
+      const speechLevel = cadenceLevel > 0 ? cadenceLevel : audioLevel
+      return { breathMode: "D", breathLevel: speechLevel, isBreathing: true }
+    }
     case "processing_conversation":
       return { breathMode: "D", breathLevel: 0.3, isBreathing: true }
     case "processing_tool":

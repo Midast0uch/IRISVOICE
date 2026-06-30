@@ -165,6 +165,24 @@ export function OrbCanvas({
       }
     }
 
+    // ── Mode C: big dramatic halo — spreads beyond shells like a voice aura.
+    // Used for STT (listening) to show the orb is "hearing" the user.
+    function drawBreathHalo(level: number, color: string) {
+      if (level <= 0) return
+      const center = SIZE / 2
+      const maxRadius = SIZE * 1.2 * (1 + level * 0.8)
+      ctx.save()
+      ctx.fillStyle = color
+      for (let r = 8; r > 0; r--) {
+        const radius = maxRadius * (r / 8)
+        ctx.globalAlpha = 0.35 * (1 - r / 8) * level
+        ctx.beginPath()
+        ctx.arc(center, center, radius, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      ctx.restore()
+    }
+
     // ── Mode D: faint contained halo — stays well inside the orb boundary.
     // Max radius capped so it never exceeds the orb visual edge.
     function drawBreathHaloFaint(level: number, color: string) {
@@ -317,16 +335,27 @@ export function OrbCanvas({
       }
 
       // ── Cadence breathing (always active when isBreathing) ─────
-      // breathLevel drives scale + brightness on top of any click animation.
+      // breathMode differentiates STT (listening→"C") vs TTS (speaking→"D")
       if (br && bl > 0) {
         const breathPulse = bl
-        bloom *= 1 + breathPulse * 0.45
-        scaleMul *= 1 + breathPulse * 0.22
+        if (breathMode === 'C') {
+          // STT / listening: big dramatic shell expansion + bright halo
+          bloom *= 1 + breathPulse * 0.55
+          scaleMul *= 1 + breathPulse * 0.38
+        } else {
+          // TTS / speaking (Mode D): subtle contained pulse, reduced bloom
+          bloom *= 1 + breathPulse * 0.30
+          scaleMul *= 1 + breathPulse * 0.14
+        }
       }
 
       // ── Draw breath halo (behind shells) ───────────────────────
       if (br && bl > 0) {
-        drawBreathHaloFaint(bl, glowColor)
+        if (breathMode === 'C') {
+          drawBreathHalo(bl, glowColor)       // big dramatic halo for STT
+        } else {
+          drawBreathHaloFaint(bl, glowColor)  // subtle contained for TTS
+        }
       }
 
       for (let i = SHELLS.length - 1; i >= 0; i--) {
