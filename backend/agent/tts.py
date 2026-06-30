@@ -238,11 +238,20 @@ class TTSManager:
             return np.concatenate(chunks)
         return None
 
+    # Silence durations for natural pacing (in seconds)
+    _INTER_SENTENCE_SILENCE: float = 0.30  # 300ms pause between sentences
+    _TRAILING_SILENCE: float = 0.40  # 400ms silence after last word
+
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """Stream synthesis — yields float32 arrays at OUTPUT_SAMPLE_RATE Hz.
 
         Text is normalised before synthesis (strips markdown / expands symbols).
         Pocket-TTS: streaming yields chunks during generation (true streaming).
+
+        Natural pacing: text is split into sentences. Each sentence is
+        synthesized separately, with a short silence gap inserted between
+        sentences. A trailing silence is appended after the final sentence
+        so TTS doesn't end abruptly.
 
         Lock discipline: self._lock held only during model load, not inference.
         """
@@ -278,16 +287,40 @@ class TTSManager:
         )
 
         if loaded and pocket is not None and voice is not None:
+            # ── Split into sentences for natural pacing ──────────────────
+            # Each sentence is synthesized separately, with a short silence
+            # gap inserted between them so the speech doesn't sound rushed.
+            sentences = _split_into_chunks(normalized, max_chars=200)
+            _root_log.info(
+                f"[TTSManager] split into {len(sentences)} sentence(s) for pacing"
+            )
+
+            silence_gap = int(self._INTER_SENTENCE_SILENCE * OUTPUT_SAMPLE_RATE)
+            trailing = int(self._TRAILING_SILENCE * OUTPUT_SAMPLE_RATE)
             _chunk_count = 0
             _total_samples = 0
+
             try:
-                for chunk in self._stream_pocket(pocket, voice, normalized):
-                    _chunk_count += 1
-                    _total_samples += len(chunk) if chunk is not None else 0
-                    yield chunk
+                for idx, sentence in enumerate(sentences):
+                    for chunk in self._stream_pocket(pocket, voice, sentence):
+                        _chunk_count += 1
+                        _total_samples += len(chunk) if chunk is not None else 0
+                        yield chunk
+
+                    # Insert silence between sentences (not after the last one)
+                    if idx < len(sentences) - 1 and silence_gap > 0:
+                        yield np.zeros(silence_gap, dtype=np.float32)
+
+                # Trailing silence so TTS doesn't end abruptly
+                if trailing > 0:
+                    yield np.zeros(trailing, dtype=np.float32)
+
                 _root_log.info(
-                    f"[TTSManager] _stream_pocket produced {_chunk_count} chunks, "
-                    f"{_total_samples} samples total"
+                    f"[TTSManager] produced {_chunk_count} chunks, "
+                    f"{_total_samples} samples total "
+                    f"({len(sentences)} sentences, "
+                    f"{silence_gap/OUTPUT_SAMPLE_RATE*1000:.0f}ms gaps, "
+                    f"{trailing/OUTPUT_SAMPLE_RATE*1000:.0f}ms trailing)"
                 )
                 return
             except Exception as exc:

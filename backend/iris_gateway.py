@@ -2774,6 +2774,12 @@ class IRISGateway:
             playback_future = loop.run_in_executor(None, _play)
 
             # ── Phase 3: Send word events while playback runs ───────────
+            # Account for audio playback startup latency: the audio device
+            # needs ~100ms to open and buffer the first chunk.  Without this
+            # offset, word events fire before the speaker produces sound.
+            _PLAYBACK_STARTUP_DELAY_S = 0.10
+            await asyncio.sleep(_PLAYBACK_STARTUP_DELAY_S)
+
             for i in range(word_count):
                 await asyncio.sleep(per_word_s)
                 try:
