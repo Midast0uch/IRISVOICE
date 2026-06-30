@@ -2298,7 +2298,8 @@ class IRISGateway:
                 if isinstance(input_source, str):
                     for audio_chunk in tts.synthesize_stream(input_source):
                         if interrupted.is_set() or engine.is_speech_interrupted():
-                            interrupted.set()
+                        logger.error(f"[TTS Diagnostic] Pocket-TTS returned no chunks for text: {text[:80]}...")
+                        interrupted.set()
                             break
                         _push_or_queue(audio_chunk)
 
@@ -3558,7 +3559,15 @@ class IRISGateway:
                             {
                                 "id": "anthropic/claude-3.5-sonnet",
                                 "name": "Claude 3.5 Sonnet",
-                                "source": "openrouter",
+                                 "source": "openrouter",
+                             },
+                         ]
+                    elif "cerebras" in _base_lower:
+                        available_models = [
+                            {
+                                "id": "gemma-4-31b",
+                                "name": "Gemma 4 31B",
+                                "source": "cerebras",
                             },
                         ]
                     elif "chutes" in _base_lower:
