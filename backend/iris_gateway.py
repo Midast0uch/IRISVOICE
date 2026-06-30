@@ -18,6 +18,7 @@ from .ws_manager import WebSocketManager, get_websocket_manager
 import asyncio
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import queue
@@ -2484,24 +2485,29 @@ class IRISGateway:
                 # Accumulate all chunks and play in one shot via play_stream
                 # (which opens the native player ONCE, avoiding the per-chunk
                 # wait_done() gap that causes choppiness).
-                _buffered_chunks = []
-                _first_chunk = True
-                while True:
-                    _timeout = 90 if _first_chunk else 15
-                    _start = time.monotonic()
-                    chunk = None
-                    while time.monotonic() - _start < _timeout:
-                        try:
-                            chunk = audio_queue.get_nowait()
+                    _buffered_chunks = []
+                    _first_chunk = True
+                    while True:
+                        # Shorter timeouts: 30s for first chunk (Pocket-TTS lazy load),
+                        # 5s for subsequent chunks.  If TTS fails, the system recovers
+                        # faster.  This does NOT set interrupted.set() — a TTS timeout
+                        # is a generation error, not a user interruption.  The auto-
+                        # relisten code checks interrupted separately, so TTS failure
+                        # won't prevent the next conversation cycle.
+                        _timeout = 30 if _first_chunk else 5
+                        _start = time.monotonic()
+                        chunk = None
+                        while time.monotonic() - _start < _timeout:
+                            try:
+                                chunk = audio_queue.get_nowait()
+                                break
+                            except asyncio.QueueEmpty:
+                                time.sleep(0.01)
+                        if chunk is None:
+                            self._logger.error(
+                                f"[Voice] TTS audio queue timed out after {_timeout}s — skipping TTS, continuing conversation"
+                            )
                             break
-                        except asyncio.QueueEmpty:
-                            time.sleep(0.01)
-                    if chunk is None:
-                        self._logger.error(
-                            f"[Voice] TTS audio queue timed out after {_timeout}s — forcing idle"
-                        )
-                        interrupted.set()
-                        break
                     _first_chunk = False
                     if chunk is None:
                         break
@@ -2519,9 +2525,54 @@ class IRISGateway:
 
                 if _buffered_chunks:
                     if engine.pipeline:
+                        # ── Cadence broadcasting during TTS ─────────────────
+                        # The orb needs audio_envelope messages during playback
+                        # so the cadence/breathing matches the speech rhythm.
+                        total_frames = sum(len(c) for c in _buffered_chunks)
+                        approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
+                        cadence_thread = None
+                        if session_id and self._main_loop and approx_duration > 0.5:
+                            def _broadcast_cadence():
+                                import asyncio as _asyncio2
+                                start = time.monotonic()
+                                end = start + approx_duration
+                                # Roughly sinusoidal cadence profile
+                                _phase = 0.0
+                                while time.monotonic() < end:
+                                    _phase += 0.15
+                                    try:
+                                        _asyncio2.run_coroutine_threadsafe(
+                                            self._ws_manager.broadcast_to_session(
+                                                session_id,
+                                                {
+                                                    "type": "audio_envelope",
+                                                    "payload": {
+                                                        "rms": 0.06,
+                                                        "cadence": abs(
+                                                            math.sin(_phase)
+                                                        ),
+                                                        "phase": "speaking",
+                                                    },
+                                                },
+                                            ),
+                                            self._main_loop,
+                                        )
+                                    except Exception:
+                                        pass
+                                    time.sleep(0.1)
+                            cadence_thread = threading.Thread(
+                                target=_broadcast_cadence,
+                                daemon=True,
+                                name="tts-cadence",
+                            )
+                            cadence_thread.start()
+
                         engine.pipeline.play_stream(
                             _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE
                         )
+
+                        if cadence_thread:
+                            cadence_thread.join(timeout=3)
 
                 producer_thread.join(timeout=5)
         except Exception as e:
