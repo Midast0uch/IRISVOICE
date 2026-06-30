@@ -2488,13 +2488,11 @@ class IRISGateway:
                 _buffered_chunks = []
                 _first_chunk = True
                 while True:
-                    # Shorter timeouts: 30s for first chunk (Pocket-TTS lazy load),
-                    # 5s for subsequent chunks.  If TTS fails, the system recovers
-                    # faster.  This does NOT set interrupted.set() — a TTS timeout
-                    # is a generation error, not a user interruption.  The auto-
-                    # relisten code checks interrupted separately, so TTS failure
-                    # won't prevent the next conversation cycle.
-                    _timeout = 30 if _first_chunk else 5
+                    # Longer timeouts for first chunk (300s = 5 min) to handle
+                    # Pocket-TTS lazy model download on first use.  Once the
+                    # model is cached, this loads in <5s.  If TTS still fails,
+                    # system recovers and continues conversation without it.
+                    _timeout = 300 if _first_chunk else 5
                     _start = time.monotonic()
                     chunk = None
                     while time.monotonic() - _start < _timeout:

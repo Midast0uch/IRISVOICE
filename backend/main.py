@@ -322,6 +322,20 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[main] could not set default session_id: {exc}")
 
         # ==========================================================================
+        # PRE-LOAD TTS (Pocket-TTS model downloads on first use — we trigger it
+        # here so it's cached by the time the user sends their first voice message)
+        # ==========================================================================
+        logger.info("  - Pre-loading TTS (Pocket-TTS model)...")
+        try:
+            from backend.agent.tts import TTSManager
+            _tts = TTSManager()
+            # Fire async pre-load in background so startup isn't blocked
+            _main_loop.create_task(_async_preload_tts(_tts))
+            logger.info("    [+] TTS pre-load started (background)")
+        except Exception as e:
+            logger.warning(f"    [x] TTS pre-load error (non-fatal): {e}")
+
+        # ==========================================================================
         # WAKE WORD CALLBACK REGISTRATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
         logger.info("  - Registering wake word callback...")
@@ -1769,6 +1783,20 @@ _WAKE_WORD_COOLDOWN_SEC: float = 5.0
 # Stored at setup so _on_wake_word_sync (called from audio thread) can schedule
 # the async handler on the correct event loop without calling get_running_loop().
 _main_event_loop: asyncio.AbstractEventLoop = None
+
+
+async def _async_preload_tts(tts_manager) -> None:
+    """Pre-load Pocket-TTS model in background to cache on first use."""
+    try:
+        logger.info("[TTS] Starting Pocket-TTS pre-load...")
+        t0 = time.monotonic()
+        # Calling _ensure_model or synthesizing dummy text triggers download
+        if hasattr(tts_manager, "_load_pocket_tts"):
+            tts_manager._load_pocket_tts()
+        elapsed = time.monotonic() - t0
+        logger.info(f"[TTS] Pocket-TTS pre-loaded in {elapsed:.1f}s")
+    except Exception as e:
+        logger.warning(f"[TTS] Pocket-TTS pre-load failed (will lazy-load): {e}")
 
 
 def _on_wake_word_sync(wake_word_name: str):
