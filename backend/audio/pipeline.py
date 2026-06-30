@@ -74,18 +74,11 @@ class AudioPipeline:
         self._frame_listeners: List[Callable[[np.ndarray], None]] = []
         self._is_buffering = False
 
-        # Native low-latency player (optional C++ extension)
+        # Native low-latency player — DISABLED.
+        # Causes 30-40s blocking on play_audio, audio normalization distortion,
+        # and half-duplex gate lock issues. Using sd.play() instead.
         self._native_player = None
         self._native_available = False
-        try:
-            from backend.native import IrisAudioPlayer, NATIVE_AVAILABLE
-
-            if NATIVE_AVAILABLE:
-                self._native_player = IrisAudioPlayer()
-                self._native_available = True
-                logger.info("[AudioPipeline] Native C++ player available")
-        except Exception:
-            pass
 
     def start_buffering(self):
         """Starts collecting audio frames into the buffer."""
