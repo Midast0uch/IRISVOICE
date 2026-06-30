@@ -2053,7 +2053,11 @@ class IRISGateway:
             def _wrap_tts_streaming(q: queue.Queue, sid: str, cid: str, _l):
                 """Consume sentences from the queue and stream TTS."""
                 try:
+                    self._logger.info("[TTS] _wrap_tts_streaming started — calling _speak_response")
                     self._speak_response(q, sid)
+                    self._logger.info("[TTS] _speak_response completed")
+                except Exception as _tts_err:
+                    self._logger.error(f"[TTS] streaming fatal: {_tts_err}", exc_info=True)
                 finally:
                     _l.call_soon_threadsafe(
                         lambda: asyncio.ensure_future(
@@ -2298,8 +2302,6 @@ class IRISGateway:
                 if isinstance(input_source, str):
                     for audio_chunk in tts.synthesize_stream(input_source):
                         if interrupted.is_set() or engine.is_speech_interrupted():
-                        logger.error(f"[TTS Diagnostic] Pocket-TTS returned no chunks for text: {text[:80]}...")
-                        interrupted.set()
                             break
                         _push_or_queue(audio_chunk)
 
