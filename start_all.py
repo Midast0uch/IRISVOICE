@@ -15,8 +15,8 @@ hit the frontend immediately.  All three child processes share a process
 group (Windows Job Object) so Ctrl+C kills them all.
 
 Usage:
-  venv\Scripts\python.exe start_all.py           # start everything
-  venv\Scripts\python.exe start_all.py --no-fe   # backend + parakeet only
+  venv\\Scripts\\python.exe start_all.py           # start everything
+  venv\\Scripts\\python.exe start_all.py --no-fe   # backend + parakeet only
 """
 from __future__ import annotations
 
