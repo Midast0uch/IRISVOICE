@@ -329,7 +329,7 @@ class TTSManager:
 
             t0 = time.monotonic()
             self._pocket_tts_model = TTSModel.load_model(
-                variant=os.environ.get("POCKET_TTS_VARIANT", "b6369a24"),
+                variant=os.environ.get("POCKET_TTS_VARIANT", "english"),
             )
             dt = time.monotonic() - t0
             logger.info(f"[TTSManager] Pocket-TTS model loaded in {dt:.1f}s")
