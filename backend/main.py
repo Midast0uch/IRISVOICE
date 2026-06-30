@@ -322,20 +322,6 @@ async def lifespan(app: FastAPI):
             logger.warning(f"[main] could not set default session_id: {exc}")
 
         # ==========================================================================
-        # PRE-LOAD TTS (Pocket-TTS model downloads on first use — we trigger it
-        # here so it's cached by the time the user sends their first voice message)
-        # ==========================================================================
-        logger.info("  - Pre-loading TTS (Pocket-TTS model)...")
-        try:
-            from backend.agent.tts import TTSManager
-            _tts = TTSManager()
-            # Fire async pre-load in background so startup isn't blocked
-            _main_loop.create_task(_async_preload_tts(_tts))
-            logger.info("    [+] TTS pre-load started (background)")
-        except Exception as e:
-            logger.warning(f"    [x] TTS pre-load error (non-fatal): {e}")
-
-        # ==========================================================================
         # WAKE WORD CALLBACK REGISTRATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================
         logger.info("  - Registering wake word callback...")
@@ -348,6 +334,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"    [x] [WAKE WORD] Failed to register callback: {e}")
             raise
+
+        # ==========================================================================
+        # PRE-LOAD TTS (Pocket-TTS model downloads on first use — we trigger it
+        # here so it's cached by the time the user sends their first voice message)
+        # ==========================================================================
+        logger.info("  - Pre-loading TTS (Pocket-TTS model)...")
+        try:
+            from backend.agent.tts import TTSManager
+            _tts = TTSManager()
+            # Fire async pre-load in background so startup isn't blocked
+            _main_loop.create_task(_async_preload_tts(_tts))
+            logger.info("    [+] TTS pre-load started (background)")
+        except Exception as e:
+            logger.warning(f"    [x] TTS pre-load error (non-fatal): {e}")
 
         # ==========================================================================
         # WAKE WORD MODEL DISCOVERY AND CONFIGURATION WITH DIAGNOSTIC LOGGING
