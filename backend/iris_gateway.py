@@ -2812,7 +2812,7 @@ class IRISGateway:
             # forcing "idle". If the user is in an active voice conversation,
             # the orb stays listening so they can respond back.
             post_tts_state = "listening" if session_id in self._conversation_sessions else "idle"
-            _root_log.info(f"[TTS] after play -> {post_tts_state} (session_id={session_id})")
+            _root_log.info(f"[TTS] after play => {post_tts_state} (session_id={session_id})")
             try:
                 await self._ws_manager.send_to_client(
                     client_id,
