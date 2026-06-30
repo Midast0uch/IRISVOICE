@@ -220,6 +220,10 @@ class TTSManager:
             "sample_rate": OUTPUT_SAMPLE_RATE,
         }
 
+    def is_loaded(self) -> bool:
+        """Return True if Pocket-TTS model and voice state are loaded."""
+        return self._pocket_tts_model is not None
+
     def synthesize(self, text: Optional[str]) -> Optional[np.ndarray]:
         """Synthesize speech from text.
 

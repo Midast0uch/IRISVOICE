@@ -2507,6 +2507,9 @@ class IRISGateway:
                     audio_queue.put(None)
 
         # 3. Suppress Porcupine while IRIS is speaking
+        # Clear any stale _speech_interrupted flag from a previous
+        # voice-command interruption so the next auto-relisten isn't skipped.
+        engine._speech_interrupted = False
         engine.set_tts_active(True)
 
         try:
@@ -2754,13 +2757,18 @@ class IRISGateway:
         except Exception as e:
             _root_log.error(f"[TTS] tts_play failed: {e}", exc_info=True)
         finally:
+            # After TTS playback, preserve the conversation state instead of
+            # forcing "idle". If the user is in an active voice conversation,
+            # the orb stays listening so they can respond back.
+            post_tts_state = "listening" if session_id in self._conversation_sessions else "idle"
+            _root_log.info(f"[TTS] after play -> {post_tts_state} (session_id={session_id})")
             try:
                 await self._ws_manager.send_to_client(
                     client_id,
-                    {"type": "listening_state", "payload": {"state": "idle"}},
+                    {"type": "listening_state", "payload": {"state": post_tts_state}},
                 )
             except Exception as e:
-                _root_log.warning(f"[TTS] send idle state failed: {e}")
+                _root_log.warning(f"[TTS] send {post_tts_state} state failed: {e}")
 
     async def _chat_heartbeat(self, client_id: str, interval: float = 5.0):
         """Send periodic chat_heartbeat messages to keep the TCP layer alive
