@@ -2773,6 +2773,45 @@ class IRISGateway:
 
             playback_future = loop.run_in_executor(None, _play)
 
+            # ── Phase 2b: Broadcast audio_envelope for orb animation ──────
+            # The orb needs periodic audio_envelope messages during playback
+            # so the breathing animation reacts to the speech rhythm.
+            import math as _math
+            _cadence_thread = None
+            if session_id and total_duration_s > 0.3:
+                def _broadcast_cadence():
+                    import asyncio as _asyncio
+                    import time as _time
+                    start = _time.monotonic()
+                    end = start + total_duration_s + 0.3  # overshoot slightly
+                    _phase = 0.0
+                    while _time.monotonic() < end:
+                        _phase += 0.15
+                        try:
+                            _asyncio.run_coroutine_threadsafe(
+                                self._ws_manager.broadcast_to_session(
+                                    session_id,
+                                    {
+                                        "type": "audio_envelope",
+                                        "payload": {
+                                            "rms": 0.06,
+                                            "cadence": abs(_math.sin(_phase)),
+                                            "phase": "speaking",
+                                        },
+                                    },
+                                ),
+                                self._main_loop,
+                            )
+                        except Exception:
+                            pass
+                        _time.sleep(0.1)
+                _cadence_thread = threading.Thread(
+                    target=_broadcast_cadence,
+                    daemon=True,
+                    name="tts-play-cadence",
+                )
+                _cadence_thread.start()
+
             # ── Phase 3: Send word events while playback runs ───────────
             # Account for audio playback startup latency: the audio device
             # needs ~100ms to open and buffer the first chunk.  Without this
@@ -2810,6 +2849,31 @@ class IRISGateway:
             )
             # Wait for actual playback to finish
             await playback_future
+
+            # Wait for cadence thread to finish
+            if _cadence_thread:
+                _cadence_thread.join(timeout=2)
+
+            # Send final audio_envelope with zero values so orb stops breathing
+            if session_id and self._main_loop and self._main_loop.is_running():
+                try:
+                    import asyncio as _asyncio
+                    _asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.broadcast_to_session(
+                            session_id,
+                            {
+                                "type": "audio_envelope",
+                                "payload": {
+                                    "rms": 0.0,
+                                    "cadence": 0.0,
+                                    "phase": "idle",
+                                },
+                            },
+                        ),
+                        self._main_loop,
+                    )
+                except Exception:
+                    pass
 
         except Exception as e:
             _root_log.error(f"[TTS] tts_play failed: {e}", exc_info=True)

@@ -239,8 +239,8 @@ class TTSManager:
         return None
 
     # Silence durations for natural pacing (in seconds)
-    _INTER_SENTENCE_SILENCE: float = 0.30  # 300ms pause between sentences
-    _TRAILING_SILENCE: float = 0.40  # 400ms silence after last word
+    _INTER_SENTENCE_SILENCE: float = 0.50  # 500ms pause between sentences
+    _TRAILING_SILENCE: float = 0.60  # 600ms silence after last word
 
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """Stream synthesis — yields float32 arrays at OUTPUT_SAMPLE_RATE Hz.

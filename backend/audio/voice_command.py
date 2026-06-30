@@ -54,9 +54,9 @@ class VoiceCommandHandler:
     """
 
     # VAD tuning — adjustable per environment
-    VAD_ENERGY_THRESHOLD: float = 0.004  # RMS level that counts as speech (was 0.008)
-    VAD_MIN_SPEECH_SEC: float = 0.15  # ignore blips shorter than this (was 0.25)
-    VAD_SILENCE_SEC: float = 1.0  # silence after speech → end of utterance (was 2.0)
+    VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
+    VAD_MIN_SPEECH_SEC: float = 0.15  # ignore blips shorter than this
+    VAD_SILENCE_SEC: float = 0.8  # silence after speech → end of utterance
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
 
@@ -729,13 +729,25 @@ class VoiceCommandHandler:
                 if rms >= self.VAD_ENERGY_THRESHOLD:
                     speech_count += 1
                     silence_count = 0
-                    if speech_count >= speech_needed:
+                    if speech_count >= speech_needed and not speech_started:
                         speech_started = True
+                        logger.info(
+                            f"[VoiceCommand] VAD: speech started (RMS={rms:.4f}, "
+                            f"threshold={self.VAD_ENERGY_THRESHOLD})"
+                        )
                 else:
                     if speech_started:
                         silence_count += 1
+                        if silence_count % 5 == 0:
+                            logger.info(
+                                f"[VoiceCommand] VAD: silence {silence_count}/{silence_needed} "
+                                f"(RMS={rms:.4f}, threshold={self.VAD_ENERGY_THRESHOLD})"
+                            )
                         if silence_count >= silence_needed:
-                            logger.debug("[VoiceCommand] VAD: end-of-speech detected")
+                            logger.info(
+                                f"[VoiceCommand] VAD: end-of-speech detected "
+                                f"(RMS={rms:.4f}, silence_frames={silence_count})"
+                            )
                             return  # silence after real speech → done
                     else:
                         # Background noise before speech — decay counter slowly
