@@ -230,7 +230,7 @@ async def _fire_tts_background(text: str, session_id: str) -> None:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _sync_tts_playback, text)
     except Exception as exc:
-        logger.debug("[ChatREST] Background TTS skipped: %s", exc)
+        logger.warning("[ChatREST] Background TTS skipped: %s", exc)
 
 
 def _sync_tts_playback(text: str) -> None:
@@ -255,7 +255,7 @@ def _sync_tts_playback(text: str) -> None:
         if chunks and pipeline:
             pipeline.play_stream(chunks)
     except Exception as exc:
-        logger.debug("[ChatREST] TTS background playback error: %s", exc)
+        logger.warning("[ChatREST] TTS background playback error: %s", exc)
     finally:
         if engine is not None:
             engine.set_tts_active(False)
