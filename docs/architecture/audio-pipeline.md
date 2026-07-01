@@ -15,9 +15,9 @@
 │  │  WORD    │    │          │    │          │    │          │    │          │ │
 │  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘ │
 │       │               │               │               │               │        │
-│   Porcupine       Energy-based    Parakeet GPU     LM Studio     Pocket-TTS   │
-│   (native)        + silence       (in-process)     (remote)      (streaming)  │
-│                   detection       or Whisper                                               │
+│   Porcupine       Energy-based    Parakeet GPU   Provider-agnostic  Pocket-TTS │
+│   (native)        + silence       (in-process)   (agent card picks  (streaming) │
+│                   detection       or Whisper      the provider)                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,17 +84,49 @@
                        ▼
 ```
 
-### Phase 4: LLM Processing
+### Phase 4: LLM Processing (Provider-Agnostic)
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  iris_gateway._on_voice_result()                         │
 │                                                          │
-│  - Sends transcribed text to LLM API                     │
-│  - Receives streaming response → sentence queue          │
+│  AgentKernel._model_provider determines the backend:     │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  Provider routing (set by user's Agent/Model card):│  │
+│  │                                                    │  │
+│  │  "lmstudio"        → LM Studio local API          │  │
+│  │                       (http://localhost:1234/v1)   │  │
+│  │                                                    │  │
+│  │  "iris_local"      → In-process llama-cpp-python   │  │
+│  │                       (LocalModelManager, GGUF)    │  │
+│  │                                                    │  │
+│  │  "local"           → LFM HuggingFace model         │  │
+│  │                       (loaded via LocalModelManager)│  │
+│  │                                                    │  │
+│  │  "api"             → Remote API (OpenAI key)       │  │
+│  │                       via LiteLLM or httpx stream  │  │
+│  │                                                    │  │
+│  │  "openai_compatible" → Any OpenAI-compat server    │  │
+│  │                         (llamafile, vllm, ollama)  │  │
+│  │                                                    │  │
+│  │  "cohere"/"deepseek"/"anthropic"/"groq"           │  │
+│  │                    → Named remote APIs via LiteLLM  │  │
+│  │                                                    │  │
+│  │  "local" + ":"     → Ollama native API             │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                          │
+│  Flow (provider-agnostic):                               │
+│  - iris_gateway sends transcribed text to AgentKernel    │
+│  - AgentKernel routes to configured provider             │
+│  - Streaming response → sentence queue                   │
 │  - Each sentence pushed to TTS queue                     │
 │  - chat_chunk WS events → frontend for progressive text  │
 │  - chat_message WS event → final assembled response      │
 │  - listening_state WS: "processing" → "speaking"         │
+│                                                          │
+│  NOTE: LM Studio is ONE optional provider. The provider  │
+│  changes when user selects a different agent/model card. │
+│  Never hardcode a specific provider in pipeline docs.    │
 └──────────────────────┬───────────────────────────────────┘
                        │ sentence from LLM
                        ▼
@@ -284,6 +316,8 @@ Error path: any state → _wrap_tts_streaming error → send idle (unsticks orb)
 
 ## Memory Budget
 
+LLM memory depends on the user's selected provider (see Phase 4). These are the fixed audio-pipeline costs:
+
 | Component | VRAM | RAM | When |
 |-----------|------|-----|------|
 | Parakeet (fp16) | ~1.2 GB | ~200 MB | Lazy-loaded on first STT |
@@ -291,8 +325,17 @@ Error path: any state → _wrap_tts_streaming error → send idle (unsticks orb)
 | Porcupine | 0 | ~5 MB | Always (wake word) |
 | Torch + transformers | 0 | ~200 MB | Loaded with parakeet |
 | Native C++ player | 0 | ~1 MB | During TTS playback |
-| **Total (parakeet active)** | **~1.2 GB** | **~450 MB** | — |
-| **Total (whisper fallback)** | **0** | **~95 MB** | — |
+| Pocket-TTS | 0 | ~50 MB | During TTS synthesis |
+| **Total (audio pipeline, parakeet)** | **~1.2 GB** | **~450 MB** | — |
+| **Total (audio pipeline, whisper)** | **0** | **~95 MB** | — |
+
+LLM provider memory (separate, user-selected):
+| Provider | VRAM | RAM |
+|----------|------|-----|
+| LM Studio (local model) | varies by model | varies by model |
+| iris_local (llama-cpp) | varies by GGUF | varies by GGUF |
+| Ollama | varies by model | varies by model |
+| Remote API (OpenAI, Anthropic, etc.) | 0 | ~10 MB (HTTP client) |
 
 ---
 
