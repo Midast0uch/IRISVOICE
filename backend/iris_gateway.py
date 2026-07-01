@@ -2216,32 +2216,40 @@ class IRISGateway:
             _loop = asyncio.get_running_loop()
 
             def _wrap_tts_streaming(q: queue.Queue, sid: str, cid: str, _l):
-                """Consume sentences from the queue and stream TTS."""
+                """Consume sentences from the queue and stream TTS.
+
+                Always ensures voice state returns to idle on error.
+                On success, _speak_response's finally block handles state
+                (auto-relisten in conversation, idle otherwise).
+                """
+                _succeeded = False
                 try:
                     self._logger.info("[TTS] _wrap_tts_streaming started — calling _speak_response")
                     self._speak_response(q, sid, _sttproc_stop=_sttproc_stop)
                     self._logger.info("[TTS] _speak_response completed")
+                    _succeeded = True
                 except Exception as _tts_err:
                     self._logger.error(f"[TTS] streaming fatal: {_tts_err}", exc_info=True)
-                    # Send idle ONLY on fatal error — _speak_response's finally block
-                    # already handles the success case (listening in conversation, idle otherwise).
-                    # Without this guard, the unconditional finally here would override
-                    # _speak_response's correct auto-relisten with "idle", breaking
-                    # conversation-mode back-and-forth (see HANDOFF_AUDIO_PIPELINE.md Bug 1).
-                    try:
-                        _l.call_soon_threadsafe(
-                            lambda: asyncio.ensure_future(
-                                self._ws_manager.send_to_client(
-                                    cid,
-                                    {
-                                        "type": "listening_state",
-                                        "payload": {"state": "idle"},
-                                    },
+                finally:
+                    # Only send idle on ERROR — _speak_response's own finally
+                    # block already handles the success case (auto-relisten or idle).
+                    # Sending idle unconditionally would override conversation-mode
+                    # auto-relisten and break back-and-forth flow.
+                    if not _succeeded:
+                        try:
+                            _l.call_soon_threadsafe(
+                                lambda: asyncio.ensure_future(
+                                    self._ws_manager.send_to_client(
+                                        cid,
+                                        {
+                                            "type": "listening_state",
+                                            "payload": {"state": "idle"},
+                                        },
+                                    )
                                 )
                             )
-                        )
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
 
             threading.Thread(
                 target=_wrap_tts_streaming,
