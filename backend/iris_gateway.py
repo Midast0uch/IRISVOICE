@@ -2928,10 +2928,6 @@ class IRISGateway:
                             )
                             cadence_thread.start()
 
-                        engine.pipeline.play_stream(
-                            _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE
-                        )
-
                         # ── Word-timing thread for fallback path ──────────────
                         # Broadcast tts_word events with character-proportional
                         # timing for sync'd word highlighting during playback.
