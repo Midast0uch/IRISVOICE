@@ -1,7 +1,12 @@
 """
-GPU-gated integration tests for the Parakeet ASR service.
+GPU-gated integration tests for the Parakeet ASR service (STANDALONE MODE).
 
-These tests require the Parakeet service running on ``localhost:8765``.
+NOTE: The primary Parakeet ASR path is now in-process via
+``ParakeetTranscriber`` in ``voice_command.py``.  This file tests the
+standalone FastAPI service in ``parakeet_service.py`` which is kept for
+debugging and optional deployment.
+
+These tests require the standalone Parakeet service running on ``localhost:8765``.
 They skip gracefully when the service is not running (no GPU, or service
 not started).
 

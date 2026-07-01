@@ -15,7 +15,6 @@ Flow:
   5. _on_command_result callback → iris_gateway._on_voice_result → agent pipeline
 """
 
-import base64
 import io
 import logging
 import threading
@@ -24,7 +23,6 @@ import wave
 import os
 
 import numpy as np
-import requests
 from typing import Optional, Callable, Dict, Any, List
 from enum import Enum
 
@@ -32,6 +30,115 @@ from .engine import AudioEngine
 from .cadence_detector import CadenceDetector
 
 logger = logging.getLogger(__name__)
+
+
+class ParakeetTranscriber:
+    """In-process Parakeet GPU ASR transcriber.
+
+    Lazy-loads ParakeetForTDT + AutoProcessor on first call.
+    Model stays in GPU memory after first load (~1.2 GB VRAM on RTX 3070).
+    Torch/transformers imports happen ONLY on first load — zero cost at
+    module import time.  Thread-safe via _lock.
+
+    Memory budget:
+      - VRAM: ~1.2 GB (fp16 model on GPU)
+      - RAM:  ~200 MB (torch + transformers runtime)
+      - Per-request: ~0 extra (reuses loaded model + processor)
+    """
+
+    def __init__(self):
+        self._model = None
+        self._processor = None
+        self._lock = threading.Lock()
+        self._loaded = False
+        self._load_error = None
+
+    def _ensure_loaded(self) -> bool:
+        """Lazy-load model on first call.  Returns True if ready."""
+        if self._loaded:
+            return True
+        if self._load_error is not None:
+            return False
+
+        with self._lock:
+            if self._loaded:
+                return True
+            try:
+                logger.info("[Parakeet] Loading Parakeet TDT model (GPU fp16)...")
+                import torch
+                from transformers import AutoProcessor, ParakeetForTDT
+
+                model_name = "nvidia/parakeet-tdt-0.6b-v3"
+                self._processor = AutoProcessor.from_pretrained(model_name)
+                self._model = ParakeetForTDT.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16,
+                ).to("cuda")
+                self._model.eval()
+                self._loaded = True
+                logger.info("[Parakeet] Model loaded successfully (GPU fp16)")
+                return True
+            except Exception as exc:
+                self._load_error = exc
+                logger.error(
+                    "[Parakeet] Failed to load model: %s — "
+                    "will fall back to faster-whisper",
+                    exc,
+                )
+                return False
+
+    def transcribe(self, audio_np: np.ndarray, sample_rate: int = 16000) -> str:
+        """Transcribe float32 PCM audio via Parakeet GPU.
+
+        Args:
+            audio_np: float32 PCM audio, mono, at *sample_rate* Hz.
+            sample_rate: Sample rate (default 16000).
+
+        Returns:
+            Transcribed text, or empty string on failure.
+        """
+        if not self._ensure_loaded():
+            return ""
+
+        try:
+            import torch
+
+            # Convert float32 → int16 PCM for the processor
+            pcm_int16 = (audio_np * 32767.0).clip(-32768, 32767).astype(np.int16)
+
+            # Process audio
+            inputs = self._processor(
+                audio=pcm_int16,
+                sampling_rate=sample_rate,
+                return_tensors="pt",
+            )
+
+            # Move to GPU
+            input_values = inputs.input_values.cuda()
+            attention_mask = (
+                inputs.attention_mask.cuda() if hasattr(inputs, "attention_mask") else None
+            )
+
+            # Inference
+            with torch.no_grad():
+                outputs = self._model(
+                    input_values=input_values,
+                    attention_mask=attention_mask,
+                )
+
+            # Decode via processor's built-in decoder
+            text = self._processor.batch_decode(outputs)[0].strip()
+
+            if text:
+                logger.info("[Parakeet] GPU ASR: '%s'", text[:80])
+                return text
+            else:
+                logger.warning("[Parakeet] GPU ASR returned empty text")
+                return ""
+
+        except Exception as exc:
+            logger.error("[Parakeet] GPU transcription failed: %s", exc)
+            return ""
 
 
 class VoiceState(str, Enum):
@@ -64,6 +171,7 @@ class VoiceCommandHandler:
         self.audio_engine = audio_engine
         self._whisper = None  # lazy-loaded WhisperModel
         self._whisper_lock = threading.Lock()
+        self._parakeet = ParakeetTranscriber()  # in-process GPU ASR (lazy-loaded)
 
         # State
         self.state = VoiceState.IDLE
@@ -78,9 +186,6 @@ class VoiceCommandHandler:
 
         # Configuration
         self.sample_rate = 16000
-
-        # Parakeet ASR service URL (None = use faster-whisper directly)
-        self.parakeet_service_url: Optional[str] = "http://localhost:8765"
 
         # Session tracking
         self._active_session_id: str = "default"
@@ -441,69 +546,18 @@ class VoiceCommandHandler:
     # Parakeet ASR path (primary, fall back to faster-whisper on failure)
     # ------------------------------------------------------------------ #
 
-    def _transcribe_via_parakeet_service(self, audio_np: np.ndarray) -> str:
+    def _transcribe_via_parakeet(self, audio_np: np.ndarray) -> str:
+        """Transcribe audio using in-process Parakeet GPU ASR.
+
+        Returns transcribed text on success, or empty string on failure.
+        Logs explicitly which STT backend was used.
         """
-        Send ``audio_np`` (float32 PCM, self.sample_rate Hz, mono) to the
-        Parakeet ASR service via HTTP POST ``/transcribe``.
-
-        Returns the transcribed text on success, or empty string on any
-        failure (connection error, timeout, bad response).  The caller
-        falls through to faster-whisper when the return is empty.
-        """
-        if not self.parakeet_service_url:
-            return ""
-
-        url = f"{self.parakeet_service_url.rstrip('/')}/transcribe"
-
-        try:
-            # Convert float32 → 16-bit WAV bytes for the service
-            pcm_int16 = (audio_np * 32767.0).clip(-32768, 32767).astype(np.int16)
-            buf = io.BytesIO()
-            with wave.open(buf, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # 16-bit
-                wf.setframerate(self.sample_rate)
-                wf.writeframes(pcm_int16.tobytes())
-            wav_bytes = buf.getvalue()
-
-            audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
-
-            resp = requests.post(
-                url,
-                json={
-                    "audio_base64": audio_b64,
-                    "encoding": "pcm_s16le",
-                    "sample_rate": self.sample_rate,
-                },
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = data.get("text", "").strip()
-            confidence = data.get("confidence", 0.0)
-
-            if text:
-                logger.info(
-                    "[VoiceCommand] Parakeet ASR: '%s' (confidence=%.3f)",
-                    text[:80], confidence,
-                )
-                return text
-
-            logger.warning("[VoiceCommand] Parakeet ASR returned empty text")
-        except requests.exceptions.ConnectionError:
-            logger.info(
-                "[VoiceCommand] Parakeet service not reachable at %s — "
-                "falling back to faster-whisper",
-                self.parakeet_service_url,
-            )
-        except requests.exceptions.Timeout:
-            logger.warning("[VoiceCommand] Parakeet ASR timed out after 30 s")
-        except requests.exceptions.HTTPError as exc:
-            logger.warning("[VoiceCommand] Parakeet ASR HTTP error: %s", exc)
-        except Exception as exc:
-            logger.warning("[VoiceCommand] Parakeet ASR unexpected error: %s", exc)
-
-        return ""
+        text = self._parakeet.transcribe(audio_np, self.sample_rate)
+        if text:
+            logger.info("[STT] parakeet GPU — '%s'", text[:80])
+        else:
+            logger.warning("[STT] parakeet FAILED or unavailable — falling back to whisper")
+        return text
 
     def _run_transcription(self) -> None:
         """
@@ -576,23 +630,27 @@ class VoiceCommandHandler:
 
             self._set_state(VoiceState.PROCESSING, "Transcribing...")
 
-            # ── Primary path: Parakeet ASR service (GPU, RTX 3070) ─────────
-            transcript = self._transcribe_via_parakeet_service(audio_np)
+            # ── Primary path: Parakeet GPU ASR (in-process) ─────────────
+            transcript = self._transcribe_via_parakeet(audio_np)
 
             # ── Fallback path: faster-whisper (CPU, tiny int8) ─────────────
             if not transcript:
+                logger.info("[STT] Attempting faster-whisper CPU fallback...")
                 whisper = self._get_whisper()
                 segments, _ = whisper.transcribe(
                     audio_np,
                     language="en",
-                    beam_size=1,  # 3× faster; negligible quality loss for conversational STT
+                    beam_size=1,  # 3x faster; negligible quality loss for conversational STT
                     best_of=1,  # deterministic, fastest path
                     condition_on_previous_text=False,  # prevents hallucination drift
                     vad_filter=True,
                     vad_parameters={"min_silence_duration_ms": 300},
                 )
                 transcript = " ".join(s.text.strip() for s in segments).strip()
-                logger.info(f"[VoiceCommand] Transcript: '{transcript[:100]}'")
+                if transcript:
+                    logger.info("[STT] whisper CPU — '%s'", transcript[:80])
+                else:
+                    logger.warning("[STT] whisper CPU returned empty text")
 
             self._on_transcription_complete(transcript)
 

@@ -2,6 +2,12 @@
  * useParakeetSTT — React hook for web-browser ASR via the backend Parakeet
  * service (NVIDIA Parakeet TDT 0.6B v3, local RTX 3070).
  *
+ * == DEPRECATED ==
+ *   The primary voice command flow now uses VoiceCommandHandler with
+ *   in-process ParakeetTranscriber (no separate HTTP service needed).
+ *   This hook is retained for potential direct browser→parakeet streaming
+ *   in the future, but is NOT used in the current voice command pipeline.
+ *
  * == Modes ==
  *   web   – getUserMedia → AudioContext → ScriptProcessorNode → 16 kHz Int16
  *           PCM → WebSocket to the Parakeet service (ws://localhost:8765/ws/stream).

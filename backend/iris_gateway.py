@@ -471,11 +471,9 @@ class IRISGateway:
                     )
 
             elif msg_type == "voice_audio_chunk":
-                # PCM chunk from frontend → forward to Parakeet ASR service.
-                # The primary path is a direct WebSocket from the frontend to
-                # the Parakeet service at ws://localhost:8765/ws/stream.
-                # This handler is a secondary / monitor path — for now we
-                # just acknowledge receipt.
+                # PCM chunk from frontend → forward to in-process Parakeet ASR.
+                # Parakeet is now embedded in VoiceCommandHandler — no separate
+                # service needed.  This handler is a secondary / monitor path.
                 self._logger.debug(
                     "[Voice] Audio chunk received from %s (%.0f bytes)",
                     client_id[:8],

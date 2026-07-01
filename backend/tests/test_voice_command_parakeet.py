@@ -1,172 +1,114 @@
 """
-Unit tests for voice_command.py's Parakeet ASR fallback path.
+Unit tests for voice_command.py's in-process Parakeet ASR path.
 
-Tests ``_transcribe_via_parakeet_service()`` with mocked HTTP calls to
-verify the fallback chain: Parakeet success → return text, Parakeet
-failure → return "" (caller tries faster-whisper).
+Tests ``ParakeetTranscriber`` and ``_transcribe_via_parakeet()`` with mocked
+model loading to verify the transcription chain:
+  - Parakeet loaded + success → return text
+  - Parakeet loaded + failure → return "" (caller tries faster-whisper)
+  - Parakeet failed to load → return "" (caller tries faster-whisper)
 """
 
 from __future__ import annotations
 
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 
 import numpy as np
 import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fixture: a minimal VoiceCommandHandler with the new method
+# Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def handler():
-    """A VoiceCommandHandler with mocked audio engine and default config."""
-    from backend.audio.voice_command import VoiceCommandHandler
+def parakeet():
+    """A fresh ParakeetTranscriber (not yet loaded)."""
+    from backend.audio.voice_command import ParakeetTranscriber
+    return ParakeetTranscriber()
 
+
+@pytest.fixture
+def handler():
+    """A minimal VoiceCommandHandler for testing _transcribe_via_parakeet."""
+    from backend.audio.voice_command import VoiceCommandHandler
     h = VoiceCommandHandler.__new__(VoiceCommandHandler)
     h._logger = MagicMock()
     h._set_state = MagicMock()
     h._get_whisper = MagicMock()
     h.sample_rate = 16000
-    h.parakeet_service_url = "http://localhost:8765"
+    h._parakeet = MagicMock()
     return h
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Tests: ParakeetTranscriber._ensure_loaded
 # ---------------------------------------------------------------------------
 
-class TestTranscribeViaParakeetService:
-    """Verify the Parakeet HTTP fallback path in VoiceCommandHandler."""
+class TestParakeetTranscriberLoading:
+    """Verify lazy-loading behavior of ParakeetTranscriber."""
 
-    # ── Happy path ─────────────────────────────────────────────────────
+    def test_initial_state_not_loaded(self, parakeet):
+        assert parakeet._loaded is False
+        assert parakeet._load_error is None
 
-    @patch("backend.audio.voice_command.requests.post")
-    def test_success_returns_text(self, mock_post, handler):
-        """Successful Parakeet transcription returns the text."""
-        mock_post.return_value = MagicMock(
-            ok=True,
-            status_code=200,
-            json=lambda: {"text": "hello world", "confidence": 0.95},
-            raise_for_status=lambda: None,
-        )
-
-        audio = np.zeros(16000, dtype=np.float32)  # 1 second of silence
-        result = handler._transcribe_via_parakeet_service(audio)
-
-        assert result == "hello world"
-        mock_post.assert_called_once_with(
-            "http://localhost:8765/transcribe",
-            json=ANY,
-            timeout=30.0,
-        )
-
-    @patch("backend.audio.voice_command.requests.post")
-    def test_success_strips_whitespace(self, mock_post, handler):
-        """Trailing/leading whitespace is stripped from the returned text."""
-        mock_post.return_value = MagicMock(
-            ok=True, status_code=200,
-            json=lambda: {"text": "  hello  ", "confidence": 0.90},
-            raise_for_status=lambda: None,
-        )
-
-        result = handler._transcribe_via_parakeet_service(np.zeros(16000, dtype=np.float32))
-        assert result == "hello"
-
-    # ── Connection errors ──────────────────────────────────────────────
-
-    @patch("backend.audio.voice_command.requests.post")
-    def test_connection_error_returns_empty(self, mock_post, handler):
-        """Service not reachable → empty string (caller falls through)."""
-        from requests.exceptions import ConnectionError
-        mock_post.side_effect = ConnectionError("Connection refused")
-
-        result = handler._transcribe_via_parakeet_service(np.zeros(16000, dtype=np.float32))
+    @patch("backend.audio.voice_command.ParakeetTranscriber._ensure_loaded")
+    def test_transcribe_skips_when_not_loaded(self, mock_ensure, parakeet):
+        """transcribe() returns '' if model not loaded."""
+        mock_ensure.return_value = False
+        result = parakeet.transcribe(np.zeros(16000, dtype=np.float32))
         assert result == ""
 
-    @patch("backend.audio.voice_command.requests.post")
-    def test_timeout_returns_empty(self, mock_post, handler):
-        """Request timeout → empty string, not an exception."""
-        from requests.exceptions import Timeout
-        mock_post.side_effect = Timeout("timeout")
+    @patch("backend.audio.voice_command.ParakeetTranscriber._ensure_loaded")
+    def test_transcribe_delegates_when_loaded(self, mock_ensure, parakeet):
+        """transcribe() calls model when loaded."""
+        mock_ensure.return_value = True
+        parakeet._model = MagicMock()
+        parakeet._processor = MagicMock()
 
-        result = handler._transcribe_via_parakeet_service(np.zeros(16000, dtype=np.float32))
-        assert result == ""
+        # Mock processor return
+        mock_inputs = MagicMock()
+        mock_inputs.input_values = MagicMock()
+        mock_inputs.input_values.cuda.return_value = MagicMock()
+        mock_inputs.attention_mask = MagicMock()
+        mock_inputs.attention_mask.cuda.return_value = MagicMock()
+        parakeet._processor.return_value = mock_inputs
 
-    @patch("backend.audio.voice_command.requests.post")
-    def test_http_error_returns_empty(self, mock_post, handler):
-        """HTTP 5xx → empty string."""
-        mock_post.return_value = MagicMock(
-            ok=False, status_code=503,
-            raise_for_status=MagicMock(side_effect=Exception("503")),
-        )
+        # Mock model return
+        mock_outputs = MagicMock()
+        parakeet._model.return_value = mock_outputs
 
-        result = handler._transcribe_via_parakeet_service(np.zeros(16000, dtype=np.float32))
-        assert result == ""
-
-    # ── Empty / missing text ───────────────────────────────────────────
-
-    @patch("backend.audio.voice_command.requests.post")
-    def test_empty_text_from_service_returns_empty(self, mock_post, handler):
-        """Service returns text='' → empty string (don't return empty text)."""
-        mock_post.return_value = MagicMock(
-            ok=True, status_code=200,
-            json=lambda: {"text": "", "confidence": 0.0},
-            raise_for_status=lambda: None,
-        )
-
-        result = handler._transcribe_via_parakeet_service(np.zeros(16000, dtype=np.float32))
-        assert result == ""
-
-    @patch("backend.audio.voice_command.requests.post")
-    def test_missing_text_key_returns_empty(self, mock_post, handler):
-        """Response missing 'text' key → handled gracefully."""
-        mock_post.return_value = MagicMock(
-            ok=True, status_code=200,
-            json=lambda: {"confidence": 1.0},
-            raise_for_status=lambda: None,
-        )
-
-        result = handler._transcribe_via_parakeet_service(np.zeros(16000, dtype=np.float32))
-        assert result == ""
-
-    # ── URL is None ────────────────────────────────────────────────────
-
-    def test_no_url_returns_empty_immediately(self, handler):
-        """parakeet_service_url = None → skip immediately, no HTTP call."""
-        handler.parakeet_service_url = None
-
-        result = handler._transcribe_via_parakeet_service(np.zeros(16000, dtype=np.float32))
-        assert result == ""
-
-    # ── Audio conversion correctness ───────────────────────────────────
-
-    @patch("backend.audio.voice_command.requests.post")
-    def test_sends_wav_in_request_body(self, mock_post, handler):
-        """The request body should be a WAV with correct base64 encoding."""
-        import base64
-        import io
-        import wave
-
-        mock_post.return_value = MagicMock(
-            ok=True, status_code=200,
-            json=lambda: {"text": "ok", "confidence": 0.9},
-            raise_for_status=lambda: None,
-        )
+        # Mock batch_decode
+        parakeet._processor.batch_decode.return_value = ["hello world"]
 
         audio = np.zeros(16000, dtype=np.float32)
-        handler._transcribe_via_parakeet_service(audio)
+        result = parakeet.transcribe(audio)
 
-        call_kwargs = mock_post.call_args.kwargs
-        body = call_kwargs["json"]
+        assert result == "hello world"
 
-        assert "audio_base64" in body
-        assert body["encoding"] == "pcm_s16le"
-        assert body["sample_rate"] == 16000
 
-        # Verify the base64 decodes to a valid WAV
-        raw = base64.b64decode(body["audio_base64"])
-        with wave.open(io.BytesIO(raw), "rb") as wf:
-            assert wf.getnchannels() == 1
-            assert wf.getsampwidth() == 2  # 16-bit
-            assert wf.getframerate() == 16000
+# ---------------------------------------------------------------------------
+# Tests: _transcribe_via_parakeet (VoiceCommandHandler method)
+# ---------------------------------------------------------------------------
+
+class TestTranscribeViaParakeet:
+    """Verify the in-process Parakeet path in VoiceCommandHandler."""
+
+    def test_success_returns_text(self, handler):
+        """Successful Parakeet transcription returns the text."""
+        handler._parakeet.transcribe.return_value = "hello world"
+        audio = np.zeros(16000, dtype=np.float32)
+        result = handler._transcribe_via_parakeet(audio)
+        assert result == "hello world"
+
+    def test_empty_text_returns_empty(self, handler):
+        """Empty transcription → empty string."""
+        handler._parakeet.transcribe.return_value = ""
+        result = handler._transcribe_via_parakeet(np.zeros(16000, dtype=np.float32))
+        assert result == ""
+
+    def test_delegates_to_parakeet_transcriber(self, handler):
+        """_transcribe_via_parakeet calls ParakeetTranscriber.transcribe."""
+        handler._parakeet.transcribe.return_value = "test"
+        audio = np.zeros(16000, dtype=np.float32)
+        handler._transcribe_via_parakeet(audio)
+        handler._parakeet.transcribe.assert_called_once_with(audio, handler.sample_rate)
