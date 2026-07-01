@@ -388,11 +388,13 @@ class TTSManager:
             from pocket_tts import TTSModel
 
             t0 = time.monotonic()
-            # pocket-tts load_model signature: variant, temp, lsd_decode_steps, noise_clamp, eos_threshold
-            # Must pass variant="english" (the default may use a lower-quality model).
-            # The 'language' kwarg was from an intermediate Pocket-TTS API — removed.
+            # Pocket-TTS variant: original working code used "b6369a24".
+            # Commit e7b7df60 switched to "english" (Pocket-TTS v2 broke b6369a24).
+            # Then the API removed 'english' and added 'language' (which also broke).
+            # b6369a24 still exists in the current Pocket-TTS and produces
+            # the best quality output. The default/no-variant model is lower quality.
             self._pocket_tts_model = TTSModel.load_model(
-                variant=os.environ.get("POCKET_TTS_VARIANT", "english"),
+                variant=os.environ.get("POCKET_TTS_VARIANT", "b6369a24"),
             )
             dt = time.monotonic() - t0
             logger.info(f"[TTSManager] Pocket-TTS model loaded in {dt:.1f}s")
