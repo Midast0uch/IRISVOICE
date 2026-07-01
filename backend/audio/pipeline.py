@@ -265,6 +265,9 @@ class AudioPipeline:
                     # Apply fixed 2.5× gain (Pocket-TTS output is ~0.37 peak).
                     # Clip to [-0.99, 0.99] to prevent wrap-around — do NOT use
                     # per-chunk peak normalization (amplifies silence to static).
+                    # Do NOT use tanh or other non-linear shaping — tanh distorts
+                    # the waveform shape, adding harmonic distortion that sounds
+                    # like static/buzzing. Hard clip is clean for audio.
                     audio_float = np.clip(audio_float * 2.5, -0.99, 0.99)
                     self._native_player.push_chunk(audio_float)
                     if i == 0 and playback_started_event is not None:

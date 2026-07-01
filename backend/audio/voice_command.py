@@ -119,15 +119,25 @@ class ParakeetTranscriber:
                 inputs.attention_mask.cuda() if hasattr(inputs, "attention_mask") else None
             )
 
-            # Inference
+            # Inference — Parakeet TDT uses generate() not direct forward()
             with torch.no_grad():
-                outputs = self._model(
+                # TDT model expects generate() to handle the decoding properly
+                # Direct forward() returns logits that need special CTC handling
+                generated_ids = self._model.generate(
                     input_values=input_values,
                     attention_mask=attention_mask,
+                    max_new_tokens=256,
                 )
 
-            # Decode via processor's built-in decoder
-            text = self._processor.batch_decode(outputs)[0].strip()
+            # Decode using the processor's tokenizer (not batch_decode — that
+            # expects a different output shape for TDT models)
+            if hasattr(self._processor, "tokenizer"):
+                text = self._processor.tokenizer.decode(
+                    generated_ids[0], skip_special_tokens=True
+                ).strip()
+            else:
+                # Fallback to batch_decode if tokenizer not directly available
+                text = self._processor.batch_decode(generated_ids)[0].strip()
 
             if text:
                 logger.info("[Parakeet] GPU ASR: '%s'", text[:80])
@@ -137,7 +147,12 @@ class ParakeetTranscriber:
                 return ""
 
         except Exception as exc:
-            logger.error("[Parakeet] GPU transcription failed: %s", exc)
+            import traceback
+            logger.error(
+                "[Parakeet] GPU transcription failed: %s\n%s",
+                exc,
+                traceback.format_exc(),
+            )
             return ""
 
 
@@ -163,7 +178,7 @@ class VoiceCommandHandler:
     # VAD tuning — adjustable per environment
     VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
     VAD_MIN_SPEECH_SEC: float = 0.15  # ignore blips shorter than this
-    VAD_SILENCE_SEC: float = 0.8  # silence after speech → end of utterance
+    VAD_SILENCE_SEC: float = 0.5  # silence after speech → end of utterance
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
 

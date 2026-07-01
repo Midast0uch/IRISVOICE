@@ -93,6 +93,11 @@ _RE_MULTI_NL = re.compile(r"\n{2,}")
 # Sentence boundary: punctuation followed by whitespace (used in split + get_spoken_version)
 _RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
 
+# Sentinel object placed in audio_queue when TTS producer finishes.
+# MUST be unique — use an object, not None (None is also what queue.get
+# returns on timeout, making the two cases indistinguishable).
+_TTS_END_STREAM = object()
+
 
 logger = logging.getLogger(__name__)
 
@@ -2706,7 +2711,8 @@ class IRISGateway:
                     except Exception:
                         pass
                 if not _native:
-                    audio_queue.put(None)
+                    # Sentinel object — distinct from the timeout → None case.
+                    audio_queue.put(_TTS_END_STREAM)
 
         # 3. Suppress Porcupine while IRIS is speaking
         # Clear any stale _speech_interrupted flag from a previous
@@ -2858,15 +2864,17 @@ class IRISGateway:
                 _buffered_chunks = []
                 _first_chunk = True
                 while True:
-                    # Longer timeouts for first chunk (300s = 5 min) to handle
-                    # Pocket-TTS lazy model download on first use.  Once the
-                    # model is cached, this loads in <5s.  If TTS still fails,
-                    # system recovers and continues conversation without it.
+                    # Timeouts: first chunk gets 300s (Pocket-TTS cold load),
+                    # subsequent chunks get 5s (generous — if the producer
+                    # freezes mid-stream we don't want to block forever).
                     _timeout = 300 if _first_chunk else 5
                     try:
                         chunk = audio_queue.get(timeout=_timeout)
                     except queue.Empty:
                         chunk = None
+                    if chunk is _TTS_END_STREAM:
+                        # Producer finished — end of stream, proceed to playback.
+                        break
                     if chunk is None:
                         self._logger.error(
                             f"[Voice] TTS audio queue timed out after {_timeout}s — skipping TTS, continuing conversation"
