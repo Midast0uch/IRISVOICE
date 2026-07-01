@@ -56,6 +56,10 @@ class AudioPipeline:
         # playing through the headphones and would be captured by the mic).
         self._tts_active: bool = False
 
+        # Barge-in energy callback (registered by AudioEngine). Fired ~31Hz
+        # from the input callback with frame RMS while TTS is active.
+        self._on_barge_in_energy: Optional[Callable[[float], None]] = None
+
         # Streams
         self._input_stream = None
         self._output_stream = None
@@ -179,6 +183,19 @@ class AudioPipeline:
         """
         self._tts_active = bool(active)
 
+    def set_barge_in_energy_callback(
+        self, callback: Optional[Callable[[float], None]]
+    ) -> None:
+        """Register callback fired ~31Hz with frame RMS while TTS is active.
+
+        The callback runs from the PortAudio input thread and receives the
+        float32 RMS of each audio frame captured during TTS playback.  The
+        AudioEngine uses this to detect user speech and trigger barge-in.
+
+        Pass None to unregister.
+        """
+        self._on_barge_in_energy = callback
+
     def _input_callback(self, indata, frames, time, status):
         """This is called (from a separate thread) for each audio block."""
         if status:
@@ -193,6 +210,15 @@ class AudioPipeline:
             # the engine's own _tts_active gate can suppress wake-word
             # detection uniformly — but STT capture is blocked here.
             if self._tts_active and self.echo_cancellation:
+                # Energy-based barge-in: compute RMS before dropping so the
+                # AudioEngine can detect user speech over TTS playback.  The
+                # callback fires at ~31Hz from the PortAudio input thread.
+                if self._on_barge_in_energy is not None:
+                    try:
+                        _rms = float(np.sqrt(np.mean(np.square(audio_frame))))
+                        self._on_barge_in_energy(_rms)
+                    except Exception:
+                        pass
                 return
 
             # Buffer audio if buffering is enabled

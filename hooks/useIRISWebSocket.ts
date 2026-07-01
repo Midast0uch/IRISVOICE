@@ -130,8 +130,8 @@ export function useIRISWebSocket(
 ): UseIRISWebSocketReturn {
   // Compute WebSocket URL based on page hostname (works on localhost AND Tailscale)
   const resolvedUrl = url ?? (typeof window !== 'undefined'
-    ? (process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:8090/ws/iris`)
-    : (process.env.NEXT_PUBLIC_WS_URL || "ws://127.0.0.1:8090/ws/iris"))
+    ? (process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:${process.env.NEXT_PUBLIC_BACKEND_PORT || 8090}/ws/iris`)
+    : (process.env.NEXT_PUBLIC_WS_URL || `ws://127.0.0.1:${process.env.NEXT_PUBLIC_BACKEND_PORT || 8090}/ws/iris`))
   // Connection state
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected")
   const [lastError, setLastError] = useState<string | null>(null)

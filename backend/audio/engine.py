@@ -72,6 +72,13 @@ class AudioEngine:
         # (b) reduce CPU load so TTS synthesis threads aren't starved.
         self._tts_active: bool = False
 
+        # Energy-based barge-in state (used when _tts_active is True).
+        # Counter of consecutive frames above BARGE_IN_ENERGY_THRESHOLD; reset
+        # to 0 on any frame below threshold.  At ~31 Hz frame rate, 15 frames
+        # ≈ 500 ms of sustained loud speech before barge-in fires.
+        self._barge_in_frame_count: int = 0
+        self._on_barge_in_detected: Optional[Callable[[], None]] = None
+
         # Mirrors WakeConfig.wake_word_enabled — updated by reinitialize_porcupine().
         # Checked in the 31 Hz audio callback; kept as a plain bool to avoid a
         # dict lookup on every frame.
@@ -306,6 +313,42 @@ class AudioEngine:
             return True
         return False
 
+    # ── Energy-based barge-in ──────────────────────────────────────────────
+    # Constants tuned for 512-frame chunks at 16 kHz (~31 Hz callback rate).
+    BARGE_IN_ENERGY_THRESHOLD: float = 0.02     # RMS level to trigger barge-in
+    BARGE_IN_CONSECUTIVE_FRAMES: int = 15       # ~500 ms sustained speech
+
+    def _on_barge_in_energy(self, rms: float) -> None:
+        """Called from PortAudio input thread ~31 Hz with frame RMS during TTS.
+
+        Counts consecutive frames above BARGE_IN_ENERGY_THRESHOLD.  When the
+        counter reaches BARGE_IN_CONSECUTIVE_FRAMES, fires the barge-in callback
+        registered by the gateway to stop TTS and start a new recording.
+        """
+        if rms >= self.BARGE_IN_ENERGY_THRESHOLD:
+            self._barge_in_frame_count += 1
+            if (
+                self._barge_in_frame_count >= self.BARGE_IN_CONSECUTIVE_FRAMES
+                and self._on_barge_in_detected is not None
+            ):
+                self._barge_in_frame_count = 0
+                try:
+                    self._on_barge_in_detected()
+                except Exception as _b_exc:
+                    logger.error(f"[AudioEngine] Barge-in callback error: {_b_exc}")
+        else:
+            self._barge_in_frame_count = 0
+
+    def set_barge_in_detected_callback(
+        self, callback: Optional[Callable[[], None]]
+    ) -> None:
+        """Register the barge-in callback (fires from PortAudio input thread).
+
+        The gateway registers a callback that stops TTS, reopens the half-duplex
+        gate, and starts a new recording.  Pass None to unregister.
+        """
+        self._on_barge_in_detected = callback
+
     def get_main_loop(self) -> Optional[asyncio.AbstractEventLoop]:
         """Return the main event loop stored during initialization."""
         return self._main_loop
@@ -384,6 +427,9 @@ class AudioEngine:
         try:
             logger.info("[AudioEngine] Starting audio pipeline...")
             self.pipeline.start(on_audio_frame=self._process_audio_frame)
+            # Register barge-in energy callback — fires ~31Hz from PortAudio
+            # input thread with RMS of frames captured during TTS playback.
+            self.pipeline.set_barge_in_energy_callback(self._on_barge_in_energy)
             self._is_running = True
             self._set_state(VoiceState.IDLE)
             logger.info("[AudioEngine] Audio pipeline started")

@@ -25,6 +25,11 @@ from backend.iris_config import load_config as _load_vl_config
 
 _VISION_PORT: int = _load_vl_config().ports.vision_port
 
+# PID of the llama-server subprocess IRIS spawned (None = we didn't start one).
+# Tracked so disable() can stop only servers we own — a user-run llama-server on
+# the same port is left alone.
+_VISION_SERVER_PID: Optional[int] = None
+
 
 @dataclass
 class LFMVLConfig:
@@ -172,13 +177,15 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
 
     logger.info(f"[LFMVLProvider] Spawning vision server: {' '.join(cmd)}")
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,  # Detach from parent
             env=env,
         )
+        global _VISION_SERVER_PID
+        _VISION_SERVER_PID = proc.pid
         # Wait up to 30s for server to be ready
         for _ in range(60):
             time.sleep(0.5)
@@ -310,6 +317,51 @@ class LFMVLProvider:
             return response.status_code == 200
         except Exception:
             return False
+
+    def start(self) -> bool:
+        """
+        Ensure the LFM2.5-VL llama-server subprocess is running on the vision port.
+
+        This is the explicit 'enable vision' entry point.  The previous design only
+        started the server lazily inside _call() on the first vision query, which
+        meant toggling 'vision enabled' in the UI did nothing — the health check
+        came back False, the gateway reported 'not_started', and GUI automation
+        that gate-checked availability bailed out before any vision call could
+        trigger the lazy auto-start.  Now the enable handler calls start()
+        directly so the server is up before anything tries to use it.
+
+        Returns True if the server is reachable after this call (already running
+        or successfully spawned); False if the model/binary is missing or the
+        server failed to come up in 30 s.
+        """
+        return _ensure_vision_server_running(self.config.base_url)
+
+    def disable(self) -> None:
+        """
+        Stop the LFM2.5-VL llama-server subprocess if IRIS spawned it.
+
+        Only terminates a server we started ourselves (tracked by PID).  If the
+        user is running their own llama-server on the vision port, we leave it
+        alone — health checks will still succeed, but IRIS will not kill it.
+        Safe to call when nothing is running (no-op).
+        """
+        global _VISION_SERVER_PID
+        if _VISION_SERVER_PID is None:
+            return
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(_VISION_SERVER_PID)],
+                    capture_output=True,
+                )
+            else:
+                import signal
+                os.kill(_VISION_SERVER_PID, signal.SIGTERM)
+            logger.info(f"[LFMVLProvider] Stopped vision server PID {_VISION_SERVER_PID}")
+        except Exception as e:
+            logger.warning(f"[LFMVLProvider] Failed to stop vision server: {e}")
+        finally:
+            _VISION_SERVER_PID = None
 
     def analyze_screen(self, img_bytes: bytes, question: str = "") -> str:
         """

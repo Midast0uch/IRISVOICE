@@ -1,5 +1,5 @@
 """
-Parakeet ASR Service — NVIDIA NeMo TDT 0.6B v3 on local RTX 3070.
+Parakeet ASR Service — NVIDIA Parakeet TDT 0.6B v3 via HuggingFace Transformers.
 
 This is the **sole ASR backend** for both the Tauri widget and the web
 browser.  Audio capture happens on the client side (Tauri command or
@@ -8,28 +8,32 @@ chunks, and the response carries partial and final hypotheses as JSON.
 
 Two transports:
 
-    WebSocket /ws/stream    Binary PCM chunks → JSON partial/final events
-    POST    /transcribe     Full-utterance raw PCM body → JSON result
+    WebSocket /ws/stream    Binary PCM chunks -> JSON partial/final events
+    POST    /transcribe     Full-utterance raw PCM body -> JSON result
 
 Plus diagnostics:
 
     GET     /healthz        liveness + model readiness + VRAM
     GET     /metrics        request counts + p50/p95/p99 latency (PR 7)
 
-The NeMo import is **lazy** so the test suite can import this module
-without the (heavy) NeMo dependency installed.  Calling `main()` or
-hitting any endpoint that needs the model will surface a clear error.
+The transformers import is **lazy** so the test suite can import this module
+without the (~1 GB) model on disk.  Calling `main()` or hitting any endpoint
+that needs the model will surface a clear error.
 
 Memory budget (RTX 3070, 8 GB):
 
-    fp32 model       ~2.4 GB   (not recommended)
-    fp16 model       ~1.2 GB   (default)
-    int8 model       ~0.6 GB   (--quantize, opt-in)
+    fp16 model       ~1.2 GB   (default -- PyTorch fp16)
+    int8 model       ~0.6 GB   (--quantize, opt-in, not yet implemented)
 
 Latency target (RTX 3070):
 
     First partial    <300 ms after end of utterance
     End-to-end       <500 ms for 3 s utterance
+
+Dependencies (lighter than NeMo):
+
+    transformers>=5.12.0    (for ParakeetForTDT)
+    torch>=2.0.0            (with CUDA)
 """
 
 from __future__ import annotations
@@ -48,15 +52,16 @@ from typing import Optional
 
 import numpy as np
 import torch
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 # Lazy import — only the WS endpoint and the /transcribe route actually
 # need the model.  This keeps unit tests fast.
 try:
-    from nemo.collections.asr.models import ASRModel  # noqa: F401  (lazy)
-    _NEMO_AVAILABLE = True
+    from transformers import AutoModelForTDT, AutoProcessor
+    _HF_AVAILABLE = True
 except ImportError:
-    _NEMO_AVAILABLE = False
+    _HF_AVAILABLE = False
 
 from .parakeet_buffer import Hypothesis, ParakeetStreamingBuffer
 
@@ -67,7 +72,7 @@ logger = logging.getLogger("parakeet_service")
 # ---------------------------------------------------------------------------
 
 DEFAULT_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
-SAMPLE_RATE = 16_000                       # Hz — fixed
+SAMPLE_RATE = 16_000                       # Hz -- fixed
 BYTES_PER_SAMPLE = 2                       # int16
 CHUNK_MS_DEFAULT = 80                      # 1280 samples per chunk
 MAX_TRANSCRIBE_SECONDS = 60.0
@@ -78,6 +83,7 @@ import threading
 # Server is "ready" when the model is loaded into app.state
 _READY = False
 _MODEL = None
+_PROCESSOR = None
 # Threading lock protects the model singleton across the WS / REST paths.
 # Model load runs in the thread executor, so asyncio.Lock won't work here.
 _MODEL_LOCK = threading.Lock()
@@ -208,15 +214,19 @@ class ServiceMetrics:
 # Model lifecycle
 # ---------------------------------------------------------------------------
 
-def _load_model(cfg: ServiceConfig) -> "ASRModel":  # type: ignore[name-defined]
+def _load_model(cfg: ServiceConfig):
     """
     Synchronous model loader.  Called once at startup.  Raises a clear
-    error if NeMo isn't installed.
+    error if transformers or the Parakeet model aren't available.
+
+    Loads the model via HuggingFace transformers instead of NeMo, which
+    avoids the complex NeMo dependency chain (triton, nv_one_logger, etc.)
+    that does not support Windows.
     """
-    if not _NEMO_AVAILABLE:
+    if not _HF_AVAILABLE:
         raise RuntimeError(
-            "nemo_toolkit[asr] is not installed.  Run:\n"
-            "  pip install 'nemo_toolkit[asr]>=2.4.0'\n"
+            "transformers is not installed.  Run:\n"
+            "  pip install transformers>=5.12.0\n"
             "Then start the service again."
         )
     if cfg.device == "cuda" and not torch.cuda.is_available():
@@ -228,40 +238,56 @@ def _load_model(cfg: ServiceConfig) -> "ASRModel":  # type: ignore[name-defined]
 
     logger.info("Loading model %s on %s (%s)", cfg.model_name, cfg.device, cfg.precision)
     t0 = time.monotonic()
-    model = ASRModel.from_pretrained(cfg.model_name)  # type: ignore[name-defined]
-    model = model.to(cfg.device)
+
+    dtype_map = {"fp16": torch.float16, "int8": torch.float16, "fp32": torch.float32}
+    torch_dtype = dtype_map.get(cfg.precision, torch.float16)
+
     if cfg.precision == "fp16":
-        model = model.half()
-    elif cfg.precision == "int8":
-        # PR 7 will add real int8 quantize() call.  For now we fall back
-        # to fp32 rather than silently shipping a "quantized" model that
-        # is actually full precision.
-        logger.warning("int8 precision not implemented in PR 1; using fp32")
-        cfg.precision = "fp32"
+        model = AutoModelForTDT.from_pretrained(
+            cfg.model_name,
+            torch_dtype=torch.float16,
+            device_map=cfg.device if cfg.device == "cuda" else None,
+            low_cpu_mem_usage=True,
+        )
+    else:
+        # int8 falls through to fp32 (stub; --quantize not yet implemented)
+        if cfg.precision == "int8":
+            logger.warning("int8 precision not implemented; using fp32")
+            cfg.precision = "fp32"
+        model = AutoModelForTDT.from_pretrained(
+            cfg.model_name,
+            torch_dtype=torch.float32,
+            device_map=cfg.device if cfg.device == "cuda" else None,
+            low_cpu_mem_usage=True,
+        )
+
+    processor = AutoProcessor.from_pretrained(cfg.model_name)
     model.eval()
+
     elapsed = time.monotonic() - t0
     logger.info("Model loaded in %.1f s", elapsed)
-    return model
+    return model, processor
 
 
 # ---------------------------------------------------------------------------
 # Decoder functions
 # ---------------------------------------------------------------------------
 
-def make_ne_mo_decoder(model, device: str) -> "callable":
+def make_hf_decoder(model, processor, device: str, precision: str) -> "callable":
     """
     Returns a decoder function compatible with ParakeetStreamingBuffer.
 
-    The decoder is invoked on every push() with a context ndarray and an
-    is_final flag.  It must return a Hypothesis or None.
+    Uses HuggingFace Transformers ParakeetForTDT model.generate() to
+    transcribe the accumulated audio context.
 
     Throttling: full-context decode only runs every 10 pushes (~800 ms at
     80 ms chunks).  Intermediate pushes return None (no partial result).
     On final (flush), the decode always runs.  This reduces the GPU decode
-    load by ∼10× compared to decoding every 80 ms push.
+    load by ~10x compared to decoding every 80 ms push.
     """
     import itertools
     _counter = itertools.count()
+    target_dtype = torch.float16 if precision == "fp16" else torch.float32
 
     def _decode(context: np.ndarray, is_final: bool) -> Optional[Hypothesis]:
         # Throttle: skip all but every 10th push for non-final decodes
@@ -271,24 +297,47 @@ def make_ne_mo_decoder(model, device: str) -> "callable":
         # Skip empty / silent input
         if context.size < SAMPLE_RATE // 4:  # < 250 ms
             return None
-        # RMS check — avoid transcribing pure silence
+        # RMS check -- avoid transcribing pure silence
         rms = float(np.sqrt(np.mean(context ** 2)))
         if rms < 1e-4:
             return None
+
         try:
+            # Processor expects float32 audio normalized to [-1, 1]
+            inputs = processor(
+                context,
+                sampling_rate=SAMPLE_RATE,
+                return_tensors="pt",
+            )
+
+            input_features = inputs["input_features"].to(
+                dtype=target_dtype, device=device
+            )
+            attention_mask = inputs["attention_mask"].to(device=device)
+
             with torch.inference_mode():
-                tensor = torch.from_numpy(context).unsqueeze(0).to(device)
-                if next(model.parameters()).dtype == torch.float16:
-                    tensor = tensor.half()
-                result = model.transcribe(tensor, return_hypotheses=True)
-            hyp = result[0]
-            text = hyp.text if hasattr(hyp, "text") else str(hyp)
-            # TDT hypotheses carry a confidence score; fall back to 1.0 if missing
-            conf = float(getattr(hyp, "score", 1.0) or 1.0)
-            return Hypothesis(text=text.strip(), confidence=conf)
+                outputs = model.generate(
+                    input_features,
+                    attention_mask=attention_mask,
+                )
+
+            # Decode token IDs to text
+            # outputs shape: (1, seq_len) for single utterance
+            text = processor.decode(outputs[0])
+            if isinstance(text, (list, tuple)):
+                text = text[0] if text else ""
+            text = str(text).strip()
+
+            # Confidence: model.generate() does not expose scores easily
+            # with the default argmax decoding.  We default to 1.0.
+            confidence = 1.0
+
+            return Hypothesis(text=text, confidence=confidence)
+
         except Exception as e:
-            logger.exception("Decode failed: %s", e)
+            logger.exception("HF decode failed: %s", e)
             return None
+
     return _decode
 
 
@@ -306,17 +355,19 @@ async def lifespan(app: FastAPI):
     # Run model load in a thread to avoid blocking startup
     loop = asyncio.get_event_loop()
     try:
-        model = await loop.run_in_executor(None, _load_model, cfg)
+        model, processor = await loop.run_in_executor(None, _load_model, cfg)
     except Exception as e:
         logger.error("Model load failed: %s", e)
-        # Don't crash — healthz will report model_loaded=false and
+        # Don't crash -- healthz will report model_loaded=false and
         # the service can still respond to /healthz.
         app.state.model = None
+        app.state.processor = None
         yield
         return
 
     app.state.model = model
-    app.state.decoder = make_ne_mo_decoder(model, cfg.device)
+    app.state.processor = processor
+    app.state.decoder = make_hf_decoder(model, processor, cfg.device, cfg.precision)
     if torch.cuda.is_available():
         vram = torch.cuda.memory_allocated() / 1024 ** 2
         logger.info("VRAM in use after load: %.1f MB", vram)
@@ -326,6 +377,7 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("Unloading model...")
         app.state.model = None
+        app.state.processor = None
         app.state.decoder = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -338,12 +390,13 @@ def create_app(config: Optional[ServiceConfig] = None) -> FastAPI:
     cfg = config or ServiceConfig()
     app = FastAPI(
         title="IRIS Parakeet ASR Service",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     app.state.config = cfg
     app.state.metrics = ServiceMetrics()
     app.state.model = None
+    app.state.processor = None
     app.state.decoder = None
     app.state.stream_semaphore = asyncio.Semaphore(cfg.max_concurrent_streams)
 
@@ -373,9 +426,9 @@ def create_app(config: Optional[ServiceConfig] = None) -> FastAPI:
         """Service metrics in Prometheus text format (default) or JSON.
 
         Usage:
-          GET /metrics               — Prometheus text (default)
-          GET /metrics?format=json   — JSON object
-          GET /metrics?format=prometheus  — explicit text
+          GET /metrics               -- Prometheus text (default)
+          GET /metrics?format=json   -- JSON object
+          GET /metrics?format=prometheus  -- explicit text
         """
         m = app.state.metrics
         if format == "json":
@@ -417,7 +470,7 @@ def create_app(config: Optional[ServiceConfig] = None) -> FastAPI:
                 if "bytes" in msg:
                     raw = msg["bytes"]
                     if len(raw) % BYTES_PER_SAMPLE != 0:
-                        logger.warning("WS chunk has odd byte count: %d — dropping", len(raw))
+                        logger.warning("WS chunk has odd byte count: %d -- dropping", len(raw))
                         metrics.errors_total += 1
                         continue
 
@@ -516,7 +569,7 @@ def _JSON_503(body: dict) -> "Response":  # type: ignore[name-defined]
     return JSONResponse(status_code=503, content=body)
 
 
-# Module-level app for `uvicorn parakeet_service:app` — uses default config
+# Module-level app for `uvicorn parakeet_service:app` -- uses default config
 app = create_app()
 
 
@@ -526,7 +579,7 @@ app = create_app()
 
 def main():
     parser = argparse.ArgumentParser(
-        description="IRIS Parakeet ASR Service (NVIDIA NeMo TDT on local GPU)"
+        description="IRIS Parakeet ASR Service (HuggingFace Parakeet TDT on local GPU)"
     )
     parser.add_argument("--host", default=os.environ.get("PARAKEET_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PARAKEET_PORT", "8765")))

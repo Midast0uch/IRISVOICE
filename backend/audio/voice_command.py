@@ -196,40 +196,31 @@ class VoiceCommandHandler:
         self._pre_speech_timeout_sec = pre_speech_timeout_sec
         if self.is_recording:
             elapsed = time.monotonic() - self._recording_started_at
+            # Duplicate within 2s — the previous start just landed, ignore.
             if elapsed < 2.0:
-                # Duplicate within 2s — return True so the caller doesn't
-                # reset the orb to idle (the existing recording is still valid).
                 logger.debug(
-                    f"[VoiceCommand] Duplicate start ignored "
-                    f"({elapsed:.1f}s since current recording started)"
+                    f"[VoiceCommand] Duplicate start within 2s — ignoring "
+                    f"({elapsed:.1f}s into current recording)"
                 )
-                return (
-                    True  # recording IS in progress — this is a success, not a failure
-                )
-            # A new wake-word arrived well after the previous one started.
-            # Cancel the existing take so the new one can start fresh.
-            # Without this, the second "hey iris" is silently swallowed and the
-            # orb stays frozen until the first recording times out.
-            logger.info(
-                "[VoiceCommand] New recording requested while already recording — cancelling previous take"
-            )
-            self.cancel_recording()
-            # The transcription thread checks _stop_event every frame (32 ms).
-            # Give it up to 500 ms to read its current frame, notice the event,
-            # and set is_recording = False.  The old 60 ms value was too tight
-            # and caused all subsequent voice commands to fail permanently
-            # with "didn't stop in time".
-            import time as _t
-
-            for _ in range(50):  # up to 50 × 10 ms = 500 ms
-                if not self.is_recording:
-                    break
-                _t.sleep(0.01)
-            if self.is_recording:
+                return True
+            # Stale recording beyond 30s — force-reset and start fresh.
+            # Don't cancel (loses audio) — just reset the flag and let the
+            # old thread finish naturally while a new one starts.
+            if elapsed > 30.0:
                 logger.warning(
-                    "[VoiceCommand] Previous recording thread didn't stop in time after 500 ms — skipping new start"
+                    f"[VoiceCommand] Stale recording detected ({elapsed:.1f}s) — "
+                    f"force-resetting is_recording"
                 )
-                return False
+                self.is_recording = False
+            else:
+                # Recording between 2-30s — it's active and valid.
+                # Return True so the caller doesn't reset the orb to idle,
+                # but a new thread won't start (the existing VAD handles it).
+                logger.debug(
+                    f"[VoiceCommand] Active recording in progress "
+                    f"({elapsed:.1f}s) — ignoring duplicate"
+                )
+                return True
 
         try:
             logger.info("[VoiceCommand] Starting recording (Parakeet primary, faster-whisper fallback)...")
@@ -797,6 +788,26 @@ class VoiceCommandHandler:
         # Sentinel keeps audio_buffer length accurate for iris_gateway check (> 30 frames)
         self.audio_buffer.append(None)
         self._raw_frames.append(audio_frame.copy())
+
+        # ── Broadcast audio_envelope for orb breathing during STT ──────
+        # The VAD loop in _run_transcription also sends audio_envelope (every
+        # 3 frames, ~96ms), but it's gated on the VAD loop iteration speed.
+        # If the VAD loop is delayed (backend-specific processing overhead),
+        # the orb stops breathing.  Broadcasting directly from _capture_frame
+        # ensures the envelope fires as long as audio frames are being captured,
+        # regardless of backend (Whisper or Parakeet).
+        if not hasattr(self, "_capture_envelope_count"):
+            self._capture_envelope_count = 0
+        self._capture_envelope_count += 1
+        if self._capture_envelope_count % 3 == 0:
+            try:
+                _rms = float(np.sqrt(np.mean(np.square(audio_frame))))
+                _level = min(1.0, _rms / (self.VAD_ENERGY_THRESHOLD * 2))
+                if hasattr(self, "_on_audio_envelope") and self._on_audio_envelope and hasattr(self, "cadence_detector"):
+                    _cadence = self.cadence_detector.process(audio_frame)
+                    self._on_audio_envelope(_level, _cadence, "listening")
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # Internal — helpers
