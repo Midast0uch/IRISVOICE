@@ -27,6 +27,9 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     and DER metrics (xi, pacman_store/recall, der_steps, etc.) logged to irisvoice.log.
     NEW NORTH STAR: Domain 17 — Self-Coding Agent (agent inside IRIS).
     Complete G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
+    ⚠️ BLOCKER: Domain 20 (Agent Multi-Step Tool Execution) must ship first —
+    the agent kernel lacks a dynamic tool-call loop, permission wiring, and
+    MCP discovery. Without D20, D17 cannot do multi-step self-coding.
 
    WINDOWS TAILSCALE MOBILE ACCESS — FIXED (2026-06-16):
      ChatWing (port 3000) now renders correctly on phone via Tailscale
@@ -81,7 +84,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 13 — Launcher: Personal/Developer Mode (PARTIAL — [13.1] DONE, [13.2] NOT STARTED, [13.3] DONE, [13.4] DONE, [13.5] PARTIAL) ← GATE 2
     Domain 14 — CLI Toolkit + Web Crawler (PARTIAL — Phases A/B/C/E done; [14.2][14.16][14.19][14.21] remain)
     Domain 15 — Linux Build + Cross-Platform Launcher (PARTIAL — tauri.conf.json targets set; needs Linux build machine)
-    Domain 17 — Self-Coding Agent (NEW — ALL items not started) ← NEW NORTH STAR
+    Domain 17 — Self-Coding Agent (BLOCKED on Domain 20) ← NORTH STAR
     Domain 18 — C++ Hybrid Core Memory Engine ✓ all 6 phases verified
     Domain 19 — Caducean v2: Mitochondria to Mycelium ✓ ALL 7 PHASES COMPLETE (2026-06-13) ← BRANCH feat/caducean-v2-mitochondria-mycelium
       78 new v2 tests pass via pytest, 0 regressions, kill switch in place.
@@ -91,6 +94,9 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
       (a,b→[1,4], s→[0.1,0.8]) verified, 422 validation verified, engine_live
       confirmed. Visual IrisOrb / CaduceanDebugPanel rendering NOT verified
       (blocked by dev-server compile hang — see cmd.exe memory leak note above).
+    Domain 20 — Agent Multi-Step Tool Execution (NEW — 7 items, investigation complete 2026-07-01)
+      ⚠️ CRITICAL BLOCKER for D17 and long-horizon tasks. See docs/architecture/agent-multi-step-gaps.md
+      Root cause: no agentic tool-call loop, permission UI disconnected, MCP static.
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
@@ -109,18 +115,23 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
          All 7 phases + Phase 0 complete on feat/caducean-v2-mitochondria-mycelium.
          78 new v2 tests pass via pytest, 3 pre-existing bugs fixed, kill switch in place.
          Ready for PR back to main. See docs/plans/cad_v2_integration_test_report.md.
-    2. Domain 17 — Self-Coding Agent ← NORTH STAR (after Domain 19 stabilises Caducean)
-    3. Domain 13 — Gate 2: Launcher + Developer Mode (13.1→13.2→13.3→13.5)
-    4. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
-    5. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
-    6. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
-    7. Domain 2  — Voice pipeline (primary input modality — manual e2e; pairs with D19 ConvKernel)
-    8. Domain 12 — PiN + MCP storage integrations (after D11 verified)
-    9. Domain 4  — Skills library (self-extension)
-    10. Domain 7  — Backend reliability (logging standardisation)
-    11. Domain 15 — Linux Build (blocked on Linux machine or CI)
-    12. Domain 8  — Distribution (MSI clean install)
-    13. Domain 9  — Advanced features (after everything else)
+    2. Domain 20 — Agent Multi-Step Tool Execution ← NEW CRITICAL BLOCKER
+         Investigation complete (2026-07-01). 7 items identified. See:
+         docs/architecture/agent-multi-step-gaps.md
+         Items [20.1]-[20.3] (tool-call loop, permission wiring, tool progress UI)
+         must ship before Domain 17 can function. See D20 for full spec.
+    3. Domain 17 — Self-Coding Agent ← NORTH STAR (BLOCKED on D20 items [20.1]-[20.3])
+    4. Domain 13 — Gate 2: Launcher + Developer Mode (13.1→13.2→13.3→13.5)
+    5. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
+    6. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
+    7. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
+    8. Domain 2  — Voice pipeline (primary input modality — manual e2e; pairs with D19 ConvKernel)
+    9. Domain 12 — PiN + MCP storage integrations (after D11 verified)
+    10. Domain 4  — Skills library (self-extension)
+    11. Domain 7  — Backend reliability (logging standardisation)
+    12. Domain 15 — Linux Build (blocked on Linux machine or CI)
+    13. Domain 8  — Distribution (MSI clean install)
+    14. Domain 9  — Advanced features (after everything else)
 
 ---
 
@@ -2128,6 +2139,145 @@ Without it, self-coding would be the rambling baseline.
     TTS chunk scaling by force_magnitude, barge-in damping, etc.
     Landmark: conversation_kernel_wired ✓
       with rational c_eff coupling — voice gets concise output during intense coding
+
+---
+
+## DOMAIN 20 — AGENT MULTI-STEP TOOL EXECUTION  ⚠️ CRITICAL BLOCKER
+Date opened: 2026-07-01
+Investigation: docs/architecture/agent-multi-step-gaps.md
+Blocks: Domain 17 (Self-Coding Agent), Gate 1.8 verification, all long-horizon tasks.
+
+**The problem:** The agent kernel can handle single tool calls via the DER loop but
+cannot do dynamic multi-step tool execution. Five critical gaps prevent long-horizon tasks:
+  1. No agentic tool-call loop (LLM→tool→LLM→tool→...→final response)
+  2. Permission system disconnected (UI exists, no backend handler)
+  3. MCP servers hardcoded at startup (no dynamic discovery)
+  4. Voice-first mode caps to 1 step
+  5. Planning trigger is keyword-based, not semantic
+
+**Why now:** Domain 17 (Self-Coding Agent) requires multi-step tool execution:
+  plan → edit_file → run_test → read_output → fix → rerun. Without D20,
+  the agent can only do single-step responses. Gate 1.8 (tool calling with
+  iris_local) also requires a working tool-call loop to verify.
+
+**Priority:** Items [20.1]-[20.3] are hard blockers for D17. Items [20.4]-[20.7]
+improve capability but are not blockers.
+
+  [20.1] Agentic tool-call loop in streaming response path
+    Status: NOT STARTED — CRITICAL BLOCKER
+    What to build:
+      Implement OpenAI-style tool_call processing in the streaming response:
+      a) When LLM response contains tool_calls → execute tools via tool_bridge
+      b) Feed tool results back to LLM as tool role messages
+      c) Continue loop until LLM produces final text response (no tool_calls)
+      d) Enforce max_iterations (default: 10) and token budget
+      e) Stream tool execution status to frontend (tool_call_start, tool_call_result)
+      f) Handle errors: tool failure → feed error back to LLM, let it decide next step
+    Files to modify:
+      backend/agent/streaming.py — add tool_call processing after text generation
+      backend/agent/agent_kernel.py — wire tool-call loop into _respond_direct path
+    Test: Agent receives "create a file hello.txt with content 'hello world' then read it back"
+          → should execute file_write THEN file_read in sequence, showing both results
+    Regression: All existing DER tests still pass (DER loop is separate path)
+    Landmark: agentic_tool_call_loop
+
+  [20.2] Wire permission backend handler for notification_response
+    Status: NOT STARTED — HIGH PRIORITY
+    What to build:
+      a) Add handler for 'notification_response' WebSocket message in iris_gateway.py
+      b) When agent requests permission (tool_call requiring approval):
+         - Pause execution
+         - Send notification_request to frontend
+         - Wait for notification_response (allow/deny) with timeout (30s default)
+         - On allow: execute tool. On deny: skip tool, inform LLM.
+         - On timeout: auto-deny for destructive tools, auto-allow for read-only
+      c) Wire to CapabilitySet: personal mode auto-approves read-only, denies write/execute
+      d) Wire to tool_bridge: mark tools as require_approval=True in metadata
+    Files to modify:
+      backend/iris_gateway.py — add notification_response handler
+      backend/agent/tool_bridge.py — add require_approval metadata to tools
+      backend/capabilities.py — add per-tool approval logic
+    Test: Agent attempts to delete a file → frontend shows Allow/Deny → deny → agent reports denied
+    Regression: Existing WebSocket message handling unaffected
+    Landmark: permission_backend_wired
+
+  [20.3] Tool execution progress UI in chat-view
+    Status: NOT STARTED — HIGH PRIORITY
+    What to build:
+      a) New WS events: tool_call_start {tool_name, args}, tool_call_result {tool_name, result, duration}
+      b) chat-view.tsx: render tool calls as distinct UI blocks (collapsible)
+      c) Show: tool icon, tool name, arguments (truncated), spinner while running, result on complete
+      d) Show step counter when multiple tools: "Step 2/4: Running file_write..."
+      e) Add abort button during tool execution (sends cancel to backend)
+    Files to modify:
+      backend/agent/agent_kernel.py — emit tool_call_start/result WS events
+      components/chat-view.tsx — add ToolCallBlock component
+    Test: Multi-step task shows tool execution blocks in chat with progress
+    Regression: Existing chat rendering unaffected
+    Landmark: tool_progress_ui
+
+  [20.4] Semantic planning trigger (replace keyword matching)
+    Status: NOT STARTED
+    What to build:
+      Replace `_needs_planning()` keyword matching with LLM-based intent classification:
+      a) Small classifier call (max_tokens=20) that determines: needs_tool: bool, tool_type: str
+      b) Cache results for repeated patterns (same user phrasing → same decision)
+      c) Fallback to keyword matching if classifier fails
+      d) OR: use a rule-based heuristic that's more comprehensive than current keywords
+    Files to modify:
+      backend/agent/agent_kernel.py — _needs_planning() method
+    Test: "what files are in this directory" → triggers planning (currently doesn't)
+          "hello" → doesn't trigger planning (currently doesn't)
+    Regression: Existing planning triggers still work
+    Landmark: semantic_planning_trigger
+
+  [20.5] Remove voice-first 1-step cap (configurable)
+    Status: NOT STARTED
+    What to build:
+      a) Make the 1-step cap configurable: voice_multi_step: bool in settings
+      b) When enabled: voice tasks can use up to 3 steps (conservative)
+      c) Add voice-specific UX: announce "I'll need to do a few things for this"
+      d) Keep token budget at 15k for voice (tight but sufficient for 3 steps)
+    Files to modify:
+      backend/agent/agent_kernel.py — line 3478, voice-first cap
+      backend/agent/config.py — add voice_multi_step setting
+    Test: "search for files and summarize them" → agent does search + summarize (2 steps)
+    Regression: Default behavior unchanged (cap stays on unless enabled)
+    Landmark: voice_multi_step_configurable
+
+  [20.6] MCP discovery API for agent
+    Status: NOT STARTED
+    What to build:
+      a) Backend endpoint: /api/mcp/discover → list all available MCP servers
+      b) Backend endpoint: /api/mcp/connect → dynamically connect a new MCP server
+      c) Agent-callable tool: mcp_discover() → returns available servers + their tools
+      d) Agent-callable tool: mcp_connect(server_name) → connects server, returns tools
+      e) Integrate with marketplace: if MCP not available, suggest installing from marketplace
+    Files to modify:
+      backend/agent/tool_bridge.py — add discovery/connect methods
+      backend/main.py — add /api/mcp/* endpoints
+    Test: Agent is asked to use a tool not in current MCP → discovers available servers → connects
+    Regression: Existing MCP servers still initialized at startup
+    Landmark: mcp_discovery_api
+
+  [20.7] Structured tool result display (expandable)
+    Status: NOT STARTED
+    What to build:
+      a) Tool results rendered in collapsible <details> blocks
+      b) Long results truncated with "Show more" (default: 500 chars)
+      c) Syntax highlighting for code results
+      d) Copy button for tool results
+      e) Error results in red with stack trace expandable
+    Files to modify:
+      components/chat-view.tsx — enhance tool result rendering
+    Test: Long file read result shows truncated with expandable full view
+    Regression: Short results still render inline
+    Landmark: structured_tool_display
+
+  Graduate condition:
+    [20.1]-[20.3] all pass: agent does multi-step task (write file + read back),
+    permission dialog appears for destructive actions, progress shows in chat.
+    Domain 17 can then be attempted.
 
 ---
 
