@@ -787,7 +787,14 @@ class VoiceCommandHandler:
                     if hasattr(self, "_on_audio_envelope") and self._on_audio_envelope and hasattr(self, "cadence_detector"):
                         try:
                             cadence = self.cadence_detector.process(frame)
-                            self._on_audio_envelope(level, cadence, "listening")
+                            # Blend spectral flux with a scaled RMS so even quiet
+                            # speech produces visible orb movement. Pure spectral flux
+                            # is near-zero at low input levels (RMS < 0.001), making
+                            # the orb appear frozen. RMS gives a floor that keeps the
+                            # orb breathing in sync with the user's voice level.
+                            rms_scaled = min(1.0, rms / (self.VAD_ENERGY_THRESHOLD * 0.5))
+                            blended = max(cadence, rms_scaled * 0.6)
+                            self._on_audio_envelope(level, blended, "listening")
                         except Exception:
                             pass
                     _level_accum = 0.0

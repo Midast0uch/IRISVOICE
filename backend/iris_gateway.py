@@ -2897,51 +2897,67 @@ class IRISGateway:
                 # Don't play buffered audio when the user already barged in.
                 if not interrupted.is_set() and _buffered_chunks:
                     if engine.pipeline:
-                        # ── Cadence broadcasting during TTS ─────────────────
-                        # The orb needs audio_envelope messages during playback
-                        # so the cadence/breathing matches the speech rhythm.
-                        total_frames = sum(len(c) for c in _buffered_chunks)
-                        approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
-                        cadence_thread = None
-                        if session_id and self._main_loop and approx_duration > 0.5:
-                            self._logger.info(
-                                f"[TTS] Starting fallback cadence thread (dur={approx_duration:.1f}s)"
-                            )
-                            _barge_in_stop = threading.Event()
-                            self._barge_in_stop = _barge_in_stop
+                         # ── Cadence broadcasting during TTS ─────────────────
+                            # The orb needs audio_envelope messages during playback
+                            # so the cadence/breathing matches the speech rhythm.
+                            # Use the ACTUAL audio RMS from the TTS output, not a
+                            # fake sine wave. Pre-compute the RMS profile so the
+                            # cadence thread can play it back in real-time.
+                            _rms_profile = []
+                            for ch in _buffered_chunks:
+                                ch_f32 = np.asarray(ch, dtype=np.float32)
+                                _r = float(np.sqrt(np.mean(np.square(ch_f32))))
+                                _rms_profile.append(_r)
+                            _peak_rms = max(_rms_profile) if _rms_profile else 1.0
+                            _rms_profile = [min(1.0, r / (_peak_rms + 1e-10) * 2.0) for r in _rms_profile]
 
-                            def _broadcast_cadence():
-                                import asyncio as _asyncio2
-                                start = time.monotonic()
-                                end = start + approx_duration
-                                # Roughly sinusoidal cadence profile
-                                _phase = 0.0
-                                while time.monotonic() < end and not _barge_in_stop.is_set():
-                                    _phase += 0.15
-                                    try:
-                                        _asyncio2.run_coroutine_threadsafe(
-                                            self._ws_manager.broadcast_to_session(
-                                                session_id,
-                                                {
-                                                    "type": "audio_envelope",
-                                                    "payload": {
-                                                        "rms": 0.06,
-                                                        "cadence": abs(
-                                                            math.sin(_phase)
-                                                        ),
-                                                        "phase": "speaking",
+                            total_frames = sum(len(np.asarray(c, dtype=np.float32)) for c in _buffered_chunks)
+                            approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
+                            cadence_thread = None
+                            if session_id and self._main_loop and approx_duration > 0.5:
+                                self._logger.info(
+                                    f"[TTS] Starting cadence thread with real RMS "
+                                    f"(dur={approx_duration:.1f}s, {len(_rms_profile)} frames)"
+                                )
+                                _barge_in_stop = threading.Event()
+                                self._barge_in_stop = _barge_in_stop
+
+                                def _broadcast_cadence():
+                                    import asyncio as _asyncio2
+                                    start = time.monotonic()
+                                    slot_count = len(_rms_profile)
+                                    while (
+                                        time.monotonic() < start + approx_duration
+                                        and not _barge_in_stop.is_set()
+                                    ):
+                                        elapsed = time.monotonic() - start
+                                        frac = elapsed / max(approx_duration, 1e-6)
+                                        idx = int(frac * slot_count)
+                                        if idx >= slot_count:
+                                            break
+                                        rms_val = _rms_profile[idx]
+                                        try:
+                                            _asyncio2.run_coroutine_threadsafe(
+                                                self._ws_manager.broadcast_to_session(
+                                                    session_id,
+                                                    {
+                                                        "type": "audio_envelope",
+                                                        "payload": {
+                                                            "rms": rms_val,
+                                                            "cadence": rms_val,
+                                                            "phase": "speaking",
+                                                        },
                                                     },
-                                                },
-                                            ),
-                                            self._main_loop,
-                                        )
-                                    except Exception:
-                                        pass
-                                    time.sleep(0.1)
-                            cadence_thread = threading.Thread(
-                                target=_broadcast_cadence,
-                                daemon=True,
-                                name="tts-cadence",
+                                                ),
+                                                self._main_loop,
+                                            )
+                                        except Exception:
+                                            pass
+                                        time.sleep(0.1)
+                                cadence_thread = threading.Thread(
+                                    target=_broadcast_cadence,
+                                    daemon=True,
+                                    name="tts-cadence",
                             )
                             cadence_thread.start()
 
