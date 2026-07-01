@@ -237,7 +237,8 @@ class AudioPipeline:
                 except Exception as exc:
                     logger.error(f"[AudioPipeline] Frame listener error: {exc}")
 
-    def play_stream(self, audio_chunks, sample_rate: int = None):
+    def play_stream(self, audio_chunks, sample_rate: int = None,
+                     playback_started_event: "threading.Event | None" = None):
         """Stream audio from an iterable of float32 chunks.
 
         Opens the native player ONCE, pushes every chunk without blocking
@@ -247,19 +248,26 @@ class AudioPipeline:
         Applies a fixed 2.5× gain to compensate for Pocket-TTS's quiet output
         (~0.03 RMS, ~0.37 peak).  Per-chunk peak normalization is NOT used
         because it would amplify near-silent lead-in chunks into loud static.
+
+        Args:
+            playback_started_event: Optional threading.Event set when the first
+                chunk reaches the audio device.  Callers can wait on this to
+                sync word-highlight timing with actual playback start.
         """
         sr = sample_rate if sample_rate is not None else self.sample_rate
         if self._native_available and self._native_player is not None:
             try:
                 if not self._native_player.open(self.output_device or -1, sr):
                     raise RuntimeError("Native player failed to open")
-                for audio_data in audio_chunks:
+                for i, audio_data in enumerate(audio_chunks):
                     audio_float = audio_data.astype(np.float32)
                     # Apply fixed 2.5× gain (Pocket-TTS output is ~0.37 peak).
                     # Clip to [-0.99, 0.99] to prevent wrap-around — do NOT use
                     # per-chunk peak normalization (amplifies silence to static).
                     audio_float = np.clip(audio_float * 2.5, -0.99, 0.99)
                     self._native_player.push_chunk(audio_float)
+                    if i == 0 and playback_started_event is not None:
+                        playback_started_event.set()
                 self._native_player.wait_done()
                 self._native_player.close()
                 return
@@ -273,6 +281,10 @@ class AudioPipeline:
         all_audio = np.concatenate(list(audio_chunks))
         audio_float = np.clip(all_audio.astype(np.float32) * 2.5, -0.99, 0.99)
         duration_ms = int(len(audio_float) / sr * 1000)
+        # Signal before blocking play — sd.play starts the audio stream
+        # synchronously; the driver handles buffering.
+        if playback_started_event is not None:
+            playback_started_event.set()
         try:
             out_dev = self.output_device
             _sd().play(audio_float, samplerate=sr, device=out_dev, blocking=True)

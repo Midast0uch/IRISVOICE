@@ -2444,6 +2444,10 @@ class IRISGateway:
         # Populated by the producer thread, consumed after it joins.
         _all_words: list = []
 
+        # Synchronization event: set when first audio chunk reaches the device.
+        # Word-highlight threads wait on this instead of hardcoded sleep(0.15).
+        _playback_event: threading.Event = threading.Event()
+
         def _producer():
             # Helper: push chunk to native player with auto-fallback to queue
             _last_level_time = [0.0]  # mutable for closure; throttle to ~10 Hz
@@ -2457,6 +2461,9 @@ class IRISGateway:
                         gained = np.clip(audio_chunk * 2.5, -0.99, 0.99)
                         engine.pipeline._native_player.push_chunk(gained)
                         native_ok = True
+                        # Signal that audio playback has started (first chunk)
+                        if _playback_event is not None and not _playback_event.is_set():
+                            _playback_event.set()
                     except Exception:
                         pass
                 if not native_ok:
@@ -2774,16 +2781,10 @@ class IRISGateway:
                     )
                     _native_cadence_thread.start()
 
-                try:
-                    engine.pipeline._native_player.wait_done()
-                except Exception as _wait_err:
-                    self._logger.warning(
-                        f"[Voice] Native wait_done failed ({_wait_err})"
-                    )
-
                 # ── Word-timing thread for native path ─────────────────────
                 # Broadcast tts_word events with character-proportional timing
                 # so word highlighting syncs with speech rhythm.
+                # MUST start BEFORE wait_done() so words fire during playback.
                 _native_word_thread = None
                 if _all_words and _approx_dur > 0.3:
                     _word_count = len(_all_words)
@@ -2797,9 +2798,11 @@ class IRISGateway:
                     def _broadcast_native_words():
                         import asyncio as _asyncio2
                         import time as _time2
-                        # Wait for audio device to start playing before firing
-                        # word events, otherwise highlighting starts before speech.
-                        _time2.sleep(0.15)
+                        # Wait for first chunk to reach audio device before firing
+                        # word events — eliminates hardcoded sleep guess.
+                        if _playback_event is not None:
+                            _playback_event.wait(timeout=2.0)
+                        _time2.sleep(0.03)  # tiny buffer for device latency
                         _start = _time2.monotonic()
                         for _i in range(_word_count):
                             _sleep = _word_timings[_i] - (_time2.monotonic() - _start)
@@ -2945,8 +2948,9 @@ class IRISGateway:
                                 import asyncio as _asyncio2
                                 import time as _time2
                                 # Wait for audio device to start playing before firing
-                                # word events, otherwise highlighting starts before speech.
-                                _time2.sleep(0.15)
+                                # word events — eliminates hardcoded sleep guess.
+                                _playback_event.wait(timeout=2.0)
+                                _time2.sleep(0.03)  # tiny buffer for device latency
                                 _start = _time2.monotonic()
                                 for _i in range(_word_count):
                                     _sleep = _word_timings[_i] - (_time2.monotonic() - _start)
@@ -2978,7 +2982,8 @@ class IRISGateway:
                             _word_thread.start()
 
                         engine.pipeline.play_stream(
-                            _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE
+                            _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE,
+                            playback_started_event=_playback_event
                         )
 
                         if cadence_thread:
