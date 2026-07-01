@@ -388,9 +388,9 @@ class TTSManager:
             from pocket_tts import TTSModel
 
             t0 = time.monotonic()
-            self._pocket_tts_model = TTSModel.load_model(
-                language=os.environ.get("POCKET_TTS_LANGUAGE", "english"),
-            )
+            # pocket-tts load_model signature (as of v0.x): variant, temp, lsd_decode_steps, noise_clamp, eos_threshold
+            # It does NOT accept 'language' — that was from an older API.
+            self._pocket_tts_model = TTSModel.load_model()
             dt = time.monotonic() - t0
             logger.info(f"[TTSManager] Pocket-TTS model loaded in {dt:.1f}s")
             self._load_voice_state()

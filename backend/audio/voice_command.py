@@ -345,15 +345,18 @@ class VoiceCommandHandler:
             # hung in RECORDING, and the next trigger raced against the dangling
             # recording ("opens and closes right after").  Now we register (if
             # needed) and fall through to start the transcription thread unconditionally.
-            if not self._frame_listener_registered:
-                if self.audio_engine.pipeline:
-                    self.audio_engine.register_frame_listener(self._capture_frame)
-                    self._frame_listener_registered = True
-                else:
-                    logger.error("[VoiceCommand] AudioEngine pipeline not available")
-                    self._set_state(VoiceState.ERROR, "Audio pipeline not ready")
-                    self.is_recording = False
-                    return False
+            # Always re-register the frame listener — not guarded by the flag.
+            # If the AudioEngine stream was cleaned up (e.g. after TTS playback),
+            # _frame_listeners was cleared and our old reference is gone.
+            # add_frame_listener is idempotent, so this is safe to call every time.
+            if self.audio_engine.pipeline:
+                self.audio_engine.register_frame_listener(self._capture_frame)
+                self._frame_listener_registered = True
+            else:
+                logger.error("[VoiceCommand] AudioEngine pipeline not available")
+                self._set_state(VoiceState.ERROR, "Audio pipeline not ready")
+                self.is_recording = False
+                return False
 
             # Play beep AFTER registering the listener but route it through
             # set_tts_active so the half-duplex gate in AudioPipeline._input_callback

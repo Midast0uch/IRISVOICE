@@ -549,5 +549,20 @@ class AudioEngine:
 
 
 def get_audio_engine() -> AudioEngine:
-    """Get the singleton AudioEngine instance"""
-    return AudioEngine()
+    """Get the singleton AudioEngine instance.
+
+    This MUST return the same instance every time. Previously this returned
+    a new AudioEngine() on every call, which caused frame listeners to be
+    registered on one engine while a different engine's input stream was
+    actually running. Result: recordings captured 0-1 frames and VAD never
+    detected speech.
+    """
+    global _audio_engine_singleton
+    if _audio_engine_singleton is None:
+        _audio_engine_singleton = AudioEngine()
+    return _audio_engine_singleton
+
+
+# Module-level singleton holder. Using a global avoids the pitfall where
+# a function-local default would be re-evaluated on each call.
+_audio_engine_singleton: Optional[AudioEngine] = None

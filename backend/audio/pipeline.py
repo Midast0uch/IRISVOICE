@@ -108,8 +108,9 @@ class AudioPipeline:
             return np.concatenate(self._audio_buffer)
 
     def add_frame_listener(self, callback: Callable[[np.ndarray], None]):
-        """Add a listener for raw audio frames."""
-        self._frame_listeners.append(callback)
+        """Add a listener for raw audio frames. Idempotent — safe to call repeatedly."""
+        if callback not in self._frame_listeners:
+            self._frame_listeners.append(callback)
 
         # Don't print devices on instantiation - slows down startup
         # self._print_input_devices()
