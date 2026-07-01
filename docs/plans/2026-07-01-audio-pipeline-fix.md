@@ -2,12 +2,14 @@
 
 ## Problem Statement
 
-The voice conversation loop has three broken behaviors that prevent end-to-end interactive experience:
+The voice conversation loop has broken behaviors that prevent end-to-end interactive experience:
 
 1. **TTS plays twice** — Every agent response audio plays back 2x
 2. **Parakeet silently fails** — HTTP boundary to separate service eats errors, falls back to whisper without user knowing
 3. **Voice state stuck at "processing"** — TTS sometimes never plays (voice stuck)
-4. **Cadence animations inconsistent** — Breathing works for whisper but not parakeet
+4. **Word highlighting out of sync** — Frontend highlights words before audio plays
+5. **Cadence animations inconsistent** — Breathing works for whisper but not parakeet
+6. **Stale HTTP references** — Codebase still references port 8765 / parakeet_service_url after embedding
 
 ## Root Causes Found
 
@@ -35,7 +37,28 @@ The voice conversation loop has three broken behaviors that prevent end-to-end i
 
 `_on_voice_result()` dispatches `_wrap_tts_streaming()` in a background thread. If the LLM call within that thread fails (API error, timeout), the voice state never transitions back to idle — stuck at "processing".
 
-### Bug 4: Cadence Missing for Parakeet
+### Bug 4: Word Highlighting Out of Sync
+**Files:** `backend/iris_gateway.py:2977-2984`, `backend/audio/pipeline.py:240-286`
+
+The word timing thread (`_broadcast_words`) starts at line 2977 with a **hardcoded 0.15s sleep** before dispatching the first word event. Meanwhile, `play_stream()` at line 2984 opens the audio device and starts `sd.play(blocking=True)` — but the audio device has its own buffer latency (50-200ms).
+
+Timeline:
+```
+t=0.00s  Word thread starts → sleeps 0.15s
+t=0.00s  play_stream() called → opens device → concatenates chunks
+t=0.15s  Word thread wakes → fires word[0] event
+t=0.20s+ sd.play() actually produces audio from speakers
+```
+
+Result: First word highlights 50-200ms BEFORE audio is audible. This compounds — by the time audio catches up, the highlight is multiple words ahead.
+
+The root cause: no synchronization between "audio device started playing" and "word thread started dispatching". The 0.15s is a guess that doesn't account for device latency.
+
+Additionally, the `play_stream()` path has **two execution paths** (native C++ and sd.play fallback), and the word thread starts differently in each:
+- **Native path** (line 2784): Word thread starts AFTER `_native_player.wait_done()` — meaning audio already finished before words begin
+- **Fallback path** (line 2977): Word thread starts BEFORE `play_stream()` — words fire before audio starts
+
+### Bug 5: Cadence Missing for Parakeet
 When parakeet IS used (HTTP path), the backend's VoiceCommandHandler still runs VAD and sends `audio_envelope` events. But since parakeet silently fails 100% of the time (0 requests seen), the user only ever experiences whisper's cadence path.
 
 ---
@@ -61,10 +84,10 @@ When parakeet IS used (HTTP path), the backend's VoiceCommandHandler still runs 
 
 ---
 
-### Phase 2: Embed Parakeet In-Process (45 min)
+### Phase 2: Embed Parakeet In-Process + Full HTTP Cleanup (45 min)
 **Risk: MEDIUM — architectural change, but isolated to audio layer**
 
-**What:** Move parakeet model loading and inference from the separate `parakeet_service.py` FastAPI server into `voice_command.py` directly, eliminating the HTTP boundary.
+**What:** Move parakeet model loading and inference from the separate `parakeet_service.py` FastAPI server into `voice_command.py` directly, eliminating the HTTP boundary. Clean up ALL HTTP/8765 references.
 
 **Why:**
 - Single-user desktop assistant — no need for separate service scaling
@@ -88,19 +111,34 @@ AFTER:
 ```
 
 **Files changed:**
-- `backend/audio/voice_command.py` — Replace `_transcribe_via_parakeet_service()` with `_transcribe_via_parakeet_inprocess()`. Add `ParakeetTranscriber` class that:
-  - Lazy-loads model on first call (ParakeetForTDT + AutoProcessor from transformers)
-  - Transcribes audio numpy array directly (no HTTP)
-  - Returns transcription text or raises exception (NO silent `""` return)
-  - Logs which STT backend was used: `[STT] parakeet GPU` or `[STT] whisper fallback`
 
-- `backend/audio/voice_command.py` — Remove `parakeet_service_url` parameter from `VoiceCommandHandler.__init__`
+1. `backend/audio/voice_command.py`:
+   - Add `ParakeetTranscriber` class:
+     - Lazy-loads model on first call (ParakeetForTDT + AutoProcessor from transformers)
+     - Transcribes audio numpy array directly (no HTTP)
+     - Returns transcription text or raises exception (NO silent `""` return)
+     - Logs which STT backend was used: `[STT] parakeet GPU` or `[STT] whisper fallback`
+   - Replace `_transcribe_via_parakeet_service()` with `_transcribe_via_parakeet_inprocess()`
+   - Remove `parakeet_service_url` parameter from `VoiceCommandHandler.__init__`
 
-- `backend/main.py` — Remove `parakeet_service_url` config pass-through
+2. `backend/main.py`:
+   - Remove `parakeet_service_url` config pass-through
+   - Remove `PARAKEET_SERVICE_URL` env var references
 
-- `backend/audio/parakeet_service.py` — Keep as-is (can still be run standalone if needed for debugging), but no longer the primary path
+3. `backend/audio/parakeet_service.py`:
+   - Keep as-is for standalone debugging, but add comment: `# STANDALONE DEBUGGING ONLY — primary path is in-process via voice_command.py`
 
-- `backend/audio/parakeet_buffer.py` — Keep as-is (streaming buffer may still be useful)
+4. `backend/audio/parakeet_buffer.py`:
+   - Keep as-is (streaming buffer may still be useful for future streaming STT)
+
+5. `backend/config.py` or equivalent:
+   - Remove `parakeet_service_url` from config
+
+6. **HTTP cleanup sweep** — search and remove ALL references to:
+   - `localhost:8765` in Python/TS files
+   - `parakeet_service_url` in config/init files
+   - `PARAKEET_SERVICE_URL` env var references
+   - Any frontend code that references the parakeet service port
 
 **Verification:**
 - Start backend (NO parakeet service needed on port 8765)
@@ -108,6 +146,7 @@ AFTER:
 - Log should show `[STT] parakeet GPU — transcription took 0.3s`
 - If parakeet fails, log should show `[STT] parakeet FAILED: <error> — falling back to whisper`
 - No more silent fallback
+- `netstat` should NOT show port 8765 listening
 
 ---
 
@@ -124,7 +163,6 @@ AFTER:
           # ... LLM call + TTS synthesis + playback ...
       except Exception as e:
           logger.error(f"[TTS] Pipeline failed: {e}")
-          # Send error to frontend
           await self._broadcast({"type": "voice_result", "state": "error", "error": str(e)})
       finally:
           # ALWAYS return voice to idle
@@ -138,34 +176,115 @@ AFTER:
 
 ---
 
-### Phase 4: Verify End-to-End (15 min)
+### Phase 4: Fix Word Highlighting Sync (30 min)
+**Risk: MEDIUM — threading synchronization change**
+
+**What:** Synchronize word highlight timing with actual audio playback start, replacing the hardcoded 0.15s sleep.
+
+**Root cause recap:**
+- Word thread uses `time.sleep(0.15)` as a guess for audio device startup
+- `sd.play(blocking=True)` has variable latency (50-200ms depending on device/buffer)
+- Native path: word thread starts AFTER playback finishes (too late)
+- Fallback path: word thread starts BEFORE playback starts (too early)
+
+**Solution:** Add a `threading.Event` to `play_stream()` that signals when audio actually starts playing. Word thread waits on this event instead of sleeping.
+
+**Files changed:**
+
+1. `backend/audio/pipeline.py` — Add `_playback_started` event:
+   ```python
+   def play_stream(self, audio_chunks, sample_rate=None, playback_started_event=None):
+       """..."""
+       sr = sample_rate if sample_rate is not None else self.sample_rate
+       if self._native_available and self._native_player is not None:
+           try:
+               if not self._native_player.open(self.output_device or -1, sr):
+                   raise RuntimeError("Native player failed to open")
+               for i, audio_data in enumerate(audio_chunks):
+                   audio_float = np.clip(audio_data.astype(np.float32) * 2.5, -0.99, 0.99)
+                   self._native_player.push_chunk(audio_float)
+                   if i == 0 and playback_started_event:
+                       playback_started_event.set()  # Signal: audio started
+               self._native_player.wait_done()
+               self._native_player.close()
+               return
+           except Exception as _native_err:
+               logger.warning(f"[AudioPipeline] Native stream failed ({_native_err}), falling back")
+
+       # Fallback: sd.play path
+       all_audio = np.concatenate(list(audio_chunks))
+       audio_float = np.clip(all_audio.astype(np.float32) * 2.5, -0.99, 0.99)
+       
+       # Signal immediately before blocking play — sd.play starts the stream
+       # synchronously; actual device latency is handled by the audio driver
+       if playback_started_event:
+           playback_started_event.set()
+       
+       out_dev = self.output_device
+       _sd().play(audio_float, samplerate=sr, device=out_dev, blocking=True)
+   ```
+
+2. `backend/iris_gateway.py` — Pass event to word thread:
+   ```python
+   # In _speak_response, non-native path:
+   _playback_event = threading.Event()
+   
+   def _broadcast_words():
+       _playback_event.wait()  # Wait for audio to actually start
+       _time2.sleep(0.05)  # Tiny buffer for device latency
+       # ... rest of word dispatch logic ...
+   
+   _word_thread = threading.Thread(target=_broadcast_words, daemon=True)
+   _word_thread.start()
+   
+   engine.pipeline.play_stream(
+       _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE,
+       playback_started_event=_playback_event
+   )
+   ```
+
+3. Same pattern for native path — set event after first `push_chunk()`.
+
+**Verification:**
+- Trigger voice command
+- First word highlight should appear WITHIN 50ms of first audible sound
+- Word progression should match speech rate (not ahead or behind)
+- No visual "jumping" where highlight skips ahead then waits
+
+---
+
+### Phase 5: Verify End-to-End (15 min)
 **What:** Full manual test of the conversation loop.
 
 **Test script:**
-1. Start backend (`python start-backend.py`)
+1. Start backend (`python start-backend.py`) — NO parakeet service needed
 2. Start frontend (`npm run dev`)
 3. Open browser to localhost:3000
 4. Test via wake word: Say wake phrase → speak a question → hear response ONCE
 5. Test via double-click: Double-click orb → speak a question → hear response ONCE
 6. Verify: Cadence breathing animates during LLM thinking
 7. Verify: Orb transitions through states (idle → listening → processing → speaking → idle)
-8. Verify: Word highlighting appears during TTS playback
+8. Verify: Word highlighting appears DURING TTS playback, synced with audio
 9. Verify: Voice returns to idle after response completes
 10. Check logs: `[STT] parakeet GPU` appears for transcriptions
+11. Check `netstat`: port 8765 NOT listening
+12. Check frontend: no console errors about missing events
 
 ---
 
 ## Execution Order
 
 1. **Phase 1** first (TTS double-play) — smallest change, highest impact, zero risk
-2. **Phase 2** next (embed parakeet) — architectural change, needs careful testing
-3. **Phase 3** next (voice state stuck) — error handling, independent of Phase 2
-4. **Phase 4** last (verification) — manual end-to-end test
+2. **Phase 4** next (word highlighting sync) — depends on Phase 1 being done (single play_stream call)
+3. **Phase 2** next (embed parakeet + HTTP cleanup) — architectural change, needs careful testing
+4. **Phase 3** next (voice state stuck) — error handling, independent of Phase 2/4
+5. **Phase 5** last (verification) — manual end-to-end test
 
 ## Commit Strategy
 
 Each phase gets its own commit:
 1. `fix: remove duplicate TTS play_stream call` 
-2. `refactor: embed parakeet transcriber in-process`
-3. `fix: ensure voice state returns to idle on error`
-4. `docs: audio pipeline fix plan and verification results`
+2. `fix: sync word highlighting with audio playback via threading.Event`
+3. `refactor: embed parakeet transcriber in-process, remove HTTP boundary`
+4. `fix: ensure voice state returns to idle on error`
+5. `docs: audio pipeline fix plan and verification results`
