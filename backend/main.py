@@ -453,12 +453,11 @@ async def lifespan(app: FastAPI):
             f"  - [AUDIO SUBSYSTEM] Initialization complete in {total_elapsed:.3f}s"
         )
         logger.info(
-            "  - [AUDIO DIAG] Wake word: %s | Pipeline: %s | Voice handler: %s | Whisper: %s | Parakeet: %s",
-            "READY" if audio_engine._porcupine_initialized else "DISABLED",
-            "RUNNING" if audio_engine._is_running else "STOPPED",
-            "WIRED" if voice_handler.is_recording is False else "RECORDING",
-            "PRE-WARMING" if voice_handler._whisper is None else "READY",
-            "PRE-WARMING" if not voice_handler._parakeet._loaded else "READY",
+            f"  - [AUDIO DIAG] Wake word: {'READY' if audio_engine._porcupine_initialized else 'DISABLED'} | "
+            f"Pipeline: {'RUNNING' if audio_engine._is_running else 'STOPPED'} | "
+            f"Voice handler: {'WIRED' if voice_handler.is_recording is False else 'RECORDING'} | "
+            f"Whisper: {'READY' if voice_handler._whisper is not None else 'PRE-WARMING'} | "
+            f"Parakeet: {'READY' if voice_handler._parakeet._loaded else 'PRE-WARMING'}"
         )
         logger.debug(
             "  - Audio subsystem ready for wake word detection and voice processing"
