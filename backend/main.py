@@ -352,6 +352,7 @@ async def lifespan(app: FastAPI):
             _main_loop = asyncio.get_running_loop()
             global _main_event_loop
             _main_event_loop = _main_loop
+            audio_engine.set_main_loop(_main_loop)  # needed for device hot-plug broadcasts
             audio_engine.set_wake_word_callback(lambda word: _on_wake_word_sync(word))
             logger.info("    [+] [WAKE WORD] Callback registered")
         except Exception as e:

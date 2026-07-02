@@ -287,6 +287,10 @@ class AudioEngine:
         """Set callback fired when wake word is detected. callback(wake_word_name: str) -> None"""
         self._on_wake_word_detected = callback
 
+    def set_main_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Store a reference to the main asyncio event loop for cross-thread broadcasts."""
+        self._main_loop = loop
+
     def set_tts_active(self, active: bool) -> None:
         """Mark TTS playback as active/inactive.
 
@@ -537,19 +541,20 @@ class AudioEngine:
         Uses the stored main event loop with call_soon_threadsafe.
         """
         ws_manager = get_websocket_manager()
+        msg_type = message.get("type", "unknown")
 
         if self._main_loop and self._main_loop.is_running():
             self._main_loop.call_soon_threadsafe(
                 self._main_loop.create_task, ws_manager.broadcast(message)
             )
+            logger.info(
+                f"[AudioEngine] Broadcast queued ({msg_type}) " +
+                f"from bg thread to main loop"
+            )
         else:
-            # _main_loop was not captured at startup (AudioEngine initialised
-            # before the asyncio event loop started).  Skip the broadcast rather
-            # than calling asyncio.get_event_loop() from a background thread,
-            # which raises "There is no current event loop in thread '...'" on
-            # Python 3.10+.
-            logger.debug(
-                f"[AudioEngine] (WS skip: no main loop ref) {message.get('type', 'unknown')}"
+            logger.warning(
+                f"[AudioEngine] Broadcast SKIPPED ({msg_type}) — " +
+                f"_main_loop is {'None' if not self._main_loop else 'not running'}"
             )
 
     def _poll_device_changes(self) -> None:
