@@ -423,6 +423,15 @@ class TTSManager:
         if self._pocket_tts_model is not None:
             return True
         try:
+            # Pocket-TTS v2.x applies beartype runtime type-checking to every
+            # function at import time, which adds ~40s to the first import.
+            # No-op it here — we don't need runtime type validation in production.
+            import beartype.claw as _bt
+            _bt.beartype_this_package = lambda **_: None
+        except ImportError:
+            pass
+
+        try:
             from pocket_tts import TTSModel
 
             t0 = time.monotonic()
