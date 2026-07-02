@@ -435,14 +435,13 @@ class TTSManager:
             from pocket_tts import TTSModel
 
             t0 = time.monotonic()
-            # Pocket-TTS v2.1.0 API: load_model accepts `language` (not `variant`).
-            # Available languages: english, english_2026-01, english_2026-04, french_24l, etc.
-            # Override via POCKET_TTS_LANGUAGE env var (default: "english").
+            # Pocket-TTS API: load_model accepts `variant` (not `language`).
+            # Override via POCKET_TTS_VARIANT env var (default: auto-detect).
             # The eos_threshold=-1.0 forces clean EOS termination (default -4.0 hits
             # max length with broken voice state, producing garbled tail).
-            model_lang = os.environ.get("POCKET_TTS_LANGUAGE", "english")
+            model_variant = os.environ.get("POCKET_TTS_VARIANT", "b6369a24")
             self._pocket_tts_model = TTSModel.load_model(
-                language=model_lang,
+                variant=model_variant,
                 eos_threshold=-1.0,
             )
             dt = time.monotonic() - t0
