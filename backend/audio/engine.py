@@ -231,8 +231,19 @@ class AudioEngine:
 
             self._porcupine_initialized = True
             return True
+        except ImportError as e:
+            logger.error(
+                f"[AudioEngine] Porcupine init failed — pvporcupine import error: {e}\n"
+                f"Native DLLs may not be on PATH. Check:\n"
+                f"  1. venv\\Lib\\site-packages\\pvporcupine\\lib\\windows\\amd64\\*.dll exists\n"
+                f"  2. Visual C++ Redistributable is installed\n"
+                f"  3. PYTHONPATH / working directory is correct",
+                exc_info=True,
+            )
+            self._porcupine_initialized = False
+            return False
         except Exception as e:
-            logger.error(f"[AudioEngine] Porcupine init failed: {e}")
+            logger.error(f"[AudioEngine] Porcupine init failed: {e}", exc_info=True)
             self._porcupine_initialized = False
             return False
 
@@ -454,32 +465,53 @@ class AudioEngine:
         - Porcupine wake word detection (lightweight, <1ms per frame)
         - Notifies registered frame listeners (used by VoiceCommandHandler for buffering)
         """
+        # One-time diagnostic: log every gate condition so we know WHY wake word
+        # isn't triggering.  Fires once per 300 frames (~10s) per condition.
+        if not hasattr(self, "_gate_diag_count"):
+            self._gate_diag_count = 0
+        self._gate_diag_count += 1
+        _diag = self._gate_diag_count % 300 == 1
+
         try:
-            # Wake word detection — gated on user toggle, Porcupine state, and TTS
-            if (
-                self._wake_word_enabled
-                and self._porcupine_initialized
-                and self._porcupine
-                and not self._tts_active
-            ):
-                # Convert float32 [-1,1] → int16 PCM for Porcupine.
-                # PERF: keep as numpy array — avoid .tolist() which allocates a Python
-                # int object per sample (512 objects × 31 frames/sec = ~16k allocs/sec).
-                # pvporcupine.process() accepts any sequence supporting the buffer protocol,
-                # including numpy int16 arrays.
-                pcm_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16)
-                frame_len = self._porcupine.frame_length
-                # Process in Porcupine-sized chunks (numpy slicing is O(1), zero-copy)
-                for i in range(0, len(pcm_int16) - frame_len + 1, frame_len):
-                    chunk = pcm_int16[i : i + frame_len]
-                    detected, word = self._porcupine.process_frame(chunk)
-                    if detected:
-                        logger.info(f"[AudioEngine] Wake word detected: '{word}'")
-                        if self._on_wake_word_detected:
-                            self._on_wake_word_detected(word)
+            if not self._wake_word_enabled:
+                if _diag:
+                    logger.info("[AudioEngine] ww-gate: wake_word_enabled=False")
+                return
+            if not self._porcupine_initialized:
+                if _diag:
+                    logger.warning(
+                        "[AudioEngine] ww-gate: porcupine_initialized=False. "
+                        "Wake word detection never started. Check PICOVOICE_ACCESS_KEY in .env.local."
+                    )
+                return
+            if not self._porcupine:
+                if _diag:
+                    logger.warning(
+                        "[AudioEngine] ww-gate: _porcupine is None. "
+                        "initialize_porcupine() succeeded but detector object is missing."
+                    )
+                return
+            if self._tts_active:
+                return  # normal — TTS gate (too noisy to log even periodically)
+
+            # Convert float32 [-1,1] → int16 PCM for Porcupine.
+            # PERF: keep as numpy array — avoid .tolist() which allocates a Python
+            # int object per sample (512 objects × 31 frames/sec = ~16k allocs/sec).
+            # pvporcupine.process() accepts any sequence supporting the buffer protocol,
+            # including numpy int16 arrays.
+            pcm_int16 = (np.clip(audio_frame, -1.0, 1.0) * 32767).astype(np.int16)
+            frame_len = self._porcupine.frame_length
+            # Process in Porcupine-sized chunks (numpy slicing is O(1), zero-copy)
+            for i in range(0, len(pcm_int16) - frame_len + 1, frame_len):
+                chunk = pcm_int16[i : i + frame_len]
+                detected, word = self._porcupine.process_frame(chunk)
+                if detected:
+                    logger.info(f"[AudioEngine] Wake word detected: '{word}'")
+                    if self._on_wake_word_detected:
+                        self._on_wake_word_detected(word)
 
         except Exception as e:
-            logger.error(f"[AudioEngine] Frame processing error: {e}")
+            logger.error(f"[AudioEngine] Frame processing error: {e}", exc_info=True)
 
     def _broadcast_threadsafe(self, message: dict):
         """

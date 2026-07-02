@@ -30,6 +30,19 @@ from backend.core.logging_config import setup_backend_logging
 
 logger = setup_backend_logging(log_level=os.environ.get("IRIS_LOG_LEVEL", "INFO"))
 
+# Ensure pvporcupine native DLLs are on PATH before any audio engine init.
+# Uvicorn may run from a different working directory than the venv, and
+# PorcupineWakeWordDetector needs the bundled libpv_porcupine.dll at runtime.
+_PV_DLL_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "venv", "Lib", "site-packages", "pvporcupine", "lib", "windows", "amd64"
+)
+if os.path.isdir(_PV_DLL_DIR):
+    os.environ["PATH"] = _PV_DLL_DIR + os.pathsep + os.environ.get("PATH", "")
+    logger.info(f"[main] Added pvporcupine native DLL dir to PATH: {_PV_DLL_DIR}")
+else:
+    logger.warning(f"[main] pvporcupine DLL dir not found: {_PV_DLL_DIR}")
+
 """
 IRIS FastAPI Backend Server (Session-Aware)
 Main application entry point with WebSocket endpoint and session management.
@@ -395,8 +408,13 @@ async def lifespan(app: FastAPI):
         # ==========================================================================
         logger.info("  - Initializing Porcupine...")
         try:
-            audio_engine.initialize_porcupine()  # reads phrase + sensitivity from WakeConfig
-            logger.info("    [+] [PORCUPINE] Initialized with wake word config")
+            if audio_engine.initialize_porcupine():  # reads phrase + sensitivity from WakeConfig
+                logger.info("    [+] [PORCUPINE] Initialized with wake word config")
+            else:
+                logger.error(
+                    "    [x] [PORCUPINE] Initialization FAILED — "
+                    "wake word detection disabled. Check PICOVOICE_ACCESS_KEY in .env.local."
+                )
         except Exception as e:
             logger.warning(
                 f"    [~] [PORCUPINE] Wake word init failed (non-fatal — voice activation disabled): {e}"
@@ -433,6 +451,14 @@ async def lifespan(app: FastAPI):
         total_elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(
             f"  - [AUDIO SUBSYSTEM] Initialization complete in {total_elapsed:.3f}s"
+        )
+        logger.info(
+            "  - [AUDIO DIAG] Wake word: %s | Pipeline: %s | Voice handler: %s | Whisper: %s | Parakeet: %s",
+            "READY" if audio_engine._porcupine_initialized else "DISABLED",
+            "RUNNING" if audio_engine._is_running else "STOPPED",
+            "WIRED" if voice_handler.is_recording is False else "RECORDING",
+            "PRE-WARMING" if voice_handler._whisper is None else "READY",
+            "PRE-WARMING" if not voice_handler._parakeet._loaded else "READY",
         )
         logger.debug(
             "  - Audio subsystem ready for wake word detection and voice processing"

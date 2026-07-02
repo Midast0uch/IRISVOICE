@@ -239,6 +239,9 @@ class VoiceCommandHandler:
         # Warm up the STT model immediately (background thread)
         self.warm_up()
 
+        # Pre-warm Parakeet GPU model in background so first transcription is instant
+        self._parakeet_warm_up()
+
     # -------------------------------------------------------------------------
     # Public API  (interface identical to the previous VoiceCommandHandler)
     # -------------------------------------------------------------------------
@@ -462,7 +465,7 @@ class VoiceCommandHandler:
             try:
                 _fw_model = self._get_whisper()
                 segments, _ = _fw_model.transcribe(
-                    audio_np, language="en", beam_size=1, vad_filter=True
+                    audio_np, language="en", beam_size=1, vad_filter=False
                 )
                 transcript = " ".join(s.text.strip() for s in segments).strip()
                 if transcript:
@@ -560,6 +563,38 @@ class VoiceCommandHandler:
             target=_do_warm_up, daemon=True, name="iris-stt-warmup"
         ).start()
 
+    def _parakeet_warm_up(self) -> None:
+        """
+        Pre-load the Parakeet GPU model in a background daemon thread so
+        the FIRST transcription has zero model-load latency (~10-30s cold
+        start avoided). During model load, the orb shows zero cadence
+        feedback because _capture_frame returns early when is_recording=False.
+        Pre-warming eliminates this dead window entirely.
+
+        Safe to call multiple times — subsequent calls are no-ops because
+        _ensure_loaded() returns True immediately if already loaded.
+        """
+        def _do_parakeet_warm():
+            try:
+                if self._parakeet._ensure_loaded():
+                    logger.info(
+                        "[VoiceCommand] Parakeet GPU pre-loaded — "
+                        "first transcription will be instant"
+                    )
+                else:
+                    logger.warning(
+                        "[VoiceCommand] Parakeet pre-load failed — "
+                        "will use whisper CPU fallback"
+                    )
+            except Exception as exc:
+                logger.warning(
+                    f"[VoiceCommand] Parakeet warm-up failed (non-fatal): {exc}"
+                )
+
+        threading.Thread(
+            target=_do_parakeet_warm, daemon=True, name="iris-parakeet-warmup"
+        ).start()
+
     # ------------------------------------------------------------------ #
     # Parakeet ASR path (primary, fall back to faster-whisper on failure)
     # ------------------------------------------------------------------ #
@@ -648,8 +683,30 @@ class VoiceCommandHandler:
 
             self._set_state(VoiceState.PROCESSING, "Transcribing...")
 
+            # ── Processing-phase orb breathing ─────────────────────────
+            # During transcription, is_recording=False so _capture_frame returns
+            # early and the orb gets zero audio_envelope messages. Without this,
+            # the orb appears dead during the 0.5-30s processing window (latency
+            # varies: whisper ~80ms, Parakeet cold start ~10-30s). Emit a subtle
+            # periodic pulse so the orb shows it's alive and working.
+            _proc_pulse_stop = threading.Event()
+            def _emit_proc_pulse():
+                while not _proc_pulse_stop.is_set():
+                    if hasattr(self, "_on_audio_envelope") and self._on_audio_envelope:
+                        try:
+                            self._on_audio_envelope(0.12, 0.06, "processing")
+                        except Exception:
+                            pass
+                    _proc_pulse_stop.wait(0.12)
+            _proc_pulse_thread = threading.Thread(
+                target=_emit_proc_pulse, daemon=True, name="iris-proc-pulse"
+            )
+            _proc_pulse_thread.start()
+
             # ── Primary path: Parakeet GPU ASR (in-process) ─────────────
             transcript = self._transcribe_via_parakeet(audio_np)
+
+            _proc_pulse_stop.set()  # stop the processing pulse
 
             # ── Fallback path: faster-whisper (CPU, tiny int8) ─────────────
             if not transcript:
@@ -661,14 +718,31 @@ class VoiceCommandHandler:
                     beam_size=1,  # 3x faster; negligible quality loss for conversational STT
                     best_of=1,  # deterministic, fastest path
                     condition_on_previous_text=False,  # prevents hallucination drift
-                    vad_filter=True,
-                    vad_parameters={"min_silence_duration_ms": 300},
+                    vad_filter=False,  # energy VAD already handled end-of-speech — whisper VAD strips too aggressively
                 )
                 transcript = " ".join(s.text.strip() for s in segments).strip()
+                # Whisper VAD (if enabled) can strip already-trimmed audio to zero
+                # segments for short utterances. Retry once with VAD explicitly off.
+                if not transcript:
+                    logger.warning("[STT] whisper returned empty — retrying without VAD filter")
+                    segments, _ = whisper.transcribe(
+                        audio_np,
+                        language="en",
+                        beam_size=1,
+                        best_of=1,
+                        condition_on_previous_text=False,
+                        vad_filter=False,
+                    )
+                    transcript = " ".join(s.text.strip() for s in segments).strip()
                 if transcript:
                     logger.info("[STT] whisper CPU — '%s'", transcript[:80])
                 else:
-                    logger.warning("[STT] whisper CPU returned empty text")
+                    logger.warning(
+                        "[STT] whisper CPU returned empty text. "
+                        "Check: (1) mic input level, (2) VAD_ENERGY_THRESHOLD "
+                        f"(currently {self.VAD_ENERGY_THRESHOLD}), "
+                        "(3) audio buffer has actual speech (not just silence)"
+                    )
 
             self._on_transcription_complete(transcript)
 
@@ -901,8 +975,12 @@ class VoiceCommandHandler:
         transcript = transcript.strip()
 
         if not transcript:
-            logger.info(
-                "[VoiceCommand] Empty transcript — returning empty result to gateway"
+            logger.warning(
+                "[VoiceCommand] Empty transcript dispatched to gateway — "
+                "agent will NOT be called (gateway skips empty transcripts). "
+                f"Buffer had {len(self._raw_frames)} frames. "
+                f"Check: (1) mic input level (VAD_ENERGY_THRESHOLD={self.VAD_ENERGY_THRESHOLD}), "
+                "(2) whisper vad_filter stripped speech, (3) audio buffer contains actual speech."
             )
             self._set_state(VoiceState.IDLE, "")
             if self._on_command_result:
