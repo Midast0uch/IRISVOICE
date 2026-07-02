@@ -425,6 +425,9 @@ class IRISGateway:
             elif msg_type == "get_audio_devices":
                 await self._handle_get_audio_devices(session_id, client_id)
 
+            elif msg_type == "select_audio_device":
+                await self._handle_select_audio_device(session_id, client_id, message)
+
             elif msg_type == "test_connection":
                 await self._handle_test_connection(session_id, client_id, message)
 
@@ -5261,6 +5264,70 @@ class IRISGateway:
             )
             await self._send_error(
                 client_id, f"Error retrieving audio devices: {str(e)}"
+            )
+
+    async def _handle_select_audio_device(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """
+        Handle select_audio_device message — switch input or output device at runtime.
+
+        Payload:
+            device_type  "input" | "output"
+            device_index  sounddevice device index (int)
+            device_name   human-readable name for logging
+        """
+        try:
+            payload = message.get("payload", {})
+            device_type = payload.get("device_type")
+            device_index = payload.get("device_index")
+            device_name = payload.get("device_name", f"index {device_index}")
+
+            if device_type not in ("input", "output"):
+                await self._send_error(client_id,
+                    "select_audio_device requires device_type: 'input' or 'output'")
+                return
+            if device_index is None:
+                await self._send_error(client_id,
+                    "select_audio_device requires device_index")
+                return
+
+            self._logger.info(
+                f"[Session: {session_id}] Switching {device_type} device to "
+                f"'{device_name}' (index {device_index})"
+            )
+
+            # Tell AudioEngine to restart the pipeline with the new device.
+            # update_config() handles stop → initialize → start atomically.
+            from .audio.engine import get_audio_engine
+            engine = get_audio_engine()
+            engine.update_config(**{f"{device_type}_device": device_index})
+
+            self._logger.info(
+                f"[Session: {session_id}] {device_type} device switched to "
+                f"'{device_name}' — pipeline restarted"
+            )
+
+            # Confirm to client
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "audio_device_selected",
+                "payload": {
+                    "device_type": device_type,
+                    "device_index": device_index,
+                    "name": device_name,
+                },
+            })
+
+            # Re-push the full device list so the UI shows the new active device
+            await self._handle_get_audio_devices(session_id, client_id)
+
+        except Exception as e:
+            self._logger.error(
+                f"[Session: {session_id}] Error handling select_audio_device: {e}",
+                exc_info=True,
+            )
+            await self._send_error(
+                client_id, f"Error switching audio device: {str(e)}"
             )
 
     async def _handle_select_wake_word(

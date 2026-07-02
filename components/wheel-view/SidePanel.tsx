@@ -57,6 +57,8 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   const [availableModels, setAvailableModels] = useState<(string | {label: string, value: string})[]>([])
   const [audioInputDevices, setAudioInputDevices] = useState<string[]>([])
   const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>([])
+  const [audioInputDeviceMap, setAudioInputDeviceMap] = useState<Record<string, number>>({})
+  const [audioOutputDeviceMap, setAudioOutputDeviceMap] = useState<Record<string, number>>({})
   const [wakeWords, setWakeWords] = useState<string[]>([])
 
   // Brand color context for theme panel
@@ -159,8 +161,14 @@ export const SidePanel: React.FC<SidePanelProps> = ({
         const outputDevices = event.detail.output_devices || []
         const inputOptions = inputDevices.map((d: any) => d.name || d.index)
         const outputOptions = outputDevices.map((d: any) => d.name || d.index)
+        const inputMap: Record<string, number> = {}
+        inputDevices.forEach((d: any) => { inputMap[d.name || d.index] = d.index })
+        const outputMap: Record<string, number> = {}
+        outputDevices.forEach((d: any) => { outputMap[d.name || d.index] = d.index })
         setAudioInputDevices(inputOptions)
         setAudioOutputDevices(outputOptions)
+        setAudioInputDeviceMap(inputMap)
+        setAudioOutputDeviceMap(outputMap)
       }
       
       window.addEventListener('iris:audio_devices', handleAudioDevices as EventListener)
@@ -346,7 +354,22 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               value={(fieldValue as string) ?? ""}
               options={fieldOptions}
               loadOptions={fieldLoadOptions}
-              onChange={(value) => onValueChange(field.id, value)}
+              onChange={(value) => {
+                onValueChange(field.id, value)
+                // If selecting an audio device, notify backend to hot-swap
+                if (card.id === 'microphone-card' && field.id === 'input_device') {
+                  const index = audioInputDeviceMap[value]
+                  if (index !== undefined) {
+                    sendMessage('select_audio_device', { device_type: 'input', device_index: index, device_name: value })
+                  }
+                }
+                if (card.id === 'speaker-card' && field.id === 'output_device') {
+                  const index = audioOutputDeviceMap[value]
+                  if (index !== undefined) {
+                    sendMessage('select_audio_device', { device_type: 'output', device_index: index, device_name: value })
+                  }
+                }
+              }}
               glowColor={glowColor}
             />
           )
@@ -440,6 +463,16 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                 <ChevronRight className="w-3 h-3 opacity-50" />
               </div>
             </button>
+          )
+
+        case "description":
+          return (
+            <p
+              key={field.id}
+              className="text-[9px] tracking-wide leading-relaxed opacity-60 mb-3"
+            >
+              {field.content}
+            </p>
           )
 
         default:

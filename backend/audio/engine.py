@@ -84,6 +84,11 @@ class AudioEngine:
         # dict lookup on every frame.
         self._wake_word_enabled: bool = True
 
+        # Audio device hot-plug polling — daemon thread checks list_devices()
+        # every 2s and broadcasts audio_devices_changed when indices change.
+        self._device_poll_stop: Optional[threading.Event] = None
+        self._device_poll_thread: Optional[threading.Thread] = None
+
         try:
             self._main_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -443,6 +448,17 @@ class AudioEngine:
             self.pipeline.set_barge_in_energy_callback(self._on_barge_in_energy)
             self._is_running = True
             self._set_state(VoiceState.IDLE)
+
+            # Start device hot-plug polling — daemon thread checks list_devices()
+            # every 2s and broadcasts when devices are plugged/unplugged.
+            if self._device_poll_stop is not None:
+                self._device_poll_stop.set()  # stop any previous poll thread
+            self._device_poll_stop = threading.Event()
+            self._device_poll_thread = threading.Thread(
+                target=self._poll_device_changes, daemon=True, name="iris-device-poll"
+            )
+            self._device_poll_thread.start()
+
             logger.info("[AudioEngine] Audio pipeline started")
             return True
 
@@ -453,6 +469,8 @@ class AudioEngine:
 
     def stop(self):
         """Stop the audio pipeline"""
+        if self._device_poll_stop is not None:
+            self._device_poll_stop.set()
         if self.pipeline:
             self.pipeline.stop()
         self._is_running = False
@@ -533,6 +551,36 @@ class AudioEngine:
             logger.debug(
                 f"[AudioEngine] (WS skip: no main loop ref) {message.get('type', 'unknown')}"
             )
+
+    def _poll_device_changes(self) -> None:
+        """Daemon thread — polls AudioPipeline.list_devices() every 2s.
+
+        When the set of device indices changes (USB/BT plug/unplug),
+        broadcasts audio_devices_changed to all connected clients.
+        The frontend responds by re-fetching the full device list.
+        """
+        last_inputs: set = set()
+        last_outputs: set = set()
+        while not self._device_poll_stop.wait(2.0):
+            try:
+                devices = AudioPipeline.list_devices()
+                inputs = {d["index"] for d in devices if d.get("input")}
+                outputs = {d["index"] for d in devices if d.get("output")}
+                if inputs != last_inputs or outputs != last_outputs:
+                    last_inputs, last_outputs = inputs, outputs
+                    logger.info(
+                        f"[AudioEngine] Audio device change detected — "
+                        f"inputs={len(inputs)} output={len(outputs)}"
+                    )
+                    self._broadcast_threadsafe({
+                        "type": "audio_devices_changed",
+                        "payload": {
+                            "input_count": len(inputs),
+                            "output_count": len(outputs),
+                        },
+                    })
+            except Exception:
+                pass  # PortAudio may be locked during stream restart — skip this poll
 
     def update_config(self, **kwargs):
         """Update engine configuration"""

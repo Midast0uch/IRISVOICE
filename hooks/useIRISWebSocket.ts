@@ -819,6 +819,21 @@ export function useIRISWebSocket(
         break
       }
 
+      case "audio_devices_changed": {
+        // A device was plugged or unplugged — re-fetch the full list
+        if (process.env.NODE_ENV !== "production") {
+          console.log(
+            "[IRIS WebSocket] Devices changed:",
+            payload.input_count,
+            "inputs,",
+            payload.output_count,
+            "outputs"
+          )
+        }
+        sendMessage("get_audio_devices", {})
+        break
+      }
+
       case "ping": {
         // Backend-initiated heartbeat ping — respond immediately to keep connection alive.
         // The backend's _heartbeat_loop in ws_manager.py sends a ping every 30s and
@@ -1306,6 +1321,17 @@ export function useIRISWebSocket(
     sendMessage("get_audio_devices", {})
   }, [sendMessage])
 
+  const selectAudioDevice = useCallback(
+    (deviceType: "input" | "output", deviceIndex: number, deviceName: string) => {
+      sendMessage("select_audio_device", {
+        device_type: deviceType,
+        device_index: deviceIndex,
+        device_name: deviceName,
+      })
+    },
+    [sendMessage]
+  )
+
   // Vision service methods
   const enableVision = useCallback(() => {
     sendMessage("enable_vision", {})
@@ -1372,6 +1398,7 @@ export function useIRISWebSocket(
     // Device actions
     getWakeWords,
     getAudioDevices,
+    selectAudioDevice,
     lastError,
     fieldErrors,
     clearFieldError,
