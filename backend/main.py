@@ -15,6 +15,16 @@ from typing import Optional, Any, Dict, Set
 # Add parent directory to path to allow absolute imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# ═══════════════════════════════════════════════════════════════════════
+# Load .env.local BEFORE any other imports so real API keys
+# (Picovoice, HuggingFace, etc.) are in os.environ before modules
+# that read them at import time (porcupine_detector, etc.).
+# .env is loaded second with override=False so local keys win.
+# ═══════════════════════════════════════════════════════════════════════
+from dotenv import load_dotenv
+load_dotenv(".env.local", override=True)
+load_dotenv()  # .env — placeholders, won't override existing real keys
+
 # Configure structured logging
 from backend.core.logging_config import setup_backend_logging
 

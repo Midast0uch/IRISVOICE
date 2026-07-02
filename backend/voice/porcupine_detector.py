@@ -14,8 +14,9 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-# Load environment variables
+# Load .env then .env.local (real keys override placeholders)
 load_dotenv()
+load_dotenv(dotenv_path=".env.local", override=True)
 
 # pvporcupine is imported lazily inside _initialize_porcupine() to avoid loading
 # the native Picovoice DLL at backend startup. This shaves ~200 ms off startup
