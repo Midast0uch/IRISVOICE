@@ -60,7 +60,7 @@ class TestParakeetTranscriberLoading:
 
     @patch("backend.audio.voice_command.ParakeetTranscriber._ensure_loaded")
     def test_transcribe_delegates_when_loaded(self, mock_ensure, parakeet):
-        """transcribe() calls model when loaded."""
+        """transcribe() calls model.generate() and decodes via tokenizer."""
         mock_ensure.return_value = True
         parakeet._model = MagicMock()
         parakeet._processor = MagicMock()
@@ -73,12 +73,14 @@ class TestParakeetTranscriberLoading:
         mock_inputs.attention_mask.cuda.return_value = MagicMock()
         parakeet._processor.return_value = mock_inputs
 
-        # Mock model return
-        mock_outputs = MagicMock()
-        parakeet._model.return_value = mock_outputs
+        # Mock model.generate() return (TDT models use generate(), not forward())
+        mock_generated = MagicMock()
+        # Make it iterable so generated_ids[0] works
+        mock_generated.__getitem__ = lambda self, i: MagicMock()
+        parakeet._model.generate.return_value = mock_generated
 
-        # Mock batch_decode
-        parakeet._processor.batch_decode.return_value = ["hello world"]
+        # Mock processor.tokenizer.decode() (new path uses tokenizer, not batch_decode)
+        parakeet._processor.tokenizer.decode.return_value = "hello world"
 
         audio = np.zeros(16000, dtype=np.float32)
         result = parakeet.transcribe(audio)

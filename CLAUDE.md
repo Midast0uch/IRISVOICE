@@ -140,7 +140,40 @@ Work claiming is atomic — two agents cannot take the same item.
 
 ---
 
+
+## _CTX GOVERNANCE
+
+Every tool response includes `_ctx`:
+
+| Field | Meaning | When to act |
+|-------|---------|-------------|
+| `gov` | OK / LOOP / RAPID / PIVOT / EXIT | PIVOT/EXIT -> compress immediately |
+| `bal` | Balance 0.5-2.5+ | >2.0 -> compress soon |
+| `fail` | Consecutive failures | >=2 -> check approach |
+| `ferr` | Last error type | e.g. "ImportError" |
+| `lock` | Pattern lock | Same error >=4x -> force compress |
+| `stuck` | Work assessment | Engine thinks you are stuck |
+
+**gov="PIVOT"**: Pattern lock - 4x same error, edits blocked. Call mcm_compress() to reset.
+
+## BREAKING OUT OF FAILURE SPIRALS
+
+1. Same error keeps repeating -> gov="PIVOT" at 4x
+2. mcm_compress() - saves failure state, clears lock
+3. mcm_recall("ErrorName") - see clustered failures with error types and files
+4. navigate(file) - check region_failures and failure_trails
+5. Do NOT edit the same file again - investigate the topology first
+
+## PRUNE TOOL (DIAGNOSTIC)
+
+prune(messages=[...]) returns tokens_before/after, real_percent, pruned_count, breakdown.
+Cannot shrink context (MCP limitation). Full originals saved by prune_id.
+Use to check pressure before compacting.
+
+---
+
 CONTEXT WINDOW MANAGEMENT
+
 
 At ~50k tokens used or when NBL pos 28 > 800:
   mcm_compress(active_task='what was just completed', active_files=['file1.py', 'file2.py'])
