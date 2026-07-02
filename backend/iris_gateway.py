@@ -2734,6 +2734,13 @@ class IRISGateway:
                 # Native path: producer pushes directly; just wait for it to finish
                 producer_thread.join()
 
+                # Detect zero-audio production (model was unavailable)
+                if _total_synth_samples[0] == 0:
+                    self._logger.error(
+                        "[TTS] _speak_response native: produced ZERO audio samples — "
+                        "TTS model returned no output. Check TTSManager error logs."
+                    )
+
                 # ── Cadence thread for native path ─────────────────────────
                 # The producer's _push_or_queue sends audio_envelope with actual
                 # RMS during synthesis (~10Hz), but stops when the producer thread
@@ -2893,9 +2900,14 @@ class IRISGateway:
 
                     _buffered_chunks.append(chunk)
 
-                # ── Skip playback if interrupted (barge-in) ────────────────
+                # ── Skip playback if interrupted (barge-in) or if TTS produced nothing ──
                 # Don't play buffered audio when the user already barged in.
-                if not interrupted.is_set() and _buffered_chunks:
+                if not _buffered_chunks:
+                    self._logger.error(
+                        "[TTS] _speak_response fallback: produced ZERO audio chunks — "
+                        "TTS model returned no output. Check TTSManager error logs."
+                    )
+                elif not interrupted.is_set():
                     if engine.pipeline:
                          # ── Cadence broadcasting during TTS ─────────────────
                             # The orb needs audio_envelope messages during playback
@@ -2961,65 +2973,63 @@ class IRISGateway:
                             )
                             cadence_thread.start()
 
-                        # ── Word-timing thread for fallback path ──────────────
-                        # Broadcast tts_word events with character-proportional
-                        # timing for sync'd word highlighting during playback.
-                        _word_thread = None
-                        if _all_words and approx_duration > 0.3:
-                            _word_count = len(_all_words)
-                            _total_chars = sum(len(w) for w in _all_words) or 1
-                            _word_timings = []
-                            _cumulative = 0.0
-                            for _w in _all_words:
-                                _cumulative += (len(_w) / _total_chars) * approx_duration
-                                _word_timings.append(_cumulative)
+                # ── Word-timing thread for fallback path ──────────────
+                # Broadcast tts_word events with character-proportional
+                # timing for sync'd word highlighting during playback.
+                _word_thread = None
+                if _all_words and approx_duration > 0.3:
+                    _word_count = len(_all_words)
+                    _total_chars = sum(len(w) for w in _all_words) or 1
+                    _word_timings = []
+                    _cumulative = 0.0
+                    for _w in _all_words:
+                        _cumulative += (len(_w) / _total_chars) * approx_duration
+                        _word_timings.append(_cumulative)
 
-                            def _broadcast_words():
-                                import asyncio as _asyncio2
-                                import time as _time2
-                                # Wait for audio device to start playing before firing
-                                # word events — eliminates hardcoded sleep guess.
-                                _playback_event.wait(timeout=2.0)
-                                _time2.sleep(0.03)  # tiny buffer for device latency
-                                _start = _time2.monotonic()
-                                for _i in range(_word_count):
-                                    _sleep = _word_timings[_i] - (_time2.monotonic() - _start)
-                                    if _sleep > 0:
-                                        _time2.sleep(_sleep)
-                                    try:
-                                        _asyncio2.run_coroutine_threadsafe(
-                                            self._ws_manager.send_to_client(
-                                                client_id,
-                                                {
-                                                    "type": "tts_word",
-                                                    "payload": {
-                                                        "word_index": _i,
-                                                        "total_words": _word_count,
-                                                        "is_final": _i == _word_count - 1,
-                                                    },
-                                                },
-                                            ),
-                                            self._main_loop,
-                                        )
-                                    except Exception:
-                                        pass
+                    def _broadcast_words():
+                        import asyncio as _asyncio2
+                        import time as _time2
+                        _playback_event.wait(timeout=2.0)
+                        _time2.sleep(0.03)
+                        _start = _time2.monotonic()
+                        for _i in range(_word_count):
+                            _sleep = _word_timings[_i] - (_time2.monotonic() - _start)
+                            if _sleep > 0:
+                                _time2.sleep(_sleep)
+                            try:
+                                _asyncio2.run_coroutine_threadsafe(
+                                    self._ws_manager.send_to_client(
+                                        client_id,
+                                        {
+                                            "type": "tts_word",
+                                            "payload": {
+                                                "word_index": _i,
+                                                "total_words": _word_count,
+                                                "is_final": _i == _word_count - 1,
+                                            },
+                                        },
+                                    ),
+                                    self._main_loop,
+                                )
+                            except Exception:
+                                pass
 
-                            _word_thread = threading.Thread(
-                                target=_broadcast_words,
-                                daemon=True,
-                                name="tts-words",
-                            )
-                            _word_thread.start()
+                    _word_thread = threading.Thread(
+                        target=_broadcast_words,
+                        daemon=True,
+                        name="tts-words",
+                    )
+                    _word_thread.start()
 
-                        engine.pipeline.play_stream(
-                            _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE,
-                            playback_started_event=_playback_event
-                        )
+                engine.pipeline.play_stream(
+                    _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE,
+                    playback_started_event=_playback_event
+                )
 
-                        if cadence_thread:
-                            cadence_thread.join(timeout=3)
-                        if _word_thread:
-                            _word_thread.join(timeout=3)
+                if cadence_thread:
+                    cadence_thread.join(timeout=3)
+                if _word_thread:
+                    _word_thread.join(timeout=3)
 
                 producer_thread.join(timeout=5)
         except Exception as e:
@@ -4609,53 +4619,70 @@ class IRISGateway:
                 self._logger.info(f"[Session: {session_id}] Diagnostics pushed to UI ({len(health_checks)} checks)")
 
             elif section_id == "logs":
-                # ── Read structured logs from LogManager ──────────────
+                # ── Read logs from actual log files on disk ────────────
                 import json
+                import os as _os
+                system_logs = []
+                error_logs = []
+
                 try:
-                    from backend.monitor.logs import get_log_manager
+                    from pathlib import Path as _Path
+                    log_dir = _Path(__file__).parent / "logs"
 
-                    log_mgr = get_log_manager()
+                    # Try the live structured log file first, then rotated backups
+                    log_files = sorted(
+                        log_dir.glob("irisvoice.log*"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    parsed = []
+                    for lf in log_files[:3]:  # up to 3 rotated files
+                        try:
+                            with open(lf, "r", encoding="utf-8", errors="replace") as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if not line:
+                                        continue
+                                    try:
+                                        entry = json.loads(line)
+                                        ts = entry.get("timestamp", "")
+                                        lvl = entry.get("level", "INFO").upper()
+                                        msg = entry.get("message", "")
+                                        mod = entry.get("module", "")
+                                        fn = entry.get("function", "")
+                                        source = mod.split(".")[0] if mod else "system"
+                                        parsed.append({
+                                            "timestamp": ts,
+                                            "level": lvl,
+                                            "source": source,
+                                            "message": f"[{fn}] {msg}" if fn else msg,
+                                        })
+                                    except json.JSONDecodeError:
+                                        # Plain text line — wrap as INFO
+                                        parsed.append({
+                                            "timestamp": "",
+                                            "level": "INFO",
+                                            "source": "system",
+                                            "message": line,
+                                        })
+                        except (OSError, PermissionError):
+                            continue
 
-                    # System logs (INFO + DEBUG)
-                    system_logs = log_mgr.get_logs(source="system", limit=50)
-                    # Also pull in voice/mcp/agent as system context
-                    for src in ("voice", "mcp", "agent"):
-                        system_logs.extend(log_mgr.get_logs(source=src, limit=15))
-                    system_logs.sort(key=lambda l: l.get("timestamp", ""), reverse=True)
-                    system_logs = system_logs[:50]
+                    # Sort newest first, take top 50 for system, top 40 for errors
+                    parsed.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+                    system_logs = parsed[:50]
+                    error_logs = [
+                        e for e in parsed
+                        if e["level"] in ("ERROR", "CRITICAL", "FATAL", "WARNING")
+                    ][:40]
 
-                    # Error / warning logs (across all sources)
-                    error_logs = []
-                    for src in ("system", "voice", "mcp", "agent"):
-                        error_logs.extend(log_mgr.get_logs(source=src, level="ERROR", limit=25))
-                        error_logs.extend(log_mgr.get_logs(source=src, level="WARNING", limit=15))
-                    error_logs.sort(key=lambda l: l.get("timestamp", ""), reverse=True)
-                    error_logs = error_logs[:40]
-
-                    # If LogManager is empty, fall back to reading the err file
-                    if not system_logs:
-                        from pathlib import Path
-                        project_dir = Path(__file__).parent.parent.resolve()
-                        err_file = project_dir / "backend_test.err"
-                        if err_file.exists():
-                            with open(err_file, "r", encoding="utf-8", errors="ignore") as f:
-                                tail = f.readlines()[-30:]
-                            for line in tail:
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                lvl = "ERROR" if any(k in line.upper() for k in ("ERROR", "EXCEPTION", "TRACEBACK", "FAILED")) else "INFO"
-                                system_logs.append({
-                                    "timestamp": "",
-                                    "level": lvl,
-                                    "source": "system",
-                                    "message": line,
-                                })
-                            if not error_logs:
-                                error_logs = [l for l in system_logs if l["level"] == "ERROR"]
-
-                except Exception as e:
-                    system_logs = [{"timestamp": "", "level": "ERROR", "source": "system", "message": f"LogManager unavailable: {e}"}]
+                except Exception as _le:
+                    system_logs = [{
+                        "timestamp": "",
+                        "level": "ERROR",
+                        "source": "system",
+                        "message": f"Log read failed: {_le}",
+                    }]
                     error_logs = []
 
                 await self._ws_manager.send_to_client(

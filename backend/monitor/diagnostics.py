@@ -223,7 +223,10 @@ class DiagnosticsManager:
         try:
             from ..agent.tts import get_tts_manager
             tts = get_tts_manager()
-            engine_name = tts.current_engine if hasattr(tts, "current_engine") else "unknown"
+            if tts.is_loaded():
+                engine_name = "Pocket TTS"
+            else:
+                engine_name = "Pocket TTS (unloaded)"
             return HealthCheck("tts_engine", "healthy", engine_name, (time.time() - start) * 1000)
         except Exception as e:
             return HealthCheck("tts_engine", "error", f"{type(e).__name__}: {str(e)[:60]}", (time.time() - start) * 1000)

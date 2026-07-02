@@ -228,6 +228,9 @@ class TTSManager:
         """Synthesize speech from text.
 
         Returns float32 array at OUTPUT_SAMPLE_RATE Hz, or None on failure.
+
+        On first call, dumps raw output to a timestamped .wav file in
+        data/tts_dumps/ for diagnostic comparison (good vs degraded paths).
         """
         if not self.config.get("tts_enabled", True):
             return None
@@ -235,8 +238,40 @@ class TTSManager:
             return None
         chunks = list(self.synthesize_stream(text))
         if chunks:
-            return np.concatenate(chunks)
+            audio = np.concatenate(chunks)
+            self._dump_raw_audio(audio, "tts_synthesize")
+            return audio
         return None
+
+    def _dump_raw_audio(self, audio: np.ndarray, label: str) -> None:
+        """Dump raw float32 audio to a .wav file for diagnostic comparison.
+
+        Only dumps on the first call per process.  File is written to
+        data/tts_dumps/ with a timestamped name.
+        """
+        if getattr(self, "_did_dump_audio", False):
+            return
+        self._did_dump_audio = True
+        try:
+            import time as _t
+            from pathlib import Path as _P
+
+            dump_dir = _P(__file__).parent.parent / "data" / "tts_dumps"
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            ts = _t.strftime("%Y%m%d_%H%M%S", _t.localtime())
+            path = dump_dir / f"{label}_{ts}.wav"
+            import scipy.io.wavfile as _wav
+
+            # Ensure float32, clip to [-1, 1], convert to int16 for WAV
+            audio_f32 = np.clip(audio.astype(np.float32), -1.0, 1.0)
+            audio_i16 = (audio_f32 * 32767.0).astype(np.int16)
+            _wav.write(str(path), OUTPUT_SAMPLE_RATE, audio_i16)
+            logger.info(
+                f"[TTSManager] Raw audio dump: {path} "
+                f"({len(audio_i16)} samples, {OUTPUT_SAMPLE_RATE} Hz, int16)"
+            )
+        except Exception as _dump_err:
+            logger.debug(f"[TTSManager] Audio dump skipped: {_dump_err}")
 
     # Silence durations for natural pacing (in seconds)
     _INTER_SENTENCE_SILENCE: float = 0.50  # 500ms pause between sentences
@@ -330,8 +365,11 @@ class TTSManager:
                 )
         else:
             _root_log.error(
-                "[TTSManager] Pocket-TTS unavailable. Run: pip install pocket-tts "
-                "and place TOMV2.wav at IRISVOICE/data/TOMV2.wav"
+                f"[TTSManager] Pocket-TTS unavailable — synthesis produced "
+                f"ZERO audio. loaded={loaded}, model={'OK' if pocket else 'None'}, "
+                f"voice={'OK' if voice else 'None'}, "
+                f"text_preview={text[:80]!r}. "
+                f"Check previous error logs for the reason."
             )
 
     # ------------------------------------------------------------------
@@ -388,14 +426,15 @@ class TTSManager:
             from pocket_tts import TTSModel
 
             t0 = time.monotonic()
-            # Pocket-TTS variant: original working code used "b6369a24".
-            # Commit e7b7df60 switched to "english" (Pocket-TTS v2 broke b6369a24).
-            # Then the API removed 'english' and added 'language' (which also broke).
-            # b6369a24 still exists in the current Pocket-TTS and produces
-            # the best quality output. The default/no-variant model is lower quality.
+            # Pocket-TTS v2.1.0 API: load_model accepts `language` (not `variant`).
+            # Available languages: english, english_2026-01, english_2026-04, french_24l, etc.
+            # Override via POCKET_TTS_LANGUAGE env var (default: "english").
+            # The eos_threshold=-1.0 forces clean EOS termination (default -4.0 hits
+            # max length with broken voice state, producing garbled tail).
+            model_lang = os.environ.get("POCKET_TTS_LANGUAGE", "english")
             self._pocket_tts_model = TTSModel.load_model(
-                variant=os.environ.get("POCKET_TTS_VARIANT", "b6369a24"),
-                eos_threshold=-1.0,  # force clean EOS termination (default -4.0 hits max length with broken voice state, producing garbled tail)
+                language=model_lang,
+                eos_threshold=-1.0,
             )
             dt = time.monotonic() - t0
             logger.info(f"[TTSManager] Pocket-TTS model loaded in {dt:.1f}s")
@@ -408,7 +447,10 @@ class TTSManager:
             self._pocket_tts_model = None
             return False
         except Exception as exc:
-            logger.warning(f"[TTSManager] Failed to load Pocket-TTS: {exc}")
+            logger.error(
+                f"[TTSManager] Failed to load Pocket-TTS: {exc}",
+                exc_info=True,
+            )
             self._pocket_tts_model = None
             return False
 
@@ -437,11 +479,16 @@ class TTSManager:
                 )
                 return True
             except Exception as exc:
-                logger.warning(f"[TTSManager] Failed to clone voice: {exc}")
+                logger.error(
+                    f"[TTSManager] Failed to clone voice '{voice_name}' from "
+                    f"{ref_path}: {exc}",
+                    exc_info=True,
+                )
 
-        logger.info(
-            "[TTSManager] Accept terms at https://huggingface.co/kyutai/pocket-tts "
-            "for voice cloning. Using first catalog voice."
+        logger.warning(
+            "[TTSManager] Voice cloning failed — falling back to catalog voice 'alba'. "
+            "Accept terms at https://huggingface.co/kyutai/pocket-tts "
+            "to enable voice cloning."
         )
         # Fallback to first catalog voice
         return self._load_catalog_voice(self.PREDEFINED_VOICES[0])
@@ -477,8 +524,9 @@ class TTSManager:
             )
             return True
         except Exception as exc:
-            logger.warning(
-                f"[TTSManager] Failed to load catalog voice '{voice_name}': {exc}"
+            logger.error(
+                f"[TTSManager] Failed to load catalog voice '{voice_name}': {exc}",
+                exc_info=True,
             )
             self._voice_state = None
             return False
@@ -491,7 +539,18 @@ class TTSManager:
     ) -> Generator[np.ndarray, None, None]:
         """Stream audio chunks from Pocket-TTS (true streaming inference)."""
         if model is None or voice_state is None:
+            logger.error(
+                f"[TTSManager] _stream_pocket called with model=None "
+                f"(model={'OK' if model else 'None'}, "
+                f"voice={'OK' if voice_state else 'None'})"
+            )
             return
+        self._dump_call_count = getattr(self, "_dump_call_count", 0) + 1
+        _should_dump = self._dump_call_count <= 1
+        _dump_chunks = []
+        _yielded = 0
+        _total_samples = 0
+        _t_start = time.monotonic()
         try:
             for chunk_tensor in model.generate_audio_stream(
                 voice_state,
@@ -501,13 +560,70 @@ class TTSManager:
                 audio = chunk_tensor.cpu().numpy().astype(np.float32)
                 if len(audio) == 0:
                     continue
+                # Clamp NaN/Inf values — these produce harsh digital noise when
+                # converted to int16 during playback. NaN/Inf indicates GPU memory
+                # corruption or torch state pollution from shared-process ASR.
+                n_nan = int(np.isnan(audio).sum())
+                n_inf = int(np.isinf(audio).sum())
+                if n_nan > 0 or n_inf > 0:
+                    logger.warning(
+                        f"[TTSManager] NaN/Inf detected in raw TTS output: "
+                        f"{n_nan} NaN, {n_inf} Inf — clamping to zero. "
+                        f"This may indicate GPU memory corruption from shared-process ASR."
+                    )
+                    audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+                # Accumulate for first-call diagnostic dump
+                if _should_dump:
+                    _dump_chunks.append(audio.copy())
                 # Skip near-silent lead-in chunks (Pocket-TTS warm-up artifacts).
                 # First ~3 chunks (240 ms) are ~60 dB below actual speech RMS.
                 if np.max(np.abs(audio)) < 0.01:
                     continue
+                _yielded += 1
+                _total_samples += len(audio)
                 yield audio
         except Exception as exc:
-            logger.warning(f"[TTSManager] Pocket-TTS stream failed: {exc}")
+            logger.error(
+                f"[TTSManager] Pocket-TTS stream failed: {exc}",
+                exc_info=True,
+            )
+        finally:
+            _t_elapsed = time.monotonic() - _t_start
+            if _yielded == 0:
+                logger.error(
+                    f"[TTSManager] _stream_pocket yielded ZERO audio chunks in "
+                    f"{_t_elapsed:.2f}s — TTS produced silence. "
+                    f"text={text[:60]!r}, model={'OK' if model else 'None'}"
+                )
+            else:
+                logger.info(
+                    f"[TTSManager] stream end: {_yielded} chunks, "
+                    f"{_total_samples} samples "
+                    f"({_total_samples/OUTPUT_SAMPLE_RATE:.1f}s audio) "
+                    f"in {_t_elapsed:.2f}s"
+                )
+            # Diagnostic dump: save first TTS call's raw output to .wav
+            if _should_dump and _dump_chunks:
+                try:
+                    import scipy.io.wavfile as _wav
+                    import time as _t
+                    from pathlib import Path as _P
+
+                    dump_dir = _P(__file__).parent.parent / "data" / "tts_dumps"
+                    dump_dir.mkdir(parents=True, exist_ok=True)
+                    ts = _t.strftime("%Y%m%d_%H%M%S", _t.localtime())
+                    path = dump_dir / f"tts_stream_{ts}.wav"
+                    full = np.concatenate(_dump_chunks)
+                    # Clip and convert to int16 for WAV
+                    full_i16 = (np.clip(full, -1.0, 1.0) * 32767.0).astype(np.int16)
+                    _wav.write(str(path), OUTPUT_SAMPLE_RATE, full_i16)
+                    logger.info(
+                        f"[TTSManager] Diagnotic dump: {path} "
+                        f"({len(full_i16)} samples, {OUTPUT_SAMPLE_RATE} Hz, "
+                        f"max={float(np.max(np.abs(full))):.4f})"
+                    )
+                except Exception as _de:
+                    logger.debug(f"[TTSManager] Diagnotic dump skipped: {_de}")
 
 
 def get_tts_manager() -> TTSManager:

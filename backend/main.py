@@ -1790,13 +1790,21 @@ async def _async_preload_tts(tts_manager) -> None:
     try:
         logger.info("[TTS] Starting Pocket-TTS pre-load...")
         t0 = time.monotonic()
-        # Calling _ensure_model or synthesizing dummy text triggers download
-        if hasattr(tts_manager, "_load_pocket_tts"):
-            tts_manager._load_pocket_tts()
+        success = tts_manager._load_pocket_tts()
         elapsed = time.monotonic() - t0
-        logger.info(f"[TTS] Pocket-TTS pre-loaded in {elapsed:.1f}s")
+        if success:
+            logger.info(f"[TTS] Pocket-TTS pre-loaded in {elapsed:.1f}s")
+        else:
+            logger.error(
+                f"[TTS] Pocket-TTS pre-load FAILED in {elapsed:.1f}s "
+                f"(model=None). TTS will produce silence. "
+                f"Check 'TTSManager' error logs above for the reason."
+            )
     except Exception as e:
-        logger.warning(f"[TTS] Pocket-TTS pre-load failed (will lazy-load): {e}")
+        logger.error(
+            f"[TTS] Pocket-TTS pre-load crashed: {e}",
+            exc_info=True,
+        )
 
 
 def _on_wake_word_sync(wake_word_name: str):
