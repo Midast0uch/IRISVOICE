@@ -395,6 +395,7 @@ class TTSManager:
             # the best quality output. The default/no-variant model is lower quality.
             self._pocket_tts_model = TTSModel.load_model(
                 variant=os.environ.get("POCKET_TTS_VARIANT", "b6369a24"),
+                eos_threshold=-1.0,  # force clean EOS termination (default -4.0 hits max length with broken voice state, producing garbled tail)
             )
             dt = time.monotonic() - t0
             logger.info(f"[TTSManager] Pocket-TTS model loaded in {dt:.1f}s")
