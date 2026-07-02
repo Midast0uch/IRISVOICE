@@ -495,8 +495,7 @@ class TTSManager:
             for chunk_tensor in model.generate_audio_stream(
                 voice_state,
                 text,
-                # frames_after_eos = None (default — stop at natural EOS)
-                # copy_state = True (default — shared state between chunks)
+                frames_after_eos=0,  # stop at EOS — no trailing frames (reduces static artifacts)
             ):
                 audio = chunk_tensor.cpu().numpy().astype(np.float32)
                 if len(audio) == 0:

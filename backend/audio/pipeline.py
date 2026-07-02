@@ -262,13 +262,9 @@ class AudioPipeline:
                     raise RuntimeError("Native player failed to open")
                 for i, audio_data in enumerate(audio_chunks):
                     audio_float = audio_data.astype(np.float32)
-                    # Apply fixed 2.5× gain (Pocket-TTS output is ~0.37 peak).
-                    # Clip to [-0.99, 0.99] to prevent wrap-around — do NOT use
-                    # per-chunk peak normalization (amplifies silence to static).
-                    # Do NOT use tanh or other non-linear shaping — tanh distorts
-                    # the waveform shape, adding harmonic distortion that sounds
-                    # like static/buzzing. Hard clip is clean for audio.
-                    audio_float = np.clip(audio_float * 2.5, -0.99, 0.99)
+                    # Apply 5.0× gain (Pocket-TTS voice-cloned output is quiet).
+                    # Clip to [-0.99, 0.99] to prevent wrap-around.
+                    audio_float = np.clip(audio_float * 5.0, -0.99, 0.99)
                     self._native_player.push_chunk(audio_float)
                     if i == 0 and playback_started_event is not None:
                         playback_started_event.set()
@@ -280,10 +276,10 @@ class AudioPipeline:
                     f"[AudioPipeline] Native stream failed ({_native_err}), falling back"
                 )
 
-        # Fallback: concatenate all chunks, apply same 2.5× gain + clip
+        # Fallback: concatenate all chunks, apply same 5.0× gain + clip
         # as the native path for consistent volume across both paths.
         all_audio = np.concatenate(list(audio_chunks))
-        audio_float = np.clip(all_audio.astype(np.float32) * 2.5, -0.99, 0.99)
+        audio_float = np.clip(all_audio.astype(np.float32) * 5.0, -0.99, 0.99)
         duration_ms = int(len(audio_float) / sr * 1000)
         # Signal before blocking play — sd.play starts the audio stream
         # synchronously; the driver handles buffering.
