@@ -74,10 +74,14 @@ class AudioEngine:
 
         # Energy-based barge-in state (used when _tts_active is True).
         # Counter of consecutive frames above BARGE_IN_ENERGY_THRESHOLD; reset
-        # to 0 on any frame below threshold.  At ~31 Hz frame rate, 15 frames
-        # ≈ 500 ms of sustained loud speech before barge-in fires.
+        # to 0 on any frame below threshold.  At ~31 Hz frame rate, 25 frames
+        # ≈ 800 ms of sustained loud speech before barge-in fires.
         self._barge_in_frame_count: int = 0
         self._on_barge_in_detected: Optional[Callable[[], None]] = None
+        # Arming delay — barge-in detection is suppressed for the first
+        # BARGE_IN_ARM_DELAY seconds after TTS starts, preventing the mic
+        # from picking up the start of IRIS's own speech and self-triggering.
+        self._barge_in_arm_time: float = 0.0
 
         # Mirrors WakeConfig.wake_word_enabled — updated by reinitialize_porcupine().
         # Checked in the 31 Hz audio callback; kept as a plain bool to avoid a
@@ -306,6 +310,10 @@ class AudioEngine:
         captures IRIS's own TTS and feeds it back into STT.
         """
         self._tts_active = active
+        if active:
+            import time as _time
+            self._barge_in_arm_time = _time.monotonic()
+            self._barge_in_frame_count = 0
         if self.pipeline is not None:
             try:
                 self.pipeline.set_tts_active(active)
@@ -335,8 +343,9 @@ class AudioEngine:
 
     # ── Energy-based barge-in ──────────────────────────────────────────────
     # Constants tuned for 512-frame chunks at 16 kHz (~31 Hz callback rate).
-    BARGE_IN_ENERGY_THRESHOLD: float = 0.02     # RMS level to trigger barge-in
-    BARGE_IN_CONSECUTIVE_FRAMES: int = 15       # ~500 ms sustained speech
+    BARGE_IN_ENERGY_THRESHOLD: float = 0.06     # RMS level to trigger barge-in
+    BARGE_IN_CONSECUTIVE_FRAMES: int = 25       # ~800 ms sustained speech
+    BARGE_IN_ARM_DELAY: float = 0.8             # seconds after TTS starts before barge-in is armed
 
     def _on_barge_in_energy(self, rms: float) -> None:
         """Called from PortAudio input thread ~31 Hz with frame RMS during TTS.
@@ -344,7 +353,15 @@ class AudioEngine:
         Counts consecutive frames above BARGE_IN_ENERGY_THRESHOLD.  When the
         counter reaches BARGE_IN_CONSECUTIVE_FRAMES, fires the barge-in callback
         registered by the gateway to stop TTS and start a new recording.
+
+        Barge-in is suppressed for BARGE_IN_ARM_DELAY seconds after TTS starts
+        to prevent the mic from picking up IRIS's own speech and self-triggering.
         """
+        # Suppress barge-in during the arm delay window
+        import time as _time
+        if _time.monotonic() - self._barge_in_arm_time < self.BARGE_IN_ARM_DELAY:
+            return
+
         if rms >= self.BARGE_IN_ENERGY_THRESHOLD:
             self._barge_in_frame_count += 1
             if (

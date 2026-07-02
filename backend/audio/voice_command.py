@@ -113,8 +113,8 @@ class ParakeetTranscriber:
                 return_tensors="pt",
             )
 
-            # Move to GPU
-            input_values = inputs.input_values.cuda()
+            # Move to GPU — processor returns input_features (not input_values)
+            input_features = inputs.input_features.cuda()
             attention_mask = (
                 inputs.attention_mask.cuda() if hasattr(inputs, "attention_mask") else None
             )
@@ -122,15 +122,15 @@ class ParakeetTranscriber:
             # Inference — Parakeet TDT uses generate() not direct forward()
             with torch.no_grad():
                 # TDT model expects generate() to handle the decoding properly
-                # Direct forward() returns logits that need special CTC handling
-                generated_ids = self._model.generate(
-                    input_values=input_values,
+                # generate() returns ParakeetRNNTGenerateOutput with .sequences
+                output = self._model.generate(
+                    input_features=input_features,
                     attention_mask=attention_mask,
                     max_new_tokens=256,
                 )
+                generated_ids = output.sequences if hasattr(output, "sequences") else output
 
-            # Decode using the processor's tokenizer (not batch_decode — that
-            # expects a different output shape for TDT models)
+            # Decode using the processor's tokenizer
             if hasattr(self._processor, "tokenizer"):
                 text = self._processor.tokenizer.decode(
                     generated_ids[0], skip_special_tokens=True

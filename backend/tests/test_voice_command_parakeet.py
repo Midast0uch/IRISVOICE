@@ -65,19 +65,20 @@ class TestParakeetTranscriberLoading:
         parakeet._model = MagicMock()
         parakeet._processor = MagicMock()
 
-        # Mock processor return
+        # Mock processor return — Parakeet processor outputs input_features
         mock_inputs = MagicMock()
-        mock_inputs.input_values = MagicMock()
-        mock_inputs.input_values.cuda.return_value = MagicMock()
+        mock_inputs.input_features = MagicMock()
+        mock_inputs.input_features.cuda.return_value = MagicMock()
         mock_inputs.attention_mask = MagicMock()
         mock_inputs.attention_mask.cuda.return_value = MagicMock()
         parakeet._processor.return_value = mock_inputs
 
         # Mock model.generate() return (TDT models use generate(), not forward())
-        mock_generated = MagicMock()
-        # Make it iterable so generated_ids[0] works
-        mock_generated.__getitem__ = lambda self, i: MagicMock()
-        parakeet._model.generate.return_value = mock_generated
+        # generate() returns ParakeetRNNTGenerateOutput with .sequences
+        mock_output = MagicMock()
+        mock_output.sequences = MagicMock()
+        mock_output.sequences.__getitem__ = lambda self, i: MagicMock()
+        parakeet._model.generate.return_value = mock_output
 
         # Mock processor.tokenizer.decode() (new path uses tokenizer, not batch_decode)
         parakeet._processor.tokenizer.decode.return_value = "hello world"

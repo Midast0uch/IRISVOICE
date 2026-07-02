@@ -2905,6 +2905,7 @@ class IRISGateway:
 
                 # ── Skip playback if interrupted (barge-in) or if TTS produced nothing ──
                 # Don't play buffered audio when the user already barged in.
+                approx_duration = 0.0
                 if not _buffered_chunks:
                     self._logger.error(
                         "[TTS] _speak_response fallback: produced ZERO audio chunks — "

@@ -41,21 +41,23 @@ class TestBargeInDetection:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = True
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.02
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.06
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 25
+        eng.BARGE_IN_ARM_DELAY = 0.8
+        eng._barge_in_arm_time = 0.0  # pre-armed (no delay)
         eng._logger = MagicMock()
         return eng
 
     def test_quiet_frame_resets_counter(self, engine):
         """A frame below threshold resets the consecutive counter to 0."""
         engine._barge_in_frame_count = 10
-        engine._on_barge_in_energy(0.01)  # below 0.02 threshold
+        engine._on_barge_in_energy(0.03)  # below 0.06 threshold
         assert engine._barge_in_frame_count == 0
 
     def test_loud_frame_increments_counter(self, engine):
         """A frame above threshold increments the consecutive counter."""
         engine._barge_in_frame_count = 0
-        engine._on_barge_in_energy(0.03)  # above 0.02 threshold
+        engine._on_barge_in_energy(0.08)  # above 0.06 threshold
         assert engine._barge_in_frame_count == 1
 
     def test_barge_in_fires_at_threshold(self, engine):
@@ -66,8 +68,8 @@ class TestBargeInDetection:
             fired["count"] += 1
 
         engine._on_barge_in_detected = callback
-        engine._barge_in_frame_count = 14  # one below threshold
-        engine._on_barge_in_energy(0.03)  # this should fire (14+1=15)
+        engine._barge_in_frame_count = 24  # one below threshold
+        engine._on_barge_in_energy(0.08)  # this should fire (24+1=25)
         assert fired["count"] == 1
         assert engine._barge_in_frame_count == 0  # reset after fire
 
@@ -79,10 +81,10 @@ class TestBargeInDetection:
             fired["count"] += 1
 
         engine._on_barge_in_detected = callback
-        # 14 loud frames, then 1 quiet frame (resets)
-        for _ in range(14):
-            engine._on_barge_in_energy(0.03)
-        engine._on_barge_in_energy(0.01)  # quiet — resets
+        # 24 loud frames, then 1 quiet frame (resets)
+        for _ in range(24):
+            engine._on_barge_in_energy(0.08)
+        engine._on_barge_in_energy(0.03)  # quiet — resets
         assert fired["count"] == 0
         assert engine._barge_in_frame_count == 0
 
@@ -95,7 +97,7 @@ class TestBargeInDetection:
 
         engine._on_barge_in_detected = callback
         for _ in range(engine.BARGE_IN_CONSECUTIVE_FRAMES):
-            engine._on_barge_in_energy(0.03)
+            engine._on_barge_in_energy(0.08)
         assert fired["count"] == 1
 
     def test_barge_in_exception_does_not_crash(self, engine):
@@ -106,8 +108,41 @@ class TestBargeInDetection:
         engine._on_barge_in_detected = callback
         engine._barge_in_frame_count = engine.BARGE_IN_CONSECUTIVE_FRAMES - 1
         # Should not raise
-        engine._on_barge_in_energy(0.03)
+        engine._on_barge_in_energy(0.08)
         assert engine._barge_in_frame_count == 0  # reset even on error
+
+    def test_arm_delay_suppresses_barge_in(self, engine):
+        """Barge-in is suppressed during the arm delay window after TTS starts."""
+        import time
+        fired = {"count": 0}
+
+        def callback():
+            fired["count"] += 1
+
+        engine._on_barge_in_detected = callback
+        # Set arm time to now — barge-in should be suppressed for 0.8s
+        engine._barge_in_arm_time = time.monotonic()
+
+        # Send 25 loud frames — should NOT fire because arm delay hasn't expired
+        for _ in range(25):
+            engine._on_barge_in_energy(0.08)
+        assert fired["count"] == 0
+
+    def test_arm_delay_expires_and_allows_barge_in(self, engine):
+        """After arm delay expires, barge-in fires normally."""
+        import time
+        fired = {"count": 0}
+
+        def callback():
+            fired["count"] += 1
+
+        engine._on_barge_in_detected = callback
+        # Set arm time to the past (1 second ago) — delay has expired
+        engine._barge_in_arm_time = time.monotonic() - 1.0
+
+        for _ in range(25):
+            engine._on_barge_in_energy(0.08)
+        assert fired["count"] == 1
 
 
 # =========================================================================
@@ -495,8 +530,10 @@ class TestMultipleBargeIns:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = True
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.02
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.06
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 25
+        eng.BARGE_IN_ARM_DELAY = 0.8
+        eng._barge_in_arm_time = 0.0
         eng._logger = MagicMock()
 
         fire_count = {"count": 0}
@@ -510,7 +547,7 @@ class TestMultipleBargeIns:
 
         # Cycle 1: barge-in fires
         for _ in range(eng.BARGE_IN_CONSECUTIVE_FRAMES):
-            eng._on_barge_in_energy(0.03)
+            eng._on_barge_in_energy(0.08)
         assert fire_count["count"] == 1
 
         # Simulate restart: TTS starts again
@@ -519,14 +556,14 @@ class TestMultipleBargeIns:
 
         # Cycle 2: barge-in fires again
         for _ in range(eng.BARGE_IN_CONSECUTIVE_FRAMES):
-            eng._on_barge_in_energy(0.03)
+            eng._on_barge_in_energy(0.08)
         assert fire_count["count"] == 2
 
         # Cycle 3
         eng._tts_active = True
         eng._barge_in_frame_count = 0
         for _ in range(eng.BARGE_IN_CONSECUTIVE_FRAMES):
-            eng._on_barge_in_energy(0.03)
+            eng._on_barge_in_energy(0.08)
         assert fire_count["count"] == 3
 
 
@@ -546,8 +583,10 @@ class TestHalfDuplexGate:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = True
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.02
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.06
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 25
+        eng.BARGE_IN_ARM_DELAY = 0.8
+        eng._barge_in_arm_time = 0.0
         eng._logger = MagicMock()
         eng.set_tts_active = MagicMock()
         eng.interrupt_speech = MagicMock()
@@ -561,7 +600,7 @@ class TestHalfDuplexGate:
 
         # Trigger barge-in
         for _ in range(eng.BARGE_IN_CONSECUTIVE_FRAMES):
-            eng._on_barge_in_energy(0.03)
+            eng._on_barge_in_energy(0.08)
 
         eng.set_tts_active.assert_called_with(False)
         eng.interrupt_speech.assert_called_once()
@@ -574,8 +613,10 @@ class TestHalfDuplexGate:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = False
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.02
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.06
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 25
+        eng.BARGE_IN_ARM_DELAY = 0.8
+        eng._barge_in_arm_time = 0.0
         eng._logger = MagicMock()
         eng.pipeline = MagicMock()
         eng.pipeline.start = MagicMock()
@@ -629,8 +670,10 @@ class TestEnergyFlowIntegration:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = True
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.02
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.06
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 25
+        eng.BARGE_IN_ARM_DELAY = 0.8
+        eng._barge_in_arm_time = 0.0
         eng._logger = MagicMock()
 
         # Register the engine's energy handler on the pipeline
@@ -645,7 +688,7 @@ class TestEnergyFlowIntegration:
         eng._on_barge_in_detected = barge_cb
 
         # Simulate loud frames arriving through the pipeline gate
-        loud_frame = (np.random.randn(512).astype(np.float32) * 0.03)
+        loud_frame = (np.random.randn(512).astype(np.float32) * 0.08)
 
         for i in range(eng.BARGE_IN_CONSECUTIVE_FRAMES):
             if pipe._tts_active and pipe.echo_cancellation:
@@ -753,12 +796,12 @@ class TestConstants:
         )
 
     def test_consecutive_frames_reasonable(self):
-        """BARGE_IN_CONSECUTIVE_FRAMES should give ~500ms at 31Hz callback rate."""
+        """BARGE_IN_CONSECUTIVE_FRAMES should give ~800ms at 31Hz callback rate."""
         from backend.audio.engine import AudioEngine
 
         frames = AudioEngine.BARGE_IN_CONSECUTIVE_FRAMES
-        # At 31Hz (512 frames at 16000 Hz), 15 frames ≈ 483ms
+        # At 31Hz (512 frames at 16000 Hz), 25 frames ≈ 806ms
         duration_ms = (frames / 31.0) * 1000
-        assert 300 <= duration_ms <= 800, (
-            f"Barge duration {duration_ms:.0f}ms outside expected range (300-800ms)"
+        assert 600 <= duration_ms <= 1200, (
+            f"Barge duration {duration_ms:.0f}ms outside expected range (600-1200ms)"
         )
