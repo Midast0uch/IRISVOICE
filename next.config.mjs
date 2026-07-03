@@ -15,8 +15,8 @@ const nextConfig = {
     // Current Tailscale IP (stable while tailnet is unchanged)
     '100.117.236.6',
     // Any Tailscale IP (100.x.x.x) or MagicDNS hostname (*.ts.net)
-    /^100\.\d+\.\d+\.\d+$/,
-    /\.ts\.net$/,
+    // NOTE: Next.js 16 only accepts strings in allowedDevOrigins, not regex.
+    // Add specific Tailscale IPs here as needed.
   ],
 
   // Backend lives on :8090; let the browser reach it through the same origin
@@ -26,7 +26,7 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8090/api/:path*',
+        destination: `http://localhost:${process.env.IRIS_BACKEND_PORT || 8090}/api/:path*`,
       },
     ];
   },
@@ -78,18 +78,10 @@ const nextConfig = {
     return config;
   },
 
-  // Turbopack configuration (used by default in Next.js 16 dev).
-  //
-  // NOTE: Turbopack is completely disabled because its PostCSS pipeline
-  // (evaluate_webpack_loader) has a hardcoded reference to app/globals.css
-  // that always triggers CSS processing. Even with an empty file, the
-  // sandboxed loader process times out, causing an infinite retry loop
-  // that balloons memory to 12+ GB (uncapped by --max-old-space-size=512).
-  // Webpack handles the same CSS file in < 1 second with no memory issue.
-  //
-  // History: see docs/OPTIMIZATION_LOG.md — June 2026.
-  // See also app/layout.tsx note at top.
-  turbo: false,
+  // Turbopack is the default dev bundler in Next.js 16.
+  // To disable it (e.g. for CSS issues), pass --no-turbopack to the CLI:
+  //   npx next dev --port 3000 --no-turbopack
+  // The "turbo" config key was removed in Next.js 16.
   experimental: {
     // Next 16.2.1+ has a memory regression in Turbopack's server-side fast
     // refresh path that compounds with route navigation; dev server can grow
