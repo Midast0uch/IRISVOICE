@@ -2098,6 +2098,8 @@ class IRISGateway:
                     _sttproc_data, _sttproc_sr = _sf_s.read(_path, dtype="float32")
                     if _sttproc_data.ndim > 1:
                         _sttproc_data = _sttproc_data.mean(axis=1)
+                    # 3x gain: STTPROC.wav is −27.4 dBFS, target ~−17.9 dBFS
+                    _sttproc_data = _np_s.clip(_sttproc_data * 3.0, -0.99, 0.99)
                     if _sttproc_sr != 24000:
                         _ratio = 24000 / _sttproc_sr
                         _len = int(len(_sttproc_data) * _ratio)
@@ -2136,6 +2138,38 @@ class IRISGateway:
             )
             _sttproc_thread.start()
 
+            # ── Filler phrases: pre-synthesized short speech during LLM gap ──
+            _filler_stop = threading.Event()
+            try:
+                from .agent.tts import TTSManager as _TTSFiller
+                _tts_filler = _TTSFiller()
+                _filler_data = _tts_filler.get_filler_audio()
+            except Exception:
+                _filler_data = None
+
+            def _loop_filler():
+                """Play random filler phrases while LLM thinks. Stops on first TTS chunk."""
+                if _filler_data is None:
+                    return
+                try:
+                    import sounddevice as _sd_f
+                    _filler_audio, _filler_sr = _filler_data
+                    from .audio.engine import get_audio_engine as _getae_f
+                    _eng_f = _getae_f()
+                    _filler_dev = _eng_f.pipeline.output_device if (_eng_f.pipeline and _eng_f.pipeline.output_device is not None) else None
+                    # Wait 0.5s before first filler (STTPROC is playing)
+                    _filler_stop.wait(0.5)
+                    while not _filler_stop.is_set():
+                        _sd_f.play(_filler_audio, _filler_sr, device=_filler_dev, blocking=True)
+                        _filler_stop.wait(0.3)  # gap between fillers
+                except Exception as _fl_err:
+                    pass  # silent — fillers are cosmetic
+
+            _filler_thread = threading.Thread(
+                target=_loop_filler, daemon=True, name="filler-loop"
+            )
+            _filler_thread.start()
+
             # ── Streaming TTS: sentence queue shared between LLM and playback ─
             import re as _re
 
@@ -2167,7 +2201,8 @@ class IRISGateway:
                         1 if chunk.strip() else 0
                     )
                     text = "".join(sentence_buf)
-                    if m := _re.search(r"([.!?])\s+", text):
+                    if m := _re.search(r"([.!?;,:])\s+|(?<=.{40})", text):
+                        # Flush on hard stops (. ! ?) or soft pauses (; , :) or 40+ chars
                         complete = text[: m.end()]
                         sentence_queue.put(complete)
                         remainder = text[m.end() :]
@@ -2653,6 +2688,11 @@ class IRISGateway:
                             if is_first_chunk:
                                 is_first_chunk = False
                                 _target = NORMAL_CHUNK_THRESHOLD
+                                # Stop STTPROC + filler on first TTS audio chunk
+                                if _sttproc_stop is not None:
+                                    _sttproc_stop.set()
+                                if _filler_stop is not None:
+                                    _filler_stop.set()
                                 # Broadcast "speaking" on first audio chunk
                                 if (
                                     not _speaking_broadcasted
@@ -2721,10 +2761,8 @@ class IRISGateway:
         # Clear any stale _speech_interrupted flag from a previous
         # voice-command interruption so the next auto-relisten isn't skipped.
         engine._speech_interrupted = False
-        # Signal that TTS playback is about to begin — the "processing" loop
-        # sound (STTPROC.wav) stops here, not at _wrap_tts_streaming start.
-        if _sttproc_stop is not None:
-            _sttproc_stop.set()
+        # Note: STTPROC.wav stop moved into producer thread — stops on first
+        # TTS audio chunk to avoid the "talking into silence" gap.
         engine.set_tts_active(True)
 
         try:

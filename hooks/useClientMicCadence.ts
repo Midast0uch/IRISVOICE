@@ -35,6 +35,7 @@ export function useClientMicCadence(active: boolean): number {
   const energyHistoryRef = useRef<number[]>(new Array(64).fill(0))
   const cooldownRef = useRef(0)
   const cadenceEnvRef = useRef(0)
+  const lastStateUpdateRef = useRef(0)  // throttle state updates to ~5 Hz
 
   useEffect(() => {
     activeRef.current = active
@@ -100,6 +101,7 @@ export function useClientMicCadence(active: boolean): number {
         energyHistoryRef.current = new Array(64).fill(0)
         cooldownRef.current = 0
         cadenceEnvRef.current = 0
+        lastStateUpdateRef.current = 0
 
         // 5. Start analysis loop
         const bufLen = analyser.frequencyBinCount
@@ -147,7 +149,14 @@ export function useClientMicCadence(active: boolean): number {
 
           const val = cadenceEnvRef.current
           cadenceRef.current = val
-          setCadence(val)
+          // Throttle React state updates to ~5 Hz (200ms) — ref is updated
+          // every frame (60fps) for the canvas, but state only needs to be
+          // fresh enough for the priority chain in useCadenceDetection.
+          const now = performance.now()
+          if (now - lastStateUpdateRef.current >= 200) {
+            lastStateUpdateRef.current = now
+            setCadence(val)
+          }
 
           rafRef.current = requestAnimationFrame(analyse)
         }

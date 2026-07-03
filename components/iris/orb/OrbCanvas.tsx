@@ -71,7 +71,7 @@ export interface OrbCanvasProps {
  * - Faint contained breath halo — Mode D cadence bloom stays inside orb
  * - Animation mode effects (bloom, scale ramp, speed ramp) when animActive
  */
-export function OrbCanvas({
+export const OrbCanvas = React.memo(function OrbCanvas({
   glowColor,
   breathMode = "D",
   breathLevel = 0,
@@ -393,4 +393,4 @@ export function OrbCanvas({
       }}
     />
   )
-}
+})

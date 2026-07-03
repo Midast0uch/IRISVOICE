@@ -171,6 +171,7 @@ class TTSManager:
         # Engine instance (lazy-loaded)
         self._pocket_tts_model = None  # Pocket-TTS model instance
         self._voice_state = None  # cached voice embedding from TOMV2.wav
+        self._filler_cache: Dict[str, tuple] = {}  # phrase → (audio_array, sample_rate)
         self._lock = threading.Lock()  # guards init only, NOT inference
 
         TTSManager._initialized = True
@@ -448,6 +449,12 @@ class TTSManager:
             dt = time.monotonic() - t0
             logger.info(f"[TTSManager] Pocket-TTS model loaded in {dt:.1f}s")
             self._load_voice_state()
+            # Pre-synthesize filler phrases (async-friendly, runs once)
+            threading.Thread(
+                target=self._pre_synthesize_fillers,
+                daemon=True,
+                name="tts-fillers",
+            ).start()
             return True
         except ImportError:
             logger.error(
@@ -501,6 +508,78 @@ class TTSManager:
         )
         # Fallback to first catalog voice
         return self._load_catalog_voice(self.PREDEFINED_VOICES[0])
+
+    # ------------------------------------------------------------------
+    # Filler phrase pre-synthesis
+    # ------------------------------------------------------------------
+
+    FILLER_PHRASES = [
+        "One moment.",
+        "Let me check that for you.",
+        "Hmm, let me think.",
+        "Give me a second.",
+        "Looking into it.",
+    ]
+
+    def _pre_synthesize_fillers(self) -> None:
+        """Pre-synthesize short filler phrases to .wav cache + in-memory arrays.
+
+        Called once after voice state is loaded.  These are played alongside
+        STTPROC during the LLM thinking gap so the user hears speech instead
+        of silence.
+        """
+        if self._pocket_tts_model is None or self._voice_state is None:
+            return
+
+        fillers_dir = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "data", "fillers",
+        )
+        os.makedirs(fillers_dir, exist_ok=True)
+
+        for phrase in self.FILLER_PHRASES:
+            # Check if already cached
+            safe_name = phrase.lower().replace(" ", "_").replace(".", "").replace(",", "")
+            wav_path = os.path.join(fillers_dir, f"{safe_name}.wav")
+            if os.path.isfile(wav_path):
+                # Load from cache
+                try:
+                    import soundfile as _sf_f
+                    data, sr = _sf_f.read(wav_path, dtype="float32")
+                    if data.ndim > 1:
+                        data = data.mean(axis=1)
+                    self._filler_cache[phrase] = (data, sr)
+                    continue
+                except Exception:
+                    pass  # Re-synthesize if cache is corrupt
+
+            # Synthesize
+            try:
+                import soundfile as _sf_f
+                audio_chunks = []
+                for chunk in self._pocket_tts_model.generate_audio_stream(
+                    text=phrase,
+                    voice_state=self._voice_state,
+                    language="english",
+                ):
+                    if chunk is not None and len(chunk) > 0:
+                        audio_chunks.append(chunk)
+                if audio_chunks:
+                    import numpy as _np_f
+                    audio = _np_f.concatenate(audio_chunks)
+                    _sf_f.write(wav_path, audio, 24000)
+                    self._filler_cache[phrase] = (audio, 24000)
+                    logger.info(f"[TTSManager] Pre-synthesized filler: {phrase!r}")
+            except Exception as exc:
+                logger.warning(f"[TTSManager] Filler synthesis failed for {phrase!r}: {exc}")
+
+    def get_filler_audio(self) -> Optional[tuple]:
+        """Return a random pre-synthesized filler phrase audio + sample rate."""
+        if not self._filler_cache:
+            return None
+        import random as _rand
+        phrase = _rand.choice(list(self._filler_cache.keys()))
+        return self._filler_cache[phrase]
 
     def _load_catalog_voice(self, voice_name: str) -> bool:
         """Download a Pocket-TTS catalog voice embedding and convert to state dict."""
