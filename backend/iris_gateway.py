@@ -2138,38 +2138,6 @@ class IRISGateway:
             )
             _sttproc_thread.start()
 
-            # ── Filler phrases: pre-synthesized short speech during LLM gap ──
-            _filler_stop = threading.Event()
-            try:
-                from .agent.tts import TTSManager as _TTSFiller
-                _tts_filler = _TTSFiller()
-                _filler_data = _tts_filler.get_filler_audio()
-            except Exception:
-                _filler_data = None
-
-            def _loop_filler():
-                """Play random filler phrases while LLM thinks. Stops on first TTS chunk."""
-                if _filler_data is None:
-                    return
-                try:
-                    import sounddevice as _sd_f
-                    _filler_audio, _filler_sr = _filler_data
-                    from .audio.engine import get_audio_engine as _getae_f
-                    _eng_f = _getae_f()
-                    _filler_dev = _eng_f.pipeline.output_device if (_eng_f.pipeline and _eng_f.pipeline.output_device is not None) else None
-                    # Wait 0.5s before first filler (STTPROC is playing)
-                    _filler_stop.wait(0.5)
-                    while not _filler_stop.is_set():
-                        _sd_f.play(_filler_audio, _filler_sr, device=_filler_dev, blocking=True)
-                        _filler_stop.wait(0.3)  # gap between fillers
-                except Exception as _fl_err:
-                    pass  # silent — fillers are cosmetic
-
-            _filler_thread = threading.Thread(
-                target=_loop_filler, daemon=True, name="filler-loop"
-            )
-            _filler_thread.start()
-
             # ── Streaming TTS: sentence queue shared between LLM and playback ─
             import re as _re
 
@@ -2688,11 +2656,9 @@ class IRISGateway:
                             if is_first_chunk:
                                 is_first_chunk = False
                                 _target = NORMAL_CHUNK_THRESHOLD
-                                # Stop STTPROC + filler on first TTS audio chunk
+                                # Stop STTPROC on first TTS audio chunk
                                 if _sttproc_stop is not None:
                                     _sttproc_stop.set()
-                                if _filler_stop is not None:
-                                    _filler_stop.set()
                                 # Broadcast "speaking" on first audio chunk
                                 if (
                                     not _speaking_broadcasted
