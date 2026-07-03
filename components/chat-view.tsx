@@ -274,7 +274,7 @@ export function ChatWing({
   // localTyping: set optimistically when sending a message; cleared when the
   // WS/REST acknowledges (chat_typing:true arrives) or after timeout.
   const [localTyping, setLocalTyping] = useState(false)
-  const isTyping = isChatTyping || voiceState === "processing_tool" || localTyping
+  const isTyping = isChatTyping || voiceState === "processing_conversation" || voiceState === "processing_tool" || localTyping
 
   // Clear optimistic localTyping when WS/REST acknowledges the message
   useEffect(() => {
@@ -408,11 +408,23 @@ export function ChatWing({
       }
       if (!isUserVoice) {
         setCurrentTtsMessageId(newMessage.id)
-        setIsSpeaking(true)
+        // Don't set isSpeaking here — wait for iris:tts_started so word
+        // highlighting stays in sync with actual audio playback.
       }
     }
     window.addEventListener('iris:text_response', handleTextResponse)
     return () => window.removeEventListener('iris:text_response', handleTextResponse)
+  }, [])
+
+  // Handle tts_started: backend signals first TTS audio chunk has been pushed
+  // to the player. This is where we actually start word highlighting, keeping
+  // it in sync with audio playback instead of starting it when text arrives.
+  useEffect(() => {
+    function handleTtsStarted() {
+      setIsSpeaking(true)
+    }
+    window.addEventListener('iris:tts_started', handleTtsStarted)
+    return () => window.removeEventListener('iris:tts_started', handleTtsStarted)
   }, [])
   
   // Handle Parakeet ASR final transcription (iris:voice_final).
@@ -543,6 +555,9 @@ export function ChatWing({
   // FALLBACK: 200 ms interval simulation when no tts_word events arrive
   // within a 1-second window of speaking starting.
   //
+  // isSpeaking is set by iris:tts_started (not text_response), so the
+  // highlighting starts when audio actually plays, not when text arrives.
+  //
   // PERF: word index lives in ttsWordIndex state — a single number — so each
   // tick does NOT remap all conversations or trigger a localStorage write.
   // messages is NOT in deps; we snapshot the words array into a closure when
@@ -558,6 +573,7 @@ export function ChatWing({
     const words = message.words; // stable snapshot
     setTtsWordIndex(0);
     let wordIndex = 0;
+    let fallbackActive = true;
 
     // ── Backend tts_word event listener ──────────────────────────────────
     // When the backend emits word indices through the IRIS gateway, use them
@@ -577,8 +593,13 @@ export function ChatWing({
     function onTtsWord(e: Event) {
       const detail = (e as CustomEvent<{ word_index: number; total_words?: number; is_final: boolean }>).detail;
       if (!detail || typeof detail.word_index !== 'number') return;
-      gotBackendEvent = true;
-      clearTimeout(ttlId);
+      if (!gotBackendEvent) {
+        // First backend event — stop the fallback so they don't double-count
+        gotBackendEvent = true;
+        fallbackActive = false;
+        clearTimeout(ttlId);
+        clearInterval(interval);
+      }
 
       wordIndex = detail.word_index;
       setTtsWordIndex(wordIndex);
@@ -586,7 +607,6 @@ export function ChatWing({
       if (detail.is_final) {
         setIsSpeaking(false);
         setTtsWordIndex(-1);
-        clearInterval(interval);
         window.removeEventListener('iris:tts_word', onTtsWord);
       }
     }
@@ -594,6 +614,7 @@ export function ChatWing({
 
     // ── Fallback interval ─────────────────────────────────────────────────
     const interval = setInterval(() => {
+      if (!fallbackActive) return;
       wordIndex++;
       if (wordIndex >= words.length) {
         setIsSpeaking(false);
@@ -1937,11 +1958,7 @@ ${message.text}`;
                                 IRIS
                               </span>
                               {isSpeaking && message.id === currentTtsMessageId && (
-                                <span className="text-[8px] text-white/40 flex items-center gap-0.5">
-                                  <span className="w-0.5 h-0.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '0ms' }} />
-                                  <span className="w-0.5 h-0.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '150ms' }} />
-                                  <span className="w-0.5 h-0.5 rounded-full bg-current animate-bounce" style={{ animationDelay: '300ms' }} />
-                                </span>
+                                <Xur size={14} color={glowColor} speed={1.5} />
                               )}
                               <span className="text-[8px] text-white/30 tabular-nums ml-auto">
                                 {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}

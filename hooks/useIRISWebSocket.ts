@@ -590,6 +590,15 @@ export function useIRISWebSocket(
         break
       }
 
+      case "tts_started": {
+        // Backend signals first TTS audio chunk has been pushed to the player.
+        // Frontend uses this to sync word highlighting with actual audio.
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:tts_started'))
+        }
+        break
+      }
+
       case "chat_typing": {
         // Typing indicator for text_message flow — does NOT affect voiceState/IrisOrb
         setIsChatTyping(payload.active === true)

@@ -2126,9 +2126,15 @@ class IRISGateway:
                     import sounddevice as _sd2
                     _loop_count = 0
                     self._logger.info("[STTPROC] Loop starting...")
-                    while not _sttproc_stop.is_set():
+                    while True:
                         _loop_count += 1
                         _sd2.play(_sttproc_data, _sttproc_sr, device=_sttproc_dev, blocking=True)
+                        # Check AFTER playback — ensures current iteration finishes
+                        # and gives TTS a moment to start before we go silent.
+                        if _sttproc_stop.is_set():
+                            # Play one more short overlap to avoid dead silence gap
+                            _sttproc_stop.wait(0.3)
+                            break
                     self._logger.info(f"[STTPROC] Loop ended ({_loop_count} iterations)")
                 except Exception as _stt_err:
                     self._logger.warning(f"[STTPROC] Playback error: {_stt_err}")
@@ -2677,6 +2683,15 @@ class IRISGateway:
                                                     "type": "listening_state",
                                                     "payload": {"state": "speaking"},
                                                 },
+                                            ),
+                                            self._main_loop,
+                                        )
+                                        # Dedicated tts_started event so the frontend
+                                        # can sync word highlighting with actual audio.
+                                        _asyncio.run_coroutine_threadsafe(
+                                            self._ws_manager.broadcast_to_session(
+                                                session_id,
+                                                {"type": "tts_started"},
                                             ),
                                             self._main_loop,
                                         )

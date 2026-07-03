@@ -22,24 +22,15 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           options: [],
           defaultValue: ''
         },
-        {
-          id: 'input_volume',
-          type: 'slider',
-          label: 'Input Volume',
-          min: 0,
-          max: 100,
-          unit: '%',
-          defaultValue: 75
-        },
-    {
-      id: 'context_window',
-      label: 'Context Window (K tokens)',
-      type: 'slider',
-      defaultValue: 10,
-      min: 1,
-      max: 128,
-      unit: 'K',
-    },
+         {
+           id: 'input_volume',
+           type: 'slider',
+           label: 'Input Volume',
+           min: 0,
+           max: 100,
+           unit: '%',
+           defaultValue: 75
+         },
         {
           id: 'vad',
           type: 'toggle',
@@ -511,14 +502,6 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           type: 'toggle',
           label: 'Memory Enabled',
           defaultValue: true
-        },
-        {
-          id: 'context_window',
-          type: 'slider',
-          label: 'Context Window',
-          min: 5,
-          max: 50,
-          defaultValue: 10
         },
         {
           id: 'memory_persistence',
