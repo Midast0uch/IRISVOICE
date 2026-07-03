@@ -131,7 +131,82 @@ The user sees the agent "freeze" during tool execution with no indication of wha
 
 ---
 
-## 6. Root Cause Analysis
+## 6. ConversationKernel/TaskKernel Separation (Deferred)
+
+> **Status**: Designed. Not yet implemented.
+> **Source**: `docs/plans/timing-sync-pipeline-overlap.md` — Phase 2
+> **Depends on**: Phase 1 (timing/sync) verified working
+> **Relates to**: Gap 1 (agentic tool-call loop), Gap 4 (frontend tool progress)
+
+### Problem
+
+LLM output currently flows through a single path — `iris_gateway.py` chunk_callback sends everything to TTS. Tool calls, planning steps, and conversation text all compete for the same channel. This creates two problems:
+
+1. **TTS says tool-call content** — the agent reads JSON tool arguments aloud instead of executing them silently
+2. **No UI distinction** — user can't tell if the agent is "thinking" vs "executing tool X" vs "reporting results"
+
+### Proposed Architecture
+
+```
+Agent LLM Output
+    ├── ConversationKernel (speech channel)
+    │   ├── Emits utterance events → TTS subscribes
+    │   ├── Caducean-governed turn-taking (EXPAND = speak, COMPRESS = listen)
+    │   ├── Filler phrase selection during processing
+    │   └── Status phrases during long tasks
+    │
+    └── TaskKernel (action/reasoning channel)
+        ├── Emits tool-call events → UI subscribes
+        ├── Planning steps → UI shows in dashboard
+        ├── Tool execution → UI shows progress
+        └── No audio output (never reaches TTS)
+```
+
+### Current State
+
+- `ConversationKernel` exists (`backend/agent/conversation_kernel.py`) as a thin Caducean wrapper — TTS chunk sizing, barge-in nudge
+- No `TaskKernel` exists
+- No event bus — `chunk_callback` in `iris_gateway.py` (line 2195) directly appends to `sentence_buf`
+- All LLM output goes to TTS regardless of type
+
+### Implementation Files (When Ready)
+
+| File | Change |
+|------|--------|
+| `backend/agent/event_bus.py` | **New** — IRISStreamEvent + EventBus class |
+| `backend/agent/conversation_kernel.py` | Extend with utterance emission, filter speech from task content |
+| `backend/agent/task_kernel.py` | **New** — Tool-call events, planning steps, progress |
+| `backend/iris_gateway.py` | Route LLM output through kernel separation |
+| `backend/agent/tts.py` | Subscribe to utterance events only (no tool calls) |
+
+### Caducean Integration
+
+The Caducean Engine governs the phase:
+- **EXPAND (u → +1)**: ConversationKernel active — agent speaks, reports results
+- **COMPRESS (u → -1)**: TaskKernel active — agent works, executes tools
+- **Phase transition**: When TaskKernel completes a step, ConversationKernel emits a status phrase
+
+Maps to existing `on_voice_state` in `conversation_kernel.py`:
+- `RECORDING → COMPRESS` (user speaking, agent listens)
+- `IDLE → EXPAND` (user finished, agent responds)
+- `PROCESSING → COMPRESS` (agent thinking/working, TaskKernel active)
+- `SUCCESS → EXPAND` (TTS playing, ConversationKernel active)
+
+### Why This Matters for the Gap Analysis
+
+| Existing Gap | How Kernel Separation Helps |
+|-------------|---------------------------|
+| Gap 1: No agentic tool-call loop | TaskKernel provides the event structure for tool-call/result cycle |
+| Gap 4: No tool progress UI | TaskKernel emits events the frontend can subscribe to |
+| Gap 5: Streaming gap during tool calls | TaskKernel handles tool execution channel, ConversationKernel stays silent |
+
+### Deferral Reason
+
+Phase 1 (timing/sync fixes) must be verified in live testing first. Kernel separation is an architecture change that touches the core LLM→TTS pipeline. Better to confirm Phase 1 works before restructuring.
+
+---
+
+## 7. Root Cause Analysis
 
 | Gap | Root Cause | Severity |
 |-----|-----------|----------|
@@ -145,7 +220,7 @@ The user sees the agent "freeze" during tool execution with no indication of wha
 
 ---
 
-## 7. What Would Need to Change
+## 8. What Would Need to Change
 
 ### For True Multi-Step Long-Horizon Tasks
 
@@ -185,7 +260,7 @@ The user sees the agent "freeze" during tool execution with no indication of wha
 
 ---
 
-## 8. Dependency Map
+## 9. Dependency Map
 
 ```
 Domain 17 (Self-Coding Agent)
@@ -202,11 +277,17 @@ Long-horizon tasks (any domain)
   ├── Requires: Agentic tool-call loop
   ├── Requires: Permission system (interactive approval)
   └── Requires: Progress reporting (user sees what's happening)
+
+Kernel Separation (Phase 2 of timing plan)
+  ├── Depends on: Phase 1 (timing/sync) verified working
+  ├── Enables: TaskKernel events for tool-call/result cycle
+  ├── Enables: Frontend subscribes to tool progress events
+  └── Enables: TTS only receives speech (not tool calls)
 ```
 
 ---
 
-## 9. Recommended Priority Order
+## 10. Recommended Priority Order
 
 | # | Change | Effort | Impact |
 |---|--------|--------|--------|
@@ -220,7 +301,7 @@ Long-horizon tasks (any domain)
 
 ---
 
-## 10. Files Referenced
+## 11. Files Referenced
 
 | File | Relevant Lines | What's There |
 |------|---------------|--------------|

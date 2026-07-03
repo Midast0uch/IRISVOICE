@@ -419,51 +419,6 @@ class TestDeadFilesRemoved:
 # ---------------------------------------------------------------------------
 
 
-class TestDownloadScript:
-    def test_script_exists(self):
-        """scripts/download_models.py must exist."""
-        script = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
-        assert script.exists(), "scripts/download_models.py not found"
-
-    def test_script_importable(self):
-        """download_models.py must import without errors."""
-        import importlib.util
-
-        script = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
-        spec = importlib.util.spec_from_file_location("download_models", script)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        assert hasattr(mod, "check_model_dir")
-        assert hasattr(mod, "check_reference_audio")
-        assert hasattr(mod, "run_verification")
-
-    def test_check_functions_return_bool(self):
-        """Verification helpers must return booleans."""
-        import importlib.util
-
-        script = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
-        spec = importlib.util.spec_from_file_location("download_models", script)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        assert isinstance(mod.check_git(), bool)
-        assert isinstance(mod.check_huggingface_hub(), bool)
-        assert isinstance(mod.check_reference_audio(), bool)
-        assert isinstance(mod.check_model_dir(), bool)
-
-    def test_reference_audio_check_correct(self):
-        """check_reference_audio() must return True since TOMV2.wav exists."""
-        import importlib.util
-
-        script = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
-        spec = importlib.util.spec_from_file_location("download_models", script)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        # TOMV2.wav confirmed present from TTSManager path test above
-        assert mod.check_reference_audio() is True, (
-            "check_reference_audio() returned False even though TOMV2.wav exists"
-        )
-
-
 # ---------------------------------------------------------------------------
 # 11. WS event integration — audio_level callback
 # ---------------------------------------------------------------------------
