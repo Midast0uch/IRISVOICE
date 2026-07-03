@@ -413,7 +413,6 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             icon="Database",
             fields=[
                 InputField(id="memory_enabled", type=FieldType.TOGGLE, label="Memory Enabled", value=True),
-                InputField(id="context_window", type=FieldType.SLIDER, label="Context Window", min=5, max=50, value=10),
                 InputField(id="memory_persistence", type=FieldType.TOGGLE, label="Save Conversations", value=True),
             ]
         ),
