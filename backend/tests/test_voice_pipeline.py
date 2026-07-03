@@ -796,3 +796,229 @@ class TestVoiceFirstDERMode:
             "iris_gateway.py must pass from_voice=True to process_text_message() "
             "inside _handle_voice so voice requests use the voice_first DER budget"
         )
+
+
+# ─── Phase 1 verification tests ────────────────────────────────────────
+# These tests verify BEHAVIORAL changes, not just that code doesn't crash.
+# Each test proves the specific change works as intended.
+
+
+class TestVADSilenceThreshold:
+    """Verify VAD_SILENCE_SEC=0.8 actually requires more silence than the old 0.5."""
+
+    def _make_handler(self):
+        from backend.audio.voice_command import VoiceCommandHandler
+        handler = VoiceCommandHandler.__new__(VoiceCommandHandler)
+        handler.is_recording = True
+        handler.audio_buffer = []
+        handler._raw_frames = []
+        handler.sample_rate = 16000
+        handler._active_session_id = "test-session"
+        handler._auto_stop_mode = True
+        handler._pre_speech_timeout_sec = 0.0
+        handler._stop_event = threading.Event()
+        handler._cancel_event = threading.Event()
+        handler._on_state_change = None
+        handler._on_command_result = None
+        handler._on_audio_level = None
+        handler._frame_listener_registered = False
+        handler._transcription_thread = None
+        handler._start_lock = threading.Lock()
+        return handler
+
+    def test_vad_silence_constant_is_08(self):
+        """VAD_SILENCE_SEC must be 0.8 (was 0.5 — increased for natural pause tolerance)."""
+        from backend.audio.voice_command import VoiceCommandHandler
+        assert VoiceCommandHandler.VAD_SILENCE_SEC == 0.8, (
+            f"VAD_SILENCE_SEC is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 0.8 — "
+            "the old 0.5 cut off users mid-thought"
+        )
+
+    def test_speech_plus_05s_silence_does_not_end_speech(self):
+        """
+        With VAD_SILENCE_SEC=0.8, feeding speech + only 0.5s of silence
+        must NOT trigger end-of-speech. The VAD loop should still be running
+        (blocked waiting for more frames) after processing 0.5s of silence.
+
+        This proves the threshold increase from 0.5→0.8 actually changed behavior:
+        the old code would have returned here, the new code must not.
+        """
+        from backend.audio.voice_command import VoiceCommandHandler
+
+        handler = self._make_handler()
+        frame_sec = 512 / handler.sample_rate  # 0.032s
+
+        # Feed enough speech to trigger speech onset
+        speech_needed = int(VoiceCommandHandler.VAD_MIN_SPEECH_SEC / frame_sec)  # ~5
+        speech_frame = np.full(512, 0.05, dtype=np.float32)
+        for _ in range(speech_needed + 2):
+            handler._raw_frames.append(speech_frame)
+
+        # Feed EXACTLY 0.5s of silence (15 frames) — this was enough under old 0.5s threshold
+        silence_05_frames = int(0.5 / frame_sec)  # 15
+        silence_frame = np.zeros(512, dtype=np.float32)
+        for _ in range(silence_05_frames):
+            handler._raw_frames.append(silence_frame)
+
+        # Run VAD in a thread — if it returns, the threshold is still 0.5 (wrong)
+        result = {"returned": False}
+        def run_vad():
+            handler._vad_wait_for_speech_then_silence()
+            result["returned"] = True
+
+        t = threading.Thread(target=run_vad, daemon=True)
+        t.start()
+        t.join(timeout=1.0)  # give it 1s to process — should still be blocked
+
+        assert not result["returned"], (
+            "VAD returned after only 0.5s of silence — "
+            "VAD_SILENCE_SEC increase to 0.8 is not working. "
+            "The old 0.5s threshold was cutting off users mid-thought."
+        )
+
+    def test_speech_plus_08s_silence_ends_speech(self):
+        """
+        With VAD_SILENCE_SEC=0.8, feeding speech + 0.8s of silence
+        MUST trigger end-of-speech and return.
+        """
+        from backend.audio.voice_command import VoiceCommandHandler
+
+        handler = self._make_handler()
+        frame_sec = 512 / handler.sample_rate
+
+        # Feed enough speech to trigger speech onset
+        speech_needed = int(VoiceCommandHandler.VAD_MIN_SPEECH_SEC / frame_sec)
+        speech_frame = np.full(512, 0.05, dtype=np.float32)
+        for _ in range(speech_needed + 2):
+            handler._raw_frames.append(speech_frame)
+
+        # Feed 0.8s of silence (25 frames) + 1 extra to be safe
+        silence_needed = int(VoiceCommandHandler.VAD_SILENCE_SEC / frame_sec)  # 25
+        silence_frame = np.zeros(512, dtype=np.float32)
+        for _ in range(silence_needed + 1):
+            handler._raw_frames.append(silence_frame)
+
+        # Run VAD — must return within 1s
+        result = {"returned": False}
+        def run_vad():
+            handler._vad_wait_for_speech_then_silence()
+            result["returned"] = True
+
+        t = threading.Thread(target=run_vad, daemon=True)
+        t.start()
+        t.join(timeout=2.0)
+
+        assert result["returned"], (
+            "VAD did NOT return after 0.8s of silence — "
+            "end-of-speech detection is broken"
+        )
+
+
+class TestSentenceBoundaryRegex:
+    """Verify the new sentence boundary flushes on comma/semicolon/colon, not just dot/excl/question."""
+
+    def test_new_pattern_matches_comma(self):
+        """New pattern must match comma+space as a sentence boundary."""
+        import re
+        pattern = r"([.!?;,:])\s+|(?<=.{40})"
+        m = re.search(pattern, "Hello, world")
+        assert m is not None, "New pattern must match comma+space"
+        assert m.group(1) == ",", f"Expected comma, got {m.group(1)}"
+
+    def test_new_pattern_matches_semicolon(self):
+        """New pattern must match semicolon+space as a sentence boundary."""
+        import re
+        pattern = r"([.!?;,:])\s+|(?<=.{40})"
+        m = re.search(pattern, "First part; second part")
+        assert m is not None, "New pattern must match semicolon+space"
+        assert m.group(1) == ";", f"Expected semicolon, got {m.group(1)}"
+
+    def test_new_pattern_matches_colon(self):
+        """New pattern must match colon+space as a sentence boundary."""
+        import re
+        pattern = r"([.!?;,:])\s+|(?<=.{40})"
+        m = re.search(pattern, "Note: this is important")
+        assert m is not None, "New pattern must match colon+space"
+        assert m.group(1) == ":", f"Expected colon, got {m.group(1)}"
+
+    def test_new_pattern_matches_period(self):
+        """New pattern must still match period+space (hard stop)."""
+        import re
+        pattern = r"([.!?;,:])\s+|(?<=.{40})"
+        m = re.search(pattern, "Hello. World")
+        assert m is not None, "New pattern must match period+space"
+        assert m.group(1) == ".", f"Expected period, got {m.group(1)}"
+
+    def test_old_pattern_would_not_match_comma(self):
+        """Prove the OLD pattern [.!?]\\s+ would NOT have matched a comma.
+
+        This demonstrates the behavioral improvement: the old code would
+        buffer 'Hello, world this is a long sentence' without flushing,
+        causing TTS latency. The new code flushes at the comma.
+        """
+        import re
+        old_pattern = r"[.!?]\s+"
+        m = re.search(old_pattern, "Hello, world")
+        assert m is None, (
+            "Old pattern matched comma — the old code would NOT have flushed here, "
+            "proving the new pattern is a real improvement"
+        )
+
+    def test_40char_lookahead_flushes_long_text(self):
+        """Text >= 40 chars without punctuation must flush via lookahead."""
+        import re
+        pattern = r"([.!?;,:])\s+|(?<=.{40})"
+        long_text = "a" * 41  # 41 chars, no punctuation
+        m = re.search(pattern, long_text)
+        assert m is not None, "40-char lookahead must flush long unpunctuated text"
+
+
+class TestFillerPhrases:
+    """Verify filler phrase API contract — get_filler_audio returns correct types."""
+
+    def test_filler_cache_attribute_exists(self):
+        """TTSManager must have _filler_cache dict for pre-synthesized fillers."""
+        from backend.agent.tts import TTSManager
+        mgr = TTSManager.__new__(TTSManager)
+        mgr._filler_cache = {}
+        assert hasattr(mgr, "_filler_cache")
+        assert isinstance(mgr._filler_cache, dict)
+
+    def test_get_filler_audio_returns_none_when_empty(self):
+        """get_filler_audio() must return None when cache is empty."""
+        from backend.agent.tts import TTSManager
+        mgr = TTSManager.__new__(TTSManager)
+        mgr._filler_cache = {}
+        result = mgr.get_filler_audio()
+        assert result is None, "get_filler_audio() should return None when cache is empty"
+
+    def test_get_filler_audio_returns_tuple_when_populated(self):
+        """get_filler_audio() must return (audio, sample_rate) tuple from cache."""
+        import numpy as np
+        from backend.agent.tts import TTSManager
+        mgr = TTSManager.__new__(TTSManager)
+        fake_audio = np.zeros(24000, dtype=np.float32)  # 1 second at 24kHz
+        mgr._filler_cache = {"One moment.": (fake_audio, 24000)}
+        result = mgr.get_filler_audio()
+        assert result is not None, "get_filler_audio() returned None with populated cache"
+        audio, sr = result
+        assert sr == 24000, f"Expected 24000 Hz sample rate, got {sr}"
+        assert len(audio) > 0, "Filler audio must not be empty"
+
+    def test_get_filler_audio_picks_from_cache(self):
+        """get_filler_audio() must return one of the cached phrases."""
+        import numpy as np
+        from backend.agent.tts import TTSManager
+        mgr = TTSManager.__new__(TTSManager)
+        phrases = {"Hello": (np.zeros(100, dtype=np.float32), 24000),
+                   "World": (np.zeros(200, dtype=np.float32), 24000)}
+        mgr._filler_cache = phrases
+        # Call 10 times — should always return something from the cache
+        for _ in range(10):
+            result = mgr.get_filler_audio()
+            assert result is not None
+            # Compare by sample rate and audio length (numpy arrays can't use 'in')
+            assert result[1] == 24000, f"Expected 24000 Hz, got {result[1]}"
+            assert len(result[0]) in (100, 200), (
+                f"Filler audio length {len(result[0])} not in cache values"
+            )

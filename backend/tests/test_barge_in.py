@@ -51,13 +51,13 @@ class TestBargeInDetection:
     def test_quiet_frame_resets_counter(self, engine):
         """A frame below threshold resets the consecutive counter to 0."""
         engine._barge_in_frame_count = 10
-        engine._on_barge_in_energy(0.03)  # below 0.06 threshold
+        engine._on_barge_in_energy(0.03)  # below 0.04 threshold
         assert engine._barge_in_frame_count == 0
 
     def test_loud_frame_increments_counter(self, engine):
         """A frame above threshold increments the consecutive counter."""
         engine._barge_in_frame_count = 0
-        engine._on_barge_in_energy(0.08)  # above 0.06 threshold
+        engine._on_barge_in_energy(0.08)  # above 0.04 threshold
         assert engine._barge_in_frame_count == 1
 
     def test_barge_in_fires_at_threshold(self, engine):
@@ -804,4 +804,25 @@ class TestConstants:
         duration_ms = (frames / 31.0) * 1000
         assert 300 <= duration_ms <= 800, (
             f"Barge duration {duration_ms:.0f}ms outside expected range (300-800ms)"
+        )
+
+    def test_barge_in_constants_are_tuned_values(self):
+        """Barge-in constants must be 0.04/15/0.3 (not the old 0.06/25/0.8).
+
+        The old values caused 1.6s detection latency. The new values give ~480ms.
+        If this test fails, someone reverted the tuning — the old values are wrong.
+        """
+        from backend.audio.engine import AudioEngine
+
+        assert AudioEngine.BARGE_IN_ENERGY_THRESHOLD == 0.04, (
+            f"BARGE_IN_ENERGY_THRESHOLD is {AudioEngine.BARGE_IN_ENERGY_THRESHOLD}, "
+            "expected 0.04 — old value 0.06 was too high, caused missed barge-ins"
+        )
+        assert AudioEngine.BARGE_IN_CONSECUTIVE_FRAMES == 15, (
+            f"BARGE_IN_CONSECUTIVE_FRAMES is {AudioEngine.BARGE_IN_CONSECUTIVE_FRAMES}, "
+            "expected 15 — old value 25 gave 800ms latency"
+        )
+        assert AudioEngine.BARGE_IN_ARM_DELAY == 0.3, (
+            f"BARGE_IN_ARM_DELAY is {AudioEngine.BARGE_IN_ARM_DELAY}, "
+            "expected 0.3 — old value 0.8 blocked barge-in too long after TTS start"
         )
