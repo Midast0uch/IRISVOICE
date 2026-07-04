@@ -2284,7 +2284,7 @@ class IRISGateway:
                 _succeeded = False
                 try:
                     self._logger.info("[TTS] _wrap_tts_streaming started â€” calling _speak_response")
-                    self._speak_response(q, sid, _sttproc_stop=_sttproc_stop)
+                    self._speak_response(q, sid, _sttproc_stop=_sttproc_stop, _client_id=cid)
                     self._logger.info("[TTS] _speak_response completed")
                     _succeeded = True
                 except Exception as _tts_err:
@@ -2413,6 +2413,7 @@ class IRISGateway:
         input_source: Union[str, queue.Queue],
         session_id: str = None,
         _sttproc_stop: Optional[threading.Event] = None,
+        _client_id: str = None,
     ) -> None:
         """
         Synthesise and play text through the configured TTS engine.
@@ -3134,7 +3135,7 @@ class IRISGateway:
                                         try:
                                             _aw.run_coroutine_threadsafe(
                                                 self._ws_manager.send_to_client(
-                                                    client_id,
+                                                    _client_id or session_id,
                                                     {
                                                         "type": "tts_word",
                                                         "payload": {
