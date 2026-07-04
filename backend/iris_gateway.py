@@ -3141,7 +3141,7 @@ class IRISGateway:
                                     if _idx >= _wn:
                                         _idx = _wn - 1
                                     nonlocal _last_word_idx
-                                    if _idx != _last_word_idx:
+                                    if _idx > _last_word_idx:
                                         _last_word_idx = _idx
                                         self._logger.info(
                                             f"[TTS][words] Broadcasting word {_idx}/{_wn} "
