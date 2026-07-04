@@ -192,7 +192,7 @@ class VoiceCommandHandler:
     # VAD tuning — adjustable per environment
     VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
     VAD_MIN_SPEECH_SEC: float = 0.15  # ignore blips shorter than this
-    VAD_SILENCE_SEC: float = 0.6  # silence after speech → end of utterance
+    VAD_SILENCE_SEC: float = 0.75  # silence after speech → end of utterance
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
 

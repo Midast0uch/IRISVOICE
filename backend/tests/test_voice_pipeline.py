@@ -782,11 +782,11 @@ class TestVADSilenceThreshold:
         handler._start_lock = threading.Lock()
         return handler
 
-    def test_vad_silence_constant_is_06(self):
-        """VAD_SILENCE_SEC must be 0.6."""
+    def test_vad_silence_constant_is_075(self):
+        """VAD_SILENCE_SEC must be 0.75."""
         from backend.audio.voice_command import VoiceCommandHandler
-        assert VoiceCommandHandler.VAD_SILENCE_SEC == 0.6, (
-            f"VAD_SILENCE_SEC is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 0.6"
+        assert VoiceCommandHandler.VAD_SILENCE_SEC == 0.75, (
+            f"VAD_SILENCE_SEC is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 0.75"
         )
 
     def test_speech_plus_05s_silence_does_not_end_speech(self):
