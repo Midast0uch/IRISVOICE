@@ -3026,6 +3026,7 @@ class IRISGateway:
                 _buffered_chunks = []  # kept for word timing calculation
                 _stream_start_time = None
                 _rms_peak = 0.0  # running peak RMS for normalization
+                _word_monitor_started = False
 
                 while True:
                     # Fast timeout (0.5s) after streaming starts so barge-in
@@ -3080,6 +3081,72 @@ class IRISGateway:
                     if _sd_stream is not None:
                         ch_f32 = np.asarray(chunk, dtype=np.float32)
                         _sd_stream.write(ch_f32)
+
+                        # ── Word monitor (starts on first chunk) ─────────
+                        # Uses _sd_stream.time (real audio playback position)
+                        # to determine the current word.  This is the
+                        # document-prescribed approach: query actual playback
+                        # position every tick, not wall-clock sleep-and-broadcast.
+                        if not _word_monitor_started:
+                            _word_monitor_started = True
+                            _last_word_idx = -1
+
+                            def _monitor_words():
+                                import asyncio as _aw
+                                import time as _tw
+                                _wn = len(_all_words)
+                                if _wn == 0:
+                                    return
+                                while _sd_stream is not None:
+                                    try:
+                                        _pos = _sd_stream.time
+                                    except Exception:
+                                        break
+                                    if _pos <= 0:
+                                        _tw.sleep(0.05)
+                                        continue
+                                    # Update word count in case more sentences
+                                    # were added by the producer.
+                                    _wn = len(_all_words) or 1
+                                    _total_dur = (
+                                        _total_synth_samples[0] / _TTS_SAMPLE_RATE
+                                        if _total_synth_samples[0]
+                                        else _pos * 2
+                                    )
+                                    _frac = min(1.0, _pos / _total_dur)
+                                    _idx = int(_frac * _wn)
+                                    if _idx >= _wn:
+                                        _idx = _wn - 1
+                                    nonlocal _last_word_idx
+                                    if _idx != _last_word_idx:
+                                        _last_word_idx = _idx
+                                        try:
+                                            _aw.run_coroutine_threadsafe(
+                                                self._ws_manager.send_to_client(
+                                                    client_id,
+                                                    {
+                                                        "type": "tts_word",
+                                                        "payload": {
+                                                            "word_index": _idx,
+                                                            "total_words": _wn,
+                                                            "is_final": _idx == _wn - 1,
+                                                        },
+                                                    },
+                                                ),
+                                                self._main_loop,
+                                            )
+                                        except Exception:
+                                            pass
+                                    if _idx >= _wn - 1:
+                                        break
+                                    _tw.sleep(0.05)
+
+                            _word_monitor = threading.Thread(
+                                target=_monitor_words,
+                                daemon=True,
+                                name="tts-words",
+                            )
+                            _word_monitor.start()
 
                         # ── Broadcast cadence per-chunk ────────────────
                         # So the orb breathing matches audio in real-time
@@ -3148,79 +3215,10 @@ class IRISGateway:
                     except Exception:
                         pass
 
-                # ── Word-timing thread (post-loop) ────────────────────
-                approx_duration = 0.0
-                if _buffered_chunks and not interrupted.is_set():
-                    total_frames = sum(
-                        len(np.asarray(c, dtype=np.float32)) for c in _buffered_chunks
-                    )
-                    approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
-                    # Subtract trailing silence so word events span only
-                    # the actual speech, not the 600ms of silence Pocket-TTS
-                    # appends after the final word.
-                    _speech_duration = max(0.3, approx_duration - 0.60)
-
-                    _word_thread = None
-                    if _all_words and _speech_duration > 0.3:
-                        _word_count = len(_all_words)
-                        # Evenly space words across speech duration only
-                        # (not trailing silence) so the last word fires
-                        # when speech ends, not 600ms later in silence.
-                        _word_timings = [
-                            (i + 1) / _word_count * _speech_duration
-                            for i in range(_word_count)
-                        ]
-
-                        def _broadcast_words():
-                            import asyncio as _asyncio2
-                            import time as _time2
-
-                            _playback_event.wait(timeout=2.0)
-                            _time2.sleep(0.03)
-                            _word_stream_start = _stream_start_time or _time2.monotonic()
-                            # Audio is already playing — skip words that have
-                            # already been spoken, start from current position.
-                            _elapsed = _time2.monotonic() - _word_stream_start
-                            _start_word = 0
-                            for _i, _t in enumerate(_word_timings):
-                                if _t >= _elapsed:
-                                    _start_word = _i
-                                    break
-                            else:
-                                _start_word = _word_count - 1
-                            for _i in range(_start_word, _word_count):
-                                _sleep = _word_timings[_i] - (
-                                    _time2.monotonic() - _word_stream_start
-                                )
-                                if _sleep > 0:
-                                    _time2.sleep(_sleep)
-                                try:
-                                    _asyncio2.run_coroutine_threadsafe(
-                                        self._ws_manager.send_to_client(
-                                            client_id,
-                                            {
-                                                "type": "tts_word",
-                                                "payload": {
-                                                    "word_index": _i,
-                                                    "total_words": _word_count,
-                                                    "is_final": _i == _word_count - 1,
-                                                },
-                                            },
-                                        ),
-                                        self._main_loop,
-                                    )
-                                except Exception:
-                                    pass
-
-                        _word_thread = threading.Thread(
-                            target=_broadcast_words,
-                            daemon=True,
-                            name="tts-words",
-                        )
-                        _word_thread.start()
-
-                    if _word_thread:
-                        _word_thread.join(timeout=3)
+                # ── Word timing is handled by the streaming monitor ────
+                # (started when the first chunk is written, uses
+                #  _sd_stream.time for real playback position).
+                # The post-loop thread has been replaced — see line ~3089.
 
                 producer_thread.join(timeout=5)
         except Exception as e:

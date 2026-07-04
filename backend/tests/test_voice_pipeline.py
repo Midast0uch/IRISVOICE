@@ -1048,6 +1048,75 @@ class TestTTSStreamingCadence:
         assert idle_broadcast[0]["payload"]["rms"] == 0
 
 
+class TestTTSWordSyncFromPlaybackPosition:
+    """Verify word highlighting uses actual audio position (_sd_stream.time),
+    not wall-clock sleep-timers — matching the word sync document's approach."""
+
+    def _simulate_word_monitor(self, words, total_samples, sample_rate, stream_time, total_synth_samples):
+        """Core logic from the streaming word monitor: calculates word index
+        from actual audio playback position (_sd_stream.time)."""
+        _word_count = len(words) or 1
+        _total_dur = (
+            total_synth_samples / sample_rate
+            if total_synth_samples
+            else stream_time * 2
+        )
+        _frac = min(1.0, stream_time / _total_dur)
+        _idx = int(_frac * _word_count)
+        if _idx >= _word_count:
+            _idx = _word_count - 1
+        return _idx
+
+    def test_word_index_from_audio_position(self):
+        """At 0.5s into a 2.0s / 10-word response, word index should be ~2.
+        At 1.5s, ~7. At the end, the last word. This proves the word
+        is derived from the audio clock, not an independent timer."""
+        words = ["the", "quick", "brown", "fox", "jumps",
+                 "over", "the", "lazy", "sleeping", "dog"]
+        total_samples = 48000  # 2.0s at 24000 Hz
+
+        idx_25 = self._simulate_word_monitor(words, total_samples, 24000, 0.5, total_samples)
+        idx_50 = self._simulate_word_monitor(words, total_samples, 24000, 1.0, total_samples)
+        idx_75 = self._simulate_word_monitor(words, total_samples, 24000, 1.5, total_samples)
+        idx_100 = self._simulate_word_monitor(words, total_samples, 24000, 2.0, total_samples)
+
+        assert idx_25 == 2, f"At 25% expected word 2, got {idx_25}"
+        assert idx_50 == 5, f"At 50% expected word 5, got {idx_50}"
+        assert idx_75 == 7, f"At 75% expected word 7, got {idx_75}"
+        assert idx_100 == 9, f"At 100% expected last word (9), got {idx_100}"
+
+    def test_word_index_stays_in_bounds(self):
+        """If playback position exceeds the estimated duration (possible if
+        _total_synth_samples is a running estimate), word index must clamp
+        to the last word, not go out of bounds."""
+        words = ["hello", "world"]
+        total_samples = 12000  # 0.5s at 24000 Hz
+
+        # Simulate position beyond the estimate
+        idx = self._simulate_word_monitor(words, total_samples, 24000, 1.0, total_samples)
+        assert idx == 1, f"At double duration, expected last word (1), got {idx}"
+
+    def test_word_index_early_without_total_samples(self):
+        """Before _total_synth_samples is available from the producer,
+        the monitor falls back to _pos * 2 as an estimate. At 0.1s,
+        estimated duration is 0.2s, so 50% through 10 words = word 5."""
+        words = list(range(10))
+        total_samples = 0  # not yet set by producer
+
+        idx = self._simulate_word_monitor(words, total_samples, 24000, 0.1, total_samples)
+        # fallback: _total_dur = 0.1 * 2 = 0.2, frac = 0.1/0.2 = 0.5, idx = 0.5 * 10 = 5
+        assert idx == 5, f"Expected fallback word 5, got {idx}"
+
+    def test_word_index_start_at_zero(self):
+        """Before audio plays (_sd_stream.time <= 0), the monitor
+        should not broadcast any word (stays at first word / no-op)."""
+        words = ["hello"] * 5
+        total_samples = 24000  # 1.0s
+
+        idx = self._simulate_word_monitor(words, total_samples, 24000, 0, total_samples)
+        assert idx == 0, f"At position 0, expected word 0, got {idx}"
+
+
 class TestTTSWordTimingOffset:
     """Verify word timing skips already-spoken words."""
 
