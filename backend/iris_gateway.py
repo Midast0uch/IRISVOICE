@@ -2826,6 +2826,9 @@ class IRISGateway:
                                                         )
                                                     except Exception:
                                                         pass
+                            # Track total samples for word timing denominator.
+                            # This runs for EVERY audio chunk regardless of path.
+                            _total_synth_samples[0] += len(audio_chunk)
                             _pending = []
                             _pending_words = 0
                             _root_log.info(
@@ -3124,7 +3127,11 @@ class IRISGateway:
                                         _tw.sleep(0.1)
                                         continue
                                     _total_dur = _total_synth_samples[0] / _TTS_SAMPLE_RATE
-                                    if _total_dur <= 0:
+                                    # Don't broadcast with a very short estimate
+                                    # (first chunk is ~0.1s) — the fraction would
+                                    # jump to >0.5 and the word index would be
+                                    # ahead of the actual audio.
+                                    if _total_dur < 0.5:
                                         _tw.sleep(0.1)
                                         continue
                                     _frac = min(1.0, _pos / _total_dur)
