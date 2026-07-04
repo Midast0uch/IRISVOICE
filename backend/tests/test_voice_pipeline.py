@@ -1197,3 +1197,46 @@ class TestTTSWordTimingOffset:
         assert _start_word == len(words) - 1, (
             f"When all past, expected start_word={len(words)-1}, got {_start_word}"
         )
+
+
+class TestNewConversationContextReset:
+    """Verify new_conversation WS message clears the agent kernel context."""
+
+    def test_new_conversation_calls_clear_conversation(self):
+        """When a new_conversation message is received, the agent kernel's
+        clear_conversation must be called so the next voice STT starts
+        with a fresh context (not the old thread's history)."""
+        from unittest.mock import MagicMock, patch
+
+        # Mock the get_agent_kernel function
+        mock_kernel = MagicMock()
+        mock_kernel.clear_conversation.return_value = None
+
+        with patch("backend.iris_gateway.get_agent_kernel", return_value=mock_kernel):
+            # Import and call the handler via the message router
+            from backend.iris_gateway import IRISGateway
+
+            # Create a minimal mock gateway
+            gateway = IRISGateway.__new__(IRISGateway)
+            gateway._logger = MagicMock()
+            gateway._ws_manager = MagicMock()
+            gateway._agent_kernels = {}
+            gateway._main_loop = MagicMock()
+
+            # Simulate what _handle_chat does for new_conversation
+            session_id = "test-session"
+            message = {"type": "new_conversation", "payload": {"conversation_id": "new-conv-1"}}
+
+            # _handle_chat is async, so we run it
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(
+                    gateway._handle_chat(session_id, "test-client", message)
+                )
+            finally:
+                loop.close()
+
+            # Verify clear_conversation was called on the agent kernel
+            mock_kernel.clear_conversation.assert_called_once()
