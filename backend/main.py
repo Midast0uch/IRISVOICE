@@ -293,6 +293,19 @@ async def lifespan(app: FastAPI):
             logger.error(f"    [x] [VOICE HANDLER] Failed to create: {e}")
             raise
 
+        # Start pre-loading Parakeet ASR model in background so the first
+        # voice command doesn't block for 2 minutes loading 723 shards.
+        async def _preload_parakeet():
+            try:
+                logger.info("[PARAKEET] Background pre-load started")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, voice_handler._parakeet._ensure_loaded)
+                logger.info("[PARAKEET] Background pre-load complete")
+            except Exception:
+                logger.warning("[PARAKEET] Background pre-load failed — will lazy-load on first voice command")
+
+        asyncio.create_task(_preload_parakeet())
+
         # faster-whisper / ctranslate2 warm-up is intentionally deferred.
         # Importing ctranslate2 allocates ~400 MB RAM and initialises a CUDA
         # context on GPU machines.  Running this at startup races with the

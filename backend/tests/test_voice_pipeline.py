@@ -1053,14 +1053,15 @@ class TestTTSWordSyncFromPlaybackPosition:
     not wall-clock sleep-timers — matching the word sync document's approach."""
 
     def _simulate_word_monitor(self, words, total_samples, sample_rate, stream_time, total_synth_samples):
-        """Core logic from the streaming word monitor: calculates word index
-        from actual audio playback position (_sd_stream.time)."""
+        """Core logic from the streaming word monitor: waits until total
+        synth samples is set, then calculates word index from audio position.
+        Returns -1 if total samples not yet available (no broadcast)."""
         _word_count = len(words) or 1
-        _total_dur = (
-            total_synth_samples / sample_rate
-            if total_synth_samples
-            else stream_time * 2
-        )
+        if not total_synth_samples or total_synth_samples <= 0:
+            return -1  # unknown total — don't broadcast yet
+        _total_dur = total_synth_samples / sample_rate
+        if _total_dur <= 0:
+            return -1
         _frac = min(1.0, stream_time / _total_dur)
         _idx = int(_frac * _word_count)
         if _idx >= _word_count:
@@ -1096,16 +1097,15 @@ class TestTTSWordSyncFromPlaybackPosition:
         idx = self._simulate_word_monitor(words, total_samples, 24000, 1.0, total_samples)
         assert idx == 1, f"At double duration, expected last word (1), got {idx}"
 
-    def test_word_index_early_without_total_samples(self):
-        """Before _total_synth_samples is available from the producer,
-        the monitor falls back to _pos * 2 as an estimate. At 0.1s,
-        estimated duration is 0.2s, so 50% through 10 words = word 5."""
+    def test_word_index_skips_when_total_samples_missing(self):
+        """Before _total_synth_samples is set, the monitor must NOT broadcast
+        (returns -1) instead of using a fallback estimate that would lock
+        the word index at 50% and then jump when total arrives."""
         words = list(range(10))
         total_samples = 0  # not yet set by producer
 
         idx = self._simulate_word_monitor(words, total_samples, 24000, 0.1, total_samples)
-        # fallback: _total_dur = 0.1 * 2 = 0.2, frac = 0.1/0.2 = 0.5, idx = 0.5 * 10 = 5
-        assert idx == 5, f"Expected fallback word 5, got {idx}"
+        assert idx == -1, f"Expected -1 (no broadcast), got {idx}"
 
     def test_word_index_start_at_zero(self):
         """Before audio plays (_sd_stream.time <= 0), the monitor

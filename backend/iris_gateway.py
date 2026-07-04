@@ -3,7 +3,7 @@ IRIS Gateway - WebSocket Message Router
 Routes incoming WebSocket messages to appropriate handlers based on message type.
 """
 
-from .iris_config import IRISConfig, load_config, save_config, InferenceConfig
+from .iris_config import IRISConfig, load_config, save_config, InferenceConfig, save_field_values, load_field_values
 from .integrations import get_integration_handler
 from .tools.lfm_vl_provider import LFMVLProvider
 from .tools.cleanup_analyzer import CleanupAnalyzer
@@ -32,7 +32,7 @@ from typing import Dict, Any, Optional, List, Union, Iterator, Callable
 from backend.utils.observability import get_turn_id, loud_error
 
 # ---------------------------------------------------------------------------
-# Port config accessor — read from env-var-aware config, cached after first
+# Port config accessor â€” read from env-var-aware config, cached after first
 # call so we don't re-load the JSON file on every reference.
 # ---------------------------------------------------------------------------
 
@@ -65,14 +65,14 @@ _DEFAULT_OLLAMA_URL: str = load_config().inference.ollama_url or "http://localho
 
 
 # ---------------------------------------------------------------------------
-# Pre-compiled regex patterns — used by _clean_for_speech and _speak_response.
+# Pre-compiled regex patterns â€” used by _clean_for_speech and _speak_response.
 # Compiled once at import time to avoid re.compile() overhead on every call.
 # ---------------------------------------------------------------------------
 _RE_EMOJI = re.compile(
-    "[\U0001f300-\U0001f9ff"  # misc symbols, emoticons, transport, food…
+    "[\U0001f300-\U0001f9ff"  # misc symbols, emoticons, transport, foodâ€¦
     "\U00002702-\U000027b0"  # dingbats
-    "\U0001fa00-\U0001fa6f"  # chess, medical …
-    "\U0001fa70-\U0001faff"  # clothing, science …
+    "\U0001fa00-\U0001fa6f"  # chess, medical â€¦
+    "\U0001fa70-\U0001faff"  # clothing, science â€¦
     "\U00002500-\U00002bef"  # CJK / box-drawing misc
     "\U0001f004-\U0001f0cf"  # mahjong / playing cards
     "\U0001f170-\U0001f171"  # blood-type buttons
@@ -81,7 +81,7 @@ _RE_EMOJI = re.compile(
     flags=re.UNICODE,
 )
 _RE_MD_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
-_RE_MD_BULLET = re.compile(r"^\s*[-*•]\s+", re.MULTILINE)
+_RE_MD_BULLET = re.compile(r"^\s*[-*â€¢]\s+", re.MULTILINE)
 _RE_MD_BOLD = re.compile(r"\*\*(.*?)\*\*")
 _RE_MD_ITALIC = re.compile(r"\*(.*?)\*")
 _RE_MD_CODE = re.compile(r"`(.*?)`")
@@ -91,10 +91,10 @@ _RE_MULTI_DOT = re.compile(r"\.{2,}")
 _RE_MULTI_SPACE = re.compile(r" +")
 _RE_MULTI_NL = re.compile(r"\n{2,}")
 # Sentence boundary: punctuation followed by whitespace (used in split + get_spoken_version)
-_RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
+_RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?â€¦])\s+|\n+")
 
 # Sentinel object placed in audio_queue when TTS producer finishes.
-# MUST be unique — use an object, not None (None is also what queue.get
+# MUST be unique â€” use an object, not None (None is also what queue.get
 # returns on timeout, making the two cases indistinguishable).
 _TTS_END_STREAM = object()
 
@@ -154,7 +154,7 @@ class IRISGateway:
         self._voice_handler = None  # set via set_voice_handler() after construction
         # session_id -> client_id for wake word routing
         self._active_voice_client: dict = {}
-        # Track which session is currently playing TTS — used by the barge-in
+        # Track which session is currently playing TTS â€” used by the barge-in
         # handler to know which conversation to resume on interruption.
         self._active_tts_session: Optional[str] = None
         # Barge-in stop event: set by _on_barge_in_detected to stop cadence
@@ -176,20 +176,20 @@ class IRISGateway:
         # a background thread without calling asyncio.get_event_loop() in that thread.
         import threading
 
-        # Pocket-TTS loads lazily — only on first actual TTS synthesis request
-        # inside _speak_response → synthesize_stream.  _tts_prewarmed = True
+        # Pocket-TTS loads lazily â€” only on first actual TTS synthesis request
+        # inside _speak_response â†’ synthesize_stream.  _tts_prewarmed = True
         # suppresses all "safety net" re-trigger paths so nothing tries to load
         # it early.  synthesize_stream calls _select_engine() + _load_pocket_tts()
         # itself when it first runs.
         self._tts_prewarmed = (
-            True  # Pocket-TTS loads in ~1s — no startup prewarm needed
+            True  # Pocket-TTS loads in ~1s â€” no startup prewarm needed
         )
 
-    # ── Routing Mode Resolver ──────────────────────────────────────────────
+    # â”€â”€ Routing Mode Resolver â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _resolve_routing_mode(self) -> str:
         """
         Read config and return the effective routing mode string.
-        Swarm takes priority — when enabled, routing mode is 'SWARM'.
+        Swarm takes priority â€” when enabled, routing mode is 'SWARM'.
         Otherwise returns the configured provider (api, lmstudio, ollama, iris_local).
         """
         try:
@@ -214,7 +214,7 @@ class IRISGateway:
             self._logger.info("[IRISGateway] Session GC task started.")
 
         if not self._tts_prewarmed:
-            pass  # Pocket-TTS loads in ~1s — no startup prewarm
+            pass  # Pocket-TTS loads in ~1s â€” no startup prewarm
 
     def _touch_session(self, session_id: str) -> None:
         """Update the last-seen timestamp for a session."""
@@ -304,7 +304,7 @@ class IRISGateway:
                 )
                 return
 
-            # Resolve session ID — use caller-supplied value when available to avoid
+            # Resolve session ID â€” use caller-supplied value when available to avoid
             # the race where heartbeat disconnect removes the mapping before we look it up.
             if session_id is None:
                 session_id = self._ws_manager.get_session_id_for_client(client_id)
@@ -457,15 +457,15 @@ class IRISGateway:
                 await self._handle_execute_tool(session_id, client_id, message)
 
             elif msg_type == "tts_play":
-                # Frontend play-icon clicked — speak the supplied text via TTS
+                # Frontend play-icon clicked â€” speak the supplied text via TTS
                 await self._handle_tts_play(session_id, client_id, message)
 
             elif msg_type == "voice_result":
-                # Parakeet ASR final transcription → parrot to all clients in
+                # Parakeet ASR final transcription â†’ parrot to all clients in
                 # the same session (used for Tailscale multi-view, where a
                 # phone via Tailscale should see the Tauri client's transcript).
                 self._logger.info(
-                    "[Voice] voice_result relay from %s → session %s",
+                    "[Voice] voice_result relay from %s â†’ session %s",
                     client_id[:8], session_id,
                 )
                 if session_id:
@@ -479,8 +479,8 @@ class IRISGateway:
                     )
 
             elif msg_type == "voice_audio_chunk":
-                # PCM chunk from frontend → forward to in-process Parakeet ASR.
-                # Parakeet is now embedded in VoiceCommandHandler — no separate
+                # PCM chunk from frontend â†’ forward to in-process Parakeet ASR.
+                # Parakeet is now embedded in VoiceCommandHandler â€” no separate
                 # service needed.  This handler is a secondary / monitor path.
                 self._logger.debug(
                     "[Voice] Audio chunk received from %s (%.0f bytes)",
@@ -512,15 +512,15 @@ class IRISGateway:
                 await self._handle_message_exported(session_id, client_id, message)
 
             elif msg_type == "crawler_query":
-                # Explicit web research request — route to CrawlerEngine
+                # Explicit web research request â€” route to CrawlerEngine
                 await self._handle_crawler_query(session_id, client_id, message)
 
             elif msg_type == "dev_cli":
-                # Developer mode — route query to CLI tool via DevOrchestrator
+                # Developer mode â€” route query to CLI tool via DevOrchestrator
                 await self._handle_dev_cli(session_id, client_id, message)
 
             elif msg_type == "dev_abort":
-                # Developer mode — abort active CLI subprocess for this session
+                # Developer mode â€” abort active CLI subprocess for this session
                 await self._handle_dev_abort(session_id, client_id)
 
             elif msg_type == "terminal_input":
@@ -713,6 +713,8 @@ class IRISGateway:
                 # NOTE: Service reinitialization (TTS, model selection, audio devices) is
                 # intentionally deferred to confirm_card. update_field only persists the value
                 # to state so it is available when the user presses Confirm.
+                # Persist raw field_values to disk so they survive frontend remounts.
+                save_field_values(self._state_manager.get_state(session_id).field_values)
 
                 # Mask API keys in the response
                 response_value = value
@@ -870,6 +872,7 @@ class IRISGateway:
                             cfg = load_config()
                             for k, v in kwargs.items():
                                 setattr(cfg.tts, k, v)
+                            cfg.field_values = self._state_manager.get_field_values(session_id)
                             save_config(cfg)
                         except Exception as _cfg_err:
                             self._logger.warning(
@@ -899,7 +902,7 @@ class IRISGateway:
 
                     kernel = get_agent_kernel(session_id)
 
-                    # ── Provider routing (DELEGATED to model_selection) ──────
+                    # â”€â”€ Provider routing (DELEGATED to model_selection) â”€â”€â”€â”€â”€â”€
                     # The inference_mode card no longer has an "inference_mode"
                     # field. Provider routing is handled exclusively by the
                     # model_selection section.
@@ -929,7 +932,7 @@ class IRISGateway:
                             except Exception:
                                 pass
 
-                    # ── Local / Swarm config — only applies when provider is iris_local ──
+                    # â”€â”€ Local / Swarm config â€” only applies when provider is iris_local â”€â”€
                     # If the user selected an API provider, skip all inference_mode startup.
                     current_provider = cfg.inference.provider if cfg else ""
                     is_local = current_provider in ("local", "iris_local")
@@ -960,7 +963,7 @@ class IRISGateway:
                             )
 
                         self._logger.info(
-                            f"[inference_mode] Local config saved — model not loaded. "
+                            f"[inference_mode] Local config saved â€” model not loaded. "
                             f"Use Load button in model browser.",
                             extra={"session_id": session_id},
                         )
@@ -970,7 +973,7 @@ class IRISGateway:
                         mode = values.get("swarm_mode", "local_fast")
                         worker_ctx = int(values.get("worker_context", 2048))
                         try:
-                            # ── Guard: unload in-process model before spawning swarm ──
+                            # â”€â”€ Guard: unload in-process model before spawning swarm â”€â”€
                             try:
                                 from .agent.local_model_manager import (
                                     get_local_model_manager,
@@ -997,9 +1000,9 @@ class IRISGateway:
                             mgr = SwarmInferenceManager()
                             cfg = mgr.apply_swarm_mode(mode, worker_ctx)
                             if mode == "api_director":
-                                # Director uses API — ensure API provider is configured
+                                # Director uses API â€” ensure API provider is configured
                                 self._logger.info(
-                                    f"[Session: {session_id}] Swarm mode=api_director — "
+                                    f"[Session: {session_id}] Swarm mode=api_director â€” "
                                     f"Director will use API, workers on GPU"
                                 )
                             else:
@@ -1009,10 +1012,10 @@ class IRISGateway:
                                     f"mode={cfg.mode.value}, director={cfg.director_model or 'API'}, "
                                     f"workers={cfg.worker_model}, worker_ctx={cfg.worker_ctx}"
                                 )
-                                # ── Route kernel inference to swarm endpoints ──
+                                # â”€â”€ Route kernel inference to swarm endpoints â”€â”€
                                 # The kernel currently supports a single OpenAI-compatible
-                                # endpoint.  quality_director → Director (8081) for quality;
-                                # local_fast      → Workers (8082) for speed.
+                                # endpoint.  quality_director â†’ Director (8081) for quality;
+                                # local_fast      â†’ Workers (8082) for speed.
                                 _swarm_ep = (
                                     cfg.director_endpoint
                                     if cfg.mode.value == "quality_director"
@@ -1035,7 +1038,7 @@ class IRISGateway:
                                     f"[Session: {session_id}] Kernel routed to swarm: "
                                     f"endpoint={_swarm_ep}, reasoning={_dir_name}, tool={_wrk_name}"
                                 )
-                                # ── Persist swarm snapshot for future sessions ──
+                                # â”€â”€ Persist swarm snapshot for future sessions â”€â”€
                                 # New sessions created after this point will auto-hydrate
                                 # from this snapshot instead of staying "uninitialized".
                                 import backend.agent.agent_kernel as _ak_mod
@@ -1052,7 +1055,7 @@ class IRISGateway:
                                     f"[Session: {session_id}] Swarm config snapshot stored: "
                                     f"{_ak_mod._swarm_config_snapshot}"
                                 )
-                                # ── Broadcast swarm config to ALL sessions ──
+                                # â”€â”€ Broadcast swarm config to ALL sessions â”€â”€
                                 # The frontend may have multiple WebSocket connections
                                 # (e.g. one for the UI, one for integration). Ensure every
                                 # session kernel points to the swarm so chat messages
@@ -1083,7 +1086,7 @@ class IRISGateway:
                             if hasattr(kernel, "_swarm_inference_mgr"):
                                 kernel._swarm_inference_mgr = mgr
 
-                            # ── Defensive re-apply: if swarm is ON but provider drifted, fix it ──
+                            # â”€â”€ Defensive re-apply: if swarm is ON but provider drifted, fix it â”€â”€
                             if (
                                 swarm_on
                                 and getattr(kernel, "_model_provider", "")
@@ -1091,7 +1094,7 @@ class IRISGateway:
                             ):
                                 self._logger.warning(
                                     f"[Session: {session_id}] Swarm ON but provider="
-                                    f"'{kernel._model_provider}' — forcing re-configure to iris_local"
+                                    f"'{kernel._model_provider}' â€” forcing re-configure to iris_local"
                                 )
                                 kernel.configure_openai_compat(
                                     _swarm_ep.rstrip("/").removesuffix("/v1"),
@@ -1105,7 +1108,7 @@ class IRISGateway:
                                 exc_info=True,
                             )
 
-                    # ── Wire up inference behaviour fields (dead settings fix) ──
+                    # â”€â”€ Wire up inference behaviour fields (dead settings fix) â”€â”€
                     # These fields have always been stored in session state but never
                     # consumed by the backend. Map them to kernel attributes so they
                     # actually affect inference.
@@ -1137,7 +1140,7 @@ class IRISGateway:
                             f"[Session: {session_id}] Tool mode set to '{_tool_mode}'"
                         )
 
-                    # ── GGUF Models Directory ──
+                    # â”€â”€ GGUF Models Directory â”€â”€
                     # Allow user to override where local GGUF models are scanned from.
                     # Empty string means keep default (env var / ~/.lmstudio/models).
                     _models_dir = values.get("models_directory", "").strip()
@@ -1152,7 +1155,7 @@ class IRISGateway:
                         # Persist to config so it survives restart
                         self._config.inference.models_directory = _models_dir
                     elif "models_directory" in values:
-                        # Explicitly empty — clear override, revert to default
+                        # Explicitly empty â€” clear override, revert to default
                         from .agent.local_model_manager import get_local_model_manager
 
                         mgr = get_local_model_manager()
@@ -1193,7 +1196,7 @@ class IRISGateway:
                         extra={"session_id": session_id, "client_id": client_id},
                     )
 
-                    # ── Provider URL map ─────────────────────────────────────
+                    # â”€â”€ Provider URL map â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                     # Named providers with well-known endpoints.
                     # Each maps to a base URL; the user only needs to provide an API key.
                     PROVIDER_ENDPOINTS = {
@@ -1209,7 +1212,7 @@ class IRISGateway:
                     api_key = values.get("api_key", "") or ""
 
                     if provider in PROVIDER_ENDPOINTS:
-                        # Named API provider — URL is pre-configured
+                        # Named API provider â€” URL is pre-configured
                         base_url = PROVIDER_ENDPOINTS[provider]
                         kernel.configure_api(api_key, base_url)
                         kernel.configure_vps({"enabled": False})
@@ -1235,7 +1238,7 @@ class IRISGateway:
                         kernel.prewarm_lmstudio()
 
                     elif provider in ("local", "iris_local"):
-                        # Local GGUF model — configure kernel for in-process endpoint.
+                        # Local GGUF model â€” configure kernel for in-process endpoint.
                         # Model loading is triggered separately via the Load button
                         # in the model browser (POST /api/models/load).
                         from .agent.local_model_manager import get_local_model_manager
@@ -1295,7 +1298,7 @@ class IRISGateway:
                     load_config().inference.lm_studio_url or "http://localhost:1234",
                                 )
                             elif provider in ("local", "iris_local"):
-                                # Local GGUF — endpoint is the in-process llama server
+                                # Local GGUF â€” endpoint is the in-process llama server
                                 cfg.inference.api_base_url = ""
                                 cfg.routing.mode = RoutingMode.SINGLE_LOCAL
                                 cfg.inference.provider = "local"
@@ -1303,7 +1306,7 @@ class IRISGateway:
                             # LOCAL/SWARM routing is set by inference_mode confirm_card.
                             if provider not in ("local", "iris_local"):
                                 cfg.routing.mode = RoutingMode.SINGLE_API
-                                # Force swarm OFF for API providers — prevents stale
+                                # Force swarm OFF for API providers â€” prevents stale
                                 # swarm config from overriding the API provider selection
                                 # when the initial state is loaded from localStorage.
                                 cfg.inference.swarm_enabled = False
@@ -1323,7 +1326,7 @@ class IRISGateway:
                         extra={"session_id": session_id, "client_id": client_id},
                     )
 
-            # ── Local Model card ──────────────────────────────────────────
+            # â”€â”€ Local Model card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Apply local_model card values when that section is confirmed.
             # NOTE: This only saves config. Model loading is triggered by the
             # Load button (action: load_local_model) in the card.
@@ -1380,7 +1383,7 @@ class IRISGateway:
                         exc_info=True,
                     )
 
-            # ── Swarm Setup card ──────────────────────────────────────────
+            # â”€â”€ Swarm Setup card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Apply swarm_setup card values when that section is confirmed.
             # NOTE: This only saves config. Swarm is started/stopped by the
             # Start Swarm / Stop Swarm buttons in the card.
@@ -1433,7 +1436,7 @@ class IRISGateway:
                         kernel._sync_context_window()
                         self._logger.info(
                             f"[Session: {session_id}] Memory context_window "
-                            f"override → {ctx_tokens} tokens (model={model})"
+                            f"override â†’ {ctx_tokens} tokens (model={model})"
                         )
                 except Exception as e:
                     self._logger.error(
@@ -1486,7 +1489,7 @@ class IRISGateway:
                         extra={"session_id": session_id, "client_id": client_id},
                     )
 
-            # ── Monitor cards: analytics / logs / diagnostics ──────────────
+            # â”€â”€ Monitor cards: analytics / logs / diagnostics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # These cards show system status.  When confirmed we push live
             # data back into the card fields via update_field messages.
             elif section_id in ("analytics", "logs", "diagnostics") and values is not None:
@@ -1511,10 +1514,10 @@ class IRISGateway:
             state = await self._state_manager.get_state(session_id)
             if not state or not state.current_category:
                 # Model selection and critical config sections should work
-                # even without an active orbit category — they're global settings.
+                # even without an active orbit category â€” they're global settings.
                 if section_id in ("model_selection", "identity", "inference_mode"):
                     logger.info(
-                        f"[Gateway] confirm_card {section_id} applied (no active category — "
+                        f"[Gateway] confirm_card {section_id} applied (no active category â€” "
                         "skipping orbit confirmation)"
                     )
                     # Broadcast that config was applied even without orbit
@@ -1562,15 +1565,15 @@ class IRISGateway:
         self._voice_handler = voice_handler
         voice_handler.set_command_result_callback(self._on_voice_result)
 
-        # v2 (Phase 7): Instantiate ConversationKernel — thin wrapper
+        # v2 (Phase 7): Instantiate ConversationKernel â€” thin wrapper
         # on the existing voice pipeline. The kernel adds Caducean
         # phase-awareness to decisions the existing classes already make.
-        # No new VAD, no new TTS, no new state machine (see plan §Component 5).
+        # No new VAD, no new TTS, no new state machine (see plan Â§Component 5).
         # Broadcast real-time audio levels during recording so the IrisOrb
         # can animate its pulse in sync with the user's voice.
         # The callback is called from the VAD background thread every ~100 ms.
         def _on_audio_level(level: float) -> None:
-            # FIX: Don't gate on _active_session_id — if the voice handler
+            # FIX: Don't gate on _active_session_id â€” if the voice handler
             # hasn't set one yet (e.g. during the first wake-word cycle),
             # broadcast to "default" so the orb still pulses.
             session_id = getattr(voice_handler, "_active_session_id", None) or "default"
@@ -1589,7 +1592,7 @@ class IRISGateway:
                     loop,
                 )
             else:
-                # FIX: Log when the main loop isn't available — this is a
+                # FIX: Log when the main loop isn't available â€” this is a
                 # silent failure mode that was hiding audio level issues.
                 _diag_count = getattr(self, "_audio_level_no_loop_count", 0)
                 if _diag_count < 3:
@@ -1671,10 +1674,10 @@ class IRISGateway:
         except Exception:
             pass
 
-    # ── Energy-based barge-in handler ─────────────────────────────────────
+    # â”€â”€ Energy-based barge-in handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Fired from the PortAudio input thread when user speech is detected over
     # active TTS playback.  Reopens the half-duplex gate, stops TTS, and
-    # starts a new recording — all without wake word involvement.
+    # starts a new recording â€” all without wake word involvement.
     def _on_barge_in_detected(self) -> None:
         """Stop TTS and start listening when user speaks over playback."""
         try:
@@ -1694,13 +1697,13 @@ class IRISGateway:
                 _sid = "default"
 
             self._logger.info(
-                f"[BargeIn] User speech over TTS — interrupting session {_sid}"
+                f"[BargeIn] User speech over TTS â€” interrupting session {_sid}"
             )
 
             # 1. Ensure conversation mode so TTS response auto-relistens
             self._conversation_sessions.add(_sid)
 
-            # 2. Reopen half-duplex gate immediately — don't wait for finally
+            # 2. Reopen half-duplex gate immediately â€” don't wait for finally
             _engine.set_tts_active(False)
 
             # 3. Stop TTS synthesis + native player
@@ -1779,7 +1782,7 @@ class IRISGateway:
         try:
             if msg_type == "voice_command_start":
                 self._logger.info(f"[Session: {session_id}] Voice command start")
-                # Enable conversation mode — will auto-relisten after each TTS response
+                # Enable conversation mode â€” will auto-relisten after each TTS response
                 self._conversation_sessions.add(session_id)
 
                 # Interrupt TTS only if it is currently playing.
@@ -1787,7 +1790,7 @@ class IRISGateway:
                 # _speech_interrupted = True and the flag persists until the
                 # playback loop in _speak_response() consumes it.  If no TTS
                 # was running, the flag stays True and the *next* TTS response
-                # bails immediately at the is_speech_interrupted() check —
+                # bails immediately at the is_speech_interrupted() check â€”
                 # producing silence even though the orb animates as "speaking".
                 try:
                     from .audio.engine import get_audio_engine
@@ -1796,13 +1799,13 @@ class IRISGateway:
                     if engine._tts_active:
                         engine.interrupt_speech()
                 except Exception:
-                    pass  # non-fatal — audio engine may not be up yet
+                    pass  # non-fatal â€” audio engine may not be up yet
 
                 # Track which client triggered this so wake-word callback knows where to respond
                 self._active_voice_client[session_id] = client_id
 
                 # Pocket-TTS loads lazily on first synthesize_stream() call.
-                # No pre-trigger here — model must not load until the user
+                # No pre-trigger here â€” model must not load until the user
                 # actually requests speech output.
 
                 # Broadcast LISTENING immediately so IrisOrb animates
@@ -1820,7 +1823,7 @@ class IRISGateway:
                     success = self._voice_handler.start_recording(**kw)
                     if not success:
                         self._logger.warning(
-                            f"[Session: {session_id}] VoiceCommandHandler start_recording() failed — resetting orb to idle"
+                            f"[Session: {session_id}] VoiceCommandHandler start_recording() failed â€” resetting orb to idle"
                         )
                         await self._ws_manager.broadcast_to_session(
                             session_id,
@@ -1828,7 +1831,7 @@ class IRISGateway:
                         )
                 else:
                     self._logger.error(
-                        "[Voice] VoiceCommandHandler not wired — call set_voice_handler()"
+                        "[Voice] VoiceCommandHandler not wired â€” call set_voice_handler()"
                     )
                     await self._ws_manager.broadcast_to_session(
                         session_id,
@@ -1863,7 +1866,7 @@ class IRISGateway:
                 #
                 # Previously this branched on is_auto_stop and called
                 # cancel_recording() for the wake-word path, which set
-                # _cancelled=True and skipped Whisper entirely — silently
+                # _cancelled=True and skipped Whisper entirely â€” silently
                 # breaking the entire voice pipeline.
                 if has_audio:
                     await self._ws_manager.broadcast_to_session(
@@ -1885,7 +1888,7 @@ class IRISGateway:
                 self._logger.info(
                     f"[Session: {session_id}] Voice command cancelled by user"
                 )
-                # Exit conversation mode — user explicitly stopped
+                # Exit conversation mode â€” user explicitly stopped
                 self._conversation_sessions.discard(session_id)
                 if self._voice_handler:
                     self._voice_handler.cancel_recording()
@@ -1894,9 +1897,9 @@ class IRISGateway:
                     from .audio.engine import get_audio_engine
 
                     engine = get_audio_engine()
-                    engine.interrupt_speech()  # idempotent — safe to call when idle
+                    engine.interrupt_speech()  # idempotent â€” safe to call when idle
                     # Also flush the native player's ring buffer so already-queued
-                    # audio stops immediately (synthesis cancel ≠ playback stop).
+                    # audio stops immediately (synthesis cancel â‰  playback stop).
                     if engine.pipeline:
                         engine.pipeline.interrupt()
                 except Exception:
@@ -1952,7 +1955,7 @@ class IRISGateway:
         """
         Callback fired by VoiceCommandHandler when LFM2-Audio finishes processing.
         Extracts transcript + audio context and routes through 4-pillar pipeline.
-        Called from a background thread — uses asyncio.run_coroutine_threadsafe.
+        Called from a background thread â€” uses asyncio.run_coroutine_threadsafe.
         """
         try:
             transcript = result.get("transcript", "").strip()
@@ -1961,7 +1964,7 @@ class IRISGateway:
             client_id = self._active_voice_client.get(session_id)
 
             # Use the loop captured during the first async message dispatch.
-            # Never call asyncio.get_event_loop() here — this runs in a background
+            # Never call asyncio.get_event_loop() here â€” this runs in a background
             # thread and that call raises "no current event loop" on Python 3.10+.
             loop = self._main_loop
             if loop is None or not loop.is_running():
@@ -2031,9 +2034,9 @@ class IRISGateway:
         Full 4-pillar pipeline after STT transcription.
 
         State machine:
-          listening → processing_conversation (LLM thinking)
-                    → speaking               (TTS playing)
-                    → idle                   (TTS done / no spoken text)
+          listening â†’ processing_conversation (LLM thinking)
+                    â†’ speaking               (TTS playing)
+                    â†’ idle                   (TTS done / no spoken text)
 
         The text response appears in ChatView as soon as the LLM returns,
         independent of TTS.  TTS plays after the full response is ready so
@@ -2067,7 +2070,7 @@ class IRISGateway:
             self._logger.info(f"[VOICE_TIMING] {label}: +{dt:.3f}s")
 
         try:
-            # ── Pillar 1A: user bubble ──────────────────────────────────────
+            # â”€â”€ Pillar 1A: user bubble â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             await self._ws_manager.send_to_client(
                 client_id,
                 {
@@ -2090,7 +2093,7 @@ class IRISGateway:
 
                 agent_kernel._tool_bridge = get_agent_tool_bridge()
 
-            # ── Orb: thinking while LLM runs ────────────────────────────────
+            # â”€â”€ Orb: thinking while LLM runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             await self._ws_manager.broadcast_to_session(
                 session_id,
                 {
@@ -2099,9 +2102,9 @@ class IRISGateway:
                 },
             )
 
-            # ── Looping "processing" sound while LLM thinks ────────────────
+            # â”€â”€ Looping "processing" sound while LLM thinks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Load the WAV file BEFORE starting the thread so playback begins
-            # immediately — the file load + resample takes ~50ms and if the
+            # immediately â€” the file load + resample takes ~50ms and if the
             # agent responds before that, the stop event is already set and
             # zero iterations play.
             _sttproc_stop = threading.Event()
@@ -2120,7 +2123,7 @@ class IRISGateway:
                     _sttproc_data, _sttproc_sr = _sf_s.read(_path, dtype="float32")
                     if _sttproc_data.ndim > 1:
                         _sttproc_data = _sttproc_data.mean(axis=1)
-                    # 3x gain: STTPROC.wav is −27.4 dBFS, target ~−17.9 dBFS
+                    # 3x gain: STTPROC.wav is âˆ’27.4 dBFS, target ~âˆ’17.9 dBFS
                     _sttproc_data = _np_s.clip(_sttproc_data * 3.0, -0.99, 0.99)
                     if _sttproc_sr != 24000:
                         _ratio = 24000 / _sttproc_sr
@@ -2151,7 +2154,7 @@ class IRISGateway:
                     while True:
                         _loop_count += 1
                         _sd2.play(_sttproc_data, _sttproc_sr, device=_sttproc_dev, blocking=True)
-                        # Check AFTER playback — ensures current iteration finishes
+                        # Check AFTER playback â€” ensures current iteration finishes
                         # and gives TTS a moment to start before we go silent.
                         if _sttproc_stop.is_set():
                             # Play one more short overlap to avoid dead silence gap
@@ -2166,7 +2169,7 @@ class IRISGateway:
             )
             _sttproc_thread.start()
 
-            # ── Streaming TTS: sentence queue shared between LLM and playback ─
+            # â”€â”€ Streaming TTS: sentence queue shared between LLM and playback â”€
             import re as _re
 
             sentence_queue = queue.Queue()
@@ -2194,7 +2197,7 @@ class IRISGateway:
 
                     # Stream sentences into TTS from RESPONSE text
                     # (chunk_callback receives actual response content from the LLM,
-                    #  NOT reasoning/thinking — reasoning goes through reasoning_callback).
+                    #  NOT reasoning/thinking â€” reasoning goes through reasoning_callback).
                     nonlocal _sentence_buf_words
                     nonlocal _first_chunk_seen
                     nonlocal _first_sentence_seen
@@ -2249,25 +2252,25 @@ class IRISGateway:
                         from_voice=True,
                     )
                     _log_timing("llm_end")
-                    # Final flush — any remaining text becomes a sentence
+                    # Final flush â€” any remaining text becomes a sentence
                     if sentence_buf:
                         sentence_queue.put("".join(sentence_buf))
                         sentence_buf.clear()
                     spoken = agent_kernel.prepare_spoken_text(resp, enriched)
                     return resp, spoken
                 finally:
-                    # ALWAYS put sentinel — even if agent throws, the TTS thread
+                    # ALWAYS put sentinel â€” even if agent throws, the TTS thread
                     # must not block forever on sentence_queue.get().
                     sentence_queue.put(None)
 
             # "speaking" state is now sent by _speak_response when audio actually
-            # starts playing — not here while the LLM is still thinking.
+            # starts playing â€” not here while the LLM is still thinking.
             _tts_started = True
 
-            # ── Start TTS thread BEFORE agent runs ────────────────────────────
+            # â”€â”€ Start TTS thread BEFORE agent runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # chunk_callback pushes response sentences into sentence_queue
             # during LLM generation.  The TTS thread picks them up and starts
-            # playing the first sentence immediately — no waiting for full reply.
+            # playing the first sentence immediately â€” no waiting for full reply.
             _loop = asyncio.get_running_loop()
 
             def _wrap_tts_streaming(q: queue.Queue, sid: str, cid: str, _l):
@@ -2280,14 +2283,14 @@ class IRISGateway:
                 _log_timing("tts_thread_start")
                 _succeeded = False
                 try:
-                    self._logger.info("[TTS] _wrap_tts_streaming started — calling _speak_response")
+                    self._logger.info("[TTS] _wrap_tts_streaming started â€” calling _speak_response")
                     self._speak_response(q, sid, _sttproc_stop=_sttproc_stop)
                     self._logger.info("[TTS] _speak_response completed")
                     _succeeded = True
                 except Exception as _tts_err:
                     self._logger.error(f"[TTS] streaming fatal: {_tts_err}", exc_info=True)
                 finally:
-                    # Only send idle on ERROR — _speak_response's own finally
+                    # Only send idle on ERROR â€” _speak_response's own finally
                     # block already handles the success case (auto-relisten or idle).
                     # Sending idle unconditionally would override conversation-mode
                     # auto-relisten and break back-and-forth flow.
@@ -2314,11 +2317,11 @@ class IRISGateway:
                 name="voice-tts-streaming",
             ).start()
 
-            # Run agent synchronously in thread pool — chunk_callback pushes
+            # Run agent synchronously in thread pool â€” chunk_callback pushes
             # sentences into sentence_queue as the LLM streams the response.
             response, spoken = await loop.run_in_executor(None, _execute_agent)
 
-            # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
+            # â”€â”€ Pillar 1B: assistant bubble in ChatView â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
             _log_timing("text_response_sent")
             await self._ws_manager.send_to_client(
@@ -2338,6 +2341,8 @@ class IRISGateway:
             self._logger.error(
                 f"[Voice] Pipeline error for session {session_id}: {e}", exc_info=True
             )
+            if _sttproc_stop is not None:
+                _sttproc_stop.set()  # stop STTPROC immediately on error
             await self._ws_manager.broadcast_to_session(
                 session_id, {"type": "listening_state", "payload": {"state": "error"}}
             )
@@ -2348,10 +2353,11 @@ class IRISGateway:
 
         finally:
             if not _tts_started:
-                # Safety net: if TTS never started, ensure we always reach idle.
-                # (TTS path sends idle itself via _speak_response finally block.)
-                pass
-            # ── Voice pipeline timing summary ─────────────────────────────────
+                # Safety net: if TTS never started, ensure STTPROC stops
+                # and we always reach idle.
+                if _sttproc_stop is not None:
+                    _sttproc_stop.set()
+            # â”€â”€ Voice pipeline timing summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if hasattr(self, "_voice_timing"):
                 t0 = self._voice_timing["vad_end"]
                 total = _voice_time.monotonic() - t0
@@ -2388,7 +2394,7 @@ class IRISGateway:
         instead of the overly energetic delivery that occurs when the model
         generates sentences ending in '!'.
         """
-        # Use module-level pre-compiled patterns — no per-call re.compile() cost.
+        # Use module-level pre-compiled patterns â€” no per-call re.compile() cost.
         text = _RE_EMOJI.sub("", text)
         text = _RE_MD_HEADING.sub("", text)
         text = _RE_MD_BULLET.sub("", text)
@@ -2419,7 +2425,7 @@ class IRISGateway:
             session_id: Optional session ID to broadcast idle state to when finished.
             _sttproc_stop: Optional event to signal that TTS playback has started.
                        The "processing" loop sound (STTPROC.wav) stops when this
-                       fires — set here at the point where audio device opens,
+                       fires â€” set here at the point where audio device opens,
                        not when the TTS thread begins.
         """
         from .agent import get_tts_manager
@@ -2482,9 +2488,9 @@ class IRISGateway:
         FIRST_CHUNK_THRESHOLD = _first_chunk_threshold
         NORMAL_CHUNK_THRESHOLD = _normal_chunk_threshold
 
-        # ── Notify frontend: TTS is starting ──
+        # â”€â”€ Notify frontend: TTS is starting â”€â”€
         # Must happen regardless of native vs fallback player path.
-        # Only for string input — queue input gets "speaking" from the caller.
+        # Only for string input â€” queue input gets "speaking" from the caller.
         if (
             isinstance(input_source, str)
             and session_id
@@ -2501,7 +2507,7 @@ class IRISGateway:
                 self._main_loop,
             )
 
-        # ── Native C++ audio fast-path (no asyncio.Queue, no polling) ──
+        # â”€â”€ Native C++ audio fast-path (no asyncio.Queue, no polling) â”€â”€
         _native = (
             engine.pipeline._native_available
             and engine.pipeline._native_player is not None
@@ -2523,7 +2529,7 @@ class IRISGateway:
         # path (main thread) can read/write it via mutating the list element.
         _total_synth_samples = [0]
 
-        # Track latest audio RMS for cadence threads — written by _push_or_queue
+        # Track latest audio RMS for cadence threads â€” written by _push_or_queue
         # (~10Hz during synthesis), read by cadence threads (~10Hz during playback).
         # A mutable list so both producer thread and cadence thread can access it.
         _latest_rms = [0.06]  # default non-zero so cadence starts immediately
@@ -2555,7 +2561,7 @@ class IRISGateway:
                     except Exception:
                         pass
                 if not native_ok:
-                    # Push raw chunk — play_stream will apply gain/normalization
+                    # Push raw chunk â€” play_stream will apply gain/normalization
                     audio_queue.put(audio_chunk)
 
                 # Track total samples for native-path cadence duration
@@ -2683,7 +2689,7 @@ class IRISGateway:
                             _ck = get_conversation_kernel()
                             if _ck is not None and _ck.should_halt_on_violation():
                                 _root_log.info(
-                                    "[_speak_response] TOPO_VIOLATION — halting TTS"
+                                    "[_speak_response] TOPO_VIOLATION â€” halting TTS"
                                 )
                                 _ck.mark_speaking(False)
                                 break
@@ -2740,7 +2746,7 @@ class IRISGateway:
                                             if not _first_audio_pushed:
                                                 _first_audio_pushed = True
                                                 _mark("first_audio_pushed")
-                                                # ── First-chunk housekeeping ──────────────
+                                                # â”€â”€ First-chunk housekeeping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                                                 if is_first_chunk:
                                                     is_first_chunk = False
                                                     _target = NORMAL_CHUNK_THRESHOLD
@@ -2787,7 +2793,7 @@ class IRISGateway:
                                         if not _first_audio_pushed:
                                             _first_audio_pushed = True
                                             _mark("first_audio_pushed")
-                                            # ── First-chunk housekeeping ──────────────
+                                            # â”€â”€ First-chunk housekeeping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                                             if is_first_chunk:
                                                 is_first_chunk = False
                                                 _target = NORMAL_CHUNK_THRESHOLD
@@ -2863,14 +2869,14 @@ class IRISGateway:
                     except Exception:
                         pass
                 if not _native:
-                    # Sentinel object — distinct from the timeout → None case.
+                    # Sentinel object â€” distinct from the timeout â†’ None case.
                     audio_queue.put(_TTS_END_STREAM)
 
         # 3. Suppress Porcupine while IRIS is speaking
         # Clear any stale _speech_interrupted flag from a previous
         # voice-command interruption so the next auto-relisten isn't skipped.
         engine._speech_interrupted = False
-        # Note: STTPROC.wav stop moved into producer thread — stops on first
+        # Note: STTPROC.wav stop moved into producer thread â€” stops on first
         # TTS audio chunk to avoid the "talking into silence" gap.
         engine.set_tts_active(True)
 
@@ -2887,15 +2893,15 @@ class IRISGateway:
                 # Detect zero-audio production (model was unavailable)
                 if _total_synth_samples[0] == 0:
                     self._logger.error(
-                        "[TTS] _speak_response native: produced ZERO audio samples — "
+                        "[TTS] _speak_response native: produced ZERO audio samples â€” "
                         "TTS model returned no output. Check TTSManager error logs."
                     )
 
-                # ── Cadence thread for native path ─────────────────────────
+                # â”€â”€ Cadence thread for native path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 # The producer's _push_or_queue sends audio_envelope with actual
                 # RMS during synthesis (~10Hz), but stops when the producer thread
                 # finishes.  The native player buffers audio and plays
-                # asynchronously — without a cadence thread covering the full
+                # asynchronously â€” without a cadence thread covering the full
                 # playback duration, the orb stops breathing mid-TTS.
                 _native_cadence_thread = None
                 _approx_dur = _total_synth_samples[0] / _TTS_SAMPLE_RATE
@@ -2950,7 +2956,7 @@ class IRISGateway:
                     )
                     _native_cadence_thread.start()
 
-                # ── Word-timing thread for native path ─────────────────────
+                # â”€â”€ Word-timing thread for native path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 # Broadcast tts_word events with character-proportional timing
                 # so word highlighting syncs with speech rhythm.
                 # MUST start BEFORE wait_done() so words fire during playback.
@@ -2968,7 +2974,7 @@ class IRISGateway:
                         import asyncio as _asyncio2
                         import time as _time2
                         # Wait for first chunk to reach audio device before firing
-                        # word events — eliminates hardcoded sleep guess.
+                        # word events â€” eliminates hardcoded sleep guess.
                         if _playback_event is not None:
                             _playback_event.wait(timeout=2.0)
                         _time2.sleep(0.03)  # tiny buffer for device latency
@@ -3049,7 +3055,7 @@ class IRISGateway:
                         break
                     if chunk is None:
                         self._logger.error(
-                            f"[Voice] TTS audio queue timed out after {_timeout}s — skipping TTS, continuing conversation"
+                            f"[Voice] TTS audio queue timed out after {_timeout}s â€” skipping TTS, continuing conversation"
                         )
                         break
 
@@ -3064,7 +3070,7 @@ class IRISGateway:
 
                     _buffered_chunks.append(chunk)
 
-                    # ── Stream immediately ──────────────────────────────
+                    # â”€â”€ Stream immediately â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                     if not _sd_stream_started:
                         _sd_stream_started = True
                         _stream_start_time = time.monotonic()
@@ -3082,7 +3088,7 @@ class IRISGateway:
                         ch_f32 = np.asarray(chunk, dtype=np.float32)
                         _sd_stream.write(ch_f32)
 
-                        # ── Word monitor (starts on first chunk) ─────────
+                        # â”€â”€ Word monitor (starts on first chunk) â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         # Uses _sd_stream.time (real audio playback position)
                         # to determine the current word.  This is the
                         # document-prescribed approach: query actual playback
@@ -3108,11 +3114,16 @@ class IRISGateway:
                                     # Update word count in case more sentences
                                     # were added by the producer.
                                     _wn = len(_all_words) or 1
-                                    _total_dur = (
-                                        _total_synth_samples[0] / _TTS_SAMPLE_RATE
-                                        if _total_synth_samples[0]
-                                        else _pos * 2
-                                    )
+                                    # Wait until the producer has set total
+                                    # synth samples â€” the fallback (_pos*2)
+                                    # locks frac to 0.5, freezing words at 50%.
+                                    if not _total_synth_samples[0] or _total_synth_samples[0] <= 0:
+                                        _tw.sleep(0.1)
+                                        continue
+                                    _total_dur = _total_synth_samples[0] / _TTS_SAMPLE_RATE
+                                    if _total_dur <= 0:
+                                        _tw.sleep(0.1)
+                                        continue
                                     _frac = min(1.0, _pos / _total_dur)
                                     _idx = int(_frac * _wn)
                                     if _idx >= _wn:
@@ -3148,7 +3159,7 @@ class IRISGateway:
                             )
                             _word_monitor.start()
 
-                        # ── Broadcast cadence per-chunk ────────────────
+                        # â”€â”€ Broadcast cadence per-chunk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         # So the orb breathing matches audio in real-time
                         # instead of waiting for all chunks to accumulate.
                         _rms = float(np.sqrt(np.mean(np.square(ch_f32))))
@@ -3186,19 +3197,19 @@ class IRISGateway:
                         _sd_stream.stop()
                         _sd_stream.close()
 
-                # ── Monitor for late interrupts ─────────────────────────
+                # â”€â”€ Monitor for late interrupts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 # If the consumer loop exited normally (END_STREAM) moments
                 # before the user clicked the orb, the interrupt flag might
                 # arrive after the stream already closed.  If so, still
                 # broadcast the idle envelope so the frontend resets.
                 if not interrupted.is_set() and _sd_stream_started:
-                    for _check in range(10):  # 10 × 100ms = 1s window
+                    for _check in range(10):  # 10 Ã— 100ms = 1s window
                         if engine.is_speech_interrupted():
                             interrupted.set()
                             break
                         time.sleep(0.1)
 
-                # ── Tell frontend the orb should stop breathing ────────
+                # â”€â”€ Tell frontend the orb should stop breathing â”€â”€â”€â”€â”€â”€â”€â”€
                 if session_id and self._main_loop and _sd_stream_started:
                     try:
                         import asyncio as _async_idle
@@ -3215,10 +3226,10 @@ class IRISGateway:
                     except Exception:
                         pass
 
-                # ── Word timing is handled by the streaming monitor ────
+                # â”€â”€ Word timing is handled by the streaming monitor â”€â”€â”€â”€
                 # (started when the first chunk is written, uses
                 #  _sd_stream.time for real playback position).
-                # The post-loop thread has been replaced — see line ~3089.
+                # The post-loop thread has been replaced â€” see line ~3089.
 
                 producer_thread.join(timeout=5)
         except Exception as e:
@@ -3247,7 +3258,7 @@ class IRISGateway:
             #
             _main_loop = self._main_loop
             if _main_loop and not _main_loop.is_running():
-                _main_loop = None  # dead loop — fall through
+                _main_loop = None  # dead loop â€” fall through
 
             if session_id and _main_loop:
                 import asyncio as _asyncio
@@ -3279,11 +3290,11 @@ class IRISGateway:
                         pre_speech_timeout_sec=self._relisten_pre_speech_timeout,
                     )
                 elif in_conversation and was_interrupted:
-                    # User double-clicked to interrupt TTS — voice_command_start
+                    # User double-clicked to interrupt TTS â€” voice_command_start
                     # already sent "listening" and started recording.  Sending
                     # "idle" here would override that state and break barge-in.
                     self._logger.info(
-                        f"[Voice] Conversation interrupted — state managed by voice_command_start"
+                        f"[Voice] Conversation interrupted â€” state managed by voice_command_start"
                     )
                 else:
                     _asyncio.run_coroutine_threadsafe(
@@ -3294,7 +3305,7 @@ class IRISGateway:
                         _main_loop,
                     )
             elif _main_loop:
-                # Fallback: no session_id → broadcast idle to ALL connected
+                # Fallback: no session_id â†’ broadcast idle to ALL connected
                 # clients so their orbs don't stay stuck in "speaking".
                 import asyncio as _asyncio
 
@@ -3305,11 +3316,11 @@ class IRISGateway:
                     _main_loop,
                 )
             else:
-                # No main_loop available at all — safe no-op.  The frontend
+                # No main_loop available at all â€” safe no-op.  The frontend
                 # unstick timer (chat-view.tsx) will clear the speaking state
                 # after the word-highlight interval completes.
                 self._logger.debug(
-                    "[Voice] No main loop to broadcast idle — relying on frontend timeout"
+                    "[Voice] No main loop to broadcast idle â€” relying on frontend timeout"
                 )
 
     async def _handle_tts_play(
@@ -3338,9 +3349,9 @@ class IRISGateway:
 
         import numpy as np
 
-        # ── Phase 1: Synthesize audio in thread executor ─────────────────
+        # â”€â”€ Phase 1: Synthesize audio in thread executor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         def _synthesize() -> list:
-            """Blocking TTS synthesis — returns list of float32 chunks."""
+            """Blocking TTS synthesis â€” returns list of float32 chunks."""
             from .agent import get_tts_manager
 
             tts = get_tts_manager()
@@ -3365,10 +3376,10 @@ class IRISGateway:
             if not audio_chunks:
                 raise RuntimeError("TTS produced no audio chunks")
 
-            # ── Calculate per-word timing (character-proportional) ───────
+            # â”€â”€ Calculate per-word timing (character-proportional) â”€â”€â”€â”€â”€â”€â”€
             # Instead of uniform total_duration/word_count (which gives short
             # words as much time as long words), allocate time proportional to
-            # each word's character length.  A 6-char word gets ~2× the time
+            # each word's character length.  A 6-char word gets ~2Ã— the time
             # of a 3-char word, matching natural speech rhythm more closely.
             from .agent.tts import OUTPUT_SAMPLE_RATE as _TTS_SAMPLE_RATE
 
@@ -3389,7 +3400,7 @@ class IRISGateway:
                 f"audio {len(audio_chunks)} chunks ({total_samples} samples)"
             )
 
-            # ── Phase 2: Start playback in thread executor (non-blocking) ─
+            # â”€â”€ Phase 2: Start playback in thread executor (non-blocking) â”€
             def _play() -> None:
                 from .audio.engine import get_audio_engine
 
@@ -3400,7 +3411,7 @@ class IRISGateway:
 
             playback_future = loop.run_in_executor(None, _play)
 
-            # ── Phase 2b: Broadcast audio_envelope for orb animation ──────
+            # â”€â”€ Phase 2b: Broadcast audio_envelope for orb animation â”€â”€â”€â”€â”€â”€
             # The orb needs periodic audio_envelope messages during playback
             # so the breathing animation reacts to the speech rhythm.
             import math as _math
@@ -3445,7 +3456,7 @@ class IRISGateway:
                 )
                 _cadence_thread.start()
 
-            # ── Phase 3: Send word events while playback runs ───────────
+            # â”€â”€ Phase 3: Send word events while playback runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Uses character-proportional timing (word_offsets) so short words
             # flash quickly while long words keep highlighting longer, matching
             # natural speech rhythm better than uniform total_duration/word_count.
@@ -3532,8 +3543,8 @@ class IRISGateway:
             except Exception as e:
                 _root_log.warning(f"[TTS] send {post_tts_state} state failed: {e}")
 
-            # ── Bug 2 fix: restart VAD recording when returning to conversation ──
-            # Sending "listening" state alone is not enough — the orb shows the
+            # â”€â”€ Bug 2 fix: restart VAD recording when returning to conversation â”€â”€
+            # Sending "listening" state alone is not enough â€” the orb shows the
             # listening animation but no audio is captured.  We must also restart
             # the voice handler so VAD can detect the next utterance.
             if post_tts_state == "listening" and self._voice_handler:
@@ -3612,7 +3623,7 @@ class IRISGateway:
                     extra={"session_id": session_id},
                 )
 
-                # Signal ChatView: AI is processing (typing indicator only — does NOT affect orb)
+                # Signal ChatView: AI is processing (typing indicator only â€” does NOT affect orb)
                 await self._ws_manager.send_to_client(
                     client_id, {"type": "chat_typing", "payload": {"active": True}}
                 )
@@ -3729,7 +3740,7 @@ class IRISGateway:
                     extra={"session_id": session_id},
                 )
 
-                # Emit inference_event for InferenceConsolePanel — fires for all backends
+                # Emit inference_event for InferenceConsolePanel â€” fires for all backends
                 try:
                     _prompt_tok = max(1, len(text) // 4)
                     _comp_tok = max(1, len(response or "") // 4)
@@ -3772,7 +3783,7 @@ class IRISGateway:
                     client_id, _final_msg
                 )
                 if not _delivered:
-                    # Client disconnected mid-inference — buffer for replay on reconnect
+                    # Client disconnected mid-inference â€” buffer for replay on reconnect
                     self._ws_manager.buffer_message(session_id, _final_msg)
 
                 # Clear ChatView typing indicator
@@ -3929,9 +3940,9 @@ class IRISGateway:
         Handle get_available_models message - dynamically query models from the active inference source.
 
         Inference modes:
-        - "Local Models"  → query Ollama at configured endpoint (default http://localhost:11434)
-        - "VPS Gateway"   → probe vps_url/v1/models or return VPS fallback list
-        - "OpenAI API"    → query openai.com/v1/models with api_key or return GPT fallback list
+        - "Local Models"  â†’ query Ollama at configured endpoint (default http://localhost:11434)
+        - "VPS Gateway"   â†’ probe vps_url/v1/models or return VPS fallback list
+        - "OpenAI API"    â†’ query openai.com/v1/models with api_key or return GPT fallback list
 
         Args:
             session_id: Session ID
@@ -3944,7 +3955,7 @@ class IRISGateway:
                 session_id
             )
 
-            # Defaults — overridden by whatever the user saved in their settings card.
+            # Defaults â€” overridden by whatever the user saved in their settings card.
             inference_mode = "lmstudio"
             vps_url = ""
             openai_api_key = ""
@@ -3955,10 +3966,10 @@ class IRISGateway:
             if session_state:
                 # model_provider field lives in the 'model_selection' section.
                 # The UI shows display values; normalise them to internal keys:
-                #   "LM Studio" / "lmstudio" → "lmstudio"
-                #   "Local Models" / "local"  → "local"   (Ollama)
-                #   "VPS Gateway"  / "vps"    → "vps"
-                #   "OpenAI API"   / "api"    → "api"
+                #   "LM Studio" / "lmstudio" â†’ "lmstudio"
+                #   "Local Models" / "local"  â†’ "local"   (Ollama)
+                #   "VPS Gateway"  / "vps"    â†’ "vps"
+                #   "OpenAI API"   / "api"    â†’ "api"
                 payload = message.get("payload", {})
                 _raw_mode = (
                     payload.get("model_provider")
@@ -4014,7 +4025,7 @@ class IRISGateway:
             )
 
             # If swarm is active (provider='iris_local'), skip LM Studio probe
-            # entirely — it just generates false warnings in the logs.
+            # entirely â€” it just generates false warnings in the logs.
             try:
                 from backend.agent.agent_kernel import get_agent_kernel as _gk
 
@@ -4024,7 +4035,7 @@ class IRISGateway:
                     and inference_mode == "lmstudio"
                 ):
                     self._logger.info(
-                        f"[Session: {session_id}] Swarm is active — skipping LM Studio probe"
+                        f"[Session: {session_id}] Swarm is active â€” skipping LM Studio probe"
                     )
                     await self._ws_manager.send_to_client(
                         client_id,
@@ -4045,7 +4056,7 @@ class IRISGateway:
                     )
                     return
             except Exception:
-                pass  # non-fatal — continue to normal flow
+                pass  # non-fatal â€” continue to normal flow
 
             available_models = []
 
@@ -4069,7 +4080,7 @@ class IRISGateway:
                 checking both the full name and the part after the last '/'.
                 """
                 name_lower = model_id.lower().split(":")[0]  # strip tag like ":latest"
-                # Also check the base name after namespace (e.g. "openbmb/minicpm-o4.5" → "minicpm-o4.5")
+                # Also check the base name after namespace (e.g. "openbmb/minicpm-o4.5" â†’ "minicpm-o4.5")
                 base_name = (
                     name_lower.rsplit("/", 1)[-1] if "/" in name_lower else name_lower
                 )
@@ -4225,7 +4236,7 @@ class IRISGateway:
                         {"id": "codellama", "name": "Code Llama", "source": "local"},
                     ]
                     self._logger.info(
-                        f"[Session: {session_id}] No models found — returning fallback list"
+                        f"[Session: {session_id}] No models found â€” returning fallback list"
                     )
 
             elif inference_mode == "lmstudio":
@@ -4295,7 +4306,7 @@ class IRISGateway:
                         },
                     ]
                     self._logger.info(
-                        f"[Session: {session_id}] LM Studio unreachable — showing fallback model list"
+                        f"[Session: {session_id}] LM Studio unreachable â€” showing fallback model list"
                     )
 
             elif inference_mode == "api":
@@ -4329,7 +4340,7 @@ class IRISGateway:
                         f"[Session: {session_id}] API models query failed ({api_base_url}): {api_err}"
                     )
 
-                # Fallback list — provider-aware based on api_base_url
+                # Fallback list â€” provider-aware based on api_base_url
                 if not available_models:
                     _base_lower = api_base_url.lower()
                     if "cohere" in _base_lower:
@@ -4662,7 +4673,7 @@ class IRISGateway:
             kernel = get_agent_kernel(session_id)
 
             if section_id == "diagnostics":
-                # ── Run diagnostics via DiagnosticsManager ────────────
+                # â”€â”€ Run diagnostics via DiagnosticsManager â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 import json
                 import subprocess as _sp
 
@@ -4808,7 +4819,7 @@ class IRISGateway:
                 self._logger.info(f"[Session: {session_id}] Diagnostics pushed to UI ({len(health_checks)} checks)")
 
             elif section_id == "logs":
-                # ── Read logs from actual log files on disk ────────────
+                # â”€â”€ Read logs from actual log files on disk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 import json
                 import os as _os
                 system_logs = []
@@ -4847,7 +4858,7 @@ class IRISGateway:
                                             "message": f"[{fn}] {msg}" if fn else msg,
                                         })
                                     except json.JSONDecodeError:
-                                        # Plain text line — wrap as INFO
+                                        # Plain text line â€” wrap as INFO
                                         parsed.append({
                                             "timestamp": "",
                                             "level": "INFO",
@@ -4895,7 +4906,7 @@ class IRISGateway:
                 self._logger.info(f"[Session: {session_id}] Logs pushed to UI ({len(system_logs)} system, {len(error_logs)} errors)")
 
             elif section_id == "analytics":
-                # ── Gather usage stats from AnalyticsManager ─────────────
+                # â”€â”€ Gather usage stats from AnalyticsManager â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 try:
                     from backend.monitor.analytics import get_analytics_manager
 
@@ -5110,11 +5121,12 @@ class IRISGateway:
 
             if success:
                 # Update state manager with model selection
-                state = await self._state_manager.get_state(session_id)
-                if state:
-                    state.selected_reasoning_model = reasoning_model
-                    state.selected_tool_execution_model = tool_execution_model
-                    # State manager will auto-save
+                pass
+            state = await self._state_manager.get_state(session_id)
+            if state:
+                state.selected_reasoning_model = reasoning_model
+                state.selected_tool_execution_model = tool_execution_model
+                # State manager will auto-save
 
                 # Send confirmation to client
                 await self._ws_manager.send_to_client(
@@ -5280,6 +5292,13 @@ class IRISGateway:
             client_id: Client ID
         """
         state = await self._state_manager.get_state(session_id)
+        # Hydrate field_values from persisted config so the user's
+        # wheel-view settings survive frontend remounts / page reloads.
+        _saved_fv = load_field_values()
+        if _saved_fv:
+            for section_id, fields in _saved_fv.items():
+                if section_id in state.field_values:
+                    state.field_values[section_id].update(fields)
 
         await self._ws_manager.send_to_client(
             client_id,
@@ -5321,7 +5340,7 @@ class IRISGateway:
             ]
 
             # 2. Rescan the wake words directory each time to pick up newly added .ppn files
-            #    (scan_directory is a fast glob — safe to call on each get_wake_words request)
+            #    (scan_directory is a fast glob â€” safe to call on each get_wake_words request)
             discovered_files = self._wake_word_discovery.scan_directory()
             custom_list = [
                 {
@@ -5347,7 +5366,7 @@ class IRISGateway:
                 },
             )
 
-            # Send response to client — type "wake_words" matches the frontend hook's case "wake_words"
+            # Send response to client â€” type "wake_words" matches the frontend hook's case "wake_words"
             await self._ws_manager.send_to_client(
                 client_id,
                 {
@@ -5456,7 +5475,7 @@ class IRISGateway:
         self, session_id: str, client_id: str, message: dict
     ) -> None:
         """
-        Handle select_audio_device message — switch input or output device at runtime.
+        Handle select_audio_device message â€” switch input or output device at runtime.
 
         Payload:
             device_type  "input" | "output"
@@ -5484,14 +5503,14 @@ class IRISGateway:
             )
 
             # Tell AudioEngine to restart the pipeline with the new device.
-            # update_config() handles stop → initialize → start atomically.
+            # update_config() handles stop â†’ initialize â†’ start atomically.
             from .audio.engine import get_audio_engine
             engine = get_audio_engine()
             engine.update_config(**{f"{device_type}_device": device_index})
 
             self._logger.info(
                 f"[Session: {session_id}] {device_type} device switched to "
-                f"'{device_name}' — pipeline restarted"
+                f"'{device_name}' â€” pipeline restarted"
             )
 
             # Confirm to client
@@ -5548,7 +5567,7 @@ class IRISGateway:
                 },
             )
 
-            # Look up wake word file — try cached results first, rescan if not found
+            # Look up wake word file â€” try cached results first, rescan if not found
             wake_word_file = self._wake_word_discovery.get_file_by_filename(filename)
             if not wake_word_file:
                 # Cache may be stale (e.g., select_wake_word called before get_wake_words).
@@ -5572,7 +5591,7 @@ class IRISGateway:
                 )
                 return
 
-            # Update WakeConfig — the registered callback triggers reinitialize_porcupine().
+            # Update WakeConfig â€” the registered callback triggers reinitialize_porcupine().
             # Custom .ppn files store the absolute path; built-ins use the keyword name.
             try:
                 from .agent.wake_config import get_wake_config
@@ -6041,7 +6060,7 @@ class IRISGateway:
 
     async def _handle_enable_vision(self, session_id: str, client_id: str) -> None:
         """
-        Handle enable_vision message — checks if LFM2.5-VL llama-server is reachable.
+        Handle enable_vision message â€” checks if LFM2.5-VL llama-server is reachable.
         Vision is a separate process (llama-server port 8081); enabling = health check.
         """
         try:
@@ -6113,7 +6132,7 @@ class IRISGateway:
     async def _handle_disable_vision(self, session_id: str, client_id: str) -> None:
         """
         Handle disable_vision message.
-        LFM2.5-VL is a separate process — disabling means the agent stops calling vision tools.
+        LFM2.5-VL is a separate process â€” disabling means the agent stops calling vision tools.
         """
         try:
             self._logger.info(f"[Session: {session_id}] Vision disabled by user")
@@ -6149,7 +6168,7 @@ class IRISGateway:
 
     async def _handle_get_vision_status(self, session_id: str, client_id: str) -> None:
         """
-        Handle get_vision_status message — pings LFM2.5-VL server.
+        Handle get_vision_status message â€” pings LFM2.5-VL server.
         """
         try:
             import asyncio
@@ -6543,7 +6562,7 @@ class IRISGateway:
         if not isinstance(device, str) or device == "":
             return device
 
-        # ── Loopback device keywords to skip ──────────────────────────────
+        # â”€â”€ Loopback device keywords to skip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         _LOOPBACK_KEYWORDS = (
             "stereo mix",
             "what u hear",
@@ -6593,7 +6612,7 @@ class IRISGateway:
                 name_lower = d["name"].lower()
                 if device_lower in name_lower or name_lower in device_lower:
                     self._logger.debug(
-                        f"[IRISGateway] Resolved '{device}' via substring match → "
+                        f"[IRISGateway] Resolved '{device}' via substring match â†’ "
                         f"'{d['name']}' (index {d['index']})"
                     )
                     return d["index"]
@@ -6601,7 +6620,7 @@ class IRISGateway:
                 d["name"] for d in devices if d.get("input" if want_input else "output")
             ]
             self._logger.warning(
-                f"[IRISGateway] Could not resolve device name '{device}' to an index — "
+                f"[IRISGateway] Could not resolve device name '{device}' to an index â€” "
                 f"using name as-is. Available: {available}"
             )
         except Exception as e:
@@ -6610,9 +6629,9 @@ class IRISGateway:
             )
         return device
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Local GGUF model handlers
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _handle_get_local_models(
         self, session_id: str, client_id: str, message: dict
@@ -6682,7 +6701,7 @@ class IRISGateway:
                             "to_model": model_path,
                             "profile": profile,
                             "pct": 0,
-                            "msg": "Switching model — finishing current requests...",
+                            "msg": "Switching model â€” finishing current requests...",
                         },
                     },
                 )
@@ -6705,7 +6724,7 @@ class IRISGateway:
         try:
             mgr = get_local_model_manager()
 
-            # Progress callback — sends incremental layer-loading updates to the client.
+            # Progress callback â€” sends incremental layer-loading updates to the client.
             # Called as each significant progress milestone is parsed from llama.cpp stdout.
             async def _progress_cb(event: dict) -> None:
                 try:
@@ -6726,7 +6745,7 @@ class IRISGateway:
                 except Exception:
                     pass
 
-            # [10.7] Crash callback — watchdog calls this if subprocess dies after load
+            # [10.7] Crash callback â€” watchdog calls this if subprocess dies after load
             async def _crash_cb() -> None:
                 try:
                     await self._ws_manager.broadcast_to_session(
@@ -6785,7 +6804,7 @@ class IRISGateway:
 
                     kernel = get_agent_kernel(session_id)
                     # mgr.ENDPOINT = "http://127.0.0.1:8082/v1"
-                    # _get_lmstudio_client() appends /v1 itself — strip to avoid /v1/v1
+                    # _get_lmstudio_client() appends /v1 itself â€” strip to avoid /v1/v1
                     _base = mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
                     kernel.configure_openai_compat(_base, provider_name="iris_local")
                     # In-process binding (no-op on legacy subprocess path since
@@ -6835,7 +6854,7 @@ class IRISGateway:
         """Stop the iris_local model server subprocess.
 
         [10.7] Also de-wires the kernel so it does not keep hitting the dead :8082
-        endpoint after unload. Kernel provider reset to None — the user must explicitly
+        endpoint after unload. Kernel provider reset to None â€” the user must explicitly
         choose a new provider before sending the next message.
         """
         from .agent.local_model_manager import get_local_model_manager
@@ -6851,7 +6870,7 @@ class IRISGateway:
             )
             await mgr.unload_model()
 
-            # [10.7] De-wire the kernel — prevent stale requests to dead :8082 endpoint
+            # [10.7] De-wire the kernel â€” prevent stale requests to dead :8082 endpoint
             # AND release the in-process adapter binding so the next model load
             # starts from a clean slate.
             try:
@@ -6923,7 +6942,7 @@ class IRISGateway:
             needs_reload = mgr.would_require_reload(new_profile, custom_params)
 
             if not needs_reload:
-                # Hot-apply: n_ctx and n_gpu_layers unchanged — acknowledge only
+                # Hot-apply: n_ctx and n_gpu_layers unchanged â€” acknowledge only
                 # (llama-cpp-python server does not expose a live settings endpoint,
                 # so we save the new params for the next load and confirm to the user)
                 mgr.save_model_settings(
@@ -6954,7 +6973,7 @@ class IRISGateway:
                         "profile": new_profile,
                         "model_path": current_model,
                         "pct": 0,
-                        "msg": "Applying new inference settings — reloading model...",
+                        "msg": "Applying new inference settings â€” reloading model...",
                     },
                 },
             )
@@ -7081,13 +7100,13 @@ class IRISGateway:
         except Exception as e:
             self._logger.error(f"[LocalModel] get_hardware_info error: {e}")
 
-    # ── Swarm Action Handler ───────────────────────────────────────────────
+    # â”€â”€ Swarm Action Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     async def _handle_swarm_action(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
         """Handle start_swarm / stop_swarm / swarm_action messages from card buttons."""
         action = message.get("type", "")
-        # Normalise — cards send "start_swarm" / "stop_swarm" directly
+        # Normalise â€” cards send "start_swarm" / "stop_swarm" directly
         if action == "swarm_action":
             action = message.get("action", "")
         payload = message.get("payload", {})
@@ -7114,7 +7133,7 @@ class IRISGateway:
                     {
                         "type": "swarm_status",
                         "title": "Swarm Started",
-                        "message": f"Swarm active — {cfg.inference.swarm_worker_count} workers",
+                        "message": f"Swarm active â€” {cfg.inference.swarm_worker_count} workers",
                         "progress": 100,
                         "status": "active",
                     }
@@ -7153,7 +7172,7 @@ class IRISGateway:
                 },
             )
 
-    # ── Local Model Load/Unload Handlers ────────────────────────────────────
+    # â”€â”€ Local Model Load/Unload Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     async def _handle_load_local_model(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -7439,7 +7458,7 @@ class IRISGateway:
         except Exception as e:
             self._logger.error(f"[LocalModel] toggle_pin error: {e}")
 
-    # ── Crawler handler ─────────────────────────────────────────────────────
+    # â”€â”€ Crawler handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _handle_crawler_query(
         self, session_id: str, client_id: str, message: dict
@@ -7570,13 +7589,13 @@ class IRISGateway:
                 "type": "text_response",
                 "turn_id": get_turn_id(),
                 "text": (
-                    f"{summary or f'Found results for: {query}'} — see Dashboard →"
+                    f"{summary or f'Found results for: {query}'} â€” see Dashboard â†’"
                 ),
                 "sender": "assistant",
             }
         )
 
-    # ── Developer Mode CLI handlers ─────────────────────────────────────────
+    # â”€â”€ Developer Mode CLI handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _handle_dev_cli(
         self, session_id: str, client_id: str, message: dict
@@ -7585,7 +7604,7 @@ class IRISGateway:
         Route a dev_cli message to the DevOrchestrator.
         Payload: { query: str, workdir: str, tool_hint?: str }
         """
-        # [13.3] Capability gate — terminal requires developer mode
+        # [13.3] Capability gate â€” terminal requires developer mode
         from backend.capabilities import CapabilitySet
 
         try:
@@ -7627,7 +7646,7 @@ class IRISGateway:
 
     async def _handle_dev_abort(self, session_id: str, client_id: str) -> None:
         """Abort the active CLI subprocess for this session."""
-        # [13.3] Capability gate — terminal requires developer mode
+        # [13.3] Capability gate â€” terminal requires developer mode
         from backend.capabilities import CapabilitySet
 
         try:
@@ -7655,7 +7674,7 @@ class IRISGateway:
     ) -> None:
         """
         Route a terminal_input message to TerminalHandler for direct shell access.
-        Domain 13.4 — developer mode only, security-filtered.
+        Domain 13.4 â€” developer mode only, security-filtered.
         """
         from backend.capabilities import CapabilitySet
 

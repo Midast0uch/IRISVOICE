@@ -315,9 +315,10 @@ class IRISConfig:
     system: SystemConfig = field(default_factory=SystemConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     ports: PortConfig = field(default_factory=PortConfig)
+    field_values: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "routing": self.routing.to_dict(),
             "inference": self.inference.to_dict(),
             "swarm_roles": self.swarm_roles.to_dict(),
@@ -325,6 +326,9 @@ class IRISConfig:
             "tts": self.tts.to_dict(),
             "ports": self.ports.to_dict(),
         }
+        if self.field_values:
+            d["field_values"] = self.field_values
+        return d
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "IRISConfig":
@@ -335,6 +339,7 @@ class IRISConfig:
             system=SystemConfig.from_dict(raw.get("system", raw)),
             tts=TTSConfig.from_dict(raw.get("tts", {})),
             ports=PortConfig.from_dict(raw.get("ports", {})),
+            field_values=raw.get("field_values", {}),
         )
 
 
@@ -400,6 +405,31 @@ def save_config(cfg: IRISConfig) -> None:
         logger.info(f"[Config] Saved config to {_IRIS_CONFIG_PATH}")
     except Exception as exc:
         logger.warning(f"[Config] Failed to save config: {exc}")
+
+
+# ── Field values persistence (wheel-view form state) ──────────────────────
+# Separate from structured IRISConfig because field_values are raw form values
+# that are saved/loaded alongside the structured config.
+
+
+def save_field_values(values: Dict[str, Dict[str, Any]]) -> None:
+    """Persist raw field_values to the config file so they survive
+    frontend remounts and page reloads."""
+    try:
+        cfg = load_config()
+        cfg.field_values = values
+        save_config(cfg)
+    except Exception as exc:
+        logger.warning(f"[Config] Failed to save field values: {exc}")
+
+
+def load_field_values() -> Dict[str, Dict[str, Any]]:
+    """Load previously persisted field_values from config file."""
+    try:
+        cfg = load_config()
+        return cfg.field_values or {}
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------------------
