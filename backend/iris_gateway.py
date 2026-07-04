@@ -361,7 +361,7 @@ class IRISGateway:
                 else:
                     await self._handle_execute_cleanup(session_id, client_id, message)
 
-            elif msg_type in ["text_message", "clear_chat"]:
+            elif msg_type in ["text_message", "clear_chat", "new_conversation"]:
                 await self._handle_chat(session_id, client_id, message)
 
             elif msg_type in [
@@ -3579,7 +3579,7 @@ class IRISGateway:
         self, session_id: str, client_id: str, message: dict
     ) -> None:
         """
-        Handle chat messages: text_message, clear_chat.
+        Handle chat messages: text_message, clear_chat, new_conversation.
 
         Args:
             session_id: Session ID
@@ -3588,6 +3588,22 @@ class IRISGateway:
         """
         msg_type = message.get("type")
         payload = message.get("payload", {})
+
+        if msg_type == "new_conversation":
+            # Reset the agent kernel's conversation context so the next
+            # voice command or text message starts fresh.  The frontend sends
+            # this when the user creates a "New Conversation" in the chat UI.
+            try:
+                agent_kernel = get_agent_kernel(session_id)
+                agent_kernel.clear_conversation()
+                self._logger.info(
+                    f"[Chat] Cleared conversation context for session {session_id}"
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    f"[Chat] Failed to clear conversation for {session_id}: {exc}"
+                )
+            return
 
         if msg_type == "text_message":
             text = payload.get("text")
