@@ -1156,23 +1156,26 @@ class TestWordMonitorStableWn:
                     f"real_wn={real_wn}, idx={idx}: capped={capped} > real_wn"
                 )
 
-    def test_monotonic_fraction_never_decreases(self):
-        """The fraction _pos / _total_dur must never decrease, even when
-        _total_dur jumps ahead (producer adds next sentence's samples)."""
+    def test_monotonic_fraction_with_padding(self):
+        """The fraction _pos / (_total_dur + 0.5) must never decrease.
+        The 0.5s padding prevents the initial fraction from being near 1.0
+        (when _pos ≈ _total_dur for the first chunk)."""
         frac = 0.0
         _last_frac = 0.0
         # Simulate: _pos grows, _total_dur jumps ahead
         for _pos, _dur in [(0.5, 1.0), (0.8, 1.2), (1.0, 3.0), (1.5, 3.2)]:
-            _frac = min(1.0, _pos / _dur)
+            _frac = min(1.0, _pos / (_dur + 0.5))
             if _frac < _last_frac:
                 _frac = _last_frac
             else:
                 _last_frac = _frac
             assert _frac >= frac, f"Fraction decreased: {frac} -> {_frac}"
             frac = _frac
-        # Even though _pos/_dur jumped from 0.8/1.2=0.67 to 1.0/3.0=0.33,
-        # the monotonic guard keeps frac at 0.67
-        assert abs(frac - 0.6666667) < 1e-6, f"Expected 0.6666, got {frac}"
+        # After step 2: frac = 0.8 / (1.2 + 0.5) = 0.8/1.7 ≈ 0.4706
+        # Step 3: 1.0 / (3.0 + 0.5) = 0.286 < 0.4706 → guard keeps 0.4706
+        # Step 4: 1.5 / (3.2 + 0.5) = 0.405 < 0.4706 → guard keeps 0.4706
+        # Final value should be 0.4706 (guard never let it decrease)
+        assert abs(frac - 0.470588235) < 1e-6, f"Expected 0.4706, got {frac}"
 
     def test_word_index_only_moves_forward(self):
         """Word index must never decrease when _wn grows."""

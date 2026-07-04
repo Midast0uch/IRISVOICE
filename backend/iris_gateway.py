@@ -3137,7 +3137,7 @@ class IRISGateway:
                                     if _total_dur < 0.5:
                                         _tw.sleep(0.1)
                                         continue
-                                    _frac = min(1.0, _pos / _total_dur)
+                                    _frac = min(1.0, _pos / (_total_dur + 0.5))
                                     # Monotonic fraction — never let _total_dur
                                     # jumps push the fraction backwards
                                     nonlocal _last_frac, _last_word_idx
