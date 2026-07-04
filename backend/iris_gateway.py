@@ -3037,6 +3037,7 @@ class IRISGateway:
                 _stream_start_time = None
                 _rms_peak = 0.0  # running peak RMS for normalization
                 _word_monitor_started = False
+                _total_written_for_words = 0  # cumulative samples written to OutputStream
 
                 while True:
                     # Fast timeout (0.5s) after streaming starts so barge-in
@@ -3091,6 +3092,7 @@ class IRISGateway:
                     if _sd_stream is not None:
                         ch_f32 = np.asarray(chunk, dtype=np.float32)
                         _sd_stream.write(ch_f32)
+                        _total_written_for_words += len(ch_f32)
 
                         # â”€â”€ Word monitor (starts on first chunk) â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         # Uses _sd_stream.time (real audio playback position)
@@ -3110,13 +3112,14 @@ class IRISGateway:
                                     self._logger.warning("[TTS][words] Zero words — bailing out")
                                     return
                                 while _sd_stream is not None:
-                                    try:
-                                        _pos = _sd_stream.time
-                                    except Exception:
-                                        break
-                                    if _pos <= 0:
+                                    # Use cumulative samples written to the OutputStream
+                                    # as the audio position.  _sd_stream.time returns
+                                    # incorrect values on Windows (20363s when it should
+                                    # be < 1s), which would jump the word index to the end.
+                                    if _total_written_for_words <= 0:
                                         _tw.sleep(0.05)
                                         continue
+                                    _pos = _total_written_for_words / _TTS_SAMPLE_RATE
                                     # Update word count in case more sentences
                                     # were added by the producer.
                                     _wn = len(_all_words) or 1
