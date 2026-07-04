@@ -315,11 +315,12 @@ class TestGatewayBargeInHandler:
                 {"type": "listening_state", "payload": {"state": "listening"}},
             )
 
-            # 5. New recording started on the correct session
+            # 5. New recording started on the correct session (beep skipped for barge-in)
             gateway._voice_handler.set_active_session.assert_called_with("session-123")
             gateway._voice_handler.start_recording.assert_called_once_with(
                 auto_stop=True,
                 pre_speech_timeout_sec=8.0,
+                play_beep=False,
             )
 
     def test_barge_in_adds_session_to_conversation(self, gateway):
@@ -826,4 +827,150 @@ class TestConstants:
         assert AudioEngine.BARGE_IN_ARM_DELAY == 0.3, (
             f"BARGE_IN_ARM_DELAY is {AudioEngine.BARGE_IN_ARM_DELAY}, "
             "expected 0.3 — old value 0.8 blocked barge-in too long after TTS start"
+        )
+
+
+# =========================================================================
+# 10. Timer(2.0) Orphan Prevention — Second Barge-In Must Not Stall
+# =========================================================================
+
+
+class TestIdleTimerPreventsStall:
+    """Verify the Timer(2.0) from _on_transcription_complete is properly
+    cancelled when a new recording starts (barge-in), preventing the
+    RECORDING → IDLE race that caused a 35-second hang."""
+
+    @pytest.fixture
+    def handler(self):
+        """Create a VoiceCommandHandler with mocked audio engine."""
+        from backend.audio.voice_command import VoiceCommandHandler
+        from backend.audio.engine import AudioEngine
+
+        eng = AudioEngine.__new__(AudioEngine)
+        eng.pipeline = MagicMock()
+        eng._tts_active = False
+        eng._speech_interrupted = False
+        eng._on_barge_in_energy = None
+        eng._on_barge_in_detected = None
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.025
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 10
+        eng.BARGE_IN_ARM_DELAY = 0.3
+        eng._barge_in_arm_time = 0.0
+        eng._barge_in_frame_count = 0
+        eng._logger = MagicMock()
+        eng.config = {}
+
+        from backend.audio.voice_command import VoiceCommandHandler
+        h = VoiceCommandHandler.__new__(VoiceCommandHandler)
+        h.audio_engine = eng
+        h.state = MagicMock()
+        h.state.value = "idle"
+        h.is_recording = False
+        h._recording_started_at = 0.0
+        h.audio_buffer = []
+        h._raw_frames = []
+        h.sample_rate = 16000
+        h._active_session_id = "default"
+        h._auto_stop_mode = False
+        h._pre_speech_timeout_sec = 0.0
+        h._stop_event = threading.Event()
+        h._cancel_event = threading.Event()
+        h._idle_timer = None
+        h._on_state_change = None
+        h._on_command_result = None
+        h._on_audio_level = None
+        h._on_audio_envelope = None
+        h._start_lock = threading.Lock()
+        h._whisper = None
+        h._whisper_lock = threading.Lock()
+        h._parakeet = MagicMock()
+        h._transcription_thread = None
+        h._frame_listener_registered = False
+        h._parakeet_warm_up_done = True
+        h.cadence_detector = MagicMock()
+        return h
+
+    def test_idle_timer_is_daemon(self, handler):
+        """Timer created in _on_transcription_complete must be daemon."""
+        import threading as _threading
+        with patch.object(handler, "_cancel_idle_timer"):
+            with patch.object(_threading, "Timer", wraps=_threading.Timer) as mock_timer_cls:
+                # Simulate successful transcription
+                handler._on_command_result = MagicMock()
+                handler._on_transcription_complete("hello")
+                # The Timer should have been created
+                mock_timer_cls.assert_called_once()
+                call_args = mock_timer_cls.call_args
+                assert call_args[0][0] == 2.0, "Timer delay should be 2.0s"
+
+    def test_cancel_idle_timer_clears_reference(self, handler):
+        """_cancel_idle_timer should cancel any pending timer and clear the ref."""
+        mock_timer = MagicMock()
+        handler._idle_timer = mock_timer
+        handler._cancel_idle_timer()
+        mock_timer.cancel.assert_called_once()
+        assert handler._idle_timer is None
+
+    def test_cancel_idle_timer_is_noop_when_none(self, handler):
+        """_cancel_idle_timer should not crash when no timer exists."""
+        handler._idle_timer = None
+        handler._cancel_idle_timer()  # should not raise
+        assert handler._idle_timer is None
+
+    def test_start_recording_cancels_idle_timer(self, handler):
+        """start_recording must cancel any orphaned idle timer before proceeding."""
+        mock_timer = MagicMock()
+        handler._idle_timer = mock_timer
+        handler.audio_engine.pipeline = MagicMock()
+        handler.audio_engine.pipeline.output_device = 0
+        # Patch beep to avoid actual audio playback
+        with patch.object(handler, "_play_activation_beep"):
+            with patch.object(handler, "_set_state"):
+                handler.start_recording(auto_stop=True, play_beep=False)
+        mock_timer.cancel.assert_called_once()
+
+    def test_idle_timer_does_not_force_idle_during_active_recording(self, handler):
+        """_fire_idle_if_not_recording must NOT set IDLE when recording is active."""
+        handler.is_recording = True
+        with patch.object(handler, "_set_state") as mock_set:
+            handler._fire_idle_if_not_recording()
+        mock_set.assert_not_called()
+
+    def test_idle_timer_sets_idle_when_not_recording(self, handler):
+        """_fire_idle_if_not_recording must set IDLE when no recording is active."""
+        handler.is_recording = False
+        handler.state = MagicMock()
+        handler.state.value = "success"
+        with patch.object(handler, "_set_state") as mock_set:
+            handler._fire_idle_if_not_recording()
+        mock_set.assert_called_once()
+
+    def test_barge_in_handler_passes_play_beep_false(self):
+        """_on_barge_in_detected must pass play_beep=False to start_recording."""
+        from backend.iris_gateway import IRISGateway
+
+        gw = IRISGateway.__new__(IRISGateway)
+        gw._logger = MagicMock()
+        gw._ws_manager = MagicMock()
+        gw._voice_handler = MagicMock()
+        gw._conversation_sessions = set()
+        gw._active_tts_session = "session-123"
+        gw._barge_in_stop = threading.Event()
+        gw._main_loop = MagicMock()
+        gw._main_loop.is_running = MagicMock(return_value=True)
+        gw._relisten_pre_speech_timeout = 8.0
+
+        with (
+            patch("backend.audio.engine.get_audio_engine") as mock_get_engine,
+            patch("asyncio.run_coroutine_threadsafe"),
+        ):
+            engine = MagicMock()
+            engine._tts_active = True
+            mock_get_engine.return_value = engine
+            gw._on_barge_in_detected()
+
+        gw._voice_handler.start_recording.assert_called_once_with(
+            auto_stop=True,
+            pre_speech_timeout_sec=8.0,
+            play_beep=False,
         )

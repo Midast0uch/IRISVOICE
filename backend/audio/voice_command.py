@@ -229,6 +229,10 @@ class VoiceCommandHandler:
         # a lock (Event.set/is_set use an internal condition + lock internally).
         self._cancel_event = threading.Event()
 
+        # Idle timer: fires 2s after SUCCESS to transition to IDLE.
+        # Stored so it can be cancelled if a new recording (barge-in) starts first.
+        self._idle_timer: Optional[threading.Timer] = None
+
         # Callbacks
         self._on_state_change: Optional[Callable[[VoiceState, str], None]] = None
         self._on_command_result: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -299,7 +303,8 @@ class VoiceCommandHandler:
         }
 
     def start_recording(
-        self, auto_stop: bool = False, pre_speech_timeout_sec: float = 0.0
+        self, auto_stop: bool = False, pre_speech_timeout_sec: float = 0.0,
+        play_beep: bool = True,
     ) -> bool:
         """
         Begin recording user speech.
@@ -310,6 +315,8 @@ class VoiceCommandHandler:
             pre_speech_timeout_sec: In auto_stop mode, give up if speech doesn't start within
                                     this many seconds (0 = use VAD_MAX_DURATION_SEC).
                                     Used for conversation mode relisten passes.
+            play_beep: True → play activation beep (default for fresh wake-word activations).
+                       False → skip beep (barge-in re-recordings, auto-relisten).
 
         Returns:
             True if recording started successfully.
@@ -321,12 +328,12 @@ class VoiceCommandHandler:
             return False
 
         try:
-            return self._start_recording_locked(auto_stop, pre_speech_timeout_sec)
+            return self._start_recording_locked(auto_stop, pre_speech_timeout_sec, play_beep)
         finally:
             self._start_lock.release()
 
     def _start_recording_locked(
-        self, auto_stop: bool, pre_speech_timeout_sec: float
+        self, auto_stop: bool, pre_speech_timeout_sec: float, play_beep: bool = True
     ) -> bool:
         """Inner implementation of start_recording — called only when _start_lock is held."""
         self._auto_stop_mode = auto_stop
@@ -362,6 +369,10 @@ class VoiceCommandHandler:
         try:
             logger.info("[VoiceCommand] Starting recording (Parakeet primary, faster-whisper fallback)...")
 
+            # Cancel any pending idle timer from a prior SUCCESS so it can't
+            # force IDLE while this new recording is active.
+            self._cancel_idle_timer()
+
             self.is_recording = True
             self._recording_started_at = time.monotonic()
             self.audio_buffer = []
@@ -395,9 +406,15 @@ class VoiceCommandHandler:
             # drops the frames captured while the beep plays.  Otherwise the
             # just-opened mic captures the 880 Hz confirmation tone and you hear
             # static feedback at every voice trigger.
-            threading.Thread(
-                target=self._play_activation_beep, daemon=True, name="iris-beep"
-            ).start()
+            #
+            # Skip the beep during barge-in re-recordings (play_beep=False)
+            # to avoid briefly blocking the audio output device while the
+            # previous TTS is still winding down — this prevents the VAD from
+            # stalling at 15/23 silence frames.
+            if play_beep:
+                threading.Thread(
+                    target=self._play_activation_beep, daemon=True, name="iris-beep"
+                ).start()
 
             # Start transcription thread (handles VAD + whisper in background)
             self._transcription_thread = threading.Thread(
@@ -654,11 +671,13 @@ class VoiceCommandHandler:
             logger.info("[VoiceCommand] Waiting for speech...")
 
             if self._auto_stop_mode:
-                # Energy-based VAD: wait for speech onset, then wait for silence
-                self._vad_wait_for_speech_then_silence()
+                # Energy-based VAD: wait for speech onset, then wait for silence.
+                # Returns True if real speech was detected, False if only silence.
+                _speech_detected = self._vad_wait_for_speech_then_silence()
             else:
                 # Manual mode: wait until stop_recording() sets the event
                 self._stop_event.wait()
+                _speech_detected = True  # manual mode always transcribes
 
             self.is_recording = False
 
@@ -669,6 +688,24 @@ class VoiceCommandHandler:
                 self._cancel_event.clear()
                 logger.info(
                     "[VoiceCommand] Recording cancelled — skipping transcription"
+                )
+                self._raw_frames = []
+                self.audio_buffer = []
+                self._on_transcription_complete("")
+                return
+
+            # ── Guard: skip transcription when VAD found no speech ──────
+            # After barge-in or auto-relisten, the VAD may timeout without
+            # ever detecting speech onset.  The buffer still contains
+            # near-silence frames.  Sending this to Parakeet causes it to
+            # hallucinate short filler words ("yeah", "okay", "hello") which
+            # the agent treats as real user input — creating phantom
+            # conversational turns.  Skip transcription entirely when no
+            # speech was detected.
+            if not _speech_detected:
+                logger.info(
+                    "[VoiceCommand] VAD detected no speech — "
+                    "discarding buffer (avoid Parakeet hallucination)"
                 )
                 self._raw_frames = []
                 self.audio_buffer = []
@@ -692,8 +729,12 @@ class VoiceCommandHandler:
             if rms < 1e-4:
                 logger.warning(
                     "[VoiceCommand] Audio RMS near zero — likely silence. "
-                    "Check input device selection (TTS feedback loop?)"
+                    "Skipping transcription to avoid Parakeet hallucination."
                 )
+                self._raw_frames = []
+                self.audio_buffer = []
+                self._on_transcription_complete("")
+                return
 
             self._set_state(VoiceState.PROCESSING, "Transcribing...")
 
@@ -803,7 +844,7 @@ class VoiceCommandHandler:
                 )
                 self.is_recording = False
 
-    def _vad_wait_for_speech_then_silence(self) -> None:
+    def _vad_wait_for_speech_then_silence(self) -> bool:
         """
         Simple energy-based VAD for auto_stop mode.
 
@@ -814,6 +855,12 @@ class VoiceCommandHandler:
 
         If _pre_speech_timeout_sec > 0, gives up if speech onset doesn't
         arrive within that window — used by conversation-mode relisten passes.
+
+        Returns:
+            True if speech was actually detected and ended naturally.
+            False if only silence was captured (timeout or max duration).
+            Callers should skip transcription when False to avoid
+            Parakeet hallucinating text from silence.
         """
         frame_sec = 512 / self.sample_rate  # ≈ 0.032 s per frame at 16 kHz
         silence_needed = int(self.VAD_SILENCE_SEC / frame_sec)
@@ -910,21 +957,23 @@ class VoiceCommandHandler:
                                 f"[VoiceCommand] VAD: end-of-speech detected "
                                 f"(RMS={rms:.4f}, silence_frames={silence_count})"
                             )
-                            return  # silence after real speech → done
+                            return True  # silence after real speech → done
                     else:
                         # Background noise before speech — decay counter slowly
                         speech_count = max(0, speech_count - 1)
                         pre_speech_frames += 1
                         if pre_speech_frames >= pre_speech_max_frames:
-                            logger.debug(
+                            logger.info(
                                 f"[VoiceCommand] VAD: pre-speech timeout "
-                                f"({self._pre_speech_timeout_sec}s) — returning to idle"
+                                f"({self._pre_speech_timeout_sec}s) — no speech detected, "
+                                f"skipping transcription to avoid hallucination"
                             )
-                            return  # no speech onset in time → done (empty frames)
+                            return False  # no speech onset → skip transcription
 
         logger.debug(
             f"[VoiceCommand] VAD: loop ended (frames={total_frames}, speech_started={speech_started})"
         )
+        return speech_started
 
     # -------------------------------------------------------------------------
     # Internal — audio capture
@@ -1024,7 +1073,12 @@ class VoiceCommandHandler:
                 logger.error(f"[VoiceCommand] Callback error: {e}")
 
         self._set_state(VoiceState.SUCCESS, "Voice transcription complete")
-        threading.Timer(2.0, lambda: self._set_state(VoiceState.IDLE, "")).start()
+        # Cancel any previous idle timer (from an earlier transcription) so a
+        # stale timer doesn't force IDLE while a new recording is active.
+        self._cancel_idle_timer()
+        self._idle_timer = threading.Timer(2.0, self._fire_idle_if_not_recording)
+        self._idle_timer.daemon = True
+        self._idle_timer.start()
 
     def _play_activation_beep(self) -> None:
         """Play a short confirmation sound when voice command starts.
@@ -1117,3 +1171,20 @@ class VoiceCommandHandler:
                     self._on_state_change(new_state, message)
                 except Exception as e:
                     logger.error(f"[VoiceCommand] State callback error: {e}")
+
+    def _fire_idle_if_not_recording(self) -> None:
+        """Timer callback: transition to IDLE only if no recording is active.
+
+        Prevents an orphaned timer from a previous SUCCESS from forcing
+        RECORDING → IDLE when the user has already barge-in-started a new
+        recording.
+        """
+        if not self.is_recording:
+            self._set_state(VoiceState.IDLE, "")
+
+    def _cancel_idle_timer(self) -> None:
+        """Cancel any pending idle-transition timer from a prior transcription."""
+        timer = getattr(self, "_idle_timer", None)
+        if timer is not None:
+            timer.cancel()
+            self._idle_timer = None

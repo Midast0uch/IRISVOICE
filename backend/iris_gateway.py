@@ -1734,6 +1734,7 @@ class IRISGateway:
                 self._voice_handler.start_recording(
                     auto_stop=True,
                     pre_speech_timeout_sec=self._relisten_pre_speech_timeout,
+                    play_beep=False,  # skip beep during barge-in re-recording
                 )
                 self._logger.info(
                     f"[BargeIn] Recording started for session {_sid}"
@@ -3096,12 +3097,11 @@ class IRISGateway:
                         # â”€â”€ Word monitor (starts on first chunk) â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         # Uses _sd_stream.time (real audio playback position)
                         # to determine the current word.  This is the
-                        # document-prescribed approach: query actual playback
-                        # position every tick, not wall-clock sleep-and-broadcast.
+                        # Time-based word indexing: wall-clock elapsed * speaking_rate.
+                        # Monitors every 50ms, broadcasts word index to frontend.
                         if not _word_monitor_started:
                             _word_monitor_started = True
                             _last_word_idx = -1
-                            _last_frac = 0.0  # monotonic fraction guard
 
                             def _monitor_words():
                                 import asyncio as _aw
@@ -3112,62 +3112,36 @@ class IRISGateway:
                                     self._logger.warning("[TTS][words] Zero words — bailing out")
                                     return
                                 while _sd_stream is not None:
-                                    # Use cumulative samples written to the OutputStream
-                                    # as the audio position.  _sd_stream.time returns
-                                    # incorrect values on Windows (20363s when it should
-                                    # be < 1s), which would jump the word index to the end.
                                     if _total_written_for_words <= 0:
                                         _tw.sleep(0.05)
                                         continue
-                                    _pos = _total_written_for_words / _TTS_SAMPLE_RATE
-                                    # Update word count in case more sentences
-                                    # were added by the producer.
+                                    if _stream_start_time is None:
+                                        _tw.sleep(0.05)
+                                        continue
+                                    # Time-based word indexing: elapsed * speaking_rate.
+                                    # Old fraction approach stuck at ~0.93 because both
+                                    # pos and total_dur grow at ~1x realtime.
+                                    _elapsed = _tw.monotonic() - _stream_start_time
                                     _wn = len(_all_words) or 1
-                                    # Wait until the producer has set total
-                                    # synth samples â€” the fallback (_pos*2)
-                                    # locks frac to 0.5, freezing words at 50%.
-                                    if not _total_synth_samples[0] or _total_synth_samples[0] <= 0:
-                                        _tw.sleep(0.1)
-                                        continue
-                                    _total_dur = _total_synth_samples[0] / _TTS_SAMPLE_RATE
-                                    # Don't broadcast with a very short estimate
-                                    # (first chunk is ~0.1s) — the fraction would
-                                    # jump to >0.5 and the word index would be
-                                    # ahead of the actual audio.
-                                    if _total_dur < 0.5:
-                                        _tw.sleep(0.1)
-                                        continue
-                                    _frac = min(1.0, _pos / (_total_dur + 0.5))
-                                    # Monotonic fraction — never let _total_dur
-                                    # jumps push the fraction backwards
-                                    nonlocal _last_frac, _last_word_idx
-                                    if _frac < _last_frac:
-                                        _frac = _last_frac
-                                    else:
-                                        _last_frac = _frac
-                                    # Stable _wn — cap at current word + 5 so
-                                    # new sentences don't jump the word index
-                                    _real_wn = len(_all_words) or 1
-                                    _wn = min(_real_wn, (_last_word_idx + 5) if _last_word_idx >= 0 else _real_wn)
-                                    _idx = int(_frac * _wn)
-                                    if _idx >= _wn:
-                                        _idx = _wn - 1
+                                    _idx = int(_elapsed * 3.5)
+                                    _idx = min(_idx, _wn - 1)
+                                    nonlocal _last_word_idx
                                     if _idx > _last_word_idx:
                                         _last_word_idx = _idx
                                         self._logger.info(
                                             f"[TTS][words] Broadcasting word {_idx}/{_wn} "
-                                            f"(pos={_pos:.2f}s, total_dur={_total_dur:.2f}s)"
+                                            f"(elapsed={_elapsed:.2f}s)"
                                         )
                                         try:
-                                             _aw.run_coroutine_threadsafe(
+                                            _aw.run_coroutine_threadsafe(
                                                 self._ws_manager.send_to_client(
                                                     _client_id or session_id,
                                                     {
                                                         "type": "tts_word",
                                                         "payload": {
                                                             "word_index": _idx,
-                                                             "total_words": _real_wn,
-                                                            "is_final": False,  # Stream closing handles final
+                                                            "total_words": _wn,
+                                                            "is_final": False,
                                                         },
                                                     },
                                                 ),
@@ -3325,6 +3299,7 @@ class IRISGateway:
                     self._voice_handler.start_recording(
                         auto_stop=True,
                         pre_speech_timeout_sec=self._relisten_pre_speech_timeout,
+                        play_beep=False,  # skip beep for seamless auto-relisten
                     )
                 elif in_conversation and was_interrupted:
                     # User double-clicked to interrupt TTS â€” voice_command_start
@@ -3593,6 +3568,7 @@ class IRISGateway:
                     self._voice_handler.start_recording(
                         auto_stop=True,
                         pre_speech_timeout_sec=self._relisten_pre_speech_timeout,
+                        play_beep=False,  # skip beep for seamless post-TTS relisten
                     )
                 except Exception as _re_err:
                     _root_log.warning(

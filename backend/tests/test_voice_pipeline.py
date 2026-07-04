@@ -1049,150 +1049,99 @@ class TestTTSStreamingCadence:
 
 
 class TestTTSWordSyncFromPlaybackPosition:
-    """Verify word highlighting uses actual audio position (_sd_stream.time),
-    not wall-clock sleep-timers — matching the word sync document's approach."""
+    """Verify word highlighting uses time-based indexing (elapsed * speaking_rate),
+    not fraction-based indexing which was stuck at ~0.93."""
 
-    def _simulate_word_monitor(self, words, total_samples, sample_rate, stream_time, total_synth_samples):
-        """Core logic from the streaming word monitor: waits until total
-        synth samples is set, then calculates word index from audio position.
-        Returns -1 if total samples not yet available (no broadcast)."""
+    def _simulate_word_monitor(self, words, elapsed_seconds, speaking_rate=3.5):
+        """Replicates the new time-based word monitor logic:
+        idx = int(elapsed * speaking_rate), clamped to word count."""
         _word_count = len(words) or 1
-        if not total_synth_samples or total_synth_samples <= 0:
-            return -1  # unknown total — don't broadcast yet
-        _total_dur = total_synth_samples / sample_rate
-        if _total_dur <= 0:
-            return -1
-        _frac = min(1.0, stream_time / _total_dur)
-        _idx = int(_frac * _word_count)
-        if _idx >= _word_count:
-            _idx = _word_count - 1
+        _idx = int(elapsed_seconds * speaking_rate)
+        _idx = min(_idx, _word_count - 1)
         return _idx
 
-    def test_word_index_from_audio_position(self):
-        """At 0.5s into a 2.0s / 10-word response, word index should be ~2.
-        At 1.5s, ~7. At the end, the last word. This proves the word
-        is derived from the audio clock, not an independent timer."""
-        words = ["the", "quick", "brown", "fox", "jumps",
-                 "over", "the", "lazy", "sleeping", "dog"]
-        total_samples = 48000  # 2.0s at 24000 Hz
+    def test_word_index_from_elapsed_time(self):
+        """At 3.5wps, a 10-word response should highlight word 3 at 1s."""
+        words = [f"word{i}" for i in range(10)]
 
-        idx_25 = self._simulate_word_monitor(words, total_samples, 24000, 0.5, total_samples)
-        idx_50 = self._simulate_word_monitor(words, total_samples, 24000, 1.0, total_samples)
-        idx_75 = self._simulate_word_monitor(words, total_samples, 24000, 1.5, total_samples)
-        idx_100 = self._simulate_word_monitor(words, total_samples, 24000, 2.0, total_samples)
+        idx_05 = self._simulate_word_monitor(words, 0.5)  # ~1.75 -> 1
+        idx_10 = self._simulate_word_monitor(words, 1.0)  # 3.5 -> 3
+        idx_20 = self._simulate_word_monitor(words, 2.0)  # 7.0 -> 7
+        idx_30 = self._simulate_word_monitor(words, 3.0)  # 10.5 -> 9 (clamped)
 
-        assert idx_25 == 2, f"At 25% expected word 2, got {idx_25}"
-        assert idx_50 == 5, f"At 50% expected word 5, got {idx_50}"
-        assert idx_75 == 7, f"At 75% expected word 7, got {idx_75}"
-        assert idx_100 == 9, f"At 100% expected last word (9), got {idx_100}"
+        assert idx_05 == 1, f"At 0.5s expected word 1, got {idx_05}"
+        assert idx_10 == 3, f"At 1.0s expected word 3, got {idx_10}"
+        assert idx_20 == 7, f"At 2.0s expected word 7, got {idx_20}"
+        assert idx_30 == 9, f"At 3.0s expected last word (9), got {idx_30}"
 
     def test_word_index_stays_in_bounds(self):
-        """If playback position exceeds the estimated duration (possible if
-        _total_synth_samples is a running estimate), word index must clamp
-        to the last word, not go out of bounds."""
+        """If elapsed exceeds word count / rate, index must clamp to last word."""
         words = ["hello", "world"]
-        total_samples = 12000  # 0.5s at 24000 Hz
 
-        # Simulate position beyond the estimate
-        idx = self._simulate_word_monitor(words, total_samples, 24000, 1.0, total_samples)
-        assert idx == 1, f"At double duration, expected last word (1), got {idx}"
+        idx = self._simulate_word_monitor(words, 10.0)  # way beyond
+        assert idx == 1, f"At 10s expected last word (1), got {idx}"
 
-    def test_word_index_skips_when_total_samples_missing(self):
-        """Before _total_synth_samples is set, the monitor must NOT broadcast
-        (returns -1) instead of using a fallback estimate that would lock
-        the word index at 50% and then jump when total arrives."""
-        words = list(range(10))
-        total_samples = 0  # not yet set by producer
-
-        idx = self._simulate_word_monitor(words, total_samples, 24000, 0.1, total_samples)
-        assert idx == -1, f"Expected -1 (no broadcast), got {idx}"
-
-    def test_word_index_start_at_zero(self):
-        """Before audio plays (_sd_stream.time <= 0), the monitor
-        should not broadcast any word (stays at first word / no-op)."""
+    def test_word_index_starts_at_zero(self):
+        """At elapsed=0, index should be 0."""
         words = ["hello"] * 5
-        total_samples = 24000  # 1.0s
-
-        idx = self._simulate_word_monitor(words, total_samples, 24000, 0, total_samples)
+        idx = self._simulate_word_monitor(words, 0.0)
         assert idx == 0, f"At position 0, expected word 0, got {idx}"
+
+    def test_word_index_never_finishes_before_tts(self):
+        """For a long response (84 words at 14.4s), index at audio end must
+        NOT exceed the last word. At 3.5wps, 14.4s -> idx=50, which is < 83.
+        This satisfies the 'doesn't finish before TTS' constraint."""
+        words = ["w"] * 84
+        idx = self._simulate_word_monitor(words, 14.4)
+        assert idx == 50, f"At 14.4s expected word 50, got {idx}"
+        assert idx < len(words) - 1, "Index should NOT be at last word yet"
+
+    def test_23_second_response_reaches_end(self):
+        """For an 81-word response at 23.4s, index should reach 80 (last word).
+        23.4 * 3.5 = 81.9, clamped to 80."""
+        words = ["w"] * 81
+        idx = self._simulate_word_monitor(words, 23.4)
+        assert idx == 80, f"At 23.4s expected word 80, got {idx}"
+
+    def test_continuous_progression(self):
+        """Word index must increase monotonically with elapsed time."""
+        words = [f"w{i}" for i in range(50)]
+        prev_idx = -1
+        for t_ms in range(0, 15000, 100):  # 0..15s in 100ms steps
+            t = t_ms / 1000.0
+            idx = self._simulate_word_monitor(words, t)
+            assert idx >= prev_idx, f"Index went backwards at t={t}s: {prev_idx} -> {idx}"
+            prev_idx = idx
+        # After 15s at 3.5wps: idx = 52, clamped to 49
+        assert prev_idx == 49, f"Expected final word 49, got {prev_idx}"
 
 
 class TestWordMonitorStableWn:
-    """Verify the word monitor's _wn capping and monotonic fraction."""
+    """Verify the time-based word monitor clamping behavior."""
 
-    def _capped_wn(self, real_wn, last_word_idx):
-        """Replicates the production word monitor's _wn capping logic:
-        _wn = min(real_wn, last_word_idx + 5)"""
-        if last_word_idx < 0:
-            return real_wn
-        return min(real_wn, last_word_idx + 5)
+    def test_clamp_to_word_count(self):
+        """Index must never exceed len(words) - 1."""
+        for wn in [2, 10, 50, 100]:
+            for elapsed in [0.5, 2.0, 10.0, 60.0]:
+                idx = int(elapsed * 3.5)
+                idx = min(idx, wn - 1)
+                assert 0 <= idx < wn, f"wn={wn}, elapsed={elapsed}: idx={idx} out of bounds"
 
-    def test_wn_starts_at_real_count(self):
-        """Before any words are highlighted, _wn = real_wn (no cap needed)."""
-        assert self._capped_wn(10, -1) == 10
-        assert self._capped_wn(2, -1) == 2
+    def test_never_negative(self):
+        """At elapsed=0, index must be 0."""
+        idx = int(0.0 * 3.5)
+        idx = min(idx, 5 - 1)
+        assert idx == 0, f"Expected 0, got {idx}"
 
-    def test_wn_capped_at_current_word_plus_5(self):
-        """_wn caps at last_word_idx + 5 so new sentences don't jump the index."""
-        # Real word count is 30, but we've only highlighted word 2
-        assert self._capped_wn(30, 2) == 7  # min(30, 7) = 7
-        assert self._capped_wn(30, 10) == 15  # min(30, 15) = 15
-        assert self._capped_wn(30, 25) == 30  # min(30, 30) = 30 (caught up)
-
-    def test_wn_grows_gradually_with_word_index(self):
-        """As last_word_idx grows, _wn grows too. Simulate a 30-word response."""
-        wn = 0
-        for idx in range(0, 30):
-            wn = self._capped_wn(30, idx)
-            expected = min(30, idx + 5)
-            assert wn == expected, f"At word {idx}: expected _wn={expected}, got {wn}"
-
-    def test_wn_never_exceeds_real_wn(self):
-        """_wn must never exceed the real word count."""
-        for real_wn in [5, 10, 50]:
-            for idx in range(-1, real_wn + 5):
-                capped = self._capped_wn(real_wn, idx)
-                assert capped <= real_wn, (
-                    f"real_wn={real_wn}, idx={idx}: capped={capped} > real_wn"
-                )
-
-    def test_monotonic_fraction_with_padding(self):
-        """The fraction _pos / (_total_dur + 0.5) must never decrease.
-        The 0.5s padding prevents the initial fraction from being near 1.0
-        (when _pos ≈ _total_dur for the first chunk)."""
-        frac = 0.0
-        _last_frac = 0.0
-        # Simulate: _pos grows, _total_dur jumps ahead
-        for _pos, _dur in [(0.5, 1.0), (0.8, 1.2), (1.0, 3.0), (1.5, 3.2)]:
-            _frac = min(1.0, _pos / (_dur + 0.5))
-            if _frac < _last_frac:
-                _frac = _last_frac
-            else:
-                _last_frac = _frac
-            assert _frac >= frac, f"Fraction decreased: {frac} -> {_frac}"
-            frac = _frac
-        # After step 2: frac = 0.8 / (1.2 + 0.5) = 0.8/1.7 ≈ 0.4706
-        # Step 3: 1.0 / (3.0 + 0.5) = 0.286 < 0.4706 → guard keeps 0.4706
-        # Step 4: 1.5 / (3.2 + 0.5) = 0.405 < 0.4706 → guard keeps 0.4706
-        # Final value should be 0.4706 (guard never let it decrease)
-        assert abs(frac - 0.470588235) < 1e-6, f"Expected 0.4706, got {frac}"
-
-    def test_word_index_only_moves_forward(self):
-        """Word index must never decrease when _wn grows."""
-        _last_word_idx = -1
-        # Simulate: fraction constant 0.5, _wn jumps from 2 to 17
-        cases = [
-            (_wn := 2, int(0.5 * 2) - 1),   # idx = 0 (safe)
-            (_wn := 17, int(0.5 * 17) - 1),  # idx = 7 (jumps but forward)
-        ]
-        for _, _idx in cases:
-            if _idx <= _last_word_idx:
-                _idx = _last_word_idx  # clamp (backup guard)
-            assert _idx >= _last_word_idx, f"Word index went backwards: {_last_word_idx} -> {_idx}"
-            _last_word_idx = _idx
-
-        # Final word index should be 7 (not 0, not 1)
-        assert _last_word_idx == 7, f"Expected final word 7, got {_last_word_idx}"
+    def test_forward_only(self):
+        """Index must never decrease as elapsed grows."""
+        words = [f"w{i}" for i in range(20)]
+        prev = -1
+        for t in [0.1, 0.5, 1.0, 2.0, 5.0]:
+            idx = int(t * 3.5)
+            idx = min(idx, len(words) - 1)
+            assert idx >= prev, f"Went backwards: {prev} -> {idx}"
+            prev = idx
 
 
 class TestNewConversationContextReset:
