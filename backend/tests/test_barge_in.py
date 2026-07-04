@@ -41,8 +41,8 @@ class TestBargeInDetection:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = True
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.04
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.025
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 10
         eng.BARGE_IN_ARM_DELAY = 0.3
         eng._barge_in_arm_time = 0.0  # pre-armed (no delay)
         eng._logger = MagicMock()
@@ -51,13 +51,13 @@ class TestBargeInDetection:
     def test_quiet_frame_resets_counter(self, engine):
         """A frame below threshold resets the consecutive counter to 0."""
         engine._barge_in_frame_count = 10
-        engine._on_barge_in_energy(0.03)  # below 0.04 threshold
+        engine._on_barge_in_energy(0.02)  # below 0.025 threshold
         assert engine._barge_in_frame_count == 0
 
     def test_loud_frame_increments_counter(self, engine):
         """A frame above threshold increments the consecutive counter."""
         engine._barge_in_frame_count = 0
-        engine._on_barge_in_energy(0.08)  # above 0.04 threshold
+        engine._on_barge_in_energy(0.08)  # above 0.025 threshold
         assert engine._barge_in_frame_count == 1
 
     def test_barge_in_fires_at_threshold(self, engine):
@@ -68,8 +68,8 @@ class TestBargeInDetection:
             fired["count"] += 1
 
         engine._on_barge_in_detected = callback
-        engine._barge_in_frame_count = 14  # one below threshold
-        engine._on_barge_in_energy(0.08)  # this should fire (24+1=25)
+        engine._barge_in_frame_count = 9  # one below threshold
+        engine._on_barge_in_energy(0.08)  # this should fire (9+1=10)
         assert fired["count"] == 1
         assert engine._barge_in_frame_count == 0  # reset after fire
 
@@ -81,10 +81,10 @@ class TestBargeInDetection:
             fired["count"] += 1
 
         engine._on_barge_in_detected = callback
-        # 14 loud frames, then 1 quiet frame (resets) — 14 is below threshold of 15
-        for _ in range(14):
+        # 9 loud frames, then 1 quiet frame (resets) — 9 is below threshold of 10
+        for _ in range(9):
             engine._on_barge_in_energy(0.08)
-        engine._on_barge_in_energy(0.03)  # quiet — resets
+        engine._on_barge_in_energy(0.02)  # quiet — resets
         assert fired["count"] == 0
         assert engine._barge_in_frame_count == 0
 
@@ -123,8 +123,8 @@ class TestBargeInDetection:
         # Set arm time to now — barge-in should be suppressed for 0.3s
         engine._barge_in_arm_time = time.monotonic()
 
-        # Send 15 loud frames — should NOT fire because arm delay hasn't expired
-        for _ in range(15):
+        # Send 10 loud frames — should NOT fire because arm delay hasn't expired
+        for _ in range(10):
             engine._on_barge_in_energy(0.08)
         assert fired["count"] == 0
 
@@ -140,7 +140,7 @@ class TestBargeInDetection:
         # Set arm time to the past (1 second ago) — delay has expired
         engine._barge_in_arm_time = time.monotonic() - 1.0
 
-        for _ in range(15):
+        for _ in range(10):
             engine._on_barge_in_energy(0.08)
         assert fired["count"] == 1
 
@@ -530,8 +530,8 @@ class TestMultipleBargeIns:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = True
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.04
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.025
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 10
         eng.BARGE_IN_ARM_DELAY = 0.3
         eng._barge_in_arm_time = 0.0
         eng._logger = MagicMock()
@@ -583,8 +583,8 @@ class TestHalfDuplexGate:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = True
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.04
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.025
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 10
         eng.BARGE_IN_ARM_DELAY = 0.3
         eng._barge_in_arm_time = 0.0
         eng._logger = MagicMock()
@@ -613,8 +613,8 @@ class TestHalfDuplexGate:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = False
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.04
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.025
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 10
         eng.BARGE_IN_ARM_DELAY = 0.3
         eng._barge_in_arm_time = 0.0
         eng._logger = MagicMock()
@@ -670,8 +670,8 @@ class TestEnergyFlowIntegration:
         eng._barge_in_frame_count = 0
         eng._on_barge_in_detected = None
         eng._tts_active = True
-        eng.BARGE_IN_ENERGY_THRESHOLD = 0.04
-        eng.BARGE_IN_CONSECUTIVE_FRAMES = 15
+        eng.BARGE_IN_ENERGY_THRESHOLD = 0.025
+        eng.BARGE_IN_CONSECUTIVE_FRAMES = 10
         eng.BARGE_IN_ARM_DELAY = 0.3
         eng._barge_in_arm_time = 0.0
         eng._logger = MagicMock()
@@ -796,31 +796,32 @@ class TestConstants:
         )
 
     def test_consecutive_frames_reasonable(self):
-        """BARGE_IN_CONSECUTIVE_FRAMES should give ~480ms at 31Hz callback rate."""
+        """BARGE_IN_CONSECUTIVE_FRAMES should give ~320ms at 31Hz callback rate (was 480ms)."""
         from backend.audio.engine import AudioEngine
 
         frames = AudioEngine.BARGE_IN_CONSECUTIVE_FRAMES
-        # At 31Hz (512 frames at 16000 Hz), 15 frames ≈ 484ms
+        # At 31Hz (512 frames at 16000 Hz), 10 frames ≈ 323ms
         duration_ms = (frames / 31.0) * 1000
         assert 300 <= duration_ms <= 800, (
             f"Barge duration {duration_ms:.0f}ms outside expected range (300-800ms)"
         )
 
     def test_barge_in_constants_are_tuned_values(self):
-        """Barge-in constants must be 0.04/15/0.3 (not the old 0.06/25/0.8).
+        """Barge-in constants must be 0.04/10/0.3 (not the old 0.06/25/0.8).
 
-        The old values caused 1.6s detection latency. The new values give ~480ms.
-        If this test fails, someone reverted the tuning — the old values are wrong.
+        The old 15-frame values caused ~480ms detection latency. The new 10-frame
+        values give ~320ms — responsive without false-triggering on background noise.
+        If this test fails, someone reverted the tuning — the new values are correct.
         """
         from backend.audio.engine import AudioEngine
 
-        assert AudioEngine.BARGE_IN_ENERGY_THRESHOLD == 0.04, (
+        assert AudioEngine.BARGE_IN_ENERGY_THRESHOLD == 0.025, (
             f"BARGE_IN_ENERGY_THRESHOLD is {AudioEngine.BARGE_IN_ENERGY_THRESHOLD}, "
-            "expected 0.04 — old value 0.06 was too high, caused missed barge-ins"
+            "expected 0.025 — lowered so normal speech over TTS triggers without screaming"
         )
-        assert AudioEngine.BARGE_IN_CONSECUTIVE_FRAMES == 15, (
+        assert AudioEngine.BARGE_IN_CONSECUTIVE_FRAMES == 10, (
             f"BARGE_IN_CONSECUTIVE_FRAMES is {AudioEngine.BARGE_IN_CONSECUTIVE_FRAMES}, "
-            "expected 15 — old value 25 gave 800ms latency"
+            "expected 10 — was 15, reduced for faster barge-in response (~320ms vs ~480ms)"
         )
         assert AudioEngine.BARGE_IN_ARM_DELAY == 0.3, (
             f"BARGE_IN_ARM_DELAY is {AudioEngine.BARGE_IN_ARM_DELAY}, "

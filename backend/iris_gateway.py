@@ -3141,12 +3141,14 @@ class IRISGateway:
                     _word_thread = None
                     if _all_words and approx_duration > 0.3:
                         _word_count = len(_all_words)
-                        _total_chars = sum(len(w) for w in _all_words) or 1
-                        _word_timings = []
-                        _cumulative = 0.0
-                        for _w in _all_words:
-                            _cumulative += (len(_w) / _total_chars) * approx_duration
-                            _word_timings.append(_cumulative)
+                        # Evenly space words across the audio duration.
+                        # Character-proportional timing was inaccurate
+                        # because Pocket-TTS doesn't produce audio
+                        # proportional to character count.
+                        _word_timings = [
+                            (i + 1) / _word_count * approx_duration
+                            for i in range(_word_count)
+                        ]
 
                         def _broadcast_words():
                             import asyncio as _asyncio2

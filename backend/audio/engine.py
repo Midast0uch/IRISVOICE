@@ -343,8 +343,8 @@ class AudioEngine:
 
     # ── Energy-based barge-in ──────────────────────────────────────────────
     # Constants tuned for 512-frame chunks at 16 kHz (~31 Hz callback rate).
-    BARGE_IN_ENERGY_THRESHOLD: float = 0.04     # RMS level to trigger barge-in
-    BARGE_IN_CONSECUTIVE_FRAMES: int = 15       # ~480 ms sustained speech
+    BARGE_IN_ENERGY_THRESHOLD: float = 0.025    # RMS level to trigger barge-in (was 0.04 — lowered so normal speech over TTS triggers without screaming)
+    BARGE_IN_CONSECUTIVE_FRAMES: int = 10       # ~320 ms sustained speech (was 15 for 480 ms)
     BARGE_IN_ARM_DELAY: float = 0.3             # seconds after TTS starts before barge-in is armed
 
     def _on_barge_in_energy(self, rms: float) -> None:
