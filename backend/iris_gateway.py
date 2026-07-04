@@ -2738,6 +2738,8 @@ class IRISGateway:
                             for audio_chunk in tts.synthesize_stream(chunk):
                                 _diag_chunks += 1
                                 if audio_chunk is not None and len(audio_chunk) > 0:
+                                    # Track total samples for word timing denominator
+                                    _total_synth_samples[0] += len(audio_chunk)
                                     if _native:
                                         gained = np.clip(audio_chunk * 2.5, -0.99, 0.99)
                                         try:
@@ -2826,12 +2828,9 @@ class IRISGateway:
                                                         )
                                                     except Exception:
                                                         pass
-                            # Track total samples for word timing denominator.
-                            # This runs for EVERY audio chunk regardless of path.
-                            _total_synth_samples[0] += len(audio_chunk)
-                            _pending = []
-                            _pending_words = 0
-                            _root_log.info(
+                    _pending = []
+                    _pending_words = 0
+                    _root_log.info(
                                 f"[TTS][producer] synthesized {_diag_chunks} audio chunks "
                                 f"for chunk of {len(chunk)} chars ({chunk[:50]!r})"
                             )
