@@ -3110,8 +3110,26 @@ class IRISGateway:
 
                 # Close the streaming output
                 if _sd_stream is not None:
-                    _sd_stream.stop()
-                    _sd_stream.close()
+                    if interrupted.is_set():
+                        # Barge-in or orb click: discard buffered audio
+                        # immediately instead of draining it (which would
+                        # keep playing the queued chunks).
+                        _sd_stream.close()
+                    else:
+                        _sd_stream.stop()
+                        _sd_stream.close()
+
+                # ── Monitor for late interrupts ─────────────────────────
+                # If the consumer loop exited normally (END_STREAM) moments
+                # before the user clicked the orb, the interrupt flag might
+                # arrive after the stream already closed.  If so, still
+                # broadcast the idle envelope so the frontend resets.
+                if not interrupted.is_set() and _sd_stream_started:
+                    for _check in range(10):  # 10 × 100ms = 1s window
+                        if engine.is_speech_interrupted():
+                            interrupted.set()
+                            break
+                        time.sleep(0.1)
 
                 # ── Tell frontend the orb should stop breathing ────────
                 if session_id and self._main_loop and _sd_stream_started:
@@ -3137,16 +3155,19 @@ class IRISGateway:
                         len(np.asarray(c, dtype=np.float32)) for c in _buffered_chunks
                     )
                     approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
+                    # Subtract trailing silence so word events span only
+                    # the actual speech, not the 600ms of silence Pocket-TTS
+                    # appends after the final word.
+                    _speech_duration = max(0.3, approx_duration - 0.60)
 
                     _word_thread = None
-                    if _all_words and approx_duration > 0.3:
+                    if _all_words and _speech_duration > 0.3:
                         _word_count = len(_all_words)
-                        # Evenly space words across the audio duration.
-                        # Character-proportional timing was inaccurate
-                        # because Pocket-TTS doesn't produce audio
-                        # proportional to character count.
+                        # Evenly space words across speech duration only
+                        # (not trailing silence) so the last word fires
+                        # when speech ends, not 600ms later in silence.
                         _word_timings = [
-                            (i + 1) / _word_count * approx_duration
+                            (i + 1) / _word_count * _speech_duration
                             for i in range(_word_count)
                         ]
 
