@@ -3102,7 +3102,9 @@ class IRISGateway:
                                 import asyncio as _aw
                                 import time as _tw
                                 _wn = len(_all_words)
+                                self._logger.info(f"[TTS][words] Monitor started, {_wn} words initially")
                                 if _wn == 0:
+                                    self._logger.warning("[TTS][words] Zero words — bailing out")
                                     return
                                 while _sd_stream is not None:
                                     try:
@@ -3132,8 +3134,12 @@ class IRISGateway:
                                     nonlocal _last_word_idx
                                     if _idx != _last_word_idx:
                                         _last_word_idx = _idx
+                                        self._logger.info(
+                                            f"[TTS][words] Broadcasting word {_idx}/{_wn} "
+                                            f"(pos={_pos:.2f}s, total_dur={_total_dur:.2f}s)"
+                                        )
                                         try:
-                                            _aw.run_coroutine_threadsafe(
+                                             _aw.run_coroutine_threadsafe(
                                                 self._ws_manager.send_to_client(
                                                     _client_id or session_id,
                                                     {
@@ -3141,7 +3147,7 @@ class IRISGateway:
                                                         "payload": {
                                                             "word_index": _idx,
                                                             "total_words": _wn,
-                                                            "is_final": _idx == _wn - 1,
+                                                            "is_final": False,  # Stream closing handles final
                                                         },
                                                     },
                                                 ),
@@ -3149,9 +3155,19 @@ class IRISGateway:
                                             )
                                         except Exception:
                                             pass
-                                    if _idx >= _wn - 1:
-                                        break
                                     _tw.sleep(0.05)
+
+                            # Final broadcast: stream closed — send is_final
+                            try:
+                                _aw.run_coroutine_threadsafe(
+                                    self._ws_manager.send_to_client(
+                                        _client_id or session_id,
+                                        {"type": "tts_word", "payload": {"word_index": _last_word_idx, "total_words": _wn, "is_final": True}},
+                                    ),
+                                    self._main_loop,
+                                )
+                            except Exception:
+                                pass
 
                             _word_monitor = threading.Thread(
                                 target=_monitor_words,
