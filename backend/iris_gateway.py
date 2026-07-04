@@ -151,6 +151,14 @@ class IRISGateway:
         self._main_loop = None
         self._speech_interrupted = False
 
+        # Word monitor thread from previous TTS — stored on self so the next
+        # _speak_response call can join it before starting a new one.
+        self._word_monitor_thread: Optional[threading.Thread] = None
+        # Instance-level stop event — shared across _speak_response calls.
+        # When a new response starts, it sets this event to kill the old monitor,
+        # then creates a fresh Event for the new monitor.
+        self._word_monitor_stop: Optional[threading.Event] = None
+
         self._voice_handler = None  # set via set_voice_handler() after construction
         # session_id -> client_id for wake word routing
         self._active_voice_client: dict = {}
@@ -2356,11 +2364,10 @@ class IRISGateway:
             )
 
         finally:
-            if not _tts_started:
-                # Safety net: if TTS never started, ensure STTPROC stops
-                # and we always reach idle.
-                if _sttproc_stop is not None:
-                    _sttproc_stop.set()
+            # ALWAYS stop STTPROC — the inner _speak_response also sets this
+            # in its finally block, but this is the outer safety net.
+            if _sttproc_stop is not None and not _sttproc_stop.is_set():
+                _sttproc_stop.set()
             # â”€â”€ Voice pipeline timing summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if hasattr(self, "_voice_timing"):
                 t0 = self._voice_timing["vad_end"]
@@ -3041,6 +3048,11 @@ class IRISGateway:
                 _rms_peak = 0.0  # running peak RMS for normalization
                 _word_monitor_started = False
                 _total_written_for_words = 0  # cumulative samples written to OutputStream
+                # Instance-level stop event: shared across _speak_response calls.
+                # Kill any old monitor before creating a fresh event for this call.
+                if self._word_monitor_stop is not None:
+                    self._word_monitor_stop.set()  # signal old monitor to die
+                self._word_monitor_stop = threading.Event()
 
                 while True:
                     # Fast timeout (0.5s) after streaming starts so barge-in
@@ -3106,34 +3118,77 @@ class IRISGateway:
                             _word_monitor_started = True
                             _last_word_idx = -1
 
+                            # Join old monitor thread from a previous _speak_response
+                            # call (e.g. barge-in killed TTS, new TTS starts immediately).
+                            # Without this, two monitors broadcast concurrently.
+                            if self._word_monitor_thread is not None and self._word_monitor_thread.is_alive():
+                                self._logger.info("[TTS][words] Joining old monitor thread...")
+                                self._word_monitor_thread.join(timeout=0.5)
+                                if self._word_monitor_thread.is_alive():
+                                    self._logger.warning("[TTS][words] Old monitor did not exit in 0.5s - proceeding anyway")
+
+                            # Capture the NEW stop event at definition time so
+                            # the closure holds a reference to this call's event.
+                            _my_stop = self._word_monitor_stop
+
                             def _monitor_words():
                                 import asyncio as _aw
                                 import time as _tw
+                                nonlocal _last_word_idx
                                 _wn = len(_all_words)
                                 self._logger.info(f"[TTS][words] Monitor started, {_wn} words initially")
                                 if _wn == 0:
-                                    self._logger.warning("[TTS][words] Zero words — bailing out")
+                                    self._logger.warning("[TTS][words] Zero words - bailing out")
                                     return
-                                while _sd_stream is not None:
-                                    if _total_written_for_words <= 0:
-                                        _tw.sleep(0.05)
+
+                                # Wait for first audio chunk before starting
+                                while _total_written_for_words <= 0:
+                                    if _my_stop.is_set():
+                                        return
+                                    _tw.sleep(0.05)
+
+                                # Broadcast word 0 immediately (audio has started)
+                                try:
+                                    _aw.run_coroutine_threadsafe(
+                                        self._ws_manager.send_to_client(
+                                            _client_id or session_id,
+                                            {
+                                                "type": "tts_word",
+                                                "payload": {
+                                                    "word_index": 0,
+                                                    "total_words": _wn,
+                                                    "is_final": False,
+                                                },
+                                            },
+                                        ),
+                                        self._main_loop,
+                                    )
+                                except Exception:
+                                    pass
+                                _last_word_idx = 0
+
+                                # ── Audio-position-based word indexing ──────
+                                # Use _sd_stream.time (actual playback position)
+                                # divided by total audio written to get the
+                                # fraction of speech that has been played.
+                                # This perfectly syncs highlighting with audio
+                                # because _sd_stream.time reflects real output.
+                                while not _my_stop.is_set():
+                                    _tw.sleep(0.05)
+                                    try:
+                                        _audio_pos = _sd_stream.time  # seconds played
+                                    except Exception:
                                         continue
-                                    if _stream_start_time is None:
-                                        _tw.sleep(0.05)
-                                        continue
-                                    # Time-based word indexing: elapsed * speaking_rate.
-                                    # Old fraction approach stuck at ~0.93 because both
-                                    # pos and total_dur grow at ~1x realtime.
-                                    _elapsed = _tw.monotonic() - _stream_start_time
-                                    _wn = len(_all_words) or 1
-                                    _idx = int(_elapsed * 3.5)
+                                    _total_sec = max(_total_written_for_words / _TTS_SAMPLE_RATE, 0.001)
+                                    _frac = _audio_pos / _total_sec
+                                    _frac = min(_frac, 1.0)
+                                    _idx = int(_frac * _wn)
                                     _idx = min(_idx, _wn - 1)
-                                    nonlocal _last_word_idx
                                     if _idx > _last_word_idx:
                                         _last_word_idx = _idx
                                         self._logger.info(
-                                            f"[TTS][words] Broadcasting word {_idx}/{_wn} "
-                                            f"(elapsed={_elapsed:.2f}s)"
+                                            f"[TTS][words] Word {_idx}/{_wn} "
+                                            f"(audio_pos={_audio_pos:.2f}s frac={_frac:.3f})"
                                         )
                                         try:
                                             _aw.run_coroutine_threadsafe(
@@ -3152,19 +3207,32 @@ class IRISGateway:
                                             )
                                         except Exception:
                                             pass
-                                    _tw.sleep(0.05)
 
-                            # Final broadcast: stream closed — send is_final
-                            try:
-                                _aw.run_coroutine_threadsafe(
-                                    self._ws_manager.send_to_client(
-                                        _client_id or session_id,
-                                        {"type": "tts_word", "payload": {"word_index": _last_word_idx, "total_words": _wn, "is_final": True}},
-                                    ),
-                                    self._main_loop,
-                                )
-                            except Exception:
-                                pass
+                                # Catch-up: stream ended but word index may not
+                                # have reached the last word yet.  Broadcast
+                                # remaining words at 30ms intervals.
+                                _wn = len(_all_words) or 1
+                                for _j in range(_last_word_idx, _wn):
+                                    if _j > _last_word_idx:
+                                        _last_word_idx = _j
+                                        try:
+                                            _aw.run_coroutine_threadsafe(
+                                                self._ws_manager.send_to_client(
+                                                    _client_id or session_id,
+                                                    {
+                                                        "type": "tts_word",
+                                                        "payload": {
+                                                            "word_index": _j,
+                                                            "total_words": _wn,
+                                                            "is_final": _j == _wn - 1,
+                                                        },
+                                                    },
+                                                ),
+                                                self._main_loop,
+                                            )
+                                        except Exception:
+                                            pass
+                                        _tw.sleep(0.03)
 
                             _word_monitor = threading.Thread(
                                 target=_monitor_words,
@@ -3172,6 +3240,7 @@ class IRISGateway:
                                 name="tts-words",
                             )
                             _word_monitor.start()
+                            self._word_monitor_thread = _word_monitor
 
                         # â”€â”€ Broadcast cadence per-chunk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         # So the orb breathing matches audio in real-time
@@ -3210,6 +3279,12 @@ class IRISGateway:
                     else:
                         _sd_stream.stop()
                         _sd_stream.close()
+                # Signal the word monitor thread to stop — without this,
+                # old monitors from previous TTS responses (killed by
+                # barge-in) keep running and broadcasting stale word
+                # indices, causing interleaved events on the frontend.
+                if _word_monitor_started and self._word_monitor_stop is not None:
+                    self._word_monitor_stop.set()
 
                 # â”€â”€ Monitor for late interrupts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 # If the consumer loop exited normally (END_STREAM) moments
@@ -3240,13 +3315,16 @@ class IRISGateway:
                     except Exception:
                         pass
 
-                # ── Send tts_word is_final to stop word highlighting ────
-                # The word monitor thread loop (while _sd_stream is not None)
-                # never exits because _sd_stream is only closed, not set to
-                # None.  Without this, the frontend never receives is_final
-                # and word highlighting gets stuck or relies on the 200ms
-                # fallback interval which may not match actual audio timing.
-                if session_id and self._main_loop and _word_monitor_started:
+                # ── Send tts_word is_final as safety net ──────────────
+                # The monitor's catch-up loop normally sends is_final on
+                # the last word.  This is a fallback if the monitor thread
+                # dies before reaching the end.
+                # SKIP on barge-in: the new tts_started event resets the frontend.
+                if (session_id and self._main_loop and _word_monitor_started
+                        and not interrupted.is_set()):
+                    # Wait for monitor thread to finish catch-up (up to 3s)
+                    if self._word_monitor_thread is not None:
+                        self._word_monitor_thread.join(timeout=3.0)
                     try:
                         import asyncio as _async_words_final
                         _wn_final = len(_all_words) if _all_words else 0
@@ -3276,6 +3354,13 @@ class IRISGateway:
         except Exception as e:
             self._logger.error(f"[Voice] TTS Consumer error: {e}")
         finally:
+            # ALWAYS stop STTPROC when speak_response exits — barge-in,
+            # interruption, or error. Without this, the looping "processing"
+            # sound keeps playing forever when the stream exits before
+            # the first audio chunk pushes _sttproc_stop.
+            if _sttproc_stop is not None and not _sttproc_stop.is_set():
+                self._logger.info("[TTS] finally: stopping STTPROC loop")
+                _sttproc_stop.set()
             if _native:
                 try:
                     engine.pipeline._native_player.close()
@@ -3327,10 +3412,11 @@ class IRISGateway:
                     _time.sleep(0.15)
                     self._voice_handler.set_active_session(session_id)
                     self._voice_handler.start_recording(
-                        auto_stop=True,
-                        pre_speech_timeout_sec=self._relisten_pre_speech_timeout,
-                        play_beep=False,  # skip beep for seamless auto-relisten
-                    )
+                    auto_stop=True,
+                    pre_speech_timeout_sec=self._relisten_pre_speech_timeout,
+                    play_beep=False,
+                    flush_ms=400,
+                )
                 elif in_conversation and was_interrupted:
                     # User double-clicked to interrupt TTS â€” voice_command_start
                     # already sent "listening" and started recording.  Sending

@@ -229,6 +229,10 @@ class VoiceCommandHandler:
         # a lock (Event.set/is_set use an internal condition + lock internally).
         self._cancel_event = threading.Event()
 
+        # Post-start flush: drops the first N frames captured after start_recording.
+        # Used after barge-in to flush residual TTS echo from the mic pipeline.
+        self._post_start_flush_frames: int = 0
+
         # Idle timer: fires 2s after SUCCESS to transition to IDLE.
         # Stored so it can be cancelled if a new recording (barge-in) starts first.
         self._idle_timer: Optional[threading.Timer] = None
@@ -304,7 +308,7 @@ class VoiceCommandHandler:
 
     def start_recording(
         self, auto_stop: bool = False, pre_speech_timeout_sec: float = 0.0,
-        play_beep: bool = True,
+        play_beep: bool = True, flush_ms: int = 0,
     ) -> bool:
         """
         Begin recording user speech.
@@ -328,12 +332,12 @@ class VoiceCommandHandler:
             return False
 
         try:
-            return self._start_recording_locked(auto_stop, pre_speech_timeout_sec, play_beep)
+            return self._start_recording_locked(auto_stop, pre_speech_timeout_sec, play_beep, flush_ms)
         finally:
             self._start_lock.release()
 
     def _start_recording_locked(
-        self, auto_stop: bool, pre_speech_timeout_sec: float, play_beep: bool = True
+        self, auto_stop: bool, pre_speech_timeout_sec: float, play_beep: bool = True, flush_ms: int = 0,
     ) -> bool:
         """Inner implementation of start_recording — called only when _start_lock is held."""
         self._auto_stop_mode = auto_stop
@@ -377,6 +381,11 @@ class VoiceCommandHandler:
             self._recording_started_at = time.monotonic()
             self.audio_buffer = []
             self._raw_frames = []
+            # Post-start flush: drop first N frames captured after start.
+            # This lets residual TTS echo from barge-in decay before VAD
+            # starts speech detection.  Caller sets flush_ms > 0 for barge-in.
+            _frame_chunk = 512  # capture frame size
+            self._post_start_flush_frames = int(flush_ms * self.sample_rate / (_frame_chunk * 1000)) if flush_ms > 0 else 0
             self._cancel_event.clear()  # clear any stale cancel from the previous take
             self._stop_event.clear()
 
@@ -1003,6 +1012,13 @@ class VoiceCommandHandler:
                 logger.warning(f"[DIAG][capture_frame] log error: {_diag_exc}")
 
         if not self.is_recording:
+            return
+
+        # Post-start flush: drop frames captured immediately after recording
+        # starts.  Used after barge-in to flush residual TTS echo from the
+        # mic pipeline before VAD begins speech detection.
+        if self._post_start_flush_frames > 0:
+            self._post_start_flush_frames -= 1
             return
 
         # Sentinel keeps audio_buffer length accurate for iris_gateway check (> 30 frames)
