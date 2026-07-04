@@ -2828,12 +2828,12 @@ class IRISGateway:
                                                         )
                                                     except Exception:
                                                         pass
-                    _pending = []
-                    _pending_words = 0
-                    _root_log.info(
-                        f"[TTS][producer] synthesized {_diag_chunks} audio chunks "
-                        f"for chunk of {len(chunk)} chars ({chunk[:50]!r})"
-                    )
+                            _pending = []
+                            _pending_words = 0
+                            _root_log.info(
+                                f"[TTS][producer] synthesized {_diag_chunks} audio chunks "
+                                f"for chunk of {len(chunk)} chars ({chunk[:50]!r})"
+                            )
             except Exception as exc:
                 self._logger.error(f"[Voice] TTS Producer error: {exc}")
             finally:

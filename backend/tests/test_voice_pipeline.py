@@ -1236,3 +1236,269 @@ class TestNewConversationContextReset:
 
             # Verify clear_conversation was called on the agent kernel
             mock_kernel.clear_conversation.assert_called_once()
+
+
+class TestPendingAccumulation:
+    """Verify the TTS producer's _pending list accumulates items correctly
+    and clears ONLY after a successful flush.
+
+    This tests the structural fix for the bug where `_pending = []` ran
+    at 20sp (outside the `if _pending_words >= _target:` block), clearing
+    items every iteration regardless of whether the threshold was met.
+    Items with fewer words than the threshold were permanently lost —
+    only the first sentence (is_first_chunk gate) and the END_STREAM
+    flush survived. This caused TTS to play the first few words then
+    restart (the END_STREAM flush sounded like "starting over").
+    """
+
+    def _make_producer(self, first_threshold=6, normal_threshold=8):
+        """Create a minimal producer state machine matching the production
+        code in iris_gateway.py lines 2665-2836.
+
+        Returns a dict with the producer state and a `feed()` method that
+        simulates one iteration of the while True: loop."""
+        state = {
+            "_pending": [],
+            "_pending_words": 0,
+            "_all_words": [],
+            "_target": first_threshold,
+            "_is_first_chunk": True,
+            "_flushed_chunks": [],   # list of (chunk_text, word_count)
+            "_first_audio_pushed": False,
+        }
+
+        def feed(item, interrupted=False):
+            """Simulate one iteration of the producer loop.
+
+            item=None means END_STREAM sentinel.
+            Returns 'flushed', 'accumulated', or 'end_stream_flush'."""
+            if item is None:
+                # END_STREAM path (lines 2699-2722)
+                if state["_pending"] and not interrupted:
+                    chunk = " ".join(state["_pending"])
+                    state["_flushed_chunks"].append((chunk, state["_pending_words"]))
+                    state["_pending"] = []
+                    state["_pending_words"] = 0
+                    return "end_stream_flush"
+                return "end_stream_empty"
+
+            if interrupted:
+                return "interrupted"
+
+            # Accumulate (line 2724-2726)
+            state["_pending"].append(item)
+            state["_pending_words"] += len(item.split())
+            state["_all_words"].extend(item.split())
+
+            # Threshold check (lines 2728-2730)
+            should_flush = (
+                state["_pending_words"] >= state["_target"]
+                or (state["_is_first_chunk"] and len(state["_pending"]) >= 1)
+            )
+
+            if should_flush:
+                chunk = " ".join(state["_pending"])
+                state["_flushed_chunks"].append((chunk, state["_pending_words"]))
+                # Post-flush housekeeping (lines 2753-2755)
+                if state["_is_first_chunk"]:
+                    state["_is_first_chunk"] = False
+                    state["_target"] = normal_threshold
+                # THIS IS THE FIX: _pending = [] and _pending_words = 0
+                # must be INSIDE the if block, not outside it
+                state["_pending"] = []
+                state["_pending_words"] = 0
+                return "flushed"
+
+            # Non-flush: items stay in _pending (no clear!)
+            return "accumulated"
+
+        return state, feed
+
+    def test_items_accumulate_below_threshold(self):
+        """Items with fewer words than the threshold must accumulate
+        in _pending, not be cleared each iteration."""
+        state, feed = self._make_producer(normal_threshold=8)
+
+        # First item always flushes due to is_first_chunk gate — skip it
+        feed("Of course!")
+        assert state["_is_first_chunk"] is False
+
+        # Now test accumulation: "For a classic" = 3 words, below threshold (8)
+        assert feed("For a classic") == "accumulated"
+        assert len(state["_pending"]) == 1
+        assert state["_pending_words"] == 3
+
+        # "apple pie," = 2 words, still below threshold
+        assert feed("apple pie,") == "accumulated"
+        assert len(state["_pending"]) == 2
+        assert state["_pending_words"] == 5
+
+        # "you can't go wrong" = 4 words, total 9 >= 8 → flush
+        assert feed("you can't go wrong") == "flushed"
+        assert len(state["_pending"]) == 0
+        assert state["_pending_words"] == 0
+
+        # Verify the flushed chunk contains all three items
+        assert len(state["_flushed_chunks"]) == 2  # first + this flush
+        flushed_text = state["_flushed_chunks"][1][0]
+        assert "For a classic" in flushed_text
+        assert "apple pie," in flushed_text
+        assert "you can't go wrong" in flushed_text
+
+    def test_first_chunk_flushes_immediately(self):
+        """is_first_chunk gate: first item triggers flush regardless of
+        word count, even if below normal threshold."""
+        state, feed = self._make_producer(first_threshold=6, normal_threshold=8)
+
+        # "Of course!" = 2 words, below first_threshold (6)
+        # but is_first_chunk=True → flush
+        assert feed("Of course!") == "flushed"
+        assert len(state["_pending"]) == 0
+        assert len(state["_flushed_chunks"]) == 1
+        assert "Of course!" in state["_flushed_chunks"][0][0]
+
+        # After first flush, is_first_chunk=False, target=normal_threshold
+        assert state["_is_first_chunk"] is False
+        assert state["_target"] == 8
+
+    def test_pending_not_cleared_on_non_flush(self):
+        """THE CRITICAL BUG TEST: _pending must NOT be cleared when the
+        word threshold is not met. Before the fix, `_pending = []` ran
+        at 20sp (outside the if block), clearing items every iteration."""
+        state, feed = self._make_producer(normal_threshold=10)
+
+        # Skip first-chunk flush
+        feed("skip")
+        assert state["_is_first_chunk"] is False
+
+        # Send 3 items of 2 words each = 6 total, below threshold (10)
+        feed("hello world")
+        feed("foo bar")
+        feed("baz qux")
+
+        # All 3 items must still be in _pending
+        assert len(state["_pending"]) == 3
+        assert state["_pending_words"] == 6
+        assert state["_pending"] == ["hello world", "foo bar", "baz qux"]
+
+        # No additional flushes occurred (only the skip flush)
+        assert len(state["_flushed_chunks"]) == 1
+
+    def test_flush_captures_all_accumulated_items(self):
+        """After accumulating multiple items, the flush must capture ALL
+        of them in the chunk, not just the current item."""
+        state, feed = self._make_producer(normal_threshold=12)
+
+        # Skip first-chunk flush
+        feed("skip")
+
+        feed("one two")       # 2 words
+        feed("three four")    # 2 words
+        feed("five six")      # 2 words  → 6 total
+        feed("seven eight")   # 2 words  → 8 total
+        feed("nine ten")      # 2 words  → 10 total
+        feed("eleven twelve thirteen")  # 3 words → 13 >= 12 → flush
+
+        assert len(state["_flushed_chunks"]) == 2  # skip + this flush
+        chunk_text, word_count = state["_flushed_chunks"][1][0], state["_flushed_chunks"][1][1]
+        assert word_count == 13
+        # All 6 items must be in the flushed chunk
+        for item in ["one two", "three four", "five six",
+                     "seven eight", "nine ten", "eleven twelve thirteen"]:
+            assert item in chunk_text
+
+    def test_end_stream_flushes_remaining(self):
+        """END_STREAM sentinel must flush whatever is left in _pending,
+        even if the threshold was never met."""
+        state, feed = self._make_producer(normal_threshold=20)
+
+        # Skip first-chunk flush
+        feed("skip")
+
+        feed("short")          # 1 word, accumulated
+        feed("text here")      # 2 words, accumulated → 3 total
+
+        assert len(state["_pending"]) == 2
+        assert state["_pending_words"] == 3
+
+        # END_STREAM
+        result = feed(None)
+        assert result == "end_stream_flush"
+        assert len(state["_pending"]) == 0
+        assert state["_pending_words"] == 0
+        assert len(state["_flushed_chunks"]) == 2  # skip + end_stream
+        assert "short" in state["_flushed_chunks"][1][0]
+        assert "text here" in state["_flushed_chunks"][1][0]
+
+    def test_multiple_flush_cycles(self):
+        """After a flush, _pending resets and the next batch accumulates
+        correctly from scratch."""
+        state, feed = self._make_producer(normal_threshold=8)
+
+        # Skip first-chunk flush
+        feed("skip")
+
+        # Batch 1: accumulate + flush
+        feed("aaa bbb ccc")     # 3 words
+        feed("ddd eee fff")     # 3 words → 6 total
+        feed("ggg hhh iii")     # 3 words → 9 >= 8 → flush
+        assert len(state["_flushed_chunks"]) == 2  # skip + batch1
+        assert state["_pending"] == []
+        assert state["_pending_words"] == 0
+
+        # Batch 2: accumulate + flush
+        feed("jjj kkk lll")     # 3 words
+        feed("mmm nnn ooo")     # 3 words → 6 total
+        feed("ppp qqq rrr")     # 3 words → 9 >= 8 → flush
+        assert len(state["_flushed_chunks"]) == 3  # skip + batch1 + batch2
+        assert state["_pending"] == []
+
+        # Verify both batches have correct content
+        assert "aaa bbb ccc" in state["_flushed_chunks"][1][0]
+        assert "jjj kkk lll" in state["_flushed_chunks"][2][0]
+
+    def test_bug_repro_items_lost_every_iteration(self):
+        """Reproduce the exact bug scenario: 6-word sentence fragments
+        with threshold=8. Before the fix, _pending cleared every iteration,
+        so items never accumulated and only the first sentence (is_first_chunk)
+        and END_STREAM flush survived."""
+        state, feed = self._make_producer(first_threshold=6, normal_threshold=8)
+
+        # Simulate LLM streaming: 6-word sentence fragments
+        # First item: is_first_chunk → flushes immediately (correct)
+        result1 = feed("Of course! For a classic")
+        assert result1 == "flushed"
+        assert "Of course! For a classic" in state["_flushed_chunks"][0][0]
+
+        # Items 2-4: 6 words each, threshold=8 after first flush
+        # BUG: _pending cleared every iteration → items LOST
+        # FIX: items accumulate until threshold met
+        result2 = feed("apple pie, you can't go wrong")
+        assert result2 == "accumulated"
+        assert len(state["_pending"]) == 1  # item survived!
+
+        # item2 (6 words) + item3 (6 words) = 12 ≥ 8 → flush
+        result3 = feed("with a flaky golden crust")
+        assert result3 == "flushed"
+        # Both items flushed together
+        assert len(state["_flushed_chunks"]) == 2  # first + this flush
+        batch2_text = state["_flushed_chunks"][1][0]
+        assert "apple pie" in batch2_text
+        assert "flaky golden crust" in batch2_text
+        # pending is cleared after flush
+        assert len(state["_pending"]) == 0
+
+        # item4 starts fresh accumulation
+        result4 = feed("and warm cinnamon filling inside")
+        assert result4 == "accumulated"
+        assert len(state["_pending"]) == 1
+        assert state["_pending"][0] == "and warm cinnamon filling inside"
+
+        # END_STREAM flushes item4
+        feed(None)
+        assert len(state["_flushed_chunks"]) == 3
+        assert "and warm cinnamon filling inside" in state["_flushed_chunks"][2][0]
+
+        # TOTAL: 3 flushes covering ALL text. Before fix: only 2 flushes
+        # (first item + END_STREAM), items 2-4 permanently lost.
+        assert len(state["_flushed_chunks"]) == 3
