@@ -297,14 +297,18 @@ async def lifespan(app: FastAPI):
         # voice command doesn't block for 2 minutes loading 723 shards.
         async def _preload_parakeet():
             try:
+                import asyncio as _asyncio
                 logger.info("[PARAKEET] Background pre-load started")
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, voice_handler._parakeet._ensure_loaded)
+                _loop = _asyncio.get_event_loop()
+                await _loop.run_in_executor(None, voice_handler._parakeet._ensure_loaded)
                 logger.info("[PARAKEET] Background pre-load complete")
             except Exception:
                 logger.warning("[PARAKEET] Background pre-load failed — will lazy-load on first voice command")
 
-        asyncio.create_task(_preload_parakeet())
+        try:
+            asyncio.create_task(_preload_parakeet())
+        except Exception:
+            logger.warning("[PARAKEET] Failed to schedule pre-load task — continuing startup")
 
         # faster-whisper / ctranslate2 warm-up is intentionally deferred.
         # Importing ctranslate2 allocates ~400 MB RAM and initialises a CUDA
@@ -332,8 +336,6 @@ async def lifespan(app: FastAPI):
 
         # Step 6: Capture the running event loop for background task dispatch
         try:
-            import asyncio
-
             iris_gateway.set_main_loop(asyncio.get_running_loop())
             logger.info("    [+] [IRIS GATEWAY] Event loop captured")
         except Exception as e:
