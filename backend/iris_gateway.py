@@ -3023,14 +3023,26 @@ class IRISGateway:
                 import sounddevice as _sd
                 _sd_stream = None
                 _sd_stream_started = False
-                _buffered_chunks = []  # kept for cadence/word calculation
-                _stream_start_time = None  # set when first chunk is written to OutputStream
+                _buffered_chunks = []  # kept for word timing calculation
+                _stream_start_time = None
+                _rms_peak = 0.0  # running peak RMS for normalization
 
                 while True:
-                    _timeout = 300 if not _sd_stream_started else 5
+                    # Fast timeout (0.5s) after streaming starts so barge-in
+                    # (interrupt_speech) is detected promptly.
+                    _timeout = 300 if not _sd_stream_started else 0.5
                     try:
                         chunk = audio_queue.get(timeout=_timeout)
                     except queue.Empty:
+                        # Check for interruption during the wait
+                        if _sd_stream_started and engine.is_speech_interrupted():
+                            interrupted.set()
+                            while not audio_queue.empty():
+                                try:
+                                    audio_queue.get_nowait()
+                                except queue.Empty:
+                                    break
+                            break
                         chunk = None
                     if chunk is _TTS_END_STREAM:
                         break
@@ -3066,117 +3078,28 @@ class IRISGateway:
                             _playback_event.set()
 
                     if _sd_stream is not None:
-                        _sd_stream.write(np.asarray(chunk, dtype=np.float32))
+                        ch_f32 = np.asarray(chunk, dtype=np.float32)
+                        _sd_stream.write(ch_f32)
 
-                # Close the streaming output
-                if _sd_stream is not None:
-                    _sd_stream.stop()
-                    _sd_stream.close()
-
-                # ── Playback complete — skip cadence/words if interrupted ──
-                approx_duration = 0.0
-                if not _buffered_chunks:
-                    self._logger.error(
-                        "[TTS] _speak_response fallback: produced ZERO audio chunks — "
-                        "TTS model returned no output. Check TTSManager error logs."
-                    )
-                elif not interrupted.is_set():
-                    if engine.pipeline:
-                        # ── Cadence broadcasting during TTS ──────────────
-                        _rms_profile = []
-                        for ch in _buffered_chunks:
-                            ch_f32 = np.asarray(ch, dtype=np.float32)
-                            _r = float(np.sqrt(np.mean(np.square(ch_f32))))
-                            _rms_profile.append(_r)
-                        _peak_rms = max(_rms_profile) if _rms_profile else 1.0
-                        _rms_profile = [min(1.0, r / (_peak_rms + 1e-10) * 2.0) for r in _rms_profile]
-
-                        total_frames = sum(len(np.asarray(c, dtype=np.float32)) for c in _buffered_chunks)
-                        approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
-                        cadence_thread = None
-                        if session_id and self._main_loop and approx_duration > 0.5:
-                            self._logger.info(
-                                f"[TTS] Starting cadence thread with real RMS "
-                                f"(dur={approx_duration:.1f}s, {len(_rms_profile)} frames)"
-                            )
-                            _barge_in_stop = threading.Event()
-                            self._barge_in_stop = _barge_in_stop
-
-                            def _broadcast_cadence():
-                                import asyncio as _asyncio2
-                                # Anchor to stream start so the breathing
-                                # matches the actual audio playback position,
-                                # not the cadence thread's own start time.
-                                _cadence_stream_start = _stream_start_time or time.monotonic()
-                                slot_count = len(_rms_profile)
-                                while (
-                                    time.monotonic() < _cadence_stream_start + approx_duration
-                                    and not _barge_in_stop.is_set()
-                                ):
-                                    elapsed = time.monotonic() - _cadence_stream_start
-                                    frac = elapsed / max(approx_duration, 1e-6)
-                                    idx = int(frac * slot_count)
-                                    if idx >= slot_count:
-                                        break
-                                    rms_val = _rms_profile[idx]
-                                    try:
-                                        _asyncio2.run_coroutine_threadsafe(
-                                            self._ws_manager.broadcast_to_session(
-                                                session_id,
-                                                {
-                                                    "type": "audio_envelope",
-                                                    "payload": {
-                                                        "rms": rms_val,
-                                                        "cadence": rms_val,
-                                                        "phase": "speaking",
-                                                    },
-                                                },
-                                            ),
-                                            self._main_loop,
-                                        )
-                                    except Exception:
-                                        pass
-                                    time.sleep(0.1)
-                            cadence_thread = threading.Thread(
-                                target=_broadcast_cadence,
-                                daemon=True,
-                                name="tts-cadence",
-                            )
-                            cadence_thread.start()
-
-                # ── Word-timing thread for fallback path ──────────────
-                _word_thread = None
-                if _all_words and approx_duration > 0.3:
-                    _word_count = len(_all_words)
-                    _total_chars = sum(len(w) for w in _all_words) or 1
-                    _word_timings = []
-                    _cumulative = 0.0
-                    for _w in _all_words:
-                        _cumulative += (len(_w) / _total_chars) * approx_duration
-                        _word_timings.append(_cumulative)
-
-                    def _broadcast_words():
-                        import asyncio as _asyncio2
-                        import time as _time2
-                        _playback_event.wait(timeout=2.0)
-                        _time2.sleep(0.03)
-                        # Anchor to stream start so word highlights match
-                        # actual audio playback, not thread start time.
-                        _word_stream_start = _stream_start_time or _time2.monotonic()
-                        for _i in range(_word_count):
-                            _sleep = _word_timings[_i] - (_time2.monotonic() - _word_stream_start)
-                            if _sleep > 0:
-                                _time2.sleep(_sleep)
+                        # ── Broadcast cadence per-chunk ────────────────
+                        # So the orb breathing matches audio in real-time
+                        # instead of waiting for all chunks to accumulate.
+                        _rms = float(np.sqrt(np.mean(np.square(ch_f32))))
+                        if _rms > _rms_peak:
+                            _rms_peak = _rms
+                        _norm_rms = min(1.0, _rms / (_rms_peak + 1e-10) * 2.0)
+                        if session_id and self._main_loop:
                             try:
-                                _asyncio2.run_coroutine_threadsafe(
-                                    self._ws_manager.send_to_client(
-                                        client_id,
+                                import asyncio as _async_envelope
+                                _async_envelope.run_coroutine_threadsafe(
+                                    self._ws_manager.broadcast_to_session(
+                                        session_id,
                                         {
-                                            "type": "tts_word",
+                                            "type": "audio_envelope",
                                             "payload": {
-                                                "word_index": _i,
-                                                "total_words": _word_count,
-                                                "is_final": _i == _word_count - 1,
+                                                "rms": _norm_rms,
+                                                "cadence": _norm_rms,
+                                                "phase": "speaking",
                                             },
                                         },
                                     ),
@@ -3185,17 +3108,96 @@ class IRISGateway:
                             except Exception:
                                 pass
 
-                    _word_thread = threading.Thread(
-                        target=_broadcast_words,
-                        daemon=True,
-                        name="tts-words",
-                    )
-                    _word_thread.start()
+                # Close the streaming output
+                if _sd_stream is not None:
+                    _sd_stream.stop()
+                    _sd_stream.close()
 
-                if cadence_thread:
-                    cadence_thread.join(timeout=3)
-                if _word_thread:
-                    _word_thread.join(timeout=3)
+                # ── Tell frontend the orb should stop breathing ────────
+                if session_id and self._main_loop and _sd_stream_started:
+                    try:
+                        import asyncio as _async_idle
+                        _async_idle.run_coroutine_threadsafe(
+                            self._ws_manager.broadcast_to_session(
+                                session_id,
+                                {
+                                    "type": "audio_envelope",
+                                    "payload": {"rms": 0, "cadence": 0, "phase": "idle"},
+                                },
+                            ),
+                            self._main_loop,
+                        )
+                    except Exception:
+                        pass
+
+                # ── Word-timing thread (post-loop) ────────────────────
+                approx_duration = 0.0
+                if _buffered_chunks and not interrupted.is_set():
+                    total_frames = sum(
+                        len(np.asarray(c, dtype=np.float32)) for c in _buffered_chunks
+                    )
+                    approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
+
+                    _word_thread = None
+                    if _all_words and approx_duration > 0.3:
+                        _word_count = len(_all_words)
+                        _total_chars = sum(len(w) for w in _all_words) or 1
+                        _word_timings = []
+                        _cumulative = 0.0
+                        for _w in _all_words:
+                            _cumulative += (len(_w) / _total_chars) * approx_duration
+                            _word_timings.append(_cumulative)
+
+                        def _broadcast_words():
+                            import asyncio as _asyncio2
+                            import time as _time2
+
+                            _playback_event.wait(timeout=2.0)
+                            _time2.sleep(0.03)
+                            _word_stream_start = _stream_start_time or _time2.monotonic()
+                            # Audio is already playing — skip words that have
+                            # already been spoken, start from current position.
+                            _elapsed = _time2.monotonic() - _word_stream_start
+                            _start_word = 0
+                            for _i, _t in enumerate(_word_timings):
+                                if _t >= _elapsed:
+                                    _start_word = _i
+                                    break
+                            else:
+                                _start_word = _word_count - 1
+                            for _i in range(_start_word, _word_count):
+                                _sleep = _word_timings[_i] - (
+                                    _time2.monotonic() - _word_stream_start
+                                )
+                                if _sleep > 0:
+                                    _time2.sleep(_sleep)
+                                try:
+                                    _asyncio2.run_coroutine_threadsafe(
+                                        self._ws_manager.send_to_client(
+                                            client_id,
+                                            {
+                                                "type": "tts_word",
+                                                "payload": {
+                                                    "word_index": _i,
+                                                    "total_words": _word_count,
+                                                    "is_final": _i == _word_count - 1,
+                                                },
+                                            },
+                                        ),
+                                        self._main_loop,
+                                    )
+                                except Exception:
+                                    pass
+
+                        _word_thread = threading.Thread(
+                            target=_broadcast_words,
+                            daemon=True,
+                            name="tts-words",
+                        )
+                        _word_thread.start()
+
+                    if _word_thread:
+                        _word_thread.join(timeout=3)
 
                 producer_thread.join(timeout=5)
         except Exception as e:
