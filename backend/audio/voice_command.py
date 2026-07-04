@@ -64,19 +64,29 @@ class ParakeetTranscriber:
             if self._loaded:
                 return True
             try:
-                logger.info("[Parakeet] Loading Parakeet TDT model (GPU fp16)...")
+                logger.info("[Parakeet] Loading Parakeet TDT model (GPU fp16, device_map=cuda)...")
                 import torch
                 from transformers import AutoProcessor, ParakeetForTDT
 
                 model_name = "nvidia/parakeet-tdt-0.6b-v3"
                 self._processor = AutoProcessor.from_pretrained(model_name)
+
+                # device_map="cuda": load weights directly to GPU, never materializing
+                # a full CPU copy.  This eliminates the ~2.4GB "CPU ghost" that
+                # from_pretrained + .to("cuda") leaves in system RSS.
                 self._model = ParakeetForTDT.from_pretrained(
                     model_name,
                     torch_dtype=torch.float16,
-                ).to("cuda")
+                    device_map="cuda",
+                )
                 self._model.eval()
+
+                # Free any residual CPU memory from processor init
+                import gc as _gc
+                _gc.collect()
+                torch.cuda.empty_cache()
                 self._loaded = True
-                logger.info("[Parakeet] Model loaded successfully (GPU fp16)")
+                logger.info("[Parakeet] Model loaded successfully (GPU fp16, device_map=cuda)")
                 return True
             except Exception as exc:
                 self._load_error = exc
@@ -113,10 +123,14 @@ class ParakeetTranscriber:
                 return_tensors="pt",
             )
 
-            # Move to GPU — processor returns input_features (not input_values)
-            input_features = inputs.input_features.cuda()
+            # Move to GPU in model's dtype — device_map="cuda" loads the model in
+            # fp16, so inputs must match.  The processor returns float32 tensors.
+            _dtype = next(self._model.parameters()).dtype
+            input_features = inputs.input_features.to(dtype=_dtype, device="cuda")
             attention_mask = (
-                inputs.attention_mask.cuda() if hasattr(inputs, "attention_mask") else None
+                inputs.attention_mask.to(dtype=_dtype, device="cuda")
+                if hasattr(inputs, "attention_mask")
+                else None
             )
 
             # Inference — Parakeet TDT uses generate() not direct forward()
@@ -178,7 +192,7 @@ class VoiceCommandHandler:
     # VAD tuning — adjustable per environment
     VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
     VAD_MIN_SPEECH_SEC: float = 0.15  # ignore blips shorter than this
-    VAD_SILENCE_SEC: float = 0.8  # silence after speech → end of utterance (was 0.5, increased for more natural pause tolerance)
+    VAD_SILENCE_SEC: float = 0.6  # silence after speech → end of utterance
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
 

@@ -2044,6 +2044,28 @@ class IRISGateway:
 
         loop = asyncio.get_running_loop()
         _tts_started = False
+        import time as _voice_time
+
+        # Voice pipeline timing profiler.  Logs deltas at key stages so we can
+        # see exactly where the 8-15s delay lives (VAD -> LLM -> TTS -> audio).
+        self._voice_timing = {
+            "vad_end": _voice_time.monotonic(),
+            "llm_start": None,
+            "first_chunk": None,
+            "first_sentence": None,
+            "tts_thread_start": None,
+            "first_tts_chunk": None,
+            "first_audio_played": None,
+            "llm_end": None,
+            "text_response_sent": None,
+        }
+
+        def _log_timing(label: str):
+            self._voice_timing[label] = _voice_time.monotonic()
+            t0 = self._voice_timing["vad_end"]
+            dt = self._voice_timing[label] - t0
+            self._logger.info(f"[VOICE_TIMING] {label}: +{dt:.3f}s")
+
         try:
             # ── Pillar 1A: user bubble ──────────────────────────────────────
             await self._ws_manager.send_to_client(
@@ -2153,6 +2175,10 @@ class IRISGateway:
             _SENTENCE_MAX_WORDS = 50  # flush if sentence grows too long
 
             def _execute_agent():
+                _log_timing("llm_start")
+                _first_chunk_seen = False
+                _first_sentence_seen = False
+
                 def chunk_callback(chunk: str):
                     if loop and loop.is_running():
                         asyncio.run_coroutine_threadsafe(
@@ -2170,13 +2196,21 @@ class IRISGateway:
                     # (chunk_callback receives actual response content from the LLM,
                     #  NOT reasoning/thinking — reasoning goes through reasoning_callback).
                     nonlocal _sentence_buf_words
+                    nonlocal _first_chunk_seen
+                    nonlocal _first_sentence_seen
+                    if not _first_chunk_seen:
+                        _first_chunk_seen = True
+                        _log_timing("first_chunk")
                     sentence_buf.append(chunk)
                     _sentence_buf_words += chunk.count(" ") + (
                         1 if chunk.strip() else 0
                     )
                     text = "".join(sentence_buf)
-                    if m := _re.search(r"([.!?;,:])\s+|(?<=.{40})", text):
-                        # Flush on hard stops (. ! ?) or soft pauses (; , :) or 40+ chars
+                    if m := _re.search(r"([.!?;,:])\s+|(?<=.{15})\s+", text):
+                        if not _first_sentence_seen:
+                            _first_sentence_seen = True
+                            _log_timing("first_sentence")
+                        # Flush on hard stops (. ! ?) or soft pauses (; , :) or 15+ chars at word boundary
                         complete = text[: m.end()]
                         sentence_queue.put(complete)
                         remainder = text[m.end() :]
@@ -2185,6 +2219,9 @@ class IRISGateway:
                             1 if remainder.strip() else 0
                         )
                     elif _sentence_buf_words >= _SENTENCE_MAX_WORDS:
+                        if not _first_sentence_seen:
+                            _first_sentence_seen = True
+                            _log_timing("first_sentence")
                         # Flush oversized sentence to avoid infinite buffering
                         sentence_queue.put(text)
                         sentence_buf.clear()
@@ -2211,6 +2248,7 @@ class IRISGateway:
                         reasoning_callback=reasoning_callback,
                         from_voice=True,
                     )
+                    _log_timing("llm_end")
                     # Final flush — any remaining text becomes a sentence
                     if sentence_buf:
                         sentence_queue.put("".join(sentence_buf))
@@ -2239,6 +2277,7 @@ class IRISGateway:
                 On success, _speak_response's finally block handles state
                 (auto-relisten in conversation, idle otherwise).
                 """
+                _log_timing("tts_thread_start")
                 _succeeded = False
                 try:
                     self._logger.info("[TTS] _wrap_tts_streaming started — calling _speak_response")
@@ -2281,6 +2320,7 @@ class IRISGateway:
 
             # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
+            _log_timing("text_response_sent")
             await self._ws_manager.send_to_client(
                 client_id,
                 {
@@ -2311,6 +2351,31 @@ class IRISGateway:
                 # Safety net: if TTS never started, ensure we always reach idle.
                 # (TTS path sends idle itself via _speak_response finally block.)
                 pass
+            # ── Voice pipeline timing summary ─────────────────────────────────
+            if hasattr(self, "_voice_timing"):
+                t0 = self._voice_timing["vad_end"]
+                total = _voice_time.monotonic() - t0
+                summary_lines = ["[VOICE_TIMING_SUMMARY] pipeline timings:"]
+                labels = [
+                    ("vad_end", "VAD end / pipeline start"),
+                    ("llm_start", "LLM start"),
+                    ("first_chunk", "LLM first text chunk"),
+                    ("first_sentence", "First sentence flushed"),
+                    ("tts_thread_start", "TTS thread start"),
+                    ("first_sentence_in_producer", "Producer received first sentence"),
+                    ("first_tts_synth_start", "TTS synthesis start (first chunk)"),
+                    ("first_audio_pushed", "First audio chunk pushed to player"),
+                    ("tts_started_event_sent", "tts_started event sent"),
+                    ("llm_end", "LLM end"),
+                    ("text_response_sent", "text_response sent"),
+                ]
+                for key, desc in labels:
+                    ts = self._voice_timing.get(key)
+                    if ts:
+                        summary_lines.append(f"  {desc}: +{ts - t0:.3f}s")
+                summary_lines.append(f"  total elapsed: +{total:.3f}s")
+                self._logger.info("\n".join(summary_lines))
+                delattr(self, "_voice_timing")
             self._logger.debug(f"[Voice] Pipeline complete for session {session_id}")
 
     @staticmethod
@@ -2540,6 +2605,24 @@ class IRISGateway:
                         except Exception:
                             pass
 
+            def _mark(label: str):
+                import time as _t
+                now = _t.monotonic()
+                if hasattr(self, "_voice_timing"):
+                    self._voice_timing[label] = now
+                    t0 = self._voice_timing.get("vad_end", now)
+                    dt = now - t0
+                    self._logger.info(f"[VOICE_TIMING] {label}: +{dt:.3f}s")
+                else:
+                    # voice_timing dict already deleted (the async handler's
+                    # finally block printed the summary before the producer
+                    # thread finished).  Log the raw monotonic time instead.
+                    self._logger.info(f"[VOICE_TIMING] {label}: raw={now:.3f}s (post-summary)")
+
+            _first_sentence_received = False
+            _first_tts_start = False
+            _first_audio_pushed = False
+
             try:
                 _native = (
                     engine.pipeline is not None
@@ -2547,6 +2630,7 @@ class IRISGateway:
                 )
                 if isinstance(input_source, str):
                     _all_words[:] = input_source.split()
+                    _mark("first_tts_synth_start")
                     for audio_chunk in tts.synthesize_stream(input_source):
                         if interrupted.is_set() or engine.is_speech_interrupted():
                             break
@@ -2573,6 +2657,9 @@ class IRISGateway:
                         pass
                     while True:
                         item = input_source.get()
+                        if not _first_sentence_received and item is not None:
+                            _first_sentence_received = True
+                            _mark("first_sentence_in_producer")
                         # DIAG: log items coming into the producer
                         if not hasattr(self, "_diag_producer_items"):
                             self._diag_producer_items = 0
@@ -2637,6 +2724,9 @@ class IRISGateway:
                             if interrupted.is_set() or engine.is_speech_interrupted():
                                 break
                             chunk = " ".join(_pending)
+                            if not _first_tts_start:
+                                _first_tts_start = True
+                                _mark("first_tts_synth_start")
                             _diag_chunks = 0
                             for audio_chunk in tts.synthesize_stream(chunk):
                                 _diag_chunks += 1
@@ -2647,56 +2737,94 @@ class IRISGateway:
                                             engine.pipeline._native_player.push_chunk(
                                                 gained
                                             )
+                                            if not _first_audio_pushed:
+                                                _first_audio_pushed = True
+                                                _mark("first_audio_pushed")
+                                                # ── First-chunk housekeeping ──────────────
+                                                if is_first_chunk:
+                                                    is_first_chunk = False
+                                                    _target = NORMAL_CHUNK_THRESHOLD
+                                                    # Stop STTPROC immediately
+                                                    if _sttproc_stop is not None:
+                                                        _sttproc_stop.set()
+                                                    # Broadcast "speaking" so the frontend
+                                                    # shows the indicator in sync with audio
+                                                    if (
+                                                        not _speaking_broadcasted
+                                                        and session_id
+                                                        and self._main_loop
+                                                        and self._main_loop.is_running()
+                                                    ):
+                                                        _speaking_broadcasted = True
+                                                        _mark("tts_started_event_sent")
+                                                        try:
+                                                            import asyncio as _asyncio
+                                                            _asyncio.run_coroutine_threadsafe(
+                                                                self._ws_manager.broadcast_to_session(
+                                                                    session_id,
+                                                                    {
+                                                                        "type": "listening_state",
+                                                                        "payload": {"state": "speaking"},
+                                                                    },
+                                                                ),
+                                                                self._main_loop,
+                                                            )
+                                                            _asyncio.run_coroutine_threadsafe(
+                                                                self._ws_manager.broadcast_to_session(
+                                                                    session_id,
+                                                                    {"type": "tts_started"},
+                                                                ),
+                                                                self._main_loop,
+                                                            )
+                                                        except Exception:
+                                                            pass
                                         except Exception as _push_err:
                                             self._logger.warning(
                                                 f"[Voice] Native push failed ({_push_err})"
                                             )
                                     else:
                                         audio_queue.put(audio_chunk)
+                                        if not _first_audio_pushed:
+                                            _first_audio_pushed = True
+                                            _mark("first_audio_pushed")
+                                            # ── First-chunk housekeeping ──────────────
+                                            if is_first_chunk:
+                                                is_first_chunk = False
+                                                _target = NORMAL_CHUNK_THRESHOLD
+                                                if _sttproc_stop is not None:
+                                                    _sttproc_stop.set()
+                                                if (
+                                                    not _speaking_broadcasted
+                                                    and session_id
+                                                    and self._main_loop
+                                                    and self._main_loop.is_running()
+                                                ):
+                                                    _speaking_broadcasted = True
+                                                    _mark("tts_started_event_sent")
+                                                    try:
+                                                        import asyncio as _asyncio
+                                                        _asyncio.run_coroutine_threadsafe(
+                                                            self._ws_manager.broadcast_to_session(
+                                                                session_id,
+                                                                {"type": "listening_state", "payload": {"state": "speaking"}},
+                                                            ),
+                                                            self._main_loop,
+                                                        )
+                                                        _asyncio.run_coroutine_threadsafe(
+                                                            self._ws_manager.broadcast_to_session(
+                                                                session_id,
+                                                                {"type": "tts_started"},
+                                                            ),
+                                                            self._main_loop,
+                                                        )
+                                                    except Exception:
+                                                        pass
                             _pending = []
                             _pending_words = 0
                             _root_log.info(
                                 f"[TTS][producer] synthesized {_diag_chunks} audio chunks "
                                 f"for chunk of {len(chunk)} chars ({chunk[:50]!r})"
                             )
-                            if is_first_chunk:
-                                is_first_chunk = False
-                                _target = NORMAL_CHUNK_THRESHOLD
-                                # Stop STTPROC on first TTS audio chunk
-                                if _sttproc_stop is not None:
-                                    _sttproc_stop.set()
-                                # Broadcast "speaking" on first audio chunk
-                                if (
-                                    not _speaking_broadcasted
-                                    and session_id
-                                    and self._main_loop
-                                    and self._main_loop.is_running()
-                                ):
-                                    _speaking_broadcasted = True
-                                    try:
-                                        import asyncio as _asyncio
-
-                                        _asyncio.run_coroutine_threadsafe(
-                                            self._ws_manager.broadcast_to_session(
-                                                session_id,
-                                                {
-                                                    "type": "listening_state",
-                                                    "payload": {"state": "speaking"},
-                                                },
-                                            ),
-                                            self._main_loop,
-                                        )
-                                        # Dedicated tts_started event so the frontend
-                                        # can sync word highlighting with actual audio.
-                                        _asyncio.run_coroutine_threadsafe(
-                                            self._ws_manager.broadcast_to_session(
-                                                session_id,
-                                                {"type": "tts_started"},
-                                            ),
-                                            self._main_loop,
-                                        )
-                                    except Exception:
-                                        pass
             except Exception as exc:
                 self._logger.error(f"[Voice] TTS Producer error: {exc}")
             finally:
@@ -2886,30 +3014,31 @@ class IRISGateway:
                 if _native_word_thread:
                     _native_word_thread.join(timeout=3)
             else:
-                # Fallback path: asyncio.Queue + polling consumer loop.
-                # Accumulate all chunks and play in one shot via play_stream
-                # (which opens the native player ONCE, avoiding the per-chunk
-                # wait_done() gap that causes choppiness).
-                _buffered_chunks = []
-                _first_chunk = True
+                # Fallback path: asyncio.Queue + streaming consumer.
+                # Play each chunk as it arrives so the user hears audio
+                # immediately instead of waiting for the full sentence to be
+                # generated.  The old accumulator pattern (play_stream at end)
+                # caused a 1-2s silent delay between "speaking" indicator and
+                # actual audio.
+                import sounddevice as _sd
+                _sd_stream = None
+                _sd_stream_started = False
+                _buffered_chunks = []  # kept for cadence/word calculation
+                _stream_start_time = None  # set when first chunk is written to OutputStream
+
                 while True:
-                    # Timeouts: first chunk gets 300s (Pocket-TTS cold load),
-                    # subsequent chunks get 5s (generous — if the producer
-                    # freezes mid-stream we don't want to block forever).
-                    _timeout = 300 if _first_chunk else 5
+                    _timeout = 300 if not _sd_stream_started else 5
                     try:
                         chunk = audio_queue.get(timeout=_timeout)
                     except queue.Empty:
                         chunk = None
                     if chunk is _TTS_END_STREAM:
-                        # Producer finished — end of stream, proceed to playback.
                         break
                     if chunk is None:
                         self._logger.error(
                             f"[Voice] TTS audio queue timed out after {_timeout}s — skipping TTS, continuing conversation"
                         )
                         break
-                    _first_chunk = False
 
                     if engine.is_speech_interrupted():
                         interrupted.set()
@@ -2922,8 +3051,29 @@ class IRISGateway:
 
                     _buffered_chunks.append(chunk)
 
-                # ── Skip playback if interrupted (barge-in) or if TTS produced nothing ──
-                # Don't play buffered audio when the user already barged in.
+                    # ── Stream immediately ──────────────────────────────
+                    if not _sd_stream_started:
+                        _sd_stream_started = True
+                        _stream_start_time = time.monotonic()
+                        _sd_stream = _sd.OutputStream(
+                            samplerate=_TTS_SAMPLE_RATE,
+                            channels=1,
+                            dtype="float32",
+                            latency="low",
+                        )
+                        _sd_stream.start()
+                        if _playback_event is not None:
+                            _playback_event.set()
+
+                    if _sd_stream is not None:
+                        _sd_stream.write(np.asarray(chunk, dtype=np.float32))
+
+                # Close the streaming output
+                if _sd_stream is not None:
+                    _sd_stream.stop()
+                    _sd_stream.close()
+
+                # ── Playback complete — skip cadence/words if interrupted ──
                 approx_duration = 0.0
                 if not _buffered_chunks:
                     self._logger.error(
@@ -2932,73 +3082,69 @@ class IRISGateway:
                     )
                 elif not interrupted.is_set():
                     if engine.pipeline:
-                         # ── Cadence broadcasting during TTS ─────────────────
-                            # The orb needs audio_envelope messages during playback
-                            # so the cadence/breathing matches the speech rhythm.
-                            # Use the ACTUAL audio RMS from the TTS output, not a
-                            # fake sine wave. Pre-compute the RMS profile so the
-                            # cadence thread can play it back in real-time.
-                            _rms_profile = []
-                            for ch in _buffered_chunks:
-                                ch_f32 = np.asarray(ch, dtype=np.float32)
-                                _r = float(np.sqrt(np.mean(np.square(ch_f32))))
-                                _rms_profile.append(_r)
-                            _peak_rms = max(_rms_profile) if _rms_profile else 1.0
-                            _rms_profile = [min(1.0, r / (_peak_rms + 1e-10) * 2.0) for r in _rms_profile]
+                        # ── Cadence broadcasting during TTS ──────────────
+                        _rms_profile = []
+                        for ch in _buffered_chunks:
+                            ch_f32 = np.asarray(ch, dtype=np.float32)
+                            _r = float(np.sqrt(np.mean(np.square(ch_f32))))
+                            _rms_profile.append(_r)
+                        _peak_rms = max(_rms_profile) if _rms_profile else 1.0
+                        _rms_profile = [min(1.0, r / (_peak_rms + 1e-10) * 2.0) for r in _rms_profile]
 
-                            total_frames = sum(len(np.asarray(c, dtype=np.float32)) for c in _buffered_chunks)
-                            approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
-                            cadence_thread = None
-                            if session_id and self._main_loop and approx_duration > 0.5:
-                                self._logger.info(
-                                    f"[TTS] Starting cadence thread with real RMS "
-                                    f"(dur={approx_duration:.1f}s, {len(_rms_profile)} frames)"
-                                )
-                                _barge_in_stop = threading.Event()
-                                self._barge_in_stop = _barge_in_stop
+                        total_frames = sum(len(np.asarray(c, dtype=np.float32)) for c in _buffered_chunks)
+                        approx_duration = total_frames / _TTS_SAMPLE_RATE if total_frames else 0
+                        cadence_thread = None
+                        if session_id and self._main_loop and approx_duration > 0.5:
+                            self._logger.info(
+                                f"[TTS] Starting cadence thread with real RMS "
+                                f"(dur={approx_duration:.1f}s, {len(_rms_profile)} frames)"
+                            )
+                            _barge_in_stop = threading.Event()
+                            self._barge_in_stop = _barge_in_stop
 
-                                def _broadcast_cadence():
-                                    import asyncio as _asyncio2
-                                    start = time.monotonic()
-                                    slot_count = len(_rms_profile)
-                                    while (
-                                        time.monotonic() < start + approx_duration
-                                        and not _barge_in_stop.is_set()
-                                    ):
-                                        elapsed = time.monotonic() - start
-                                        frac = elapsed / max(approx_duration, 1e-6)
-                                        idx = int(frac * slot_count)
-                                        if idx >= slot_count:
-                                            break
-                                        rms_val = _rms_profile[idx]
-                                        try:
-                                            _asyncio2.run_coroutine_threadsafe(
-                                                self._ws_manager.broadcast_to_session(
-                                                    session_id,
-                                                    {
-                                                        "type": "audio_envelope",
-                                                        "payload": {
-                                                            "rms": rms_val,
-                                                            "cadence": rms_val,
-                                                            "phase": "speaking",
-                                                        },
+                            def _broadcast_cadence():
+                                import asyncio as _asyncio2
+                                # Anchor to stream start so the breathing
+                                # matches the actual audio playback position,
+                                # not the cadence thread's own start time.
+                                _cadence_stream_start = _stream_start_time or time.monotonic()
+                                slot_count = len(_rms_profile)
+                                while (
+                                    time.monotonic() < _cadence_stream_start + approx_duration
+                                    and not _barge_in_stop.is_set()
+                                ):
+                                    elapsed = time.monotonic() - _cadence_stream_start
+                                    frac = elapsed / max(approx_duration, 1e-6)
+                                    idx = int(frac * slot_count)
+                                    if idx >= slot_count:
+                                        break
+                                    rms_val = _rms_profile[idx]
+                                    try:
+                                        _asyncio2.run_coroutine_threadsafe(
+                                            self._ws_manager.broadcast_to_session(
+                                                session_id,
+                                                {
+                                                    "type": "audio_envelope",
+                                                    "payload": {
+                                                        "rms": rms_val,
+                                                        "cadence": rms_val,
+                                                        "phase": "speaking",
                                                     },
-                                                ),
-                                                self._main_loop,
-                                            )
-                                        except Exception:
-                                            pass
-                                        time.sleep(0.1)
-                                cadence_thread = threading.Thread(
-                                    target=_broadcast_cadence,
-                                    daemon=True,
-                                    name="tts-cadence",
+                                                },
+                                            ),
+                                            self._main_loop,
+                                        )
+                                    except Exception:
+                                        pass
+                                    time.sleep(0.1)
+                            cadence_thread = threading.Thread(
+                                target=_broadcast_cadence,
+                                daemon=True,
+                                name="tts-cadence",
                             )
                             cadence_thread.start()
 
                 # ── Word-timing thread for fallback path ──────────────
-                # Broadcast tts_word events with character-proportional
-                # timing for sync'd word highlighting during playback.
                 _word_thread = None
                 if _all_words and approx_duration > 0.3:
                     _word_count = len(_all_words)
@@ -3014,9 +3160,11 @@ class IRISGateway:
                         import time as _time2
                         _playback_event.wait(timeout=2.0)
                         _time2.sleep(0.03)
-                        _start = _time2.monotonic()
+                        # Anchor to stream start so word highlights match
+                        # actual audio playback, not thread start time.
+                        _word_stream_start = _stream_start_time or _time2.monotonic()
                         for _i in range(_word_count):
-                            _sleep = _word_timings[_i] - (_time2.monotonic() - _start)
+                            _sleep = _word_timings[_i] - (_time2.monotonic() - _word_stream_start)
                             if _sleep > 0:
                                 _time2.sleep(_sleep)
                             try:
@@ -3043,11 +3191,6 @@ class IRISGateway:
                         name="tts-words",
                     )
                     _word_thread.start()
-
-                engine.pipeline.play_stream(
-                    _buffered_chunks, sample_rate=_TTS_SAMPLE_RATE,
-                    playback_started_event=_playback_event
-                )
 
                 if cadence_thread:
                     cadence_thread.join(timeout=3)

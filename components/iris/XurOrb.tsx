@@ -211,10 +211,15 @@ export function XurOrb({
 
   const handleOrbClick = useCallback(() => {
     if (isVoiceActive) {
-      // Single-click while listening ENDS the voice command and processes STT.
-      // Previously this called cancelVoiceCommand() which discarded the audio
-      // — the user never saw their transcript because it was thrown away.
-      endVoiceCommand()
+      if (isSpeaking) {
+        // Clicking while TTS is playing cancels it immediately.
+        cancelVoiceCommand()
+      } else {
+        // Single-click while listening ENDS the voice command and processes STT.
+        // Previously this called cancelVoiceCommand() which discarded the audio
+        // — the user never saw their transcript because it was thrown away.
+        endVoiceCommand()
+      }
       return
     }
     if (isWingsOpen) {
@@ -229,7 +234,7 @@ export function XurOrb({
       setMenuOpen(true)
     }
     onClick()
-  }, [isVoiceActive, cancelVoiceCommand, isWingsOpen, onClick, menuOpen, triggerAnimation, state.level])
+  }, [isVoiceActive, isSpeaking, endVoiceCommand, cancelVoiceCommand, isWingsOpen, onClick, menuOpen, triggerAnimation, state.level])
 
   const handleDoubleClick = useCallback(() => {
     if (isVoiceActive) {

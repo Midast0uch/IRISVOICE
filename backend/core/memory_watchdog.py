@@ -4,19 +4,19 @@ IRIS Memory Watchdog
 Monitors the backend process RSS.  When memory exceeds configured caps it
 takes graduated action:
 
-  SOFT cap (default 800 MB):
+  SOFT cap (default 5000 MB):
     - Run gc.collect()
     - Trigger Mycelium maintenance (compress old episodes)
     - Log a WARNING so the profiler CSV shows the spike
 
-  HARD cap (default 1400 MB):
+  HARD cap (default 7000 MB):
     - Everything in SOFT
     - Attempt to unload the active local LLM (frees VRAM + CPU RAM)
     - Log an ERROR
 
 Both caps are configurable via env vars:
-    IRIS_MEM_SOFT_MB  (default: 800)
-    IRIS_MEM_HARD_MB  (default: 1400)
+    IRIS_MEM_SOFT_MB  (default: 5000)
+    IRIS_MEM_HARD_MB  (default: 7000)
 
 The watchdog runs as a background asyncio task started in main.py lifespan.
 It never raises — a watchdog crash must not take down the backend.
@@ -31,8 +31,12 @@ from typing import Callable, Awaitable, Optional
 
 logger = logging.getLogger("backend.memory.watchdog")
 
-SOFT_CAP_MB: int = int(os.getenv("IRIS_MEM_SOFT_MB", "800"))
-HARD_CAP_MB: int = int(os.getenv("IRIS_MEM_HARD_MB", "1400"))
+# ── Thresholds raised for GPU model host ──────────────────────────────────
+# Backend loads Parakeet (1000-2000 MB GPU + CPU overhead), Pocket-TTS
+# (~200 MB CPU), Python runtime (~600 MB), and CUDA context (~500 MB).
+# Baseline RSS is 2000-3500 MB with all models loaded.
+SOFT_CAP_MB: int = int(os.getenv("IRIS_MEM_SOFT_MB", "5000"))
+HARD_CAP_MB: int = int(os.getenv("IRIS_MEM_HARD_MB", "7000"))
 
 # Minimum seconds between consecutive soft/hard actions (avoid spam)
 _SOFT_COOLDOWN_S: float = 120.0
