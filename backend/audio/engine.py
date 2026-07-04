@@ -432,6 +432,13 @@ class AudioEngine:
                     )
 
             output_device = self.config.get("output_device")
+            # The UI config stores "Default" as a string, but sounddevice
+            # expects None (system default) or an integer device ID.
+            # The string "Default" makes PortAudio look for a device literally
+            # named "Default" which doesn't exist — causing silent failures
+            # on activation beep and STTPROC playback.
+            if isinstance(output_device, str) and output_device.lower() in ("default", ""):
+                output_device = None
             logger.info(
                 f"[AudioEngine] Output device: {'system default' if output_device is None else output_device}"
             )

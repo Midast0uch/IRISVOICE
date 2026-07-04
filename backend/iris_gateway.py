@@ -2138,6 +2138,9 @@ class IRISGateway:
                     from .audio.engine import get_audio_engine as _getae_s
                     _eng_s = _getae_s()
                     _sttproc_dev = _eng_s.pipeline.output_device if (_eng_s.pipeline and _eng_s.pipeline.output_device is not None) else None
+                    # Resolve "Default" string → None for sounddevice compatibility
+                    if isinstance(_sttproc_dev, str) and _sttproc_dev.lower() in ("default", ""):
+                        _sttproc_dev = None
                     self._logger.info(
                         f"[STTPROC] Pre-loaded {len(_sttproc_data)} samples @ {_sttproc_sr}Hz "
                         f"device={_sttproc_dev}"
@@ -3237,10 +3240,37 @@ class IRISGateway:
                     except Exception:
                         pass
 
-                # â”€â”€ Word timing is handled by the streaming monitor â”€â”€â”€â”€
+                # ── Send tts_word is_final to stop word highlighting ────
+                # The word monitor thread loop (while _sd_stream is not None)
+                # never exits because _sd_stream is only closed, not set to
+                # None.  Without this, the frontend never receives is_final
+                # and word highlighting gets stuck or relies on the 200ms
+                # fallback interval which may not match actual audio timing.
+                if session_id and self._main_loop and _word_monitor_started:
+                    try:
+                        import asyncio as _async_words_final
+                        _wn_final = len(_all_words) if _all_words else 0
+                        _async_words_final.run_coroutine_threadsafe(
+                            self._ws_manager.send_to_client(
+                                _client_id or session_id,
+                                {
+                                    "type": "tts_word",
+                                    "payload": {
+                                        "word_index": max(0, _wn_final - 1),
+                                        "total_words": _wn_final,
+                                        "is_final": True,
+                                    },
+                                },
+                            ),
+                            self._main_loop,
+                        )
+                    except Exception:
+                        pass
+
+                # â€"â€" Word timing is handled by the streaming monitor â€"â€"â€"â€"
                 # (started when the first chunk is written, uses
                 #  _sd_stream.time for real playback position).
-                # The post-loop thread has been replaced â€” see line ~3089.
+                # The post-loop thread has been replaced â€" see line ~3089.
 
                 producer_thread.join(timeout=5)
         except Exception as e:

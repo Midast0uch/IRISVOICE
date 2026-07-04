@@ -1146,8 +1146,13 @@ class VoiceCommandHandler:
                 # Using sd.play() directly preserves the original file's
                 # dynamics and completes in real-time.
                 import sounddevice as _sd
+                # Resolve output device: the config may store "Default" as a
+                # string, but sounddevice needs None (system default) or int.
+                _dev = self.audio_engine.pipeline.output_device
+                if isinstance(_dev, str) and _dev.lower() in ("default", ""):
+                    _dev = None
                 try:
-                    _sd.play(sound, sr, device=self.audio_engine.pipeline.output_device, blocking=True)
+                    _sd.play(sound, sr, device=_dev, blocking=True)
                 except Exception as _beep_err:
                     # Fallback: play through pipeline's fallback path
                     logger.warning(f"[VoiceCommand] Direct sd.play failed ({_beep_err}), using pipeline")
