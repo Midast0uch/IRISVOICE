@@ -2209,11 +2209,11 @@ class IRISGateway:
                         1 if chunk.strip() else 0
                     )
                     text = "".join(sentence_buf)
-                    if m := _re.search(r"([.!?;,:])\s+|(?<=.{15})\s+", text):
+                    if m := _re.search(r"([.!?;,:])\s+|(?<=.{30})\s+", text):
                         if not _first_sentence_seen:
                             _first_sentence_seen = True
                             _log_timing("first_sentence")
-                        # Flush on hard stops (. ! ?) or soft pauses (; , :) or 15+ chars at word boundary
+                        # Flush on hard stops (. ! ?) or soft pauses (; , :) or 30+ chars at word boundary
                         complete = text[: m.end()]
                         sentence_queue.put(complete)
                         remainder = text[m.end() :]
@@ -3101,6 +3101,7 @@ class IRISGateway:
                         if not _word_monitor_started:
                             _word_monitor_started = True
                             _last_word_idx = -1
+                            _last_frac = 0.0  # monotonic fraction guard
 
                             def _monitor_words():
                                 import asyncio as _aw
@@ -3137,11 +3138,21 @@ class IRISGateway:
                                         _tw.sleep(0.1)
                                         continue
                                     _frac = min(1.0, _pos / _total_dur)
+                                    # Monotonic fraction — never let _total_dur
+                                    # jumps push the fraction backwards
+                                    nonlocal _last_frac, _last_word_idx
+                                    if _frac < _last_frac:
+                                        _frac = _last_frac
+                                    else:
+                                        _last_frac = _frac
+                                    # Stable _wn — cap at current word + 5 so
+                                    # new sentences don't jump the word index
+                                    _real_wn = len(_all_words) or 1
+                                    _wn = min(_real_wn, (_last_word_idx + 5) if _last_word_idx >= 0 else _real_wn)
                                     _idx = int(_frac * _wn)
                                     if _idx >= _wn:
                                         _idx = _wn - 1
-                                    nonlocal _last_word_idx
-                                    if _idx != _last_word_idx:
+                                    if _idx > _last_word_idx:
                                         _last_word_idx = _idx
                                         self._logger.info(
                                             f"[TTS][words] Broadcasting word {_idx}/{_wn} "
@@ -3155,7 +3166,7 @@ class IRISGateway:
                                                         "type": "tts_word",
                                                         "payload": {
                                                             "word_index": _idx,
-                                                            "total_words": _wn,
+                                                             "total_words": _real_wn,
                                                             "is_final": False,  # Stream closing handles final
                                                         },
                                                     },

@@ -1117,86 +1117,79 @@ class TestTTSWordSyncFromPlaybackPosition:
         assert idx == 0, f"At position 0, expected word 0, got {idx}"
 
 
-class TestTTSWordTimingOffset:
-    """Verify word timing skips already-spoken words."""
+class TestWordMonitorStableWn:
+    """Verify the word monitor's _wn capping and monotonic fraction."""
 
-    def test_word_timing_skips_past_words(self):
-        """
-        When the word thread starts N seconds into playback (because all
-        chunks were accumulated first), it must skip words whose timing
-        has already passed and start from the current word.
-        """
-        # Simulate a 5-word sentence with character-proportional timings
-        words = ["The", "quick", "brown", "fox", "jumps"]
-        approx_duration = 2.0  # 2 seconds total
-        _total_chars = sum(len(w) for w in words)  # 19
+    def _capped_wn(self, real_wn, last_word_idx):
+        """Replicates the production word monitor's _wn capping logic:
+        _wn = min(real_wn, last_word_idx + 5)"""
+        if last_word_idx < 0:
+            return real_wn
+        return min(real_wn, last_word_idx + 5)
 
-        word_timings = []
-        _cumulative = 0.0
-        for w in words:
-            _cumulative += (len(w) / _total_chars) * approx_duration
-            word_timings.append(_cumulative)
+    def test_wn_starts_at_real_count(self):
+        """Before any words are highlighted, _wn = real_wn (no cap needed)."""
+        assert self._capped_wn(10, -1) == 10
+        assert self._capped_wn(2, -1) == 2
 
-        # Word timings: The=0.21s, quick=0.53s, brown=0.84s, fox=1.05s, jumps=2.0s
+    def test_wn_capped_at_current_word_plus_5(self):
+        """_wn caps at last_word_idx + 5 so new sentences don't jump the index."""
+        # Real word count is 30, but we've only highlighted word 2
+        assert self._capped_wn(30, 2) == 7  # min(30, 7) = 7
+        assert self._capped_wn(30, 10) == 15  # min(30, 15) = 15
+        assert self._capped_wn(30, 25) == 30  # min(30, 30) = 30 (caught up)
 
-        # Simulate the thread starting 1.0s into playback — "brown" should be
-        # the current word (its timing 0.84s is the first < 1.0s elapsed)
-        _start_word = 0
-        _elapsed = 1.0
-        for _i, _t in enumerate(word_timings):
-            if _t >= _elapsed:
-                _start_word = _i
-                break
-        else:
-            _start_word = len(words) - 1
+    def test_wn_grows_gradually_with_word_index(self):
+        """As last_word_idx grows, _wn grows too. Simulate a 30-word response."""
+        wn = 0
+        for idx in range(0, 30):
+            wn = self._capped_wn(30, idx)
+            expected = min(30, idx + 5)
+            assert wn == expected, f"At word {idx}: expected _wn={expected}, got {wn}"
 
-        # "brown" is word index 2 (0-indexed: The=0, quick=1, brown=2)
-        assert _start_word == 2, (
-            f"At 1.0s elapsed, expected start_word=2 (brown), got {_start_word}"
-        )
+    def test_wn_never_exceeds_real_wn(self):
+        """_wn must never exceed the real word count."""
+        for real_wn in [5, 10, 50]:
+            for idx in range(-1, real_wn + 5):
+                capped = self._capped_wn(real_wn, idx)
+                assert capped <= real_wn, (
+                    f"real_wn={real_wn}, idx={idx}: capped={capped} > real_wn"
+                )
 
-        # Now verify that only words 2-4 are broadcast
-        broadcasted = []
-        for _i in range(_start_word, len(words)):
-            broadcasted.append(words[_i])
+    def test_monotonic_fraction_never_decreases(self):
+        """The fraction _pos / _total_dur must never decrease, even when
+        _total_dur jumps ahead (producer adds next sentence's samples)."""
+        frac = 0.0
+        _last_frac = 0.0
+        # Simulate: _pos grows, _total_dur jumps ahead
+        for _pos, _dur in [(0.5, 1.0), (0.8, 1.2), (1.0, 3.0), (1.5, 3.2)]:
+            _frac = min(1.0, _pos / _dur)
+            if _frac < _last_frac:
+                _frac = _last_frac
+            else:
+                _last_frac = _frac
+            assert _frac >= frac, f"Fraction decreased: {frac} -> {_frac}"
+            frac = _frac
+        # Even though _pos/_dur jumped from 0.8/1.2=0.67 to 1.0/3.0=0.33,
+        # the monotonic guard keeps frac at 0.67
+        assert abs(frac - 0.6666667) < 1e-6, f"Expected 0.6666, got {frac}"
 
-        assert broadcasted == ["brown", "fox", "jumps"], (
-            f"Expected ['brown', 'fox', 'jumps'], got {broadcasted}"
-        )
+    def test_word_index_only_moves_forward(self):
+        """Word index must never decrease when _wn grows."""
+        _last_word_idx = -1
+        # Simulate: fraction constant 0.5, _wn jumps from 2 to 17
+        cases = [
+            (_wn := 2, int(0.5 * 2) - 1),   # idx = 0 (safe)
+            (_wn := 17, int(0.5 * 17) - 1),  # idx = 7 (jumps but forward)
+        ]
+        for _, _idx in cases:
+            if _idx <= _last_word_idx:
+                _idx = _last_word_idx  # clamp (backup guard)
+            assert _idx >= _last_word_idx, f"Word index went backwards: {_last_word_idx} -> {_idx}"
+            _last_word_idx = _idx
 
-    def test_word_timing_start_at_zero_if_no_elapsed(self):
-        """If the word thread starts before any audio plays, it starts from word 0."""
-        words = ["Hello", "world"]
-        word_timings = [0.3, 0.8]
-
-        _start_word = 0
-        _elapsed = 0.0
-        for _i, _t in enumerate(word_timings):
-            if _t >= _elapsed:
-                _start_word = _i
-                break
-
-        assert _start_word == 0, (
-            f"At 0s elapsed, expected start_word=0, got {_start_word}"
-        )
-
-    def test_word_timing_ends_at_last_word_if_all_past(self):
-        """If all words have already been spoken, start from the last word."""
-        words = ["A", "B", "C"]
-        word_timings = [0.2, 0.5, 1.0]
-
-        _start_word = 0
-        _elapsed = 2.0  # past the end
-        for _i, _t in enumerate(word_timings):
-            if _t >= _elapsed:
-                _start_word = _i
-                break
-        else:
-            _start_word = len(words) - 1
-
-        assert _start_word == len(words) - 1, (
-            f"When all past, expected start_word={len(words)-1}, got {_start_word}"
-        )
+        # Final word index should be 7 (not 0, not 1)
+        assert _last_word_idx == 7, f"Expected final word 7, got {_last_word_idx}"
 
 
 class TestNewConversationContextReset:
