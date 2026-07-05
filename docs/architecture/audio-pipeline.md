@@ -1,10 +1,10 @@
 # IRIS Voice — Full Audio Pipeline Architecture
 
-> **DEFINITIVE REFERENCE** — Last updated 2026-07-05 (session 154).
+> **DEFINITIVE REFERENCE** — Last updated 2026-07-05 (session 155).
 > This document is the single source of truth for the audio pipeline. If the
 > code and this document ever disagree, treat this as a bug and update both.
 > All values below are verified against `backend/audio/voice_command.py` and
-> `backend/iris_gateway.py` at commit `fa9313c7`.
+> `backend/iris_gateway.py` at commit `3997c3ca`.
 
 ---
 
@@ -198,6 +198,10 @@ TTS echo from the interrupted playback decay before VAD speech detection begins.
 │     └─ Frontend sets currentTtsMessageId from turn_id   │
 │        so the word highlight listener is registered      │
 │        BEFORE tts_word events arrive.                    │
+│     Also used by play-button TTS path (isolated state): │
+│        XurOrb.playbackSpeaking listens to tts_started    │
+│        and drives the same breathing animation without   │
+│        touching voiceState.                              │
 │                                                          │
 │  3. Producer thread: _producer()                         │
 │     ┌─────────────────────────────────────────────────┐ │
@@ -219,7 +223,7 @@ TTS echo from the interrupted playback decay before VAD speech detection begins.
 │  5. Word-highlight thread: _monitor_words()              │
 │     ┌─────────────────────────────────────────────────┐ │
 │     │  Dynamic while-True loop (re-checks _all_words) │ │
-│     │  - Character-proportional timing at 12.5 chars/s│ │
+│     │  - Character-proportional timing at 15.8 chars/s│ │
 │     │  - Fires tts_word WS events                     │ │
 │     │  - is_final=True only after stream close         │ │
 │     │  - Barge-in: catch up remaining words at 30ms   │ │
@@ -312,7 +316,7 @@ iris_gateway._speak_response()
 │
 ├── Word-highlight Thread (_monitor_words)
 │   ├── Dynamic while-True loop (re-checks _all_words)
-│   ├── Character-proportional sleep at 12.5 chars/sec
+│   ├── Character-proportional sleep at 15.8 chars/sec
 │   ├── Wait for _total_written_for_words > 0 (first chunk)
 │   ├── _word_monitor_stop event for kill
 │   └── Barge-in: catch up remaining at 30ms intervals
@@ -350,7 +354,7 @@ iris_gateway._speak_response()
 | `listening_state` | `{ state: "idle" \| "listening" \| "speaking" \| "processing" \| "processing_conversation" }` | State transitions | Orb animation mode |
 | `audio_envelope` | `{ rms, cadence, phase }` | During recording + playback (~10 Hz) | Orb breathing/speaking |
 | `audio_level` | `{ level }` | During recording (legacy) | Old IrisOrb compatibility |
-| `tts_started` | `{ turn_id, total_words }` | Before TTS playback starts | Frontend sets currentTtsMessageId early |
+| `tts_started` | `{ turn_id, total_words }` (flat, not nested) | Before TTS playback starts | Frontend sets currentTtsMessageId early |
 | `tts_word` | `{ word_index, total_words, is_final }` | During TTS playback | Word highlighting in chat |
 | `chat_chunk` | `{ chunk }` | LLM streaming | Progressive text rendering |
 | `text_response` | `{ text, sender, turn_id }` | LLM complete (user + assistant) | Final response display |
@@ -443,10 +447,10 @@ Uses `sounddevice.OutputStream` for PortAudio-based playback:
 4. **Dynamic word count**: re-reads `len(_all_words)` each iteration to
    catch words added by the producer from later sentences
 
-**Timing algorithm** (character-proportional, 12.5 chars/sec):
+**Timing algorithm** (character-proportional, 15.8 chars/sec):
 ```python
 _char_prop = len(_all_words[_i]) / _total_chars_now
-_est_tts_dur = _total_chars_now / 12.5
+_est_tts_dur = _total_chars_now / 15.8
 _word_dur = max(0.03, _est_tts_dur * _char_prop)
 ```
 
@@ -455,10 +459,12 @@ _word_dur = max(0.03, _est_tts_dur * _char_prop)
 sleep is deterministic, matches the native path (proven working), and has
 no OS-specific audio API dependency.
 
-**Why 12.5 chars/sec?**
-This rate closely matches the actual Pocket-TTS synthesis speed. Slower
-values (e.g., 10) cause visible lag; faster values (e.g., 15) cause the
-highlight to race ahead of the audio.
+**Why 15.8 chars/sec?**
+This rate closely matches the actual Pocket-TTS synthesis speed. Tuned through
+multiple iterations: 12.5 (too slow, highlights lagged) → 14.5 (closer) →
+15.8 (verified perfectly in sync with TTS playback during live testing).
+The `tts_started` event includes `total_words` so the frontend can derive
+character-proportional timing independently.
 
 ---
 
@@ -485,10 +491,8 @@ The `tts_started` event is sent **before** the first `tts_word`:
 ```json
 {
   "type": "tts_started",
-  "payload": {
-    "turn_id": "uuid4-here",
-    "total_words": 5
-  }
+  "turn_id": "uuid4-here",
+  "total_words": 5
 }
 ```
 
@@ -712,7 +716,9 @@ LLM provider memory (separate, user-selected):
 
 ### Test Files
 
-- `backend/tests/test_voice_pipeline.py` — 6 unit tests + 4 integration tests
+- `backend/tests/test_voice_pipeline.py` — 88 unit/integration tests + 3 new regression tests (91 total)
+- `backend/tests/test_latency_metrics.py` — 8 latency metric tests
+- `backend/tests/test_chunk_callback_nonstreaming.py` — 6 chunk callback / DER path tests
 - `backend/tests/test_barge_in.py` — 40+ tests
 - `backend/tests/test_conversation_kernel.py` — 12 tests
 
@@ -724,7 +730,7 @@ Verifies the character-proportional algorithm contracts:
 - Barge-in catch-up fires is_final
 - Multi-sentence word coverage
 
-### TestTTSWordEventIntegration (4 integration tests)
+### TestTTSWordEventIntegration (7 integration tests)
 
 **Contract** (enforced by these tests):
 1. All expected indices appear (monotonically non-decreasing)
@@ -737,6 +743,9 @@ Verifies the character-proportional algorithm contracts:
 - `test_barge_in_catchup_integration`
 - `test_tts_started_events_include_turn_id`
 - `test_multi_sentence_dynamic_word_count`
+- `test_text_response_includes_turn_id_matching_tts_started`
+- `test_text_response_turn_id_source_code_contract`
+- `test_tts_play_sends_tts_started_not_listening_state`
 
 **Critical**: `_make_mock_gateway` uses `AsyncMock` for `broadcast_to_session`
 and `send_to_client`. `MagicMock` lacks `__await__` in Python 3.14, so
@@ -757,6 +766,25 @@ The `_monitor_words` function has a contract comment:
 
 ## Known Issues & Recent Fixes
 
+### Session 155 (2026-07-05) — Pipeline Solidified (commit 3997c3ca)
+
+**RESOLVED**:
+- Word highlighting regression — `turn_id` not propagated through
+  `iris:text_response` CustomEvent. Backend sends `turn_id` at top level of
+  WS message but handler only destructured from nested `payload`. Fixed:
+  extract `message.turn_id` and pass through CustomEvent detail.
+- Play-button TTS orb breathing — orb did not animate when user clicks play
+  button on assistant response. Fixed: `tts_play` backend sends `tts_started`
+  (with `turn_id` + `total_words`) instead of `listening_state: speaking`.
+  Frontend XurOrb added `playbackSpeaking` state listening to
+  `iris:tts_started`/`iris:tts_word(is_final)` for isolated breathing.
+- Character-proportional timing tuned to **15.8 chars/sec** (was 12.5, then
+  14.5). Verified perfectly in sync with TTS playback during live testing.
+- 3 new targeted regression tests added (91/91 passing):
+  - `test_text_response_includes_turn_id_matching_tts_started`
+  - `test_text_response_turn_id_source_code_contract`
+  - `test_tts_play_sends_tts_started_not_listening_state`
+
 ### Session 154 (2026-07-05) — Major Checkpoint (commit fa9313c7)
 
 **RESOLVED**:
@@ -772,9 +800,9 @@ The `_monitor_words` function has a contract comment:
   as `tts_started` (was generating separate UUID)
 - 140 tests passing (130 legacy + 6 unit + 4 integration)
 
-**REMAINING TWEAKS**:
+**REMAINING TWEAKS** (all resolved in session 155):
 - VAD sensitivity tuning (`VAD_SILENCE_SEC` increased from 0.75s to 1.2s)
-- Word highlighting sync (`chars_per_sec` increased from 10 to 12.5)
+- Word highlighting sync (`chars_per_sec` tuned from 10 → 12.5 → 14.5 → 15.8)
 
 ### Session 153 (2026-07-04) — Barge-In + STTPROC Fix (commit 42f9c9cf)
 

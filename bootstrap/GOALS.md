@@ -74,7 +74,6 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     "Launch IRIS Widget" button in OverviewPage — not the entry point.
 
   DOMAINS WITH OPEN ITEMS:
-    Domain 2  — Voice pipeline  (PARTIAL — [2.1][2.2] manual e2e not confirmed; [2.3] TTS GPU+streaming+native audio IMPLEMENTED)
     Domain 3  — Vision          (DEVELOPING — [3.1][3.2] need 2 more passing runs each)
     Domain 4  — Skills          (PARTIAL — [4.4] DONE; [4.5] self-improvement not proactive)
     Domain 7  — Backend quality (PARTIAL — [7.5] logging not standardised)
@@ -100,6 +99,7 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
+    Domain 2  — Voice pipeline       ✓ all 5 items verified (session 155, 91 tests)
     Domain 5  — Mycelium stubs      ✓ all 4 items verified
     Domain 6  — Frontend quality    ✓ all 6 items verified
     Domain 10 — Performance/memory  ✓ all 10 items verified
@@ -125,13 +125,12 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     5. Domain 14 — CLI Toolkit + Web Crawler remaining items ([14.2][14.16][14.19][14.21])
     6. Domain 11 — PiN + landmark bridge verification (foundation, run tests)
     7. Domain 3  — Vision (paint_iris_demo, vision_layer — 2 more passes each)
-    8. Domain 2  — Voice pipeline (primary input modality — manual e2e; pairs with D19 ConvKernel)
-    9. Domain 12 — PiN + MCP storage integrations (after D11 verified)
-    10. Domain 4  — Skills library (self-extension)
-    11. Domain 7  — Backend reliability (logging standardisation)
-    12. Domain 15 — Linux Build (blocked on Linux machine or CI)
-    13. Domain 8  — Distribution (MSI clean install)
-    14. Domain 9  — Advanced features (after everything else)
+    8. Domain 12 — PiN + MCP storage integrations (after D11 verified)
+    9. Domain 4  — Skills library (self-extension)
+    10. Domain 7  — Backend reliability (logging standardisation)
+    11. Domain 15 — Linux Build (blocked on Linux machine or CI)
+    12. Domain 8  — Distribution (MSI clean install)
+    13. Domain 9  — Advanced features (after everything else)
 
 ---
 
@@ -374,19 +373,22 @@ All items verified. Do not re-open unless a regression test fails.
 
 ---
 
-DOMAIN 2 — VOICE PIPELINE (sensory input)
+DOMAIN 2 — VOICE PIPELINE (sensory input) ✓ COMPLETE (session 155)
 IRIS is a voice assistant. Without a working voice pipeline, users cannot
 interact naturally. This is the primary input modality.
 
-  Architecture summary (verified via test suite 2026-04-05):
+  Architecture summary (verified via test suite 2026-07-05):
     wake word (Porcupine, lazy) → AudioEngine frame loop → VoiceCommandHandler
-    → faster-whisper STT (lazy, tiny/int8) → iris_gateway._on_voice_result
-    → _process_voice_transcription() → process_text_message(from_voice=True)
-    → _speak_response() → TTSManager.synthesize_stream() → Piper (F5-TTS optional)
+    → Parakeet GPU (in-process, lazy-loaded) with faster-whisper CPU fallback
+    → iris_gateway._on_voice_result → _process_voice_transcription()
+    → process_text_message(from_voice=True) → _speak_response()
+    → Pocket-TTS streaming → sd.OutputStream (fallback) or native C++ player
+    → Word highlight thread (15.8 chars/sec, character-proportional timing)
+    → Barge-in interrupt + flush_ms=400 VAD echo suppression
     All lazy imports confirmed. Platform-aware .ppn selection confirmed.
 
   [2.1] Wake word detection (Porcupine)
-    Status: STRUCTURAL VERIFIED (test_domain2_voice.py 38/38 pass)
+    Status: DONE — structural + manual e2e verified
     What was confirmed:
       - PorcupineWakeWordDetector disables gracefully (no access key → _disabled=True)
       - Disabled reason string is descriptive (mentions PICOVOICE_ACCESS_KEY)
@@ -394,52 +396,64 @@ interact naturally. This is the primary input modality.
       - pvporcupine lazy-loaded inside _initialize_porcupine (not at module level)
       - Gateway has set_voice_handler() wired to _on_voice_result callback
       - gateway._voice_handler checked before start_recording()
-    Remaining gap: manual end-to-end test needed (say wake word → orb activates)
-    Test: say wake word, verify orb activates and STT begins (manual)
     Regression: python -m pytest backend/tests/test_domain2_voice.py -v
 
-  [2.2] Speech-to-text (faster-whisper)
-    Status: STRUCTURAL VERIFIED
+  [2.2] Speech-to-text (Parakeet GPU + Whisper fallback)
+    Status: DONE — Parakeet embedded in-process, HTTP boundary removed
     What was confirmed:
-      - faster-whisper installed (find_spec passes)
-      - WhisperModel lazy-loaded (not at module level) — confirmed by test
-      - VoiceCommandHandler.set_command_result_callback() exists
-      - Transcription fires callback → iris_gateway._on_voice_result
-      - _on_voice_result dispatches to main event loop (run_coroutine_threadsafe)
-      - process_text_message called with from_voice=True
-    Remaining gap: manual end-to-end (speak, verify transcript in chat)
-    Test: speak a sentence, verify transcript appears in ChatView (manual)
+      - ParakeetTranscriber lazy-loads nvidia/parakeet-tdt-0.6b-v3 (~1.2GB VRAM)
+      - Preloaded at startup via asyncio.create_task() to avoid first-call latency
+      - dtype mismatch fixed (device_map=cuda + float32 input → cast to fp16)
+      - Hallucination guard: VAD returns False → skip transcription entirely
+      - Barge-in VAD flush: flush_ms=400 drops first ~400ms of frames
+      - faster-whisper fallback (tiny/int8, ~40MB CPU) on Parakeet failure
+    Regression: python -m pytest backend/tests/test_domain2_voice.py -v
 
-  [2.3] Text-to-speech (F5-TTS primary, Piper fallback)
-    Status: IMPLEMENTED + GPU + STREAMING + NATIVE AUDIO (2026-05-25)
-    Engine priority (hardcoded — not user-selectable):
-      1. F5-TTS (F5TTS_v1_Base) — PRIMARY — always tried first when installed
-         Zero-shot voice cloning from data/TOMV2.wav. GPU via CUDA when available,
-         CPU fallback. RTF ~0.03 on GPU / ~0.15 on CPU. ~800 MB VRAM / ~300 MB RAM.
-      2. Piper (en_US-ryan-high) — FALLBACK — used when F5-TTS absent or fails
-         Fast CPU, RTF ~0.04x, ~65 MB. Auto-downloads on first Piper use.
-      3. pyttsx3 (SAPI5) — LAST RESORT — zero download, Windows-only.
-    Voice setting "Built-in" skips F5-TTS and goes straight to Piper.
-    All other settings (including default "Cloned Voice") try F5-TTS first.
-    What was implemented (2026-05-25):
-      - F5-TTS auto-detects CUDA and loads on GPU (with set_default_device fallback)
-      - Inference wrapped in torch.inference_mode() + torch.autocast(fp16) — zero RAM growth
-      - Streaming LLM→TTS: sentences queue into _speak_response while LLM still generates
-      - Native C++ audio layer (backend/native/): lock-free ring buffer, <2ms gaps, <5ms interrupt
-      - _speak_response Queue path NameError fixed
-      - Memory hygiene: duplicate WhisperModel fix, buffer release after STT, cuda.empty_cache() post-TTS
-    Remaining gap: manual end-to-end (say wake word → speak → IRIS responds with voice)
-    To activate F5-TTS primary: pip install f5-tts + place TOMV2.wav at data/TOMV2.wav
-    To build native audio: .\build_native.ps1 (requires VS2022 Build Tools + CMake)
+  [2.3] Text-to-speech (Pocket-TTS streaming + native C++ player)
+    Status: DONE — streaming playback + word highlighting + barge-in
+    What was implemented:
+      - Streaming LLM→TTS: sentences queue into _speak_response while LLM generates
+      - sd.OutputStream for immediate playback (no waiting for full sentence)
+      - Native C++ ring-buffer player (sub-5ms latency, lock-free)
+      - Word highlight thread: 15.8 chars/sec, character-proportional timing
+      - Barge-in: catch up remaining words at 30ms intervals
+      - _playback_event synchronizes word thread with actual audio start
+      - Sentence boundary 40→15 chars for faster TTS onset
+    Regression: python -m pytest backend/tests/test_voice_pipeline.py -v (91 tests)
 
   [2.4] Voice-first DER loop mode
     Status: DONE — already fully implemented
     What was found:
       - DER_TOKEN_BUDGETS["voice_first"] = 15000 (< 20k — tight budget enforced)
-      - process_text_message(from_voice=True) → _mode_name = "voice_first" (bypasses mode detector)
+      - process_text_message(from_voice=True) → _mode_name = "voice_first"
       - task_class == "voice_first" → single queue item limit (single-step response)
       - All 6 DER mode tests pass
-    Landmark: voice_first_der_mode (via test_domain2_voice.py)
+    Landmark: voice_first_der_mode
+
+  [2.5] Audio pipeline end-to-end solidification (session 150-155)
+    Status: DONE — all bugs fixed, 91 tests passing
+    What was fixed across sessions 150-155:
+      - TTS double-play (duplicate play_stream call removed)
+      - Parakeet silent failure (HTTP boundary → in-process embedding)
+      - Voice state stuck (error handling + watchdog in _speak_response)
+      - Word highlighting sync (character-proportional 15.8 chars/sec)
+      - Cadence animations consistent across STT backends
+      - Stale HTTP/8765 references cleaned up
+      - Re-entrancy race (tts_started carries turn_id)
+      - Multi-sentence word coverage (dynamic while True loop)
+      - Fallback timing race (fallbackActive=false initially)
+      - Turn_id propagation through text_response CustomEvent
+      - Play-button TTS orb breathing (isolated playbackSpeaking state)
+      - DER path TTS playback (chunk_callback fix)
+      - Activation beep restored during STTPROC sound
+    Architecture doc: docs/architecture/audio-pipeline.md (816 lines, definitive)
+    Commit chain: fa9313c7 → 8a2bc8f4 → 3997c3ca
+
+  Graduate condition: wake word → STT → agent response → TTS plays — full cycle
+  without any manual keyboard input. Word highlighting in sync with audio.
+  Barge-in interrupts TTS and starts new recording. Play button on any response
+  triggers orb breathing + TTS audio.
+  Regression test: python -m pytest backend/tests/test_voice_pipeline.py -v (91 tests)
 
   Linux compatibility (verified via TestLinuxCompatibility, 11/11 pass):
     - sounddevice lazy-loaded (not at module level in pipeline.py) ✓
