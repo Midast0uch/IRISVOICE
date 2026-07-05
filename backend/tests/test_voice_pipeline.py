@@ -783,10 +783,10 @@ class TestVADSilenceThreshold:
         return handler
 
     def test_vad_silence_constant_is_075(self):
-        """VAD_SILENCE_SEC must be 0.75."""
+        """VAD_SILENCE_SEC must be 1.2 (tuned for natural speech pauses)."""
         from backend.audio.voice_command import VoiceCommandHandler
-        assert VoiceCommandHandler.VAD_SILENCE_SEC == 0.75, (
-            f"VAD_SILENCE_SEC is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 0.75"
+        assert VoiceCommandHandler.VAD_SILENCE_SEC == 1.2, (
+            f"VAD_SILENCE_SEC is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 1.2"
         )
 
     def test_speech_plus_05s_silence_does_not_end_speech(self):

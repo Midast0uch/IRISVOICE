@@ -192,7 +192,7 @@ class VoiceCommandHandler:
     # VAD tuning — adjustable per environment
     VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
     VAD_MIN_SPEECH_SEC: float = 0.15  # ignore blips shorter than this
-    VAD_SILENCE_SEC: float = 0.75  # silence after speech → end of utterance
+    VAD_SILENCE_SEC: float = 1.2  # silence after speech → end of utterance
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
 
@@ -212,6 +212,10 @@ class VoiceCommandHandler:
         # Sentinel Nones keep the count accurate without storing duplicates.
         self.audio_buffer: List = []
         self._raw_frames: List[np.ndarray] = []  # actual float32 PCM frames
+
+        # STT timing: populated by _transcribe_via_parakeet() / whisper fallback,
+        # forwarded via the result dict to iris_gateway for real-time metric broadcast.
+        self._last_stt_timing: Dict[str, float] = {}
 
         # Configuration
         self.sample_rate = 16000
@@ -644,12 +648,30 @@ class VoiceCommandHandler:
 
         Returns transcribed text on success, or empty string on failure.
         Logs explicitly which STT backend was used.
+
+        Also records STT latency in self._last_stt_timing for the result
+        callback to forward to iris_gateway for real-time metric broadcast.
         """
+        import time as _stt_time
+        _stt_start = _stt_time.monotonic()
         text = self._parakeet.transcribe(audio_np, self.sample_rate)
+        _stt_end = _stt_time.monotonic()
+        # Record timing for the result callback to pick up
+        self._last_stt_timing = {
+            "stt_start_monotonic": _stt_start,
+            "stt_end_monotonic": _stt_end,
+            "stt_latency_ms": (_stt_end - _stt_start) * 1000.0,
+            "stt_backend": "parakeet",
+            "stt_audio_seconds": len(audio_np) / self.sample_rate,
+        }
         if text:
-            logger.info("[STT] parakeet GPU — '%s'", text[:80])
+            logger.info(
+                f"[STT] parakeet GPU — '{text[:80]}' "
+                f"(latency: {self._last_stt_timing['stt_latency_ms']:.0f}ms)"
+            )
         else:
             logger.warning("[STT] parakeet FAILED or unavailable — falling back to whisper")
+            self._last_stt_timing["stt_backend"] = "parakeet_failed"
         return text
 
     def _run_transcription(self) -> None:
@@ -775,6 +797,8 @@ class VoiceCommandHandler:
             # ── Fallback path: faster-whisper (CPU, tiny int8) ─────────────
             if not transcript:
                 logger.info("[STT] Attempting faster-whisper CPU fallback...")
+                import time as _stt_time_w
+                _w_start = _stt_time_w.monotonic()
                 whisper = self._get_whisper()
                 segments, _ = whisper.transcribe(
                     audio_np,
@@ -798,6 +822,20 @@ class VoiceCommandHandler:
                         vad_filter=False,
                     )
                     transcript = " ".join(s.text.strip() for s in segments).strip()
+                _w_end = _stt_time_w.monotonic()
+                # Overwrite the parakeet timing with whisper timing
+                self._last_stt_timing = {
+                    "stt_start_monotonic": _w_start,
+                    "stt_end_monotonic": _w_end,
+                    "stt_latency_ms": (_w_end - _w_start) * 1000.0,
+                    "stt_backend": "whisper",
+                    "stt_audio_seconds": len(audio_np) / self.sample_rate,
+                }
+                if transcript:
+                    logger.info(
+                        f"[STT] whisper CPU — '{transcript[:80]}' "
+                        f"(latency: {self._last_stt_timing['stt_latency_ms']:.0f}ms)"
+                    )
                 if transcript:
                     logger.info("[STT] whisper CPU — '%s'", transcript[:80])
                 else:
@@ -1080,6 +1118,7 @@ class VoiceCommandHandler:
             "audio_context": "",
             "session_id": self._active_session_id,
             "status": "success",
+            "stt_timing": dict(self._last_stt_timing),  # STT latency for metric broadcast
         }
 
         if self._on_command_result:

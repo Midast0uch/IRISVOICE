@@ -1972,6 +1972,23 @@ class IRISGateway:
             session_id = result.get("session_id", "default")
             client_id = self._active_voice_client.get(session_id)
 
+            # ── Log STT latency (Parakeet / Whisper) ──────────────────────
+            # Populated by voice_command._transcribe_via_parakeet() or the
+            # whisper fallback. Surface it in the log so latency regressions
+            # are immediately visible alongside the existing VOICE_TIMING lines.
+            stt_timing = result.get("stt_timing") or {}
+            if stt_timing:
+                _stt_ms = stt_timing.get("stt_latency_ms", 0.0)
+                _stt_backend = stt_timing.get("stt_backend", "unknown")
+                _stt_audio_s = stt_timing.get("stt_audio_seconds", 0.0)
+                # Real-time factor: how many seconds of STT per second of audio
+                _rtf = (_stt_ms / 1000.0) / _stt_audio_s if _stt_audio_s > 0 else 0.0
+                self._logger.info(
+                    f"[STT_LATENCY] backend={_stt_backend} "
+                    f"latency_ms={_stt_ms:.0f} audio_s={_stt_audio_s:.2f} "
+                    f"rtf={_rtf:.2f}x"
+                )
+
             # Use the loop captured during the first async message dispatch.
             # Never call asyncio.get_event_loop() here â€” this runs in a background
             # thread and that call raises "no current event loop" on Python 3.10+.
@@ -2270,14 +2287,19 @@ class IRISGateway:
                         from_voice=True,
                     )
                     _log_timing("llm_end")
-                    # Final flush â€” any remaining text becomes a sentence
+                    self._logger.info(
+                        f"[DER-TTS-FIX] after process_text_message: "
+                        f"sentence_buf_len={len(sentence_buf)}, "
+                        f"sentence_buf_content={sentence_buf[:2]!r}"
+                    )
+                    # Final flush — any remaining text becomes a sentence
                     if sentence_buf:
                         sentence_queue.put("".join(sentence_buf))
                         sentence_buf.clear()
                     spoken = agent_kernel.prepare_spoken_text(resp, enriched)
                     return resp, spoken
                 finally:
-                    # ALWAYS put sentinel â€” even if agent throws, the TTS thread
+                    # ALWAYS put sentinel — even if agent throws, the TTS thread
                     # must not block forever on sentence_queue.get().
                     sentence_queue.put(None)
 
@@ -2398,6 +2420,44 @@ class IRISGateway:
                         summary_lines.append(f"  {desc}: +{ts - t0:.3f}s")
                 summary_lines.append(f"  total elapsed: +{total:.3f}s")
                 self._logger.info("\n".join(summary_lines))
+
+                # ── Conversational flow latency breakdown ──────────────────
+                # One-line per-phase delta summary, easy to grep from logs:
+                #   [FLOW_LATENCY] vad->stt=380ms stt->llm=10ms llm_first_token=620ms
+                #                   tts_synth=340ms total=2380ms
+                _flow_parts = []
+                # STT: time from VAD end until Parakeet/Whisper returns text.
+                # Approximated as vad_end -> llm_start (the agent starts only
+                # after the STT result lands via _on_voice_result).
+                if "llm_start" in self._voice_timing:
+                    _vad_to_llm = (self._voice_timing["llm_start"] - t0) * 1000.0
+                    _flow_parts.append(f"vad_to_llm={_vad_to_llm:.0f}ms")
+                # LLM: llm_start -> first_chunk (time to first token)
+                if "first_chunk" in self._voice_timing and "llm_start" in self._voice_timing:
+                    _llm_ttft = (self._voice_timing["first_chunk"] - self._voice_timing["llm_start"]) * 1000.0
+                    _flow_parts.append(f"llm_ttft={_llm_ttft:.0f}ms")
+                # LLM: llm_start -> llm_end (full response generation)
+                if "llm_end" in self._voice_timing and "llm_start" in self._voice_timing:
+                    _llm_total = (self._voice_timing["llm_end"] - self._voice_timing["llm_start"]) * 1000.0
+                    _flow_parts.append(f"llm_total={_llm_total:.0f}ms")
+                # TTS synth: first_tts_synth_start -> first_audio_pushed
+                if "first_tts_synth_start" in self._voice_timing and "first_audio_pushed" in self._voice_timing:
+                    _tts_synth = (
+                        self._voice_timing["first_audio_pushed"]
+                        - self._voice_timing["first_tts_synth_start"]
+                    ) * 1000.0
+                    _flow_parts.append(f"tts_synth={_tts_synth:.0f}ms")
+                # VAD -> first audio: total time to first audible response
+                if "first_audio_pushed" in self._voice_timing:
+                    _vad_to_audio = (self._voice_timing["first_audio_pushed"] - t0) * 1000.0
+                    _flow_parts.append(f"vad_to_audio={_vad_to_audio:.0f}ms")
+                # Full conversational flow: VAD end -> text_response_sent
+                if "text_response_sent" in self._voice_timing:
+                    _flow_total = (self._voice_timing["text_response_sent"] - t0) * 1000.0
+                    _flow_parts.append(f"flow_total={_flow_total:.0f}ms")
+                _flow_parts.append(f"wall={total * 1000.0:.0f}ms")
+                self._logger.info("[FLOW_LATENCY] " + " ".join(_flow_parts))
+
                 delattr(self, "_voice_timing")
             self._logger.debug(f"[Voice] Pipeline complete for session {session_id}")
 
@@ -2767,6 +2827,22 @@ class IRISGateway:
                                             if not _first_audio_pushed:
                                                 _first_audio_pushed = True
                                                 _mark("first_audio_pushed")
+                                                # ── Log TTS synthesis latency ──────
+                                                # first_tts_synth_start → first_audio_pushed
+                                                # is the time Pocket-TTS took to produce
+                                                # the first playable audio chunk.
+                                                _synth_start = (
+                                                    self._voice_timing.get("first_tts_synth_start")
+                                                    if hasattr(self, "_voice_timing")
+                                                    else None
+                                                )
+                                                _first_audio_now = _time2.monotonic()
+                                                if _synth_start:
+                                                    _tts_ms = (_first_audio_now - _synth_start) * 1000.0
+                                                    self._logger.info(
+                                                        f"[TTS_LATENCY] backend=pocket_tts "
+                                                        f"synth_to_audio_ms={_tts_ms:.0f}"
+                                                    )
                                                 # â”€â”€ First-chunk housekeeping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                                                 if is_first_chunk:
                                                     is_first_chunk = False
@@ -3242,13 +3318,12 @@ class IRISGateway:
                                     _last_word_idx = _i
 
                                     # Character-proportional timing sleep.
-                                    # Uses a conservative estimate (10 char/s) so
-                                    # words are spread slightly longer than the
-                                    # fastest TTS.  If too short, the last word
-                                    # stays highlighted until audio ends.  If too
-                                    # long, stream close triggers catch-up.
+                                    # Uses 14.5 char/s estimate — tighter sync
+                                    # with TTS playback.  If too short, the last
+                                    # word stays highlighted until audio ends.
+                                    # If too long, stream close triggers catch-up.
                                     _char_prop = len(_all_words[_i]) / _total_chars_now
-                                    _est_tts_dur = _total_chars_now / 10.0
+                                    _est_tts_dur = _total_chars_now / 14.5
                                     _word_dur = max(0.03, _est_tts_dur * _char_prop)
 
                                     _sleep_until = _tw.monotonic() + _word_dur

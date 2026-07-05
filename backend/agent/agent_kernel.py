@@ -2032,6 +2032,17 @@ class AgentKernel:
             _ctok = _usage.get("completion_tokens", max(1, len(_reply) // 4))
             self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
 
+            # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
+            # When the LLM provider returns the full reply in one shot (Cerebras,
+            # Cohere batch mode, etc.), chunk_callback is never called, so the
+            # TTS sentence_queue only receives the None sentinel and the
+            # producer breaks immediately without synthesizing any audio.
+            # Send the full reply as a single chunk, then a force-flush (""),
+            # matching the streaming path's end-of-stream semantics.
+            if chunk_callback and _reply:
+                chunk_callback(_reply)
+                chunk_callback("")  # force-flush end-of-stream
+
             thinking, clean = self._parse_thinking(_reply)
             return clean or "(I see.)", thinking
 
@@ -2179,6 +2190,15 @@ class AgentKernel:
             _elapsed_ns = _perf_t.perf_counter() - _t0 if '_t0' in dir() else 0
             self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed_ns)
 
+            # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
+            # Same fix as _dispatch_api: when LM Studio returns the full reply
+            # in one shot, chunk_callback is never called, so the TTS
+            # sentence_queue only receives the None sentinel. Send the full
+            # reply as a single chunk, then a force-flush ("").
+            if chunk_callback and _reply:
+                chunk_callback(_reply)
+                chunk_callback("")  # force-flush end-of-stream
+
             thinking, clean = self._parse_thinking(_reply)
             return clean or "(I see.)", thinking
 
@@ -2210,6 +2230,14 @@ class AgentKernel:
         reply = reasoning_model.generate(
             messages[-1].get("content", "") if messages else ""
         )
+
+        # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
+        # Local in-process models generate the full reply at once. Without
+        # this call, the TTS pipeline never sees the response text.
+        if chunk_callback and reply:
+            chunk_callback(reply)
+            chunk_callback("")  # force-flush end-of-stream
+
         thinking, clean = self._parse_thinking(reply)
         return clean or "(I see.)", thinking
 
@@ -2929,9 +2957,27 @@ class AgentKernel:
                     )
                 except Exception:
                     pass
+                # ── FIX (session 154): Invoke chunk_callback on DER path ──
+                # The DER loop generates the full response via internal LLM
+                # calls but never invokes chunk_callback. Without this call,
+                # the TTS sentence_queue only receives the None sentinel,
+                # the producer breaks immediately, and no audio is synthesized.
+                logger.info(
+                    f"[DER-TTS-FIX] chunk_callback={chunk_callback is not None}, "
+                    f"der_response_len={len(_der_response) if _der_response else 0}"
+                )
+                if chunk_callback and _der_response:
+                    chunk_callback(_der_response)
+                    chunk_callback("")  # force-flush end-of-stream
+                    logger.info("[DER-TTS-FIX] chunk_callback invoked OK")
+                else:
+                    logger.warning(
+                        f"[DER-TTS-FIX] SKIPPED — chunk_callback={chunk_callback}, "
+                        f"der_response={bool(_der_response)}"
+                    )
                 return _der_response
 
-        # DER produced empty/failed response — return error instead of
+        # If DER produced empty/failed response, return error instead of
         # falling through to the agentic loop which would retry the API
         # call multiple times and leave the UI stuck in "thinking..." state.
         metrics.path = "der"
@@ -2960,8 +3006,16 @@ class AgentKernel:
 
         # Return specific error to user so they can fix it immediately
         if _der_err_text:
-            return f"IRIS couldn't generate a response. API error: {_der_err_text}"
-        return "IRIS couldn't generate a response. Please try again."
+            _err_msg = f"IRIS couldn't generate a response. API error: {_der_err_text}"
+            if chunk_callback:
+                chunk_callback(_err_msg)
+                chunk_callback("")
+            return _err_msg
+        _fallback_msg = "IRIS couldn't generate a response. Please try again."
+        if chunk_callback:
+            chunk_callback(_fallback_msg)
+            chunk_callback("")
+        return _fallback_msg
         # Truncate to avoid leaking full traceback in chat
         if len(_der_error_detail) > 200:
             _der_error_detail = _der_error_detail[:200] + "..."

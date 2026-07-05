@@ -6,6 +6,7 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 
 ### 🎤 Voice & Audio
 - **Wake Word Detection**: Custom wake words using Picovoice Porcupine with automatic file discovery
+- **Wake Word Memory**: Porcupine ~2.2 MB on disk (~5 MB RAM, 0 VRAM at runtime; <1ms per audio frame)
 - **Wake Word Discovery**: Automatically finds all wake word files in wake_words/ directory
 - **Parakeet ASR (GPU)**: NVIDIA Parakeet TDT 0.6B v3 (requires NVIDIA GPU with 8 GB+ VRAM, e.g. RTX 3070) — shared WebSocket streaming service (`ws://localhost:8765/ws/stream`), REST `/transcribe` endpoint, Prometheus `/metrics`. Both Tauri (backend mic) and web (`getUserMedia`) clients stream PCM to the same service. Lazy HuggingFace Transformers import, graceful fallback to faster-whisper on CPU.
 - **End-to-End Audio Processing**: Porcupine (wake words) → Parakeet TDT 0.6B (GPU ASR) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS (TTS)
@@ -15,6 +16,38 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Native C++ Audio Layer**: Optional low-latency ring-buffer playback via PortAudio (<5ms chunk-to-speaker, <2ms inter-chunk gap)
 - **Instant Interrupt**: Sub-5ms TTS cancellation via atomic flag in the C++ audio callback
 - **Audio Processing**: Automatic noise reduction, echo cancellation, and voice enhancement
+
+#### Audio Pipeline Architecture (Detailed)
+
+The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio playback — is documented in **[`docs/architecture/audio-pipeline.md`](./docs/architecture/audio-pipeline.md)** (the definitive reference, verified against code at commit `fa9313c7`). Key behaviors:
+
+- **VAD (Voice Activity Detection)**: Energy-based, two-state machine (PRE_SPEECH → IN_SPEECH → DONE). Tuned for natural speech pauses:
+  - `VAD_ENERGY_THRESHOLD = 0.006` RMS
+  - `VAD_SILENCE_SEC = 1.2` (silence after speech → end of utterance)
+  - `VAD_MIN_SPEECH_SEC = 0.15` (ignore blips)
+  - `VAD_MAX_DURATION_SEC = 30` (hard cap)
+- **Barge-In**: User can interrupt TTS playback by speaking. VAD detects, consumer closes audio stream, word monitor catches up remaining words at 30ms intervals, new recording starts with `flush_ms=400` (drops first ~400ms of frames so residual TTS echo decays before VAD).
+- **Half-Duplex Gate**: During TTS playback, `engine._tts_active = True` drops mic frames in the PortAudio callback. Prevents TTS echo from triggering false VAD.
+- **Word Highlighting**: Character-proportional timing at 12.5 chars/sec, driven by `tts_word` WebSocket events. Dynamic word count (`while True` loop) catches words from later sentences. Re-entrancy-safe via shared `turn_id` between `tts_started` and `text_response` events. `is_final=True` only sent after the audio stream closes — highlighting never finishes before TTS ends.
+- **Latency Metrics** (logs only, no frontend UI): Per-turn log lines surface STT and TTS latency in real time:
+  - `[STT_LATENCY] backend=parakeet latency_ms=380 audio_s=2.30 rtf=0.17x`
+  - `[TTS_LATENCY] backend=pocket_tts synth_to_audio_ms=340`
+  - `[FLOW_LATENCY] vad_to_llm=380ms llm_ttft=620ms llm_total=1120ms tts_synth=340ms vad_to_audio=1350ms flow_total=1520ms`
+  - `[VOICE_TIMING_SUMMARY]` cumulative offsets from VAD end for each phase boundary
+- **STTPROC Processing Sound**: Loops `data/STTPROC.wav` at 3x gain (file is -27.4 dBFS, target -17.9 dBFS) while the agent is processing the LLM request, until TTS playback starts. Stopped unconditionally in the `_speak_response` finally block (was previously left running on barge-in).
+- **Activation Beep**: `liquid-bubble-3000.wav` plays on `start_recording()`. Skipped (`play_beep=False`) on barge-in re-recordings to avoid double-chime.
+- **Memory Budget** (audio pipeline only):
+
+  | Component | VRAM | RAM | When |
+  |-----------|------|-----|------|
+  | Porcupine (wake word) | 0 | ~5 MB | Always |
+  | Parakeet (fp16) | ~1.2 GB | ~200 MB | Lazy-loaded on first STT, preloaded at startup |
+  | faster-whisper (int8) | 0 | ~40 MB | Fallback if parakeet fails |
+  | Torch + transformers | 0 | ~200 MB | Loaded with parakeet |
+  | Native C++ player | 0 | ~1 MB | During TTS playback |
+  | Pocket-TTS | 0 | ~50 MB | During TTS synthesis |
+  | **Total (parakeet path)** | **~1.2 GB** | **~450 MB** | — |
+  | **Total (whisper path)** | **0** | **~95 MB** | — |
 
 ### 🤖 AI Agent System
 - **Flexible Inference**: Brain model via ik_llama.cpp (port 8082) or llama-cpp-python, vision via upstream llama.cpp (port 8081), or remote OpenAI-compatible API — select in Settings
