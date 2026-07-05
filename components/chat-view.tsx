@@ -246,6 +246,9 @@ export function ChatWing({
   // Word index lives here, NOT inside Message/Conversations, so the 200 ms tick
   // updates a single number rather than remapping all conversations + localStorage.
   const [ttsWordIndex, setTtsWordIndex] = useState(-1);
+  // Total word count from tts_started (backend-provided).  Used by the word
+  // highlighting effect when the assistant message hasn't arrived yet (re-entrancy).
+  const [ttsTotalWords, setTtsTotalWords] = useState<number | null>(null);
   
   // Copy feedback state
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -419,9 +422,21 @@ export function ChatWing({
   // Handle tts_started: backend signals first TTS audio chunk has been pushed
   // to the player. This is where we actually start word highlighting, keeping
   // it in sync with audio playback instead of starting it when text arrives.
+  //
+  // The backend now includes turn_id and total_words in the tts_started payload
+  // so the frontend can set currentTtsMessageId immediately — BEFORE the
+  // text_response (assistant) arrives — and register the tts_word listener
+  // early enough to capture every word event.
   useEffect(() => {
-    function handleTtsStarted() {
+    function handleTtsStarted(e: Event) {
+      const detail = (e as CustomEvent).detail as { turn_id?: string; total_words?: number } | undefined
       setIsSpeaking(true)
+      if (detail?.turn_id) {
+        setCurrentTtsMessageId(detail.turn_id)
+      }
+      if (detail?.total_words) {
+        setTtsTotalWords(detail.total_words)
+      }
     }
     window.addEventListener('iris:tts_started', handleTtsStarted)
     return () => window.removeEventListener('iris:tts_started', handleTtsStarted)
@@ -551,12 +566,15 @@ export function ChatWing({
   // Handle TTS word highlighting.
   //
   // PRIMARY: backend tts_word events (via iris:tts_word CustomEvent) — the
-  // Pocket-TTS alignment produces real word-level indices.
+  // character-proportional word monitor produces real word-level indices.
   // FALLBACK: 200 ms interval simulation when no tts_word events arrive
-  // within a 1-second window of speaking starting.
+  // within a 1-second window of speaking starting (graceful degradation).
   //
   // isSpeaking is set by iris:tts_started (not text_response), so the
   // highlighting starts when audio actually plays, not when text arrives.
+  // currentTtsMessageId is also set by tts_started (via turn_id) so the
+  // tts_word listener is registered BEFORE the first word event arrives —
+  // fixing the re-entrancy race where tts_started beat text_response.
   //
   // PERF: word index lives in ttsWordIndex state — a single number — so each
   // tick does NOT remap all conversations or trigger a localStorage write.
@@ -567,13 +585,16 @@ export function ChatWing({
       setTtsWordIndex(-1);
       return;
     }
-    const message = messages.find((m: Message) => m.id === currentTtsMessageId);
-    if (!message?.words?.length) return;
 
-    const words = message.words; // stable snapshot
+    // Derive total word count from the message (if already created by
+    // text_response) OR from tts_started's total_words (if text_response
+    // hasn't arrived yet, fixing the re-entrancy race).
+    const message = messages.find((m: Message) => m.id === currentTtsMessageId);
+    const totalWords = message?.words?.length ?? ttsTotalWords;
+
     setTtsWordIndex(0);
     let wordIndex = 0;
-    let fallbackActive = true;
+    let fallbackActive = false;  // disabled until 1s timeout fires
 
     // ── Backend tts_word event listener ──────────────────────────────────
     // When the backend emits word indices through the IRIS gateway, use them
@@ -581,9 +602,10 @@ export function ChatWing({
     // perfectly in sync with the actual audio.
     let gotBackendEvent = false;
     const ttlId = setTimeout(() => {
-      // If no backend tts_word event arrived within 1 second, fall back to the
-      // 200ms interval simulation (existing behavior).
       if (!gotBackendEvent) {
+        // No backend events within 1 second — enable the fallback interval
+        // so word highlighting still advances gracefully.
+        fallbackActive = true;
         if (process.env.NODE_ENV !== 'production') {
           console.log('[ChatView] No tts_word event within 1s, using 200ms fallback');
         }
@@ -594,7 +616,7 @@ export function ChatWing({
       const detail = (e as CustomEvent<{ word_index: number; total_words?: number; is_final: boolean }>).detail;
       if (!detail || typeof detail.word_index !== 'number') return;
       if (!gotBackendEvent) {
-        // First backend event — stop the fallback so they don't double-count
+        // First backend event — confirm the pipeline is live, kill fallback
         gotBackendEvent = true;
         fallbackActive = false;
         clearTimeout(ttlId);
@@ -607,16 +629,19 @@ export function ChatWing({
       if (detail.is_final) {
         setIsSpeaking(false);
         setTtsWordIndex(-1);
+        setTtsTotalWords(null);
         window.removeEventListener('iris:tts_word', onTtsWord);
       }
     }
     window.addEventListener('iris:tts_word', onTtsWord);
 
     // ── Fallback interval ─────────────────────────────────────────────────
+    // Only fires when no backend tts_word event arrived within 1 second.
+    // Advances at 200ms intervals as a graceful degradation.
     const interval = setInterval(() => {
       if (!fallbackActive) return;
       wordIndex++;
-      if (wordIndex >= words.length) {
+      if (totalWords !== null && wordIndex >= totalWords) {
         setIsSpeaking(false);
         setTtsWordIndex(-1);
         clearInterval(interval);
@@ -634,7 +659,7 @@ export function ChatWing({
       setTtsWordIndex(-1);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSpeaking, currentTtsMessageId]); // intentionally omit `messages` — words are snapshotted above
+  }, [isSpeaking, currentTtsMessageId, ttsTotalWords]); // intentionally omit `messages` — words are snapshotted above
 
   // Reset speaking state when voice changes to idle
   useEffect(() => {

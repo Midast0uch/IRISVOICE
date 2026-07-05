@@ -2188,6 +2188,12 @@ class IRISGateway:
             sentence_buf = []
             _sentence_buf_words = 0
             _SENTENCE_MAX_WORDS = 50  # flush if sentence grows too long
+            # Generate a stable turn_id for this TTS+text_response pair.
+            # Shared between tts_started (sent immediately) and text_response
+            # (sent later), so the frontend can set currentTtsMessageId early
+            # and capture all tts_word events instead of missing the first N.
+            from uuid import uuid4 as _uuid4
+            _turn_id = str(_uuid4())
 
             def _execute_agent():
                 _log_timing("llm_start")
@@ -2296,7 +2302,7 @@ class IRISGateway:
                 _succeeded = False
                 try:
                     self._logger.info("[TTS] _wrap_tts_streaming started â€” calling _speak_response")
-                    self._speak_response(q, sid, _sttproc_stop=_sttproc_stop, _client_id=cid)
+                    self._speak_response(q, sid, _sttproc_stop=_sttproc_stop, _client_id=cid, _turn_id=_turn_id)
                     self._logger.info("[TTS] _speak_response completed")
                     _succeeded = True
                 except Exception as _tts_err:
@@ -2340,7 +2346,7 @@ class IRISGateway:
                 client_id,
                 {
                     "type": "text_response",
-                    "turn_id": get_turn_id(),
+                    "turn_id": _turn_id,
                     "payload": {
                         "text": response,
                         "sender": "assistant",
@@ -2425,6 +2431,7 @@ class IRISGateway:
         session_id: str = None,
         _sttproc_stop: Optional[threading.Event] = None,
         _client_id: str = None,
+        _turn_id: Optional[str] = None,
     ) -> None:
         """
         Synthesise and play text through the configured TTS engine.
@@ -2792,7 +2799,11 @@ class IRISGateway:
                                                             _asyncio.run_coroutine_threadsafe(
                                                                 self._ws_manager.broadcast_to_session(
                                                                     session_id,
-                                                                    {"type": "tts_started"},
+                                                                    {
+                                                                        "type": "tts_started",
+                                                                        "turn_id": _turn_id or "",
+                                                                        "total_words": len(_all_words),
+                                                                    },
                                                                 ),
                                                                 self._main_loop,
                                                             )
@@ -2833,7 +2844,11 @@ class IRISGateway:
                                                         _asyncio.run_coroutine_threadsafe(
                                                             self._ws_manager.broadcast_to_session(
                                                                 session_id,
-                                                                {"type": "tts_started"},
+                                                                {
+                                                                    "type": "tts_started",
+                                                                    "turn_id": _turn_id or "",
+                                                                    "total_words": len(_all_words),
+                                                                },
                                                             ),
                                                             self._main_loop,
                                                         )
@@ -3132,14 +3147,30 @@ class IRISGateway:
                             _my_stop = self._word_monitor_stop
 
                             def _monitor_words():
+                                # ── CONTRACT ──────────────────────────────────────
+                                # The behavioral contracts below are verified by
+                                # integration tests in:
+                                #   tests/test_voice_pipeline.py::TestTTSWordEventIntegration
+                                #
+                                # DO NOT change the word monitor implementation
+                                # without also updating those tests.
+                                #
+                                # Guarantees:
+                                #   1. Every word (from every sentence) is broadcast
+                                #      at least once — dynamically catches up as
+                                #      the producer adds words from later sentences.
+                                #   2. All expected indices appear (monotonically
+                                #      non-decreasing).
+                                #   3. No premature is_final (is_final=True only
+                                #      after stream close, on the last event).
+                                #   4. Barge-in: remaining words catch up at 30ms
+                                #      intervals; is_final on the last catch-up word.
+                                # ──────────────────────────────────────────────────
                                 import asyncio as _aw
                                 import time as _tw
                                 nonlocal _last_word_idx
-                                _wn = len(_all_words)
-                                self._logger.info(f"[TTS][words] Monitor started, {_wn} words initially")
-                                if _wn == 0:
-                                    self._logger.warning("[TTS][words] Zero words - bailing out")
-                                    return
+                                _initial_wn = len(_all_words)
+                                self._logger.info(f"[TTS][words] Monitor started, {_initial_wn} words initially")
 
                                 # Wait for first audio chunk before starting
                                 while _total_written_for_words <= 0:
@@ -3147,92 +3178,109 @@ class IRISGateway:
                                         return
                                     _tw.sleep(0.05)
 
-                                # Broadcast word 0 immediately (audio has started)
-                                try:
-                                    _aw.run_coroutine_threadsafe(
-                                        self._ws_manager.send_to_client(
-                                            _client_id or session_id,
-                                            {
-                                                "type": "tts_word",
-                                                "payload": {
-                                                    "word_index": 0,
-                                                    "total_words": _wn,
-                                                    "is_final": False,
-                                                },
-                                            },
-                                        ),
-                                        self._main_loop,
-                                    )
-                                except Exception:
-                                    pass
-                                _last_word_idx = 0
+                                # Dynamic word broadcasting loop.
+                                # Re-checks _all_words each iteration so words
+                                # added by the producer from subsequent sentences
+                                # are also broadcast with character-proportional
+                                # timing — they don't fall through to the fallback.
+                                _i = 0
 
-                                # ── Audio-position-based word indexing ──────
-                                # Use _sd_stream.time (actual playback position)
-                                # divided by total audio written to get the
-                                # fraction of speech that has been played.
-                                # This perfectly syncs highlighting with audio
-                                # because _sd_stream.time reflects real output.
-                                while not _my_stop.is_set():
-                                    _tw.sleep(0.05)
-                                    try:
-                                        _audio_pos = _sd_stream.time  # seconds played
-                                    except Exception:
+                                while True:
+                                    # Re-read current word count dynamically
+                                    _current_wn = len(_all_words)
+
+                                    if _i >= _current_wn:
+                                        # All currently-available words broadcast.
+                                        # Wait for more words from producer OR
+                                        # stream close (which means all sentences
+                                        # have been processed).
+                                        if _my_stop.is_set():
+                                            # Stream closed — send is_final on the
+                                            # last word that was broadcast.
+                                            if _i == 0:
+                                                return  # No words broadcast at all
+                                            try:
+                                                _aw.run_coroutine_threadsafe(
+                                                    self._ws_manager.send_to_client(
+                                                        _client_id or session_id,
+                                                        {
+                                                            "type": "tts_word",
+                                                            "payload": {
+                                                                "word_index": _last_word_idx,
+                                                                "total_words": _current_wn,
+                                                                "is_final": True,
+                                                            },
+                                                        },
+                                                    ),
+                                                    self._main_loop,
+                                                )
+                                            except Exception:
+                                                pass
+                                            return
+                                        _tw.sleep(0.05)
                                         continue
-                                    _total_sec = max(_total_written_for_words / _TTS_SAMPLE_RATE, 0.001)
-                                    _frac = _audio_pos / _total_sec
-                                    _frac = min(_frac, 1.0)
-                                    _idx = int(_frac * _wn)
-                                    _idx = min(_idx, _wn - 1)
-                                    if _idx > _last_word_idx:
-                                        _last_word_idx = _idx
-                                        self._logger.info(
-                                            f"[TTS][words] Word {_idx}/{_wn} "
-                                            f"(audio_pos={_audio_pos:.2f}s frac={_frac:.3f})"
-                                        )
-                                        try:
-                                            _aw.run_coroutine_threadsafe(
-                                                self._ws_manager.send_to_client(
-                                                    _client_id or session_id,
-                                                    {
-                                                        "type": "tts_word",
-                                                        "payload": {
-                                                            "word_index": _idx,
-                                                            "total_words": _wn,
-                                                            "is_final": False,
-                                                        },
-                                                    },
-                                                ),
-                                                self._main_loop,
-                                            )
-                                        except Exception:
-                                            pass
 
-                                # Catch-up: stream ended but word index may not
-                                # have reached the last word yet.  Broadcast
-                                # remaining words at 30ms intervals.
-                                _wn = len(_all_words) or 1
-                                for _j in range(_last_word_idx, _wn):
-                                    if _j > _last_word_idx:
-                                        _last_word_idx = _j
-                                        try:
-                                            _aw.run_coroutine_threadsafe(
-                                                self._ws_manager.send_to_client(
-                                                    _client_id or session_id,
-                                                    {
-                                                        "type": "tts_word",
-                                                        "payload": {
-                                                            "word_index": _j,
-                                                            "total_words": _wn,
-                                                            "is_final": _j == _wn - 1,
-                                                        },
+                                    # ── Broadcast word _i ────────────────────────
+                                    _total_chars_now = max(1, sum(len(w) for w in _all_words))
+                                    try:
+                                        _aw.run_coroutine_threadsafe(
+                                            self._ws_manager.send_to_client(
+                                                _client_id or session_id,
+                                                {
+                                                    "type": "tts_word",
+                                                    "payload": {
+                                                        "word_index": _i,
+                                                        "total_words": _current_wn,
+                                                        "is_final": False,
                                                     },
-                                                ),
-                                                self._main_loop,
-                                            )
-                                        except Exception:
-                                            pass
-                                        _tw.sleep(0.03)
+                                                },
+                                            ),
+                                            self._main_loop,
+                                        )
+                                    except Exception:
+                                        pass
+                                    _last_word_idx = _i
+
+                                    # Character-proportional timing sleep.
+                                    # Uses a conservative estimate (10 char/s) so
+                                    # words are spread slightly longer than the
+                                    # fastest TTS.  If too short, the last word
+                                    # stays highlighted until audio ends.  If too
+                                    # long, stream close triggers catch-up.
+                                    _char_prop = len(_all_words[_i]) / _total_chars_now
+                                    _est_tts_dur = _total_chars_now / 10.0
+                                    _word_dur = max(0.03, _est_tts_dur * _char_prop)
+
+                                    _sleep_until = _tw.monotonic() + _word_dur
+                                    while _tw.monotonic() < _sleep_until:
+                                        if _my_stop.is_set():
+                                            # Barge-in or stream close during sleep
+                                            # — catch up ALL remaining words (even
+                                            # ones the producer added since start).
+                                            _catch_up_wn = len(_all_words)
+                                            for _j in range(_i + 1, _catch_up_wn):
+                                                try:
+                                                    _aw.run_coroutine_threadsafe(
+                                                        self._ws_manager.send_to_client(
+                                                            _client_id or session_id,
+                                                            {
+                                                                "type": "tts_word",
+                                                                "payload": {
+                                                                    "word_index": _j,
+                                                                    "total_words": _catch_up_wn,
+                                                                    "is_final": _j == _catch_up_wn - 1,
+                                                                },
+                                                            },
+                                                        ),
+                                                        self._main_loop,
+                                                    )
+                                                except Exception:
+                                                    pass
+                                                _tw.sleep(0.03)
+                                            return
+                                        _tw.sleep(0.01)
+
+                                    _i += 1
 
                             _word_monitor = threading.Thread(
                                 target=_monitor_words,
@@ -3315,38 +3363,14 @@ class IRISGateway:
                     except Exception:
                         pass
 
-                # ── Send tts_word is_final as safety net ──────────────
-                # The monitor's catch-up loop normally sends is_final on
-                # the last word.  This is a fallback if the monitor thread
-                # dies before reaching the end.
-                # SKIP on barge-in: the new tts_started event resets the frontend.
-                if (session_id and self._main_loop and _word_monitor_started
-                        and not interrupted.is_set()):
-                    # Wait for monitor thread to finish catch-up (up to 3s)
-                    if self._word_monitor_thread is not None:
-                        self._word_monitor_thread.join(timeout=3.0)
-                    try:
-                        import asyncio as _async_words_final
-                        _wn_final = len(_all_words) if _all_words else 0
-                        _async_words_final.run_coroutine_threadsafe(
-                            self._ws_manager.send_to_client(
-                                _client_id or session_id,
-                                {
-                                    "type": "tts_word",
-                                    "payload": {
-                                        "word_index": max(0, _wn_final - 1),
-                                        "total_words": _wn_final,
-                                        "is_final": True,
-                                    },
-                                },
-                            ),
-                            self._main_loop,
-                        )
-                    except Exception:
-                        pass
+                # ── Wait for monitor thread to exit ──────────────────
+                # The monitor's post-stream-close handling sends is_final
+                # on the last word.  We just need to let it finish.
+                if _word_monitor_started and self._word_monitor_thread is not None:
+                    self._word_monitor_thread.join(timeout=2.0)
 
                 # â€"â€" Word timing is handled by the streaming monitor â€"â€"â€"â€"
-                # (started when the first chunk is written, uses
+                # Uses character-proportional timing (see word monitor above).
                 #  _sd_stream.time for real playback position).
                 # The post-loop thread has been replaced â€" see line ~3089.
 
