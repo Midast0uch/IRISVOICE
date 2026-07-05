@@ -1,5 +1,38 @@
 # IRIS Changelog
 
+## [Unreleased] — Audio Pipeline Solidification — 2026-07-05
+
+### fix: word highlighting regression — turn_id propagation through text_response
+
+The `iris:text_response` CustomEvent was dispatched without `turn_id`, causing `chat-view.tsx` to create messages with `id = Date.now()` — which never matched `currentTtsMessageId` set by `tts_started`. Word highlighting rendered against a mismatched ID, resulting in no visible highlights on any response.
+
+- **`hooks/useIRISWebSocket.ts`** — Extract `turn_id` from the top-level WS message (`message.turn_id`, not in `payload`) and pass it through the `iris:text_response` CustomEvent detail.
+
+### fix: play-button TTS orb breathing animation (isolated state)
+
+When a user clicks the play button on an assistant response, the orb now breathes (1.2× scale + cadence animation) matching the voice pipeline UX — without touching `voiceState` or affecting the conversational pipeline.
+
+- **`backend/iris_gateway.py`** — `tts_play` handler sends `tts_started` (with `turn_id` + `total_words`) instead of `listening_state: speaking`. Fully isolated from `voiceState`.
+- **`components/iris/XurOrb.tsx`** — Added `playbackSpeaking` state listening to `iris:tts_started` / `iris:tts_word(is_final)` CustomEvents. Drives the same breathing animation as voice TTS but never triggers listening/processing effects.
+
+### fix: character-proportional word timing tuned to 15.8 chars/sec
+
+Word highlight timing tuned across multiple iterations: 12.5 → 14.5 → **15.8 chars/sec**. Verified perfectly in sync with TTS playback during live testing.
+
+- **`backend/iris_gateway.py`** line 3327
+
+### tests: 3 new targeted tests (91/91 passing)
+
+- `test_text_response_includes_turn_id_matching_tts_started` — asserts both events share the same `turn_id`
+- `test_text_response_turn_id_source_code_contract` — source code pattern check ensuring both paths use `_turn_id`
+- `test_tts_play_sends_tts_started_not_listening_state` — asserts `tts_started` sent, `listening_state:speaking` NOT sent
+
+### docs: audio pipeline fix plan updated with completion status
+
+- **`docs/plans/2026-07-01-audio-pipeline-fix.md`** — Added completion status table, additional fixes section, test results, and commit strategy update.
+
+---
+
 ## [Unreleased] — Parakeet GPU ASR Pipeline (PRs 1-7) — 2026-06-29
 
 ### feat: NVIDIA Parakeet TDT 0.6B ASR — full-duplex GPU streaming (PR 1 + 4)

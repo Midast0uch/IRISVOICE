@@ -3318,12 +3318,12 @@ class IRISGateway:
                                     _last_word_idx = _i
 
                                     # Character-proportional timing sleep.
-                                    # Uses 14.5 char/s estimate — tighter sync
+                                    # Uses 15.8 char/s estimate — tight sync
                                     # with TTS playback.  If too short, the last
                                     # word stays highlighted until audio ends.
                                     # If too long, stream close triggers catch-up.
                                     _char_prop = len(_all_words[_i]) / _total_chars_now
-                                    _est_tts_dur = _total_chars_now / 14.5
+                                    _est_tts_dur = _total_chars_now / 15.8
                                     _word_dur = max(0.03, _est_tts_dur * _char_prop)
 
                                     _sleep_until = _tw.monotonic() + _word_dur
@@ -3592,9 +3592,13 @@ class IRISGateway:
             return audio_chunks
 
         try:
+            # Send tts_started (NOT listening_state:speaking) so the frontend
+            # orb uses its isolated playbackSpeaking state — never touches
+            # voiceState and can't trigger listening/processing effects.
+            total_words = len(text.split())
             await self._ws_manager.send_to_client(
                 client_id,
-                {"type": "listening_state", "payload": {"state": "speaking"}},
+                {"type": "tts_started", "turn_id": f"tts-play-{int(time.time())}", "total_words": total_words},
             )
 
             loop = asyncio.get_running_loop()

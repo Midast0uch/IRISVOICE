@@ -1951,6 +1951,126 @@ class TestTTSWordEventIntegration:
             f"Expected total_words=6, got {started['total_words']}"
         )
 
+    def test_text_response_includes_turn_id_matching_tts_started(self):
+        """text_response and tts_started must share the same turn_id so the
+        frontend can match currentTtsMessageId (set by tts_started) with the
+        message ID (set by text_response).  Without this, word highlighting
+        renders against a mismatched message ID and nothing highlights."""
+        import asyncio
+        import queue
+        from unittest.mock import MagicMock, patch
+
+        gw = self._make_mock_gateway()
+        ws = gw._ws_manager
+        pipeline = self._make_mock_pipeline()
+        engine = self._make_mock_engine(pipeline)
+
+        sentence_queue = queue.Queue()
+        sentence_queue.put("Hello world")
+        sentence_queue.put(None)
+
+        mock_tts = MagicMock()
+        mock_tts.is_loaded.return_value = True
+
+        def _mock_synth(chunk, sample_rate=24000, **kw):
+            for _ in range(2):
+                yield np.zeros(2400, dtype=np.float32)
+                time.sleep(0.005)
+
+        mock_tts.synthesize_stream.side_effect = _mock_synth
+
+        with (
+            patch("backend.agent.tts.get_tts_manager", return_value=mock_tts),
+            patch("backend.audio.engine.get_audio_engine", return_value=engine),
+            patch("sounddevice.OutputStream") as mock_stream_cls,
+            patch("sounddevice.check_output_settings", return_value=None),
+        ):
+            mock_stream = MagicMock()
+            mock_stream.time = 0.0
+            mock_stream.active = False
+            mock_stream_cls.return_value = mock_stream
+
+            try:
+                gw._speak_response(
+                    input_source=sentence_queue,
+                    session_id="test-session",
+                    _client_id="test-client",
+                    _turn_id="highlight-test-42",
+                )
+            except Exception:
+                pass
+            finally:
+                gw._main_loop.call_soon_threadsafe(gw._main_loop.stop)
+                if hasattr(gw, "_loop_thread"):
+                    gw._loop_thread.join(timeout=2.0)
+
+        import time as _wait_time
+        _wait_time.sleep(0.1)
+
+        # Extract both tts_started and text_response events
+        tts_started_events = []
+        text_response_events = []
+        for ca in ws.broadcast_to_session.call_args_list:
+            msg = ca.args[1] if len(ca.args) > 1 else ca.args[0]
+            if msg.get("type") == "tts_started":
+                tts_started_events.append(msg)
+            elif msg.get("type") == "text_response":
+                text_response_events.append(msg)
+
+        # Also check send_to_client calls (text_response may use that path)
+        for ca in ws.send_to_client.call_args_list:
+            msg = ca.args[1] if len(ca.args) > 1 else ca.args[0]
+            if msg.get("type") == "text_response":
+                text_response_events.append(msg)
+
+        # tts_started must exist
+        assert len(tts_started_events) >= 1, "No tts_started event found"
+        started_turn_id = tts_started_events[0].get("turn_id")
+
+        # text_response must include turn_id at top level
+        if text_response_events:
+            text_turn_id = text_response_events[0].get("turn_id")
+            assert text_turn_id, (
+                f"text_response missing 'turn_id' — frontend cannot match "
+                f"currentTtsMessageId. Keys: {list(text_response_events[0].keys())}"
+            )
+            assert text_turn_id == started_turn_id, (
+                f"text_response turn_id={text_turn_id!r} does not match "
+                f"tts_started turn_id={started_turn_id!r} — frontend will "
+                f"create message with different ID than currentTtsMessageId"
+            )
+
+    def test_text_response_turn_id_source_code_contract(self):
+        """In _process_voice_transcription, the _turn_id generated for
+        tts_started must be the SAME variable passed to text_response.  This is
+        the contract that makes word highlighting work end-to-end."""
+        import re
+
+        gateway_path = Path(__file__).parent.parent / "iris_gateway.py"
+        source = gateway_path.read_text(encoding="utf-8")
+
+        # tts_started should use: "turn_id": _turn_id or ""
+        tts_pattern = re.search(
+            r'"type"\s*:\s*"tts_started".*?"turn_id"\s*:\s*_turn_id',
+            source,
+            re.DOTALL,
+        )
+        assert tts_pattern, (
+            "tts_started must use _turn_id variable for turn_id field"
+        )
+
+        # text_response in _process_voice_transcription should use: "turn_id": _turn_id
+        text_pattern = re.search(
+            r'"type"\s*:\s*"text_response".*?"turn_id"\s*:\s*_turn_id',
+            source,
+            re.DOTALL,
+        )
+        assert text_pattern, (
+            "text_response must use _turn_id variable for turn_id field — "
+            "without this, frontend creates message with different ID than "
+            "currentTtsMessageId set by tts_started"
+        )
+
     def test_multi_sentence_dynamic_word_count(self):
         """Words from subsequent sentences (added by the producer after the
         word monitor starts) must be broadcast dynamically — not just the
@@ -2051,4 +2171,63 @@ class TestTTSWordEventIntegration:
         # Last event has is_final=True
         assert word_events[-1].get("is_final") is True, (
             f"Last event missing is_final=True. Last: {word_events[-1]}"
+        )
+
+    def test_tts_play_sends_tts_started_not_listening_state(self):
+        """The tts_play backend path must send tts_started (NOT
+        listening_state:speaking) so the frontend orb uses its isolated
+        playbackSpeaking state.  If listening_state:speaking is sent, it would
+        pollute voiceState and potentially restart VAD or trigger listening
+        effects — violating the isolation contract."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+
+        gw = self._make_mock_gateway()
+        ws = gw._ws_manager
+        mock_tts = MagicMock()
+        mock_tts.is_loaded.return_value = True
+        # tts_play calls synthesize() not synthesize_stream()
+        mock_tts.synthesize.return_value = np.zeros(48000, dtype=np.float32)
+
+        with patch("backend.agent.tts.get_tts_manager", return_value=mock_tts), \
+             patch("sounddevice.play") as mock_play, \
+             patch("sounddevice.wait") as mock_wait:
+
+            mock_play.return_value = None
+            mock_wait.return_value = None
+
+            async def _run():
+                await gw._handle_tts_play("test-session", "test-client", {"payload": {"text": "Hello world"}})
+            asyncio.run(_run())
+
+        # Collect messages sent to the client
+        tts_started_msgs = []
+        listening_state_msgs = []
+        for ca in ws.send_to_client.call_args_list:
+            msg = ca.args[1] if len(ca.args) > 1 else ca.args[0]
+            if isinstance(msg, dict):
+                if msg.get("type") == "tts_started":
+                    tts_started_msgs.append(msg)
+                elif msg.get("type") == "listening_state":
+                    listening_state_msgs.append(msg)
+
+        # MUST have tts_started
+        assert len(tts_started_msgs) >= 1, (
+            f"tts_play must send tts_started event. Got: "
+            f"{[m.get('type') for m in [ca.args[1] if len(ca.args) > 1 else ca.args[0] for ca in ws.send_to_client.call_args_list] if isinstance(m, dict)]}"
+        )
+
+        # tts_started must have turn_id and total_words
+        ts = tts_started_msgs[0]
+        assert ts.get("turn_id"), f"tts_started missing turn_id: {ts}"
+        assert ts.get("total_words") == 2, (
+            f"tts_started total_words should be 2 ('Hello world'), got {ts.get('total_words')}"
+        )
+
+        # MUST NOT have listening_state:speaking from the tts_play path
+        speaking_msgs = [m for m in listening_state_msgs
+                         if m.get("payload", {}).get("state") == "speaking"]
+        assert len(speaking_msgs) == 0, (
+            f"tts_play must NOT send listening_state:speaking — it would pollute "
+            f"voiceState.  Got {len(speaking_msgs)} speaking state messages."
         )

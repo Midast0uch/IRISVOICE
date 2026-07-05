@@ -100,6 +100,24 @@ export function XurOrb({
   const isVoiceActive = voiceState !== "idle"
   const isListening = voiceState === "listening"
   const isSpeaking = voiceState === "speaking"
+  // Independent playback breathing — set by tts_started/tts_word(is_final)
+  // CustomEvents from the play-button TTS path.  Never touches voiceState,
+  // so it can't accidentally trigger listening_state or conversation reset.
+  const [playbackSpeaking, setPlaybackSpeaking] = useState(false)
+  useEffect(() => {
+    function onStart() { setPlaybackSpeaking(true) }
+    function onWord(e: Event) {
+      const detail = (e as CustomEvent<{ is_final?: boolean }>).detail
+      if (detail?.is_final) setPlaybackSpeaking(false)
+    }
+    window.addEventListener('iris:tts_started', onStart)
+    window.addEventListener('iris:tts_word', onWord)
+    return () => {
+      window.removeEventListener('iris:tts_started', onStart)
+      window.removeEventListener('iris:tts_word', onWord)
+    }
+  }, [])
+  const isSpeakingActive = isSpeaking || playbackSpeaking
   const isProcessing = voiceState === "processing_conversation" || voiceState === "processing_tool"
   const isError = voiceState === "error"
   const isWingsOpen =
@@ -340,7 +358,7 @@ export function XurOrb({
   const baseScale = isExpanded ? 1.1 : 1
   const effectiveScale = isPressed
     ? 0.92
-    : isSpeaking ? 1.2
+    : isSpeakingActive ? 1.2
       : isListening ? 1.15
         : isProcessing ? 1.08
           : isError ? 1.0

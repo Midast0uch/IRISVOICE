@@ -593,8 +593,16 @@ export function useIRISWebSocket(
       case "tts_started": {
         // Backend signals first TTS audio chunk has been pushed to the player.
         // Frontend uses this to sync word highlighting with actual audio.
+        // Pass turn_id and total_words so chat-view can set currentTtsMessageId
+        // immediately — BEFORE text_response arrives — preventing the re-run
+        // race that drops tts_word events between cleanup/setup cycles.
         if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('iris:tts_started'))
+          window.dispatchEvent(new CustomEvent('iris:tts_started', {
+            detail: {
+              turn_id: typeof payload.turn_id === 'string' ? payload.turn_id : undefined,
+              total_words: typeof payload.total_words === 'number' ? payload.total_words : undefined,
+            }
+          }))
         }
         break
       }
@@ -705,13 +713,18 @@ export function useIRISWebSocket(
               : {}),
           })
           
-          // Dispatch CustomEvent for SidePanel and other listeners
+          // Dispatch CustomEvent for SidePanel and other listeners.
+          // turn_id lives at the top level of the WS message (not inside payload)
+          // and is used by chat-view to match tts_started's currentTtsMessageId
+          // so word highlighting renders against the correct message.
+          const turnId = typeof message.turn_id === 'string' ? message.turn_id : undefined
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('iris:text_response', {
               detail: {
                 text: payload.text,
                 sender,
                 thinking: typeof payload.thinking === 'string' ? payload.thinking : undefined,
+                turn_id: turnId,
               }
             }))
           }

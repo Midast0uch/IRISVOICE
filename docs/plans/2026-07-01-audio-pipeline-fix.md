@@ -280,6 +280,74 @@ AFTER:
 4. **Phase 3** next (voice state stuck) — error handling, independent of Phase 2/4
 5. **Phase 5** last (verification) — manual end-to-end test
 
+---
+
+## Completion Status
+
+### All Original Bugs Fixed ✅
+
+| Bug | Status | Fix |
+|-----|--------|-----|
+| 1. TTS plays twice | ✅ Fixed | Removed duplicate `play_stream()` call |
+| 2. Parakeet silently fails | ✅ Fixed | Embedded in-process, HTTP boundary removed |
+| 3. Voice state stuck | ✅ Fixed | Error handling + watchdog in `_speak_response` |
+| 4. Word highlighting out of sync | ✅ Fixed | Character-proportional timing at **15.8 chars/sec**, `tts_started`/`tts_word` events with `turn_id` |
+| 5. Cadence animations inconsistent | ✅ Fixed | Shared cadence path for all STT backends |
+| 6. Stale HTTP references | ✅ Fixed | HTTP/8765 references cleaned up |
+
+### Additional Fixes Applied (Session 150-155)
+
+These were discovered and fixed during live testing beyond the original plan:
+
+#### Word Highlighting Regression: `turn_id` not propagated through `iris:text_response`
+
+**Problem**: Backend sends `text_response` with `turn_id` at the top level of the WS message, but `useIRISWebSocket.ts` only destructured from the nested `payload` object. The `iris:text_response` CustomEvent was dispatched **without `turn_id`**, so `chat-view.tsx` created messages with `id = Date.now()` — which never matched `currentTtsMessageId` set by `tts_started`. Word highlighting rendered against a mismatched ID → nothing highlighted.
+
+**Fix** (`hooks/useIRISWebSocket.ts`): Extract `turn_id` from the top-level WS message (`message.turn_id`) and pass it through the `iris:text_response` CustomEvent detail.
+
+**Verification**: `test_text_response_includes_turn_id_matching_tts_started` — asserts both events share the same `turn_id`. `test_text_response_turn_id_source_code_contract` — source code pattern check.
+
+#### Play-Button TTS Orb Breathing Animation
+
+**Problem**: When a user clicks the play button on an assistant response, the orb did not animate (no breathing, no scale). The `tts_play` backend path sent `listening_state: speaking` which polluted `voiceState`, and the orb relied solely on `voiceState` for animation.
+
+**Fix**:
+- **Backend** (`backend/iris_gateway.py`): Changed `tts_play` handler to send `tts_started` (with `turn_id` and `total_words`) instead of `listening_state: speaking`. This keeps the play-button TTS completely isolated from `voiceState` — no risk of triggering listening/processing effects or restarting VAD.
+- **Frontend** (`components/iris/XurOrb.tsx`): Added `playbackSpeaking` state that listens to `iris:tts_started` / `iris:tts_word(is_final)` CustomEvents. Drives the same 1.2× scale and breathing animation as voice pipeline TTS. Completely isolated: never touches `voiceState`.
+
+**Verification**: `test_tts_play_sends_tts_started_not_listening_state` — asserts `tts_started` has `turn_id` and `total_words`, and `listening_state:speaking` is NOT sent.
+
+#### Character-Proportional Timing Tuned to 15.8 chars/sec
+
+Word highlight timing was tuned through multiple iterations:
+- Started at 12.5 chars/sec → too slow (highlights lagged behind audio)
+- Bumped to 14.5 → closer but still slightly behind
+- Final value: **15.8 chars/sec** — verified perfectly in sync with TTS playback during live testing
+
+**File**: `backend/iris_gateway.py` line 3327
+
+#### Other Fixes Retained
+
+- `tts_started` carries `turn_id` + `total_words` in detail (re-entrancy race fix)
+- `fallbackActive = false` initially (prevents 200ms fallback racing against first backend `tts_word`)
+- Dynamic word count (`while True` loop) picks up words from later sentences
+- `_root_log` NameError fixed (line 2291 — changed to `self._logger`)
+- VAD_SILENCE_SEC increased to 1.2s for natural speech pauses
+- DER path `chunk_callback` fix for TTS playback on non-streaming responses
+- AsyncMock for WS manager in tests (Python 3.14 compatibility)
+- 12 diagnostic logging lines (`[DER-TTS-FIX]`, `[STT_LATENCY]`, `[TTS_LATENCY]`, `[FLOW_LATENCY]`)
+
+### Test Results
+
+**91/91 tests passing** (backend):
+- 88 legacy voice pipeline tests
+- `test_text_response_includes_turn_id_matching_tts_started`
+- `test_text_response_turn_id_source_code_contract`
+- `test_tts_play_sends_tts_started_not_listening_state`
+
+**8/8 latency metric tests** passing
+**6/6 chunk callback tests** passing
+
 ## Commit Strategy
 
 Each phase gets its own commit:
@@ -288,3 +356,4 @@ Each phase gets its own commit:
 3. `refactor: embed parakeet transcriber in-process, remove HTTP boundary`
 4. `fix: ensure voice state returns to idle on error`
 5. `docs: audio pipeline fix plan and verification results`
+6. `fix: turn_id propagation in text_response + orb breathing for play TTS` ← latest
