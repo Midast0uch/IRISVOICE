@@ -709,6 +709,50 @@ class AgentToolBridge:
                 "success": False,
             }
 
+        # ── Phase 4: Permission check ──────────────────────────────────────
+        try:
+            from backend.agent.permissions import (
+                classify_tool,
+                get_permission_action,
+                get_permission_system,
+                PermissionTier,
+            )
+
+            tier = classify_tool(tool_name, params)
+            level = CapabilitySet.get_mode()
+            action = get_permission_action(tier, level)
+
+            if action.value in ("require_approval", "require_confirmation"):
+                perm_system = get_permission_system()
+                req = perm_system.request_permission(
+                    tool_name=tool_name,
+                    tier=tier,
+                    params=params,
+                    description=(
+                        f"Execute '{tool_name}' with {len(params)} params"
+                    ),
+                    level=level,
+                )
+
+                if req.status == "pending":
+                    # Wait for user response (async)
+                    resolved = await perm_system.get_response_async(req)
+                    if resolved.status == "denied":
+                        return {
+                            "success": False,
+                            "error": f"Permission denied for tool '{tool_name}'",
+                            "permission_response": "denied",
+                        }
+                    if resolved.status == "timed_out":
+                        return {
+                            "success": False,
+                            "error": f"Permission timed out for tool '{tool_name}'",
+                            "permission_response": "timed_out",
+                        }
+                    # approved — continue
+        except Exception:
+            logger.warning("[Permissions] Permission check failed — allowing tool to proceed", exc_info=True)
+
         # Map tool names to their execution methods
         vision_tools = ["vision_detect_element", "vision_analyze_screen",
                         "vision_validate_action", "vision_get_context"]
