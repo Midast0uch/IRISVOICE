@@ -78,8 +78,8 @@ class TaskContext:
     task_id: str  # unique per user message
     user_message: str  # original user request — never lost
     session_id: str
-    conversation_id: str = "default"
     conversation_history: List[Dict]  # snapshot of memory at task start
+    conversation_id: str = "default"
     plan: Optional[Dict] = None  # brain's plan (set after planning)
     # accumulates as steps execute
     step_results: List[Dict] = field(default_factory=list)
