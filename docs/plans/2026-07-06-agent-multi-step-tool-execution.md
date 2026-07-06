@@ -153,11 +153,11 @@ These existing test files encode the old contract and **must be updated** to ass
 
 ---
 
-## Phase 1 — Layer 2: Per-Thread Context + WS Resilience (Gap 12)
+## Phase 1 — Layer 2: Per-Thread Context + Rust-Side WS Transport (Gap 12)
 
-**Goal:** Agent context keyed by `conversation_id`, survives WS disconnect, no crashes on reconnect.
+**Goal:** Agent context keyed by `conversation_id`, survives WS disconnect, no crashes on reconnect. WebSocket connection lives in the Rust process — survives WebView throttling and Windows sleep/wake.
 
-### Step 1.1 — ConversationContextStore (new backend component)
+### Step 1.1 — ConversationContextStore (new backend component) ✅ DONE
 
 **File:** `backend/agent/conversation_context_store.py` (new)
 
@@ -167,58 +167,122 @@ These existing test files encode the old contract and **must be updated** to ass
 - `save_current_and_load(new_id)` — atomic swap for thread switch
 - `clear(conversation_id)` — for `new_conversation`
 - Bounded: max 50 conversations, 200 messages each (matches frontend `MAX_CONVERSATIONS` / `MAX_MESSAGES_PER_CONV`)
-- Storage: SQLite table `conversation_contexts` (reuse `data/databases/` dir) or JSON files in `data/conversations/`
-- Thread-safe (WAL mode if SQLite)
+- Storage: SQLite table `conversation_contexts` in `data/databases/`
+- Thread-safe (WAL mode)
+- Error handling: missing file/corrupt JSON → return None, log, no crash
 
-**Quality check before test:**
-- [ ] No unbounded caches — max 50 conversations enforced
-- [ ] File handles closed after each operation
-- [ ] No blocking I/O in async hot paths — use `asyncio.to_thread()` for disk writes
-- [ ] Error handling: missing file/corrupt JSON → return None, log, no crash
-
-### Step 1.2 — Agent kernel re-keying
+### Step 1.2 — Agent kernel re-keying ✅ DONE
 
 **File:** `backend/agent/agent_kernel.py`
 
-- `process_text_message(text, conversation_id, session_id=None)` — `conversation_id` is the context key, `session_id` is transport-only
-- `clear_conversation(conversation_id)` — already exists, extend to clear from `ConversationContextStore`
-- `get_conversation_context(conversation_id)` — fetch from store, not in-memory dict
+- `process_text_message(text, conversation_id, session_id=None)` — `conversation_id` is the context key, `session_id` is transport-only ✅
+- `clear_conversation(conversation_id)` — extended to clear from `ConversationContextStore` ✅
+- `save_context_to_store()` — persists current context to store ✅
+- `restore_context_from_store()` — restores context from store ✅
+- `get_agent_kernel(conversation_id, session_id)` — re-keyed from `session_id` to `conversation_id` ✅
+- `cleanup_agent_kernel(conversation_id, session_id)` — re-keyed, saves context on cleanup ✅
 - Keep `session_id` for WS routing only (which connection to send responses to)
 
-**Lines to change:** 80-133 (context key), 2616-2624 (`process_text_message` signature)
-
-### Step 1.3 — Gateway WS handlers
+### Step 1.3 — Gateway WS handlers ✅ DONE
 
 **File:** `backend/iris_gateway.py`
 
-- `voice_command_start` handler (line 1783-1830): accept `conversation_id` from payload, pass to `agent_kernel.process_text_message()`
-- New `switch_conversation` handler: calls `agent_kernel.save_current_and_load(conversation_id)`
-- WS reconnect: detect reconnection (same user, new `session_id`), call `ConversationContextStore.get_or_restore(conversation_id)`, reattach agent context
-- New `settings_sync` handler: frontend sends current settings on reconnect, backend re-syncs (brand color, voice mode, etc.)
+- `voice_command_start` handler: accepts `conversation_id` from payload, stores in `_active_conversation_id` dict ✅
+- `_on_voice_result`: extracts `conversation_id` from result or `_active_conversation_id` fallback ✅
+- `_process_voice_transcription`: accepts `conversation_id`, passes to `get_agent_kernel` and `process_text_message` ✅
+- `_handle_chat` / `text_message`: extracts `conversation_id` from payload, passes to `process_text_message` ✅
+- `new_conversation` handler: extracts `conversation_id`, calls `clear_conversation(conversation_id)` ✅
+- New `switch_conversation` handler: saves old context, acknowledges switch ✅
+- New `settings_sync` handler: receives settings on reconnect ✅
 
-### Step 1.4 — Frontend WS changes
+### Step 1.4 — Rust-side WebSocket client (NEW)
+
+**Files:** `src-tauri/src/ws_client.rs` (new), `src-tauri/src/commands/ws.rs` (new)
+
+This is the core of Design Decision 15. The WebSocket connection moves from the WebView to the Rust process.
+
+**`src-tauri/src/ws_client.rs`:**
+- Uses `tokio-tungstenite` for async WebSocket client
+- Maintains the connection in a Tokio task — independent of WebView lifecycle
+- Handles reconnection with exponential backoff (1s → 2s → 4s → 8s → 15s cap)
+- Stability reset: after 30s of stable connection, backoff resets to 1s
+- Buffers outgoing messages in an `mpsc::UnboundedSender<WsMessage>` — survives WebView suspension
+- Forwards incoming messages to the frontend via `app_handle.emit("ws:message", payload)`
+- Emits `ws:connected` / `ws:disconnected` events for connection state
+- Detects Windows power events (sleep/wake) via `tauri::RunEvent` and reconnects immediately on wake
+- TCP keepalive enabled (`SO_KEEPALIVE` via `tungstenite` socket options)
+
+**`src-tauri/src/commands/ws.rs` (Tauri commands):**
+- `start_ws_client(url: String)` — starts the Rust-side WS client in a Tokio task
+- `ws_send(message: String)` — sends a message through the Rust-side connection (non-blocking, returns immediately)
+- `ws_disconnect()` — cleanly closes the connection (for app shutdown)
+- `get_ws_connection_state()` — returns current connection state ("connected" | "disconnected" | "connecting")
+
+**`src-tauri/src/commands/mod.rs`:** Register the WS commands
+
+**`src-tauri/src/main.rs`:** Initialize WS client on app startup (after window creation)
+
+**`src-tauri/Cargo.toml`:** Add dependencies:
+```toml
+[dependencies]
+tokio-tungstenite = { version = "0.23", features = ["native-tls"] }
+futures-util = "0.3"
+```
+
+**Quality check before test:**
+- [ ] No blocking calls in the Tokio task — all I/O is async
+- [ ] Message queue is bounded (max 1000 messages) — no unbounded memory growth
+- [ ] Reconnection backoff has a cap (15s) — no infinite backoff
+- [ ] Error handling: connection failure → log, retry, no panic
+- [ ] Clean shutdown: `ws_disconnect()` closes the socket and drops the task
+- [ ] No shared mutable state without `Mutex`/`RwLock`
+
+### Step 1.5 — Frontend hook rewrite (Tauri event listener)
 
 **File:** `hooks/useIRISWebSocket.ts`
 
-- `voice_command_start` (line 1285-1295): send `{ conversation_id }` instead of `{}`
-- New `switchConversation(conversationId)` sender
-- New `settingsSync(settings)` sender (called on reconnect)
-- Reconnect state: emit `iris:ws_reconnecting` and `iris:ws_reconnected` CustomEvents
-- No errors thrown on disconnect — graceful state transition
+The hook's public API stays identical. Only the transport changes — from raw `WebSocket` to Tauri events + commands.
 
-**File:** `components/chat-view.tsx`
+**Remove:**
+- `const ws = useRef<WebSocket | null>(null)` — no more raw WebSocket
+- `ws.current = new WebSocket(url)` — no more direct connection
+- `ws.current.onopen / onclose / onmessage` — replaced by Tauri event listeners
+- `ws.current.send(JSON.stringify(...))` — replaced by `invoke('ws_send', ...)`
+- Exponential backoff logic — moved to Rust
+- Message queue — moved to Rust (mpsc channel)
 
-- `handleSelectConversation` (line 787-790): call `sendMessage('switch_conversation', { conversation_id })`
-- Track `conversation_id` in a ref for reconnect
-- On `iris:ws_reconnected`: re-send `switch_conversation` with current `conversation_id` + `settingsSync`
+**Add:**
+- `useEffect` on mount: `invoke('start_ws_client', { url: 'ws://localhost:8765' })`
+- `listen('ws:connected', () => setConnectionState('connected'))`
+- `listen('ws:disconnected', () => setConnectionState('disconnected'))`
+- `listen('ws:message', (event) => handleMessage(JSON.parse(event.payload)))`
+- `sendMessage(type, payload)` → `invoke('ws_send', { message: JSON.stringify({ type, payload }) })`
+- Cleanup on unmount: `invoke('ws_disconnect')` + unlisten all
 
-### Step 1.5 — Orb reconnecting state
+**Keep unchanged (public API):**
+- `sendMessage(type, payload) -> boolean`
+- `startVoiceCommand(conversationId?) -> void`
+- `endVoiceCommand() -> void`
+- `voiceState`, `connectionState`, `isChatTyping`
+- `currentConversationId`, `setCurrentConversationId`
+- All state variables and their setters
+- All CustomEvent forwarding (`iris:text_response`, `iris:voice_final`, etc.)
+- `seenTurnIds` dedup (still needed for cross-turn replay)
+
+**`components/chat-view.tsx` (already done in Step 1.4-old):**
+- `handleSelectConversation` sends `switch_conversation` ✅
+- `handleNewConversation` calls `setCurrentConversationId` ✅
+- `text_message` includes `conversation_id` ✅
+
+### Step 1.6 — Orb reconnecting state
 
 **File:** `components/iris/XurOrb.tsx`
 
-- Listen for `iris:ws_reconnecting` / `iris:ws_reconnected`
-- Show subtle "reconnecting" visual (dimmed pulse) — no error overlay
-- Return to normal on reconnect
+- Listen for `connectionState` changes from `useNavigation()`
+- When `connectionState === 'disconnected'`: show subtle "reconnecting" pulse (dimmed, slower cadence)
+- When `connectionState === 'connected'`: return to normal
+- No error overlay — the orb just looks "calm but waiting"
+- This is a visual hint, not an error state
 
 ### Verification (Phase 1)
 
@@ -228,17 +292,22 @@ pytest backend/tests/test_conversation_context_store.py -v
 pytest backend/tests/test_chat_handler.py -v
 pytest backend/tests/test_chat_persistence.py -v
 
+# Rust tests
+cd src-tauri && cargo test ws_client -- --nocapture
+
 # Frontend type check
 npx tsc --noEmit
 
 # Manual smoke test:
-# 1. Start backend + frontend
+# 1. Start backend + frontend (Tauri dev)
 # 2. Send a message, switch to a different conversation, send another message
 # 3. Verify agent context is per-thread (no bleed)
-# 4. Kill WS backend, restart — verify no crash, settings preserved, context restored
+# 4. Kill backend, restart — verify no crash, settings preserved, context restored
+# 5. Minimize the widget, wait 30s, restore — verify WS still connected (no reconnect flicker)
+# 6. Put Windows to sleep, wake — verify WS reconnects immediately (no backoff delay)
 ```
 
-**Landmark on pass:** `pin_add(title='per_thread_context_gap12', pin_type='decision', content='conversation_id keying + ConversationContextStore + WS resilience')`
+**Landmark on pass:** `pin_add(title='per_thread_context_rust_ws_gap12', pin_type='decision', content='conversation_id keying + ConversationContextStore + Rust-side WebSocket transport')`
 
 ---
 
@@ -1078,10 +1147,12 @@ pin_add(
 
 ## File Inventory
 
-### New Files (42)
+### New Files (46)
 
 | File | Layer | Purpose |
 |------|-------|---------|
+| `src-tauri/src/ws_client.rs` | 2 | Rust-side WebSocket client (tokio-tungstenite) |
+| `src-tauri/src/commands/ws.rs` | 2 | Tauri commands for WS client control |
 | `backend/agent/conversation_context_store.py` | 2 | Persistent per-thread context |
 | `backend/agent/event_bus.py` | 3 | IRISStreamEvent + EventBus + ring buffer |
 | `backend/agent/task_kernel.py` | 3 | Tool-call events, planning steps, progress, agent-initiated speech |
@@ -1091,6 +1162,7 @@ pin_add(
 | `components/chat/QuestionCard.tsx` | 5.5 | Multiple-choice question card component |
 | `components/iris/OrbBadge.tsx` | 6 | Orb badge for background tasks + question badge |
 | `backend/tests/test_conversation_context_store.py` | 2 | Contract: store save/restore/atomic swap/bounded |
+| `src-tauri/tests/ws_client_test.rs` | 2 | Contract: Rust WS client connect/send/reconnect/backoff |
 | `backend/tests/test_per_thread_context_behavior.py` | 2 | Behavioral: thread switch, WS reconnect |
 | `backend/tests/test_voice_command_start_contract.py` | 2 | Contract: payload includes conversation_id |
 | `backend/tests/test_event_bus.py` | 3 | Contract: emit/sub/unsub, handler isolation |
@@ -1158,7 +1230,11 @@ pin_add(
 | ConversationContextStore disk I/O blocks async | Use `asyncio.to_thread()` for all disk operations |
 | Permission timeout kills long tasks | Timeout only applies to approval wait, not tool execution; 30s/60s is generous |
 | OrbBadge aesthetic mismatch | Use same `glowColor` and particle rendering as `OrbCanvas`; behavioral test verifies aesthetic match |
-| WS reconnect race condition | `ConversationContextStore.get_or_restore()` is atomic; frontend re-sends `switch_conversation` on reconnect |
+| WS reconnect race condition | `ConversationContextStore.get_or_restore()` is atomic; Rust-side client flushes queue on reconnect; frontend re-sends `switch_conversation` on reconnect |
+| Rust WS client panics | All Rust code uses `Result<T, E>` error handling; no `unwrap()` in production paths; Tokio task is supervised — if it dies, a watchdog restarts it |
+| `tokio-tungstenite` version conflict with Tauri's Tokio runtime | Pin `tokio-tungstenite` to a version compatible with Tauri's Tokio; test with `cargo build` before integration |
+| Tauri event payload serialization | All payloads are JSON strings — `app_handle.emit()` takes `serde_json::Value`; no binary payloads |
+| Rust WS client leaks memory | Message queue is bounded (max 1000); connection is dropped on `ws_disconnect()`; Tokio task is cancelled on app shutdown |
 | Stale tests give false confidence | Step 6.4 stale test audit is mandatory; every existing test file read and verified |
 | Agent runs old tests to fake a pass | Testing Discipline Rule 4: never modify tests to pass, never skip failures, never use xfail to hide |
 | Behavioral tests miss edge cases | Contract tests cover interface edges; behavioral tests cover user-visible flows; both required |
@@ -1170,7 +1246,6 @@ pin_add(
 - **MCP dynamic discovery** (Gap 3) — 8 hardcoded servers remain; follow-up branch
 - **SpecEngine** — not built; out of scope
 - **Structured tool result display** (Gap 7, low severity) — TaskListCard covers the primary need; rich result rendering deferred
-- **Tauri Rust changes** — no Rust changes; widget resilience is frontend + backend only
 
 ---
 

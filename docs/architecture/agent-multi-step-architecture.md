@@ -36,6 +36,7 @@ These decisions were validated through brainstorming with the user. They are the
 | 12 | AskUserQuestion tool | New agent tool that renders multiple-choice questions in chat-view. The agent calls it when it needs user input mid-task (clarification, choice between approaches, confirmation). User answers by clicking or voice. Answer feeds back as the tool result to the DER loop. Works whether chat-view is open or closed (orb shows a question badge). |
 | 13 | Voice smart filler comments | When voice command is open (listening/processing) and there's a silence gap during COMPRESS, ConversationKernel emits context-aware filler phrases ("Let me check that...", "Searching now...") so the user knows the agent is still working. Timer-based: if no utterance for N seconds during COMPRESS, emit a filler. |
 | 14 | Agent-initiated speech | The agent can open the audio pipeline itself to speak, even when chat-view isn't open. TTS becomes subscribable independent of the voice command flow. Used for: background task completion, AskUserQuestion prompts, status updates when chat-view is closed. The agent emits an utterance event → ConversationKernel → TTS, regardless of chat-view state. |
+| 15 | WebSocket transport layer | **Rust-side WebSocket.** The WebSocket connection lives in the Tauri Rust process (`tokio-tungstenite`), not in the WebView. The Rust process maintains the connection, handles reconnection, buffers messages during WebView suspension, and forwards messages to the frontend via Tauri events. The frontend hook (`useIRISWebSocket`) becomes a Tauri event listener — it never owns a `WebSocket` object. This eliminates WebView-throttling disconnects, survives Windows sleep/wake (Rust process stays alive), and makes reconnection invisible to the user. The hook's public API (`sendMessage`, `voiceState`, `connectionState`, etc.) stays identical — only the transport changes. |
 
 ---
 
@@ -60,8 +61,9 @@ Six layers, built bottom to top. Each layer depends only on the ones below it.
 │   EventBus · ConversationKernel (speech) · TaskKernel (tools)    │
 │   Caducean phase governs which kernel is active                  │
 ├─────────────────────────────────────────────────────────────────┤
-│ Layer 2 — Per-Thread Context + WS Resilience                     │
+│ Layer 2 — Per-Thread Context + Rust-Side WS Transport             │
 │   conversation_id keying · ConversationContextStore              │
+│   Rust-side WebSocket (tokio-tungstenite) · Tauri event bridge   │
 │   disconnect first-class state · settings re-sync                │
 ├─────────────────────────────────────────────────────────────────┤
 │ Layer 1 — Foundation (exists, solidified)                        │
@@ -73,47 +75,77 @@ Six layers, built bottom to top. Each layer depends only on the ones below it.
 
 ---
 
-## 4. Layer 2 — Per-Thread Context + WS Resilience (Gap 12)
+## 4. Layer 2 — Per-Thread Context + Rust-Side WS Transport (Gap 12)
 
 ### 4.1 Problem
 
 The agent kernel stores conversation history keyed by `session_id` (the WebSocket connection's session — changes on every reconnect). When the user switches threads or the WS disconnects, context is lost or bleeds across threads.
 
+Additionally, the WebSocket connection lives in the WebView (TypeScript). When the widget is minimized, the OS throttles the WebView, causing ping timeouts and disconnects. Windows sleep/hibernate kills the connection entirely. The user sees "reconnecting" flicker even though the backend is fine.
+
 ### 4.2 Solution
+
+**Three-part solution:**
+
+#### Part A: Rust-Side WebSocket Transport
+
+The WebSocket connection moves from the WebView to the Tauri Rust process. The Rust process doesn't get throttled when the WebView is minimized. It survives Windows sleep/wake. It handles reconnection independently.
+
+**New Rust module:** `src-tauri/src/ws_client.rs`
+- Uses `tokio-tungstenite` for async WebSocket client
+- Maintains the connection in a Tokio task — independent of WebView lifecycle
+- Handles reconnection with exponential backoff (1s → 2s → 4s → 8s → 15s cap)
+- Buffers outgoing messages in an `mpsc` channel — survives WebView suspension
+- Forwards incoming messages to the frontend via `app_handle.emit("ws:message", payload)`
+- Emits `ws:connected` / `ws:disconnected` events for connection state
+- Detects Windows power events (sleep/wake) and reconnects immediately
+
+**New Tauri commands:** `src-tauri/src/commands/ws.rs`
+- `start_ws_client(url)` — starts the Rust-side WS client
+- `ws_send(message)` — sends a message through the Rust-side connection
+- `ws_disconnect()` — cleanly closes the connection (for app shutdown)
+- `get_ws_connection_state()` — returns current connection state
+
+**Frontend hook rewrite:** `hooks/useIRISWebSocket.ts`
+- No longer creates a `WebSocket` object
+- Calls `invoke('start_ws_client', { url })` on mount
+- Listens to Tauri events: `ws:connected`, `ws:disconnected`, `ws:message`
+- `sendMessage(type, payload)` calls `invoke('ws_send', { message: JSON.stringify({type, payload}) })`
+- Public API stays identical: `sendMessage`, `voiceState`, `connectionState`, `startVoiceCommand`, etc.
+- All other frontend components are unchanged — they use the hook's API, not the raw WebSocket
+
+#### Part B: Per-Thread Context Keying
 
 **Context keying:** `conversation_id` becomes the sole key for agent context. `session_id` becomes a transport label used only for WS routing.
 
 **New backend component:** `ConversationContextStore` (`backend/agent/conversation_context_store.py`)
-- Persists per-thread context to disk (SQLite or JSON, keyed by `conversation_id`)
+- Persists per-thread context to disk (SQLite, keyed by `conversation_id`)
 - On WS reconnect: `get_or_restore(conversation_id)` returns the stored context
 - On thread switch: `save_current()` + `load(conversation_id)` swaps active context
 - Bounded: max 50 conversations, 200 messages each (matches frontend limits)
 
-**Frontend changes:**
-- `voice_command_start` payload includes `conversation_id`
-- New `switch_conversation` WS message when user selects a different thread
-- `handleSelectConversation` sends `switch_conversation { conversation_id }` to backend
+#### Part C: Disconnect Resilience
 
-**Backend changes:**
-- `voice_command_start` handler accepts `conversation_id`
-- `AgentKernel.process_text_message()` keys context by `conversation_id` instead of `session_id`
-- `clear_conversation()` already exists for `new_conversation` — extended for thread switch
-
-**WS disconnect resilience:**
 - Disconnect is a first-class state, not an exception
+- Rust-side client keeps: connection state, message queue, reconnection timer
 - Frontend keeps: brand color, voice mode, web toggle, conversation history (localStorage), active thread, context window token count
-- On reconnect: WS reattaches to same `conversation_id`, agent kernel restores from `ConversationContextStore`, settings re-sync from frontend via a `settings_sync` message
-- No errors thrown on disconnect — the UI shows a "reconnecting" state on the orb
+- On reconnect: Rust client reattaches to same `conversation_id`, agent kernel restores from `ConversationContextStore`, settings re-sync from frontend via a `settings_sync` message
+- No errors thrown on disconnect — the orb shows a brief "reconnecting" pulse, then returns to normal
 
 ### 4.3 Files Touched
 
 | File | Change |
 |------|--------|
+| `src-tauri/src/ws_client.rs` | **New** — Rust-side WebSocket client (tokio-tungstenite) |
+| `src-tauri/src/commands/ws.rs` | **New** — Tauri commands for WS client control |
+| `src-tauri/src/commands/mod.rs` | Register WS commands |
+| `src-tauri/src/main.rs` | Initialize WS client on app startup |
+| `src-tauri/Cargo.toml` | Add `tokio-tungstenite`, `futures-util` dependencies |
 | `backend/agent/conversation_context_store.py` | **New** — persistent per-thread context store |
 | `backend/agent/agent_kernel.py` | Re-key context from `session_id` to `conversation_id` |
 | `backend/iris_gateway.py` | `voice_command_start` accepts `conversation_id`; add `switch_conversation` handler; WS reconnect reattaches |
+| `hooks/useIRISWebSocket.ts` | Rewrite: Tauri event listener instead of raw WebSocket; public API unchanged |
 | `components/chat-view.tsx` | `handleSelectConversation` sends `switch_conversation`; `voice_command_start` includes `conversation_id` |
-| `hooks/useIRISWebSocket.ts` | `voice_command_start` sends `{ conversation_id }`; add `switch_conversation` sender; handle reconnect state |
 
 ---
 
@@ -532,6 +564,12 @@ Mycelium: record_outcome → crystallize_landmark → clear_session → record_p
 ```
 [Connected] ──disconnect──> [Disconnected]
      │                           │
+     │                    Rust-side client keeps:
+     │                    - connection state
+     │                    - message queue (mpsc channel)
+     │                    - reconnection timer (exponential backoff)
+     │                    - conversation_id
+     │                           │
      │                    frontend keeps:
      │                    - brand color, voice mode, web toggle
      │                    - conversation history (localStorage)
@@ -539,8 +577,10 @@ Mycelium: record_outcome → crystallize_landmark → clear_session → record_p
      │                    - context window token count
      │                    - orb position (Tauri window pos)
      │                           │
-     │                    orb shows "reconnecting" state
+     │                    orb shows "reconnecting" pulse
      │                    no errors thrown
+     │                    WebView can be suspended — doesn't matter
+     │                    Rust process stays alive
      │                           │
      │                    backend keeps:
      │                    - ConversationContextStore (disk)
@@ -549,18 +589,25 @@ Mycelium: record_outcome → crystallize_landmark → clear_session → record_p
      │                           │
      │<────reconnect─────────────┘
      │
-     frontend sends:
-     - reconnect with conversation_id
-     - settings_sync (brand color, voice mode, etc.)
+     │  Rust-side client reconnects (independent of WebView):
+     │  - exponential backoff: 1s → 2s → 4s → 8s → 15s cap
+     │  - on Windows wake: immediate reconnect (power event detected)
+     │  - flushes message queue on reconnect
+     │  - emits ws:connected to frontend
      │
-     backend:
-     - ConversationContextStore.get_or_restore(conversation_id)
-     - agent kernel reattaches to stored context
-     - settings re-synced
-     - in-flight task resumes (if Layer 2+ complete)
+     │  frontend sends (via Tauri command):
+     │  - settings_sync (brand color, voice mode, etc.)
      │
-[Connected] (state restored, no crash)
+     │  backend:
+     │  - ConversationContextStore.get_or_restore(conversation_id)
+     │  - agent kernel reattaches to stored context
+     │  - settings re-synced
+     │  - in-flight task resumes (if Layer 2+ complete)
+     │
+[Connected] (state restored, no crash, no visible flicker)
 ```
+
+**Key difference from frontend-side WS:** The Rust process is never throttled by the OS. When the WebView is minimized or the system sleeps, the Rust process keeps running. On Windows wake, the Rust client reconnects immediately — no backoff delay. The user never sees a "reconnecting" state unless the network itself is down.
 
 ---
 
@@ -633,14 +680,15 @@ These are the things that cause "works in isolation, breaks when layers combine"
 - `seenTurnIds` ref for deduplication (line 222)
 - Message queue for non-ephemeral messages when offline (line 1192)
 - Flush queued messages on reconnect (line 318)
-- Exponential backoff reconnect (line 265)
 - CustomEvent forwarding (`iris:text_response`, `iris:voice_final`, etc.)
 
-**Solution — extend existing dedup + queue:**
+**With Rust-side WS (Design Decision 15):** The message queue and reconnection logic move to the Rust process. The Rust client buffers messages in an `mpsc` channel — it survives WebView suspension. On reconnect, the Rust client flushes the queue. The frontend hook's `seenTurnIds` dedup still handles cross-turn replay.
+
+**Solution — extend existing dedup + queue (now Rust-side):**
 - **EventBus guarantees in-order delivery per `turn_id`.** Events with the same `turn_id` are delivered to subscribers in emit order. The existing `seenTurnIds` dedup handles cross-turn replay.
-- **Frontend event buffer = existing message queue.** The WS hook already queues messages when offline and flushes on reconnect. TaskListCard subscribes to `iris:task_update` CustomEvents — if it mounts after events fire, the WS hook's queue has them.
+- **Rust-side message buffer = existing message queue, now in Rust.** The Rust WS client queues outgoing messages in an `mpsc` channel when the connection is down. On reconnect, it flushes the queue. The frontend hook receives messages via Tauri events — if the WebView was suspended, the Rust client held the messages.
 - **Backend ring buffer for replay.** A small bounded ring buffer (100 events per `conversation_id`, 1000 total) on the backend. On reconnect, the backend replays the last 10 events per active `conversation_id`. The frontend deduplicates by `event_id` using the existing `seenTurnIds` pattern.
-- **No new queue mechanism.** The existing message queue + flush-on-reconnect + `seenTurnIds` dedup is the foundation. The ring buffer is the only new piece, and it's small.
+- **No new queue mechanism.** The existing message queue + flush-on-reconnect + `seenTurnIds` dedup is the foundation. The ring buffer is the only new piece, and it's small. The queue just moved from TypeScript to Rust.
 
 ### 14.3 State Synchronization
 
@@ -686,12 +734,14 @@ These are the things that cause "works in isolation, breaks when layers combine"
 
 **What already exists:** `useIRISWebSocket.ts` already queues messages when offline (line 1192) and flushes on reconnect (line 318). The backend already has `new_conversation` → `clear_conversation()` for context lifecycle.
 
-**Solution — persist pause state, leverage existing queue:**
+**With Rust-side WS (Design Decision 15):** The reconnection logic lives in the Rust process. The Rust client detects disconnects immediately (not delayed by WebView throttling) and reconnects with exponential backoff. On Windows wake, the Rust client reconnects instantly — no backoff delay.
+
+**Solution — persist pause state, leverage Rust-side queue:**
 - **Paused DER loop state is persisted to ConversationContextStore.** The pause reason (question, permission), the pending tool call, and the timeout deadline are saved. This is a new field on the existing store — not a new store.
-- **On reconnect:** the backend restores the paused state from ConversationContextStore. If the timeout hasn't expired, the question/permission is re-sent to the frontend via the existing WS message queue + flush mechanism. If the timeout has expired, the tool returns "timeout" and the DER loop continues with the default/fallback.
-- **Frontend shows the question/permission again on reconnect** — the existing flush mechanism delivers it. The user can answer as if it was never interrupted.
+- **On reconnect:** the backend restores the paused state from ConversationContextStore. If the timeout hasn't expired, the question/permission is re-sent to the frontend via the Rust-side message queue + Tauri event. If the timeout has expired, the tool returns "timeout" and the DER loop continues with the default/fallback.
+- **Frontend shows the question/permission again on reconnect** — the Rust client flushes the queued message via Tauri event. The user can answer as if it was never interrupted.
 - **No orphaned pauses.** Every paused state has a timeout (existing pattern from permission system: 30s/60s). No DER loop hangs forever.
-- **No new reconnect mechanism.** The existing queue + flush + backoff handles delivery. ConversationContextStore handles persistence. They connect at the `conversation_id` key.
+- **No new reconnect mechanism.** The Rust-side queue + flush + backoff handles delivery. ConversationContextStore handles persistence. They connect at the `conversation_id` key.
 
 ### 14.7 Agent-Initiated Speech vs User Speech Priority
 
