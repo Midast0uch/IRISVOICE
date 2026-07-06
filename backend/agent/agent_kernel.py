@@ -3563,9 +3563,10 @@ Respond with a JSON object:
         """
         from backend.agent.der_loop import (
             DirectorQueue,
-            QueueItem,
+            Reviewer,
             ReviewVerdict,
         )
+        from backend.agent.der_constants import ExecutionMode
         import uuid as _uuid
 
         _session = session_id or self.session_id
@@ -3599,13 +3600,42 @@ Respond with a JSON object:
             )
             for step in plan.steps
         ]
-        # Voice-first: cap to single step so the response arrives quickly.
-        # The token budget (15k) is the primary throttle; this is a secondary
-        # guard ensuring the plan never fans out into multi-step work on voice.
-        if task_class == "voice_first" and len(items) > 1:
-            items = items[:1]
-
         queue = DirectorQueue(objective=plan.original_task, items=items)
+
+        # ── Phase 3: initialize execution mode ────────────────────────
+        # Director decides mode dynamically based on task characteristics.
+        # Voice no longer caps to 1 step — Director decides based on content.
+        voice_preference = getattr(self, "_voice_preference", "auto")
+        initial_mode = DirectorQueue._decide_mode(
+            task_class=task_class,
+            from_voice=from_voice,
+            message_text=plan.original_task or "",
+            token_budget_remaining=_token_budget,
+            confidence=plan.confidence or 0.5,
+            voice_preference=voice_preference,
+        )
+        queue.set_mode(initial_mode, reason=f"Task class: {task_class}")
+        self._logger.info(
+            "[DER] Mode selected: %s (voice=%s, class=%s, budget=%d)",
+            initial_mode.value, from_voice, task_class, _token_budget,
+        )
+
+        # ── EventBus: emit task:start ──────────────────────────────────
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            bus = get_event_bus()
+            bus.emit(
+                IRISStreamEvent.TASK_START,
+                data={
+                    "task_id": _turn_id or plan.original_task[:40],
+                    "description": plan.original_task[:200],
+                    "mode": initial_mode.value,
+                },
+                turn_id=_turn_id,
+                conversation_id=self.conversation_id,
+            )
+        except Exception:
+            pass  # EventBus is optional — no crash if it fails
 
         # C.1 LiveContextPackage — refreshes ContextPackage mid-loop so the
         # Director always reads current gradient_warnings + tier2_predictions.
@@ -3765,6 +3795,24 @@ Respond with a JSON object:
                     logger.info(f"[DER] Step {item.step_number} REFINED")
 
             # ── EXPLORER PHASE ─────────────────────────────────────────────
+            # Emit TOOL_CALL event for the frontend / TaskKernel
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                get_event_bus().emit(
+                    IRISStreamEvent.TOOL_CALL,
+                    data={
+                        "task_id": _turn_id or item.step_id,
+                        "tool_name": item.tool or "direct",
+                        "description": item.description[:200],
+                        "params": item.params,
+                        "step_number": item.step_number,
+                    },
+                    turn_id=_turn_id,
+                    conversation_id=self.conversation_id,
+                )
+            except Exception:
+                pass
+
             step_result: str = ""
             step_success: bool = True
             try:
@@ -3808,6 +3856,36 @@ Respond with a JSON object:
                 )
 
             step_outputs.append(step_result)
+
+            # ── EventBus: emit tool:result or tool:error ────────────────
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                if step_success:
+                    get_event_bus().emit(
+                        IRISStreamEvent.TOOL_RESULT,
+                        data={
+                            "task_id": _turn_id or item.step_id,
+                            "result_summary": step_result[:200],
+                            "tool_name": item.tool or "direct",
+                            "step_number": item.step_number,
+                        },
+                        turn_id=_turn_id,
+                        conversation_id=self.conversation_id,
+                    )
+                else:
+                    get_event_bus().emit(
+                        IRISStreamEvent.TOOL_ERROR,
+                        data={
+                            "task_id": _turn_id or item.step_id,
+                            "error": step_result[:200],
+                            "tool_name": item.tool or "direct",
+                            "step_number": item.step_number,
+                        },
+                        turn_id=_turn_id,
+                        conversation_id=self.conversation_id,
+                    )
+            except Exception:
+                pass
 
             # Option B / Pacman: fragment DER step output into vector DB so it can be
             # retrieved as context in later steps or future sessions.
@@ -3963,6 +4041,80 @@ Respond with a JSON object:
 
             completed_items.append(item)
 
+            # ── Phase 3: escalation + explorer ─────────────────────────
+            # After each step, check if mode escalation is warranted.
+            # If queue is complete but more work is needed in AGENTIC/FULL
+            # mode, re-plan with the LLM.
+            try:
+                _result_summary = (step_outputs[-1] if step_outputs else "")[:200]
+                queue.check_escalation(
+                    review_verdict=verdict,
+                    tool_result_summary=_result_summary,
+                    token_budget_remaining=_tokens_used,
+                    turn_id=_turn_id,
+                )
+
+                # If queue is complete but mode is AGENTIC or FULL,
+                # ask the LLM if more tools are needed.
+                if queue.mode in (
+                    ExecutionMode.AGENTIC, ExecutionMode.FULL,
+                ) and queue.is_complete():
+                    _next_tool = self._der_plan_next_step(
+                        plan.original_task,
+                        completed_items,
+                        queue.mode,
+                        _turn_id,
+                    )
+                    if _next_tool:
+                        _next_item = QueueItem(
+                            step_id=f"explorer_{len(completed_items) + 1}",
+                            step_number=len(completed_items) + 1,
+                            description=_next_tool.get("description", ""),
+                            tool=_next_tool.get("tool"),
+                            params=_next_tool.get("params", {}),
+                            objective_anchor=plan.original_task,
+                        )
+                        queue.add_item(_next_item)
+                        self._logger.info(
+                            "[DER] Explorer added step %d: %s",
+                            _next_item.step_number,
+                            _next_item.description,
+                        )
+
+                # If mode is FULL and multiple steps completed,
+                # also check for overall progress and re-synthesize.
+                if queue.mode == ExecutionMode.FULL and len(completed_items) >= 3:
+                    self._der_check_full_progress(
+                        plan.original_task,
+                        completed_items,
+                        _turn_id,
+                    )
+            except Exception as _explorer_exc:
+                self._logger.warning(
+                    "[DER] Explorer escalation failed: %s", _explorer_exc
+                )
+
+            # ── EventBus: emit der:step ────────────────────────────────
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                get_event_bus().emit(
+                    IRISStreamEvent.DER_STEP,
+                    data={
+                        "task_id": _turn_id or item.step_id,
+                        "step_number": item.step_number,
+                        "step_description": item.description[:200],
+                        "tool": item.tool,
+                        "success": step_success,
+                        "total_steps": len(queue.items),
+                        "completed": len(completed_items),
+                        "mode": queue.mode.value,
+                    },
+                    turn_id=_turn_id,
+                    conversation_id=self.conversation_id,
+                )
+            except Exception:
+                pass
+
             # ── TRAILING DIRECTOR: analyze gaps every TRAILING_GAP_MIN steps ─
             # Domain 19: phase 4 (crystallization) forces gap analysis;
             # phase 3 (strict) suppresses adding new gap items.
@@ -4058,6 +4210,34 @@ Respond with a JSON object:
         except Exception as _exc:
             loud_error(_exc, "store_task_episode")
 
+        # ── EventBus: emit der:done ────────────────────────────────────
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            get_event_bus().emit(
+                IRISStreamEvent.DER_DONE,
+                data={
+                    "task_id": _turn_id or plan.original_task[:40],
+                    "outcome": outcome,
+                    "mode": queue.mode.value,
+                    "total_steps": len(queue.items),
+                    "completed": len(completed_items),
+                    "tokens_used": _tokens_used,
+                    "mode_history": [
+                        {
+                            "previous": c.previous_mode.value if c.previous_mode else None,
+                            "new": c.new_mode.value,
+                            "reason": c.reason,
+                            "turn_id": c.turn_id,
+                        }
+                        for c in queue.mode_history
+                    ],
+                },
+                turn_id=_turn_id,
+                conversation_id=self.conversation_id,
+            )
+        except Exception:
+            pass
+
         if step_outputs:
             return "\n".join(o for o in step_outputs if o)
         return (
@@ -4103,6 +4283,142 @@ Respond with a JSON object:
             return result.raw_text or f"[step {item.step_number} completed]"
         except Exception as _e:
             return f"[step {item.step_number} error: {_e}]"
+
+    # ── Phase 3: explorer methods ──────────────────────────────────────
+
+    def _der_plan_next_step(
+        self,
+        task_objective: str,
+        completed_items: List,
+        mode: "ExecutionMode",
+        turn_id: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """
+        After all planned steps are done, ask the LLM if more tools are
+        needed to satisfy the original objective.
+
+        Returns a dict with 'tool', 'description', 'params' if another
+        tool is needed, or None if done.
+
+        This is the key method for AGENTIC mode — it enables the multi-step
+        tool loop without a hardcoded limit.
+        """
+        try:
+            if not completed_items:
+                return None
+
+            from backend.agent.der_constants import ExecutionMode
+
+            # Build a summary of what was done
+            done_summary = "\n".join(
+                f"  Step {i.step_number}: {i.description}"
+                for i in completed_items[-10:]
+            )
+
+            prompt = (
+                "You are the Explorer. Your job is to decide if more work is needed.\n\n"
+                f"OBJECTIVE: {task_objective}\n\n"
+                f"STEPS COMPLETED ({len(completed_items)} total):\n{done_summary}\n\n"
+                f"Current mode: {mode.value if isinstance(mode, (str, ExecutionMode)) else 'agentic'}\n\n"
+                "Is the objective fully met? If yes, respond with {\"done\": true}.\n"
+                "If no, what single tool should run next? Respond with:\n"
+                '{"done": false, "tool": "tool_name", "description": "what to do", '
+                '"params": {"key": "value"}}\n'
+                "Choose the tool that makes the most progress toward the objective.\n"
+                "Be specific about parameters.\n\n"
+                "Respond with JSON only."
+            )
+
+            response = self.infer(
+                prompt, role="EXECUTION", max_tokens=400, temperature=0.1
+            )
+            raw = response.raw_text or ""
+
+            # Parse JSON from response
+            import re
+            import json as _json
+
+            m = re.search(r"\{[\s\S]+\}", raw)
+            if not m:
+                return None
+
+            data = _json.loads(m.group())
+            if data.get("done") is True:
+                return None
+
+            return {
+                "tool": data.get("tool"),
+                "description": data.get("description", "Continue"),
+                "params": data.get("params", {}),
+            }
+
+        except Exception as exc:
+            self._logger.warning(
+                "[DER] _der_plan_next_step failed: %s", exc
+            )
+            return None
+
+    def _der_check_full_progress(
+        self,
+        task_objective: str,
+        completed_items: List,
+        turn_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        FULL mode: check overall task progress and return a synthesis
+        suggestion if the task is drifting.  Returns None if on track.
+        Called every 3 steps in FULL mode.
+        """
+        try:
+            if len(completed_items) < 2:
+                return None
+
+            done_summary = "\n".join(
+                f"  {i.step_number}. {i.description}"
+                for i in completed_items[-5:]
+            )
+
+            prompt = (
+                "You are the Director's navigator. Assess progress so far.\n\n"
+                f"OBJECTIVE: {task_objective}\n\n"
+                f"STEPS DONE ({len(completed_items)}):\n{done_summary}\n\n"
+                "Is the task on track toward completion? Are we drifting or stuck?\n"
+                "Respond with JSON only:\n"
+                '{"on_track": true|false, "note": "short assessment", '
+                '"suggestion": "what to do next if not on track"}'
+            )
+
+            response = self.infer(
+                prompt, role="EXECUTION", max_tokens=300, temperature=0.1
+            )
+            raw = response.raw_text or ""
+
+            import re as _re
+            import json as _json
+
+            m = _re.search(r"\{[\s\S]+\}", raw)
+            if m:
+                data = _json.loads(m.group())
+                if not data.get("on_track", True):
+                    note = data.get("note", "")
+                    suggestion = data.get("suggestion", "")
+                    self._logger.info(
+                        "[DER] FULL mode progress check — drift detected: %s", note
+                    )
+                    if suggestion:
+                        # The suggestion is logged for debugging but not
+                        # automatically applied — the Director decides.
+                        self._logger.info(
+                            "[DER] FULL mode suggestion: %s", suggestion
+                        )
+                    return note
+            return None
+
+        except Exception as exc:
+            self._logger.warning(
+                "[DER] _der_check_full_progress failed: %s", exc
+            )
+            return None
 
     async def execute_plan(self, plan: Dict[str, Any]) -> List[Any]:
         """

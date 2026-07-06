@@ -4,19 +4,23 @@
     "director_source": "api"
   },
   "inference": {
-    "provider": "chutes",
-    "reasoning_model": "MiniMaxAI/MiniMax-M2.5-TEE",
+    "provider": "cerebras",
+    "reasoning_model": "gemma-4-31b",
     "tool_execution_model": "",
-    "api_base_url": "https://llm.chutes.ai/v1",
-    "api_key": "cpk_2405c119f86644f281a4865ac95af4b3.2727f25f2cce5bb690b83ed0d9628923.5RCdRtXb0eKDpGkoutAeeW50KOOtaxmG",
+    "api_base_url": "https://api.cerebras.ai/v1",
+    "api_key": "csk-wn5m3wp3pkwjepye29vkv4ny68j3xkpwy2j24dy6vrrw35r5",
     "lm_studio_url": "http://localhost:1234",
     "ollama_url": "http://localhost:11434",
-    "local_model_path": "models/gguf/bartowski/prism-ml_Bonsai-8B-unpacked-Q3_K_M.gguf",
-    "local_model_id": "apothic/bonsai-8B-1bit-turboquant",
-    "models_directory": "C:/Users/midas/.lmstudio/models",
+    "local_model_path": "",
+    "local_model_id": "",
+    "local_model_profile": "balanced",
+    "local_model_gpu_layers": -1,
+    "local_model_ctx": 16384,
+    "local_model_status": "unloaded",
+    "models_directory": "",
     "hardware_profile": "balanced",
     "temperature": 0.6,
-    "max_tokens": 8192,
+    "max_tokens": 4096,
     "reasoning_effort": "balanced",
     "response_length": "medium",
     "thinking_style": "balanced",
@@ -24,11 +28,36 @@
     "swarm_enabled": false,
     "swarm_mode": "SWARM_TURBO",
     "swarm_worker_count": 2,
-    "gpu_layers": 99,
+    "gpu_layers": 0,
     "worker_context": "auto"
+  },
+  "swarm_roles": {
+    "director_model": "",
+    "director_provider": "api",
+    "worker_model": "",
+    "worker_count": 2,
+    "worker_gpu_layers": -1,
+    "worker_context": 2048,
+    "auto_balance_vram": true
   },
   "system": {
     "mode": "personal",
     "projects": []
+  },
+  "tts": {
+    "tts_voice": "Cloned Voice",
+    "tts_enabled": true,
+    "speaking_rate": 1.0
+  },
+  "ports": {
+    "backend_port": 8090,
+    "brain_port": 18182,
+    "vision_port": 18181
+  },
+  "agent": {
+    "multi_step_enabled": true,
+    "default_mode": "agentic",
+    "voice_preference": "auto",
+    "max_tools_per_turn": 10
   }
 }
