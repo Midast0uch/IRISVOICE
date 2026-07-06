@@ -604,10 +604,198 @@ The branch is mergeable when:
 5. **Task list UI:** Inline card shows live DER progress. Context pill shows token usage. Orb badge shows step counter when wings closed.
 6. **Voice multi-step:** Voice tasks can be multi-step by default. `quick` mode caps to 1 step.
 7. **Widget resilience:** Orb can be moved, wings opened/closed, WS disconnects — no crashes, no lost settings.
+8. **Cross-cutting concerns:** All 12 concerns in Section 14 are addressed. No layer failure blocks a user response.
 
 ---
 
-## 14. References
+## 14. Cross-Cutting Concerns
+
+These are the things that cause "works in isolation, breaks when layers combine" failures. **The system already has most of the machinery.** Each solution below connects to and refines an existing mechanism — nothing is built from scratch.
+
+### 14.1 Concurrency Model
+
+**Problem:** Can the agent work on a background task in conversation A while the user is in conversation B? What if the user sends a text message while a voice command is processing?
+
+**What already exists:** `get_agent_kernel(session_id)` returns one `AgentKernel` per session. The DER loop is already single-threaded per session — `process_text_message(session_id=)` handles one message at a time. No concurrent DER loops within a session.
+
+**Solution — re-key, don't rebuild:**
+- Re-key `get_agent_kernel` from `session_id` to `conversation_id`. The existing single-threaded-per-session model becomes single-threaded-per-conversation. Same orchestration, different key.
+- **Thread switching** = save current kernel context to `ConversationContextStore` + load the new thread's context. The existing `clear_conversation()` (called on `new_conversation`) is extended to handle thread switching too.
+- **Background tasks in paused conversations:** a paused DER loop's in-flight tool calls complete (they're already running), but no new steps start until the user returns. The orb badge shows the active conversation's task only.
+- **Text + voice simultaneity:** the frontend already disables text input during voice processing (existing UI behavior). No new locking needed — the existing disable is the lock.
+- **Mycelium writes:** already serialized per session (single-threaded DER). Re-keying to `conversation_id` preserves this. WAL mode handles cross-conversation concurrency.
+
+### 14.2 Event Ordering and Delivery Guarantees
+
+**Problem:** EventBus emits events, but what if a `tool_call` event arrives before the TaskListCard is mounted? What about events during WS reconnect?
+
+**What already exists:** `useIRISWebSocket.ts` already has:
+- `seenTurnIds` ref for deduplication (line 222)
+- Message queue for non-ephemeral messages when offline (line 1192)
+- Flush queued messages on reconnect (line 318)
+- Exponential backoff reconnect (line 265)
+- CustomEvent forwarding (`iris:text_response`, `iris:voice_final`, etc.)
+
+**Solution — extend existing dedup + queue:**
+- **EventBus guarantees in-order delivery per `turn_id`.** Events with the same `turn_id` are delivered to subscribers in emit order. The existing `seenTurnIds` dedup handles cross-turn replay.
+- **Frontend event buffer = existing message queue.** The WS hook already queues messages when offline and flushes on reconnect. TaskListCard subscribes to `iris:task_update` CustomEvents — if it mounts after events fire, the WS hook's queue has them.
+- **Backend ring buffer for replay.** A small bounded ring buffer (100 events per `conversation_id`, 1000 total) on the backend. On reconnect, the backend replays the last 10 events per active `conversation_id`. The frontend deduplicates by `event_id` using the existing `seenTurnIds` pattern.
+- **No new queue mechanism.** The existing message queue + flush-on-reconnect + `seenTurnIds` dedup is the foundation. The ring buffer is the only new piece, and it's small.
+
+### 14.3 State Synchronization
+
+**Problem:** Three state stores: ConversationContextStore (backend disk), conversations (frontend localStorage), agent kernel context (backend memory). What's the source of truth?
+
+**What already exists:** Frontend localStorage (`iris_conversations_v1`) is already the source of truth for message history + conversation metadata. The backend agent kernel already holds context in-memory per session. They're already separate — message history (display) ≠ agent context (LLM inference).
+
+**Solution — make the existing split persistent:**
+- **Frontend localStorage stays the source of truth for UI state** (message text, timestamps, conversation metadata). Unchanged.
+- **ConversationContextStore makes the existing in-memory agent context persistent.** The agent kernel already has context in-memory — we just persist it to disk so it survives WS disconnect. Same data, persistent instead of volatile.
+- **On conflict:** frontend message history wins for display. Backend agent context wins for LLM inference. They don't need to be identical — the agent context is a compressed view (per Pacman: metabolized, not raw text).
+- **On WS reconnect:** frontend sends `conversation_id` + last message timestamp (existing `switch_conversation` message, extended). Backend responds with any agent context updated after that timestamp. Frontend merges. The existing `settings_sync` pattern handles settings.
+
+### 14.4 Barge-in During Agent Speech
+
+**Problem:** When the agent is speaking a filler or a question, can the user interrupt? How does barge-in interact with the DER loop pause and AskUserQuestion flow?
+
+**What already exists:** `ConversationKernel.on_audio_level()` already detects barge-in — if user speaks loudly (`level > 0.5`) while agent is speaking (`_was_speaking`), it nudges Caducean params and calls `audio_pipeline.interrupt()`. This is the existing, solidified barge-in path.
+
+**Solution — extend the existing barge-in path, don't replace it:**
+- **Barge-in during filler:** `audio_pipeline.interrupt()` halts TTS (existing path). The filler is discarded. The silence timer resets after the user's turn. No new code — the existing `on_audio_level` + `interrupt()` handles it.
+- **Barge-in during AskUserQuestion (voice mode):** `audio_pipeline.interrupt()` halts the question TTS (existing path). The user's speech is captured by the existing STT pipeline. The transcript is fuzzy-matched to options. If valid, DER loop continues. If not, the agent re-asks after the user's turn. The only new code: the fuzzy matcher + the re-ask logic.
+- **Barge-in during agent-initiated speech (background task result):** `audio_pipeline.interrupt()` halts TTS (existing path). The result is still saved to the conversation (text). The user's voice command takes priority. No new interrupt path — just save the text result before discarding the audio.
+- **Barge-in during permission prompt:** `audio_pipeline.interrupt()` halts TTS (existing path). The user's speech is captured. If they say "yes"/"allow" → grant. If "no"/"deny" → deny. Otherwise, the permission prompt stays. The only new code: voice-to-permission-action matching.
+
+### 14.5 Token Budget Across Mode Changes
+
+**Problem:** Director escalates from `quick` (15k) to `agentic` (50k). Does the budget reset? Accumulate?
+
+**What already exists:** The DER loop already has `_token_budget` and `_tokens_used` (line 2306-2430). `_tokens_used` is incremented per step (`len(step_result) // 4`). The budget is set from `DER_TOKEN_BUDGETS[task_class]` at loop start.
+
+**Solution — keep the existing counter running:**
+- **`_tokens_used` accumulates across mode changes.** The existing counter keeps running. When the Director escalates, `_token_budget` is updated to the new mode's budget, but `_tokens_used` is NOT reset.
+- **Escalation does not reset the counter.** This prevents infinite loops via repeated escalation.
+- **De-escalation does not restore budget.** Tokens spent are spent.
+- **Budget is per-turn (per user message).** The Director can change modes freely, but the total token spend is capped by the highest mode's budget reached. A `quick` (15k) task that escalates to `agentic` (50k) has 50k total — not 65k.
+- **Budget extension:** if a high-value task approaches the cap, the Director can request an extension from Mycelium (rare, logged, max 1 extension per turn of +50%). This hooks into the existing `mycelium_ingest_statement()` for logging.
+- **No new tracking mechanism.** The existing `_token_budget` / `_tokens_used` pair is extended with mode-awareness. Same variables, same increment logic.
+
+### 14.6 WS Reconnect During Paused States
+
+**Problem:** Agent asks a question (AskUserQuestion) or requests permission, then WS disconnects before the user answers. What happens to the paused DER loop?
+
+**What already exists:** `useIRISWebSocket.ts` already queues messages when offline (line 1192) and flushes on reconnect (line 318). The backend already has `new_conversation` → `clear_conversation()` for context lifecycle.
+
+**Solution — persist pause state, leverage existing queue:**
+- **Paused DER loop state is persisted to ConversationContextStore.** The pause reason (question, permission), the pending tool call, and the timeout deadline are saved. This is a new field on the existing store — not a new store.
+- **On reconnect:** the backend restores the paused state from ConversationContextStore. If the timeout hasn't expired, the question/permission is re-sent to the frontend via the existing WS message queue + flush mechanism. If the timeout has expired, the tool returns "timeout" and the DER loop continues with the default/fallback.
+- **Frontend shows the question/permission again on reconnect** — the existing flush mechanism delivers it. The user can answer as if it was never interrupted.
+- **No orphaned pauses.** Every paused state has a timeout (existing pattern from permission system: 30s/60s). No DER loop hangs forever.
+- **No new reconnect mechanism.** The existing queue + flush + backoff handles delivery. ConversationContextStore handles persistence. They connect at the `conversation_id` key.
+
+### 14.7 Agent-Initiated Speech vs User Speech Priority
+
+**Problem:** Agent tries to speak (background task done) while the user is speaking. Who wins?
+
+**What already exists:** `ConversationKernel.on_audio_level()` already detects when the user is speaking. `voiceState` already tracks listening/speaking/processing. The existing barge-in path (`audio_pipeline.interrupt()`) already halts agent speech when the user speaks.
+
+**Solution — check existing `voiceState` before speaking:**
+- **User speech always wins.** Before emitting an agent-initiated utterance, ConversationKernel checks `voiceState`. If `voiceState === "listening"` (user is speaking), the utterance is queued, not played.
+- **Queue is bounded:** max 2 pending agent utterances. If 2 are already queued, the 3rd is rendered as text only (saved to conversation) — not spoken. This uses the existing WS message queue pattern.
+- **Queue drains when user finishes speaking.** After the user's voice turn completes and TTS plays the response, queued agent utterances play in order. The existing `on_voice_state` IDLE transition triggers the drain.
+- **User can flush the queue.** Starting a new voice command flushes pending agent utterances (they're saved as text, not spoken). The existing `startVoiceCommand` path is extended with a queue flush.
+- **Filler phrases never queue.** If a filler would fire while the user is speaking, it's skipped. The existing `on_audio_level` check prevents filler emission during user speech.
+- **No new priority system.** The existing `voiceState` + `on_audio_level` + `audio_pipeline.interrupt()` is the priority mechanism. The queue is a small addition using the existing WS queue pattern.
+
+### 14.8 Configuration Storage and UI
+
+**Problem:** Voice preference, filler timer, approval timeouts, mode budgets — all "configurable" but where do they live?
+
+**What already exists:** `data/iris_config.json` already exists with sections: `routing`, `inference`, `swarm_roles`, `system`, `tts`, `ports`. The customize panel (side panel) already exposes user-facing settings. `system.mode` is already `"personal"`.
+
+**Solution — add an `agent` section to the existing config:**
+```json
+{
+  "agent": {
+    "multi_step_enabled": true,
+    "voice_preference": "quick_first",
+    "filler_enabled": true,
+    "filler_timer_seconds": 5,
+    "approval_timeout_seconds": 30,
+    "destructive_approval_timeout_seconds": 60,
+    "agent_speech_enabled": true,
+    "background_tasks_enabled": true
+  }
+}
+```
+- **Settings UI:** extend the existing customize panel with an "Agent" section. Exposes user-facing settings: voice preference, filler enabled/timer, agent speech enabled, background tasks enabled.
+- **Developer-only settings** (mode budgets, max iterations) are in `iris_config.json` but not exposed in the UI — edited manually.
+- **Settings sync on WS reconnect:** the existing `settings_sync` message (defined in Layer 2) sends current frontend settings to backend. Backend uses the synced values.
+- **Settings changes take effect on the next turn.** No hot-reload of in-flight DER loops. The existing config-read-at-startup pattern is preserved.
+- **No new config system.** The existing `iris_config.json` + customize panel + `settings_sync` message handles everything.
+
+### 14.9 Observability / Correlation IDs
+
+**Problem:** With kernel separation + EventBus + mode changes, debugging is hard. Need to trace a single turn through all layers.
+
+**What already exists:** `turn_id` is already used for deduplication in the frontend (`seenTurnIds` ref). The backend `_text_response` helper already includes `turn_id` in WS payloads. `ConversationKernel` already logs with `session_id` context.
+
+**Solution — extend `turn_id` to all layers, follow existing logging pattern:**
+- **`turn_id` is the correlation ID.** Every event, log line, WS message, and DB write includes `turn_id`. Already partially implemented — just extend to EventBus events, TaskKernel events, and mode change logs.
+- **Structured logging:** follow the existing `ConversationKernel` pattern (`logger.debug("[ConversationKernel] ...")`). Every log line includes `turn_id`, `conversation_id`, `mode` (when in DER), `phase` (EXPAND/COMPRESS). Format: `[turn_id=abc conv=123 mode=agentic phase=COMPRESS] message`.
+- **Mode change logging:** every Director mode change is logged with reason. This hooks into the existing `mycelium_ingest_statement()` — the mode change reason is ingested as a coordinate statement, so Mycelium learns.
+- **EventBus debug log:** EventBus writes a debug log of all emitted events (bounded ring buffer, 1000 entries). Accessible via a debug endpoint. Follows the existing `memory/interface.py` try/except pattern — never blocks.
+- **No new ID system.** `turn_id` already exists. No new correlation ID. No new logging framework. Just extend the existing pattern.
+
+### 14.10 Migration Path
+
+**Problem:** Existing conversations in localStorage use the old format. Existing agent kernel sessions in-flight when code deploys.
+
+**What already exists:** `iris_conversations_v1` localStorage key with conversations array. The frontend already deserializes timestamps on load (line 170-174 of chat-view.tsx).
+
+**Solution — standard localStorage version bump:**
+- **`iris_conversations_v1` → `iris_conversations_v2`:** on startup, if `v2` doesn't exist but `v1` does, migrate:
+  - Each conversation gets a `conversation_id` (UUID) if it doesn't have one
+  - Format is otherwise identical — just add the `conversation_id` field
+  - Old `v1` key is kept for one session as backup, then removed
+- **Agent kernel sessions:** on backend restart, in-flight DER loops are lost (they were in-memory). ConversationContextStore has no persisted in-flight state yet. The user's next message starts a fresh DER loop. No crash — just a lost in-flight task. This is the existing behavior on restart.
+- **No Mycelium migration.** Mycelium schema is unchanged. Existing coordinate graph, landmarks, PiNs all work as-is.
+- **No new migration framework.** Standard localStorage version bump. The existing deserialization pattern handles it.
+
+### 14.11 Feature Flags / Rollback
+
+**Problem:** If the branch has a critical bug after merge, what's the rollback?
+
+**What already exists:** `data/iris_config.json` already has config keys that control behavior (e.g., `system.mode`, `inference.tool_mode`). The backend already reads config at startup.
+
+**Solution — one flag in existing config:**
+- **`agent.multi_step_enabled`** in `iris_config.json` (default: `true` on this branch).
+  - `true`: new behavior (conversation_id keying, kernel separation, Director-decided mode, agentic loop, permission tiers, AskUserQuestion, voice filler, agent-initiated speech)
+  - `false`: old behavior (session_id keying, direct chunk_callback → TTS, pre-planned DER, 1-step voice cap, no permission tiers, no AskUserQuestion, no filler, no agent-initiated speech)
+- **Flag is checked at entry points:** `process_text_message()`, `chunk_callback`, `voice_command_start` handler. If false, the old code path runs. The old code paths are preserved (not deleted) behind the flag.
+- **Rollback = set flag to false + restart backend.** No code revert needed for emergency rollback.
+- **Flag is removed** in a follow-up branch after the new behavior is verified stable for 2 weeks.
+- **No new feature flag framework.** One boolean in the existing config file.
+
+### 14.12 Error Propagation Across Layers
+
+**Problem:** If EventBus fails, does DER hang? If ConversationContextStore corrupts, does the agent crash?
+
+**What already exists:** `backend/memory/interface.py` already wraps all Mycelium calls in try/except — "Mycelium failures NEVER block the DER loop. When `_mycelium` is None, all calls are silent no-ops." `ConversationKernel` follows the same pattern — every method is wrapped in try/except with `logger.debug`.
+
+**Solution — follow the existing try/except pattern for every new component:**
+- **EventBus:** `emit()` wraps each handler call in try/except. A handler error is logged and dropped. Other handlers still receive the event. The DER loop continues regardless. Same pattern as `memory/interface.py`.
+- **ConversationContextStore:** disk read/write wrapped in try/except. If read fails, return None — agent kernel starts fresh context. If write fails, log warning — context is volatile for that session. Same pattern as Mycelium.
+- **TaskKernel:** `emit_*` methods wrapped in try/except. If emit fails, the DER loop continues. Tool results are still used by the LLM. Frontend might miss an event, but the final result is still delivered via `text_response`. Same pattern.
+- **ConversationKernel:** `emit_utterance` / `emit_status_phrase` wrapped in try/except. If emit fails, TTS doesn't speak. The text response is still delivered via WS. Same pattern.
+- **Permission system:** if the permission check throws, the tool is denied (fail-closed for safety). The DER loop continues with the denial. Same pattern.
+- **AskUserQuestion:** if the question event can't be emitted, the tool returns "no response" after timeout. The DER loop continues with a default. Same pattern.
+- **Golden rule (existing, preserved):** the user always gets a response. It might be degraded (no audio, no task list, no context), but it's never silence. A crash that blocks a user response is a P0 bug. This is the existing Mycelium philosophy extended to all new components.
+- **No new error handling framework.** The existing try/except + log + continue pattern from `memory/interface.py` is applied to every new component. Same philosophy, new components.
+
+---
+
+## 15. References
 
 - Gap analysis: `docs/architecture/agent-multi-step-gaps.md`
 - DER loop + Mycelium: `docs/DER_LOOP_MYCELIUM.md`

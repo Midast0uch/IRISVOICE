@@ -108,6 +108,18 @@ A passing test on unoptimized code is not done. Quality check is not optional.
 | 5.5 | `test_voice_filler_behavior.py` | Behavioral: filler fires during silence, no EXPAND filler, no repeat, AskUserQuestion voice flow |
 | 5.5 | `test_agent_speech_behavior.py` | Behavioral: agent-initiated TTS, orb speaking state, chat-view closed |
 | 5.5 | `test_question_card_behavior.tsx` | Behavioral: renders question, click answer, free-form input, voice match |
+| 5.6 | `test_concurrency_behavior.py` | Behavioral: thread switch pauses task, text queues during voice |
+| 5.6 | `test_event_ordering_contract.py` | Contract: in-order per turn_id, ring buffer replay, no events lost |
+| 5.6 | `test_state_sync_behavior.py` | Behavioral: localStorage vs ConversationContextStore, reconnect merge |
+| 5.6 | `test_barge_in_integration.py` | Behavioral: barge-in during filler/question/agent-speech/permission |
+| 5.6 | `test_token_budget_mode_transition.py` | Contract: budget accumulates across mode changes, no reset on escalate |
+| 5.6 | `test_ws_reconnect_paused_state.py` | Behavioral: question persists through disconnect, re-asks on reconnect |
+| 5.6 | `test_agent_speech_priority.py` | Behavioral: user speech wins, queue drains on IDLE, fillers never queue |
+| 5.6 | `test_config_agent_section.py` | Contract: agent config read, settings_sync updates, next-turn effect |
+| 5.6 | `test_turn_id_correlation.py` | Contract: turn_id in all events/logs, mode change logged |
+| 5.6 | `test_localstorage_migration.py` | Behavioral: v1→v2 migration, conversation_id assigned, backup kept |
+| 5.6 | `test_feature_flag_rollback.py` | Behavioral: flag=false→old behavior, flag=true→new behavior |
+| 5.6 | `test_error_propagation.py` | Behavioral: EventBus fail→DER continues, store corrupt→fresh context |
 | 5 | `test_task_list_card_behavior.tsx` | Behavioral: live updates, collapsible, renders in chat stream |
 | 5 | `test_context_pill_behavior.tsx` | Behavioral: token count, color shifts, phase indicator |
 | 5 | `test_orb_badge_behavior.tsx` | Behavioral: step counter, question badge, aesthetic match, clears on done |
@@ -723,6 +735,223 @@ npm test -- --verbose test_question_card_behavior
 
 ---
 
+## Phase 5.6 — Cross-Cutting Concerns
+
+**Goal:** Connect all layers so they work together without conflicts. Every solution below hooks into an existing mechanism — nothing is built from scratch.
+
+**Reference:** `docs/architecture/agent-multi-step-architecture.md` Section 14 has the full rationale for each concern. This phase implements the connections.
+
+### Step 5.6.1 — Concurrency: re-key agent kernel
+
+**What exists:** `get_agent_kernel(session_id)` returns one AgentKernel per session. DER loop is already single-threaded per session.
+
+**What to do:**
+- Re-key `get_agent_kernel` from `session_id` to `conversation_id` in `backend/iris_gateway.py`
+- Extend existing `clear_conversation()` (called on `new_conversation`) to handle thread switching: save current → load new
+- Frontend already disables text input during voice processing — no new locking
+- Mycelium writes already serialized per session — re-keying preserves this
+
+**Files:** `backend/iris_gateway.py`, `backend/agent/agent_kernel.py`
+
+### Step 5.6.2 — Event ordering: extend existing dedup + queue
+
+**What exists:** `useIRISWebSocket.ts` has `seenTurnIds` dedup (line 222), message queue for offline (line 1192), flush on reconnect (line 318), exponential backoff (line 265).
+
+**What to do:**
+- EventBus guarantees in-order delivery per `turn_id` — events with same `turn_id` delivered in emit order
+- Frontend event buffer = existing message queue. TaskListCard subscribes to `iris:task_update` — if it mounts late, the queue has the events
+- Backend ring buffer: bounded (100 per `conversation_id`, 1000 total). On reconnect, replay last 10 per active `conversation_id`. Frontend deduplicates by `event_id` using existing `seenTurnIds` pattern
+- No new queue mechanism — extend the existing one
+
+**Files:** `backend/agent/event_bus.py` (ring buffer), `hooks/useIRISWebSocket.ts` (event_id dedup)
+
+### Step 5.6.3 — State sync: make existing in-memory context persistent
+
+**What exists:** Frontend localStorage (`iris_conversations_v1`) is source of truth for message history. Backend agent kernel holds context in-memory per session. They're already separate.
+
+**What to do:**
+- ConversationContextStore makes the existing in-memory agent context persistent — same data, persistent instead of volatile
+- Frontend localStorage stays source of truth for UI — unchanged
+- On WS reconnect: frontend sends `conversation_id` + last message timestamp via existing `switch_conversation` message (extended). Backend responds with updated agent context. Frontend merges.
+- On conflict: frontend message history wins for display, backend agent context wins for LLM inference. They don't need to be identical (Pacman: metabolized, not raw)
+
+**Files:** `backend/agent/conversation_context_store.py`, `hooks/useIRISWebSocket.ts`
+
+### Step 5.6.4 — Barge-in: extend existing `on_audio_level` path
+
+**What exists:** `ConversationKernel.on_audio_level()` detects barge-in (level > 0.5 while `_was_speaking`). Calls `audio_pipeline.interrupt()`. This is the solidified path.
+
+**What to do:**
+- Barge-in during filler: existing `audio_pipeline.interrupt()` halts TTS. Filler discarded. Silence timer resets. No new code.
+- Barge-in during AskUserQuestion: existing `interrupt()` halts question TTS. STT captures speech. New code: fuzzy matcher + re-ask logic.
+- Barge-in during agent-initiated speech: existing `interrupt()` halts TTS. Result saved as text. No new interrupt path.
+- Barge-in during permission prompt: existing `interrupt()` halts TTS. New code: voice-to-permission-action matching ("yes"→grant, "no"→deny).
+
+**Files:** `backend/agent/conversation_kernel.py` (extend `on_audio_level`), `backend/agent/tools/ask_user_tool.py` (fuzzy matcher)
+
+### Step 5.6.5 — Token budget: keep existing counter running
+
+**What exists:** DER loop has `_token_budget` and `_tokens_used` (line 2306-2430). `_tokens_used` incremented per step. Budget from `DER_TOKEN_BUDGETS[task_class]`.
+
+**What to do:**
+- `_tokens_used` accumulates across mode changes — the existing counter keeps running
+- On escalation: `_token_budget` updated to new mode's budget, `_tokens_used` NOT reset
+- Budget is per-turn, capped by highest mode's budget reached
+- Budget extension: Director requests from Mycelium via existing `mycelium_ingest_statement()` (rare, max 1 per turn, +50%)
+- No new tracking mechanism — extend existing `_token_budget` / `_tokens_used`
+
+**Files:** `backend/agent/agent_kernel.py` (mode-aware budget update), `backend/agent/der_loop.py` (budget check on mode change)
+
+### Step 5.6.6 — WS reconnect during paused states: persist + leverage existing queue
+
+**What exists:** `useIRISWebSocket.ts` queues messages when offline (line 1192), flushes on reconnect (line 318). Backend has `new_conversation` → `clear_conversation()`.
+
+**What to do:**
+- Paused DER loop state (question, permission, pending tool, timeout deadline) persisted to ConversationContextStore — new field on existing store
+- On reconnect: backend restores paused state. If timeout not expired, re-send question/permission via existing WS queue + flush. If expired, tool returns "timeout", DER continues with fallback.
+- Frontend shows question/permission again — existing flush mechanism delivers it
+- No orphaned pauses — every paused state has timeout (existing 30s/60s pattern)
+- No new reconnect mechanism — existing queue + flush + ConversationContextStore connect at `conversation_id`
+
+**Files:** `backend/agent/conversation_context_store.py` (pause state field), `backend/iris_gateway.py` (restore on reconnect)
+
+### Step 5.6.7 — Agent speech vs user speech: check existing `voiceState`
+
+**What exists:** `ConversationKernel.on_audio_level()` detects user speaking. `voiceState` tracks listening/speaking/processing. Existing barge-in path halts agent speech.
+
+**What to do:**
+- Before emitting agent-initiated utterance, ConversationKernel checks `voiceState`. If `listening`, queue instead of play.
+- Queue bounded: max 2 pending. 3rd → text only (saved to conversation). Uses existing WS queue pattern.
+- Queue drains on `voiceState` IDLE transition — existing `on_voice_state` triggers it.
+- User can flush queue: starting new voice command flushes (saves as text). Extend existing `startVoiceCommand`.
+- Fillers never queue: if user is speaking, filler skipped. Existing `on_audio_level` check prevents emission.
+- No new priority system — existing `voiceState` + `on_audio_level` + `interrupt()` is the mechanism.
+
+**Files:** `backend/agent/conversation_kernel.py` (voiceState check + queue), `backend/agent/task_kernel.py` (queue drain on IDLE)
+
+### Step 5.6.8 — Configuration: add `agent` section to existing config
+
+**What exists:** `data/iris_config.json` has sections: `routing`, `inference`, `swarm_roles`, `system`, `tts`, `ports`. Customize panel exposes user-facing settings. `system.mode` is `"personal"`.
+
+**What to do:**
+- Add `agent` section to `iris_config.json`:
+  ```json
+  "agent": {
+    "multi_step_enabled": true,
+    "voice_preference": "quick_first",
+    "filler_enabled": true,
+    "filler_timer_seconds": 5,
+    "approval_timeout_seconds": 30,
+    "destructive_approval_timeout_seconds": 60,
+    "agent_speech_enabled": true,
+    "background_tasks_enabled": true
+  }
+  ```
+- Extend existing customize panel with "Agent" section (user-facing settings)
+- Developer-only settings (mode budgets, max iterations) in config file, not UI
+- Settings sync on WS reconnect: existing `settings_sync` message sends frontend settings to backend
+- Settings changes take effect next turn — no hot-reload (existing config-read-at-startup preserved)
+- No new config system — extend existing `iris_config.json` + customize panel
+
+**Files:** `data/iris_config.json`, `components/CustomizePanel` (or equivalent), `backend/iris_gateway.py` (read agent config)
+
+### Step 5.6.9 — Observability: extend `turn_id` to all layers
+
+**What exists:** `turn_id` already used for dedup in frontend (`seenTurnIds`). Backend `_text_response` includes `turn_id` in WS payloads. `ConversationKernel` logs with `session_id` context.
+
+**What to do:**
+- `turn_id` is the correlation ID — extend to EventBus events, TaskKernel events, mode change logs
+- Structured logging: follow existing `ConversationKernel` pattern (`logger.debug("[ConversationKernel] ...")`). Every log line: `[turn_id=abc conv=123 mode=agentic phase=COMPRESS] message`
+- Mode change logging: hooks into existing `mycelium_ingest_statement()` — reason ingested as coordinate statement
+- EventBus debug log: bounded ring buffer (1000 entries), accessible via debug endpoint. Follows existing `memory/interface.py` try/except pattern.
+- No new ID system — `turn_id` already exists. No new logging framework.
+
+**Files:** `backend/agent/event_bus.py` (debug log), `backend/agent/task_kernel.py` (turn_id in events), `backend/agent/agent_kernel.py` (mode change logging)
+
+### Step 5.6.10 — Migration: standard localStorage version bump
+
+**What exists:** `iris_conversations_v1` localStorage key. Frontend deserializes timestamps on load (chat-view.tsx line 170-174).
+
+**What to do:**
+- `iris_conversations_v1` → `iris_conversations_v2`: on startup, if `v2` doesn't exist but `v1` does, migrate
+  - Each conversation gets `conversation_id` (UUID) if missing
+  - Format otherwise identical — just add `conversation_id` field
+  - Old `v1` key kept for one session as backup, then removed
+- Agent kernel sessions: in-flight DER loops lost on restart (existing behavior). ConversationContextStore has no persisted in-flight state yet. Next message starts fresh DER loop. No crash.
+- No Mycelium migration — schema unchanged
+- No new migration framework — standard localStorage version bump
+
+**Files:** `components/chat-view.tsx` (v2 migration on load)
+
+### Step 5.6.11 — Feature flag: one boolean in existing config
+
+**What exists:** `data/iris_config.json` has config keys that control behavior. Backend reads config at startup.
+
+**What to do:**
+- `agent.multi_step_enabled` in `iris_config.json` (default: `true`)
+  - `true`: new behavior (conversation_id keying, kernel separation, Director-decided mode, agentic loop, permission tiers, AskUserQuestion, voice filler, agent-initiated speech)
+  - `false`: old behavior (session_id keying, direct chunk_callback → TTS, pre-planned DER, 1-step voice cap, no permission tiers, no AskUserQuestion, no filler, no agent-initiated speech)
+- Flag checked at entry points: `process_text_message()`, `chunk_callback`, `voice_command_start` handler. If false, old code path runs.
+- Old code paths preserved (not deleted) behind the flag
+- Rollback = set flag to false + restart backend. No code revert.
+- Flag removed in follow-up branch after 2 weeks stable
+- No new feature flag framework — one boolean in existing config
+
+**Files:** `data/iris_config.json`, `backend/agent/agent_kernel.py` (flag check), `backend/iris_gateway.py` (flag check), `backend/agent/conversation_kernel.py` (flag check)
+
+### Step 5.6.12 — Error propagation: follow existing try/except pattern
+
+**What exists:** `backend/memory/interface.py` wraps all Mycelium calls in try/except — "Mycelium failures NEVER block the DER loop. When `_mycelium` is None, all calls are silent no-ops." `ConversationKernel` follows same pattern.
+
+**What to do:**
+- Apply the existing try/except + log + continue pattern to every new component:
+  - EventBus: `emit()` wraps each handler in try/except. Handler error logged + dropped. Other handlers still receive event. DER continues.
+  - ConversationContextStore: disk read/write in try/except. Read fail → return None, fresh context. Write fail → log warning, volatile for session.
+  - TaskKernel: `emit_*` in try/except. Emit fail → DER continues. Final result still delivered via `text_response`.
+  - ConversationKernel: `emit_utterance`/`emit_status_phrase` in try/except. Emit fail → no TTS. Text still delivered via WS.
+  - Permission system: check throws → tool denied (fail-closed). DER continues with denial.
+  - AskUserQuestion: question event can't emit → tool returns "no response" after timeout. DER continues with default.
+- Golden rule (existing, preserved): user always gets a response. Might be degraded (no audio, no task list, no context), but never silence. Crash that blocks user response = P0 bug.
+- No new error handling framework — existing `memory/interface.py` pattern applied to new components.
+
+**Files:** `backend/agent/event_bus.py`, `backend/agent/conversation_context_store.py`, `backend/agent/task_kernel.py`, `backend/agent/conversation_kernel.py`, `backend/agent/tools/ask_user_tool.py`
+
+### Verification (Phase 5.6)
+
+```powershell
+# Cross-cutting concern tests
+pytest backend/tests/test_concurrency_behavior.py -v
+pytest backend/tests/test_event_ordering_contract.py -v
+pytest backend/tests/test_state_sync_behavior.py -v
+pytest backend/tests/test_barge_in_integration.py -v
+pytest backend/tests/test_token_budget_mode_transition.py -v
+pytest backend/tests/test_ws_reconnect_paused_state.py -v
+pytest backend/tests/test_agent_speech_priority.py -v
+pytest backend/tests/test_config_agent_section.py -v
+pytest backend/tests/test_turn_id_correlation.py -v
+pytest backend/tests/test_localstorage_migration.py -v
+pytest backend/tests/test_feature_flag_rollback.py -v
+pytest backend/tests/test_error_propagation.py -v
+
+# Manual smoke test:
+# 1. Start a task in conversation A, switch to conversation B — verify A's task pauses
+# 2. Switch back to A — verify task resumes
+# 3. Start a voice command while a text message is processing — verify text queues
+# 4. Trigger a tool_call event before TaskListCard mounts — verify no events lost
+# 5. Disconnect WS mid-question — verify question persists, re-asks on reconnect
+# 6. Start agent-initiated speech while user is speaking — verify it queues
+# 7. Change voice_preference in settings — verify next turn uses new preference
+# 8. Check logs — verify turn_id appears in all log lines
+# 9. Load with old iris_conversations_v1 — verify migration to v2
+# 10. Set agent.multi_step_enabled=false — verify old behavior
+# 11. Kill EventBus mid-emit — verify DER loop continues
+# 12. Corrupt ConversationContextStore — verify agent starts fresh, no crash
+```
+
+**Landmark on pass:** `pin_add(title='cross_cutting_concerns_connected', pin_type='decision', content='All 12 cross-cutting concerns addressed by connecting to existing mechanisms — concurrency re-key, event dedup extend, state persist, barge-in extend, token counter extend, pause persist, voiceState check, config extend, turn_id extend, localStorage bump, feature flag, try/except pattern')`
+
+---
+
 ## Phase 6 — Integration + End-to-End Verification
 
 **Goal:** All layers work together. Full multi-step agent experience. **This phase is a testing gate — nothing merges until every test category passes.**
@@ -849,12 +1078,12 @@ pin_add(
 
 ## File Inventory
 
-### New Files (30)
+### New Files (42)
 
 | File | Layer | Purpose |
 |------|-------|---------|
 | `backend/agent/conversation_context_store.py` | 2 | Persistent per-thread context |
-| `backend/agent/event_bus.py` | 3 | IRISStreamEvent + EventBus |
+| `backend/agent/event_bus.py` | 3 | IRISStreamEvent + EventBus + ring buffer |
 | `backend/agent/task_kernel.py` | 3 | Tool-call events, planning steps, progress, agent-initiated speech |
 | `backend/agent/tools/ask_user_tool.py` | 5.5 | AskUserQuestion tool — multiple-choice questions mid-task |
 | `components/chat/TaskListCard.tsx` | 6 | Inline task list card |
@@ -876,6 +1105,18 @@ pin_add(
 | `backend/tests/test_ask_user_tool.py` | 5.5 | Contract: question/answer flow, timeout, fuzzy match |
 | `backend/tests/test_voice_filler_behavior.py` | 5.5 | Behavioral: filler fires during silence, no EXPAND filler, no repeat |
 | `backend/tests/test_agent_speech_behavior.py` | 5.5 | Behavioral: agent-initiated TTS, orb speaking state, chat-view closed |
+| `backend/tests/test_concurrency_behavior.py` | 5.6 | Behavioral: thread switch pauses task, text queues during voice |
+| `backend/tests/test_event_ordering_contract.py` | 5.6 | Contract: in-order per turn_id, ring buffer replay, no events lost |
+| `backend/tests/test_state_sync_behavior.py` | 5.6 | Behavioral: localStorage vs ConversationContextStore, reconnect merge |
+| `backend/tests/test_barge_in_integration.py` | 5.6 | Behavioral: barge-in during filler/question/agent-speech/permission |
+| `backend/tests/test_token_budget_mode_transition.py` | 5.6 | Contract: budget accumulates across mode changes, no reset on escalate |
+| `backend/tests/test_ws_reconnect_paused_state.py` | 5.6 | Behavioral: question persists through disconnect, re-asks on reconnect |
+| `backend/tests/test_agent_speech_priority.py` | 5.6 | Behavioral: user speech wins, queue drains on IDLE, fillers never queue |
+| `backend/tests/test_config_agent_section.py` | 5.6 | Contract: agent config read, settings_sync updates, next-turn effect |
+| `backend/tests/test_turn_id_correlation.py` | 5.6 | Contract: turn_id in all events/logs, mode change logged |
+| `backend/tests/test_localstorage_migration.py` | 5.6 | Behavioral: v1→v2 migration, conversation_id assigned, backup kept |
+| `backend/tests/test_feature_flag_rollback.py` | 5.6 | Behavioral: flag=false→old behavior, flag=true→new behavior |
+| `backend/tests/test_error_propagation.py` | 5.6 | Behavioral: EventBus fail→DER continues, store corrupt→fresh context |
 | `__tests__/test_task_list_card_behavior.tsx` | 6 | Behavioral: live updates, collapsible |
 | `__tests__/test_context_pill_behavior.tsx` | 6 | Behavioral: token count, color shifts |
 | `__tests__/test_orb_badge_behavior.tsx` | 6 | Behavioral: step counter, question badge, aesthetic match |
