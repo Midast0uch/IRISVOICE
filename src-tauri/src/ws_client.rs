@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -84,47 +85,40 @@ async fn run_ws_loop(
                 backoff = INITIAL_BACKOFF_SECS;
                 stable_since = Some(std::time::Instant::now());
 
-                // Message pump loop
-                let result: Result<(), &str> = loop {
+                // Message pump loop — breaks on any error/disconnect
+                loop {
                     tokio::select! {
                         // Outgoing: frontend → backend
                         msg = rx.recv() => {
-                            match msg {
-                                Some(text) => {
-                                    if write
-                                        .send(tungstenite::Message::Text(text.into()))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break Err("write failed");
-                                    }
-                                }
-                                None => break Err("channel closed"),
+                            let text = match msg {
+                                Some(t) => t,
+                                None => break,
+                            };
+                            if write
+                                .send(WsMessage::Text(text.into()))
+                                .await
+                                .is_err()
+                            {
+                                break;
                             }
                         }
                         // Incoming: backend → frontend
                         msg = read.next() => {
                             match msg {
-                                Some(Ok(tungstenite::Message::Text(text))) => {
+                                Some(Ok(WsMessage::Text(text))) => {
                                     let _ = app_handle.emit("ws:message", text.to_string());
                                 }
-                                Some(Ok(tungstenite::Message::Close(_))) => {
-                                    break Err("server closed connection");
-                                }
-                                Some(Ok(tungstenite::Message::Ping(data))) => {
-                                    // Auto-pong handled by tungstenite — but
-                                    // send a pong explicitly to be safe
+                                Some(Ok(WsMessage::Close(_))) => break,
+                                Some(Ok(WsMessage::Ping(data))) => {
                                     let _ = write
-                                        .send(tungstenite::Message::Pong(data))
+                                        .send(WsMessage::Pong(data))
                                         .await;
                                 }
                                 Some(Ok(_)) => {
                                     // Binary, Pong — ignore
                                 }
-                                Some(Err(e)) => {
-                                    break Err("ws error");
-                                }
-                                None => break Err("stream ended"),
+                                Some(Err(_)) => break,
+                                None => break,
                             }
                         }
                     }
@@ -133,10 +127,10 @@ async fn run_ws_loop(
                     if let Some(start) = stable_since {
                         if start.elapsed().as_secs() >= STABILITY_RESET_SECS {
                             backoff = INITIAL_BACKOFF_SECS;
-                            stable_since = None; // don't keep checking
+                            stable_since = None;
                         }
                     }
-                };
+                }
 
                 // Clean up state on disconnect
                 {
@@ -145,10 +139,7 @@ async fn run_ws_loop(
                 }
 
                 let _ = app_handle.emit("ws:disconnected", ());
-                eprintln!(
-                    "[WS Client] Disconnected from {} ({:?})",
-                    url, result
-                );
+                eprintln!("[WS Client] Disconnected from {}", url);
             }
             Err(e) => {
                 eprintln!("[WS Client] Connection failed: {} — retrying in {}s", e, backoff);
@@ -188,5 +179,36 @@ mod tests {
         assert!(INITIAL_BACKOFF_SECS >= 1);
         assert!(MAX_BACKOFF_SECS >= INITIAL_BACKOFF_SECS);
         assert!(STABILITY_RESET_SECS >= INITIAL_BACKOFF_SECS);
+    }
+
+    #[test]
+    fn test_backoff_resets_after_stable_connection() {
+        let mut backoff = 8u64;
+        let mut stable_seconds: u64 = 15;
+        assert!(stable_seconds < STABILITY_RESET_SECS);
+        stable_seconds = 30;
+        if stable_seconds >= STABILITY_RESET_SECS {
+            backoff = INITIAL_BACKOFF_SECS;
+        }
+        assert_eq!(backoff, 1);
+    }
+
+    #[tokio::test]
+    async fn test_mpsc_channel_buffers_messages() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        tx.send("hello".to_string()).unwrap();
+        tx.send("world".to_string()).unwrap();
+        assert_eq!(rx.recv().await.unwrap(), "hello");
+        assert_eq!(rx.recv().await.unwrap(), "world");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mpsc_channel_dropped_sender_closes() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        tx.send("test".to_string()).unwrap();
+        drop(tx);
+        assert_eq!(rx.recv().await.unwrap(), "test");
+        assert!(rx.recv().await.is_none());
     }
 }
