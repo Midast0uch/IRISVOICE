@@ -78,6 +78,7 @@ class TaskContext:
     task_id: str  # unique per user message
     user_message: str  # original user request — never lost
     session_id: str
+    conversation_id: str = "default"
     conversation_history: List[Dict]  # snapshot of memory at task start
     plan: Optional[Dict] = None  # brain's plan (set after planning)
     # accumulates as steps execute
@@ -121,16 +122,20 @@ class AgentKernel:
         self,
         config_path: str = "./backend/agent/agent_config.yaml",
         session_id: str = "default",
+        conversation_id: Optional[str] = None,
     ):
         """
         Initialize AgentKernel with dual-LLM coordination.
 
         Args:
             config_path: Path to agent configuration YAML
-            session_id: Session identifier for conversation memory
+            session_id: Session identifier for WebSocket routing and Mycelium
+            conversation_id: Conversation identifier for per-thread context.
+                             If None, falls back to session_id.
         """
         self.config_path = config_path
         self.session_id = session_id
+        self.conversation_id = conversation_id or session_id
 
         # Core components
         self._model_router: Optional[ModelRouter] = None
@@ -412,6 +417,67 @@ class AgentKernel:
         except Exception as _mcm_err:
             logger.warning(f"[AgentKernel] MCMOrchestrator unavailable: {_mcm_err}")
             self._mcm_orch = None
+
+    def clear_conversation(self, conversation_id: Optional[str] = None) -> None:
+        """
+        Clear the agent context for a conversation from the persistent store.
+        Called on 'new conversation' or thread switch cleanup.
+
+        Never raises — logs warning on failure.  The in-memory conversation
+        memory still works for the current turn; subsequent turns start fresh.
+        """
+        _cid = conversation_id or self.conversation_id
+        try:
+            from backend.agent.conversation_context_store import get_context_store
+
+            store = get_context_store()
+            store.clear(_cid)
+            logger.info(
+                f"[AgentKernel] Cleared context for conversation {_cid}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[AgentKernel] clear_conversation({_cid}) failed: {exc}"
+            )
+
+    def save_context_to_store(self) -> None:
+        """Persist current conversation context to the store (best-effort)."""
+        try:
+            from backend.agent.conversation_context_store import (
+                get_context_store,
+                ConversationContext,
+            )
+
+            store = get_context_store()
+            ctx = ConversationContext(
+                conversation_id=self.conversation_id,
+                tokens_used=getattr(self, "_tokens_used", 0),
+            )
+            store.save(self.conversation_id, ctx)
+        except Exception as exc:
+            logger.warning(
+                f"[AgentKernel] save_context_to_store failed "
+                f"for conv={self.conversation_id}: {exc}"
+            )
+
+    def restore_context_from_store(self) -> None:
+        """Restore conversation context from the store (best-effort)."""
+        try:
+            from backend.agent.conversation_context_store import get_context_store
+
+            store = get_context_store()
+            ctx = store.get_or_restore(self.conversation_id)
+            if ctx:
+                self._tokens_used = ctx.tokens_used
+                logger.info(
+                    f"[AgentKernel] Restored context for conv={self.conversation_id} "
+                    f"(tokens_used={ctx.tokens_used})"
+                )
+        except Exception as exc:
+            logger.warning(
+                f"[AgentKernel] restore_context_from_store failed "
+                f"for conv={self.conversation_id}: {exc}"
+            )
 
     def infer(
         self,
@@ -2645,6 +2711,7 @@ class AgentKernel:
         self,
         text: str,
         session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         from_voice: bool = False,
@@ -2654,6 +2721,8 @@ class AgentKernel:
         Main entry point for text messages.
         Decides between direct response and agentic (tool-calling) loop.
 
+        conversation_id: Key for per-thread context persistence. If None,
+                         falls back to self.conversation_id (or session_id).
         from_voice: when True the request came from the voice pipeline.
           - Overrides mode detection → "voice_first"
           - Uses DER_TOKEN_BUDGETS["voice_first"] (15k tokens, under 20k)
@@ -2664,6 +2733,10 @@ class AgentKernel:
         # Use provided session_id or fall back to instance session_id
         if session_id is None:
             session_id = self.session_id
+
+        # Resolve conversation_id — primary key for per-thread context
+        _conv_id = conversation_id or self.conversation_id
+        self.conversation_id = _conv_id
 
         # Reset thinking from any previous call so stale data never leaks
         self._pending_thinking = ""
@@ -4940,21 +5013,34 @@ _agent_kernel_instances: Dict[str, AgentKernel] = {}
 _swarm_config_snapshot: Optional[dict] = None
 
 
-def get_agent_kernel(session_id: str = "default") -> AgentKernel:
+def get_agent_kernel(
+    conversation_id: str = "default",
+    session_id: Optional[str] = None,
+) -> AgentKernel:
     """
-    Get or create an AgentKernel instance for a session.
+    Get or create an AgentKernel instance for a conversation.
     Auto-wires the memory interface (Pillar 4) when a new kernel is created.
 
+    Re-keyed from session_id to conversation_id for multi-thread context.
+    session_id is preserved for WS routing and Mycelium ingestion.
+
     Args:
-        session_id: Session identifier
+        conversation_id: Primary key — one kernel per conversation thread.
+        session_id: Transport label for WS routing and Mycelium.
+                    If None, falls back to conversation_id.
 
     Returns:
-        AgentKernel instance for the session
+        AgentKernel instance for the conversation
     """
     global _agent_kernel_instances
 
-    if session_id not in _agent_kernel_instances:
-        kernel = AgentKernel(session_id=session_id)
+    _sid = session_id or conversation_id
+
+    if conversation_id not in _agent_kernel_instances:
+        kernel = AgentKernel(
+            session_id=_sid,
+            conversation_id=conversation_id,
+        )
 
         # Auto-wire Pillar 4 (Memory) — connects episodic/semantic memory to every session
         try:
@@ -4964,11 +5050,11 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
             if memory is not None:
                 kernel.set_memory_interface(memory)
                 logger.info(
-                    f"[AgentKernel] Memory interface wired for session {session_id}"
+                    f"[AgentKernel] Memory interface wired for conv={conversation_id}"
                 )
         except Exception as e:
             logger.warning(
-                f"[AgentKernel] Memory interface not available for session {session_id}: {e}"
+                f"[AgentKernel] Memory interface not available for conv={conversation_id}: {e}"
             )
 
         # Inherit model configuration from any already-configured kernel.
@@ -4982,7 +5068,7 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
         # We look for the first peer kernel whose provider is not the default
         # "uninitialized" sentinel and copy its full model configuration.
         if kernel._model_provider == "uninitialized":
-            for peer_id, peer_kernel in _agent_kernel_instances.items():
+            for peer_key, peer_kernel in _agent_kernel_instances.items():
                 if peer_kernel._model_provider not in (None, "uninitialized"):
                     kernel.set_model_selection(
                         reasoning_model=peer_kernel._selected_reasoning_model,
@@ -5002,8 +5088,8 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
                     kernel._reasoning_effort = peer_kernel._reasoning_effort
                     kernel._tool_mode = peer_kernel._tool_mode
                     logger.info(
-                        f"[AgentKernel] Session '{session_id}' inherited model config "
-                        f"from '{peer_id}' "
+                        f"[AgentKernel] Conv '{conversation_id}' inherited model config "
+                        f"from '{peer_key}' "
                         f"(provider={peer_kernel._model_provider!r}, "
                         f"model={peer_kernel._selected_reasoning_model!r})"
                     )
@@ -5027,30 +5113,40 @@ def get_agent_kernel(session_id: str = "default") -> AgentKernel:
                 )
                 kernel._swarm_enabled = True
                 logger.info(
-                    f"[AgentKernel] Session '{session_id}' auto-hydrated from "
+                    f"[AgentKernel] Conv '{conversation_id}' auto-hydrated from "
                     f"swarm snapshot (provider='iris_local', "
                     f"endpoint={_swarm_config_snapshot.get('endpoint')!r})"
                 )
 
-        _agent_kernel_instances[session_id] = kernel
+        _agent_kernel_instances[conversation_id] = kernel
 
-    return _agent_kernel_instances[session_id]
+    return _agent_kernel_instances[conversation_id]
 
 
-def cleanup_agent_kernel(session_id: str) -> None:
+def cleanup_agent_kernel(
+    conversation_id: str,
+    session_id: Optional[str] = None,
+) -> None:
     """
-    Remove the AgentKernel instance for a session and release its resources.
+    Remove the AgentKernel instance for a conversation and release its resources.
 
-    Call this when a session expires (e.g., from session_manager.archive_inactive_sessions
-    or IRISession.cleanup) to prevent unbounded growth of _agent_kernel_instances.
+    Call this when a conversation expires or is deleted.
+    Keyed by conversation_id (re-keyed from session_id).
 
     Args:
-        session_id: Session identifier whose kernel should be cleaned up
+        conversation_id: Conversation whose kernel should be cleaned up
+        session_id: Optional session label for logging
     """
     global _agent_kernel_instances
-    kernel = _agent_kernel_instances.pop(session_id, None)
+    kernel = _agent_kernel_instances.pop(conversation_id, None)
+    _log_id = session_id or conversation_id
     if kernel is not None:
         try:
+            # Save any pending context to the store
+            try:
+                kernel.save_context_to_store()
+            except Exception:
+                pass
             # Shut down VPS Gateway if it was active
             if kernel._vps_gateway is not None:
                 import asyncio
@@ -5067,6 +5163,6 @@ def cleanup_agent_kernel(session_id: str) -> None:
                     pass
         except Exception as e:
             logger.warning(
-                f"[AgentKernel] Error during cleanup for session {session_id}: {e}"
+                f"[AgentKernel] Error during cleanup for conv {_log_id}: {e}"
             )
-        logger.info(f"[AgentKernel] Kernel cleaned up for session {session_id}")
+        logger.info(f"[AgentKernel] Kernel cleaned up for conv {_log_id}")

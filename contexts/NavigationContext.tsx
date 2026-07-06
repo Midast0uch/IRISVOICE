@@ -511,6 +511,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     clearChat: wsClearChat,
     getAgentStatus,
     getAgentTools,
+    currentConversationId,
+    setCurrentConversationId,
     getWakeWords,
     getAudioDevices,
   } = useIRISWebSocket()
@@ -829,6 +831,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     setView,
 
     // WebSocket state and functions
+    currentConversationId,
+    setCurrentConversationId,
     currentCategory,
     currentSection,
     voiceState,
@@ -894,6 +898,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     setView,
 
     // WebSocket state and functions
+    currentConversationId,
+    setCurrentConversationId,
     currentCategory,
     currentSection,
     voiceState,

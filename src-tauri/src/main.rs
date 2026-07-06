@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+pub mod ws_client;
 
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Listener, Manager, PhysicalSize, RunEvent};
@@ -13,14 +14,20 @@ fn main() {
     let sidecar_child_exit = sidecar_child.clone();
 
     let app = tauri::Builder::default()
+        .manage(Arc::new(tokio::sync::Mutex::new(ws_client::WsClient::new())))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
         // v2: register Caducean commands (thin HTTP proxies to Python FastAPI)
+        // v3 (Phase 1): register WS client commands (Rust-side WebSocket)
         .invoke_handler(tauri::generate_handler![
             commands::caducean::caducean_get_state,
             commands::caducean::caducean_get_direction_signal,
             commands::caducean::caducean_set_params,
             commands::caducean::caducean_health,
+            commands::ws::start_ws_client,
+            commands::ws::ws_send,
+            commands::ws::ws_disconnect,
+            commands::ws::get_ws_connection_state,
         ])
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();

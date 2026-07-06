@@ -63,6 +63,7 @@ export function XurOrb({
   // ── Context ──────────────────────────────────────────────────────
   const {
     voiceState,
+    connectionState,
     startVoiceCommand,
     endVoiceCommand,
     cancelVoiceCommand,
@@ -100,6 +101,7 @@ export function XurOrb({
   const isVoiceActive = voiceState !== "idle"
   const isListening = voiceState === "listening"
   const isSpeaking = voiceState === "speaking"
+  const isReconnecting = connectionState === "disconnected" || connectionState === "connecting"
   // Independent playback breathing — set by tts_started/tts_word(is_final)
   // CustomEvents from the play-button TTS path.  Never touches voiceState,
   // so it can't accidentally trigger listening_state or conversation reset.
@@ -461,11 +463,11 @@ export function XurOrb({
           >
             <OrbCanvas
               glowColor={glowColor}
-              breathMode={cadence.breathMode}
-              breathLevel={cadence.breathLevel}
-              isBreathing={cadence.isBreathing}
-              animationMode={animationMode}
-              animActive={animActive}
+              breathMode={isReconnecting ? 'pulse' : cadence.breathMode}
+              breathLevel={isReconnecting ? 2.0 : cadence.breathLevel}
+              isBreathing={isReconnecting ? true : cadence.isBreathing}
+              animationMode={isReconnecting ? 'waiting' : animationMode}
+              animActive={isReconnecting ? true : animActive}
             />
           </div>
 

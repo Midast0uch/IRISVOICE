@@ -224,7 +224,7 @@ export function ChatWing({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const chatPanelRef = useRef<HTMLDivElement>(null)
   const chatOuterRef = useRef<HTMLDivElement>(null)
-  const { voiceState, isChatTyping, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
+  const { voiceState, isChatTyping, setCurrentConversationId, clearChat, activeTheme, fieldErrors, audioLevel } = useNavigation();
   
   // Notification system state
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -804,14 +804,23 @@ export function ChatWing({
         console.error("[REST primary] /api/chat failed, falling back to WS:", err)
         setLocalTyping(false)
         // Fallback: try WebSocket
-        sendMessage?.("text_message", { text: userMessage.text })
+        sendMessage?.("text_message", { text: userMessage.text, conversation_id: activeConversationId })
       })
   }
 
   // Conversation management functions
   const handleSelectConversation = (conversationId: string) => {
+    const oldId = activeConversationId;
     setActiveConversationId(conversationId);
+    setCurrentConversationId(conversationId);
     setShowHistory(false);
+    // Notify backend of conversation switch for context persistence
+    if (sendMessage && oldId && oldId !== conversationId) {
+      sendMessage('switch_conversation', {
+        conversation_id: conversationId,
+        old_conversation_id: oldId,
+      });
+    }
   };
 
   const handleDeleteConversation = (e: React.MouseEvent, conversationId: string) => {
@@ -852,6 +861,7 @@ export function ChatWing({
     
     setConversations(prev => [newConv, ...prev]);
     setActiveConversationId(newConv.id);
+    setCurrentConversationId(newConv.id);
     setInputText('');
     
     // Close any open dropdowns

@@ -11,6 +11,7 @@ from .voice.wake_word_discovery import WakeWordDiscovery
 from .audio.pipeline import AudioPipeline
 from .agent.tts import get_tts_manager
 from .agent import get_agent_kernel
+from .agent.conversation_context_store import get_context_store
 from .agent.swarm_inference_manager import SwarmInferenceManager
 from .core_models import Category, get_sections_for_category
 from .state_manager import StateManager, get_state_manager
@@ -162,6 +163,7 @@ class IRISGateway:
         self._voice_handler = None  # set via set_voice_handler() after construction
         # session_id -> client_id for wake word routing
         self._active_voice_client: dict = {}
+        self._active_conversation_id: dict = {}
         # Track which session is currently playing TTS â€” used by the barge-in
         # handler to know which conversation to resume on interruption.
         self._active_tts_session: Optional[str] = None
@@ -1782,10 +1784,12 @@ class IRISGateway:
             msg_type = "voice_command_start"
 
         # DIAGNOSTIC: log every voice message with payload summary
-        payload_keys = list(message.get("payload", {}).keys()) if isinstance(message.get("payload"), dict) else []
+        payload = message.get("payload", {}) or {}
+        payload_keys = list(payload.keys()) if isinstance(payload, dict) else []
+        conversation_id = payload.get("conversation_id") if isinstance(payload, dict) else None
         self._logger.info(
             f"[VoiceMSG] type={msg_type} session={session_id} client={client_id} "
-            f"auto_stop={auto_stop} payload_keys={payload_keys}"
+            f"conv={conversation_id} auto_stop={auto_stop} payload_keys={payload_keys}"
         )
 
         try:
@@ -1826,6 +1830,8 @@ class IRISGateway:
                 # Delegate recording to the shared VoiceCommandHandler
                 if self._voice_handler:
                     self._voice_handler.set_active_session(session_id)
+                    if conversation_id:
+                        self._active_conversation_id[session_id] = conversation_id
                     kw = {"auto_stop": auto_stop}
                     if pre_speech_timeout_sec is not None:
                         kw["pre_speech_timeout_sec"] = pre_speech_timeout_sec
@@ -1970,6 +1976,7 @@ class IRISGateway:
             transcript = result.get("transcript", "").strip()
             audio_context = result.get("audio_context", "").strip()
             session_id = result.get("session_id", "default")
+            conversation_id = result.get("conversation_id") or self._active_conversation_id.get(session_id)
             client_id = self._active_voice_client.get(session_id)
 
             # ── Log STT latency (Parakeet / Whisper) ──────────────────────
@@ -2017,7 +2024,8 @@ class IRISGateway:
 
             asyncio.run_coroutine_threadsafe(
                 self._process_voice_transcription(
-                    session_id, client_id, transcript, audio_context
+                    session_id, client_id, transcript, audio_context,
+                    conversation_id=conversation_id,
                 ),
                 loop,
             )
@@ -2054,7 +2062,8 @@ class IRISGateway:
         return msg
 
     async def _process_voice_transcription(
-        self, session_id: str, client_id: str, transcript: str, audio_context: str
+        self, session_id: str, client_id: str, transcript: str, audio_context: str,
+        conversation_id: str | None = None,
     ) -> None:
         """
         Full 4-pillar pipeline after STT transcription.
@@ -2112,7 +2121,9 @@ class IRISGateway:
 
             from .agent.agent_kernel import get_agent_kernel
 
-            agent_kernel = get_agent_kernel(session_id)
+            agent_kernel = get_agent_kernel(
+                conversation_id or session_id, session_id
+            )
 
             if agent_kernel._tool_bridge is None:
                 from .agent.tool_bridge import get_agent_tool_bridge
@@ -2282,6 +2293,7 @@ class IRISGateway:
                     resp = agent_kernel.process_text_message(
                         enriched,
                         session_id=session_id,
+                        conversation_id=conversation_id,
                         chunk_callback=chunk_callback,
                         reasoning_callback=reasoning_callback,
                         from_voice=True,
@@ -3820,23 +3832,67 @@ class IRISGateway:
         msg_type = message.get("type")
         payload = message.get("payload", {})
 
+        if msg_type == "switch_conversation":
+            new_conv_id = payload.get("conversation_id")
+            old_conv_id = payload.get("old_conversation_id") or session_id
+            self._logger.info(
+                f"[Chat] Switching conversation from {old_conv_id} to {new_conv_id}"
+            )
+            # Save old context to store (best-effort)
+            try:
+                old_kernel = get_agent_kernel(old_conv_id, session_id)
+                old_kernel.save_context_to_store()
+            except Exception as exc:
+                self._logger.warning(
+                    f"[Chat] Failed to save context for {old_conv_id}: {exc}"
+                )
+            # Acknowledge switch to frontend
+            try:
+                self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "conversation_switched",
+                        "payload": {
+                            "conversation_id": new_conv_id,
+                            "status": "context_saved"
+                        },
+                    },
+                )
+            except Exception:
+                pass
+            return
+
+        if msg_type == "settings_sync":
+            settings_data = payload.get("settings", {})
+            self._logger.info(
+                f"[Chat] Settings sync for session {session_id}: "
+                f"{len(settings_data)} keys"
+            )
+            # Re-apply settings to the agent kernel
+            for key, value in settings_data.items():
+                # Settings are re-applied on the next process_text_message call
+                pass
+            return
+
         if msg_type == "new_conversation":
             # Reset the agent kernel's conversation context so the next
             # voice command or text message starts fresh.  The frontend sends
             # this when the user creates a "New Conversation" in the chat UI.
+            conversation_id = payload.get("conversation_id") or session_id
             try:
-                agent_kernel = get_agent_kernel(session_id)
-                agent_kernel.clear_conversation()
+                agent_kernel = get_agent_kernel(conversation_id, session_id)
+                agent_kernel.clear_conversation(conversation_id)
                 self._logger.info(
-                    f"[Chat] Cleared conversation context for session {session_id}"
+                    f"[Chat] Cleared conversation context for conv {conversation_id}"
                 )
             except Exception as exc:
                 self._logger.warning(
-                    f"[Chat] Failed to clear conversation for {session_id}: {exc}"
+                    f"[Chat] Failed to clear conversation for {conversation_id}: {exc}"
                 )
             return
 
         if msg_type == "text_message":
+            conversation_id = payload.get("conversation_id") or session_id
             text = payload.get("text")
             turn_id = get_turn_id()
 
@@ -3958,6 +4014,7 @@ class IRISGateway:
                         response = agent_kernel.process_text_message(
                             text,
                             session_id=session_id,
+                            conversation_id=conversation_id,
                             chunk_callback=_chunk_cb,
                             reasoning_callback=_reasoning_cb,
                             turn_id=turn_id,

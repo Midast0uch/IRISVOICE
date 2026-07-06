@@ -132,6 +132,8 @@ export function useIRISWebSocket(
   const resolvedUrl = url ?? (typeof window !== 'undefined'
     ? (process.env.NEXT_PUBLIC_WS_URL || `ws://${window.location.hostname}:${process.env.NEXT_PUBLIC_BACKEND_PORT || 8090}/ws/iris`)
     : (process.env.NEXT_PUBLIC_WS_URL || `ws://127.0.0.1:${process.env.NEXT_PUBLIC_BACKEND_PORT || 8090}/ws/iris`))
+  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
   // Connection state
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected")
   const [lastError, setLastError] = useState<string | null>(null)
@@ -155,6 +157,7 @@ export function useIRISWebSocket(
   // True while a text_message is being processed — drives ChatView typing indicator
   // independently of voiceState so the IrisOrb never animates for typed messages.
   const [isChatTyping, setIsChatTyping] = useState<boolean>(false)
+  const [currentConversationId, setCurrentConversationId] = useState<string | undefined>(undefined)
   
   // Agent state
   const [agentStatus, setAgentStatus] = useState<Record<string, unknown> | null>(null)
@@ -235,6 +238,12 @@ export function useIRISWebSocket(
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
     }
+    // ── Tauri path: disconnect Rust-side WS client ───────────────────
+    if (isTauri) {
+      import('@tauri-apps/api/core').then(({ invoke }) => {
+        invoke('ws_disconnect');
+      }).catch(() => {});
+    }
     // Close after 2 s delay — cancel if the component remounts before then
     // (the new mount's effect calls _cancelDeferredClose).
     if (wsRef.current) {
@@ -278,6 +287,19 @@ export function useIRISWebSocket(
   const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return // Already connected
+    }
+
+    // ── Tauri path: delegate to Rust-side WS client ──────────────────
+    if (isTauri) {
+      setConnectionState("connecting");
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('start_ws_client', { url: resolvedUrl });
+      } catch (e) {
+        console.error("[IRIS WebSocket] Tauri start_ws_client failed:", e);
+        setConnectionState("disconnected");
+      }
+      return;
     }
 
     setConnectionState("connecting")
@@ -1113,6 +1135,18 @@ export function useIRISWebSocket(
         break
       }
 
+      // ── Conversation switch ───────────────────────────────────────────────
+      // Acknowledgment from backend after switch_conversation message.
+      case "conversation_switched": {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug(
+            "[IRIS WebSocket] Conversation switched to",
+            (payload as Record<string, unknown>)?.conversation_id
+          )
+        }
+        break
+      }
+
       case 'cli_output': {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:cli_output', { detail: payload }))
@@ -1184,8 +1218,27 @@ export function useIRISWebSocket(
 
   // Send message helper — Fix 3 (queue) + Fix 4 (sequence numbers)
   const sendMessage = useCallback((type: string, payload: Record<string, unknown> = {}) => {
+    const seq = seqRef.current++;
+    const message = JSON.stringify({ type, payload, seq });
+
+    // ── Tauri path: send via Rust-side WS client ────────────────────────
+    if (isTauri) {
+      import('@tauri-apps/api/core').then(({ invoke }) => {
+        invoke('ws_send', { message }).then((sent) => {
+          if (!sent) {
+            // Queue if disconnected (Rust side will send on reconnect)
+            messageQueueRef.current.push({ type, payload });
+          }
+        });
+      }).catch(() => {
+        messageQueueRef.current.push({ type, payload });
+      });
+      return true;
+    }
+
+    // ── Browser path: send via raw WebSocket ─────────────────────────────
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type, payload, seq: seqRef.current++ }))
+      wsRef.current.send(message)
       return true
     }
 
@@ -1290,7 +1343,7 @@ export function useIRISWebSocket(
   }, [sendMessage])
 
   // Voice command methods
-  const startVoiceCommand = useCallback(() => {
+  const startVoiceCommand = useCallback((conversationId?: string) => {
     // Optimistic update: show listening animation immediately without waiting for backend
     setVoiceState("listening")
     if (typeof window !== 'undefined') {
@@ -1298,8 +1351,13 @@ export function useIRISWebSocket(
         detail: { state: "listening" }
       }))
     }
-    sendMessage("voice_command_start", {})
-  }, [sendMessage])
+    const payload: Record<string, unknown> = {}
+    const cid = conversationId || currentConversationId
+    if (cid) {
+      payload.conversation_id = cid
+    }
+    sendMessage("voice_command_start", payload)
+  }, [sendMessage, currentConversationId])
 
   const endVoiceCommand = useCallback(() => {
     // Optimistic update: show processing immediately (backend will transcribe + respond)
@@ -1382,6 +1440,66 @@ export function useIRISWebSocket(
   // busy (TTS synthesis, model loading, subprocess calls) and the pong reply arrived
   // a few seconds late.  Removing it eliminates that class of disconnect entirely.
 
+  // ── Tauri event listeners ────────────────────────────────────────────
+  // When running inside Tauri, the WebSocket connection lives in the Rust
+  // process.  We listen for events from the Rust-side WS client.
+  useEffect(() => {
+    if (!isTauri) return;
+
+    let unlistConnected: (() => void) | null = null;
+    let unlistDisconnected: (() => void) | null = null;
+    let unlistMessage: (() => void) | null = null;
+
+    (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+
+      unlistConnected = await listen<string>('ws:connected', () => {
+        setConnectionState('connected');
+        reconnectAttemptsRef.current = 0;
+        connectedAtRef.current = Date.now();
+        setIsChatTyping(false);
+        seqRef.current = 0;
+
+        // Send burst messages on connect (same as browser path)
+        sendMessage('request_state', {});
+        sendMessage('get_audio_devices', {});
+        sendMessage('get_wake_words', {});
+        sendMessage('get_available_models', {});
+
+        // Flush the send queue accumulated while disconnected
+        const queued = messageQueueRef.current.splice(0);
+        for (const msg of queued) {
+          sendMessage(msg.type, msg.payload);
+        }
+        if (process.env.NODE_ENV !== 'production' && queued.length > 0) {
+          console.log(`[IRIS WebSocket] Flushed ${queued.length} queued message(s)`);
+        }
+      });
+
+      unlistDisconnected = await listen<string>('ws:disconnected', () => {
+        setConnectionState('disconnected');
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[IRIS WebSocket] Rust-side WS disconnected');
+        }
+      });
+
+      unlistMessage = await listen<string>('ws:message', (event) => {
+        try {
+          const message = JSON.parse(event.payload);
+          handleMessage(message);
+        } catch (err) {
+          console.error('[IRIS WebSocket] Failed to parse Tauri WS message:', err);
+        }
+      });
+    })();
+
+    return () => {
+      unlistConnected?.();
+      unlistDisconnected?.();
+      unlistMessage?.();
+    };
+  }, [isTauri, sendMessage]);
+
   return {
     isConnected,
     connectionState,
@@ -1424,6 +1542,8 @@ export function useIRISWebSocket(
     lastError,
     fieldErrors,
     clearFieldError,
+    currentConversationId,
+    setCurrentConversationId,
     isChatTyping,
     // Vision state and actions
     visionStatus,
