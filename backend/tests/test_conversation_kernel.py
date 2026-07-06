@@ -141,6 +141,8 @@ def test_no_duplicate_vad():
         "register_callbacks",
         "get_tts_chunk_size",
         "should_halt_on_violation",
+        "subscribe_to_event_bus",
+        "filter_speech",
     }
     actual = {
         m
