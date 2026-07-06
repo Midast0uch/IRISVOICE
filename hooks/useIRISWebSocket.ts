@@ -1147,6 +1147,20 @@ export function useIRISWebSocket(
         break
       }
 
+      // ── Permission events ──────────────────────────────────────────────────
+      // Forwarded from ToolPermissionSystem to frontend PermissionCard.
+      case "permission:request":
+      case "permission:granted":
+      case "permission:denied": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent(
+            `iris:${(message as Record<string, unknown>).type}`,
+            { detail: payload }
+          ))
+        }
+        break
+      }
+
       case 'cli_output': {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:cli_output', { detail: payload }))

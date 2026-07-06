@@ -18,6 +18,7 @@ import { ConversationChips } from "@/components/chat/ConversationChips";
 // Lazy-load entire workspace — only bundles in developer mode
 const DeveloperWorkspace = lazy(() => import("@/components/workspace/DeveloperWorkspace"))
 import { SuggestionPills } from "@/components/chat/SuggestionPills";
+import { PermissionCard } from "@/components/chat/PermissionCard";
 import type { ConversationChip, Suggestion } from "@/types/iris";
 
 // Notification types for the universal notification system
@@ -230,6 +231,18 @@ export function ChatWing({
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+
+  // Permission request state — each request_id mapped to its card state
+  interface PendingPermission {
+    requestId: string
+    toolName: string
+    tier: "read_only" | "side_effect" | "destructive"
+    params?: Record<string, unknown>
+    description?: string
+    timeoutSeconds: number
+    requiresConfirmation: boolean
+  }
+  const [pendingPermissions, setPendingPermissions] = useState<Map<string, PendingPermission>>(new Map())
 
   // Window width for responsive both-open layout
   const [windowWidth, setWindowWidth] = useState(1280);
@@ -503,6 +516,53 @@ export function ChatWing({
     }
     window.addEventListener('iris:voice_final', handleVoiceFinal)
     return () => window.removeEventListener('iris:voice_final', handleVoiceFinal)
+  }, [])
+
+  // Handle incoming permission requests from ToolPermissionSystem
+  useEffect(() => {
+    function handlePermissionRequest(e: Event) {
+      const detail = (e as CustomEvent<{
+        request_id: string; tool_name: string; tier: string;
+        params?: Record<string, unknown>; description?: string;
+        timeout_seconds?: number; requires_confirmation?: boolean
+      }>).detail
+      if (!detail?.request_id || !detail?.tool_name) return
+
+      const perm: PendingPermission = {
+        requestId: detail.request_id,
+        toolName: detail.tool_name,
+        tier: detail.tier as PendingPermission["tier"],
+        params: detail.params,
+        description: detail.description || `Execute ${detail.tool_name}`,
+        timeoutSeconds: detail.timeout_seconds || 30,
+        requiresConfirmation: detail.requires_confirmation || false,
+      }
+
+      setPendingPermissions(prev => {
+        const next = new Map(prev)
+        next.set(perm.requestId, perm)
+        return next
+      })
+    }
+
+    function handlePermissionResolved(e: Event) {
+      const detail = (e as CustomEvent<{ request_id: string }>).detail
+      if (!detail?.request_id) return
+      setPendingPermissions(prev => {
+        const next = new Map(prev)
+        next.delete(detail.request_id)
+        return next
+      })
+    }
+
+    window.addEventListener('iris:permission_request', handlePermissionRequest)
+    window.addEventListener('iris:permission_granted', handlePermissionResolved)
+    window.addEventListener('iris:permission_denied', handlePermissionResolved)
+    return () => {
+      window.removeEventListener('iris:permission_request', handlePermissionRequest)
+      window.removeEventListener('iris:permission_granted', handlePermissionResolved)
+      window.removeEventListener('iris:permission_denied', handlePermissionResolved)
+    }
   }, [])
 
   // Handle voice command errors
@@ -2288,6 +2348,40 @@ ${message.text}`;
                   )}
 
                   <div ref={messagesEndRef} />
+
+                  {/* Permission Cards — inline tool approval UI */}
+                  <AnimatePresence>
+                    {Array.from(pendingPermissions.values()).map((perm) => (
+                      <PermissionCard
+                        key={perm.requestId}
+                        requestId={perm.requestId}
+                        toolName={perm.toolName}
+                        tier={perm.tier}
+                        params={perm.params}
+                        description={perm.description}
+                        timeoutSeconds={perm.timeoutSeconds}
+                        requiresConfirmation={perm.requiresConfirmation}
+                        onApprove={(id) => {
+                          sendMessage?.('notification_response', {
+                            notification_id: id,
+                            action: 'grant',
+                          })
+                        }}
+                        onDeny={(id) => {
+                          sendMessage?.('notification_response', {
+                            notification_id: id,
+                            action: 'deny',
+                          })
+                        }}
+                        onConfirm={(id) => {
+                          sendMessage?.('notification_response', {
+                            notification_id: id,
+                            action: 'confirm',
+                          })
+                        }}
+                      />
+                    ))}
+                  </AnimatePresence>
                 </div>
               )}
             </div>

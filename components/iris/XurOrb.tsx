@@ -466,7 +466,7 @@ export function XurOrb({
               breathMode={isReconnecting ? 'pulse' : cadence.breathMode}
               breathLevel={isReconnecting ? 2.0 : cadence.breathLevel}
               isBreathing={isReconnecting ? true : cadence.isBreathing}
-              animationMode={isReconnecting ? 'waiting' : animationMode}
+              animationMode={isReconnecting ? 'D' : animationMode}
               animActive={isReconnecting ? true : animActive}
             />
           </div>
