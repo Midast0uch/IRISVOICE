@@ -262,6 +262,88 @@ class ConversationKernel:
         with self._lock:
             self._was_speaking = is_speaking
 
+    # ── EventBus integration ─────────────────────────────────────────
+
+    def filter_speech(self, phase: str) -> bool:
+        """Determine if speech should be emitted based on Caducean phase.
+
+        Only emit speech during EXPAND phase.  During COMPRESS phase,
+        the agent is working on tools — speaking would be distracting.
+        """
+        return phase in ("EXPAND", "IDLE")
+
+    def subscribe_to_event_bus(self) -> None:
+        """Subscribe to EventBus for utterance events.
+
+        This kernel receives utterance events and forwards them
+        to the TTS pipeline.  Speech is gated by Caducean phase:
+        only EXPAND phase utterances are spoken aloud.
+        """
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            bus = get_event_bus()
+            bus.subscribe(IRISStreamEvent.UTTERANCE_START, self._on_utterance_start)
+            bus.subscribe(IRISStreamEvent.UTTERANCE_CHUNK, self._on_utterance_chunk)
+            bus.subscribe(IRISStreamEvent.UTTERANCE_DONE, self._on_utterance_done)
+            logger.info("[ConversationKernel] Subscribed to EventBus utterance events")
+        except Exception as exc:
+            logger.warning(
+                "[ConversationKernel] EventBus subscription failed: %s", exc
+            )
+
+    def _on_utterance_start(self, payload) -> None:
+        """Handle an utterance:start event.
+
+        Only forwards to TTS during EXPAND phase (when the kernel
+        is in its speaking phase, not working phase).
+        """
+        phase = getattr(self, "_current_caducean_phase", "EXPAND")
+        if not self.filter_speech(phase):
+            logger.debug(
+                "[ConversationKernel] Suppressed utterance (phase=%s)", phase
+            )
+            return
+        # Forward to TTS pipeline
+        text = (payload.data or {}).get("text", "")
+        if text and hasattr(self, "_tts_manager"):
+            tts = getattr(self, "_tts_manager")
+            if tts:
+                try:
+                    tts.speak(text)
+                except Exception as exc:
+                    logger.warning(
+                        "[ConversationKernel] TTS failed for utterance: %s", exc
+                    )
+
+    def _on_utterance_chunk(self, payload) -> None:
+        """Handle an utterance:chunk event — incremental TTS streaming."""
+        phase = getattr(self, "_current_caducean_phase", "EXPAND")
+        if not self.filter_speech(phase):
+            return
+        text = (payload.data or {}).get("text", "")
+        if text and hasattr(self, "_tts_manager"):
+            tts = getattr(self, "_tts_manager")
+            if tts:
+                try:
+                    tts.speak(text)
+                except Exception as exc:
+                    logger.warning(
+                        "[ConversationKernel] TTS chunk failed: %s", exc
+                    )
+
+    def _on_utterance_done(self, payload) -> None:
+        """Handle an utterance:done event — flush TTS buffer."""
+        if hasattr(self, "_tts_manager"):
+            tts = getattr(self, "_tts_manager")
+            if tts:
+                try:
+                    tts.flush()
+                except Exception as exc:
+                    logger.warning(
+                        "[ConversationKernel] TTS flush failed: %s", exc
+                    )
+
     # ── Registration helpers (no new state machine) ────────────────
 
     def register_callbacks(self) -> None:
