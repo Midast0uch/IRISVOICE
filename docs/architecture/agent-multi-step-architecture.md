@@ -27,12 +27,12 @@ These decisions were validated through brainstorming with the user. They are the
 | 3 | Context keying strategy | `conversation_id` only. `session_id` is a transport label. Context persists to disk, reattaches on WS reconnect. |
 | 4 | Context window display | Compact pill in chat header: `12.4k / 128k` + thin progress bar. Color shifts green → amber → red. Phase indicator sits next to it. |
 | 5 | Background task visual updates | Orb state change (working pulse, color shift) + small badge with step counter / notification count. Badge matches orb aesthetic (canvas particle style, brand color). No OS toast notifications. |
-| 6 | DER + agentic loop relationship | DER absorbs agentic mode. New `agentic` task_class lets LLM emit `tool_calls` during Explorer phase. Reviewer stays. Mycelium ingestion per tool call. |
+| 6 | DER + agentic loop relationship | DER absorbs agentic mode. The **Director** dynamically decides and adjusts the execution mode during the loop — not a hardcoded upfront classification. LLM emits `tool_calls` during Explorer phase when mode allows. Reviewer stays. Mycelium ingestion per tool call. |
 | 7 | Caducean governance | Caducean phase (EXPAND/COMPRESS) is the single source of truth for which kernel is active. ConversationKernel speaks only during EXPAND. TaskKernel works only during COMPRESS. |
 | 8 | Tool approval model | Configurable tiered risk: read-only auto-execute; side-effect require approval; destructive require approval + confirmation. Personal vs developer mode distinction = app-source modification + OS system commands. Wired through existing permission UI. |
 | 9 | WS disconnect resilience | All user settings + agent state persist. Disconnect is a first-class state, not an exception. On reconnect: reattach to same `conversation_id`, restore context from backend store, re-sync settings. |
 | 10 | Task list UI | Agent-generated todo list, inline in chat stream as a structured card. Live updates as DER progresses. Collapsible. Matches orb aesthetic. |
-| 11 | Voice 1-step cap | Configurable per task. Default multi-step. `quick` task_class caps to 1 step for fast exchanges. Caducean COMPRESS keeps voice tasks silent during work. |
+| 11 | Voice 1-step cap | Configurable per task. The Director decides mode dynamically — can start in `quick` (1-step) and escalate to `agentic`/`full` if intermediate results demand it. Default allows multi-step. Caducean COMPRESS keeps voice tasks silent during work. |
 
 ---
 
@@ -50,8 +50,8 @@ Six layers, built bottom to top. Each layer depends only on the ones below it.
 │   personal/developer mode distinction                            │
 ├─────────────────────────────────────────────────────────────────┤
 │ Layer 4 — DER Agentic Mode                                       │
-│   agentic task_class · LLM emits tool_calls in Explorer phase    │
-│   Reviewer stays · Mycelium ingestion per call · voice cap config│
+│   Director decides mode dynamically · LLM emits tool_calls        │
+│   when agentic · Reviewer stays · Mycelium per call · voice config│
 ├─────────────────────────────────────────────────────────────────┤
 │ Layer 3 — Kernel Separation                                      │
 │   EventBus · ConversationKernel (speech) · TaskKernel (tools)    │
@@ -167,46 +167,64 @@ LLM output flows through a single path — `iris_gateway.py` `chunk_callback` se
 
 ### 6.1 Problem
 
-The DER loop pre-plans all steps via `_plan_task()` before execution. The LLM cannot dynamically decide which tools to call based on intermediate results. Voice-first mode caps to 1 step.
+The DER loop pre-plans all steps via `_plan_task()` before execution. The LLM cannot dynamically decide which tools to call based on intermediate results. Voice-first mode caps to 1 step. The mode is hardcoded upfront by `TaskClassifier` — there is no way to escalate or de-escalate mid-execution when intermediate results reveal the task is simpler or more complex than initially assessed.
 
 ### 6.2 Solution
 
-**DER absorbs agentic mode.** The DER loop stays the canonical executor. A new `agentic` task_class (or a flag on the ExecutionPlan) lets the LLM emit `tool_calls` during the Explorer phase instead of pre-deciding all steps.
+**DER absorbs agentic mode.** The DER loop stays the canonical executor. **The Director dynamically decides and adjusts the execution mode during the loop** — it is not a hardcoded upfront classification. The Director can start a task in `quick` mode (single LLM call, no tools) and escalate to `agentic` (dynamic tool_calls) or `full` (pre-planned multi-step) when intermediate results demand it. It can also de-escalate when a task turns out simpler than expected.
 
-**How it works:**
-1. `_plan_task()` returns a plan with `strategy = "agentic"` and a minimal step list (or a single "execute user intent" step)
-2. DER loop enters Explorer phase
-3. Explorer calls the LLM with tool definitions
-4. LLM returns `tool_calls` in its response
-5. System executes those tools, feeds results back to the LLM
-6. Loop continues until LLM produces a final text response (no tool_calls)
-7. Reviewer still runs on each tool call — can PASS/REFINE/VETO
-8. Mycelium `ingest_tool_call()` fires per tool execution (same as today)
-9. TrailingDirector gap-filling still runs
+**Three execution modes the Director can choose between:**
 
-**Voice cap configurability:**
+| Mode | When Director picks it | Behavior | Token budget | Iteration cap |
+|------|------------------------|----------|--------------|---------------|
+| `quick` | Task looks simple — single LLM call suffices | 1 step, no tools, direct response | 15k | 1 |
+| `agentic` | Task needs dynamic tool selection — LLM decides tools mid-response | LLM emits `tool_calls` in Explorer phase, loop until final text | 50k | 20 |
+| `full` | Task needs pre-planned multi-step execution — DER classic | `_plan_task()` returns step list, Director/Reviewer/Explorer cycle | 50k | 40 cycles |
+
+**How the Director decides mode:**
+
+1. **Initial assessment** (before first Explorer call): Director reads the task, the ContextPackage from Mycelium, and the task classification hint (from `TaskClassifier` — still runs for Mycelium space routing, but its `task_class` is a **hint**, not a lock). Director picks initial mode.
+2. **Mid-loop escalation**: After each Explorer result, Director re-evaluates. If the result reveals the task needs tools the current mode doesn't allow, Director escalates: `quick → agentic → full`. Escalation injects new steps into the `DirectorQueue`.
+3. **Mid-loop de-escalation**: If a `full` plan's remaining steps turn out to be trivial after an intermediate result, Director can collapse them into a single `quick` step.
+4. **Mode change is logged** to Mycelium via `ingest_statement()` — the graph learns which tasks needed escalation, improving future initial assessments.
+
+**Agentic mode flow (when Director selects `agentic`):**
+1. Director sets mode = `agentic` on the queue
+2. Explorer calls the LLM with tool definitions
+3. LLM returns `tool_calls` in its response
+4. System executes those tools, feeds results back to the LLM
+5. Loop continues until LLM produces a final text response (no `tool_calls`)
+6. Reviewer still runs on each tool call — can PASS/REFINE/VETO
+7. Mycelium `ingest_tool_call()` fires per tool execution (same as today)
+8. TrailingDirector gap-filling still runs
+9. Director re-evaluates mode after each iteration — can escalate to `full` if the LLM keeps needing more tools than the iteration cap allows
+
+**Voice cap — removed, Director decides:**
 - Remove the hard 1-step cap at line 3478
-- `task_class = "quick"` caps to 1 step (for fast exchanges)
-- Default voice tasks can be multi-step
-- Caducean COMPRESS phase keeps voice tasks silent during work
+- The Director decides whether a voice task is `quick` (1 step) or needs more
+- A user-configurable "voice preference" setting hints the Director: `quick_first` (try quick, escalate if needed) or `multi_step` (default to agentic)
+- Caducean COMPRESS phase keeps voice tasks silent during work regardless of mode
 
-**Token budget:**
-- `agentic` task_class: 50k token budget (matches "full")
-- `quick` task_class: 15k token budget (matches current voice-first)
-- Max iterations: 20 (configurable) — prevents infinite loops
+**Token budget — dynamic, set by mode:**
+- `quick`: 15k token budget
+- `agentic`: 50k token budget
+- `full`: 50k token budget (existing)
+- Max iterations: 20 for `agentic`, 40 cycles for `full` (configurable) — prevents infinite loops
+- Director can request a budget extension from Mycelium if a high-value task is approaching the cap (rare, logged)
 
 **Semantic planning trigger (Gap 4 in root cause):**
 - Replace keyword-based `_needs_planning()` with LLM-based intent classification
-- A small classifier call (or a fast LLM inference) determines if tools are needed
+- A small classifier call (or a fast LLM inference) provides a **hint** to the Director about whether tools are likely needed
+- The Director uses this hint as one input among many — not a lock
 - Falls back to keyword matching if classifier unavailable
 
 ### 6.3 Files Touched
 
 | File | Change |
 |------|--------|
-| `backend/agent/agent_kernel.py` | Add `agentic` task_class; implement tool-call loop in Explorer; remove 1-step cap; semantic `_needs_planning()` |
-| `backend/agent/der_loop.py` | `QueueItem` supports `agentic` flag; DirectorQueue handles dynamic step injection |
-| `backend/agent/der_constants.py` | Add `DER_TOKEN_BUDGETS["agentic"]`, `MAX_AGENTIC_ITERATIONS` |
+| `backend/agent/agent_kernel.py` | Director decides mode dynamically; implement tool-call loop in Explorer when mode=agentic; remove 1-step cap; semantic `_needs_planning()` provides hint not lock |
+| `backend/agent/der_loop.py` | `DirectorQueue` gains `current_mode` + `set_mode()` + `escalate()` + `de_escalate()`; `QueueItem` supports mode-aware execution; dynamic step injection on escalation |
+| `backend/agent/der_constants.py` | Add mode budgets (`QUICK=15k`, `AGENTIC=50k`, `FULL=50k`), `MAX_AGENTIC_ITERATIONS=20`, `MAX_FULL_CYCLES=40` |
 | `backend/agent/streaming.py` | Stream tool-call results through EventBus (not direct TTS) |
 
 ---
@@ -321,26 +339,35 @@ AgentKernel.process_text_message(text, conversation_id)
     ↓
 ConversationContextStore.get_or_restore(conversation_id)
     ↓
-TaskClassifier → task_class = "agentic" | "quick" | "full"
+TaskClassifier → task_class hint (for Mycelium space routing, NOT a mode lock)
     ↓
 Mycelium.get_task_context_package() → ContextPackage
     ↓
-_plan_task() → ExecutionPlan (strategy="agentic" for dynamic tool use)
+_plan_task() → ExecutionPlan (initial mode hint from classifier)
     ↓
 Caducean: phase → COMPRESS (TaskKernel active, ConversationKernel silent)
     ↓
-DER Loop (agentic mode):
+DER Loop (Director decides and adjusts mode dynamically):
+    ├─ Director: assess task + context + classifier hint → pick initial mode
+    │   mode = quick | agentic | full
     ├─ Director: next_ready()
     ├─ Reviewer: PASS/REFINE/VETO (reads Mycelium + PiNs)
-    ├─ Explorer: LLM emits tool_calls
-    │   ├─ Permission check (tiered risk)
+    ├─ Explorer: executes based on current mode
+    │   ├─ quick: single LLM call, no tools
+    │   ├─ agentic: LLM emits tool_calls dynamically
+    │   └─ full: pre-planned step execution
+    │   ├─ Permission check (tiered risk) if tools involved
     │   │   └─ If approval needed: emit permission_request → wait
-    │   ├─ Tool executes
+    │   ├─ Tool executes (if applicable)
     │   ├─ EventBus.emit(tool_call) → frontend: TaskListCard updates
     │   ├─ EventBus.emit(tool_result) → frontend: TaskListCard updates
     │   └─ Mycelium.ingest_tool_call()
+    ├─ Director: re-evaluate mode after result
+    │   ├─ Escalate: quick → agentic → full (if task needs more)
+    │   ├─ De-escalate: full → agentic → quick (if task simplifies)
+    │   └─ Log mode change to Mycelium via ingest_statement()
     ├─ TrailingDirector: gap analysis
-    └─ Loop until LLM produces final text (no tool_calls)
+    └─ Loop until complete or budget exhausted
     ↓
 Caducean: phase → EXPAND (ConversationKernel active)
     ↓
@@ -400,7 +427,7 @@ Mycelium: record_outcome → crystallize_landmark → clear_session → record_p
 
 | Existing System | How This Branch Extends It |
 |-----------------|---------------------------|
-| DER loop | Absorbs agentic mode — LLM emits tool_calls in Explorer phase |
+| DER loop | Director dynamically decides and adjusts execution mode (quick/agentic/full) during the loop — not hardcoded upfront. LLM emits tool_calls in Explorer when mode=agentic |
 | Mycelium memory | Unchanged — ingestion per tool call continues as today |
 | Caducean engine | Becomes governor of kernel phase (EXPAND/COMPASS) |
 | ConversationKernel | Extended — emits utterance events, filters task content |

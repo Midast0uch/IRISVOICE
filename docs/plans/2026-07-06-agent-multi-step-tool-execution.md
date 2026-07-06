@@ -207,48 +207,96 @@ pytest backend/tests/test_chunk_callback_fix.py -v
 
 ## Phase 3 — Layer 4: DER Agentic Mode (Gap 1)
 
-**Goal:** LLM dynamically calls tools mid-response. Reviewer stays. Voice cap configurable.
+**Goal:** Director dynamically decides and adjusts execution mode. LLM can emit tool_calls when mode=agentic. Voice cap removed, Director decides.
 
-### Step 3.1 — Agentic task_class
+### Step 3.1 — Mode constants + Director mode logic
 
 **File:** `backend/agent/der_constants.py`
 
-- Add `DER_TOKEN_BUDGETS["agentic"] = 50000`
+- Add `ExecutionMode` enum: `QUICK`, `AGENTIC`, `FULL`
+- Add mode budgets: `MODE_TOKEN_BUDGETS = {QUICK: 15000, AGENTIC: 50000, FULL: 50000}`
 - Add `MAX_AGENTIC_ITERATIONS = 20`
-- Add `AGENTIC_TASK_CLASSES = {"agentic", "full"}` (multi-step allowed)
+- Add `MAX_FULL_CYCLES = 40` (existing cycle cap, now named explicitly)
+- Add `VOICE_PREFERENCE_DEFAULT = "quick_first"` (try quick, escalate if needed)
 
-### Step 3.2 — DER loop agentic mode
+### Step 3.2 — DirectorQueue mode management
+
+**File:** `backend/agent/der_loop.py`
+
+- `DirectorQueue` gains:
+  - `current_mode: ExecutionMode` — the active mode
+  - `set_mode(mode: ExecutionMode)` — change mode mid-loop
+  - `escalate()` — quick → agentic → full
+  - `de_escalate()` — full → agentic → quick
+  - `mode_history: List[Tuple[ExecutionMode, cycle, reason]]` — for Mycelium logging
+- `QueueItem` gains `mode: ExecutionMode` (the mode it was created under)
+- Dynamic step injection on escalation: when escalating to `full`, Director can call `_plan_task()` for remaining work and inject steps
+- When escalating to `agentic`, Director injects a single "dynamic tool execution" step
+- When de-escalating, Director collapses remaining steps into a single `quick` step
+
+### Step 3.3 — Director mode decision logic
 
 **File:** `backend/agent/agent_kernel.py`
 
-- `_plan_task()`: when task needs dynamic tool selection, return plan with `strategy = "agentic"`
-- `_execute_plan_der()`: when `strategy == "agentic"`:
-  - Explorer phase calls LLM with tool definitions
+- **Initial assessment** (before first Explorer call): Director reads task + ContextPackage + classifier hint → picks initial mode
+  - Hint from `TaskClassifier` is one input, not a lock
+  - Mycelium `tier2_predictions` (predicted tools) inform the decision
+  - If no tools predicted → `quick`
+  - If tools predicted but task looks simple → `agentic`
+  - If task looks complex / multi-step → `full`
+- **Mid-loop re-evaluation** (after each Explorer result): Director re-assesses
+  - If `quick` result reveals tools needed → escalate to `agentic`
+  - If `agentic` iteration count approaching cap and task not done → escalate to `full`
+  - If `full` plan's remaining steps are trivial after intermediate result → de-escalate to `quick`
+- **Mode change logging**: `memory_interface.mycelium_ingest_statement()` logs the mode change + reason
+  - Over many sessions, Mycelium learns which tasks need escalation → improves initial assessment
+
+### Step 3.4 — Agentic Explorer implementation
+
+**File:** `backend/agent/agent_kernel.py`
+
+- When `queue.current_mode == AGENTIC`:
+  - Explorer calls LLM with tool definitions
   - LLM returns `tool_calls` in response
   - System executes tools, feeds results back
   - Loop continues until LLM produces final text (no `tool_calls`)
   - Reviewer still runs on each tool call (PASS/REFINE/VETO)
   - Mycelium `ingest_tool_call()` fires per execution
   - TrailingDirector gap-filling still runs
-- Remove voice 1-step cap (line 3478): replace with `task_class == "quick"` check
-- `task_class == "quick"` → cap to 1 step (configurable)
+- When `queue.current_mode == QUICK`:
+  - Single LLM call, no tools, direct response
+  - If result reveals tools needed, Director escalates
+- When `queue.current_mode == FULL`:
+  - Existing DER behavior — pre-planned steps, Director/Reviewer/Explorer cycle
 
-### Step 3.3 — Semantic planning trigger
+### Step 3.5 — Remove voice 1-step cap
+
+**File:** `backend/agent/agent_kernel.py`
+
+- Remove the hard 1-step cap at line 3478
+- Replace with Director-decided mode
+- User-configurable "voice preference" setting hints the Director:
+  - `quick_first` (default): try quick, escalate if needed
+  - `multi_step`: default to agentic
+- Caducean COMPRESS phase keeps voice tasks silent during work regardless of mode
+
+### Step 3.6 — Semantic planning trigger (hint, not lock)
 
 **File:** `backend/agent/agent_kernel.py`
 
 - Replace keyword-based `_needs_planning()` (line 1372-1430) with LLM-based intent classification
-- Fast LLM inference (small model, max 100 tokens) determines: does this need tools?
+- Fast LLM inference (small model, max 100 tokens) provides a **hint** to the Director about whether tools are likely needed
+- The Director uses this hint as one input among many — not a lock
 - Falls back to keyword matching if classifier unavailable
-- Result determines `task_class`: `quick` (no tools) / `agentic` (dynamic tools) / `full` (pre-planned multi-step)
 
-### Step 3.4 — Streaming integration
+### Step 3.7 — Streaming integration
 
 **File:** `backend/agent/streaming.py`
 
 - Stream tool-call results through EventBus (not direct TTS)
 - Stream final text response through ConversationKernel → TTS
 - Stream planning steps through TaskKernel → frontend
+- Stream mode changes through TaskKernel → frontend (TaskListCard shows mode transitions)
 
 ### Verification (Phase 3)
 
@@ -258,14 +306,15 @@ pytest backend/tests/test_der_caducean_gaps.py -v
 pytest backend/tests/test_agent_loop_upgrade.py -v
 
 # Manual smoke test:
-# 1. Ask agent to "search for X and summarize" — verify dynamic tool calls
-# 2. Verify Reviewer runs (check logs for PASS/REFINE/VETO)
-# 3. Verify Mycelium ingest_tool_call fires (check logs)
-# 4. Voice command multi-step: speak "find my latest file and open it"
-# 5. Verify task completes in multiple steps, not capped at 1
+# 1. Ask agent a simple question ("what's 2+2?") — verify Director picks quick mode
+# 2. Ask agent to "search for X and summarize" — verify Director picks agentic mode
+# 3. Ask agent a complex task ("refactor this file and run tests") — verify Director picks full mode
+# 4. Ask a task that starts simple but needs tools mid-response — verify escalation
+# 5. Voice command: speak "find my latest file and open it" — verify multi-step, not capped at 1
+# 6. Check logs for mode_history — verify changes are logged to Mycelium
 ```
 
-**Landmark on pass:** `pin_add(title='der_agentic_mode_gap1', pin_type='decision', content='DER absorbs agentic mode, LLM emits tool_calls in Explorer, voice cap configurable')`
+**Landmark on pass:** `pin_add(title='der_director_mode_gap1', pin_type='decision', content='Director dynamically decides and adjusts execution mode (quick/agentic/full), not hardcoded upfront')`
 
 ---
 
@@ -502,13 +551,13 @@ pin_add(
 
 | File | Layer | Change |
 |------|-------|--------|
-| `backend/agent/agent_kernel.py` | 2, 3, 4 | Re-key to conversation_id; agentic task_class; semantic planning; remove 1-step cap |
+| `backend/agent/agent_kernel.py` | 2, 3, 4 | Re-key to conversation_id; Director mode decision logic; agentic Explorer; remove 1-step cap; semantic `_needs_planning()` as hint |
 | `backend/iris_gateway.py` | 2, 3, 5 | voice_command_start accepts conversation_id; switch_conversation handler; notification_response handler; EventBus routing; settings_sync |
 | `backend/agent/conversation_kernel.py` | 3 | Emit utterances, filter speech from task content |
 | `backend/agent/tts.py` | 3 | Subscribe to utterance events only |
-| `backend/agent/streaming.py` | 3, 4 | Stream through EventBus, not direct TTS |
-| `backend/agent/der_constants.py` | 4 | Add agentic token budget, max iterations |
-| `backend/agent/der_loop.py` | 4 | QueueItem supports agentic flag |
+| `backend/agent/streaming.py` | 3, 4 | Stream through EventBus, not direct TTS; stream mode changes |
+| `backend/agent/der_constants.py` | 4 | Add `ExecutionMode` enum, mode budgets, iteration caps, voice preference default |
+| `backend/agent/der_loop.py` | 4 | `DirectorQueue` gains `current_mode`/`set_mode`/`escalate`/`de_escalate`/`mode_history`; `QueueItem` gains mode field; dynamic step injection on escalation |
 | `backend/agent/tool_bridge.py` | 5 | Permission check before execute_tool |
 | `backend/vision/permission_system.py` | 5 | Extend for general tools, tiered risk |
 | `backend/capabilities.py` | 5 | Per-tool approval on top of mode |
