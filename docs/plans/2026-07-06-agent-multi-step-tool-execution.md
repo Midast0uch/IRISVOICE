@@ -16,6 +16,113 @@
 2. Build layers in order (Layer 2 → Layer 6). Each layer depends only on the ones below it.
 3. After each phase, run the verification commands listed. Do not proceed to the next phase until verification passes.
 4. Record `record_edit()` / `record_test()` / `pin_add()` per the AGENTS.md protocol as you go.
+5. **Follow the Testing Discipline (below) — it is mandatory, not optional.**
+
+---
+
+## Testing Discipline — Mandatory
+
+This branch introduces architectural changes to the DER loop, kernel separation, context keying, and permission system. These are load-bearing components. **Proper testing validates the implementation.** The testing rules below are absolute and apply to every phase.
+
+### Rule 1: Target tests, not stale tests
+
+- **Write new target tests** for every new component and every modified behavior. Target tests verify the *new* contract, not the *old* one.
+- **Never run stale or old tests just to get things to pass.** If an existing test encodes the old behavior (e.g. `session_id` keying, 1-step voice cap, direct `chunk_callback` → TTS), that test is now wrong. It must be updated to assert the new contract — not deleted, not skipped, not marked `xfail`.
+- If an existing test still encodes valid behavior that hasn't changed, it stays. But verify it actually tests what it claims before relying on it.
+- **Before relying on any existing test file:** read it. Confirm it asserts the current contract. If it asserts the old contract, update it. Do not assume a passing test means the implementation is correct — a test that checks the wrong thing is worse than no test.
+
+### Rule 2: Behavioral testing
+
+Behavioral tests verify *what the system does* from the outside, not *how it's implemented*. For each phase:
+
+- **Write behavioral tests** that exercise the user-visible behavior:
+  - Phase 1: "When I switch conversation threads, the agent's next response uses the correct thread's context — not the previous thread's."
+  - Phase 2: "When the agent executes a tool, TTS never speaks the tool-call JSON — only status phrases and the final result."
+  - Phase 3: "When I ask a simple question, the Director picks `quick` mode. When I ask for a multi-step task, the Director escalates to `agentic` or `full`."
+  - Phase 4: "When the agent calls a side-effect tool in personal mode, an approval prompt appears. Denying aborts the tool."
+  - Phase 5: "When a multi-step task runs, the TaskListCard renders live updates. The ContextPill shows token count. The OrbBadge shows step counter when wings are closed."
+- Behavioral tests use the public interface (WS messages, REST endpoints, CustomEvents) — not internal function calls. They survive refactors.
+- **A behavioral test that passes after a refactor is worth more than a unit test that passes.** Unit tests verify the implementation; behavioral tests verify the contract.
+
+### Rule 3: Contract testing
+
+Contract tests verify that the interfaces between components honor their agreements. For each new or modified interface:
+
+- **EventBus contract:** `emit(event)` delivers to all subscribers of that event type. A handler error does not block other handlers. Subscribers can unsubscribe cleanly.
+- **ConversationContextStore contract:** `get_or_restore(id)` returns the stored context or None. `save(id, context)` persists. `save_current_and_load(new_id)` is atomic — no partial state on crash.
+- **ConversationKernel contract:** Only emits `utterance` events during EXPAND phase. `filter_speech()` strips tool-call JSON, planning markers, and reasoning blocks. Never emits during COMPRESS.
+- **TaskKernel contract:** Emits `tool_call` / `tool_result` / `planning_step` events. Never reaches TTS. Emits `status_phrase` to ConversationKernel on milestones.
+- **DirectorQueue mode contract:** `set_mode()` changes the active mode. `escalate()` only moves in the direction quick→agentic→full. `de_escalate()` only moves in the direction full→agentic→quick. `mode_history` records every change with cycle number and reason.
+- **Permission system contract:** `notification_response` with `action=grant` resumes the paused tool. `action=deny` aborts it. Timeout (30s non-critical, 60s destructive) auto-denies. Tier classification is deterministic for the same tool+params.
+- **WS reconnect contract:** On reconnect, the frontend re-sends `switch_conversation` + `settings_sync`. The backend restores context from `ConversationContextStore`. No exceptions thrown on disconnect.
+
+### Rule 4: Never fake a pass
+
+- **Do not modify a test to make it pass.** If a test fails, the implementation is wrong — fix the implementation, not the test. The test is the requirement. (AGENTS.md: "Never write new tests to match your code. Never modify existing tests to make them pass.")
+- **Do not skip a failing test.** If a test is genuinely obsolete (the behavior it tests no longer exists), update it to test the new behavior. But document *why* it changed in the commit message.
+- **Do not run only the tests you know pass.** Run the full target test suite for the phase. A green build with a red test you didn't run is a failure.
+- **Do not use `xfail` to hide a real failure.** `xfail` is for known limitations with a documented reason. If the test should pass, make it pass by fixing the code.
+
+### Rule 5: Quality check before every test run
+
+Per AGENTS.md, verify ALL of these before running any test:
+
+- [ ] No unnecessary work in hot paths — loops, I/O, DB calls as few as needed
+- [ ] Heavy imports are lazy — no ML model or GPU init at module level
+- [ ] Error handling complete — every exception path has an explicit outcome
+- [ ] Resources cleaned up — file handles, connections, subprocesses closed
+- [ ] No shared mutable state across sessions or concurrent requests
+- [ ] Memory footprint bounded — no unbounded caches or infinite queues
+- [ ] Async/sync boundary correct — blocking calls not in async hot paths
+- [ ] Logging structured — context identifier in every log line
+- [ ] Nothing in this file can crash and block a user response
+
+A passing test on unoptimized code is not done. Quality check is not optional.
+
+### Test file naming convention
+
+| Test type | Naming | Location |
+|-----------|--------|----------|
+| Target unit tests | `test_<component>_<behavior>.py` | `backend/tests/` |
+| Behavioral tests | `test_<phase>_behavior.py` | `backend/tests/` |
+| Contract tests | `test_<interface>_contract.py` | `backend/tests/` |
+| Frontend tests | `test_<component>.tsx` | `__tests__/` or co-located |
+
+### Test inventory per phase
+
+| Phase | New test files | What they verify |
+|-------|----------------|------------------|
+| 1 | `test_conversation_context_store.py` | Store contract: save/restore/atomic swap/bounded |
+| 1 | `test_per_thread_context_behavior.py` | Behavioral: thread switch restores context, WS reconnect preserves state |
+| 1 | `test_voice_command_start_contract.py` | Contract: `voice_command_start` payload includes `conversation_id` |
+| 2 | `test_event_bus.py` | Contract: emit/sub/unsub, handler isolation, bounded subscribers |
+| 2 | `test_kernel_separation_behavior.py` | Behavioral: TTS never speaks tool JSON, only utterances during EXPAND |
+| 2 | `test_conversation_kernel_contract.py` | Contract: filter_speech strips tool content, only emits during EXPAND |
+| 2 | `test_task_kernel_contract.py` | Contract: emits tool events, never reaches TTS, milestone status phrases |
+| 3 | `test_director_mode_behavior.py` | Behavioral: Director picks correct mode, escalates/de-escalates correctly |
+| 3 | `test_director_queue_contract.py` | Contract: set_mode/escalate/de_escalate, mode_history logging |
+| 3 | `test_agentic_explorer_behavior.py` | Behavioral: LLM emits tool_calls, loop until final text, Reviewer runs |
+| 4 | `test_permission_system_contract.py` | Contract: tiered risk, grant/deny/timeout, personal/developer distinction |
+| 4 | `test_permission_flow_behavior.py` | Behavioral: approval prompt appears, deny aborts, grant resumes |
+| 5 | `test_task_list_card_behavior.tsx` | Behavioral: live updates, collapsible, renders in chat stream |
+| 5 | `test_context_pill_behavior.tsx` | Behavioral: token count, color shifts, phase indicator |
+| 5 | `test_orb_badge_behavior.tsx` | Behavioral: shows step counter, matches orb aesthetic, clears on done |
+
+### Existing tests that must be updated (not deleted)
+
+These existing test files encode the old contract and **must be updated** to assert the new contract. They are not stale — they test real behavior — but the behavior has changed.
+
+| Existing test file | Old contract | New contract |
+|--------------------|--------------|--------------|
+| `backend/tests/test_der_loop.py` | Pre-planned steps only, no mode concept | Director decides mode, escalation/de-escalation |
+| `backend/tests/test_chat_handler.py` | `session_id` keying | `conversation_id` keying |
+| `backend/tests/test_chat_persistence.py` | In-memory context | `ConversationContextStore` persistence |
+| `backend/tests/test_chunk_callback_fix.py` | Direct `chunk_callback` → TTS | EventBus → ConversationKernel → TTS |
+| `backend/tests/test_agent_loop_upgrade.py` | Single execution path | Three modes, Director decides |
+| `backend/tests/test_tool_permissions_security.py` | Binary personal/developer | Tiered risk + per-tool approval |
+| `backend/tests/test_der_caducean_gaps.py` | No kernel separation | Kernel separation, Caducean governs phase |
+
+**Before updating each:** read the full test file. Understand what it currently asserts. Then update the assertions to match the new contract. Document the change in the commit message.
 
 ---
 
@@ -473,37 +580,95 @@ npm test
 
 ## Phase 6 — Integration + End-to-End Verification
 
-**Goal:** All layers work together. Full multi-step agent experience.
+**Goal:** All layers work together. Full multi-step agent experience. **This phase is a testing gate — nothing merges until every test category passes.**
 
-### Step 6.1 — End-to-end smoke test
+### Step 6.1 — Full target test suite
+
+Run the complete target test suite. This is not a subset — every test file listed in the Testing Discipline test inventory must pass.
 
 ```powershell
-# Full stack
-pytest backend/tests/ -v --tb=short
+# Backend — all target tests, no skips, no xfails hiding failures
+pytest backend/tests/ -v --tb=short --no-header -rA
+
+# Frontend
 npx tsc --noEmit
 npm run lint
-npm test
+npm test -- --verbose
+```
 
+**Before running:** verify the quality check (Rule 5) on every file touched in this branch. A passing test on unoptimized code is not done.
+
+**After running:** if any test fails, do not proceed. Fix the implementation (not the test). The test is the requirement. Re-run until green.
+
+### Step 6.2 — Contract test verification
+
+Verify every contract defined in the Testing Discipline (Rule 3) holds:
+
+```powershell
+# Contract tests — run explicitly, verify each contract
+pytest backend/tests/test_event_bus.py -v
+pytest backend/tests/test_conversation_kernel_contract.py -v
+pytest backend/tests/test_task_kernel_contract.py -v
+pytest backend/tests/test_director_queue_contract.py -v
+pytest backend/tests/test_permission_system_contract.py -v
+pytest backend/tests/test_voice_command_start_contract.py -v
+```
+
+Each contract test must pass without modification. If a contract test fails, the interface is wrong — fix the implementation.
+
+### Step 6.3 — Behavioral test verification
+
+Verify every behavioral scenario from the Testing Discipline (Rule 2):
+
+```powershell
+pytest backend/tests/test_per_thread_context_behavior.py -v
+pytest backend/tests/test_kernel_separation_behavior.py -v
+pytest backend/tests/test_director_mode_behavior.py -v
+pytest backend/tests/test_agentic_explorer_behavior.py -v
+pytest backend/tests/test_permission_flow_behavior.py -v
+npm test -- --verbose test_task_list_card_behavior
+npm test -- --verbose test_context_pill_behavior
+npm test -- --verbose test_orb_badge_behavior
+```
+
+### Step 6.4 — Stale test audit
+
+Before merging, audit every existing test file that was *not* updated in this branch. For each:
+
+1. Read the test file.
+2. Confirm it still asserts valid behavior that hasn't changed.
+3. If it asserts old behavior (e.g. `session_id` keying, 1-step cap, direct `chunk_callback`), it must be updated — do not leave it stale.
+4. If it's genuinely obsolete (the behavior no longer exists), document why in the commit and remove it.
+
+**A stale test that passes is a false positive.** It gives confidence that doesn't exist. Audit is mandatory.
+
+### Step 6.5 — End-to-end smoke test
+
+```powershell
 # Manual E2E:
 # 1. Start backend + frontend + Tauri
 # 2. Voice command: "Find my latest IRIS doc and summarize it"
 # 3. Verify:
 #    - Agent dynamically calls file_search + file_read tools
+#    - Director picked correct mode (check logs for mode_history)
 #    - TTS speaks status phrases only ("On it.", "Found 3 files...", "Here's the summary...")
+#    - TTS never speaks tool-call JSON or planning steps
 #    - TaskListCard shows live progress in chat
 #    - ContextPill shows token count
 #    - OrbBadge shows step counter when wings closed
-#    - Reviewer runs (check logs)
+#    - Reviewer runs (check logs for PASS/REFINE/VETO)
 #    - Mycelium ingest_tool_call fires (check logs)
 # 4. Switch to a different conversation thread
-# 5. Verify agent context switches correctly
+# 5. Verify agent context switches correctly (no bleed)
 # 6. Kill WS backend, restart
 # 7. Verify no crash, settings preserved, context restored
 # 8. Permission: in personal mode, ask agent to delete a file
 # 9. Verify approval prompt, deny, verify tool aborts
+# 10. Ask a simple question ("what's 2+2?") — verify Director picks quick mode
+# 11. Ask a task that starts simple but needs tools — verify escalation
 ```
 
-### Step 6.2 — Widget resilience test
+### Step 6.6 — Widget resilience test
 
 ```powershell
 # Manual:
@@ -518,13 +683,20 @@ npm test
 # 9. Verify settings preserved, context restored, task resumes
 ```
 
-### Step 6.3 — Final landmark
+### Step 6.7 — Final landmark (only after ALL tests pass)
 
 ```python
+# Only call this after:
+# - All target tests pass (Step 6.1)
+# - All contract tests pass (Step 6.2)
+# - All behavioral tests pass (Step 6.3)
+# - Stale test audit complete (Step 6.4)
+# - E2E smoke test passes (Step 6.5)
+# - Widget resilience test passes (Step 6.6)
 pin_add(
     title='agent_multi_step_tool_execution_complete',
     pin_type='decision',
-    content='Full vision: per-thread context + kernel separation + DER agentic mode + permission wiring + frontend components + widget resilience'
+    content='Full vision verified: per-thread context + kernel separation + DER Director-decided mode + permission wiring + frontend components + widget resilience. All target, contract, and behavioral tests pass. Stale test audit complete.'
 )
 ```
 
@@ -532,7 +704,7 @@ pin_add(
 
 ## File Inventory
 
-### New Files (13)
+### New Files (24)
 
 | File | Layer | Purpose |
 |------|-------|---------|
@@ -542,10 +714,21 @@ pin_add(
 | `components/chat/TaskListCard.tsx` | 6 | Inline task list card |
 | `components/chat/ContextPill.tsx` | 6 | Context window + phase pill |
 | `components/iris/OrbBadge.tsx` | 6 | Orb badge for background tasks |
-| `backend/tests/test_conversation_context_store.py` | 2 | Phase 1 tests |
-| `backend/tests/test_event_bus.py` | 3 | Phase 2 tests |
-| `backend/tests/test_kernel_separation.py` | 3 | Phase 2 tests |
-| `backend/tests/test_permission_system.py` | 5 | Phase 4 tests |
+| `backend/tests/test_conversation_context_store.py` | 2 | Contract: store save/restore/atomic swap/bounded |
+| `backend/tests/test_per_thread_context_behavior.py` | 2 | Behavioral: thread switch, WS reconnect |
+| `backend/tests/test_voice_command_start_contract.py` | 2 | Contract: payload includes conversation_id |
+| `backend/tests/test_event_bus.py` | 3 | Contract: emit/sub/unsub, handler isolation |
+| `backend/tests/test_kernel_separation_behavior.py` | 3 | Behavioral: TTS never speaks tool JSON |
+| `backend/tests/test_conversation_kernel_contract.py` | 3 | Contract: filter_speech, EXPAND-only emission |
+| `backend/tests/test_task_kernel_contract.py` | 3 | Contract: tool events, no TTS, milestones |
+| `backend/tests/test_director_mode_behavior.py` | 4 | Behavioral: mode selection, escalation |
+| `backend/tests/test_director_queue_contract.py` | 4 | Contract: set_mode/escalate/de_escalate/history |
+| `backend/tests/test_agentic_explorer_behavior.py` | 4 | Behavioral: LLM tool_calls, loop, Reviewer |
+| `backend/tests/test_permission_system_contract.py` | 5 | Contract: tiered risk, grant/deny/timeout |
+| `backend/tests/test_permission_flow_behavior.py` | 5 | Behavioral: approval prompt, deny aborts |
+| `__tests__/test_task_list_card_behavior.tsx` | 6 | Behavioral: live updates, collapsible |
+| `__tests__/test_context_pill_behavior.tsx` | 6 | Behavioral: token count, color shifts |
+| `__tests__/test_orb_badge_behavior.tsx` | 6 | Behavioral: step counter, aesthetic match |
 
 ### Modified Files (12)
 
@@ -578,12 +761,15 @@ pin_add(
 
 | Risk | Mitigation |
 |------|------------|
-| DER agentic mode breaks existing DER tests | Run `test_der_loop.py` after Step 3.2; fix before proceeding |
-| Kernel separation breaks TTS timing | Phase 2 verification includes TTS smoke test; preserve existing chunk sizing logic |
+| DER mode changes break existing DER tests | Update `test_der_loop.py` to assert new Director-decided mode contract; do not skip |
+| Kernel separation breaks TTS timing | Phase 2 contract tests verify TTS only receives utterances; preserve existing chunk sizing logic |
 | ConversationContextStore disk I/O blocks async | Use `asyncio.to_thread()` for all disk operations |
 | Permission timeout kills long tasks | Timeout only applies to approval wait, not tool execution; 30s/60s is generous |
-| OrbBadge aesthetic mismatch | Use same `glowColor` and particle rendering as `OrbCanvas`; review in Phase 5 smoke test |
+| OrbBadge aesthetic mismatch | Use same `glowColor` and particle rendering as `OrbCanvas`; behavioral test verifies aesthetic match |
 | WS reconnect race condition | `ConversationContextStore.get_or_restore()` is atomic; frontend re-sends `switch_conversation` on reconnect |
+| Stale tests give false confidence | Step 6.4 stale test audit is mandatory; every existing test file read and verified |
+| Agent runs old tests to fake a pass | Testing Discipline Rule 4: never modify tests to pass, never skip failures, never use xfail to hide |
+| Behavioral tests miss edge cases | Contract tests cover interface edges; behavioral tests cover user-visible flows; both required |
 
 ---
 
