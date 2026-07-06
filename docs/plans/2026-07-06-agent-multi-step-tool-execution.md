@@ -104,9 +104,13 @@ A passing test on unoptimized code is not done. Quality check is not optional.
 | 3 | `test_agentic_explorer_behavior.py` | Behavioral: LLM emits tool_calls, loop until final text, Reviewer runs |
 | 4 | `test_permission_system_contract.py` | Contract: tiered risk, grant/deny/timeout, personal/developer distinction |
 | 4 | `test_permission_flow_behavior.py` | Behavioral: approval prompt appears, deny aborts, grant resumes |
+| 5.5 | `test_ask_user_tool.py` | Contract: question/answer flow, timeout, fuzzy match, voice integration |
+| 5.5 | `test_voice_filler_behavior.py` | Behavioral: filler fires during silence, no EXPAND filler, no repeat, AskUserQuestion voice flow |
+| 5.5 | `test_agent_speech_behavior.py` | Behavioral: agent-initiated TTS, orb speaking state, chat-view closed |
+| 5.5 | `test_question_card_behavior.tsx` | Behavioral: renders question, click answer, free-form input, voice match |
 | 5 | `test_task_list_card_behavior.tsx` | Behavioral: live updates, collapsible, renders in chat stream |
 | 5 | `test_context_pill_behavior.tsx` | Behavioral: token count, color shifts, phase indicator |
-| 5 | `test_orb_badge_behavior.tsx` | Behavioral: shows step counter, matches orb aesthetic, clears on done |
+| 5 | `test_orb_badge_behavior.tsx` | Behavioral: step counter, question badge, aesthetic match, clears on done |
 
 ### Existing tests that must be updated (not deleted)
 
@@ -578,6 +582,147 @@ npm test
 
 ---
 
+## Phase 5.5 — AskUserQuestion Tool + Voice Filler + Agent-Initiated Speech
+
+**Goal:** Agent can ask the user multiple-choice questions mid-task. Voice filler comments prevent silence gaps. Agent can speak proactively even when chat-view is closed.
+
+### Step 5.5.1 — AskUserQuestion tool (backend)
+
+**File:** `backend/agent/tools/ask_user_tool.py` (new)
+
+- Tool name: `ask_user_question`
+- Parameters: `question: str`, `options: List[str]`, `allow_other: bool = False`
+- When called by DER Explorer:
+  1. Emits `agent_question` event via TaskKernel → EventBus → WS → frontend
+  2. Pauses DER loop (tool execution waits for answer)
+  3. If voice command is open: ConversationKernel emits question as utterance → TTS speaks it → agent listens for spoken answer (see Step 5.5.3)
+  4. Receives answer from `agent_question_response` WS message
+  5. Returns answer as tool result to DER loop
+  6. DER loop continues
+
+**Quality check before test:**
+- [ ] DER loop pause is clean — no deadlock, no busy wait
+- [ ] Timeout: if no answer in 120s, tool returns "no response" and DER loop continues with a default
+- [ ] Error handling: WS disconnect during question → tool returns "connection lost", DER loop handles gracefully
+
+### Step 5.5.2 — QuestionCard component (frontend)
+
+**File:** `components/chat/QuestionCard.tsx` (new)
+
+- Props: `question: string`, `options: string[]`, `allowOther: boolean`, `turnId: string`, `onAnswer: (answer: string) => void`
+- Renders inline in chat stream (like TaskListCard)
+- Question text + options as clickable buttons
+- "Other" option opens a text input for free-form answer
+- Matches orb aesthetic: dark glass, brand-color buttons, monospace question text
+- Subscribes to `iris:agent_question` CustomEvent
+- On answer: calls `sendMessage('agent_question_response', { turn_id, answer })`
+
+### Step 5.5.3 — Voice filler + AskUserQuestion voice integration
+
+**File:** `backend/agent/conversation_kernel.py`
+
+- **Silence timer:** starts when entering COMPRESS with voice command open
+  - If no utterance for N seconds (default 5s, configurable), emit a `status_phrase` filler
+  - Timer resets after each filler or utterance
+  - No filler during EXPAND or when user is speaking (barge-in detection)
+- **Filler phrase selection:** context-aware based on current tool / task phase
+  - Searching → "Let me search for that..."
+  - Reading files → "Let me check that file..."
+  - Executing tool → "One moment, working on it..."
+  - Planning → "Let me think about the best approach..."
+  - Generic → "Hmm...", "Let me see...", "Working on it..."
+  - No repetition: track last 3 fillers, pick a different one
+- **AskUserQuestion voice flow:**
+  1. When `ask_user_question` is called and voice command is open:
+     - Emit question text as `utterance` event → TTS speaks it
+     - After TTS finishes, enter listening mode for spoken answer
+  2. User speaks answer → STT captures transcript
+  3. Fuzzy match transcript against options:
+     - Confidence > 0.7 → accept match
+     - Confidence 0.4-0.7 → ask confirmation: "Did you mean [option]? Say yes or no."
+     - Confidence < 0.4 → re-state: "I didn't catch that. Say option 1 for [A], option 2 for [B]."
+     - No match + `allow_other` → treat as free-form input
+  4. If no response within N seconds after question spoken:
+     - Filler prompt: "Did you catch that? I asked: [shorter rephrase]"
+     - After 2 filler prompts: render visual card / orb badge, wait for click answer
+
+### Step 5.5.4 — Agent-initiated speech (TTS independence)
+
+**File:** `backend/agent/tts.py`
+
+- Subscribe to `utterance` events from EventBus regardless of voice command state
+- Currently TTS is triggered by voice command flow — after this, any `utterance` event triggers TTS
+- Voice command flow still works (it's one source of utterance events)
+- Agent-initiated speech is another source
+- Both go through same TTS pipeline (chunk sizing, word timing, barge-in)
+
+**File:** `backend/agent/task_kernel.py`
+
+- `emit_utterance(text, turn_id, conversation_id)` — for agent-initiated speech
+- Used when: background task completes, milestone reached, error needs attention
+- Emits to EventBus → TTS plays it → orb shows speaking state if chat-view closed
+
+### Step 5.5.5 — Orb question badge + speaking state
+
+**File:** `components/iris/OrbBadge.tsx`
+
+- Add question badge state: question mark icon, pulsing brand color
+- Renders when agent has a pending question and wings are closed
+- Clicking orb opens wings to reveal QuestionCard
+
+**File:** `components/iris/XurOrb.tsx`
+
+- Render question badge when `iris:agent_question` received and wings closed
+- Orb speaking state already exists (`isSpeaking` / `playbackSpeaking`) — agent-initiated speech uses the same visual
+- No new visual needed for speaking — just ensure agent-initiated utterances trigger the existing speaking state
+
+### Step 5.5.6 — WebSocket + gateway wiring
+
+**File:** `hooks/useIRISWebSocket.ts`
+
+- Forward `agent_question` WS events as `iris:agent_question` CustomEvents
+- Add `sendAgentQuestionResponse(turnId, answer)` sender
+
+**File:** `backend/iris_gateway.py`
+
+- Handle `agent_question_response` WS message → route to DER loop (resolves the paused `ask_user_question` tool)
+
+### Step 5.5.7 — Tool bridge registration
+
+**File:** `backend/agent/tool_bridge.py`
+
+- Register `ask_user_question` tool in the MCP tool list
+- Tool is available in all modes (personal + developer)
+- No permission tier — this is a conversational tool, not a side-effect tool
+
+### Verification (Phase 5.5)
+
+```powershell
+# Backend
+pytest backend/tests/test_ask_user_tool.py -v
+pytest backend/tests/test_voice_filler_behavior.py -v
+pytest backend/tests/test_agent_speech_behavior.py -v
+
+# Frontend
+npx tsc --noEmit
+npm test -- --verbose test_question_card_behavior
+
+# Manual smoke test:
+# 1. Ask agent a task that needs clarification — verify QuestionCard renders
+# 2. Click an option — verify DER loop continues with that answer
+# 3. Voice mode: ask a task, when agent asks a question, verify TTS speaks it
+# 4. Speak the answer — verify fuzzy matching works
+# 5. Voice filler: start a long task with voice open — verify filler phrases fire during silence
+# 6. Close chat-view mid-task — verify agent-initiated speech still plays (task completion)
+# 7. Verify orb shows speaking state during agent-initiated speech
+# 8. Verify orb shows question badge when agent asks a question with wings closed
+# 9. Click orb with question badge — verify wings open to reveal QuestionCard
+```
+
+**Landmark on pass:** `pin_add(title='ask_user_voice_filler_agent_speech', pin_type='decision', content='AskUserQuestion tool + voice filler + agent-initiated speech, all integrated')`
+
+---
+
 ## Phase 6 — Integration + End-to-End Verification
 
 **Goal:** All layers work together. Full multi-step agent experience. **This phase is a testing gate — nothing merges until every test category passes.**
@@ -704,16 +849,18 @@ pin_add(
 
 ## File Inventory
 
-### New Files (24)
+### New Files (30)
 
 | File | Layer | Purpose |
 |------|-------|---------|
 | `backend/agent/conversation_context_store.py` | 2 | Persistent per-thread context |
 | `backend/agent/event_bus.py` | 3 | IRISStreamEvent + EventBus |
-| `backend/agent/task_kernel.py` | 3 | Tool-call events, planning steps, progress |
+| `backend/agent/task_kernel.py` | 3 | Tool-call events, planning steps, progress, agent-initiated speech |
+| `backend/agent/tools/ask_user_tool.py` | 5.5 | AskUserQuestion tool — multiple-choice questions mid-task |
 | `components/chat/TaskListCard.tsx` | 6 | Inline task list card |
 | `components/chat/ContextPill.tsx` | 6 | Context window + phase pill |
-| `components/iris/OrbBadge.tsx` | 6 | Orb badge for background tasks |
+| `components/chat/QuestionCard.tsx` | 5.5 | Multiple-choice question card component |
+| `components/iris/OrbBadge.tsx` | 6 | Orb badge for background tasks + question badge |
 | `backend/tests/test_conversation_context_store.py` | 2 | Contract: store save/restore/atomic swap/bounded |
 | `backend/tests/test_per_thread_context_behavior.py` | 2 | Behavioral: thread switch, WS reconnect |
 | `backend/tests/test_voice_command_start_contract.py` | 2 | Contract: payload includes conversation_id |
@@ -726,9 +873,13 @@ pin_add(
 | `backend/tests/test_agentic_explorer_behavior.py` | 4 | Behavioral: LLM tool_calls, loop, Reviewer |
 | `backend/tests/test_permission_system_contract.py` | 5 | Contract: tiered risk, grant/deny/timeout |
 | `backend/tests/test_permission_flow_behavior.py` | 5 | Behavioral: approval prompt, deny aborts |
+| `backend/tests/test_ask_user_tool.py` | 5.5 | Contract: question/answer flow, timeout, fuzzy match |
+| `backend/tests/test_voice_filler_behavior.py` | 5.5 | Behavioral: filler fires during silence, no EXPAND filler, no repeat |
+| `backend/tests/test_agent_speech_behavior.py` | 5.5 | Behavioral: agent-initiated TTS, orb speaking state, chat-view closed |
 | `__tests__/test_task_list_card_behavior.tsx` | 6 | Behavioral: live updates, collapsible |
 | `__tests__/test_context_pill_behavior.tsx` | 6 | Behavioral: token count, color shifts |
-| `__tests__/test_orb_badge_behavior.tsx` | 6 | Behavioral: step counter, aesthetic match |
+| `__tests__/test_orb_badge_behavior.tsx` | 6 | Behavioral: step counter, question badge, aesthetic match |
+| `__tests__/test_question_card_behavior.tsx` | 5.5 | Behavioral: renders question, click answer, free-form input |
 
 ### Modified Files (12)
 
@@ -736,17 +887,17 @@ pin_add(
 |------|-------|--------|
 | `backend/agent/agent_kernel.py` | 2, 3, 4 | Re-key to conversation_id; Director mode decision logic; agentic Explorer; remove 1-step cap; semantic `_needs_planning()` as hint |
 | `backend/iris_gateway.py` | 2, 3, 5 | voice_command_start accepts conversation_id; switch_conversation handler; notification_response handler; EventBus routing; settings_sync |
-| `backend/agent/conversation_kernel.py` | 3 | Emit utterances, filter speech from task content |
-| `backend/agent/tts.py` | 3 | Subscribe to utterance events only |
+| `backend/agent/conversation_kernel.py` | 3, 5.5 | Emit utterances, filter speech; silence timer for voice filler; AskUserQuestion voice flow; agent-initiated speech |
+| `backend/agent/tts.py` | 3, 5.5 | Subscribe to utterance events only; subscribe regardless of voice command state (agent-initiated speech) |
 | `backend/agent/streaming.py` | 3, 4 | Stream through EventBus, not direct TTS; stream mode changes |
 | `backend/agent/der_constants.py` | 4 | Add `ExecutionMode` enum, mode budgets, iteration caps, voice preference default |
 | `backend/agent/der_loop.py` | 4 | `DirectorQueue` gains `current_mode`/`set_mode`/`escalate`/`de_escalate`/`mode_history`; `QueueItem` gains mode field; dynamic step injection on escalation |
-| `backend/agent/tool_bridge.py` | 5 | Permission check before execute_tool |
+| `backend/agent/tool_bridge.py` | 5, 5.5 | Permission check before execute_tool; register `ask_user_question` tool |
 | `backend/vision/permission_system.py` | 5 | Extend for general tools, tiered risk |
 | `backend/capabilities.py` | 5 | Per-tool approval on top of mode |
-| `hooks/useIRISWebSocket.ts` | 2, 6 | conversation_id in voice_command_start; switch_conversation; settings_sync; task_update/context_usage forwarding |
-| `components/chat-view.tsx` | 2, 6 | switch_conversation on thread select; TaskListCard + ContextPill rendering; event listeners |
-| `components/iris/XurOrb.tsx` | 2, 6 | Reconnecting state; OrbBadge rendering |
+| `hooks/useIRISWebSocket.ts` | 2, 5.5, 6 | conversation_id in voice_command_start; switch_conversation; settings_sync; task_update/context_usage/agent_question forwarding; sendAgentQuestionResponse |
+| `components/chat-view.tsx` | 2, 5.5, 6 | switch_conversation on thread select; TaskListCard + ContextPill + QuestionCard rendering; event listeners |
+| `components/iris/XurOrb.tsx` | 2, 5.5, 6 | Reconnecting state; OrbBadge rendering (working + question states) |
 
 ### Docs (2, already written)
 

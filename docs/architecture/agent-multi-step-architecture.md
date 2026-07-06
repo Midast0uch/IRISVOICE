@@ -33,6 +33,9 @@ These decisions were validated through brainstorming with the user. They are the
 | 9 | WS disconnect resilience | All user settings + agent state persist. Disconnect is a first-class state, not an exception. On reconnect: reattach to same `conversation_id`, restore context from backend store, re-sync settings. |
 | 10 | Task list UI | Agent-generated todo list, inline in chat stream as a structured card. Live updates as DER progresses. Collapsible. Matches orb aesthetic. |
 | 11 | Voice 1-step cap | Configurable per task. The Director decides mode dynamically — can start in `quick` (1-step) and escalate to `agentic`/`full` if intermediate results demand it. Default allows multi-step. Caducean COMPRESS keeps voice tasks silent during work. |
+| 12 | AskUserQuestion tool | New agent tool that renders multiple-choice questions in chat-view. The agent calls it when it needs user input mid-task (clarification, choice between approaches, confirmation). User answers by clicking or voice. Answer feeds back as the tool result to the DER loop. Works whether chat-view is open or closed (orb shows a question badge). |
+| 13 | Voice smart filler comments | When voice command is open (listening/processing) and there's a silence gap during COMPRESS, ConversationKernel emits context-aware filler phrases ("Let me check that...", "Searching now...") so the user knows the agent is still working. Timer-based: if no utterance for N seconds during COMPRESS, emit a filler. |
+| 14 | Agent-initiated speech | The agent can open the audio pipeline itself to speak, even when chat-view isn't open. TTS becomes subscribable independent of the voice command flow. Used for: background task completion, AskUserQuestion prompts, status updates when chat-view is closed. The agent emits an utterance event → ConversationKernel → TTS, regardless of chat-view state. |
 
 ---
 
@@ -323,8 +326,146 @@ The DER loop pre-plans all steps via `_plan_task()` before execution. The LLM ca
 | `components/iris/OrbBadge.tsx` | **New** — orb badge matching canvas aesthetic |
 | `components/chat-view.tsx` | Render TaskListCard in message stream; ContextPill in header; wire event listeners |
 | `components/iris/XurOrb.tsx` | Render OrbBadge when working state active |
-| `hooks/useIRISWebSocket.ts` | Forward `iris:task_update`, `iris:context_usage` as CustomEvents |
+| `hooks/useIRISWebSocket.ts` | Forward `iris:task_update`, `iris:context_usage`, `iris:agent_question` as CustomEvents |
 | `hooks/useUILayoutState.ts` | Expose working state for orb badge |
+
+---
+
+## 9. AskUserQuestion Tool + Voice Filler + Agent-Initiated Speech
+
+Three interconnected features that make the agent conversational and proactive, not just reactive.
+
+### 9.1 AskUserQuestion Tool
+
+**What it is:** A new agent tool (`ask_user_question`) that the DER loop can call during Explorer phase when the agent needs user input mid-task. Unlike the permission system (which asks "should I do this?"), AskUserQuestion asks "which approach should I take?" or "can you clarify?".
+
+**When the agent calls it:**
+- Clarification needed: "Did you mean file X or file Y?"
+- Approach choice: "I can do this quickly with approach A, or thoroughly with approach B. Which?"
+- Missing information: "Which directory should I search in?"
+- Confirmation on ambiguous intent: "You said 'delete the old ones' — do you mean files older than 30 days?"
+
+**How it works:**
+1. Agent LLM emits `tool_call` for `ask_user_question` with `question` + `options` (multiple choice)
+2. TaskKernel emits `agent_question` event via EventBus → WS → frontend
+3. Frontend renders a question card in chat-view (if open) or shows a question badge on the orb (if wings closed)
+4. User answers by:
+   - Clicking an option (chat-view open)
+   - Speaking the answer (voice command open — STT captures the answer, fuzzy-matched to options, see §9.2 voice filler integration)
+   - Clicking the orb to open wings, then clicking an option
+5. Answer is fed back to the DER loop as the tool result
+6. DER loop continues with the user's answer
+
+**Voice mode integration (see §9.2):** When voice command is open and the agent calls `ask_user_question`, the question is spoken aloud via the ConversationKernel utterance mechanism. After TTS finishes, the agent listens for a spoken answer. The spoken answer is fuzzy-matched to the options. If no response within N seconds, filler prompts re-state the question. This makes AskUserQuestion fully hands-free in voice mode.
+
+**Question card UI:**
+- Renders inline in chat stream (like TaskListCard)
+- Shows: question text, options as clickable buttons
+- Optional: "Other" option that opens a text input for free-form answer
+- Voice-eligible: if voice command is open, the user can speak their answer and the agent matches it to the closest option
+- Matches orb aesthetic: dark glass, brand-color option buttons, monospace question text
+
+**Orb question badge (when wings closed):**
+- Small badge with a question mark icon
+- Pulsing brand color to draw attention
+- Clicking the orb opens wings to reveal the question card
+- If voice command is open, the agent speaks the question aloud and listens for the answer
+
+### 9.2 Voice Smart Filler Comments
+
+**What it is:** Context-aware filler phrases that ConversationKernel emits during COMPRESS phase when the voice command is open and there's a silence gap. Prevents the user from thinking the agent froze. **Also supports AskUserQuestion** — the question is spoken aloud via the filler/utterance mechanism, and the agent listens for a spoken answer.
+
+**When it fires:**
+- Voice command is open (listening or processing state)
+- Caducean phase is COMPRESS (agent is working)
+- No utterance has been emitted for N seconds (configurable, default 5s)
+- Timer resets after each filler or utterance
+
+**Filler phrase selection:**
+- Context-aware: the filler matches what the agent is doing
+  - Searching: "Let me search for that...", "Searching now..."
+  - Reading files: "Let me check that file...", "Reading through it..."
+  - Executing tool: "One moment, working on it...", "Let me handle that..."
+  - Planning: "Let me think about the best approach...", "Considering options..."
+  - Generic: "Hmm...", "Let me see...", "Working on it..."
+- Phrase selection uses the current tool name / task phase to pick a relevant filler
+- Phrases are short (3-7 words) — they fill silence, they don't narrate
+- No filler during EXPAND phase (agent is already speaking)
+- No filler if the user is speaking (barge-in detection)
+
+**How it works:**
+1. ConversationKernel starts a silence timer when entering COMPRESS with voice command open
+2. If timer exceeds threshold, ConversationKernel emits a `status_phrase` event
+3. TTS plays the filler phrase
+4. Timer resets
+5. If another N seconds pass with no utterance, another filler fires (different phrase to avoid repetition)
+
+**AskUserQuestion + voice filler integration:**
+When the agent calls `ask_user_question` and voice command is open:
+1. ConversationKernel emits the question text as an `utterance` event (not a filler — a real utterance)
+2. TTS speaks the question aloud: "Did you mean file X or file Y?"
+3. After TTS finishes, the agent enters listening mode to capture the user's spoken answer
+4. The user speaks their answer (e.g., "file X" or just "X")
+5. STT captures the transcript
+6. The transcript is matched to the closest option (fuzzy match) or treated as free-form if "Other" is enabled
+7. The matched answer feeds back to the DER loop as the tool result
+8. If the user doesn't respond within N seconds after the question is spoken, a filler prompt fires:
+   - "Did you catch that? I asked: [question rephrased shorter]"
+   - Or: "Take your time — which option do you prefer?"
+9. If the user still doesn't respond after 2 filler prompts, the question is rendered as a visual card in chat-view (if open) or the orb badge pulses (if wings closed), and the DER loop waits for a click answer
+
+**Voice answer matching:**
+- Fuzzy match the spoken transcript against the option labels
+- If confidence > 0.7, accept the match
+- If confidence 0.4-0.7, ask for confirmation: "Did you mean [option]? Say yes or no."
+- If confidence < 0.4, re-state the question and ask the user to speak the option number: "I didn't catch that. Say option 1 for [A], option 2 for [B]."
+- If "Other" option is enabled and the transcript doesn't match any option, treat it as free-form input
+
+### 9.3 Agent-Initiated Speech
+
+**What it is:** The agent can open the audio pipeline itself to speak, even when chat-view isn't open and no voice command is in progress. TTS becomes subscribable independent of the voice command flow.
+
+**When the agent speaks proactively:**
+- Background task completed: "Done. I found 3 files matching your search."
+- AskUserQuestion prompt (when voice command is open): "Did you mean file X or file Y?"
+- Long-running task milestone: "Still working — step 3 of 5 done."
+- Error that needs user attention: "I hit an error trying to access that file. Want me to try a different approach?"
+
+**How it works:**
+1. TaskKernel or ConversationKernel emits an `utterance` event via EventBus
+2. TTS is subscribed to `utterance` events regardless of voice command state
+3. TTS plays the utterance through the audio pipeline
+4. If chat-view is closed, the orb shows a speaking state (canvas breathing shifts to speaking cadence)
+5. If chat-view is open, the utterance also renders as a chat message
+
+**Audio pipeline independence:**
+- Currently: TTS is triggered by the voice command flow (user speaks → STT → agent → TTS)
+- After: TTS is triggered by any `utterance` event from EventBus, regardless of source
+- The voice command flow still works as before — it's one source of utterance events
+- Agent-initiated speech is another source
+- Both go through the same TTS pipeline (chunk sizing, word timing, barge-in)
+
+**Orb speaking state (when chat-view closed):**
+- Orb canvas breathing shifts to speaking cadence (same as `isSpeaking` today)
+- No visual text shown (chat-view is closed)
+- User can click the orb to open wings and see the text
+- User can interrupt (barge-in) by speaking — same as today
+
+### 9.4 Files Touched
+
+| File | Change |
+|------|--------|
+| `backend/agent/tools/ask_user_tool.py` | **New** — `ask_user_question` tool implementation |
+| `backend/agent/task_kernel.py` | Emit `agent_question` events; emit `utterance` events for agent-initiated speech |
+| `backend/agent/conversation_kernel.py` | Silence timer for voice filler; emit filler `status_phrase` events; emit `utterance` for agent-initiated speech |
+| `backend/agent/tts.py` | Subscribe to `utterance` events regardless of voice command state |
+| `backend/agent/tool_bridge.py` | Register `ask_user_question` tool; pause DER loop until answer received |
+| `components/chat/QuestionCard.tsx` | **New** — multiple-choice question card component |
+| `components/iris/OrbBadge.tsx` | Add question badge state (question mark icon, pulsing) |
+| `components/chat-view.tsx` | Render QuestionCard in message stream; handle answer submission |
+| `components/iris/XurOrb.tsx` | Render question badge when agent has a question |
+| `hooks/useIRISWebSocket.ts` | Forward `iris:agent_question` as CustomEvent; handle answer submission |
+| `backend/iris_gateway.py` | Handle `agent_question_response` WS message; route to DER loop |
 
 ---
 
