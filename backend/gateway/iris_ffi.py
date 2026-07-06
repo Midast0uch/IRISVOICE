@@ -1052,3 +1052,32 @@ def ffi_simulate_trajectories(n: int = 500, steps: int = 50) -> int:
     if _engine is None:
         return -1
     return _engine.simulate_trajectories_to_db(n, steps)
+
+
+# -- Immortus FFI wrappers ------------------------------------------------
+
+
+def ffi_immortus_chain_append(
+    thread_id: str,
+    result: str = "",
+    coords_from: Optional[str] = None,
+    coords_to: Optional[str] = None,
+    nbl_outcome: Optional[str] = None,
+    insight: Optional[str] = None,
+    file_path: Optional[str] = None,
+    landmark_id: Optional[str] = None,
+) -> int:
+    """Append an entry to the Immortus chain. No-op if engine not loaded."""
+    if _engine is None:
+        return -1
+    return _engine.immortus_chain_append(
+        thread_id, result, coords_from, coords_to,
+        nbl_outcome, insight, file_path, landmark_id,
+    )
+
+
+def ffi_immortus_chain_keep_latest(thread_id: str, keep_count: int) -> int:
+    """Keep the latest keep_count entries in the Immortus chain."""
+    if _engine is None:
+        return -1
+    return _engine.immortus_chain_keep_latest(thread_id, keep_count)
