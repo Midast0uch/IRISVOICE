@@ -1161,6 +1161,20 @@ export function useIRISWebSocket(
         break
       }
 
+      // ── Agent question events ──────────────────────────────────────────────
+      // Forwarded from AskUserTool to frontend QuestionCard.
+      case "question:ask":
+      case "question:answered":
+      case "question:timeout": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent(
+            `iris:${(message as Record<string, unknown>).type}`,
+            { detail: payload }
+          ))
+        }
+        break
+      }
+
       case 'cli_output': {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:cli_output', { detail: payload }))

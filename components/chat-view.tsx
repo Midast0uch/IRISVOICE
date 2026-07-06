@@ -19,6 +19,7 @@ import { ConversationChips } from "@/components/chat/ConversationChips";
 const DeveloperWorkspace = lazy(() => import("@/components/workspace/DeveloperWorkspace"))
 import { SuggestionPills } from "@/components/chat/SuggestionPills";
 import { PermissionCard } from "@/components/chat/PermissionCard";
+import { QuestionCard } from "@/components/chat/QuestionCard";
 import type { ConversationChip, Suggestion } from "@/types/iris";
 
 // Notification types for the universal notification system
@@ -243,6 +244,16 @@ export function ChatWing({
     requiresConfirmation: boolean
   }
   const [pendingPermissions, setPendingPermissions] = useState<Map<string, PendingPermission>>(new Map())
+
+  // Pending agent questions state — rendered as QuestionCards
+  interface PendingQuestion {
+    questionId: string
+    text: string
+    options?: string[]
+    allowOther?: boolean
+    timeoutSeconds?: number
+  }
+  const [pendingQuestions, setPendingQuestions] = useState<Map<string, PendingQuestion>>(new Map())
 
   // Window width for responsive both-open layout
   const [windowWidth, setWindowWidth] = useState(1280);
@@ -562,6 +573,45 @@ export function ChatWing({
       window.removeEventListener('iris:permission_request', handlePermissionRequest)
       window.removeEventListener('iris:permission_granted', handlePermissionResolved)
       window.removeEventListener('iris:permission_denied', handlePermissionResolved)
+    }
+  }, [])
+
+  // Handle incoming agent questions (AskUserTool)
+  useEffect(() => {
+    function handleQuestionAsk(e: Event) {
+      const detail = (e as CustomEvent<{
+        question_id: string; text: string; options?: string[];
+        allow_other?: boolean; timeout_seconds?: number
+      }>).detail
+      if (!detail?.question_id || !detail?.text) return
+      setPendingQuestions(prev => {
+        const next = new Map(prev)
+        next.set(detail.question_id, {
+          questionId: detail.question_id,
+          text: detail.text,
+          options: detail.options,
+          allowOther: detail.allow_other,
+          timeoutSeconds: detail.timeout_seconds,
+        })
+        return next
+      })
+    }
+    function handleQuestionResolved(e: Event) {
+      const detail = (e as CustomEvent<{ question_id: string }>).detail
+      if (!detail?.question_id) return
+      setPendingQuestions(prev => {
+        const next = new Map(prev)
+        next.delete(detail.question_id)
+        return next
+      })
+    }
+    window.addEventListener('iris:question_ask', handleQuestionAsk)
+    window.addEventListener('iris:question_answered', handleQuestionResolved)
+    window.addEventListener('iris:question_timeout', handleQuestionResolved)
+    return () => {
+      window.removeEventListener('iris:question_ask', handleQuestionAsk)
+      window.removeEventListener('iris:question_answered', handleQuestionResolved)
+      window.removeEventListener('iris:question_timeout', handleQuestionResolved)
     }
   }, [])
 
@@ -2377,6 +2427,26 @@ ${message.text}`;
                           sendMessage?.('notification_response', {
                             notification_id: id,
                             action: 'confirm',
+                          })
+                        }}
+                      />
+                    ))}
+                  </AnimatePresence>
+
+                  {/* Agent Question Cards */}
+                  <AnimatePresence>
+                    {Array.from(pendingQuestions.values()).map((q) => (
+                      <QuestionCard
+                        key={q.questionId}
+                        questionId={q.questionId}
+                        text={q.text}
+                        options={q.options}
+                        allowOther={q.allowOther}
+                        timeoutSeconds={q.timeoutSeconds}
+                        onAnswer={(id, answer) => {
+                          sendMessage?.('question_response', {
+                            question_id: id,
+                            answer,
                           })
                         }}
                       />

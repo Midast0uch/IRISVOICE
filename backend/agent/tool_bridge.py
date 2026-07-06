@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Agent Tool Bridge
 
@@ -360,6 +360,16 @@ class AgentToolBridge:
                 },
                 "category": "research",
             },
+            {
+                "name": "ask_user_question",
+                "description": "Ask the user a question mid-task. Requires user input.",
+                "parameters": {
+                    "text": {"type": "string", "description": "The question to ask"},
+                    "options": {"type": "array", "items": {"type": "string"}, "description": "Optional: multiple-choice options"},
+                    "allow_other": {"type": "boolean", "description": "Allow free-form input (default: true)"}
+                },
+                "category": "system",
+            },
         ])
 
         # [13.3] Filter developer-only tools in personal mode
@@ -690,6 +700,53 @@ class AgentToolBridge:
 
             return error_result
 
+    async def _handle_ask_user_question(self, params: Dict, session_id: str) -> Dict:
+        """Handle the ask_user_question tool — ask user, wait for answer.
+
+        Expected params:
+          text: The question to ask (required)
+          options: List of multiple-choice options (optional)
+          allow_other: Whether to allow free-form input (optional, default True)
+
+        Returns the user's answer or {"timeout": True} on timeout.
+        """
+        try:
+            from backend.agent.tools.ask_user_tool import get_ask_user_tool
+
+            tool = get_ask_user_tool()
+            text = params.get("text", "")
+            if not text:
+                return {"success": False, "error": "Question text is required"}
+
+            question = tool.ask(
+                text=text,
+                options=params.get("options"),
+                allow_other=params.get("allow_other", True),
+                turn_id=session_id,
+            )
+
+            # Wait for answer (this blocks until user responds or timeout)
+            resolved = tool.wait_for_answer(question)
+
+            if resolved.status == "answered":
+                return {
+                    "success": True,
+                    "answer": resolved.answer,
+                    "question_id": resolved.question_id,
+                }
+            elif resolved.status == "timed_out":
+                return {
+                    "success": False,
+                    "timeout": True,
+                    "error": "User did not respond in time",
+                    "question_id": resolved.question_id,
+                }
+            return {"success": False, "error": "Unknown question status"}
+
+        except Exception as exc:
+            logger.warning("[ToolBridge] ask_user_question failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+
     async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
         """
         Execute any tool by name with routing to appropriate server.
@@ -760,11 +817,18 @@ class AgentToolBridge:
                      "gui_press_key", "take_screenshot"]
 
         try:
+            # Internal tools (handled here)
+            internal_tools = ["ask_user_question"]
+
+            if tool_name in internal_tools:
+                if tool_name == "ask_user_question":
+                    return await self._handle_ask_user_question(params, session_id)
+
             if tool_name in vision_tools:
-                return await self.execute_vision_tool(tool_name, params, session_id)
+                    return await self.execute_vision_tool(tool_name, params, session_id)
 
             if tool_name in gui_tools:
-                return await self.execute_gui_tool(tool_name, params, session_id)
+                    return await self.execute_gui_tool(tool_name, params, session_id)
 
             # MCP Tools
             mcp_tools = {

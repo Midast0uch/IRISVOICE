@@ -4163,6 +4163,34 @@ class IRISGateway:
                     f"[Session: {session_id}] flush_pending failed: {_flush_err}"
                 )
 
+        elif msg_type == "notification_response":
+            # Handle permission responses from the frontend PermissionCard
+            try:
+                from backend.agent.permissions import get_permission_system
+                perm_system = get_permission_system()
+                request_id = payload.get("notification_id", "")
+                action = payload.get("action", "")
+                if action == "grant":
+                    perm_system.respond_to_permission(request_id, approved=True)
+                elif action == "deny":
+                    perm_system.respond_to_permission(request_id, approved=False)
+                elif action == "confirm":
+                    perm_system.respond_to_permission(request_id, approved=True, confirmed=True)
+            except Exception as _perm_err:
+                self._logger.warning(f"[Permissions] notification_response failed: {_perm_err}")
+
+        elif msg_type == "question_response":
+            # Handle question responses from AskUserTool
+            try:
+                from backend.agent.tools.ask_user_tool import get_ask_user_tool
+                tool = get_ask_user_tool()
+                question_id = payload.get("question_id", "")
+                answer = payload.get("answer", "")
+                if question_id and answer:
+                    tool.receive_answer(question_id, answer)
+            except Exception as _q_err:
+                self._logger.warning(f"[AskUser] question_response failed: {_q_err}")
+
         elif msg_type == "clear_chat":
             # Get AgentKernel for this session and clear conversation
             try:
