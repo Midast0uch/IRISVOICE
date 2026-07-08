@@ -20,6 +20,9 @@ const DeveloperWorkspace = lazy(() => import("@/components/workspace/DeveloperWo
 import { SuggestionPills } from "@/components/chat/SuggestionPills";
 import { PermissionCard } from "@/components/chat/PermissionCard";
 import { QuestionCard } from "@/components/chat/QuestionCard";
+import TaskListCard from "@/components/chat/TaskListCard";
+import ContextPill from "@/components/chat/ContextPill";
+import { useTaskProgress } from "@/hooks/useTaskProgress";
 import type { ConversationChip, Suggestion } from "@/types/iris";
 
 // Notification types for the universal notification system
@@ -314,6 +317,24 @@ export function ChatWing({
   const glowColor = brandTheme.glow.color || "#00d4ff";
   const primaryColor = brandTheme.glow.color || "#00d4ff";
   const fontColor = brandTheme.text.primary || "#ffffff";
+
+  // Task progress (drives TaskListCard + OrbBadge)
+  const taskProgress = useTaskProgress()
+  // Context-window usage (drives ContextPill)
+  const [contextUsage, setContextUsage] = useState<{ used: number; max: number }>({
+    used: 0,
+    max: 128000,
+  })
+  useEffect(() => {
+    const onUsage = (e: Event) => {
+      const d = (e as CustomEvent).detail
+      if (d && typeof d.used_tokens === "number") {
+        setContextUsage({ used: d.used_tokens, max: d.max_tokens ?? 128000 })
+      }
+    }
+    window.addEventListener("iris:context_usage", onUsage)
+    return () => window.removeEventListener("iris:context_usage", onUsage)
+  }, [])
 
   // Get active conversation messages
   const activeConversation = conversations.find(c => c.id === activeConversationId);
@@ -2399,6 +2420,15 @@ ${message.text}`;
 
                   <div ref={messagesEndRef} />
 
+                  {/* Agent task plan / progress (drives TaskListCard) */}
+                  {taskProgress.steps.length > 0 && (
+                    <TaskListCard
+                      steps={taskProgress.steps}
+                      turnId={taskProgress.turnId}
+                      mode={taskProgress.mode}
+                    />
+                  )}
+
                   {/* Permission Cards — inline tool approval UI */}
                   <AnimatePresence>
                     {Array.from(pendingPermissions.values()).map((perm) => (
@@ -2770,7 +2800,7 @@ ${message.text}`;
                     whileTap={{ scale: 0.92 }}
                     title="Upload file"
                   >
-                    <Icon icon="material-symbols:arrow-upload-progress" size={18} />
+                    <Icon icon="material-symbols:arrow-upload-progress" width={18} />
                   </motion.button>
 
                   {/* Divider */}
@@ -2791,6 +2821,11 @@ ${message.text}`;
                       glowColor={glowColor}
                       onChipClick={handleChipClick}
                       containerRef={messagesContainerRef}
+                    />
+                    <ContextPill
+                      usedTokens={contextUsage.used}
+                      maxTokens={contextUsage.max}
+                      phase={voiceState}
                     />
                   </div>
                 </div>

@@ -3630,9 +3630,20 @@ Respond with a JSON object:
                     "task_id": _turn_id or plan.original_task[:40],
                     "description": plan.original_task[:200],
                     "mode": initial_mode.value,
+                    "steps": [
+                        {
+                            "id": it.step_id,
+                            "description": it.description,
+                            "status": "pending",
+                            "toolName": it.tool,
+                        }
+                        for it in items
+                    ],
+                    "total_steps": len(items),
                 },
                 turn_id=_turn_id,
                 conversation_id=self.conversation_id,
+                session_id=_session,
             )
         except Exception:
             pass  # EventBus is optional — no crash if it fails
@@ -3871,6 +3882,7 @@ Respond with a JSON object:
                         },
                         turn_id=_turn_id,
                         conversation_id=self.conversation_id,
+                        session_id=_session,
                     )
                 else:
                     get_event_bus().emit(
@@ -3883,6 +3895,7 @@ Respond with a JSON object:
                         },
                         turn_id=_turn_id,
                         conversation_id=self.conversation_id,
+                        session_id=_session,
                     )
             except Exception:
                 pass
@@ -3921,6 +3934,23 @@ Respond with a JSON object:
             # ── TOKEN BUDGET: accumulate estimated tokens from step result ──
             # 4 chars ≈ 1 token; also count prompt overhead per step (~200 tok)
             _tokens_used += max(200, len(step_result) // 4)
+            # ── EventBus: emit context:usage (token budget progress) ──────
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                get_event_bus().emit(
+                    IRISStreamEvent.CONTEXT_USAGE,
+                    data={
+                        "used_tokens": int(_tokens_used),
+                        "max_tokens": int(_token_budget),
+                        "step_number": item.step_number,
+                        "total_steps": len(queue.items),
+                    },
+                    turn_id=_turn_id,
+                    conversation_id=self.conversation_id,
+                    session_id=_session,
+                )
+            except Exception:
+                pass  # EventBus is optional — no crash if it fails
             if _tokens_used >= _token_budget:
                 logger.info(
                     f"[DER] Token budget exhausted ({_tokens_used}/{_token_budget}) "
@@ -4138,6 +4168,24 @@ Respond with a JSON object:
         # and mycelium_crystallize_landmark, so we do NOT duplicate them here.
         had_failures = any("[STEP ERROR" in o for o in step_outputs)
         outcome = "failure" if had_failures else "success"
+
+        # ── EventBus: emit task:done / task:fail ────────────────────────
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            get_event_bus().emit(
+                IRISStreamEvent.TASK_DONE if outcome == "success" else IRISStreamEvent.TASK_FAIL,
+                data={
+                    "task_id": _turn_id or plan.original_task[:40],
+                    "outcome": outcome,
+                    "steps_completed": len(completed_items),
+                    "total_steps": len(plan.steps),
+                },
+                turn_id=_turn_id,
+                conversation_id=self.conversation_id,
+                session_id=_session,
+            )
+        except Exception:
+            pass  # EventBus is optional — no crash if it fails
 
         try:
             if self._memory_interface:

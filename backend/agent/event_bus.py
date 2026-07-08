@@ -82,6 +82,9 @@ class IRISStreamEvent(enum.Enum):
     # ── Mode change ─────────────────────────────────────────────────────
     MODE_CHANGED = "mode:changed"
 
+    # ── Context window usage ────────────────────────────────────────────
+    CONTEXT_USAGE = "context:usage"
+
     # ── DER loop ────────────────────────────────────────────────────────
     DER_STEP = "der:step"
     DER_DONE = "der:done"

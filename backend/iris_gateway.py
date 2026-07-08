@@ -125,6 +125,13 @@ class IRISGateway:
         self._state_manager = state_manager or get_state_manager()
         self._logger = logging.getLogger(__name__)
 
+        # Bus -> WebSocket bridge: delivers task/question/permission/context
+        # events to the frontend. Started here; main loop captured in
+        # set_main_loop() (called from main.py lifespan startup).
+        from .agent.ws_event_bridge import WSEventBridge
+        self._ws_bridge = WSEventBridge(self._ws_manager)
+        self._ws_bridge.start()
+
         # Initialize wake word discovery
         self._wake_word_discovery = WakeWordDiscovery()
         self._wake_word_discovery.scan_directory()
@@ -217,6 +224,7 @@ class IRISGateway:
         can reach the event loop before the first UI WebSocket connects.
         """
         self._main_loop = loop
+        self._ws_bridge.set_main_loop(loop)
         self._logger.info("[IRISGateway] Main event loop captured.")
         # Start session GC task
         if self._session_gc_task is None:

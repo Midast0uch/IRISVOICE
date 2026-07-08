@@ -69,6 +69,9 @@ interface UseIRISWebSocketReturn {
   ttsAudioLevel: number
   // Audio phase: "listening" | "speaking" | "idle"
   audioPhase: "listening" | "speaking" | "idle"
+  // Per-thread context keying (Phase 1)
+  currentConversationId: string | undefined
+  setCurrentConversationId: (id: string | undefined) => void
   lastTextResponse: TextResponseMessage | null
   // Agent state
   agentStatus: Record<string, unknown> | null
@@ -1171,6 +1174,38 @@ export function useIRISWebSocket(
             `iris:${(message as Record<string, unknown>).type}`,
             { detail: payload }
           ))
+        }
+        break
+      }
+
+      // ── Task progress events ───────────────────────────────────────────────
+      // Forwarded from WSEventBridge to frontend TaskListCard + OrbBadge.
+      // Collapsed into a single iris:task_update CustomEvent (detail carries
+      // the original event type) so useTaskProgress can reduce them.
+      case "task:start":
+      case "task:progress":
+      case "task:milestone":
+      case "task:done":
+      case "task:fail":
+      case "tool:call":
+      case "tool:result":
+      case "tool:error": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:task_update', {
+            detail: {
+              type: (message as Record<string, unknown>).type,
+              ...(payload as Record<string, unknown>),
+            },
+          }))
+        }
+        break
+      }
+
+      // ── Context usage events ───────────────────────────────────────────────
+      // Forwarded from WSEventBridge to frontend ContextPill.
+      case "context:usage": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:context_usage', { detail: payload }))
         }
         break
       }

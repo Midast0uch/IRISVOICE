@@ -16,6 +16,9 @@ import {
   ANIM_DURATION_MS,
 } from "./orb/animationModes"
 import { RadialArcNodes } from "./radial/RadialArcNodes"
+import OrbBadge from "./OrbBadge"
+import { useTaskProgress } from "@/hooks/useTaskProgress"
+import { useAgentQuestion } from "@/hooks/useAgentQuestion"
 
 // ── Label configuration (matches PrototypeOrbShellsRotating winner) ────
 // Positions are relative to orb center in a 120px container.
@@ -74,6 +77,8 @@ export function XurOrb({
   } = useNavigation()
   const { getThemeConfig } = useBrandColor()
   const cadence = useCadenceDetection()
+  const taskProgress = useTaskProgress()
+  const agentQuestion = useAgentQuestion()
 
   // ── State ────────────────────────────────────────────────────────
   const [animationMode, setAnimationMode] = useState<AnimationMode>('C')
@@ -126,6 +131,13 @@ export function XurOrb({
     uiState === UILayoutState.UI_STATE_CHAT_OPEN ||
     uiState === UILayoutState.UI_STATE_BOTH_OPEN ||
     uiState === UILayoutState.UI_STATE_DASHBOARD_OPEN
+
+  // OrbBadge visibility: only when wings are closed (orb-only) AND a
+  // background task is working or a question is pending.
+  const showOrbBadge =
+    uiState === UILayoutState.UI_STATE_IDLE &&
+    (taskProgress.isWorking || agentQuestion.hasPendingQuestion)
+  const badgeVariant = agentQuestion.hasPendingQuestion ? "question" : "working"
 
   // Sync menuOpen with navigation level — menu is only open at level 2.
   // When navigating forward to level 3 (WheelView), menu closes.
@@ -445,6 +457,15 @@ export function XurOrb({
             />
           )}
         </AnimatePresence>
+
+        {/* OrbBadge — background-task / question indicator (orb-only view) */}
+        <OrbBadge
+          isVisible={showOrbBadge}
+          variant={badgeVariant}
+          currentStep={taskProgress.currentStep}
+          totalSteps={taskProgress.totalSteps}
+          glowColor={glowColor}
+        />
 
         {/* Inner 3D layer — canvas + labels */}
         <div
