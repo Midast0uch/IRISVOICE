@@ -16,9 +16,10 @@ from .personality import PersonalityManager
 from .memory import ConversationMemory, TaskRecord
 from .model_router import ModelRouter
 from .tool_bridge import AgentToolBridge
+from .mcm_protocol.actions.pacman_fragment import is_external_tool
 from ..llm_service import llm as _llm
 from . import streaming as _streaming
-from typing import Any, Dict, Optional, List, Callable, Tuple
+from typing import Any, Dict, Optional, List, Callable, Tuple, Sequence
 import json
 import asyncio
 import logging
@@ -338,6 +339,13 @@ class AgentKernel:
         # MCM Protocol Orchestrator — wired after set_memory_interface()
         self._mcm_orch = None
 
+        # Trust-routing (plan W2): whether the current turn touched external/
+        # web sources (web_search / crawler_query). When True, turn-pair
+        # fragments are stored in the 'reference' zone instead of 'trusted'.
+        # Reset at the start of each turn (process_text_message /
+        # _execute_plan_der) and set when an external tool runs.
+        self._turn_touched_external: bool = False
+
         # ── DER Loop components ────────────────────────────────────────────
         # DER_MAX_CYCLES / DER_MAX_VETO_PER_ITEM re-exported at module level
         # for spec compliance (Gap 11). Canonical values live in der_constants.
@@ -417,6 +425,29 @@ class AgentKernel:
         except Exception as _mcm_err:
             logger.warning(f"[AgentKernel] MCMOrchestrator unavailable: {_mcm_err}")
             self._mcm_orch = None
+
+    # ── Trust-routing helpers (plan W2) ────────────────────────────────────
+    def _pacman_zone_for_turn(self) -> Optional[str]:
+        """Zone for fragments produced by the current turn.
+
+        Returns 'reference' when the turn touched external/web sources
+        (web_search / crawler_query), else None so EpisodicStore applies its
+        trusted/tool default. See trust-routing plan W2.
+        """
+        return "reference" if getattr(self, "_turn_touched_external", False) else None
+
+    def mark_external_tool(self, tool_name: str = "") -> None:
+        """Flag the current turn as having touched external/web sources.
+
+        Idempotent: once a turn is marked external it stays external for the
+        whole turn (a later local tool must not clear it).
+        """
+        if is_external_tool(tool_name):
+            self._turn_touched_external = True
+
+    def clear_turn_trust_flag(self) -> None:
+        """Reset the per-turn external flag. Call at the start of each turn."""
+        self._turn_touched_external = False
 
     def clear_conversation(self, conversation_id: Optional[str] = None) -> None:
         """
@@ -1225,7 +1256,11 @@ class AgentKernel:
             '{"speak": "<2-3 sentence conversational summary of what you say>", '
             '"show": {"format": "markdown|html|table|diagram|text", '
             '"content": "<the full content>", '
-            '"alternatives": ["<other formats you could render>"]}}\n'
+            '"alternatives": ["<other formats you could render>"], '
+            '"variants": {"<format>": "<full content rendered in that format>", ...} '
+            '// optional but encouraged: also include the SAME content rendered in '
+            'other formats (e.g. {"markdown": "...", "html": "..."}) so the user can '
+            'switch formats instantly without re-generating}}\n'
             "The `speak` field is what the user HEARS via TTS — keep it brief "
             "and natural (1-3 sentences). The `show` field is what renders "
             "visually — put the detail there. For short conversational replies, "
@@ -2519,6 +2554,19 @@ class AgentKernel:
         speak, show = parse_structured_response(response)
 
         if show is not None:
+            # Trust-routing W3: 'untrusted' when this turn touched external/web
+            # sources, else 'trusted'. The frontend sanitizes html/mermaid when
+            # trust != 'trusted'.
+            trust = (
+                "untrusted"
+                if self._pacman_zone_for_turn() == "reference"
+                else "trusted"
+            )
+            # W4: stable document_id so the canonical data (not the render) can
+            # be stored and later retrieved/reformatted by id.
+            import uuid
+
+            document_id = str(uuid.uuid4())
             try:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -2528,6 +2576,8 @@ class AgentKernel:
                         "format": show.get("format", "markdown"),
                         "content": show.get("content", ""),
                         "alternatives": show.get("alternatives", []),
+                        "trust": trust,
+                        "document_id": document_id,
                         "turn_id": turn_id,
                         "conversation_id": conversation_id,
                     },
@@ -2536,6 +2586,16 @@ class AgentKernel:
                 )
             except Exception as exc:
                 logger.warning("[AgentKernel] DOCUMENT_RENDER emit failed: %s", exc)
+            # W4: persist the canonical DATA (underlying structured content),
+            # keyed by document_id, in both memory stores. Fire-and-forget so a
+            # storage failure never blocks the document render.
+            self._store_document_data(
+                document_id=document_id,
+                show=show,
+                trust=trust,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+            )
 
         if speak is not None:
             # Issue C.2: also deliver the spoken summary to external channels
@@ -2556,22 +2616,216 @@ class AgentKernel:
             return ""
         return response
 
+    # ── W4: canonical document-data storage ────────────────────────────────
+    def _get_document_store(self):
+        """Return the DocumentDataStore for this kernel's memory DB, or None."""
+        try:
+            from backend.agent.document_store import DocumentDataStore
+
+            return DocumentDataStore.get_for(self._memory_interface)
+        except Exception as exc:
+            logger.warning("[AgentKernel] document store unavailable: %s", exc)
+            return None
+
+    def _store_document_data(
+        self,
+        document_id: str,
+        show: dict,
+        trust: str,
+        turn_id: Optional[str],
+        conversation_id: str,
+    ) -> None:
+        """Persist a document's canonical DATA (not its render) keyed by document_id.
+
+        Two coordinated homes (plan W4):
+          * Mycelium (episodic.fragment_and_store) — semantically retrievable
+            later via mcm_recall / pacman_recall, scoped by zone (trust).
+          * Immortus 4D chain (immortus_chain_append) — placed in the reasoning
+            trajectory via coords_from->coords_to so it "finds its place".
+
+        The rendered ``content`` is only a view derived on demand; the stored
+        source of truth is the canonical {format, content, alternatives}.
+        All failures are swallowed — storage must never block the render.
+        """
+        import json
+
+        fmt = show.get("format", "markdown")
+        content = show.get("content", "")
+        # W5 (G1): store the actual rendered content of each alternative format.
+        # The LLM may emit `variants: {format: content}` in one response; we
+        # always also register the primary format's content as a variant so a
+        # reformat to the original format is deterministic too.
+        variants = dict(show.get("variants", {}) or {})
+        variants[fmt] = content
+
+        canonical = {
+            "document_id": document_id,
+            "format": fmt,
+            "content": content,
+            "variants": variants,
+            "alternatives": show.get("alternatives", []),
+            "trust": trust,
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+        }
+        canonical_text = json.dumps(canonical, ensure_ascii=False)
+        zone = "reference" if trust == "untrusted" else "trusted"
+
+        # ── DocumentDataStore: source-of-truth keyed by document_id (G4) ────
+        try:
+            store = self._get_document_store()
+            if store is not None:
+                store.store(
+                    document_id=document_id,
+                    conversation_id=conversation_id,
+                    fmt=fmt,
+                    content=content,
+                    variants=variants,
+                    alternatives=show.get("alternatives", []),
+                    trust=trust,
+                )
+        except Exception as exc:
+            logger.warning("[AgentKernel] document_data store failed: %s", exc)
+
+        # ── Mycelium: semantic/episodic store ──────────────────────────────
+        try:
+            mi = getattr(self, "_memory_interface", None)
+            if mi is not None and getattr(mi, "episodic", None) is not None:
+                mi.episodic.fragment_and_store(
+                    canonical_text,
+                    conversation_id,
+                    chunk_type="document_data",
+                    zone=zone,
+                )
+        except Exception as exc:
+            logger.warning("[AgentKernel] document_data Mycelium store failed: %s", exc)
+
+        # ── Mycelium: seed document data as a trust-routed context node (W8/O2) ──
+        # So trusted, frequently-referenced data can crystallize into a permanent
+        # landmark at PERMANENCE_THRESHOLD. Trust routing is CellWall-enforced
+        # inside the interface — never bypassed. coords_from is the agent's real
+        # reasoning-state coordinate ("x,y,xi,u"); the interface parses it.
+        try:
+            if mi is not None and hasattr(mi, "ingest_document_data"):
+                mi.ingest_document_data(
+                    content=canonical_text,
+                    trust=trust,
+                    session_id=conversation_id,
+                    coords=coords_from,
+                    label=document_id,
+                )
+        except Exception as exc:
+            logger.warning("[AgentKernel] document_data Mycelium seed failed: %s", exc)
+
+        # ── Immortus 4D chain: trajectory placement ────────────────────────
+        # coords_from = the agent's actual reasoning-state coordinate at the
+        # moment this document was produced (sourced from the Caducean
+        # trajectory recorder). This is what lets W7/O1 do trajectory-proximity
+        # recall ("data gathered while thinking like this") instead of a flat
+        # append. Falls back to "" if no trajectory has been recorded yet.
+        coords_from = ""
+        try:
+            from backend.agent.caducean_trajectory import get_trajectory_recorder
+
+            _coord = get_trajectory_recorder(self._memory_interface).get_latest_coordinate(
+                conversation_id
+            )
+            if _coord is not None:
+                coords_from = "{x:.4f},{y:.4f},{xi:.4f},{u:.4f}".format(**_coord)
+        except Exception as exc:
+            logger.warning("[AgentKernel] document_data coord lookup failed: %s", exc)
+
+        try:
+            from backend.gateway.iris_ffi import ffi_immortus_chain_append
+
+            ffi_immortus_chain_append(
+                thread_id=conversation_id,
+                result=canonical_text,
+                coords_from=coords_from,
+                coords_to=canonical.get("format", "document"),
+                nbl_outcome="document_render",
+                insight=canonical.get("format", "document"),
+                file_path=document_id,
+                landmark_id="",
+            )
+        except Exception as exc:
+            logger.warning("[AgentKernel] document_data Immortus store failed: %s", exc)
+
     def reformat_document(
         self,
-        content: str,
-        target_format: str,
+        document_id: Optional[str] = None,
+        content: Optional[str] = None,
+        target_format: str = "",
         conversation_id: str = "default",
         turn_id: Optional[str] = None,
         original_format: Optional[str] = None,
+        trust: Optional[str] = None,
     ) -> Optional[str]:
         """Re-render a previously generated document in a different format.
 
-        Calls the LLM (via ``_respond_direct``) to reformat ``content`` as
-        ``target_format``, then emits a DOCUMENT_RENDER event so the frontend
-        swaps the rendered document.  Returns the new content, or None on
-        failure.  Issue D.2.
+        W5 (data-centric): the primary path retrieves the document's canonical
+        data + stored variants by ``document_id`` (the frontend sends only
+        ``{document_id, target_format}`` — no client ``content``).  Deterministic
+        first (G1): if ``target_format`` is already a stored variant, it is
+        returned with **zero LLM calls**.  Only genuinely new formats invoke the
+        LLM on the canonical data, and the result is cached as a new variant.
+
+        A ``content``-based fallback (pre-W5) remains for direct/legacy callers;
+        it always goes through the LLM.
+
+        ``trust`` (trust-routing W3) is carried through so a reformatted
+        document keeps the original's trust level.  Returns the new content, or
+        None on failure.  Issue D.2.
         """
-        if not content or not target_format:
+        if not target_format:
+            return None
+
+        # ── W5 primary path: retrieve by document_id ───────────────────────
+        if document_id:
+            store = self._get_document_store()
+            doc = store.get(document_id) if store is not None else None
+            if doc is None:
+                logger.warning(
+                    "[AgentKernel] reformat_document: document_id %s not found",
+                    document_id,
+                )
+                return None
+            stored_trust = doc.get("trust") or trust or "trusted"
+
+            # Deterministic-first (G1): stored variant -> no LLM.
+            variant = store.get_variant(document_id, target_format) if store else None
+            if variant is not None:
+                payload = {
+                    "format": target_format,
+                    "content": variant,
+                    "alternatives": doc.get("alternatives") or [],
+                    "trust": stored_trust,
+                    "document_id": document_id,
+                    "turn_id": turn_id,
+                    "conversation_id": conversation_id,
+                    "reformatted": True,
+                }
+                try:
+                    from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                    get_event_bus().emit(
+                        IRISStreamEvent.DOCUMENT_RENDER,
+                        data=payload,
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[AgentKernel] DOCUMENT_RENDER (reformat) emit failed: %s", exc
+                    )
+                return variant
+
+            # No stored variant -> LLM reformat on the canonical data.
+            content = doc.get("content", "")
+            original_format = original_format or doc.get("format")
+
+        # ── LLM reformat path (W5 new format, or legacy content fallback) ───
+        if not content:
             return None
         prompt = (
             "Reformat the following document as " + target_format + ". "
@@ -2597,7 +2851,11 @@ class AgentKernel:
             turn_id=turn_id,
             conversation_id=conversation_id,
             original_format=original_format,
+            trust=trust,
         )
+        # T6: reformat payload preserves document_id + trust.
+        if document_id:
+            payload["document_id"] = document_id
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -2611,7 +2869,56 @@ class AgentKernel:
             logger.warning(
                 "[AgentKernel] DOCUMENT_RENDER (reformat) emit failed: %s", exc
             )
+        # Cache the new variant so future reformats are deterministic (G1).
+        if document_id:
+            try:
+                store = self._get_document_store()
+                if store is not None:
+                    store.add_variant(document_id, target_format, payload.get("content", ""))
+            except Exception as exc:
+                logger.warning("[AgentKernel] reformat variant cache failed: %s", exc)
         return payload["content"]
+
+    def retrieve_documents_by_trajectory(
+        self,
+        coords: Sequence[float],
+        threshold: float = 1.0,
+        limit: int = 10,
+        conversation_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """O1 (W7): return document data produced in a *similar reasoning state*.
+
+        Queries the Immortus 4D chain by coordinate proximity (not embedding
+        cosine) and returns the canonical document data for document entries
+        (``nbl_outcome='document_render'``, ``file_path`` set). This is the novel
+        primitive: "data gathered while thinking like this."  Fire-and-forget —
+        returns [] on any failure.
+        """
+        try:
+            import json
+            from backend.gateway.iris_ffi import ffi_immortus_chain_query_by_coordinate
+
+            entries = ffi_immortus_chain_query_by_coordinate(
+                coords,
+                threshold=threshold,
+                limit=limit,
+                thread_id=conversation_id,
+                nbl_outcome="document_render",
+            )
+            docs = []
+            for e in entries:
+                if not e.get("file_path"):
+                    continue
+                try:
+                    data = json.loads(e.get("result") or "{}")
+                except Exception:
+                    data = {}
+                data["_distance"] = e.get("distance")
+                docs.append(data)
+            return docs
+        except Exception as exc:
+            logger.warning("[AgentKernel] trajectory doc retrieval failed: %s", exc)
+            return []
 
     def _sanitize_task(self, task: str) -> str:
         """
@@ -2876,6 +3183,10 @@ class AgentKernel:
         """
         _t_start = time.perf_counter()
 
+        # Trust-routing W2: each new turn starts unmarked; the external flag is
+        # set if a web/crawler tool runs during this turn.
+        self.clear_turn_trust_flag()
+
         # Use provided session_id or fall back to instance session_id
         if session_id is None:
             session_id = self.session_id
@@ -2988,12 +3299,16 @@ class AgentKernel:
             try:
                 if response:
                     _turn = f"User: {text}\nAssistant: {response}"
+                    # Trust-routing W2: route to 'reference' when this turn
+                    # touched external/web sources; else keep default 'trusted'.
+                    _zone = self._pacman_zone_for_turn()
                     if self._mcm_orch is not None:
                         self._mcm_orch.post_turn(
                             self._conversation_memory.messages
                             if self._conversation_memory
                             else [],
                             response_text=response,
+                            zone=_zone,
                         )
                         metrics.pacman_store += 1
                     elif (
@@ -3007,7 +3322,7 @@ class AgentKernel:
                             _turn,
                             session_id=session_id or self.session_id,
                             chunk_type="context_fragment",
-                            zone="trusted",
+                            zone=_zone,
                         )
                         metrics.pacman_store += 1
             except Exception as _pac_exc:
@@ -3724,6 +4039,8 @@ Respond with a JSON object:
         Never raises — wraps failures as step error text so the response
         always reaches the user.
         """
+        # Trust-routing W2: a plan run is one turn — start unmarked.
+        self.clear_turn_trust_flag()
         from backend.agent.der_loop import (
             DirectorQueue,
             QueueItem,
@@ -3992,6 +4309,9 @@ Respond with a JSON object:
             step_success: bool = True
             try:
                 if item.tool and self._tool_bridge is not None:
+                    # Trust-routing W2: mark the turn external when a web/crawler
+                    # tool runs, so later turn-pair fragments land in 'reference'.
+                    self.mark_external_tool(item.tool)
                     # execute_tool is async — use asyncio.run() since _execute_plan_der
                     # runs inside run_in_executor (a thread pool thread), making
                     # asyncio.run() safe here. Same pattern as the ReAct loop (line ~1484).
@@ -4073,11 +4393,17 @@ Respond with a JSON object:
                         f"[Step {item.step_number}: {item.description[:120]}]"
                         f"\n{step_result}"
                     )
+                    # Trust-routing W2: a DER step that used an external/web
+                    # tool stores its output in 'reference', not 'tool'.
+                    _der_zone = (
+                        "reference" if is_external_tool(getattr(item, "tool", "")) else None
+                    )
                     if self._mcm_orch is not None:
                         self._mcm_orch.post_turn(
                             [{"role": "assistant", "content": _der_text}],
                             response_text=_der_text,
                             tool_name=getattr(item, "tool_name", ""),
+                            zone=_der_zone,
                         )
                     elif (
                         self._memory_interface is not None
@@ -4090,7 +4416,7 @@ Respond with a JSON object:
                             _der_text,
                             session_id=_session,
                             chunk_type="der_output",
-                            zone="tool",
+                            zone=_der_zone,
                         )
             except Exception as _frag_exc:
                 loud_error(_frag_exc, "der_pacman_fragment")

@@ -67,15 +67,22 @@ class MCMOrchestrator:
         messages: list[dict],
         response_text: str = "",
         tool_name: str = "",
+        zone: Optional[str] = None,
     ) -> bool:
         """
         Run post_turn_flow workflow.
         Returns True if MCM compression fired.
+
+        ``zone`` is a non-breaking hint (trust-routing plan W2): when a turn
+        touched external/web sources the caller passes 'reference' so the
+        downstream pacman_fragment action stores the fragment outside the
+        trusted zone. Ignored when None.
         """
         ctx = self._make_ctx(
             messages=messages,
             response_text=response_text,
             tool_name=tool_name,
+            zone=zone,
         )
         result = self.run_workflow("post_turn_flow", ctx)
         # Propagate compressed messages back to caller's list

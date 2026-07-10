@@ -221,6 +221,25 @@ class ConversationContextStore:
             )
             return False
 
+    def close(self) -> None:
+        """Close all connections and free resources. Called by fixtures on teardown.
+
+        After calling close(), the store can still be used — it will open new
+        connections as needed.  This is a hint for the SQLite engine to flush
+        WAL and release file locks so tools like tempfile.cleanup() can delete
+        the database file on Windows.
+        """
+        try:
+            conn = self._get_connection()
+            # Flush WAL to main database file
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            # Switch out of WAL mode so no WAL/-shm/-wal files remain
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.commit()
+            conn.close()
+        except Exception as exc:
+            logger.warning(f"[ConversationContextStore] close failed: {exc}")
+
     def list_active(self) -> List[str]:
         """Return list of conversation_ids that have stored context."""
         try:

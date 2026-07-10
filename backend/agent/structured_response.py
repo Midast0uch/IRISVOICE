@@ -77,12 +77,17 @@ def build_reformat_payload(
     turn_id: Optional[str] = None,
     conversation_id: str = "default",
     original_format: Optional[str] = None,
+    trust: Optional[str] = None,
 ) -> Dict:
     """Turn an LLM reformat response into a DOCUMENT_RENDER payload (Issue D.2).
 
     Accepts either structured JSON (``{"show": {...}}``) or plain text.  The
     original format is offered back as an alternative so the user can toggle
     between formats.  Pure and dependency-free — safe to unit test directly.
+
+    ``trust`` (trust-routing W3): when provided, carried through so a
+    re-rendered document keeps the original document's trust level
+    ('trusted' / 'untrusted').  Defaults to 'trusted'.
     """
     speak, show = parse_structured_response(reformatted_text)
     if show is not None:
@@ -99,6 +104,7 @@ def build_reformat_payload(
         "format": new_format,
         "content": new_content,
         "alternatives": alternatives,
+        "trust": trust or "trusted",
         "turn_id": turn_id,
         "conversation_id": conversation_id,
         "reformatted": True,

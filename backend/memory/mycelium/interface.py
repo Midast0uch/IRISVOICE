@@ -655,6 +655,92 @@ class MyceliumInterface:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[interface] ingest_rag_content index failed: %s", exc)
 
+    def ingest_document_data(
+        self,
+        content: str,
+        trust: str,
+        session_id: str,
+        coords: Any = None,
+        label: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        W8 (O2): Seed agent document data into the Mycelium coordinate graph as a
+        trust-routed context node with proper coordinates, so that trusted,
+        frequently-referenced data can crystallize into a permanent landmark at
+        PERMANENCE_THRESHOLD (landmark.py:414).
+
+        Trust routing (CellWall-enforced, never bypassed):
+          * trust == "trusted"   -> HyphaChannel.VERIFIED -> writes TOOL_ZONE
+                                     (context space)
+          * trust == "untrusted" -> HyphaChannel.EXTERNAL -> writes REFERENCE_ZONE
+                                     (toolpath space only)
+
+        The LandmarkCondenser trust-cap (landmark.py:40, kyudo.py:63, 0.30)
+        excludes untrusted sessions from crystallization when ``source_channel``
+        is supplied at crystallize time — we record the channel here so a future
+        crystallize call can honor it. All failures are swallowed: document
+        seeding must never block the render.
+        """
+        try:
+            from .kyudo import HyphaChannel  # noqa: PLC0415
+
+            channel = (
+                HyphaChannel.VERIFIED if trust == "trusted" else HyphaChannel.EXTERNAL
+            )
+            space_id = "context" if channel == HyphaChannel.VERIFIED else "toolpath"
+
+            # CellWall guard — never bypass the trust boundary.
+            if not self._cell_wall.can_write_space(channel, space_id):
+                logger.debug(
+                    "[interface] ingest_document_data: channel %s blocked from '%s'",
+                    channel.name,
+                    space_id,
+                )
+                return
+
+            # Normalize coordinates (accept "x,y,xi,u" string or list of floats).
+            norm_coords: Optional[List[float]] = None
+            if coords:
+                if isinstance(coords, str):
+                    try:
+                        norm_coords = [float(v) for v in coords.split(",") if v.strip()]
+                    except (ValueError, TypeError):
+                        norm_coords = None
+                else:
+                    try:
+                        norm_coords = [float(v) for v in coords]
+                    except (ValueError, TypeError):
+                        norm_coords = None
+
+            # Fall back to content-derived coordinates when none supplied.
+            if not norm_coords:
+                try:
+                    extracted = self._extractor.extract_from_statement(content)
+                    if extracted:
+                        _sp, norm_coords, _conf, _label = extracted[0]
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "[interface] ingest_document_data coord extract failed: %s", exc
+                    )
+
+            if not norm_coords:
+                return
+
+            self._store.upsert_node(space_id, norm_coords, label or "document_data", 0.8)
+
+            # Record source_channel so crystallization can honor the trust-cap.
+            try:
+                self._ep_indexer.index_episode(
+                    episode_id=f"doc_{session_id}_{int(time.time() * 1000)}",
+                    session_id=session_id,
+                    source_channel=channel.value,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[interface] ingest_document_data index failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[interface] ingest_document_data failed: %s", exc)
+
     def _check_quorum_and_reorganize(self, session_id: str) -> None:
         """
         Check QuorumSensor threshold and fire QuorumReorganization if breached.
@@ -725,6 +811,7 @@ class MyceliumInterface:
         cumulative_score: float,
         outcome: str,
         task_entry_label: Optional[str] = None,
+        source_channel: Optional[str] = None,
     ) -> Optional[Landmark]:
         """
         Crystallise a Landmark from the current session in causal order (Req 12.7):
@@ -747,6 +834,7 @@ class MyceliumInterface:
             cumulative_score=cumulative_score,
             outcome=outcome,
             task_entry_label=task_entry_label,
+            source_channel=source_channel,
         )
         if landmark is None:
             return None

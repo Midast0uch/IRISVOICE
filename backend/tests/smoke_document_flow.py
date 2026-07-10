@@ -153,16 +153,18 @@ def main():
                 def __init__(self):
                     self.called = {}
 
-                def reformat_document(self, content, target_format,
-                                      conversation_id="default", turn_id=None,
-                                      original_format=None):
-                    self.called = dict(content=content, target_format=target_format,
-                                       turn_id=turn_id, original_format=original_format)
+                def reformat_document(self, document_id=None, content=None,
+                                      target_format=None, conversation_id="default",
+                                      turn_id=None, original_format=None, trust=None,
+                                      **kwargs):
+                    self.called = dict(document_id=document_id, content=content,
+                                       target_format=target_format, turn_id=turn_id,
+                                       original_format=original_format, trust=trust)
                     get_event_bus().emit(
                         IRISStreamEvent.DOCUMENT_RENDER,
                         data={"format": target_format, "content": "REFORMATTED",
                               "alternatives": [original_format or "markdown"],
-                              "reformatted": True},
+                              "reformatted": True, "document_id": document_id},
                         turn_id=turn_id, conversation_id=conversation_id)
                     return "REFORMATTED"
 
@@ -172,7 +174,7 @@ def main():
             async def run():
                 await gw._handle_reformat_document(
                     "sess", "client",
-                    {"payload": {"content": "orig", "format": "html",
+                    {"payload": {"document_id": "doc-1", "format": "html",
                                  "turn_id": "t2", "original_format": "markdown"}})
 
             loop_b = asyncio.new_event_loop()
@@ -188,6 +190,8 @@ def main():
                       fk.called.get("target_format") == "html")
                 check("B4 original_format passed",
                       fk.called.get("original_format") == "markdown")
+                check("B5 document_id passed (W5 contract)",
+                      fk.called.get("document_id") == "doc-1")
         except Exception as e:
             check("B0 iris_gateway handler", False, f"{type(e).__name__}: {e}")
 

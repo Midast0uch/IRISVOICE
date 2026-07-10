@@ -155,6 +155,29 @@ class CaduceanTrajectoryRecorder:
         """Thread-safe read of last recorded EML (no FFI from async context)."""
         return cls._eml_cache
 
+    def get_latest_coordinate(
+        self, session_id: str
+    ) -> Optional[Dict[str, float]]:
+        """Return the most recent 4D coordinate (x, y, xi, u) for a session.
+
+        Used to place a document on the Immortus chain at the agent's actual
+        reasoning-state position (coords_from), so trajectory-proximity queries
+        (W7/O1) can later recall "data gathered while thinking like this".
+        Returns None if no trajectory has been recorded yet for the session.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT x, y, xi, u FROM caducean_trajectories "
+                "WHERE session_id = ? ORDER BY ts DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {"x": float(row[0]), "y": float(row[1]), "xi": float(row[2]), "u": float(row[3])}
+        except Exception as exc:
+            logger.warning("[CaduceanTrajectory] get_latest_coordinate failed: %s", exc)
+            return None
+
 
 def get_trajectory_recorder(memory_interface: Any) -> CaduceanTrajectoryRecorder:
     """Return (or create) the singleton recorder for this MemoryInterface."""

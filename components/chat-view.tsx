@@ -130,8 +130,12 @@ interface DocRender {
   content: string
   alternatives: string[]
   turnId?: string
+  // W4/W5: stable id so reformat can retrieve canonical data by id (no client content).
+  documentId?: string
   reformatted?: boolean
   error?: string | null
+  // Trust-routing W3: "trusted" vs anything else (web/crawler-sourced).
+  trust?: string
 }
 
 interface ChatWingProps {
@@ -500,7 +504,9 @@ export function ChatWing({
         content?: string
         alternatives?: string[]
         turn_id?: string
+        document_id?: string
         reformatted?: boolean
+        trust?: string
       } | undefined
       if (!detail?.content) return
       const doc: DocRender = {
@@ -509,8 +515,10 @@ export function ChatWing({
         content: detail.content,
         alternatives: detail.alternatives || [],
         turnId: detail.turn_id,
+        documentId: detail.document_id,
         reformatted: detail.reformatted || false,
         error: null,
+        trust: detail.trust,
       }
       setRenderedDocuments((prev) => {
         // Update in place if the same turn_id is already rendered (reformat flow)
@@ -2477,12 +2485,14 @@ ${message.text}`;
                         format={doc.format as "markdown" | "html" | "table" | "diagram" | "text"}
                         glowColor={glowColor}
                         alternatives={doc.alternatives}
+                        trust={doc.trust}
                         onFormatChange={(newFormat) =>
                           sendMessage?.('reformat_document', {
-                            content: doc.content,
+                            document_id: doc.documentId,
                             format: newFormat,
                             turn_id: doc.turnId,
                             original_format: doc.format,
+                            trust: doc.trust,
                           })
                         }
                         onExpand={() => setExpandedDocId(doc.id)}
@@ -2731,12 +2741,14 @@ ${message.text}`;
                       format={doc.format}
                       alternatives={doc.alternatives}
                       glowColor={glowColor}
+                      trust={doc.trust}
                       onClose={() => setExpandedDocId(null)}
                       onFormatChange={(newFormat) =>
                         sendMessage?.('reformat_document', {
-                          content: doc.content,
+                          document_id: doc.documentId,
                           format: newFormat,
                           turn_id: doc.turnId,
+                          trust: doc.trust,
                           original_format: doc.format,
                         })
                       }
