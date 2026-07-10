@@ -36,7 +36,8 @@
     ".next/types/**/*.ts",
     "dist/types/**/*.ts",
     "dist/dev/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts",
+    ".next/dev/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
@@ -46,6 +47,8 @@
     "dist/server",
     "dist/standalone",
     "iris-launcher",
+    "llama.cpp",
+    "llama-cpp-turboquant",
     "test-*.ts",
     "test-*.tsx",
     "**/*.test.ts",

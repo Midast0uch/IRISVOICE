@@ -1505,9 +1505,23 @@ DER loop executes (tools, planning, etc.)
 
 ---
 
-## 9. Pre-existing tsc Errors (to resolve)
+## 9. Pre-existing tsc Errors (RESOLVED 2026-07-10)
 
-These errors exist in the project and are **not caused by this plan's implementation.** They predate the work in this document and were discovered by running `npx tsc --noEmit` on 2026-07-09. They must be resolved for acceptance criterion §7.5 (`npx tsc --noEmit clean`) to pass.
+These errors existed in the project and were **not caused by this plan's implementation.** They were discovered by running `npx tsc --noEmit` on 2026-07-09 and resolved on 2026-07-10. Acceptance criterion §7.5 (`npx tsc --noEmit clean`) now **PASSES** (exit 0, 0 errors).
+
+### 9.0 Resolution summary
+- **Submodule noise (~380 errors):** Added `"llama.cpp"` and `"llama-cpp-turboquant"` to `tsconfig.json` `exclude`. These are separate Svelte git-submodules (local model loading) with their own tsconfigs; tsc was pulling their `.ts`/`.tsx` source via the `**/*.ts(x)` include globs. `skipLibCheck` did not help because they are source files, not `.d.ts`. Excluding them is correct — they build independently.
+- **9 project errors (5 files):** All fixed with minimal, behavior-preserving type corrections.
+
+| # | File | Error | Fix |
+|---|------|-------|-----|
+| 1 | `components/card.tsx` (94) | TS2322 options type mismatch | Widened `DropdownField.options` to `(string \| DropdownOption)[]` (matches `FieldConfig.options`) |
+| 2 | `components/dashboard/MonitorDiagnosticsPanel.tsx` (78) | TS2339 `toUpperCase` on `never` | `String(status).toUpperCase()` in default branch |
+| 3–5 | `components/preview/PrototypeOrbBreathing.tsx` (89,190,239) | TS2304 `Cannot find name 'BreathKey'` | Added `type BreathKey = BreathMode` alias |
+| 6 | `components/wheel-view/SidePanel.tsx` (468) | TS2678 `"description"` not in `FieldType` | Added `"description"` to `FieldType` union |
+| 7 | `components/wheel-view/SidePanel.tsx` (474) | TS2339 `content` not on `FieldConfig` | Added `content?: string` to `FieldConfig` |
+| 8 | `hooks/useIRISWebSocket.ts` (771) | TS2362 arithmetic on non-number | `Number(payload.total_words ?? 0) - 1` |
+| 9 | `hooks/useIRISWebSocket.ts` (1604) | TS2561 `selectAudioDevice` missing from return type | Added `selectAudioDevice` to `UseIRISWebSocketReturn` interface |
 
 ### 9.1 IRIS Voice project code (8 errors, 5 files)
 

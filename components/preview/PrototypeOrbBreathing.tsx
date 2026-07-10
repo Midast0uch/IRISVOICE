@@ -5,6 +5,9 @@ import React, { useEffect, useRef, useCallback, useState } from 'react'
 type BreathMode = 'A' | 'B' | 'C' | 'D'
 type PairMode = 'C' | 'D' | 'A'
 
+// BreathKey aliases the active breath mode used by the draw helpers below.
+type BreathKey = BreathMode
+
 interface PrototypeOrbBreathingProps {
   glowColor?: string
   breathMode: BreathMode

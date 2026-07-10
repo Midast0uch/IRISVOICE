@@ -1,4 +1,4 @@
-export type FieldType = "text" | "slider" | "dropdown" | "toggle" | "color" | "custom" | "section" | "button" | "password"
+export type FieldType = "text" | "slider" | "dropdown" | "toggle" | "color" | "custom" | "section" | "button" | "password" | "description"
 
 export type FieldValue = string | number | boolean | Record<string, unknown>;
 
@@ -8,6 +8,7 @@ export interface FieldConfig {
   label: string
   defaultValue?: FieldValue
   description?: string
+  content?: string
   // text field props
   placeholder?: string
   // slider props

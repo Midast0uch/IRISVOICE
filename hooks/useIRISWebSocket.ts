@@ -97,6 +97,7 @@ interface UseIRISWebSocketReturn {
   // Device actions
   getWakeWords: () => void
   getAudioDevices: () => void
+  selectAudioDevice: (deviceType: "input" | "output", deviceIndex: number, deviceName: string) => void
   isChatTyping: boolean
   lastError: string | null
   fieldErrors: Record<string, string> // Map of "sectionId:fieldId" to error message
@@ -768,7 +769,7 @@ export function useIRISWebSocket(
               word_index: payload.word_index,
               total_words: typeof payload.total_words === 'number' ? payload.total_words : undefined,
               message_id: typeof payload.message_id === 'string' ? payload.message_id : undefined,
-              is_final: payload.word_index === (payload.total_words ?? 0) - 1 || payload.is_final === true,
+              is_final: payload.word_index === Number(payload.total_words ?? 0) - 1 || payload.is_final === true,
             }
           }))
         }

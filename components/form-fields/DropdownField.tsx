@@ -14,7 +14,7 @@ interface DropdownOption {
 interface DropdownFieldProps {
   label: string
   value: string
-  options?: string[] | DropdownOption[]
+  options?: (string | DropdownOption)[]
   loadOptions?: () => Promise<DropdownOption[]>
   onChange: (value: string) => void
   placeholder?: string
