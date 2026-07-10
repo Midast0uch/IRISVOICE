@@ -2671,6 +2671,24 @@ class AgentKernel:
         canonical_text = json.dumps(canonical, ensure_ascii=False)
         zone = "reference" if trust == "untrusted" else "trusted"
 
+        # ── Immortus 4D chain coordinate (computed early; used by W8 seed + Immortus) ──
+        # coords_from = the agent's actual reasoning-state coordinate at the
+        # moment this document was produced (sourced from the Caducean
+        # trajectory recorder). This is what lets W7/O1 do trajectory-proximity
+        # recall ("data gathered while thinking like this") instead of a flat
+        # append. Falls back to "" if no trajectory has been recorded yet.
+        coords_from = ""
+        try:
+            from backend.agent.caducean_trajectory import get_trajectory_recorder
+
+            _coord = get_trajectory_recorder(self._memory_interface).get_latest_coordinate(
+                conversation_id
+            )
+            if _coord is not None:
+                coords_from = "{x:.4f},{y:.4f},{xi:.4f},{u:.4f}".format(**_coord)
+        except Exception as exc:
+            logger.warning("[AgentKernel] document_data coord lookup failed: %s", exc)
+
         # ── DocumentDataStore: source-of-truth keyed by document_id (G4) ────
         try:
             store = self._get_document_store()
@@ -2717,23 +2735,7 @@ class AgentKernel:
         except Exception as exc:
             logger.warning("[AgentKernel] document_data Mycelium seed failed: %s", exc)
 
-        # ── Immortus 4D chain: trajectory placement ────────────────────────
-        # coords_from = the agent's actual reasoning-state coordinate at the
-        # moment this document was produced (sourced from the Caducean
-        # trajectory recorder). This is what lets W7/O1 do trajectory-proximity
-        # recall ("data gathered while thinking like this") instead of a flat
-        # append. Falls back to "" if no trajectory has been recorded yet.
-        coords_from = ""
-        try:
-            from backend.agent.caducean_trajectory import get_trajectory_recorder
 
-            _coord = get_trajectory_recorder(self._memory_interface).get_latest_coordinate(
-                conversation_id
-            )
-            if _coord is not None:
-                coords_from = "{x:.4f},{y:.4f},{xi:.4f},{u:.4f}".format(**_coord)
-        except Exception as exc:
-            logger.warning("[AgentKernel] document_data coord lookup failed: %s", exc)
 
         try:
             from backend.gateway.iris_ffi import ffi_immortus_chain_append
@@ -2750,6 +2752,81 @@ class AgentKernel:
             )
         except Exception as exc:
             logger.warning("[AgentKernel] document_data Immortus store failed: %s", exc)
+
+    # ── W9 (O3): proactive structured-data capture from ANY tool result ──────
+    # Plan W9: extend capture beyond `show` payloads to any tool result
+    # (web_search, crawler_query, read_file, ...) so everything the agent
+    # touches becomes reformat-able via the same DocumentDataStore. Scoped by a
+    # relevance/structure threshold so trivial results are not embedded.
+
+    _MIN_CAPTURE_CHARS = 50       # below this, a result is "trivial"
+    _RELEVANCE_THRESHOLD = 0.30   # results carrying a score below this are skipped
+
+    def _is_capture_worthy(self, tool_name: str, result: Any) -> bool:
+        """Cheap, deterministic gate (no I/O, no LLM) for whether to persist a result.
+
+        * None / empty results are skipped.
+        * Explicit error payloads ({"error": ...}) are skipped.
+        * Very short results (< _MIN_CAPTURE_CHARS) are skipped as trivial.
+        * Results carrying a numeric relevance/score below _RELEVANCE_THRESHOLD
+          are skipped (low-signal).
+        """
+        if result is None:
+            return False
+        if isinstance(result, dict):
+            if "error" in result:
+                return False
+            score = result.get("relevance") or result.get("score")
+            if isinstance(score, (int, float)) and float(score) < self._RELEVANCE_THRESHOLD:
+                return False
+            payload = result
+        else:
+            payload = result
+        import json
+
+        text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+        if len(text) < self._MIN_CAPTURE_CHARS:
+            return False
+        return True
+
+    def _capture_tool_result(
+        self,
+        tool_name: str,
+        result: Any,
+        conversation_id: str,
+        turn_id: Optional[str] = None,
+        session_id: str = "unknown",
+    ) -> Optional[str]:
+        """Persist a tool result into the document store so it becomes reformat-able.
+
+        Trust-routing (W2/W3): external tools (web_search, crawler_query) are
+        stored as ``untrusted``; everything else (e.g. read_file) as ``trusted``.
+        Returns the new document_id, or None when the result was skipped by the
+        capture-worthiness gate. All failures are swallowed — capture must never
+        block the tool result from reaching the agent.
+        """
+        if not self._is_capture_worthy(tool_name, result):
+            return None
+        import uuid
+
+        import json
+
+        document_id = str(uuid.uuid4())
+        fmt = "json" if isinstance(result, (dict, list)) else "text"
+        content = json.dumps(result, ensure_ascii=False) if isinstance(result, (dict, list)) else str(result)
+        show = {
+            "format": fmt,
+            "content": content,
+            "variants": {fmt: content},
+            "source_tool": tool_name,
+        }
+        trust = "untrusted" if is_external_tool(tool_name) else "trusted"
+        try:
+            self._store_document_data(document_id, show, trust, turn_id, conversation_id)
+        except Exception as exc:
+            logger.warning("[AgentKernel] tool-result capture failed: %s", exc)
+            return None
+        return document_id
 
     def reformat_document(
         self,
@@ -4341,6 +4418,20 @@ Respond with a JSON object:
                                 ),
                             ).result(timeout=60)
                     step_result = str(raw) if raw is not None else ""
+                    # ── W9 (O3): proactively capture structured tool results ──
+                    # Any non-trivial tool result (web_search, crawler_query,
+                    # read_file, ...) is persisted so it becomes reformat-able
+                    # via the same DocumentDataStore. Skipped results (trivial /
+                    # error / low-relevance) cost nothing. Never blocks the step.
+                    if item.tool and raw is not None:
+                        try:
+                            self._capture_tool_result(
+                                item.tool, raw, self.conversation_id, _turn_id, _session
+                            )
+                        except Exception as _cap_err:
+                            logger.warning(
+                                "[DER] tool-result capture failed: %s", _cap_err
+                            )
                 else:
                     step_result = self._run_step_direct(item, context_package, _session)
             except Exception as _ex_err:
