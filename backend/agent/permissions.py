@@ -90,6 +90,7 @@ class ToolPermissionResponse:
 # Tools that only read state — never modify anything
 _READ_ONLY_TOOLS: set = {
     "read_file",
+    "speak",
     "search",
     "glob",
     "grep",

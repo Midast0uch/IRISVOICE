@@ -370,6 +370,20 @@ class AgentToolBridge:
                 },
                 "category": "system",
             },
+            {
+                "name": "speak",
+                "description": (
+                    "Speak text aloud via TTS. Use for agent-initiated speech — status updates, "
+                    "follow-ups, or any time you want the user to HEAR something without reading. "
+                    "Fire-and-forget: returns immediately and never blocks. Text is capped at 500 chars."
+                ),
+                "parameters": {
+                    "text": {"type": "string", "description": "The text to speak (max 500 characters)"},
+                    "priority": {"type": "string", "enum": ["normal", "high", "low"], "description": "Speech priority (default: normal)"},
+                    "interrupt": {"type": "boolean", "description": "If true and priority is high, interrupt current TTS to speak immediately (default: false)"},
+                },
+                "category": "system",
+            },
         ])
 
         # [13.3] Filter developer-only tools in personal mode
@@ -747,6 +761,30 @@ class AgentToolBridge:
             logger.warning("[ToolBridge] ask_user_question failed: %s", exc)
             return {"success": False, "error": str(exc)}
 
+    def _handle_speak(self, params: Dict, session_id: str) -> Dict:
+        """Handle the speak tool — fire-and-forget TTS speech.
+
+        The speak tool never blocks: it emits an utterance event and returns
+        immediately.  Speech is best-effort (TTS may be unavailable).
+        """
+        try:
+            from backend.agent.tools.speak_tool import get_speak_tool
+
+            tool = get_speak_tool()
+            text = params.get("text", "")
+            priority = params.get("priority", "normal")
+            interrupt = bool(params.get("interrupt", False))
+            result = tool.speak(text=text, priority=priority, interrupt=interrupt)
+            logger.info(
+                "[ToolBridge] speak: status=%s text=%s",
+                result.get("status"),
+                str(text)[:40],
+            )
+            return result
+        except Exception as exc:
+            logger.warning("[ToolBridge] speak failed: %s", exc)
+            return {"status": "error", "reason": str(exc)}
+
     async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
         """
         Execute any tool by name with routing to appropriate server.
@@ -818,11 +856,13 @@ class AgentToolBridge:
 
         try:
             # Internal tools (handled here)
-            internal_tools = ["ask_user_question"]
+            internal_tools = ["ask_user_question", "speak"]
 
             if tool_name in internal_tools:
                 if tool_name == "ask_user_question":
                     return await self._handle_ask_user_question(params, session_id)
+                if tool_name == "speak":
+                    return self._handle_speak(params, session_id)
 
             if tool_name in vision_tools:
                     return await self.execute_vision_tool(tool_name, params, session_id)

@@ -309,6 +309,14 @@ class ConversationKernel:
         if text and hasattr(self, "_tts_manager"):
             tts = getattr(self, "_tts_manager")
             if tts:
+                # Issue C.2: high-priority interrupt halts current TTS first.
+                if (payload.data or {}).get("interrupt") and hasattr(tts, "stop"):
+                    try:
+                        tts.stop()
+                    except Exception as exc:
+                        logger.warning(
+                            "[ConversationKernel] TTS stop failed: %s", exc
+                        )
                 try:
                     tts.speak(text)
                 except Exception as exc:
