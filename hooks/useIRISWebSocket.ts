@@ -1211,6 +1211,24 @@ export function useIRISWebSocket(
         break
       }
 
+      // ── Document render (plan Issue D.3) ───────────────────────────────
+      // Agent pushed a rich document (format + content + alternatives).
+      // Forwarded to iris:document_render so chat-view renders it inline.
+      case "document:render": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:document_render', { detail: payload }))
+        }
+        break
+      }
+
+      // Reformat failure — surfaced as an inline error on the document card.
+      case "reformat_document_error": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:reformat_document_error', { detail: payload }))
+        }
+        break
+      }
+
       case 'cli_output': {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:cli_output', { detail: payload }))

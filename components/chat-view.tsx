@@ -22,6 +22,8 @@ import { PermissionCard } from "@/components/chat/PermissionCard";
 import { QuestionCard } from "@/components/chat/QuestionCard";
 import TaskListCard from "@/components/chat/TaskListCard";
 import ContextPill from "@/components/chat/ContextPill";
+import { RichDocument } from "@/components/chat/RichDocument";
+import { DocumentPanel } from "@/components/chat/DocumentPanel";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import type { ConversationChip, Suggestion } from "@/types/iris";
 
@@ -121,6 +123,17 @@ interface Conversation {
   lastMessagePreview: string;
 }
 
+// Rich document pushed by the agent via the document:render WS event (plan Issue D.3).
+interface DocRender {
+  id: string
+  format: string
+  content: string
+  alternatives: string[]
+  turnId?: string
+  reformatted?: boolean
+  error?: string | null
+}
+
 interface ChatWingProps {
   isOpen: boolean
   onClose: () => void
@@ -186,6 +199,12 @@ export function ChatWing({
     return localStorage.getItem(ACTIVE_ID_KEY) || null
   })
 
+  // Rich documents rendered inline (plan Issue D.3). Each document:render WS
+  // event appends (or updates, by turn_id) a DocRender; the expand action
+  // opens it full-panel via DocumentPanel.
+  const [renderedDocuments, setRenderedDocuments] = useState<DocRender[]>([])
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
+
   // Persist conversations with a 1 s debounce — avoids hammering localStorage on every
   // fast state change (typing, streaming, etc.).  isSpeaking is excluded from the debounce
   // because the TTS interval no longer mutates conversations anyway.
@@ -216,6 +235,14 @@ export function ChatWing({
   }, [activeConversationId])
   const [inputText, setInputText] = useState("")
   const [webMode, setWebMode] = useState(false)  // explicit Web toggle — routes send to crawler_query
+  // Sync web-mode toggle to backend session so STT transcripts also route through the crawler
+  useEffect(() => {
+    sendMessage?.('set_web_mode', { enabled: webMode })
+    // Reset to off on unmount so the session doesn't stay in web mode
+    return () => {
+      sendMessage?.('set_web_mode', { enabled: false })
+    }
+  }, [webMode, sendMessage])
   const [justSent, setJustSent] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -462,6 +489,55 @@ export function ChatWing({
     }
     window.addEventListener('iris:text_response', handleTextResponse)
     return () => window.removeEventListener('iris:text_response', handleTextResponse)
+  }, [])
+
+  // Handle document:render — agent pushed a rich document (plan Issue D.3).
+  // Appended inline with format pills; reformat updates the same doc by turn_id.
+  useEffect(() => {
+    function handleDocumentRender(e: Event) {
+      const detail = (e as CustomEvent).detail as {
+        format?: string
+        content?: string
+        alternatives?: string[]
+        turn_id?: string
+        reformatted?: boolean
+      } | undefined
+      if (!detail?.content) return
+      const doc: DocRender = {
+        id: detail.turn_id || `doc-${Date.now()}`,
+        format: detail.format || "markdown",
+        content: detail.content,
+        alternatives: detail.alternatives || [],
+        turnId: detail.turn_id,
+        reformatted: detail.reformatted || false,
+        error: null,
+      }
+      setRenderedDocuments((prev) => {
+        // Update in place if the same turn_id is already rendered (reformat flow)
+        const idx = prev.findIndex((d) => d.turnId && detail.turn_id && d.turnId === detail.turn_id)
+        if (idx >= 0) {
+          const next = [...prev]
+          next[idx] = doc
+          return next
+        }
+        return [...prev, doc]
+      })
+    }
+    function handleReformatError(e: Event) {
+      const detail = (e as CustomEvent).detail as { error?: string; turn_id?: string } | undefined
+      if (!detail?.turn_id) return
+      setRenderedDocuments((prev) =>
+        prev.map((d) =>
+          d.turnId === detail.turn_id ? { ...d, error: detail.error || "reformat failed" } : d
+        )
+      )
+    }
+    window.addEventListener('iris:document_render', handleDocumentRender)
+    window.addEventListener('iris:reformat_document_error', handleReformatError)
+    return () => {
+      window.removeEventListener('iris:document_render', handleDocumentRender)
+      window.removeEventListener('iris:reformat_document_error', handleReformatError)
+    }
   }, [])
 
   // Handle tts_started: backend signals first TTS audio chunk has been pushed
@@ -2393,6 +2469,30 @@ ${message.text}`;
                   );
                 })}
 
+                  {/* Rich documents (plan Issue D.3) — inline render with format pills + expand */}
+                  {renderedDocuments.map((doc) => (
+                    <div key={doc.id} className="my-3">
+                      <RichDocument
+                        content={doc.content}
+                        format={doc.format as "markdown" | "html" | "table" | "diagram" | "text"}
+                        glowColor={glowColor}
+                        alternatives={doc.alternatives}
+                        onFormatChange={(newFormat) =>
+                          sendMessage?.('reformat_document', {
+                            content: doc.content,
+                            format: newFormat,
+                            turn_id: doc.turnId,
+                            original_format: doc.format,
+                          })
+                        }
+                        onExpand={() => setExpandedDocId(doc.id)}
+                      />
+                      {doc.error && (
+                        <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
+                      )}
+                    </div>
+                  ))}
+
                   {/* Typing Indicator */}
                   {isTyping && (
                     <div>
@@ -2607,6 +2707,45 @@ ${message.text}`;
               )}
             </AnimatePresence>
 
+            {/* Expanded Document Panel (plan Issue D.3) — full-panel viewer for a rendered doc */}
+            <AnimatePresence>
+              {expandedDocId && (() => {
+                const doc = renderedDocuments.find((d) => d.id === expandedDocId)
+                if (!doc) return null
+                return (
+                  <motion.div
+                    key="doc-panel"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
+                    className="absolute inset-0 z-50 flex flex-col"
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(10,10,20,0.99) 0%, rgba(5,5,10,0.98) 100%)'
+                    }}
+                    role="dialog"
+                    aria-modal="true"
+                  >
+                    <DocumentPanel
+                      content={doc.content}
+                      format={doc.format}
+                      alternatives={doc.alternatives}
+                      glowColor={glowColor}
+                      onClose={() => setExpandedDocId(null)}
+                      onFormatChange={(newFormat) =>
+                        sendMessage?.('reformat_document', {
+                          content: doc.content,
+                          format: newFormat,
+                          turn_id: doc.turnId,
+                          original_format: doc.format,
+                        })
+                      }
+                    />
+                  </motion.div>
+                )
+              })()}
+            </AnimatePresence>
+
             {/* Input Area - Command Line Style with Drag & Drop */}
             <div
               className={isRemoteView ? "px-4 pb-4 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t" : "px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"}
@@ -2679,6 +2818,7 @@ ${message.text}`;
                 {/* Web toggle — explicit opt-in for web research routing.
                     Left of the text area. OFF by default; every message goes to
                     the agent. ON routes the next send to crawler_query. */}
+                <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
                 <motion.button
                   type="button"
                   onClick={() => setWebMode(v => !v)}
@@ -2690,7 +2830,6 @@ ${message.text}`;
                     border: `1px solid ${webMode ? glowColor : `${fontColor}80`}`,
                     borderRadius: '9999px',
                     boxShadow: webMode ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                    transform: 'translateY(-6.5px)',
                   }}
                   whileHover={{ scale: 1.08 }}
                   whileTap={{ scale: 0.92 }}
@@ -2698,8 +2837,9 @@ ${message.text}`;
                   aria-pressed={webMode}
                   aria-label="Toggle web research mode"
                 >
-                  <Icon icon={webMode ? 'mdi:web' : 'mdi:web-off'} width={16} height={16} />
+                  <Icon icon={webMode ? 'mdi:web' : 'mdi:web-off'} width={14} height={14} />
                 </motion.button>
+                </div>
 
                 <div className="flex-1 relative">
                   <textarea
