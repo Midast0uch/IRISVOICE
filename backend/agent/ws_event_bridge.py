@@ -46,6 +46,7 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
     IRISStreamEvent.PERMISSION_GRANTED,
     IRISStreamEvent.PERMISSION_DENIED,
     IRISStreamEvent.CONTEXT_USAGE,
+    IRISStreamEvent.DOCUMENT_RENDER,
 )
 
 # Events added at runtime (e.g. future additions) so the tuple above stays
@@ -82,7 +83,9 @@ class WSEventBridge:
         if self._started:
             return
         for evt in list(_BRIDGED_EVENTS) + list(_BRIDGED_EVENTS_EXT):
-            self._bus.subscribe(evt, self._make_handler(evt))
+            handler = self._make_handler(evt)
+            self._bus.subscribe(evt, handler)
+            self._subs.append((evt, handler))
         self._started = True
         logger.info("[WSEventBridge] subscribed to %d event types", len(self._subs))
 

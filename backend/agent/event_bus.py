@@ -57,6 +57,12 @@ class IRISStreamEvent(enum.Enum):
     UTTERANCE_CHUNK = "utterance:chunk"
     UTTERANCE_DONE = "utterance:done"
 
+    # ── Document render (speak/show separation, Issue C.1) ──────────────
+    # Carries the `show` payload (format/content/alternatives) to the
+    # frontend so a generated document renders visually while only the
+    # `speak` summary is read aloud by TTS.
+    DOCUMENT_RENDER = "document:render"
+
     # ── Tool execution ──────────────────────────────────────────────────
     TOOL_CALL = "tool:call"
     TOOL_RESULT = "tool:result"

@@ -1213,6 +1213,25 @@ class AgentKernel:
         except Exception:
             pass
 
+        # Issue C.1 — structured speak/show response contract.
+        # When the answer is long or contains structured data, the LLM returns
+        # JSON so TTS reads only the short `speak` summary while the full
+        # content renders visually.  Short conversational replies stay plain text.
+        base += (
+            "\n\n[RESPONSE FORMAT]\n"
+            "When your answer is longer than about 3 sentences or contains "
+            "structured data (tables, lists, diagrams, code, comparisons), "
+            "respond with JSON:\n"
+            '{"speak": "<2-3 sentence conversational summary of what you say>", '
+            '"show": {"format": "markdown|html|table|diagram|text", '
+            '"content": "<the full content>", '
+            '"alternatives": ["<other formats you could render>"]}}\n'
+            "The `speak` field is what the user HEARS via TTS — keep it brief "
+            "and natural (1-3 sentences). The `show` field is what renders "
+            "visually — put the detail there. For short conversational replies, "
+            "respond with plain text (no JSON)."
+        )
+
         return base
 
     # ------------------------------------------------------------------
@@ -2471,6 +2490,57 @@ class AgentKernel:
             spoken += " Full response in the chat window."
         return spoken
 
+    # ------------------------------------------------------------------
+    # Issue C.1 — structured speak/show response contract
+    # ------------------------------------------------------------------
+
+    def _process_structured_response(
+        self,
+        response: Optional[str],
+        turn_id: Optional[str] = None,
+        conversation_id: str = "default",
+    ) -> str:
+        """Apply the Issue C.1 speak/show contract to a final LLM response.
+
+        Parses ``response`` as structured JSON.  If it is structured:
+          * emits a ``DOCUMENT_RENDER`` event carrying the ``show`` payload
+            (so the frontend renders the full document visually), and
+          * returns the ``speak`` field (so conversation memory and the
+            ``text_response`` only contain the short spoken summary).
+
+        If the response is not structured JSON, returns it unchanged
+        (backward compatible — old free-text behavior is preserved).
+        """
+        if not response:
+            return response or ""
+
+        from backend.agent.structured_response import parse_structured_response
+
+        speak, show = parse_structured_response(response)
+
+        if show is not None:
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                get_event_bus().emit(
+                    IRISStreamEvent.DOCUMENT_RENDER,
+                    data={
+                        "format": show.get("format", "markdown"),
+                        "content": show.get("content", ""),
+                        "alternatives": show.get("alternatives", []),
+                        "turn_id": turn_id,
+                        "conversation_id": conversation_id,
+                    },
+                    turn_id=turn_id,
+                    conversation_id=conversation_id,
+                )
+            except Exception as exc:
+                logger.warning("[AgentKernel] DOCUMENT_RENDER emit failed: %s", exc)
+
+        if speak is not None:
+            return speak
+        return response
+
     def _sanitize_task(self, task: str) -> str:
         """
         Filter prompt-injection attempts before the task reaches the DER Director.
@@ -2827,6 +2897,11 @@ class AgentKernel:
                 # handles it with structured logging and sends a visible
                 # error to the UI. No silent error swallowing.
                 raise
+            # Issue C.1: apply speak/show contract — emit document:render for
+            # the `show` payload and reduce the stored/returned text to `speak`.
+            response = self._process_structured_response(
+                response, turn_id=task_id, conversation_id=_conv_id
+            )
             # Never store error or empty responses in conversation memory.
             # They break role alternation and accumulate into garbage context
             # on subsequent turns, causing Cohere/OpenAI 400 errors.
@@ -3058,6 +3133,10 @@ class AgentKernel:
                         f"[DER-TTS-FIX] SKIPPED — chunk_callback={chunk_callback}, "
                         f"der_response={bool(_der_response)}"
                     )
+                # Issue C.1: apply speak/show contract before returning.
+                _der_response = self._process_structured_response(
+                    _der_response, turn_id=task_id, conversation_id=_conv_id
+                )
                 return _der_response
 
         # If DER produced empty/failed response, return error instead of

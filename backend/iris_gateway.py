@@ -2270,6 +2270,14 @@ class IRISGateway:
                 _first_sentence_seen = False
 
                 def chunk_callback(chunk: str):
+                    sentence_buf.append(chunk)
+                    _text = "".join(sentence_buf)
+                    # Issue C.1: structured speak/show JSON responses start with
+                    # '{'. Don't stream the raw JSON to the UI or TTS — the
+                    # `speak` field is spoken via the sentence_queue (after
+                    # parsing at final flush) and `show` via document:render.
+                    if _text.lstrip().startswith("{"):
+                        return
                     if loop and loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             self._ws_manager.send_to_client(
@@ -2284,14 +2292,13 @@ class IRISGateway:
 
                     # Stream sentences into TTS from RESPONSE text
                     # (chunk_callback receives actual response content from the LLM,
-                    #  NOT reasoning/thinking â€” reasoning goes through reasoning_callback).
+                    #  NOT reasoning/thinking — reasoning goes through reasoning_callback).
                     nonlocal _sentence_buf_words
                     nonlocal _first_chunk_seen
                     nonlocal _first_sentence_seen
                     if not _first_chunk_seen:
                         _first_chunk_seen = True
                         _log_timing("first_chunk")
-                    sentence_buf.append(chunk)
                     _sentence_buf_words += chunk.count(" ") + (
                         1 if chunk.strip() else 0
                     )
@@ -2347,8 +2354,23 @@ class IRISGateway:
                     )
                     # Final flush — any remaining text becomes a sentence
                     if sentence_buf:
-                        sentence_queue.put("".join(sentence_buf))
+                        _final = "".join(sentence_buf)
                         sentence_buf.clear()
+                        # Issue C.1: for a structured JSON response, speak only
+                        # the `speak` field (not the raw JSON). Plain responses
+                        # pass through unchanged.
+                        try:
+                            from backend.agent.structured_response import (
+                                parse_structured_response,
+                            )
+
+                            _speak, _show = parse_structured_response(_final)
+                        except Exception:
+                            _speak = None
+                        if _speak is not None:
+                            sentence_queue.put(_speak)
+                        elif not _final.lstrip().startswith("{"):
+                            sentence_queue.put(_final)
                     spoken = agent_kernel.prepare_spoken_text(resp, enriched)
                     return resp, spoken
                 finally:
