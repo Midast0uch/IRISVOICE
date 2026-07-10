@@ -93,9 +93,39 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
       (a,b→[1,4], s→[0.1,0.8]) verified, 422 validation verified, engine_live
       confirmed. Visual IrisOrb / CaduceanDebugPanel rendering NOT verified
       (blocked by dev-server compile hang — see cmd.exe memory leak note above).
-    Domain 20 — Agent Multi-Step Tool Execution (NEW — 7 items, investigation complete 2026-07-01)
-      ⚠️ CRITICAL BLOCKER for D17 and long-horizon tasks. See docs/architecture/agent-multi-step-gaps.md
-      Root cause: no agentic tool-call loop, permission UI disconnected, MCP static.
+   Domain 20 — Agent Multi-Step Tool Execution (NEW — 7 items, investigation complete 2026-07-01)
+     ⚠️ CRITICAL BLOCKER for D17 and long-horizon tasks. See docs/architecture/agent-multi-step-gaps.md
+     Root cause: no agentic tool-call loop, permission UI disconnected, MCP static.
+
+     SUB-INITIATIVE — Trust-Routing + Data-Centric Document Memory (W1–W10 DONE 2026-07-10):
+       Plan: docs/plans/2026-07-10-trust-routing-document-store.md
+       Architecture doc: docs/architecture/trust-routing-document-memory.md
+       Branch: feat/agent-multi-step-tool-execution
+         (commits 5d12dc55, 30b2b820, 756b4405, c5dc1111, 393d0660)
+       What shipped (test-first CDD, all green):
+         - W1/W2 Trust-zone routing: web/crawler tool outputs → "reference" (untrusted) zone;
+                  per-turn external flag propagates to episodic fragment + Mycelium trust-cap.
+         - W3 Frontend sanitization: DOMPurify on RichDocument html when trust≠trusted;
+                  MermaidDiagram securityLevel→strict for untrusted. tsc clean, jest 4/4.
+         - W4 Canonical DATA store keyed by document_id: DocumentDataStore (SQLite-WAL) +
+                  Mycelium semantic + Immortus 4D chain (coords_from = real trajectory coord).
+         - W5 Data-centric reformat: reformat_document(document_id, target_format) retrieves
+                  canonical data; deterministic-first (stored variant → no LLM call).
+         - W7 Trajectory-conditioned retrieval (O1): coordinate-proximity query over Immortus
+                  4D chain (C++ iris_core + Python fallback) — "data gathered while thinking
+                  like this," distinct from embedding cosine.
+         - W8 Crystallization seeding (O2): document data seeded as trust-routed Mycelium
+                  context node; trusted data crystallizes at PERMANENCE_THRESHOLD=8; trust-cap
+                  (0.30) auto-excludes untrusted/web data from permanent memory.
+         - W9 Proactive capture (O3): _capture_tool_result hooks the DER loop; any non-trivial
+                  tool result (web/file) → DocumentDataStore → reformat-able. Threshold gate
+                  skips None/error/trivial/low-relevance.
+         - W10 Pheromone + cross-modal (O4): reformat_document reinforces a from→to pheromone
+                  edge (DocumentDataStore); suggest_reformat() offers the sticky next format;
+                  vocalize_document() speaks via SpeakTool; diagram_document() returns the
+                  mermaid view. Test test_reformat_pheromone.py 11/11.
+       Why it matters for D20: gives the agent a durable, trust-scoped, reformat-able memory
+         of everything it produces/retrieves — the substrate D17 self-coding builds on.
 
   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified

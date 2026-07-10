@@ -1,7 +1,7 @@
 # Plan: Trust-Routing for Web Content + Data-Centric Document Memory
 
 **Date:** 2026-07-10
-**Status:** PLANNED (not yet implemented)
+**Status:** COMPLETE — W1–W10 implemented & committed (branch `feat/agent-multi-step-tool-execution`)
 **Author:** Senior Architect review (main session)
 **Branch context:** `feat/agent-multi-step-tool-execution`
 
@@ -333,3 +333,59 @@ match code; the tests define the requirement (per project test rules).
 - Backend: `py_compile` clean + targeted standalone tests (T1/T2/T3/T6/T7/T9/T10/T12/T13/T14/T15) green.
 - E2E smoke (T7) mirrors the project's `smoke_document_flow.py` 13/13 pattern.
 - Cross-protocol consistency (T14) uses the project's `mcp-eml-testing` discipline.
+
+---
+
+## Implementation Progress (W1–W10 COMPLETE)
+
+**Updated:** 2026-07-10 (session completing W9)
+**Branch:** `feat/agent-multi-step-tool-execution`
+**Commits:** `5d12dc55` (W1–W8), `30b2b820` (remaining churn), `756b4405` (W7 C++ DLL), `c5dc1111` (W9), `393d0660` (W10)
+**Architecture doc:** `docs/architecture/trust-routing-document-memory.md`
+
+### Locked decisions (user-confirmed)
+- **Zone naming:** reuse existing `"reference"` zone (`episodic.py:107`); no enum change.
+- **External tools:** `web_search` + `crawler_query` only (`pacman_fragment.py:24` `_EXTERNAL_TOOLS`).
+- **Sanitization:** frontend DOMPurify, gated on `trust` (not `trusted`).
+
+### Wave status
+| Wave | What shipped | Test | Result | Commit |
+|------|-------------|------|--------|--------|
+| W1 | Zone routing for web/crawler tools | `test_pacman_fragment_zone.py` | 5/5 | `5d12dc55` |
+| W2 | Per-turn external flag → `reference` zone | `test_agent_kernel_turn_zone.py` | 10/10 | `5d12dc55` |
+| W3 | `trust` through DOCUMENT_RENDER + DOMPurify/Mermaid strict | `test_document_render_trust.py` + jest | 5/5 + 4/4 | `5d12dc55` |
+| W4 | Canonical DATA store keyed by `document_id` (Mycelium + Immortus + DocumentDataStore) | `test_document_data_store.py` | 21/21 | `5d12dc55` |
+| W5 | `reformat_document` retrieves-and-reformats, deterministic-first | `test_document_reformat_by_id.py` | 15/15 | `5d12dc55` |
+| W7 | Trajectory-conditioned retrieval (O1) — C++ + Python fallback | `test_trajectory_retrieval.py` | 15/15 | `756b4405` |
+| W8 | Crystallization seeding (O2) — trust-routed Mycelium node seed | `test_crystallization_seeding.py` | 7/7 | `5d12dc55` |
+| W9 | Proactive structured-data capture from any tool result (O3) | `test_proactive_capture.py` | 16/16 | `c5dc1111` |
+| W10 | Pheromone-reinforced reformat + cross-modal synergy (O4) | `test_reformat_pheromone.py` | 11/11 | `393d0660` |
+
+### Regression (all green after W9)
+W1 5/5 · W2 10/10 · W3 5/5 · W4 21/21 · W5 15/15 · W7 15/15 · W8 7/7 · smoke 14/14 · `py_compile` clean.
+
+### Notable fix (W9)
+Latent `NameError` in `agent_kernel._store_document_data`: `coords_from` was referenced by the
+W8 Mycelium seed block before its definition (masked by an `except`). Now computed early, before
+the DocumentDataStore / Mycelium / Immortus blocks.
+
+### W9 detail (O3)
+- `_is_capture_worthy(tool_name, result)`: skips `None`, `{"error":...}`, <50-char trivial,
+  and numeric `relevance`/`score` < 0.30.
+- `_capture_tool_result(tool_name, result, conversation_id, turn_id, session_id)`: trust via
+  `is_external_tool` (external→untrusted, else trusted); builds a `show` dict; calls
+  `_store_document_data`. Hooked into the DER loop tool-execution path (`_execute_plan_der`,
+  after `step_result = str(raw)`) — non-blocking try/except.
+- Any non-trivial tool result (web_search, crawler_query, read_file, …) now becomes
+  reformat-able via the same `DocumentDataStore` (W4/W5).
+
+### W10 detail (O4)
+- `DocumentDataStore` gains reformat pheromone edges: `record_reformat` (weight
+  compounds, bounded 100.0), `get_reformat_edges`, `predict_next_format`.
+- `reformat_document` reinforces the `from_format -> to_format` edge on every
+  reformat (deterministic + LLM paths) — frequently-reformatted doc types become "sticky".
+- `suggest_reformat(document_id)`: proactive-offer substrate — returns the most-reinforced
+  next format for a doc's type (None if no signal yet).
+- `vocalize_document(...)`: reformat → `SpeakTool.speak` (existing TTS channel).
+- `diagram_document(...)`: reformat to `diagram` (mermaid) format — the cross-modal
+  "turn data into a diagram" synergy (Vision MCP only analyzes screens, so no separate generator).
