@@ -16,7 +16,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List, Any, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +232,21 @@ class _IrisFFI:
         self._lib.immortus_chain_keep_latest.argtypes = [ctypes.c_char_p, ctypes.c_int]
         self._lib.immortus_chain_keep_latest.restype = ctypes.c_int
 
+        # W7/O1: trajectory-conditioned query (C++ core). Guarded so an older
+        # DLL that lacks the symbol still loads — the engine then falls back to
+        # the Python implementation.
+        if hasattr(self._lib, "immortus_chain_query_by_coordinate"):
+            self._lib.immortus_chain_query_by_coordinate.argtypes = [
+                ctypes.c_char_p,
+                ctypes.c_double,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+            ]
+            self._lib.immortus_chain_query_by_coordinate.restype = ctypes.c_void_p
+            self._lib.free_cstring.argtypes = [ctypes.c_void_p]
+            self._lib.free_cstring.restype = None
+
         # --- Caducean Simulator ---
         self._lib.simulate_trajectories_to_db.argtypes = [
             ctypes.c_int,
@@ -398,6 +413,44 @@ class _IrisFFI:
         return self._lib.immortus_chain_keep_latest(
             thread_id.encode("utf-8"), keep_count
         )
+
+    def immortus_chain_query_by_coordinate(
+        self,
+        coords,
+        threshold: float = 1.0,
+        limit: int = 10,
+        thread_id: Optional[str] = None,
+        nbl_outcome: Optional[str] = None,
+    ):
+        """W7/O1: trajectory-conditioned retrieval via the C++ core.
+
+        Returns a list of dicts parsed from the C++ JSON response. The C++
+        side allocates the result string; we free it via free_cstring().
+        Raises AttributeError if the loaded DLL lacks the symbol (older build),
+        which the caller catches to fall back to the Python engine.
+        """
+        if isinstance(coords, (list, tuple)):
+            coords_str = ",".join(str(float(c)) for c in coords)
+        else:
+            coords_str = str(coords)
+        ptr = self._lib.immortus_chain_query_by_coordinate(
+            coords_str.encode("utf-8"),
+            ctypes.c_double(threshold),
+            ctypes.c_int(limit),
+            thread_id.encode("utf-8") if thread_id else None,
+            nbl_outcome.encode("utf-8") if nbl_outcome else None,
+        )
+        if not ptr:
+            return []
+        try:
+            import json
+
+            raw = ctypes.cast(ptr, ctypes.c_char_p).value
+            if not raw:
+                return []
+            return json.loads(raw.decode("utf-8"))
+        finally:
+            self._lib.free_cstring(ptr)
 
     def simulate_trajectories_to_db(
         self, n: int, steps: int, a: float = 2.0, b: float = 2.0, s: float = 0.35
@@ -660,6 +713,88 @@ class _PythonFallbackEngine:
         )
         return cur.rowcount
 
+    @staticmethod
+    def _parse_coords(text: Optional[str]) -> Optional[tuple]:
+        """Parse a 'x,y,xi,u' coordinate string into a 4-tuple of floats."""
+        if not text:
+            return None
+        try:
+            parts = [float(p) for p in text.split(",")]
+        except (ValueError, AttributeError):
+            return None
+        if len(parts) != 4:
+            return None
+        return tuple(parts)
+
+    def immortus_chain_query_by_coordinate(
+        self,
+        coords: Sequence[float],
+        threshold: float = 1.0,
+        limit: int = 10,
+        thread_id: Optional[str] = None,
+        nbl_outcome: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """W7/O1: trajectory-conditioned retrieval over the Immortus 4D chain.
+
+        Returns chain entries whose ``coords_from`` is within ``threshold``
+        (Euclidean distance over the 4D coordinate) of ``coords``, sorted by
+        proximity. This is a *reasoning-state* query — "data gathered while
+        thinking like this" — distinct from embedding cosine similarity.
+
+        Entries without a parseable ``coords_from`` (orphaned appends) are
+        excluded.  Returns dicts with ``distance`` plus the stored fields
+        (``file_path`` = document_id for documents, ``result`` = canonical data).
+        """
+        if not self._conn:
+            return []
+        try:
+            q = (
+                "SELECT chain_id, thread_id, result, coords_from, coords_to, "
+                "nbl_outcome, insight, file_path, landmark_id, created_at "
+                "FROM memory_chain WHERE 1=1"
+            )
+            params: List[Any] = []
+            if thread_id is not None:
+                q += " AND thread_id = ?"
+                params.append(thread_id)
+            if nbl_outcome is not None:
+                q += " AND nbl_outcome = ?"
+                params.append(nbl_outcome)
+            rows = self._conn.execute(q, params).fetchall()
+        except Exception as exc:
+            logger.warning("[IrisFallback] chain query failed: %s", exc)
+            return []
+
+        import math
+
+        scored = []
+        for r in rows:
+            cf = self._parse_coords(r[3])
+            if cf is None:
+                continue
+            dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(coords, cf)))
+            if dist <= threshold:
+                scored.append((dist, r))
+        scored.sort(key=lambda t: t[0])
+
+        out = []
+        for dist, r in scored[:limit]:
+            out.append(
+                {
+                    "chain_id": r[0],
+                    "thread_id": r[1],
+                    "result": r[2],
+                    "coords_from": r[3],
+                    "coords_to": r[4],
+                    "nbl_outcome": r[5],
+                    "insight": r[6],
+                    "file_path": r[7],
+                    "landmark_id": r[8],
+                    "distance": dist,
+                }
+            )
+        return out
+
     def health_check(self) -> int:
         return 1 if self._conn else 0
 
@@ -914,6 +1049,34 @@ class IrisCoreEngine:
             return self._fallback.immortus_chain_keep_latest(thread_id, keep_count)
         return -1
 
+    def immortus_chain_query_by_coordinate(
+        self,
+        coords: Sequence[float],
+        threshold: float = 1.0,
+        limit: int = 10,
+        thread_id: Optional[str] = None,
+        nbl_outcome: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """W7/O1: trajectory-conditioned retrieval.
+
+        The C++ core is primary; the Python engine is the fallback.
+        """
+        if self._ffi is not None:
+            try:
+                return self._ffi.immortus_chain_query_by_coordinate(
+                    coords, threshold, limit, thread_id, nbl_outcome
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[iris_ffi] C++ trajectory query failed, using Python fallback: %s",
+                    exc,
+                )
+        if self._fallback is not None:
+            return self._fallback.immortus_chain_query_by_coordinate(
+                coords, threshold, limit, thread_id, nbl_outcome
+            )
+        return []
+
     def simulate_trajectories_to_db(
         self,
         n: int = 500,
@@ -1081,3 +1244,22 @@ def ffi_immortus_chain_keep_latest(thread_id: str, keep_count: int) -> int:
     if _engine is None:
         return -1
     return _engine.immortus_chain_keep_latest(thread_id, keep_count)
+
+
+def ffi_immortus_chain_query_by_coordinate(
+    coords: Sequence[float],
+    threshold: float = 1.0,
+    limit: int = 10,
+    thread_id: Optional[str] = None,
+    nbl_outcome: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """W7/O1: trajectory-conditioned retrieval over the Immortus 4D chain.
+
+    Returns chain entries near ``coords`` (reasoning-state proximity), distinct
+    from embedding cosine similarity. No-op (empty list) if engine not loaded.
+    """
+    if _engine is None:
+        return []
+    return _engine.immortus_chain_query_by_coordinate(
+        coords, threshold, limit, thread_id, nbl_outcome
+    )

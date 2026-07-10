@@ -5,6 +5,11 @@
 #include <iostream>
 #include <cstring>
 #include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <algorithm>
+#include <string>
+#include <vector>
 #include <sqlite3.h>
 
 // ============================================================================
@@ -342,4 +347,168 @@ extern "C" IRIS_API int immortus_chain_keep_latest(const char* thread_id, int ke
 
     // Wait for synchronous commit
     return future.get();
+}
+
+// --- Immortus trajectory-conditioned query (W7/O1) ---
+// Mirror of backend/gateway/iris_ffi.py::_PythonFallbackEngine.
+// immortus_chain_query_by_coordinate. Returns a malloc'd JSON array string;
+// the caller frees it via free_cstring().
+
+// Parse exactly 4 comma-separated floats into out[4]. Returns false otherwise.
+static bool iris_parse_coord4(const char* text, double out[4]) {
+    if (!text) return false;
+    double vals[4] = {0, 0, 0, 0};
+    int idx = 0;
+    const char* p = text;
+    const char* start = text;
+    while (true) {
+        if (*p == ',' || *p == '\0') {
+            if (idx >= 4) return false;
+            std::string tok(start, p);
+            try {
+                size_t pos = 0;
+                vals[idx] = std::stod(tok, &pos);
+                if (pos != tok.size()) return false;
+            } catch (...) {
+                return false;
+            }
+            idx++;
+            if (*p == '\0') break;
+            start = p + 1;
+        }
+        p++;
+    }
+    if (idx != 4) return false;
+    for (int i = 0; i < 4; ++i) out[i] = vals[i];
+    return true;
+}
+
+static std::string iris_json_escape(const std::string& in) {
+    std::string out;
+    out.reserve(in.size() + 8);
+    for (char c : in) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x",
+                                  static_cast<unsigned int>(
+                                      static_cast<unsigned char>(c)));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+static std::string iris_col_text(sqlite3_stmt* stmt, int col) {
+    const unsigned char* t = sqlite3_column_text(stmt, col);
+    return t ? std::string(reinterpret_cast<const char*>(t)) : std::string();
+}
+
+// Returns "null" for SQL NULL, otherwise a JSON-escaped quoted string.
+static std::string iris_json_value(sqlite3_stmt* stmt, int col) {
+    if (sqlite3_column_type(stmt, col) == SQLITE_NULL) return "null";
+    return "\"" + iris_json_escape(iris_col_text(stmt, col)) + "\"";
+}
+
+extern "C" IRIS_API char* immortus_chain_query_by_coordinate(
+    const char* coords,
+    double threshold,
+    int limit,
+    const char* thread_id,
+    const char* nbl_outcome
+) {
+    auto emit_empty = []() -> char* {
+        char* s = static_cast<char*>(std::malloc(3));
+        std::strcpy(s, "[]");
+        return s;
+    };
+
+    double target[4] = {0, 0, 0, 0};
+    if (!iris_parse_coord4(coords, target)) return emit_empty();
+
+    DBManager::ReadGuard guard;
+    if (!guard) return emit_empty();
+    sqlite3* conn = guard.get();
+
+    std::string sql =
+        "SELECT chain_id, thread_id, result, coords_from, coords_to, "
+        "nbl_outcome, insight, file_path, landmark_id FROM memory_chain WHERE 1=1";
+    std::vector<std::string> binds;
+    if (thread_id && *thread_id) {
+        sql += " AND thread_id = ?";
+        binds.push_back(thread_id);
+    }
+    if (nbl_outcome && *nbl_outcome) {
+        sql += " AND nbl_outcome = ?";
+        binds.push_back(nbl_outcome);
+    }
+    sql += ";";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(conn, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) return emit_empty();
+
+    for (size_t i = 0; i < binds.size(); ++i) {
+        sqlite3_bind_text(stmt, static_cast<int>(i + 1),
+                          binds[i].c_str(), -1, SQLITE_STATIC);
+    }
+
+    struct Row { double dist; std::string json; };
+    std::vector<Row> rows;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        double cf[4] = {0, 0, 0, 0};
+        if (!iris_parse_coord4(iris_col_text(stmt, 3).c_str(), cf)) continue;
+        double d = 0.0;
+        for (int k = 0; k < 4; ++k) {
+            double diff = cf[k] - target[k];
+            d += diff * diff;
+        }
+        d = std::sqrt(d);
+        if (d > threshold) continue;
+
+        std::string obj = "{";
+        obj += "\"chain_id\":" + iris_json_value(stmt, 0) + ",";
+        obj += "\"thread_id\":" + iris_json_value(stmt, 1) + ",";
+        obj += "\"result\":" + iris_json_value(stmt, 2) + ",";
+        obj += "\"coords_from\":" + iris_json_value(stmt, 3) + ",";
+        obj += "\"coords_to\":" + iris_json_value(stmt, 4) + ",";
+        obj += "\"nbl_outcome\":" + iris_json_value(stmt, 5) + ",";
+        obj += "\"insight\":" + iris_json_value(stmt, 6) + ",";
+        obj += "\"file_path\":" + iris_json_value(stmt, 7) + ",";
+        obj += "\"landmark_id\":" + iris_json_value(stmt, 8) + ",";
+        obj += "\"distance\":" + std::to_string(d);
+        obj += "}";
+        rows.push_back({d, obj});
+    }
+    sqlite3_finalize(stmt);
+
+    std::sort(rows.begin(), rows.end(),
+              [](const Row& a, const Row& b) { return a.dist < b.dist; });
+    if (limit > 0 && rows.size() > static_cast<size_t>(limit)) {
+        rows.resize(static_cast<size_t>(limit));
+    }
+
+    std::string out = "[";
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (i) out += ",";
+        out += rows[i].json;
+    }
+    out += "]";
+
+    char* result = static_cast<char*>(std::malloc(out.size() + 1));
+    std::memcpy(result, out.c_str(), out.size() + 1);
+    return result;
+}
+
+extern "C" IRIS_API void free_cstring(char* s) {
+    if (s) std::free(s);
 }

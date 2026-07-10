@@ -205,6 +205,30 @@ IRIS_API int immortus_chain_append(
  */
 IRIS_API int immortus_chain_keep_latest(const char* thread_id, int keep_count);
 
+/**
+ * Query the Immortus memory chain by coordinate proximity (W7/O1).
+ * Mirrors backend/gateway/iris_ffi.py::_PythonFallbackEngine.immortus_chain_query_by_coordinate.
+ * Returns a malloc'd JSON array string; caller frees it via free_cstring().
+ * @param coords        Target coordinate "x,y,xi,u" (4 comma-separated floats).
+ * @param threshold     Max Euclidean 4D distance to include.
+ * @param limit         Max number of results (<=0 means no limit).
+ * @param thread_id     Optional thread filter (nullable).
+ * @param nbl_outcome   Optional nbl_outcome filter (nullable).
+ * @return malloc'd JSON string (free with free_cstring()); "[]" on no match/error.
+ */
+IRIS_API char* immortus_chain_query_by_coordinate(
+    const char* coords,
+    double threshold,
+    int limit,
+    const char* thread_id,
+    const char* nbl_outcome
+);
+
+/**
+ * Free a string returned by immortus_chain_query_by_coordinate.
+ */
+IRIS_API void free_cstring(char* s);
+
 #ifdef __cplusplus
 }
 #endif
