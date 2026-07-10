@@ -25,6 +25,9 @@ export function QuestionCard({
   const { getThemeConfig } = useBrandColor()
   const brandTheme = getThemeConfig()
   const glowColor = brandTheme.glow.color || "#00d4ff"
+  const shimmerPrimary = brandTheme.shimmer.primary || glowColor
+  const glassBlur = brandTheme.glass.blur || 20
+  const glassOpacity = brandTheme.glass.opacity || 0.18
 
   const [selected, setSelected] = useState<string | null>(null)
   const [customInput, setCustomInput] = useState("")
@@ -63,9 +66,12 @@ export function QuestionCard({
       className="my-3 w-full"
     >
       <div
-        className="rounded-xl overflow-hidden relative"
+        className="rounded-lg overflow-hidden relative"
         style={{
-          background: "linear-gradient(135deg, rgba(10,11,22,0.96) 0%, rgba(15,16,28,0.98) 100%)",
+          background: `linear-gradient(135deg, rgba(10,11,22,${0.6 + glassOpacity * 2}) 0%, rgba(15,16,28,${0.65 + glassOpacity * 2}) 100%)`,
+          backdropFilter: `blur(${glassBlur}px)`,
+          WebkitBackdropFilter: `blur(${glassBlur}px)`,
+          borderLeft: `2px solid ${glowColor}`,
           border: `1px solid ${glowColor}20`,
           boxShadow: `
             inset 0 1px 1px rgba(255,255,255,0.04),
@@ -80,10 +86,10 @@ export function QuestionCard({
           className="absolute inset-0 pointer-events-none"
           style={{
             background: `
-              linear-gradient(90deg, ${glowColor}06 0%, transparent 20%, transparent 80%, ${glowColor}06 100%),
-              linear-gradient(0deg, ${glowColor}04 0%, transparent 20%, transparent 80%, ${glowColor}04 100%)
+              linear-gradient(90deg, ${shimmerPrimary}06 0%, transparent 20%, transparent 80%, ${shimmerPrimary}06 100%),
+              linear-gradient(0deg, ${shimmerPrimary}04 0%, transparent 20%, transparent 80%, ${shimmerPrimary}04 100%)
             `,
-            borderRadius: "12px",
+            borderRadius: "10px",
           }}
         />
 
@@ -110,14 +116,14 @@ export function QuestionCard({
           {/* Options */}
           {options.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2.5">
-              {options.map((opt, i) => {
+              {options.map((opt) => {
                 const isSelected = selected === opt
                 return (
                   <button
                     key={opt}
                     onClick={() => { setSelected(opt); setCustomInput("") }}
                     disabled={submitted && !isSelected}
-                    className="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all duration-150"
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all duration-150 hover:brightness-125"
                     style={{
                       color: isSelected ? glowColor : "rgba(255,255,255,0.5)",
                       backgroundColor: isSelected ? `${glowColor}15` : "rgba(255,255,255,0.04)",
@@ -140,11 +146,19 @@ export function QuestionCard({
                 onChange={(e) => { setCustomInput(e.target.value); setSelected(null) }}
                 placeholder="Type your answer..."
                 disabled={submitted}
-                className="flex-1 px-2.5 py-1 rounded-lg text-[10px] outline-none"
+                className="flex-1 px-2.5 py-1 rounded-lg text-[11px] outline-none transition-all duration-150"
                 style={{
                   color: "rgba(255,255,255,0.6)",
                   backgroundColor: "rgba(255,255,255,0.04)",
-                  border: "1px solid rgba(255,255,255,0.08)",
+                  border: `1px solid rgba(255,255,255,0.08)`,
+                }}
+                onFocus={(e) => {
+                  e.currentTarget.style.borderColor = `${glowColor}40`
+                  e.currentTarget.style.boxShadow = `0 0 0 2px ${glowColor}10`
+                }}
+                onBlur={(e) => {
+                  e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"
+                  e.currentTarget.style.boxShadow = "none"
                 }}
               />
             </div>
@@ -152,12 +166,12 @@ export function QuestionCard({
 
           {/* Submit */}
           {!submitted && !expired && (
-            <div className="flex gap-1.5 pt-1.5 border-t"
+            <div className="flex gap-1.5 pt-1.5 border-t items-center"
               style={{ borderColor: "rgba(255,255,255,0.06)" }}>
               <button
                 onClick={handleSubmit}
                 disabled={!selected && !customInput.trim()}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium tracking-wide transition-all duration-150 hover:brightness-110 disabled:opacity-30"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium tracking-wide transition-all duration-150 hover:brightness-125 disabled:opacity-30"
                 style={{
                   color: glowColor,
                   backgroundColor: `${glowColor}12`,
@@ -177,7 +191,7 @@ export function QuestionCard({
 
           {/* Submitted state */}
           {submitted && (
-            <div className="flex items-center gap-1.5 py-1.5 text-[10px] font-medium"
+            <div className="flex items-center gap-1.5 py-1.5 text-[11px] font-medium"
               style={{ color: "#22c55e" }}>
               <Send size={12} />
               Answer submitted
@@ -186,7 +200,7 @@ export function QuestionCard({
 
           {/* Expired state */}
           {expired && !submitted && (
-            <div className="flex items-center gap-1.5 py-1.5 text-[10px] font-medium"
+            <div className="flex items-center gap-1.5 py-1.5 text-[11px] font-medium"
               style={{ color: "rgba(239,68,68,0.8)" }}>
               Timed out
             </div>

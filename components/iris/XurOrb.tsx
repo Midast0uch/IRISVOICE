@@ -17,6 +17,7 @@ import {
 } from "./orb/animationModes"
 import { RadialArcNodes } from "./radial/RadialArcNodes"
 import OrbBadge from "./OrbBadge"
+import { OrbWorkingIndicator } from "./OrbWorkingIndicator"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
 import { useAgentQuestion } from "@/hooks/useAgentQuestion"
 
@@ -465,37 +466,16 @@ export function XurOrb({
           )}
         </AnimatePresence>
 
-        {/* Agent-working indicator: visible ring + label while the agent is
-            thinking/executing tools — regardless of wing open/closed. Fixes the
-            "dead air, nothing happening" perception during a voice/chat turn. */}
-        <AnimatePresence>
-          {isAgentWorking && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="absolute rounded-full pointer-events-none"
-              style={{
-                inset: -28,
-                border: `2px solid ${glowColor}`,
-                boxShadow: `0 0 18px ${glowColor}66, inset 0 0 14px ${glowColor}33`,
-              }}
-            >
-              <motion.span
-                className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[9px] font-bold tracking-[0.18em] uppercase whitespace-nowrap"
-                style={{ color: glowColor, fontFamily: "'Courier New', Courier, monospace" }}
-                animate={{ opacity: [0.4, 1, 0.4] }}
-                transition={{ duration: 1.2, repeat: Infinity }}
-              >
-                {agentQuestion.hasPendingQuestion
-                  ? "NEEDS INPUT"
-                  : taskProgress.isWorking
-                    ? "WORKING"
-                    : "THINKING"}
-              </motion.span>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* Agent-working indicator: orbiting particles while the agent is
+            thinking/executing tools — regardless of wing open/closed. Replaces
+            the old flat CSS border ring (clashed with the orb's particle
+            aesthetic). OrbBadge (top-right) shows the step counter / "?" glyph. */}
+        <OrbWorkingIndicator
+          isActive={isAgentWorking}
+          variant={agentQuestion.hasPendingQuestion ? "question" : "working"}
+          glowColor={glowColor}
+          shimmerPrimary={theme.shimmer.primary}
+        />
 
         {/* OrbBadge — background-task / question indicator (orb-only view) */}
         <OrbBadge

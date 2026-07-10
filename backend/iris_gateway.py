@@ -7517,26 +7517,30 @@ class IRISGateway:
     ) -> None:
         """Re-render a document in a different format on user request.
 
-        Receives {content, format, turn_id, conversation_id, original_format}
-        from the frontend (a format-pill click). Runs the LLM reformat in an
-        executor (non-blocking) and emits a document:render event with the new
+        Receives {document_id, format, turn_id, conversation_id, original_format}
+        from the frontend (a format-pill click) — W5 drops the client ``content``
+        so the backend retrieves the canonical data by id. Runs the reformat in
+        an executor (non-blocking) and emits a document:render event with the new
         format; the frontend swaps the rendered document on that event.
         """
         payload = (message or {}).get("payload", {})
-        content = payload.get("content", "")
+        document_id = payload.get("document_id", "")
         target_format = payload.get("format", "")
         turn_id = payload.get("turn_id")
         conversation_id = payload.get("conversation_id") or session_id
         original_format = payload.get("original_format")
+        # Trust-routing W3: carry the original document's trust level through
+        # reformat so a reformatted untrusted doc stays untrusted.
+        trust = payload.get("trust")
 
-        if not content or not target_format:
+        if not document_id or not target_format:
             try:
                 if self._ws_manager:
                     await self._ws_manager.send_to_client(
                         client_id,
                         {
                             "type": "reformat_document_error",
-                            "payload": {"error": "content and format are required"},
+                            "payload": {"error": "document_id and format are required"},
                         },
                     )
             except Exception:
@@ -7562,11 +7566,12 @@ class IRISGateway:
 
             def _do():
                 return kernel.reformat_document(
-                    content=content,
+                    document_id=document_id,
                     target_format=target_format,
                     conversation_id=conversation_id,
                     turn_id=turn_id,
                     original_format=original_format,
+                    trust=trust,
                 )
 
             await loop.run_in_executor(None, _do)

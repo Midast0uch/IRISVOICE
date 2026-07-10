@@ -108,6 +108,12 @@ class StructuredLogger:
 
         # Console handler
         console_handler = logging.StreamHandler(sys.stdout)
+        # Force UTF-8 on the console stream so Windows cp1252 stderr can't
+        # choke on non-ASCII (e.g. the '→' arrow) and emit cosmetic tracebacks.
+        try:
+            console_handler.stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
 

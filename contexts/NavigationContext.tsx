@@ -469,6 +469,11 @@ interface NavigationContextValue {
   endVoiceCommand: () => void
   cancelVoiceCommand: () => void
 
+  // Per-thread context keying + connection state (Phase 1)
+  currentConversationId: string | undefined
+  setCurrentConversationId: (id: string | undefined) => void
+  connectionState: "connecting" | "connected" | "disconnected" | "error"
+
   // Chat actions
   clearChat: () => void
   
@@ -513,6 +518,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     getAgentTools,
     currentConversationId,
     setCurrentConversationId,
+    connectionState,
     getWakeWords,
     getAudioDevices,
   } = useIRISWebSocket()
@@ -833,6 +839,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     // WebSocket state and functions
     currentConversationId,
     setCurrentConversationId,
+    connectionState,
     currentCategory,
     currentSection,
     voiceState,
@@ -900,6 +907,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     // WebSocket state and functions
     currentConversationId,
     setCurrentConversationId,
+    connectionState,
     currentCategory,
     currentSection,
     voiceState,

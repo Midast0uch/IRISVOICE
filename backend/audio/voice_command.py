@@ -191,7 +191,7 @@ class VoiceCommandHandler:
 
     # VAD tuning — adjustable per environment
     VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
-    VAD_MIN_SPEECH_SEC: float = 0.15  # ignore blips shorter than this
+    VAD_MIN_SPEECH_SEC: float = 0.3  # ignore blips shorter than this (plan §1.3.4)
     VAD_SILENCE_SEC: float = 1.2  # silence after speech → end of utterance
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
@@ -893,15 +893,23 @@ class VoiceCommandHandler:
 
     def _vad_wait_for_speech_then_silence(self) -> bool:
         """
-        Simple energy-based VAD for auto_stop mode.
+        Energy-based VAD with adaptive noise-floor calibration (plan §1.3).
 
         State machine:
-          PRE_SPEECH  → wait for audio above VAD_ENERGY_THRESHOLD
-          IN_SPEECH   → wait for sustained silence (VAD_SILENCE_SEC) after speech
-          DONE        → return (triggers transcription)
+          CALIBRATE  → sample ~0.5s ambient audio, compute noise floor, set thresholds
+          PRE_SPEECH  → wait for audio above speech_threshold (noise_floor * 3.0)
+          IN_SPEECH   → wait for sustained silence (adaptive frames) below silence_threshold
+          DONE        → return True (triggers transcription)
 
-        If _pre_speech_timeout_sec > 0, gives up if speech onset doesn't
-        arrive within that window — used by conversation-mode relisten passes.
+        The fixed threshold (VAD_ENERGY_THRESHOLD) was the root cause of the
+        intermittent "STT never starts" bug: too high in a quiet room (speech
+        never detected) or too low in a noisy room (background noise triggers
+        false speech). Calibrating from the actual ambient level makes detection
+        robust to the environment. Hysteresis (speech_threshold > silence_threshold)
+        prevents flicker at the boundary.
+
+        If _pre_speech_timeout_sec > 0, gives up if speech onset doesn't arrive
+        within that window — used by conversation-mode relisten passes.
 
         Returns:
             True if speech was actually detected and ended naturally.
@@ -919,9 +927,28 @@ class VoiceCommandHandler:
             else max_frames
         )
 
+        # ── Adaptive noise-floor calibration (plan §1.3.1) ──────────────
+        # Sample ~0.5s of ambient audio to set thresholds relative to the
+        # actual room noise. Recalibrate once if speech hasn't started by 10s.
+        calibration_frames = max(1, int(0.5 / frame_sec))
+        noise_floor = self.VAD_ENERGY_THRESHOLD  # fallback if no frames yet
+        _calibration_rms: list = []
+        _recalibrated = False
+
+        def _calibrate() -> tuple:
+            """Return (speech_threshold, silence_threshold) from current noise floor."""
+            floor = noise_floor if noise_floor > 0 else self.VAD_ENERGY_THRESHOLD
+            # Hysteresis: speech onset needs 3× floor, offset needs only 1.5× floor.
+            speech_th = max(floor * 3.0, self.VAD_ENERGY_THRESHOLD * 0.5)
+            silence_th = max(floor * 1.5, self.VAD_ENERGY_THRESHOLD * 0.25)
+            return speech_th, silence_th
+
+        speech_threshold, silence_threshold = _calibrate()
+
         silence_count = 0
         speech_count = 0
         speech_started = False
+        speech_frames_total = 0  # total speech frames → drives adaptive silence
         last_processed = 0
         total_frames = 0
         pre_speech_frames = 0  # frames elapsed before first speech onset
@@ -932,6 +959,12 @@ class VoiceCommandHandler:
         # Cadence: reset spectral flux detector at recording start
         if hasattr(self, "cadence_detector"):
             self.cadence_detector.reset()
+
+        logger.debug(
+            f"[VAD] start: calibration_frames={calibration_frames}, "
+            f"silence_needed={silence_needed}, speech_needed={speech_needed}, "
+            f"max_frames={max_frames}, fallback_th={self.VAD_ENERGY_THRESHOLD}"
+        )
 
         while total_frames < max_frames and not self._stop_event.is_set():
             current_len = len(self._raw_frames)
@@ -948,16 +981,30 @@ class VoiceCommandHandler:
                 total_frames += 1
                 rms = float(np.sqrt(np.mean(np.square(frame))))
 
+                # ── Calibration phase: collect ambient RMS, no VAD yet ──
+                if not speech_started and total_frames <= calibration_frames:
+                    _calibration_rms.append(rms)
+                    continue
+                # Finalize calibration on the first frame after the window
+                if not speech_started and total_frames == calibration_frames + 1:
+                    if _calibration_rms:
+                        # Median is robust to early speech blips during calibration
+                        _sorted = sorted(_calibration_rms)
+                        noise_floor = _sorted[len(_sorted) // 2]
+                    speech_threshold, silence_threshold = _calibrate()
+                    logger.info(
+                        f"[VAD] calibrated noise_floor={noise_floor:.5f} "
+                        f"speech_th={speech_threshold:.5f} silence_th={silence_threshold:.5f}"
+                    )
+
                 # Accumulate for audio_level broadcast (~100 ms cadence)
                 _level_accum += rms
                 _level_frame_count += 1
                 if _level_frame_count >= _LEVEL_EMIT_EVERY:
-                    # Normalise: divide by 2× threshold so speech ≈ 0.5, loud ≈ 1.0
+                    # Normalise: divide by 2× speech threshold so speech ≈ 0.5
                     level = min(
                         1.0,
-                        _level_accum
-                        / _level_frame_count
-                        / (self.VAD_ENERGY_THRESHOLD * 2),
+                        _level_accum / _level_frame_count / (speech_threshold * 2),
                     )
                     # Legacy callback (old IrisOrb.tsx still listens for audio_level)
                     if self._on_audio_level:
@@ -974,7 +1021,7 @@ class VoiceCommandHandler:
                             # is near-zero at low input levels (RMS < 0.001), making
                             # the orb appear frozen. RMS gives a floor that keeps the
                             # orb breathing in sync with the user's voice level.
-                            rms_scaled = min(1.0, rms / (self.VAD_ENERGY_THRESHOLD * 0.5))
+                            rms_scaled = min(1.0, rms / (speech_threshold * 0.5))
                             blended = max(cadence, rms_scaled * 0.6)
                             self._on_audio_envelope(level, blended, "listening")
                         except Exception:
@@ -982,26 +1029,53 @@ class VoiceCommandHandler:
                     _level_accum = 0.0
                     _level_frame_count = 0
 
-                if rms >= self.VAD_ENERGY_THRESHOLD:
+                # ── Recalibrate once if speech hasn't started after 10s ──
+                if (
+                    not speech_started
+                    and not _recalibrated
+                    and total_frames >= int(10.0 / frame_sec)
+                ):
+                    recent = _calibration_rms[-calibration_frames:] if _calibration_rms else []
+                    if recent:
+                        _sorted = sorted(recent)
+                        noise_floor = _sorted[len(_sorted) // 2]
+                        speech_threshold, silence_threshold = _calibrate()
+                        logger.info(
+                            f"[VAD] recalibrated @10s: noise_floor={noise_floor:.5f} "
+                            f"speech_th={speech_threshold:.5f}"
+                        )
+                    _recalibrated = True
+
+                # ── VAD state machine ───────────────────────────────────
+                if rms >= speech_threshold:
                     speech_count += 1
                     silence_count = 0
+                    speech_frames_total += 1
                     if speech_count >= speech_needed and not speech_started:
                         speech_started = True
                         logger.info(
-                            f"[VoiceCommand] VAD: speech started (RMS={rms:.4f}, "
-                            f"threshold={self.VAD_ENERGY_THRESHOLD})"
+                            f"[VAD] speech started (RMS={rms:.4f}, "
+                            f"speech_th={speech_threshold:.4f})"
                         )
                 else:
                     if speech_started:
                         silence_count += 1
+                        # Adaptive silence frames (plan §1.3.2): shorter for short
+                        # utterances (snappier), longer for long ones (natural pauses).
+                        adaptive_silence = silence_needed
+                        speech_sec = speech_frames_total * frame_sec
+                        if speech_sec < 2.0:
+                            adaptive_silence = max(8, int(silence_needed * 0.5))
+                        elif speech_sec > 5.0:
+                            adaptive_silence = int(silence_needed * 1.5)
                         if silence_count % 5 == 0:
                             logger.info(
-                                f"[VoiceCommand] VAD: silence {silence_count}/{silence_needed} "
-                                f"(RMS={rms:.4f}, threshold={self.VAD_ENERGY_THRESHOLD})"
+                                f"[VAD] silence {silence_count}/{adaptive_silence} "
+                                f"(RMS={rms:.4f}, silence_th={silence_threshold:.4f})"
                             )
-                        if silence_count >= silence_needed:
+                        if silence_count >= adaptive_silence:
                             logger.info(
-                                f"[VoiceCommand] VAD: end-of-speech detected "
+                                f"[VAD] end-of-speech detected "
                                 f"(RMS={rms:.4f}, silence_frames={silence_count})"
                             )
                             return True  # silence after real speech → done
@@ -1011,14 +1085,14 @@ class VoiceCommandHandler:
                         pre_speech_frames += 1
                         if pre_speech_frames >= pre_speech_max_frames:
                             logger.info(
-                                f"[VoiceCommand] VAD: pre-speech timeout "
+                                f"[VAD] pre-speech timeout "
                                 f"({self._pre_speech_timeout_sec}s) — no speech detected, "
                                 f"skipping transcription to avoid hallucination"
                             )
                             return False  # no speech onset → skip transcription
 
         logger.debug(
-            f"[VoiceCommand] VAD: loop ended (frames={total_frames}, speech_started={speech_started})"
+            f"[VAD] loop ended (frames={total_frames}, speech_started={speech_started})"
         )
         return speech_started
 
@@ -1212,6 +1286,16 @@ class VoiceCommandHandler:
                     # Fallback: play through pipeline's fallback path
                     logger.warning(f"[VoiceCommand] Direct sd.play failed ({_beep_err}), using pipeline")
                     self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
+                finally:
+                    # ALWAYS release the half-duplex gate after playback,
+                    # whether it succeeded or fell back.  If skipped on the
+                    # happy path, _tts_active stays True and _input_callback
+                    # drops every frame forever — STT captures nothing until
+                    # the pipeline is closed/restarted (VAD never sees speech).
+                    try:
+                        self.audio_engine.set_tts_active(False)
+                    except Exception:
+                        pass
         except Exception as e:
             # Always release the gate even if playback raised — otherwise the
             # pipeline stays muted and the real recording captures nothing.

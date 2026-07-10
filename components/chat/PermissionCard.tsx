@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Shield, ShieldCheck, ShieldAlert, CheckCircle, X, Clock, Terminal, AlertTriangle } from "lucide-react"
+import { ShieldCheck, ShieldAlert, CheckCircle, X, Clock, AlertTriangle } from "lucide-react"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -69,6 +69,9 @@ export function PermissionCard({
   const { getThemeConfig } = useBrandColor()
   const brandTheme = getThemeConfig()
   const glowColor = brandTheme.glow.color || "#00d4ff"
+  const shimmerPrimary = brandTheme.shimmer.primary || glowColor
+  const glassBlur = brandTheme.glass.blur || 20
+  const glassOpacity = brandTheme.glass.opacity || 0.18
   const [step, setStep] = useState<Step>("approve")
   const [confirmed, setConfirmed] = useState(false)
   const [timeLeft, setTimeLeft] = useState(timeoutSeconds)
@@ -131,9 +134,12 @@ export function PermissionCard({
       className="my-3 w-full"
     >
       <div
-        className="rounded-xl overflow-hidden"
+        className="rounded-lg overflow-hidden relative"
         style={{
-          background: "linear-gradient(135deg, rgba(10,11,22,0.96) 0%, rgba(15,16,28,0.98) 100%)",
+          background: `linear-gradient(135deg, rgba(10,11,22,${0.6 + glassOpacity * 2}) 0%, rgba(15,16,28,${0.65 + glassOpacity * 2}) 100%)`,
+          backdropFilter: `blur(${glassBlur}px)`,
+          WebkitBackdropFilter: `blur(${glassBlur}px)`,
+          borderLeft: `2px solid ${tierCfg.color}`,
           border: `1px solid ${tierCfg.color}20`,
           boxShadow: `
             inset 0 1px 1px rgba(255,255,255,0.04),
@@ -148,10 +154,10 @@ export function PermissionCard({
           className="absolute inset-0 pointer-events-none"
           style={{
             background: `
-              linear-gradient(90deg, ${tierCfg.color}06 0%, transparent 20%, transparent 80%, ${tierCfg.color}06 100%),
-              linear-gradient(0deg, ${tierCfg.color}04 0%, transparent 20%, transparent 80%, ${tierCfg.color}04 100%)
+              linear-gradient(90deg, ${shimmerPrimary}06 0%, transparent 20%, transparent 80%, ${shimmerPrimary}06 100%),
+              linear-gradient(0deg, ${shimmerPrimary}04 0%, transparent 20%, transparent 80%, ${shimmerPrimary}04 100%)
             `,
-            borderRadius: "12px",
+            borderRadius: "10px",
           }}
         />
 
@@ -237,7 +243,7 @@ export function PermissionCard({
                 key="resolved"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="flex items-center gap-1.5 py-1.5 text-[10px] font-medium"
+                className="flex items-center gap-1.5 py-1.5 text-[11px] font-medium"
                 style={{
                   color: resolved === "approved" ? "#22c55e" : "rgba(239,68,68,0.8)",
                 }}
@@ -256,12 +262,12 @@ export function PermissionCard({
                 style={{ borderColor: "rgba(255,255,255,0.06)" }}
               >
                 <ShieldAlert size={12} style={{ color: "#ef4444" }} />
-                <span className="text-[10px] flex-1" style={{ color: "rgba(255,255,255,0.5)" }}>
-                  This is a <span className="font-semibold text-red-400/80">destructive</span> operation. Are you sure?
+                <span className="text-[11px] flex-1" style={{ color: "rgba(255,255,255,0.5)" }}>
+                  This is a <span className="font-semibold" style={{ color: "rgba(239,68,68,0.8)" }}>destructive</span> operation. Are you sure?
                 </span>
                 <button
                   onClick={handleConfirm}
-                  className="px-2.5 py-1 rounded text-[9px] font-semibold tracking-wide transition-all hover:brightness-110"
+                  className="px-2.5 py-1 rounded text-[11px] font-semibold tracking-wide transition-all duration-150 hover:brightness-125"
                   style={{
                     color: "#ef4444",
                     backgroundColor: "rgba(239,68,68,0.12)",
@@ -272,7 +278,7 @@ export function PermissionCard({
                 </button>
                 <button
                   onClick={handleDeny}
-                  className="px-2.5 py-1 rounded text-[9px] font-semibold tracking-wide transition-all hover:brightness-110"
+                  className="px-2.5 py-1 rounded text-[11px] font-semibold tracking-wide transition-all duration-150 hover:brightness-125"
                   style={{
                     color: "rgba(255,255,255,0.4)",
                     backgroundColor: "rgba(255,255,255,0.05)",
@@ -295,17 +301,11 @@ export function PermissionCard({
                 {/* Deny button */}
                 <button
                   onClick={handleDeny}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-[10px] font-medium tracking-wide transition-all duration-150 hover:brightness-110"
+                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-[11px] font-medium tracking-wide transition-all duration-150 hover:brightness-125"
                   style={{
                     color: "rgba(255,255,255,0.5)",
                     backgroundColor: "rgba(255,255,255,0.04)",
                     border: "1px solid rgba(255,255,255,0.08)",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.08)"
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.04)"
                   }}
                 >
                   <X size={10} />
@@ -315,17 +315,11 @@ export function PermissionCard({
                 {/* Approve button */}
                 <button
                   onClick={handleApprove}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-[10px] font-medium tracking-wide transition-all duration-150 hover:brightness-110"
+                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-[11px] font-medium tracking-wide transition-all duration-150 hover:brightness-125"
                   style={{
                     color: tierCfg.color,
                     backgroundColor: `${tierCfg.color}12`,
                     border: `1px solid ${tierCfg.color}30`,
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = `${tierCfg.color}20`
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = `${tierCfg.color}12`
                   }}
                 >
                   <CheckCircle size={10} />
