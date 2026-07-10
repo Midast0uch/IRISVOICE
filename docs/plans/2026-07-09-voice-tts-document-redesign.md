@@ -1449,7 +1449,7 @@ Build order is mandatory — each layer depends on the ones below it:
 | 3 | Issue C.1: Structured JSON response (backend) — **DONE 2026-07-10** | None | 2 sessions |
 | 4 | Issue C.2: Speak tool — **DONE 2026-07-10** | Issue C.1 (utterance events) | 1 session |
 | 5 | Issue D.1: Rich document renderer | None | 2 sessions |
-| 6 | Issue D.2: Format auto-decision + alternatives | Issue C.1 (structured response), Issue D.1 | 1 session |
+| 6 | Issue D.2: Format auto-decision + alternatives — **DONE 2026-07-10** | Issue C.1 (structured response) | 1 session |
 | 7 | Issue D.3: Inline + expand rendering | Issue D.1, Issue D.2 | 1 session |
 | 8 | Integration + E2E | All above | 1 session |
 

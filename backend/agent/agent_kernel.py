@@ -2550,6 +2550,63 @@ class AgentKernel:
             return speak
         return response
 
+    def reformat_document(
+        self,
+        content: str,
+        target_format: str,
+        conversation_id: str = "default",
+        turn_id: Optional[str] = None,
+        original_format: Optional[str] = None,
+    ) -> Optional[str]:
+        """Re-render a previously generated document in a different format.
+
+        Calls the LLM (via ``_respond_direct``) to reformat ``content`` as
+        ``target_format``, then emits a DOCUMENT_RENDER event so the frontend
+        swaps the rendered document.  Returns the new content, or None on
+        failure.  Issue D.2.
+        """
+        if not content or not target_format:
+            return None
+        prompt = (
+            "Reformat the following document as " + target_format + ". "
+            "Preserve all information and meaning. "
+            'Respond with JSON: {"show": {"format": "' + target_format + '", '
+            '"content": "<reformatted text>", "alternatives": ["<other formats>"]}} '
+            "or, if plain text is clearer, just return the reformatted text.\n\n"
+            "DOCUMENT:\n" + content
+        )
+        try:
+            reformatted = self._respond_direct(prompt, context=[])
+        except Exception as exc:
+            logger.warning("[AgentKernel] reformat_document LLM call failed: %s", exc)
+            return None
+        if not reformatted:
+            return None
+
+        from backend.agent.structured_response import build_reformat_payload
+
+        payload = build_reformat_payload(
+            reformatted,
+            target_format=target_format,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            original_format=original_format,
+        )
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            get_event_bus().emit(
+                IRISStreamEvent.DOCUMENT_RENDER,
+                data=payload,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[AgentKernel] DOCUMENT_RENDER (reformat) emit failed: %s", exc
+            )
+        return payload["content"]
+
     def _sanitize_task(self, task: str) -> str:
         """
         Filter prompt-injection attempts before the task reaches the DER Director.

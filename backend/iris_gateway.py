@@ -433,6 +433,9 @@ class IRISGateway:
             elif msg_type == "get_hardware_info":
                 await self._handle_get_hardware_info(session_id, client_id, message)
 
+            elif msg_type == "reformat_document":
+                await self._handle_reformat_document(session_id, client_id, message)
+
             elif msg_type == "download_gguf_model":
                 await self._handle_download_gguf_model(session_id, client_id, message)
 
@@ -7509,6 +7512,78 @@ class IRISGateway:
             self._logger.error(f"[LocalModel] get_hardware_info error: {e}")
 
     # â”€â”€ Swarm Action Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    async def _handle_reformat_document(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """Re-render a document in a different format on user request.
+
+        Receives {content, format, turn_id, conversation_id, original_format}
+        from the frontend (a format-pill click). Runs the LLM reformat in an
+        executor (non-blocking) and emits a document:render event with the new
+        format; the frontend swaps the rendered document on that event.
+        """
+        payload = (message or {}).get("payload", {})
+        content = payload.get("content", "")
+        target_format = payload.get("format", "")
+        turn_id = payload.get("turn_id")
+        conversation_id = payload.get("conversation_id") or session_id
+        original_format = payload.get("original_format")
+
+        if not content or not target_format:
+            try:
+                if self._ws_manager:
+                    await self._ws_manager.send_to_client(
+                        client_id,
+                        {
+                            "type": "reformat_document_error",
+                            "payload": {"error": "content and format are required"},
+                        },
+                    )
+            except Exception:
+                pass
+            return
+
+        # Ack immediately so the UI can show a spinner.
+        try:
+            if self._ws_manager:
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "reformat_document_ack",
+                        "payload": {"status": "processing", "format": target_format},
+                    },
+                )
+        except Exception:
+            pass
+
+        try:
+            kernel = get_agent_kernel(conversation_id, session_id)
+            loop = asyncio.get_event_loop()
+
+            def _do():
+                return kernel.reformat_document(
+                    content=content,
+                    target_format=target_format,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    original_format=original_format,
+                )
+
+            await loop.run_in_executor(None, _do)
+        except Exception as exc:
+            self._logger.warning("[iris_gateway] reformat_document failed: %s", exc)
+            try:
+                if self._ws_manager:
+                    await self._ws_manager.send_to_client(
+                        client_id,
+                        {
+                            "type": "reformat_document_error",
+                            "payload": {"error": str(exc)},
+                        },
+                    )
+            except Exception:
+                pass
+
     async def _handle_swarm_action(
         self, session_id: str, client_id: str, message: dict
     ) -> None:

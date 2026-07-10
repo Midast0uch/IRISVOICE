@@ -69,3 +69,37 @@ def parse_structured_response(text: str) -> Tuple[Optional[str], Optional[Dict]]
     speak_out = speak if isinstance(speak, str) else None
     show_out = show if isinstance(show, dict) else None
     return (speak_out, show_out)
+
+
+def build_reformat_payload(
+    reformatted_text: str,
+    target_format: str,
+    turn_id: Optional[str] = None,
+    conversation_id: str = "default",
+    original_format: Optional[str] = None,
+) -> Dict:
+    """Turn an LLM reformat response into a DOCUMENT_RENDER payload (Issue D.2).
+
+    Accepts either structured JSON (``{"show": {...}}``) or plain text.  The
+    original format is offered back as an alternative so the user can toggle
+    between formats.  Pure and dependency-free — safe to unit test directly.
+    """
+    speak, show = parse_structured_response(reformatted_text)
+    if show is not None:
+        new_format = show.get("format", target_format)
+        new_content = show.get("content", "")
+        alternatives = list(show.get("alternatives", []))
+    else:
+        new_format = target_format
+        new_content = reformatted_text
+        alternatives = []
+    if original_format and original_format not in alternatives:
+        alternatives = [original_format] + alternatives
+    return {
+        "format": new_format,
+        "content": new_content,
+        "alternatives": alternatives,
+        "turn_id": turn_id,
+        "conversation_id": conversation_id,
+        "reformatted": True,
+    }
