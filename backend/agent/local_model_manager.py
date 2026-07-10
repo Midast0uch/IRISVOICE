@@ -1586,6 +1586,17 @@ class LocalModelManager:
         env_path = os.environ.get("IK_LLAMA_SERVER")
         if env_path and Path(env_path).is_file():
             return env_path
+        # 1b. Tauri-bundled binary (the widget ships llama-server via
+        # externalBin). Resolved next to the running backend executable so
+        # the vision model / legacy subprocess path work out-of-the-box.
+        try:
+            from backend.binaries import find_binary as _find_bundled
+
+            bundled = _find_bundled("llama-server", env_var="IRIS_LLAMA_SERVER")
+            if bundled and Path(bundled).is_file():
+                return bundled
+        except Exception:
+            pass
         # 2. PATH lookup
         found = shutil.which("llama-server")
         if found:

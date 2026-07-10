@@ -1499,8 +1499,20 @@ async def api_load_model(body: dict):
             pass
 
     try:
-        await mgr.load_model(model_path, profile=profile, progress_cb=_progress_cb)
-        # Signal completion
+        ok = await mgr.load_model(model_path, profile=profile, progress_cb=_progress_cb)
+        if not ok:
+            # load_model() returned False → the model did NOT actually load.
+            # Do NOT report success — the frontend must not show "loaded".
+            await ws.broadcast(
+                {
+                    "type": "model_load_progress",
+                    "percent": 100,
+                    "message": "Load failed — model not loaded",
+                    "phase": "error",
+                }
+            )
+            return {"status": "error", "message": "Model failed to load"}
+        # Signal completion only on a genuine successful load.
         await ws.broadcast(
             {
                 "type": "model_load_progress",

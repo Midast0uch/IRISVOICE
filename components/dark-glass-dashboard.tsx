@@ -609,6 +609,25 @@ export function DarkGlassDashboard({
     return () => window.removeEventListener('model-selected', onModelSelected)
   }, [localUpdateField])
 
+  // Listen for model-load-request events from the ModelBrowserPanel and route
+  // them through the WebSocket `load_local_model` path. This is the single
+  // source of truth for loading: it honors the backend load result and wires
+  // the kernel to the iris_local provider (so a local model drives reasoning
+  // and tool execution exactly like an API-key provider).
+  useEffect(() => {
+    const onModelLoadRequest = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail?.path && sendMessage) {
+        sendMessage('load_local_model', {
+          model_path: detail.path,
+          profile: detail.profile || 'balanced',
+        })
+      }
+    }
+    window.addEventListener('model-load-request', onModelLoadRequest)
+    return () => window.removeEventListener('model-load-request', onModelLoadRequest)
+  }, [sendMessage])
+
   const fieldValues = localFieldValues;
   const updateField = localUpdateField;
 

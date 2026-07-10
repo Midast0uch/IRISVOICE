@@ -74,6 +74,13 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
   }, []);
 
   // ── Load a model ─────────────────────────────────────────────────────
+  // Route through the WebSocket `load_local_model` path (same path the
+  // dashboard's "Load Model" button uses). That handler is the single source
+  // of truth: it honors the backend load result and wires the kernel to the
+  // iris_local provider, which is what makes a local model behave like an
+  // API-key provider in the reasoning/tool dropdowns. The HTTP
+  // /api/models/load endpoint is NOT used here because it cannot wire the
+  // kernel and previously reported "loaded" even on failure.
   const doLoad = async (path: string) => {
     if (!path || isLoading) return;
     setLoadingPath(path);
@@ -81,30 +88,20 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
     setLoadMsg('Loading model…');
     setLoadPhase('loading');
     try {
-      const res = await fetch('/api/models/load', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, profile: 'balanced' }),
-      });
-      const data = await res.json();
-      if (data.status === 'ok') {
-        setLoadMsg('Model loaded ✓');
-        setLoadPct(100);
-        setTimeout(() => fetchModels(), 300);
-      } else if (data.status === 'loading') {
-        // Started in background — progress comes via WS events
-        setLoadMsg(data.message || 'Loading…');
-        setLoadPct(0);
-      } else {
-        setLoadMsg('✗ ' + (data.message || 'Unknown error'));
-        setLoadPct(0);
-      }
+      window.dispatchEvent(
+        new CustomEvent('model-load-request', {
+          detail: { path, profile: 'balanced' },
+        })
+      );
+      setLoadMsg('Loading… (via local model server)');
+      setLoadPct(0);
     } catch (err: any) {
-      setLoadMsg('✗ ' + (err.message || 'Connection failed'));
+      setLoadMsg('✗ ' + (err.message || 'Failed to request load'));
       setLoadPct(0);
     } finally {
       setLoadingPath('');
-      // Keep progress bar alive until WS says 100% or timeout
+      // Keep progress bar alive until WS says 100% / done, or timeout.
+      // The WS model_load_progress listener flips isLoading off on 100%.
       setTimeout(() => setIsLoading(false), 60000);
     }
   };

@@ -77,6 +77,9 @@ tailscale_active.png
 
 # llama.cpp forks (external dependencies, not committed)
 llama.cpp/build/
+
+# Bundled llama-server (built artifact shipped via Tauri bundle.resources)
+src-tauri/binaries/llama-server/
 llama.cpp/CMakeCache.txt
 llama.cpp/CMakeFiles/
 ik_llama.cpp/build_ik/
