@@ -117,12 +117,24 @@ web/crawler tool runs
   the store, emits `DOCUMENT_RENDER` with same `document_id` + preserved `trust`.
 - Bonus: store is queryable → "show me that table again" becomes possible.
 
-### W6 — Tests + verification
-- Unit: `pacman_fragment` routes `web_search` → `untrusted` zone; trusted tools stay trusted.
-- Unit: regression test for the show-without-speak JSON-leak fix.
-- Integration: reformat via `document_id` returns correct payload; untrusted `html`
-  sanitized in render.
-- Regression: existing Mycelium trust-cap tests still pass.
+### W6 — Testing matrix (CDD-first, multi-type — NOT unit-only)
+
+Testing is defined **before** implementation (Contract-Driven Development): the contract
+and behavioral tests below are the acceptance criteria for W1–W5, not an afterthought.
+
+| # | Type | What it verifies | Location / pattern |
+|---|------|------------------|--------------------|
+| T1 | **Contract (CDD)** | `DOCUMENT_RENDER` payload shape includes `trust` + `document_id`; `reformat_document` WS message is `{document_id, target_format}` (no `content`). Catches frontend/backend drift. | `backend/tests/` standalone importlib (mirror `smoke_document_flow.py` to avoid pytest memory spike) |
+| T2 | **Behavioral** | `web_search` / `crawler_query` output → `untrusted` zone; local tools (`ask_user`, `speak`) → `trusted`; a turn that used web mid-conversation → turn fragment tagged `untrusted`. | `pacman_fragment` + `agent_kernel` pacman_store tests |
+| T3 | **Invariant** | Untrusted content **never** lands in the `trusted` zone (cellwall-style assertion at the `pacman_fragment` boundary). | new test mirroring `test_cellwall_untrusted_rejected_from_trusted_zone` |
+| T4 | **Security** | Real XSS payload (`<img src=x onerror=alert(1)>`, `javascript:` href) injected into an `untrusted` html doc is stripped/neutralized before render; mermaid `securityLevel` flips to `strict` for untrusted. | jest (jsdom) + backend sanitizer assertion |
+| T5 | **Component** | `RichDocument` renders trusted html raw; sanitizes untrusted html; `MermaidDiagram` trust-gated `securityLevel`. | `__tests__/components/` (jest, already wired — see `OrbWorkingIndicator.test.tsx`) |
+| T6 | **Integration** | Reformat via `document_id` reformats from the **canonical original** in `DocumentStore`; updated `DOCUMENT_RENDER` preserves `trust` + `document_id`. | `backend/tests/` standalone |
+| T7 | **E2E smoke** | Full loop: `document:render` → click format pill → `reformat_document` (by `document_id`) → updated `document:render`; assert no `content` sent by client. | `backend/tests/smoke_*` standalone (13/13-style) |
+| T8 | **Regression** | Existing Mycelium trust-cap tests (`test_mycelium_kyudo_security.py`) still pass; show-without-speak JSON-leak fix regression. | existing + new |
+
+**Acceptance gate:** W1–W5 are "done" only when T1–T8 are green. No new tests written to
+match code; the tests define the requirement (per project test rules).
 
 ---
 
@@ -139,7 +151,10 @@ web/crawler tool runs
 ---
 
 ## Verification strategy
-- Existing Mycelium trust-cap tests (`test_mycelium_kyudo_security.py`) remain green.
-- New unit tests for `pacman_fragment` zone routing + show-without-speak regression.
-- New integration test for `document_id`-based reformat + untrusted-html sanitization.
-- `npx tsc --noEmit` clean on frontend; backend `py_compile` + targeted pytest.
+- **CDD-first:** T1 (contract) + T2/T3 (behavioral/invariant) are written before W1–W5 code.
+- Existing Mycelium trust-cap tests (`test_mycelium_kyudo_security.py`) remain green (T8).
+- Standalone importlib scripts (not `pytest`) for backend contract/integration to avoid the
+  ~38s numpy cold-import memory spike noted in prior plan follow-up pins.
+- Frontend: `npx tsc --noEmit` clean + jest component/security tests (T4/T5) green.
+- Backend: `py_compile` clean + targeted standalone tests (T1/T2/T3/T6/T7) green.
+- E2E smoke (T7) mirrors the project's `smoke_document_flow.py` 13/13 pattern.
