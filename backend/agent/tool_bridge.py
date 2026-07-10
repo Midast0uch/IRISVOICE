@@ -373,9 +373,12 @@ class AgentToolBridge:
             {
                 "name": "speak",
                 "description": (
-                    "Speak text aloud via TTS. Use for agent-initiated speech — status updates, "
-                    "follow-ups, or any time you want the user to HEAR something without reading. "
-                    "Fire-and-forget: returns immediately and never blocks. Text is capped at 500 chars."
+                    "Speak text aloud via TTS. You may proactively call this at ANY time and for ANY "
+                    "reason — to raise a concern, flag a risk, give feedback, ask for attention, or share "
+                    "a status update — not only at the end of a task. Use it whenever the user should HEAR "
+                    "something without reading. Fire-and-forget: returns immediately and never blocks. "
+                    "Text is capped at 500 chars. The same spoken words are also delivered to any connected "
+                    "external channels (e.g. Telegram) so the user hears you there too."
                 ),
                 "parameters": {
                     "text": {"type": "string", "description": "The text to speak (max 500 characters)"},

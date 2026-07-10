@@ -2538,6 +2538,15 @@ class AgentKernel:
                 logger.warning("[AgentKernel] DOCUMENT_RENDER emit failed: %s", exc)
 
         if speak is not None:
+            # Issue C.2: also deliver the spoken summary to external channels
+            # (Telegram, MCP).  Local TTS already handles it via sentence_queue,
+            # so we only forward externally here (no second local utterance).
+            try:
+                from backend.agent.tools.speak_broadcaster import get_speak_broadcaster
+
+                get_speak_broadcaster().forward_external(speak)
+            except Exception as exc:
+                logger.warning("[AgentKernel] speak broadcast failed: %s", exc)
             return speak
         return response
 

@@ -1660,6 +1660,18 @@ class IRISGateway:
             set_conversation_kernel(kernel)
             logger.info("[iris_gateway] ConversationKernel instantiated and wired")
             kernel_ok = True
+
+            # Issue C.2: forward agent speech (utterances) to external channels
+            # (Telegram, MCP-connected integrations).  Non-fatal if it fails.
+            try:
+                from backend.agent.tools.speak_broadcaster import get_speak_broadcaster
+
+                get_speak_broadcaster()
+                logger.info("[iris_gateway] SpeakBroadcaster initialized")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[iris_gateway] SpeakBroadcaster init failed (non-fatal): %s", exc
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[iris_gateway] ConversationKernel setup failed (non-fatal): %s", exc
