@@ -109,14 +109,22 @@ class CrawlPlanner:
             return self._fallback_plan(query)
 
     def _fallback_plan(self, query: str) -> CrawlPlan:
-        """Minimal safe fallback when LLM planning fails."""
-        # Use a DuckDuckGo-style search URL as a fallback source
+        """Minimal safe fallback when LLM planning fails.
+
+        Crawl DuckDuckGo lite (a parseable results page) rather than the raw
+        ``/html/?q=`` search page, so DataExtractor can pull real result cards
+        (titles + snippets + URLs) instead of the user's literal query being
+        shown back in the browser tab.
+        """
         encoded = query.replace(" ", "+")
         return CrawlPlan(
-            urls=[f"https://duckduckgo.com/html/?q={encoded}"],
-            instructions=f"Extract results relevant to: {query}",
+            urls=[f"https://lite.duckduckgo.com/lite/?q={encoded}"],
+            instructions=(
+                f"Extract the top web search results for: {query}. "
+                "For each result capture title, url, and a short snippet."
+            ),
             result_type="cards",
-            title=query[:60],
+            title=f"Web results: {query[:48]}",
         )
 
 

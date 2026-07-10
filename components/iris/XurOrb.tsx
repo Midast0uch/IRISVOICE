@@ -132,12 +132,19 @@ export function XurOrb({
     uiState === UILayoutState.UI_STATE_BOTH_OPEN ||
     uiState === UILayoutState.UI_STATE_DASHBOARD_OPEN
 
-  // OrbBadge visibility: only when wings are closed (orb-only) AND a
-  // background task is working or a question is pending.
+  // OrbBadge visibility: show whenever a background task is working or a
+  // question is pending — INCLUDING during an open wing (chat turn).
+  // Previously gated on uiState===IDLE, which hid the working indicator
+  // for the entire duration of a voice/chat turn (wing open) — leaving the
+  // user with dead air and no "agent is working" feedback.
   const showOrbBadge =
-    uiState === UILayoutState.UI_STATE_IDLE &&
-    (taskProgress.isWorking || agentQuestion.hasPendingQuestion)
+    taskProgress.isWorking || agentQuestion.hasPendingQuestion
   const badgeVariant = agentQuestion.hasPendingQuestion ? "question" : "working"
+
+  // Explicit "agent is thinking / working" flag that drives a visible orb
+  // state during processing — independent of wing open/closed.
+  const isAgentWorking =
+    isProcessing || taskProgress.isWorking || agentQuestion.hasPendingQuestion
 
   // Sync menuOpen with navigation level — menu is only open at level 2.
   // When navigating forward to level 3 (WheelView), menu closes.
@@ -455,6 +462,38 @@ export function XurOrb({
                 background: `radial-gradient(circle, ${glowColor}22 0%, transparent 70%)`,
               }}
             />
+          )}
+        </AnimatePresence>
+
+        {/* Agent-working indicator: visible ring + label while the agent is
+            thinking/executing tools — regardless of wing open/closed. Fixes the
+            "dead air, nothing happening" perception during a voice/chat turn. */}
+        <AnimatePresence>
+          {isAgentWorking && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="absolute rounded-full pointer-events-none"
+              style={{
+                inset: -28,
+                border: `2px solid ${glowColor}`,
+                boxShadow: `0 0 18px ${glowColor}66, inset 0 0 14px ${glowColor}33`,
+              }}
+            >
+              <motion.span
+                className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[9px] font-bold tracking-[0.18em] uppercase whitespace-nowrap"
+                style={{ color: glowColor, fontFamily: "'Courier New', Courier, monospace" }}
+                animate={{ opacity: [0.4, 1, 0.4] }}
+                transition={{ duration: 1.2, repeat: Infinity }}
+              >
+                {agentQuestion.hasPendingQuestion
+                  ? "NEEDS INPUT"
+                  : taskProgress.isWorking
+                    ? "WORKING"
+                    : "THINKING"}
+              </motion.span>
+            </motion.div>
           )}
         </AnimatePresence>
 

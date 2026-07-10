@@ -558,9 +558,8 @@ class TTSManager:
                 import soundfile as _sf_f
                 audio_chunks = []
                 for chunk in self._pocket_tts_model.generate_audio_stream(
-                    text=phrase,
-                    voice_state=self._voice_state,
-                    language="english",
+                    self._voice_state,
+                    phrase,
                 ):
                     if chunk is not None and len(chunk) > 0:
                         audio_chunks.append(chunk)

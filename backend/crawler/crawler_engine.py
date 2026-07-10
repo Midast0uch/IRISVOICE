@@ -120,6 +120,7 @@ class CrawlerEngine:
         try:
             from crawl4ai import CrawlerRunConfig  # type: ignore
             from crawl4ai.content_filter_strategy import BM25ContentFilter  # type: ignore
+            from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator  # type: ignore
         except ImportError as exc:
             raise CrawlerUnavailable("crawl4ai not installed") from exc
 
@@ -128,8 +129,9 @@ class CrawlerEngine:
             user_query=query,
             bm25_threshold=_BM25_THRESHOLD,
         )
+        md_generator = DefaultMarkdownGenerator(content_filter=content_filter)
         run_config = CrawlerRunConfig(
-            content_filter=content_filter,
+            markdown_generator=md_generator,
             page_timeout=_TIMEOUT_MS,
         )
 

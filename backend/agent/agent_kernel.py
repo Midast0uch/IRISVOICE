@@ -1965,12 +1965,16 @@ class AgentKernel:
         import json as _json
         import time as _perf_t
         import httpx as _httpx
+        from backend.utils.ssl_context import get_ssl_context
 
         _api_base = self._api_base_url or "https://api.openai.com/v1"
         _api_key = self._api_key or ""
         sel = self._selected_reasoning_model or "local-model"
         if sel in ("local-model", "Currently Loaded Model", "currently-loaded-model"):
-            sel = "command-a-03-2025"
+            raise RuntimeError(
+                "No reasoning model configured. Set a model in Settings → "
+                "Model Selection (e.g. Cerebras gemma-4-31b) before sending messages."
+            )
 
         _url = f"{_api_base.rstrip('/')}/chat/completions"
         _headers = {
@@ -2007,7 +2011,7 @@ class AgentKernel:
             full_reply = ""
             _reasoning_buf: List[str] = []
 
-            with _httpx.Client(timeout=_httpx.Timeout(60.0)) as _client:
+            with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
                 with _client.stream(
                     "POST", _url, headers=_headers, json={**_body, "stream": True}
                 ) as _resp:
@@ -2075,7 +2079,7 @@ class AgentKernel:
 
         else:
             # Non-streaming path
-            with _httpx.Client(timeout=_httpx.Timeout(60.0)) as _client:
+            with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
                 _resp = _client.post(_url, headers=_headers, json=_body)
                 if _resp.status_code != 200:
                     raise RuntimeError(
@@ -2161,7 +2165,7 @@ class AgentKernel:
             full_reply = ""
             _reasoning_buf: List[str] = []
 
-            with _httpx.Client(timeout=_httpx.Timeout(60.0)) as _client:
+            with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
                 # Try the standard v1 path, fall back to v1-less path for older LM Studio
                 for _try_url in [_url, _url_v1]:
                     try:
@@ -2220,7 +2224,7 @@ class AgentKernel:
 
         else:
             # Non-streaming path
-            with _httpx.Client(timeout=_httpx.Timeout(60.0)) as _client:
+            with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
                 for _try_url in [_url, _url_v1]:
                     try:
                         _resp = _client.post(
@@ -2905,10 +2909,13 @@ class AgentKernel:
             # (token budget via DER_TOKEN_BUDGETS[mode]).
             # Voice requests skip mode detection and lock to "voice_first" so
             # they always get the tight 15k token budget and single-step plan.
+            # Confidence defaults to 0.5 for voice — memory-derived when mature.
             if from_voice:
                 _mode_name = "voice_first"
+                _confidence = 0.70 if _is_mature else 0.50
             else:
                 _mode_name = "full"  # default maps to DER_TOKEN_BUDGETS["full"]
+                _confidence = 0.50
                 if self._mode_detector is not None:
                     try:
                         _mode_result = self._mode_detector.detect(
@@ -2917,6 +2924,7 @@ class AgentKernel:
                             is_mature=_is_mature,
                         )
                         _mode_name = _mode_result.mode.name.lower()
+                        _confidence = _mode_result.confidence
                     except Exception as _md_exc:
                         loud_error(_md_exc, "mode_detector.detect")
 
@@ -2968,6 +2976,8 @@ class AgentKernel:
                     is_mature=_is_mature,
                     task_class=_der_task_class,
                     session_id=session_id or self.session_id,
+                    from_voice=from_voice,
+                    confidence=_confidence,
                 )
 
         except Exception as _der_err:
@@ -3549,6 +3559,8 @@ Respond with a JSON object:
         is_mature: bool = False,
         task_class: str = "full",
         session_id: Optional[str] = None,
+        from_voice: bool = False,
+        confidence: float = 0.50,
     ) -> str:
         """
         DER execution cycle: Director → Reviewer → Explorer → repeat until complete.
@@ -3563,6 +3575,7 @@ Respond with a JSON object:
         """
         from backend.agent.der_loop import (
             DirectorQueue,
+            QueueItem,
             Reviewer,
             ReviewVerdict,
         )
@@ -3611,11 +3624,11 @@ Respond with a JSON object:
             from_voice=from_voice,
             message_text=plan.original_task or "",
             token_budget_remaining=_token_budget,
-            confidence=plan.confidence or 0.5,
+            confidence=confidence,
             voice_preference=voice_preference,
         )
         queue.set_mode(initial_mode, reason=f"Task class: {task_class}")
-        self._logger.info(
+        logger.info(
             "[DER] Mode selected: %s (voice=%s, class=%s, budget=%d)",
             initial_mode.value, from_voice, task_class, _token_budget,
         )
@@ -3941,7 +3954,7 @@ Respond with a JSON object:
                     IRISStreamEvent.CONTEXT_USAGE,
                     data={
                         "used_tokens": int(_tokens_used),
-                        "max_tokens": int(_token_budget),
+                        "max_tokens": int(self.resolve_context_window()),
                         "step_number": item.step_number,
                         "total_steps": len(queue.items),
                     },
@@ -4105,7 +4118,7 @@ Respond with a JSON object:
                             objective_anchor=plan.original_task,
                         )
                         queue.add_item(_next_item)
-                        self._logger.info(
+                        logger.info(
                             "[DER] Explorer added step %d: %s",
                             _next_item.step_number,
                             _next_item.description,
@@ -4120,7 +4133,7 @@ Respond with a JSON object:
                         _turn_id,
                     )
             except Exception as _explorer_exc:
-                self._logger.warning(
+                logger.warning(
                     "[DER] Explorer escalation failed: %s", _explorer_exc
                 )
 
@@ -4401,7 +4414,7 @@ Respond with a JSON object:
             }
 
         except Exception as exc:
-            self._logger.warning(
+            logger.warning(
                 "[DER] _der_plan_next_step failed: %s", exc
             )
             return None
@@ -4450,20 +4463,20 @@ Respond with a JSON object:
                 if not data.get("on_track", True):
                     note = data.get("note", "")
                     suggestion = data.get("suggestion", "")
-                    self._logger.info(
+                    logger.info(
                         "[DER] FULL mode progress check — drift detected: %s", note
                     )
                     if suggestion:
                         # The suggestion is logged for debugging but not
                         # automatically applied — the Director decides.
-                        self._logger.info(
+                        logger.info(
                             "[DER] FULL mode suggestion: %s", suggestion
                         )
                     return note
             return None
 
         except Exception as exc:
-            self._logger.warning(
+            logger.warning(
                 "[DER] _der_check_full_progress failed: %s", exc
             )
             return None

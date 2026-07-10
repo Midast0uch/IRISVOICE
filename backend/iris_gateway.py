@@ -28,6 +28,7 @@ import re
 import threading
 import time
 import httpx
+from backend.utils.ssl_context import get_ssl_context
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Union, Iterator, Callable
 from backend.utils.observability import get_turn_id, loud_error
@@ -131,6 +132,10 @@ class IRISGateway:
         from .agent.ws_event_bridge import WSEventBridge
         self._ws_bridge = WSEventBridge(self._ws_manager)
         self._ws_bridge.start()
+
+        # Track which sessions have web-mode toggled ON, so STT transcripts
+        # route through the crawler instead of the agent kernel.
+        self._web_mode_sessions: set[str] = set()
 
         # Initialize wake word discovery
         self._wake_word_discovery = WakeWordDiscovery()
@@ -458,6 +463,18 @@ class IRISGateway:
 
             elif msg_type == "reload_skills":
                 await self._handle_reload_skills(session_id, client_id, message)
+
+            elif msg_type == "set_web_mode":
+                # Frontend web-search toggle sync.  When ON, STT transcripts
+                # are routed through the crawler instead of the agent kernel.
+                enabled = bool(message.get("payload", {}).get("enabled", False))
+                if enabled:
+                    self._web_mode_sessions.add(session_id)
+                else:
+                    self._web_mode_sessions.discard(session_id)
+                self._logger.info(
+                    f"[WebMode] session={session_id} web_mode={enabled}"
+                )
 
             elif msg_type == "get_skills":
                 await self._handle_get_skills(session_id, client_id)
@@ -2123,6 +2140,20 @@ class IRISGateway:
                 },
             )
 
+            # ── Web mode check: if toggle is on, route STT transcript ──
+            # through the crawler instead of the agent kernel.  Same path
+            # as a typed message with webMode=true in chat-view.tsx.
+            if session_id in self._web_mode_sessions:
+                self._logger.info(
+                    f"[Voice→Crawler] session={session_id} routing STT "
+                    f"transcript to crawler_query"
+                )
+                await self._handle_crawler_query(
+                    session_id, client_id,
+                    {"type": "crawler_query", "payload": {"query": transcript}},
+                )
+                return
+
             enriched = transcript
             if audio_context:
                 enriched = f"{transcript}\n\n[Audio context: {audio_context}]"
@@ -2198,13 +2229,15 @@ class IRISGateway:
                 try:
                     import sounddevice as _sd2
                     _loop_count = 0
+                    _min_played = False  # guarantee >=1 full iteration before stop
                     self._logger.info("[STTPROC] Loop starting...")
                     while True:
                         _loop_count += 1
                         _sd2.play(_sttproc_data, _sttproc_sr, device=_sttproc_dev, blocking=True)
+                        _min_played = True
                         # Check AFTER playback â€” ensures current iteration finishes
                         # and gives TTS a moment to start before we go silent.
-                        if _sttproc_stop.is_set():
+                        if _min_played and _sttproc_stop.is_set():
                             # Play one more short overlap to avoid dead silence gap
                             _sttproc_stop.wait(0.3)
                             break
@@ -4432,7 +4465,7 @@ class IRISGateway:
             if inference_mode == "local":
                 # Query Ollama for locally installed models
                 try:
-                    async with httpx.AsyncClient(timeout=3.0) as http_client:
+                    async with httpx.AsyncClient(timeout=3.0, verify=get_ssl_context()) as http_client:
                         r = await http_client.get(
                             f"{ollama_endpoint.rstrip('/')}/api/tags"
                         )
@@ -4584,7 +4617,7 @@ class IRISGateway:
                 # LM Studio exposes an OpenAI-compatible REST API at localhost:1234.
                 # Query /v1/models to get whatever model(s) the user currently has loaded.
                 try:
-                    async with httpx.AsyncClient(timeout=3.0) as http_client:
+                    async with httpx.AsyncClient(timeout=3.0, verify=get_ssl_context()) as http_client:
                         r = await http_client.get(
                             f"{lmstudio_endpoint.rstrip('/')}/v1/models",
                             headers={"Authorization": "Bearer lm-studio"},
@@ -4659,7 +4692,7 @@ class IRISGateway:
                 if openai_api_key:
                     headers["Authorization"] = f"Bearer {openai_api_key}"
                 try:
-                    async with httpx.AsyncClient(timeout=5.0) as http_client:
+                    async with httpx.AsyncClient(timeout=5.0, verify=get_ssl_context()) as http_client:
                         r = await http_client.get(models_url, headers=headers)
                         if r.status_code == 200:
                             models_data = r.json().get("data", [])
@@ -4912,7 +4945,7 @@ class IRISGateway:
                 # Try to query the VPS endpoint for models
                 if vps_url:
                     try:
-                        async with httpx.AsyncClient(timeout=3.0) as http_client:
+                        async with httpx.AsyncClient(timeout=3.0, verify=get_ssl_context()) as http_client:
                             r = await http_client.get(
                                 f"{vps_url.rstrip('/')}/v1/models"
                             )
@@ -5365,7 +5398,7 @@ class IRISGateway:
 
         # Fetch models from Ollama
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=get_ssl_context()) as client:
                 response = await client.get(f"{endpoint}/api/tags")
 
                 if response.status_code == 200:

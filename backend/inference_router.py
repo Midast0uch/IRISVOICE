@@ -140,7 +140,10 @@ async def _call_api(
     """Dispatch to a remote API provider (Chutes, OpenAI, Cohere, etc.)."""
     model = inf.reasoning_model or "local-model"
     if model in ("local-model", "Currently Loaded Model", "currently-loaded-model"):
-        model = "command-a-03-2025"
+        raise ModelConnectError(
+            "No reasoning model configured. Set a model in Settings → "
+            "Model Selection before sending messages."
+        )
 
     api_key = inf.api_key
     api_base = inf.api_base_url
@@ -248,11 +251,12 @@ def _sanity_check_endpoint(api_base: str, api_key: str) -> None:
     Raises ModelConnectError if the endpoint appears unreachable.
     """
     import httpx
+    from backend.utils.ssl_context import get_ssl_context
 
     try:
         _url = f"{api_base.rstrip('/').removesuffix('/v1')}/v1/models"
         _headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        _r = httpx.get(_url, timeout=2.0, headers=_headers)
+        _r = httpx.get(_url, timeout=2.0, headers=_headers, verify=get_ssl_context())
         if _r.status_code not in (200, 401, 403, 404):
             raise ModelConnectError(
                 f"Endpoint returned status {_r.status_code}"
