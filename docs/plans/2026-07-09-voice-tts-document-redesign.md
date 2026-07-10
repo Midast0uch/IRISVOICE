@@ -1501,4 +1501,43 @@ DER loop executes (tools, planning, etc.)
 3. **VAD calibration race condition** — if the user starts speaking during the 0.5s ambient calibration, the threshold will be too high. Handle by discarding the calibration if speech is detected during calibration (retry on next VAD start).
 4. **Document re-formatting latency** — when the user clicks a format pill, the agent must re-generate the document. This takes an LLM call (~1–3s). Show a loading state on the pill (disable button, show spinner).
 5. **OrbWorkingIndicator performance** — 5 orbiting particles with framer-motion animations. Should be fine (GPU transforms), but verify on low-end machines. Cap at 5 particles, use `will-change: transform` on the particle elements.
-6. **react-markdown version** — ensure `react-markdown` v9+ is installed (the `components` API changed in v9). Check `package.json` before starting Phase 5.
+6. **react-markdown version** — ensure `react-markdown` v9+ is installed (the `components` API changed in v9). `react-markdown` v10 is installed (verified 2026-07-09). The `inline` prop was removed in v9; the plan's `code` renderer uses `node.parent.tagName` to detect block vs inline code.
+
+---
+
+## 9. Pre-existing tsc Errors (to resolve)
+
+These errors exist in the project and are **not caused by this plan's implementation.** They predate the work in this document and were discovered by running `npx tsc --noEmit` on 2026-07-09. They must be resolved for acceptance criterion §7.5 (`npx tsc --noEmit clean`) to pass.
+
+### 9.1 IRIS Voice project code (8 errors, 5 files)
+
+These are real type errors in the project's own components and hooks. They should be fixed directly.
+
+| File | Line | Error | Fix suggestion |
+|------|------|-------|---------------|
+| `components/card.tsx` | 94 | `Type '...' is not assignable to type 'string[] \| DropdownOption[]'` | Fix the type assertion or cast — array has mixed string/object entries, needs explicit typing |
+| `components/dashboard/MonitorDiagnosticsPanel.tsx` | 78 | `Property 'toUpperCase' does not exist on type 'never'` | The variable is narrowed to `never` — likely a union type that needs correct narrowing or default case |
+| `components/preview/PrototypeOrbBreathing.tsx` | 89, 190, 239 | `Cannot find name 'BreathKey'` (3 instances) | `BreathKey` type/import is missing — either import it from the correct module or define the expected string literal union |
+| `components/wheel-view/SidePanel.tsx` | 468 | `Type '"description"' is not comparable to type 'FieldType'` | `FieldType` union doesn't include `"description"` — add it to the union or correct the string literal |
+| `components/wheel-view/SidePanel.tsx` | 474 | `Property 'content' does not exist on type 'FieldConfig'` | `FieldConfig` type lacks a `content` property — define it in the type or use an existing property |
+| `hooks/useIRISWebSocket.ts` | 771 | `Left-hand side of arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type'` | The value is not a number — add `Number()` coercion or correct the type |
+| `hooks/useIRISWebSocket.ts` | 1604 | `'selectAudioDevice' does not exist in type 'UseIRISWebSocketReturn'` | The returned interface lacks `selectAudioDevice` — either add it to the interface or use `getAudioDevices` instead |
+
+**Root cause for all 8:** These are stale types/imports from previous iterations that weren't updated when the code changed. Each is a straightforward 1-2 line fix.
+
+### 9.2 Foreign submodule noise (~380 errors, 2 directories)
+
+These errors come from **svelte-based submodules** (`llama.cpp/tools/ui/` and `llama-cpp-turboquant/tools/server/webui/`) that are not part of the IRIS Voice Next.js project. They use svelte path aliases (`$lib/*`), svelte stores, and svelte-specific imports that `tsc` cannot resolve because the TypeScript configuration only targets the Next.js project.
+
+| Directory | Error count | Root cause |
+|-----------|-------------|------------|
+| `llama.cpp/tools/ui/` | ~80 | Svelte project — `$lib/*` path aliases, svelte stores, missing `@sveltejs/kit` types |
+| `llama-cpp-turboquant/tools/server/webui/` | ~300 | Svelte project — same issues plus missing `bits-ui`, `dexie`, `@lucide/svelte`, `svelte-sonner`, `pdfjs-dist`, `@modelcontextprotocol/sdk` types |
+
+**Fix:** Add `"exclude": ["llama.cpp", "llama-cpp-turboquant"]` to `tsconfig.json` at the project root. This tells tsc to skip these directories entirely. They are separate projects with their own tsconfigs. This clears ~380 errors instantly and makes tsc usable as a meaningful check.
+
+### 9.3 Resolution priority
+
+1. **High-priority (block tsc from being useful):** Add `"exclude"` for submodules in `tsconfig.json` (30-second fix, clears 380 errors).
+2. **Medium-priority (real bugs):** Fix the 8 project errors in order of impact — `useIRISWebSocket.ts` (active code, 2 errors) first, then `SidePanel.tsx` and `MonitorDiagnosticsPanel.tsx` (dashboard/wheel-view), then `PrototypeOrbBreathing.tsx` and `card.tsx` (preview/legacy).
+3. **Low-priority (visual polish):** Once tsc output is clean, the project can enforce type checking in CI and catch regressions early.
