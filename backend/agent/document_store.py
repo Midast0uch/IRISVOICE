@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS document_data (
 """
 
 
+_SQL_CREATE_EDGES = """
+CREATE TABLE IF NOT EXISTS reformat_edges (
+    from_format TEXT NOT NULL,
+    to_format   TEXT NOT NULL,
+    weight      REAL DEFAULT 0.0,
+    updated_at  REAL,
+    PRIMARY KEY (from_format, to_format)
+)
+"""
+
 class DocumentDataStore:
     """Per-connection store of canonical document data, keyed by document_id."""
 
@@ -51,6 +61,7 @@ class DocumentDataStore:
     def _ensure_table(self) -> None:
         try:
             self._conn.execute(_SQL_CREATE)
+            self._conn.execute(_SQL_CREATE_EDGES)
             self._conn.commit()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] ensure_table failed: %s", exc)
@@ -139,6 +150,55 @@ class DocumentDataStore:
             self._conn.commit()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] add_variant failed: %s", exc)
+
+    # ── W10 (O4): reformat pheromone edges ──────────────────────────────────
+    def record_reformat(self, from_format: str, to_format: str, amount: float = 1.0) -> None:
+        """Reinforce the pheromone edge from_format -> to_format (W10/O4).
+
+        Weight compounds on repeated use (bounded at 100.0) so frequently
+        reformatted doc types become "sticky" — the substrate for proactively
+        offering reformats. Never raises.
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO reformat_edges (from_format, to_format, weight, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(from_format, to_format) DO UPDATE SET "
+                "weight = MIN(weight + excluded.weight, 100.0), "
+                "updated_at = excluded.updated_at",
+                (from_format, to_format, float(amount), time.time()),
+            )
+            self._conn.commit()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[DocumentDataStore] record_reformat failed: %s", exc)
+
+    def get_reformat_edges(self, from_format: Optional[str] = None) -> list:
+        """Return reformat edges (from_format, to_format, weight), highest weight first."""
+        try:
+            if from_format is not None:
+                rows = self._conn.execute(
+                    "SELECT from_format, to_format, weight FROM reformat_edges "
+                    "WHERE from_format = ? ORDER BY weight DESC",
+                    (from_format,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT from_format, to_format, weight FROM reformat_edges "
+                    "ORDER BY weight DESC"
+                ).fetchall()
+            return [
+                {"from_format": r[0], "to_format": r[1], "weight": r[2]} for r in rows
+            ]
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[DocumentDataStore] get_reformat_edges failed: %s", exc)
+            return []
+
+    def predict_next_format(self, from_format: str) -> Optional[str]:
+        """Return the most-reinforced target format for ``from_format``, or None."""
+        edges = self.get_reformat_edges(from_format)
+        if not edges:
+            return None
+        return edges[0]["to_format"]
 
     def _evict_if_needed(self) -> None:
         try:

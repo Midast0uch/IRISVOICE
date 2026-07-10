@@ -2861,6 +2861,7 @@ class AgentKernel:
         if document_id:
             store = self._get_document_store()
             doc = store.get(document_id) if store is not None else None
+            orig_fmt = original_format or (doc.get("format") if doc else None)
             if doc is None:
                 logger.warning(
                     "[AgentKernel] reformat_document: document_id %s not found",
@@ -2895,6 +2896,7 @@ class AgentKernel:
                     logger.warning(
                         "[AgentKernel] DOCUMENT_RENDER (reformat) emit failed: %s", exc
                     )
+                self._record_reformat_edge(store, orig_fmt, target_format)
                 return variant
 
             # No stored variant -> LLM reformat on the canonical data.
@@ -2954,7 +2956,91 @@ class AgentKernel:
                     store.add_variant(document_id, target_format, payload.get("content", ""))
             except Exception as exc:
                 logger.warning("[AgentKernel] reformat variant cache failed: %s", exc)
+        self._record_reformat_edge(self._get_document_store(), original_format, target_format)
         return payload["content"]
+
+    # ── W10 (O4): pheromone-reinforced reformat + cross-modal synergy ────────
+    # Plan W10: reinforce the reformat action's pheromone edge when used, so
+    # frequently-reformatted doc types become "sticky" (the agent can proactively
+    # offer a reformat), and expose cross-modal views (vocalize / diagram) that
+    # reuse existing channels (SpeakTool, reformat_document's diagram format).
+
+    def _record_reformat_edge(self, store, from_format, to_format):
+        """Safely reinforce a reformat pheromone edge (W10/O4)."""
+        if store is None or not from_format or not to_format:
+            return
+        try:
+            store.record_reformat(from_format, to_format)
+        except Exception as exc:
+            logger.warning("[AgentKernel] reformat edge record failed: %s", exc)
+
+    def suggest_reformat(self, document_id: str, conversation_id: str = "default") -> Optional[str]:
+        """Proactively suggest the next format for a document (W10/O4 substrate).
+
+        Returns the most-reinforced target format for the document's current
+        format (from the reformat pheromone edges), or None if no signal yet.
+        This is the primitive the agent/UI uses to *offer* a reformat of a
+        frequently-touched doc type.
+        """
+        try:
+            store = self._get_document_store()
+            if store is None:
+                return None
+            doc = store.get(document_id)
+            if doc is None:
+                return None
+            return store.predict_next_format(doc.get("format"))
+        except Exception as exc:
+            logger.warning("[AgentKernel] suggest_reformat failed: %s", exc)
+            return None
+
+    def vocalize_document(
+        self,
+        document_id: str,
+        target_format: str = "text",
+        conversation_id: str = "default",
+        turn_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Cross-modal synergy (W10/O4): speak a reformatted view of a document.
+
+        Reformats the stored document to ``target_format`` (reusing W5's
+        data-centric reformat) and vocalizes the result via the SpeakTool
+        (existing TTS channel). Fire-and-forget — returns the speak status.
+        """
+        content = self.reformat_document(
+            document_id=document_id,
+            target_format=target_format,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
+        if not content:
+            return {"status": "error", "reason": "no content to speak"}
+        try:
+            from backend.agent.tools.speak_tool import get_speak_tool
+
+            return get_speak_tool().speak(content)
+        except Exception as exc:
+            logger.warning("[AgentKernel] vocalize_document failed: %s", exc)
+            return {"status": "error", "reason": str(exc)}
+
+    def diagram_document(
+        self,
+        document_id: str,
+        conversation_id: str = "default",
+        turn_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Cross-modal synergy (W10/O4): return a diagram view of a document.
+
+        Reuses reformat_document's existing ``diagram`` (mermaid) format — the
+        "turn data into a diagram" synergy without a separate Vision generator.
+        Returns the mermaid/diagram content, or None on failure.
+        """
+        return self.reformat_document(
+            document_id=document_id,
+            target_format="diagram",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
 
     def retrieve_documents_by_trajectory(
         self,
