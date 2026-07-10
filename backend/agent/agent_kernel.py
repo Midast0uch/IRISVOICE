@@ -2548,6 +2548,12 @@ class AgentKernel:
             except Exception as exc:
                 logger.warning("[AgentKernel] speak broadcast failed: %s", exc)
             return speak
+        # speak is None.  If a visual document was emitted above, say nothing —
+        # never return the raw JSON, or it would be spoken by TTS and shown in
+        # chat as the assistant's message.  Otherwise fall back to the plain
+        # text response (backward compatible).
+        if show is not None:
+            return ""
         return response
 
     def reformat_document(
