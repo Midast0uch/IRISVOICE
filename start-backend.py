@@ -4,9 +4,52 @@ Uses uvicorn programmatically to avoid subprocess Python path issues
 """
 import os
 import sys
+
+# ── Bulletproof UTF-8 mode from ANY shell ──────────────────────────────────
+# On Windows a non-TTY / piped stdout uses a 'charmap' codec that cannot
+# encode non-ASCII (e.g. the '→' arrow in some log lines). That raises
+# UnicodeEncodeError and aborts backend startup depending on how the process
+# was launched. Python's UTF-8 mode (PYTHONUTF8 / -X utf8) makes all stdio
+# UTF-8 at the C level — the only reliable, shell-independent fix.
+# If we weren't started in UTF-8 mode, re-exec ourselves with -X utf8 so the
+# rest of this script (and uvicorn) always runs with UTF-8 stdio.
+if not getattr(sys.flags, "utf8_mode", 0):
+    import subprocess
+
+    # Preserve PYTHONPATH / working dir; re-launch same interpreter + args.
+    os.execl(sys.executable, sys.executable, "-X", "utf8", *sys.argv)
+    # os.execl replaces the process; the line below is unreachable.
+    raise SystemExit(subprocess.call([sys.executable, "-X", "utf8", *sys.argv]))
+
+import io
 import signal
 import asyncio
 from pathlib import Path
+
+# ── Force UTF-8 stdout/stderr (belt-and-suspenders, in case -X utf8 is unavailable) ──
+# On Windows a non-TTY / piped stdout uses a 'charmap' codec that cannot
+# encode non-ASCII (e.g. the '→' arrow in some log lines). That raises
+# UnicodeEncodeError and aborts backend startup depending on how the
+# process was launched. Reconfiguring the streams to UTF-8 (errors="replace")
+# makes startup reliable from any shell.
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    else:  # Python <3.7 fallback
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding="utf-8", errors="replace"
+        )
+except Exception:
+    pass
+try:
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    else:
+        sys.stderr = io.TextIOWrapper(
+            sys.stderr.buffer, encoding="utf-8", errors="replace"
+        )
+except Exception:
+    pass
 
 # Get the directory containing this script (project root)
 base_dir = Path(__file__).parent.resolve()
@@ -44,6 +87,30 @@ if not os.environ.get('SSL_CERT_FILE') or not os.environ.get('REQUESTS_CA_BUNDLE
 
 # Now import and run uvicorn
 import uvicorn
+
+# ---------------------------------------------------------------------------
+# Harden uvicorn's loggers against non-UTF-8 stdout (Windows charmap).
+# Uvicorn installs its own "uvicorn"/"uvicorn.error"/"uvicorn.access"
+# StreamHandlers that emit non-ASCII (e.g. the '→' arrow in port logs).
+# On a piped/non-TTY stdout this raises UnicodeEncodeError. Reconfigure
+# those handlers to UTF-8 so startup is clean from any shell.
+# ---------------------------------------------------------------------------
+def _harden_uvicorn_loggers() -> None:
+    import logging
+
+    for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        _log = logging.getLogger(_name)
+        for _h in _log.handlers:
+            _stream = getattr(_h, "stream", None)
+            if _stream is None:
+                continue
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+_harden_uvicorn_loggers()
 
 # Read backend port from config (env var override: IRIS_BACKEND_PORT)
 try:

@@ -83,6 +83,14 @@ def setup_backend_logging(
 
         # stdout handler — visible in terminal
         _handler = logging.StreamHandler(sys.stdout)
+        # Force UTF-8 on the stream so a non-TTY / piped stdout (charmap codec
+        # on Windows) can't choke on non-ASCII log text (e.g. the '→' arrow in
+        # agent_kernel.py) and crash backend startup. errors="replace" keeps the
+        # process alive even if a glyph is unrepresentable in the terminal font.
+        try:
+            _handler.stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
         _handler.setFormatter(_fmt)
         _root.addHandler(_handler)
 

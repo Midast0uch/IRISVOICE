@@ -7617,14 +7617,15 @@ class IRISGateway:
                 cfg.inference.swarm_enabled = True
                 save_config(cfg)
                 # Notify dashboard
-                await self._broadcast_json(
+                await self._ws_manager.broadcast_to_session(
+                    session_id,
                     {
                         "type": "swarm_status",
                         "title": "Swarm Started",
                         "message": f"Swarm active â€” {cfg.inference.swarm_worker_count} workers",
                         "progress": 100,
                         "status": "active",
-                    }
+                    },
                 )
 
             elif action == "stop_swarm":
@@ -7632,13 +7633,14 @@ class IRISGateway:
                 await mgr.stop_swarm()
                 cfg.inference.swarm_enabled = False
                 save_config(cfg)
-                await self._broadcast_json(
+                await self._ws_manager.broadcast_to_session(
+                    session_id,
                     {
                         "type": "swarm_status",
                         "title": "Swarm Stopped",
                         "message": "All swarm workers terminated",
                         "status": "inactive",
-                    }
+                    },
                 )
 
             else:
@@ -7650,7 +7652,7 @@ class IRISGateway:
             self._logger.error(
                 f"[Session: {session_id}] Swarm action failed: {e}", exc_info=True
             )
-            await self._send_json(
+            await self._ws_manager.send_to_client(
                 client_id,
                 {
                     "type": "swarm_status",
@@ -7668,10 +7670,15 @@ class IRISGateway:
         try:
             from .agent.local_model_manager import get_local_model_manager
 
-            cfg = load_config()
-            model_path = cfg.inference.local_model_path
+            # Use the model_path from the incoming WS message (the frontend
+            # sends load_local_model with { model_path, profile }). Fall back
+            # to the configured local_model_path if the payload omits it.
+            payload = message.get("payload", message)
+            model_path = (payload.get("model_path") or "").strip() or (
+                load_config().inference.local_model_path or ""
+            ).strip()
             if not model_path:
-                await self._send_json(
+                await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "model_load_progress",
@@ -7687,34 +7694,61 @@ class IRISGateway:
             self._logger.info(
                 f"[Session: {session_id}] Loading local model: {model_path}"
             )
-            await self._broadcast_json(
+            cfg = load_config()
+            await self._ws_manager.broadcast_to_session(
+                session_id,
                 {
                     "type": "model_load_progress",
                     "title": "Loading Model",
                     "message": f"Loading {model_path}...",
                     "progress": 10,
                     "status": "loading",
-                }
+                },
             )
+
+            # Persist the selected model path so status/config stay consistent.
+            cfg.inference.local_model_path = model_path
+            save_config(cfg)
+
+            profile = (payload.get("profile") or "balanced").strip()
+            custom_params = payload.get("custom_params") or {}
+
+            async def _progress_cb(event: dict) -> None:
+                try:
+                    await self._ws_manager.broadcast_to_session(
+                        session_id,
+                        {
+                            "type": "model_load_progress",
+                            "title": "Loading Model",
+                            "message": event.get("msg", f"Loading {model_path}..."),
+                            "progress": int(event.get("pct", 0) or 0),
+                            "status": "loading",
+                        },
+                    )
+                except Exception:
+                    pass
 
             await mgr.load_model(
                 model_path=model_path,
-                gpu_layers=cfg.inference.local_model_gpu_layers,
-                context_length=cfg.inference.local_model_ctx,
-                hardware_profile=cfg.inference.local_model_profile,
+                profile=profile,
+                custom_params=custom_params,
+                progress_cb=_progress_cb,
             )
 
+            cfg = load_config()
             cfg.inference.local_model_status = "loaded"
+            cfg.inference.local_model_path = model_path
             save_config(cfg)
 
-            await self._broadcast_json(
+            await self._ws_manager.broadcast_to_session(
+                session_id,
                 {
                     "type": "model_load_progress",
                     "title": "Model Loaded",
                     "message": f"{model_path} ready",
                     "progress": 100,
                     "status": "loaded",
-                }
+                },
             )
             self._logger.info(
                 f"[Session: {session_id}] Local model loaded: {model_path}"
@@ -7728,14 +7762,15 @@ class IRISGateway:
             cfg = load_config()
             cfg.inference.local_model_status = "error"
             save_config(cfg)
-            await self._broadcast_json(
+            await self._ws_manager.broadcast_to_session(
+                session_id,
                 {
                     "type": "model_load_progress",
                     "title": "Model Load Error",
                     "message": str(e),
                     "status": "error",
                     "progress": 0,
-                }
+                },
             )
 
     async def _handle_unload_local_model(
@@ -7753,14 +7788,15 @@ class IRISGateway:
             cfg.inference.local_model_status = "unloaded"
             save_config(cfg)
 
-            await self._broadcast_json(
+            await self._ws_manager.broadcast_to_session(
+                session_id,
                 {
                     "type": "model_load_progress",
                     "title": "Model Unloaded",
                     "message": "Local model unloaded successfully",
                     "progress": 0,
                     "status": "unloaded",
-                }
+                },
             )
             self._logger.info(f"[Session: {session_id}] Local model unloaded")
 
@@ -7769,7 +7805,8 @@ class IRISGateway:
                 f"[Session: {session_id}] Failed to unload local model: {e}",
                 exc_info=True,
             )
-            await self._broadcast_json(
+            await self._ws_manager.broadcast_to_session(
+                session_id,
                 {
                     "type": "model_load_progress",
                     "title": "Unload Error",
