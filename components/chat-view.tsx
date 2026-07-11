@@ -55,17 +55,18 @@ const ContentTypePatterns = {
   email: /(?:^From:|^To:|^Subject:|\S+@\S+\.\S+)/m
 };
 
-// NOTE: chat messages are NO LONGER auto-routed to the web crawler.
+// NOTE: chat messages are NEVER auto-routed to the web crawler.
 // The previous heuristic (CRAWLER_PATTERNS) matched common English words
 // like "current", "recent", "find", "show me" and misrouted normal
 // conversation to crawler_query — which then failed with "crawl4ai is not
 // installed" or tried to crawl the web for a conversational question.
 //
-// Web research is now opt-in via the Web toggle pill to the LEFT of the
-// text area. When webMode is true, handleSendMessage routes to
-// crawler_query; otherwise every message goes to /api/chat (the agent).
-// The agent can still decide to use web tools on its own — this toggle
-// only controls the explicit "research this on the web" intent.
+// Web research is now gated by the Web toggle pill to the LEFT of the
+// text area. The toggle is an INTERNET-ACCESS CAPABILITY GATE, not a
+// routing switch: when ON, the agent kernel is granted web tools
+// (search / crawler_query) and decides when to use them; when OFF, the
+// agent has zero internet tools. Every message always goes to the agent
+// (/api/chat or the agent kernel) — see plan Issue E.
 
 const ContentTypeLabels: Record<ContentType, string> = {
   markdown: 'Markdown Document',
@@ -238,14 +239,20 @@ export function ChatWing({
     }
   }, [activeConversationId])
   const [inputText, setInputText] = useState("")
-  const [webMode, setWebMode] = useState(false)  // explicit Web toggle — routes send to crawler_query
-  // Sync web-mode toggle to backend session so STT transcripts also route through the crawler
-  useEffect(() => {
-    sendMessage?.('set_web_mode', { enabled: webMode })
-    // Reset to off on unmount so the session doesn't stay in web mode
-    return () => {
-      sendMessage?.('set_web_mode', { enabled: false })
+  const [webMode, setWebMode] = useState(() => {
+    try {
+      return localStorage.getItem('iris-web-mode') === 'true'
+    } catch {
+      return false
     }
+  })  // explicit Web toggle — internet-access gate (plan Issue E); persisted to survive unmounts
+  // Sync web-mode toggle to backend session so STT transcripts also route through the crawler.
+  // Web mode SURVIVES component unmounts — we deliberately do NOT reset to off on unmount.
+  // The backend's global internet-access flag is the source of truth for the running session,
+  // and we re-sync it on every mount from the persisted value below.
+  useEffect(() => {
+    try { localStorage.setItem('iris-web-mode', String(webMode)) } catch { /* ignore */ }
+    sendMessage?.('set_web_mode', { enabled: webMode })
   }, [webMode, sendMessage])
   const [justSent, setJustSent] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -938,15 +945,6 @@ export function ChatWing({
         setInputText('')
         return
       }
-    }
-
-    // Route to crawler ONLY when the user has explicitly enabled Web mode
-    // via the toggle pill. Previously a greedy regex auto-routed any message
-    // containing words like "current"/"recent"/"find" to the crawler.
-    if (webMode) {
-      // Web crawler queries go through WebSocket (streaming results)
-      sendMessage?.("crawler_query", { query: userMessage.text })
-      return
     }
 
     // === Primary path: REST /api/chat (reliable, no WS dependency) ===
@@ -2792,8 +2790,7 @@ ${message.text}`;
                             return [...prev, { id: newId, title: `Conversation ${prev.length + 1}`, preview: s.message.substring(0, 60), messages: [userMsg], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
                           })()
                     )
-                    const msgType = webMode ? 'crawler_query' : 'text_message'
-                    sendMessage?.(msgType, msgType === 'crawler_query' ? { query: s.message } : { text: s.message })
+                    sendMessage?.('text_message', { text: s.message })
                   }}
                   onDismiss={() => setCurrentSuggestions([])}
                   mode={isDeveloper ? 'developer' : 'personal'}
@@ -2827,9 +2824,11 @@ ${message.text}`;
 
                 <div className={isRemoteView ? "relative flex items-end gap-2 px-1" : "relative flex items-end gap-2"} style={{ marginRight: '4px' }}>
 
-                {/* Web toggle — explicit opt-in for web research routing.
-                    Left of the text area. OFF by default; every message goes to
-                    the agent. ON routes the next send to crawler_query. */}
+                {/* Web toggle — internet-access capability gate (plan Issue E).
+                    Left of the text area. OFF by default: agent has no web tools.
+                    ON: agent is granted web tools and decides when to use them.
+                    Every message still goes to the agent — this only flips the
+                    global internet-access flag via the set_web_mode WS message. */}
                 <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
                 <motion.button
                   type="button"

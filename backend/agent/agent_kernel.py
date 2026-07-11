@@ -193,8 +193,8 @@ class AgentKernel:
         # VPS configuration (loaded from settings)
         self._vps_config: Optional[VPSConfig] = None
 
-        # Internet access control (default: False to match UI default)
-        self._internet_access_enabled: bool = False
+        # Internet access is now a global app-wide flag (see
+        # set_global_internet_access / get_global_internet_access below).
 
         # Swarm compound collaboration (default: False — enabled via UI toggle)
         self._swarm_enabled: bool = False
@@ -1884,117 +1884,143 @@ class AgentKernel:
                 logger.warning(f"[RespondDirect] Config load failed: {_cfg_err}")
                 config_mode = "auto"
 
-        # === Config-driven dispatch: SINGLE_API ===
-        if config_mode == "SINGLE_API":
-            # Always load credentials and model from config when in SINGLE_API mode.
-            # _api_base_url defaults to "https://api.openai.com/v1" (non-empty),
-            # so a bare truthiness check would skip loading the config URL.
-            # The config URL always takes precedence when available.
-            if config:
-                if config.inference.api_base_url:
-                    self._api_base_url = config.inference.api_base_url
-                if config.inference.api_key:
-                    self._api_key = config.inference.api_key
-                if config.inference.reasoning_model:
-                    self._selected_reasoning_model = config.inference.reasoning_model
-            response_text, thinking_text = self._dispatch_api(
-                messages,
-                _max_tokens,
-                _temperature,
-                _reasoning_effort_val,
-                chunk_callback=chunk_callback,
-                reasoning_callback=reasoning_callback,
+        # === Tool definitions for function calling (gated by internet access) ===
+        # When the web toggle is ON, get_available_tools() includes search /
+        # crawler_query; when OFF, those are omitted. The agent decides when to
+        # use them via the ReAct loop below. See plan Issue E.
+        import json as _json
+        _tools = self._get_openai_tools()
+
+        # Local dispatch wrapper — routes to the correct backend provider and
+        # returns (response_text, thinking_text, tool_calls).
+        def _call(_msgs: List[Dict], _tools_arg: Optional[List[Dict]]) -> Tuple[str, str, List[Dict]]:
+            if config_mode == "SINGLE_API":
+                if config:
+                    if config.inference.api_base_url:
+                        self._api_base_url = config.inference.api_base_url
+                    if config.inference.api_key:
+                        self._api_key = config.inference.api_key
+                    if config.inference.reasoning_model:
+                        self._selected_reasoning_model = config.inference.reasoning_model
+                return self._dispatch_api(
+                    _msgs, _max_tokens, _temperature, _reasoning_effort_val,
+                    chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
+                    tools=_tools_arg,
+                )
+            if config_mode == "SINGLE_LOCAL":
+                return self._dispatch_inprocess(
+                    _msgs, _max_tokens, _temperature,
+                    chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
+                )
+            sel = self._selected_reasoning_model or "local-model"
+            if self._is_openai_compat():
+                return self._dispatch_openai_compat(
+                    _msgs, _max_tokens, _temperature, _reasoning_effort_val,
+                    chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
+                    tools=_tools_arg,
+                )
+            if self._is_api_provider():
+                return self._dispatch_api(
+                    _msgs, _max_tokens, _temperature, _reasoning_effort_val,
+                    chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
+                    tools=_tools_arg,
+                )
+            if sel and ":" in sel:
+                # Ollama — no tool support
+                import requests as _req
+                _r = _req.post(
+                    "http://localhost:11434/api/chat",
+                    json={"model": sel, "messages": _msgs, "stream": False},
+                    timeout=30,
+                )
+                if _r.status_code == 200:
+                    _reply = _r.json().get("message", {}).get("content", "")
+                    _thinking, _clean = self._parse_thinking(_reply)
+                    return _clean or "(I see.)", _thinking, []
+                return "(I see.)", "", []
+            # Local loaded model — no tool support
+            _rm = None
+            if self._model_router and self._selected_reasoning_model:
+                _rm = self._model_router.models.get(self._selected_reasoning_model)
+            if not _rm and self._model_router:
+                _rm = self._model_router.get_reasoning_model()
+            if _rm:
+                _reply = _rm.generate(_msgs[-1].get("content", "") if _msgs else text)
+                _thinking, _clean = self._parse_thinking(_reply)
+                return _clean or "(I see.)", _thinking, []
+            logger.error(
+                f"[AgentKernel] _respond_direct: no model provider matched for session "
+                f"'{self.session_id}' (provider={self._model_provider!r}, "
+                f"model={self._selected_reasoning_model!r})."
             )
-            self._pending_thinking = thinking_text
-            return response_text
-
-        # === Config-driven dispatch: SINGLE_LOCAL ===
-        if config_mode == "SINGLE_LOCAL":
-            response_text, thinking_text = self._dispatch_inprocess(
-                messages,
-                _max_tokens,
-                _temperature,
-                chunk_callback=chunk_callback,
-                reasoning_callback=reasoning_callback,
+            return (
+                "I'm not connected to a language model yet. "
+                "Please select a model in IRIS settings and try again.",
+                "",
+                [],
             )
-            self._pending_thinking = thinking_text
-            return response_text
 
-        # === Auto mode: per-provider detection ===
-        sel = self._selected_reasoning_model or "local-model"
+        # === Initial LLM call ===
+        _response, _thinking, _tool_calls = _call(messages, _tools)
+        self._pending_thinking = _thinking
 
-        # LM Studio (OpenAI-compatible)
-        if self._is_openai_compat():
-            use_thinking = self._needs_thinking(text)
-            response_text, thinking_text = self._dispatch_openai_compat(
-                messages,
-                _max_tokens,
-                _temperature,
-                _reasoning_effort_val,
-                chunk_callback=chunk_callback,
-                reasoning_callback=reasoning_callback,
-            )
-            self._pending_thinking = thinking_text
-            # Timing is handled inside _dispatch_openai_compat
-            return response_text
+        # === ReAct tool-call loop ===
+        # If the model requested tool calls (e.g. web search / crawler_query),
+        # execute them, feed results back, and let the model produce the final
+        # answer. Bounded to avoid runaway loops.
+        _MAX_TOOL_ROUNDS = 3
+        _round = 0
+        while _tool_calls and _round < _MAX_TOOL_ROUNDS:
+            _round += 1
+            messages.append({
+                "role": "assistant",
+                "content": _response or None,
+                "tool_calls": _tool_calls,
+            })
+            for _tc in _tool_calls:
+                _tc_id = _tc.get("id")
+                _fn = _tc.get("function", {})
+                _name = _fn.get("name", "")
+                _args_raw = _fn.get("arguments", "{}") or "{}"
+                try:
+                    _params = _json.loads(_args_raw) if _args_raw.strip() else {}
+                except Exception:
+                    _params = {"__raw_arguments__": _args_raw}
+                try:
+                    _raw = asyncio.run(
+                        self._tool_bridge.execute_tool(
+                            tool_name=_name,
+                            params=_params,
+                            session_id=self.conversation_id or "voice",
+                        )
+                    )
+                except RuntimeError:
+                    # asyncio.run() fails if a loop is already running in this
+                    # thread (shouldn't happen in the executor, but guard anyway).
+                    import concurrent.futures as _cf
+                    with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                        _raw = _pool.submit(
+                            asyncio.run,
+                            self._tool_bridge.execute_tool(
+                                tool_name=_name,
+                                params=_params,
+                                session_id=self.conversation_id or "voice",
+                            ),
+                        ).result(timeout=60)
+                if isinstance(_raw, str):
+                    _content = _raw
+                else:
+                    _content = _json.dumps(_raw, ensure_ascii=False, default=str)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": _tc_id,
+                    "name": _name,
+                    "content": _content,
+                })
+            _response, _thinking, _tool_calls = _call(messages, _tools)
+            self._pending_thinking = _thinking
 
-        # Remote API provider (OpenAI, Groq, Cohere, etc.)
-        if self._is_api_provider():
-            response_text, thinking_text = self._dispatch_api(
-                messages,
-                _max_tokens,
-                _temperature,
-                _reasoning_effort_val,
-                chunk_callback=chunk_callback,
-                reasoning_callback=reasoning_callback,
-            )
-            self._pending_thinking = thinking_text
-            return response_text
-
-        # Ollama (model IDs contain ":")
-        if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
-            import requests as _req
-
-            r = _req.post(
-                "http://localhost:11434/api/chat",
-                json={
-                    "model": self._selected_reasoning_model,
-                    "messages": messages,
-                    "stream": False,
-                },
-                timeout=30,
-            )
-            if r.status_code == 200:
-                reply = r.json().get("message", {}).get("content", "")
-                thinking, clean = self._parse_thinking(reply)
-                self._pending_thinking = thinking
-                return clean
-
-        # Local loaded model
-        reasoning_model = None
-        if self._model_router and self._selected_reasoning_model:
-            reasoning_model = self._model_router.models.get(
-                self._selected_reasoning_model
-            )
-        if not reasoning_model and self._model_router:
-            reasoning_model = self._model_router.get_reasoning_model()
-        if reasoning_model:
-            reply = reasoning_model.generate(text)
-            thinking, clean = self._parse_thinking(reply)
-            self._pending_thinking = thinking
-            return clean
-
-        # No provider matched
-        logger.error(
-            f"[AgentKernel] _respond_direct: no model provider matched for session "
-            f"'{self.session_id}' (provider={self._model_provider!r}, "
-            f"model={self._selected_reasoning_model!r}). "
-            "Was set_model_selection() called for this session?"
-        )
-        return (
-            "I'm not connected to a language model yet. "
-            "Please select a model in IRIS settings and try again."
-        )
+        return _response
 
     # ------------------------------------------------------------------ #
     # Dispatch methods
@@ -2008,7 +2034,8 @@ class AgentKernel:
         reasoning_effort: str = "balanced",
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
-    ) -> Tuple[str, str]:
+        tools: Optional[List[Dict]] = None,
+    ) -> Tuple[str, str, List[Dict]]:
         """Remote API provider — direct httpx streaming (Chutes, OpenAI, etc.).
 
         Uses httpx directly instead of _llm.complete() to avoid thread-pool hangs.
@@ -2041,6 +2068,9 @@ class AgentKernel:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if tools:
+            _body["tools"] = tools
+            _body["tool_choice"] = "auto"
         # ── Telemetry: log API request shape (not content) ──────────
         try:
             _msg_count = len(messages)
@@ -2064,49 +2094,103 @@ class AgentKernel:
             _t0 = _perf_t.perf_counter()
             full_reply = ""
             _reasoning_buf: List[str] = []
+            _tool_calls_acc: Dict[int, Dict] = {}
+            _tool_calls: List[Dict] = []
 
-            with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
-                with _client.stream(
-                    "POST", _url, headers=_headers, json={**_body, "stream": True}
-                ) as _resp:
-                    if _resp.status_code != 200:
-                        # Streaming response: reading .text raises ResponseNotRead
-                        # because httpx hasn't consumed the body yet. Read the first
-                        # chunk manually for the error detail.
-                        try:
-                            _first = next(_resp.iter_bytes(), b"")
-                            _err_detail = _first[:200].decode("utf-8", errors="replace")
-                        except Exception:
-                            _err_detail = "(could not read error body)"
-                        raise RuntimeError(
-                            f"API returned {_resp.status_code}: {_err_detail}"
-                        )
-                    for _line in _resp.iter_lines():
-                        if not _line or not _line.startswith("data:"):
-                            continue
-                        _data = _line[5:].strip()
-                        if _data == "[DONE]":
-                            break
-                        # Let JSONDecodeError propagate on malformed data
-                        _chunk = _json.loads(_data)
-                        _choices = _chunk.get("choices", [])
-                        if not _choices:
-                            continue
-                        _delta = _choices[0].get("delta", {})
+            for _attempt in range(3):
+                _stream_ok = False
+                try:
+                    with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
+                        with _client.stream(
+                            "POST", _url, headers=_headers, json={**_body, "stream": True}
+                        ) as _resp:
+                            if _resp.status_code == 429:
+                                # Rate-limited (LM Studio "queue_exceeded" / high
+                                # traffic). Discard body and retry with backoff.
+                                try:
+                                    _resp.read()
+                                except Exception:
+                                    pass
+                                logger.warning(
+                                    "[DispatchAPI] 429 rate-limit (attempt %d/3) — retrying",
+                                    _attempt + 1,
+                                )
+                                continue
+                            if _resp.status_code != 200:
+                                # Streaming response: reading .text raises ResponseNotRead
+                                # because httpx hasn't consumed the body yet. Read the first
+                                # chunk manually for the error detail.
+                                try:
+                                    _first = next(_resp.iter_bytes(), b"")
+                                    _err_detail = _first[:200].decode("utf-8", errors="replace")
+                                except Exception:
+                                    _err_detail = "(could not read error body)"
+                                raise RuntimeError(
+                                    f"API returned {_resp.status_code}: {_err_detail}"
+                                )
+                            for _line in _resp.iter_lines():
+                                if not _line or not _line.startswith("data:"):
+                                    continue
+                                _data = _line[5:].strip()
+                                if _data == "[DONE]":
+                                    break
+                                # Let JSONDecodeError propagate on malformed data
+                                _chunk = _json.loads(_data)
+                                _choices = _chunk.get("choices", [])
+                                if not _choices:
+                                    continue
+                                _delta = _choices[0].get("delta", {})
 
-                        # Reasoning content — field name varies by provider
-                        _r = _delta.get("reasoning_content") or _delta.get("reasoning")
-                        if _r:
-                            _reasoning_buf.append(_r)
-                            if reasoning_callback:
-                                reasoning_callback(_r)
+                                # Reasoning content — field name varies by provider
+                                _r = _delta.get("reasoning_content") or _delta.get("reasoning")
+                                if _r:
+                                    _reasoning_buf.append(_r)
+                                    if reasoning_callback:
+                                        reasoning_callback(_r)
 
-                        # Text content
-                        _c = _delta.get("content")
-                        if _c:
-                            full_reply += _c
-                            if chunk_callback:
-                                chunk_callback(_c)
+                                # Text content
+                                _c = _delta.get("content")
+                                if _c:
+                                    full_reply += _c
+                                    if chunk_callback:
+                                        chunk_callback(_c)
+
+                                # Tool calls (function calling) — accumulate across
+                                # streaming deltas by index.
+                                for _tc_item in (_delta.get("tool_calls") or []):
+                                    _idx = _tc_item.get("index", 0)
+                                    _acc = _tool_calls_acc.setdefault(
+                                        _idx,
+                                        {
+                                            "id": "",
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        },
+                                    )
+                                    if _tc_item.get("id"):
+                                        _acc["id"] = _tc_item["id"]
+                                    _fn = _tc_item.get("function") or {}
+                                    if _fn.get("name"):
+                                        _acc["function"]["name"] = _fn["name"]
+                                    if _fn.get("arguments"):
+                                        _acc["function"]["arguments"] += _fn["arguments"]
+                            _stream_ok = True
+                except RuntimeError:
+                    raise
+                except Exception as _e:
+                    logger.warning(
+                        "[DispatchAPI] stream error (attempt %d/3): %s",
+                        _attempt + 1,
+                        _e,
+                    )
+                    if _attempt == 2:
+                        raise
+                if _stream_ok:
+                    break
+                if _attempt < 2:
+                    _perf_t.sleep(1.0 * (2 ** _attempt))
+
+            _tool_calls = [v for v in _tool_calls_acc.values()]
 
             reasoning_text = "".join(_reasoning_buf)
             if reasoning_callback:
@@ -2117,40 +2201,64 @@ class AgentKernel:
             # Reasoning fallback: some models return answer in reasoning_content
             # with empty content. When using reasoning fallback, skip _parse_thinking
             # since the reasoning IS the answer (preamble stripping would kill it).
-            if not full_reply.strip() and reasoning_text.strip():
+            if not full_reply.strip() and reasoning_text.strip() and not _tool_calls:
                 _elapsed = _perf_t.perf_counter() - _t0
                 _ctok = max(1, len(reasoning_text) // 4)
                 _ptok = sum(len(m.get("content", "")) for m in messages) // 4
                 self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-                return reasoning_text, reasoning_text
+                return reasoning_text, reasoning_text, []
 
             thinking, clean = self._parse_thinking(full_reply)
             _elapsed = _perf_t.perf_counter() - _t0
             _ctok = max(1, len(full_reply) // 4)
             _ptok = sum(len(m.get("content", "")) for m in messages) // 4
             self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
-            return clean or "(I see.)", thinking
+            return clean or "(I see.)", thinking, _tool_calls
 
         else:
             # Non-streaming path
-            with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
-                _resp = _client.post(_url, headers=_headers, json=_body)
-                if _resp.status_code != 200:
-                    raise RuntimeError(
-                        f"API returned {_resp.status_code}: {_resp.text[:200]}"
+            _t0 = _perf_t.perf_counter()
+            _result = None
+            for _attempt in range(3):
+                try:
+                    with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
+                        _resp = _client.post(_url, headers=_headers, json=_body)
+                        if _resp.status_code == 429:
+                            logger.warning(
+                                "[DispatchAPI] 429 rate-limit (attempt %d/3) — retrying",
+                                _attempt + 1,
+                            )
+                            if _attempt < 2:
+                                _perf_t.sleep(1.0 * (2 ** _attempt))
+                            continue
+                        if _resp.status_code != 200:
+                            raise RuntimeError(
+                                f"API returned {_resp.status_code}: {_resp.text[:200]}"
+                            )
+                        _result = _resp.json()
+                        break
+                except RuntimeError:
+                    raise
+                except Exception as _e:
+                    logger.warning(
+                        "[DispatchAPI] request error (attempt %d/3): %s",
+                        _attempt + 1,
+                        _e,
                     )
-                _result = _resp.json()
-                _reply = (
-                    _result.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
+                    if _attempt == 2:
+                        raise
+            if _result is None:
+                raise RuntimeError("API request failed after retries")
 
-            if not _reply:
+            _msg = _result.get("choices", [{}])[0].get("message", {})
+            _reply = _msg.get("content", "")
+            _tool_calls = _msg.get("tool_calls") or []
+
+            if not _reply and not _tool_calls:
                 raise RuntimeError("Empty response from API")
 
             # Record usage with real API tokens if available
-            _elapsed = _perf_t.perf_counter() - _t0 if '_t0' in dir() else 0
+            _elapsed = _perf_t.perf_counter() - _t0
             _usage = _result.get("usage", {})
             _ptok = _usage.get("prompt_tokens", max(1, sum(len(m.get("content", "")) for m in messages) // 4))
             _ctok = _usage.get("completion_tokens", max(1, len(_reply) // 4))
@@ -2168,7 +2276,7 @@ class AgentKernel:
                 chunk_callback("")  # force-flush end-of-stream
 
             thinking, clean = self._parse_thinking(_reply)
-            return clean or "(I see.)", thinking
+            return clean or "(I see.)", thinking, _tool_calls
 
     def _dispatch_openai_compat(
         self,
@@ -2178,7 +2286,8 @@ class AgentKernel:
         reasoning_effort: str = "balanced",
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
-    ) -> Tuple[str, str]:
+        tools: Optional[List[Dict]] = None,
+    ) -> Tuple[str, str, List[Dict]]:
         """LM Studio / local OpenAI-compatible endpoint — direct httpx streaming.
 
         Similar to _dispatch_api but uses _lmstudio_endpoint and LM Studio's
@@ -2189,6 +2298,7 @@ class AgentKernel:
         import json as _json
         import time as _perf_t
         import httpx as _httpx
+        from backend.utils.ssl_context import get_ssl_context
 
         _api_base = self._lmstudio_endpoint or "http://localhost:1234"
         sel = self._selected_reasoning_model or "local-model"
@@ -2207,6 +2317,9 @@ class AgentKernel:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if tools:
+            _body["tools"] = tools
+            _body["tool_choice"] = "auto"
 
         # LM Studio-specific extra_body for thinking template hints
         _body["extra_body"] = {
@@ -2218,51 +2331,101 @@ class AgentKernel:
             _t0 = _perf_t.perf_counter()
             full_reply = ""
             _reasoning_buf: List[str] = []
+            _tool_calls_acc: Dict[int, Dict] = {}
+            _tool_calls: List[Dict] = []
 
-            with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
-                # Try the standard v1 path, fall back to v1-less path for older LM Studio
-                for _try_url in [_url, _url_v1]:
-                    try:
-                        _resp = _client.stream(
-                            "POST",
-                            _try_url,
-                            headers={"Content-Type": "application/json"},
-                            json={**_body, "stream": True},
-                        )
-                        break
-                    except Exception:
-                        continue
-                else:
-                    raise RuntimeError(f"Could not connect to LM Studio at {_api_base}")
+            for _attempt in range(3):
+                _stream_ok = False
+                try:
+                    with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
+                        # Try the standard v1 path, fall back to v1-less path for older LM Studio
+                        for _try_url in [_url, _url_v1]:
+                            try:
+                                _resp = _client.stream(
+                                    "POST",
+                                    _try_url,
+                                    headers={"Content-Type": "application/json"},
+                                    json={**_body, "stream": True},
+                                )
+                                break
+                            except Exception:
+                                continue
+                        else:
+                            raise RuntimeError(f"Could not connect to LM Studio at {_api_base}")
 
-                with _resp as _stream:
-                    if _stream.status_code != 200:
-                        raise RuntimeError(
-                            f"LM Studio returned {_stream.status_code}: {_stream.text[:200]}"
-                        )
-                    for _line in _stream.iter_lines():
-                        if not _line or not _line.startswith("data:"):
-                            continue
-                        _data = _line[5:].strip()
-                        if _data == "[DONE]":
-                            break
-                        _chunk = _json.loads(_data)
-                        _choices = _chunk.get("choices", [])
-                        if not _choices:
-                            continue
-                        _delta = _choices[0].get("delta", {})
+                        with _resp as _stream:
+                            if _stream.status_code == 429:
+                                try:
+                                    _stream.read()
+                                except Exception:
+                                    pass
+                                logger.warning(
+                                    "[DispatchLMStudio] 429 rate-limit (attempt %d/3) — retrying",
+                                    _attempt + 1,
+                                )
+                                continue
+                            if _stream.status_code != 200:
+                                raise RuntimeError(
+                                    f"LM Studio returned {_stream.status_code}: {_stream.text[:200]}"
+                                )
+                            for _line in _stream.iter_lines():
+                                if not _line or not _line.startswith("data:"):
+                                    continue
+                                _data = _line[5:].strip()
+                                if _data == "[DONE]":
+                                    break
+                                _chunk = _json.loads(_data)
+                                _choices = _chunk.get("choices", [])
+                                if not _choices:
+                                    continue
+                                _delta = _choices[0].get("delta", {})
 
-                        _r = _delta.get("reasoning_content") or _delta.get("reasoning")
-                        if _r:
-                            _reasoning_buf.append(_r)
-                            if reasoning_callback:
-                                reasoning_callback(_r)
+                                _r = _delta.get("reasoning_content") or _delta.get("reasoning")
+                                if _r:
+                                    _reasoning_buf.append(_r)
+                                    if reasoning_callback:
+                                        reasoning_callback(_r)
 
-                        _c = _delta.get("content")
-                        if _c:
-                            full_reply += _c
-                            if chunk_callback:
-                                chunk_callback(_c)
+                                _c = _delta.get("content")
+                                if _c:
+                                    full_reply += _c
+                                    if chunk_callback:
+                                        chunk_callback(_c)
+
+                                for _tc_item in (_delta.get("tool_calls") or []):
+                                    _idx = _tc_item.get("index", 0)
+                                    _acc = _tool_calls_acc.setdefault(
+                                        _idx,
+                                        {
+                                            "id": "",
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        },
+                                    )
+                                    if _tc_item.get("id"):
+                                        _acc["id"] = _tc_item["id"]
+                                    _fn = _tc_item.get("function") or {}
+                                    if _fn.get("name"):
+                                        _acc["function"]["name"] = _fn["name"]
+                                    if _fn.get("arguments"):
+                                        _acc["function"]["arguments"] += _fn["arguments"]
+                            _stream_ok = True
+                except RuntimeError:
+                    raise
+                except Exception as _e:
+                    logger.warning(
+                        "[DispatchLMStudio] stream error (attempt %d/3): %s",
+                        _attempt + 1,
+                        _e,
+                    )
+                    if _attempt == 2:
+                        raise
+                if _stream_ok:
+                    break
+                if _attempt < 2:
+                    _perf_t.sleep(1.0 * (2 ** _attempt))
+
+            _tool_calls = [v for v in _tool_calls_acc.values()]
 
             reasoning_text = "".join(_reasoning_buf)
             if reasoning_callback:
@@ -2270,48 +2433,74 @@ class AgentKernel:
             if chunk_callback:
                 chunk_callback("")
 
-            if not full_reply.strip() and reasoning_text.strip():
-                return reasoning_text, reasoning_text
+            if not full_reply.strip() and reasoning_text.strip() and not _tool_calls:
+                return reasoning_text, reasoning_text, []
 
             thinking, clean = self._parse_thinking(full_reply)
-            return clean or "(I see.)", thinking
+            return clean or "(I see.)", thinking, _tool_calls
 
         else:
             # Non-streaming path
-            with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
-                for _try_url in [_url, _url_v1]:
-                    try:
-                        _resp = _client.post(
-                            _try_url,
-                            headers={"Content-Type": "application/json"},
-                            json=_body,
-                        )
-                        if _resp.status_code < 500:
-                            break
-                    except Exception:
-                        continue
-                else:
-                    raise RuntimeError(f"Could not connect to LM Studio at {_api_base}")
+            _t0 = _perf_t.perf_counter()
+            _result = None
+            for _attempt in range(3):
+                try:
+                    with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
+                        for _try_url in [_url, _url_v1]:
+                            try:
+                                _resp = _client.post(
+                                    _try_url,
+                                    headers={"Content-Type": "application/json"},
+                                    json=_body,
+                                )
+                                if _resp.status_code == 429:
+                                    logger.warning(
+                                        "[DispatchLMStudio] 429 rate-limit (attempt %d/3) — retrying",
+                                        _attempt + 1,
+                                    )
+                                    if _attempt < 2:
+                                        _perf_t.sleep(1.0 * (2 ** _attempt))
+                                    break  # retry outer loop
+                                if _resp.status_code < 500:
+                                    break
+                            except Exception:
+                                continue
+                        else:
+                            raise RuntimeError(f"Could not connect to LM Studio at {_api_base}")
 
-                if _resp.status_code != 200:
-                    raise RuntimeError(
-                        f"LM Studio returned {_resp.status_code}: {_resp.text[:200]}"
+                        if _resp.status_code == 429:
+                            continue
+                        if _resp.status_code != 200:
+                            raise RuntimeError(
+                                f"LM Studio returned {_resp.status_code}: {_resp.text[:200]}"
+                            )
+                        _result = _resp.json()
+                        break
+                except RuntimeError:
+                    raise
+                except Exception as _e:
+                    logger.warning(
+                        "[DispatchLMStudio] request error (attempt %d/3): %s",
+                        _attempt + 1,
+                        _e,
                     )
-                _result = _resp.json()
-                _reply = (
-                    _result.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
+                    if _attempt == 2:
+                        raise
+            if _result is None:
+                raise RuntimeError("LM Studio request failed after retries")
 
-            if not _reply:
+            _msg = _result.get("choices", [{}])[0].get("message", {})
+            _reply = _msg.get("content", "")
+            _tool_calls = _msg.get("tool_calls") or []
+
+            if not _reply and not _tool_calls:
                 raise RuntimeError("Empty response from LM Studio")
 
             # Record usage with real API tokens if available
             _usage = _result.get("usage", {})
             _ptok = _usage.get("prompt_tokens", max(1, sum(len(m.get("content", "")) for m in messages) // 4))
             _ctok = _usage.get("completion_tokens", max(1, len(_reply) // 4))
-            _elapsed_ns = _perf_t.perf_counter() - _t0 if '_t0' in dir() else 0
+            _elapsed_ns = _perf_t.perf_counter() - _t0
             self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed_ns)
 
             # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
@@ -2324,7 +2513,7 @@ class AgentKernel:
                 chunk_callback("")  # force-flush end-of-stream
 
             thinking, clean = self._parse_thinking(_reply)
-            return clean or "(I see.)", thinking
+            return clean or "(I see.)", thinking, _tool_calls
 
     def _dispatch_inprocess(
         self,
@@ -2363,7 +2552,7 @@ class AgentKernel:
             chunk_callback("")  # force-flush end-of-stream
 
         thinking, clean = self._parse_thinking(reply)
-        return clean or "(I see.)", thinking
+        return clean or "(I see.)", thinking, []
 
     # Word count above which we consider a reply "long" for TTS purposes.
     # Only applied to DOCUMENT-like content; conversational replies are always spoken in full.
@@ -3323,6 +3512,30 @@ class AgentKernel:
             ],
         )
 
+    def _is_web_search_request(self, text: str) -> bool:
+        """Quick heuristic: does the user message explicitly request a web search?
+
+        Uses precise phrase triggers rather than broad keywords to avoid
+        blocking legitimate non-search queries. Only matches when the user
+        clearly intends to fetch content from the internet.
+        """
+        if not text:
+            return False
+        _lower = text.lower().strip()
+        _triggers = [
+            "web search",
+            "search the web",
+            "search on the internet",
+            "search online",
+            "look up online",
+            "look up on the",
+            "find on the web",
+            "find on the internet",
+            "browse the web",
+            "do a web search",
+        ]
+        return any(t in _lower for t in _triggers)
+
     def process_text_message(
         self,
         text: str,
@@ -3500,6 +3713,35 @@ class AgentKernel:
             logger.info(metrics.to_log_line())
             return response
 
+        # ── Internet-access gate check (runs before DER to save cost) ──────
+        # If web tools are disabled and the user explicitly asked for a web
+        # search, respond directly without engaging the expensive DER loop.
+        if not get_global_internet_access() and self._is_web_search_request(text):
+            return (
+                "Web search is currently disabled. You can toggle internet "
+                "access on via the dashboard (the web button) to enable "
+                "web features."
+            )
+
+        # ── Thinking feedback: emit a filler utterance so the user hears ──
+        # audio feedback while the agent is "thinking" (DER/ReAct path).
+        # Fire-and-forget via the speak tool; ConversationKernel drives TTS
+        # (phase defaults to EXPAND in production, so it is never suppressed).
+        # Fixes the reported "no utterance during thinking" gap. See plan Issue E.
+        try:
+            from backend.agent.tools.speak_tool import get_speak_tool
+            import random as _random
+
+            _fillers = (
+                "Let me check that for you.",
+                "One moment.",
+                "Just a second.",
+                "Working on it.",
+            )
+            get_speak_tool().speak(_random.choice(_fillers), priority="low")
+        except Exception as _filler_err:
+            logger.debug("[AgentKernel] thinking filler emit skipped: %s", _filler_err)
+
         # ── DER path: sanitize → classify → Mycelium → plan → execute ──────
         # Runs BEFORE the ReAct loop. Falls through to ReAct on any failure.
         _der_response: Optional[str] = None
@@ -3603,6 +3845,7 @@ class AgentKernel:
                     session_id=session_id or self.session_id,
                     from_voice=from_voice,
                     confidence=_confidence,
+                    turn_id=task_id,
                 )
 
         except Exception as _der_err:
@@ -4190,6 +4433,7 @@ Respond with a JSON object:
         session_id: Optional[str] = None,
         from_voice: bool = False,
         confidence: float = 0.50,
+        turn_id: Optional[str] = None,
     ) -> str:
         """
         DER execution cycle: Director → Reviewer → Explorer → repeat until complete.
@@ -4214,6 +4458,11 @@ Respond with a JSON object:
         import uuid as _uuid
 
         _session = session_id or self.session_id
+        # _turn_id threads the request turn id through EventBus emits and
+        # escalation calls. It was previously referenced throughout this
+        # method but never defined — that NameError broke the DER escalation
+        # path and forced the "[step N completed]" fallback. See Issue E fix.
+        _turn_id = turn_id
         completed_items: List[Any] = []
         step_outputs: List[str] = []
         _der_start_time = time.perf_counter()
@@ -5953,28 +6202,23 @@ If any tools failed, address those issues in your response.
         """
         Enable or disable agent internet access.
 
-        This controls whether the agent can use web search and internet-based tools.
-        It does NOT affect application connectivity to VPS or OpenAI services.
+        Delegates to the app-wide global flag (set_global_internet_access) so that
+        internet access is a single switch for all conversations, not per-kernel.
+        The UI web-mode toggle flips this via iris_gateway.set_web_mode.
 
         Args:
             enabled: True to enable internet access, False to disable
         """
-        self._internet_access_enabled = enabled
-        logger.info(
-            f"[AgentKernel] Agent internet access {'enabled' if enabled else 'disabled'}"
-        )
-        logger.info(
-            "[AgentKernel] Note: This controls agent web search tools, not application connectivity"
-        )
+        set_global_internet_access(enabled)
 
     def get_internet_access(self) -> bool:
         """
-        Get current internet access setting.
+        Get current internet access setting (app-wide global).
 
         Returns:
             True if internet access is enabled, False otherwise
         """
-        return self._internet_access_enabled
+        return get_global_internet_access()
 
     def set_swarm_enabled(self, enabled: bool) -> None:
         """
@@ -6036,6 +6280,53 @@ If any tools failed, address those issues in your response.
 
 # Singleton instance management
 _agent_kernel_instances: Dict[str, AgentKernel] = {}
+
+# ── Global internet-access gate (app-wide) ────────────────────────────────
+# Web mode is a single app-level switch, not per-conversation.  Kernels are
+# created per conversation (_agent_kernel_instances), but internet access must
+# apply to every kernel at once when the user toggles web mode in the UI.
+# set_web_mode in iris_gateway flips this; tool_bridge gates web tools on it.
+_internet_access_enabled: bool = False
+
+
+def set_global_internet_access(enabled: bool) -> None:
+    """Flip the app-wide internet-access gate (UI web-mode toggle)."""
+    global _internet_access_enabled
+    _internet_access_enabled = bool(enabled)
+    logger.info(
+        f"[AgentKernel] Global internet access {'enabled' if enabled else 'disabled'}"
+    )
+
+
+def get_global_internet_access() -> bool:
+    """Return the app-wide internet-access gate state."""
+    return _internet_access_enabled
+
+
+# ── Global desktop-control gate (app-wide) ────────────────────────────────
+# Desktop control = launching the user's real browser/apps, opening files with
+# their default application, locking the screen, GUI/screen automation, etc.
+# Everything that reaches OUTSIDE the app sandbox.  It is OFF by default and
+# only enabled when the user explicitly grants permission via the
+# desktop_control dashboard card (confirm_card → set_desktop_control_enabled).
+# tool_bridge gates every desktop-control tool on this flag so the agent can
+# NEVER reach the desktop unless the user opted in.
+_desktop_control_enabled: bool = False
+
+
+def set_desktop_control_enabled(enabled: bool) -> None:
+    """Flip the app-wide desktop-control gate (UI desktop_control card)."""
+    global _desktop_control_enabled
+    _desktop_control_enabled = bool(enabled)
+    logger.info(
+        f"[AgentKernel] Desktop control {'enabled' if enabled else 'disabled'}"
+    )
+
+
+def get_desktop_control_enabled() -> bool:
+    """Return the app-wide desktop-control gate state."""
+    return _desktop_control_enabled
+
 
 # Last-known-good swarm configuration snapshot.
 # When a new session's kernel is created after swarm mode has already been

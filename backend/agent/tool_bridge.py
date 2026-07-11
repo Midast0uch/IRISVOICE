@@ -25,6 +25,30 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+# Tools that reach OUTSIDE the app sandbox — they launch the user's real
+# browser/apps, open files with the default application, lock the screen, or
+# drive the GUI/screen.  These are gated by the app-wide desktop-control flag
+# (agent_kernel.get_desktop_control_enabled); the agent can only use them when
+# the user has explicitly granted desktop-control permission.  Web search
+# (search / crawler_query) is NOT here — that is gated by the internet-access
+# flag and stays fully in-app (headless crawl), never touching the desktop.
+DESKTOP_CONTROL_TOOLS = frozenset({
+    "open_url",          # launches the OS default browser
+    "launch_app",        # launches an application
+    "open_file",         # opens a file with its default app
+    "lock_screen",       # locks the user's session
+    "shutdown",          # shuts down the machine
+    "restart",           # restarts the machine
+    "gui_click",         # clicks at screen coordinates
+    "gui_type",          # types at the current/coordinates
+    "gui_press_key",     # presses a keyboard key
+    "gui_automate_click",  # GUI automation click
+    "gui_automate_type",   # GUI automation type
+    "take_screenshot",   # captures the screen
+    "start_screen_monitor",  # background screen monitoring
+})
+
+
 class AgentToolBridge:
     """
     Bridges all IRIS capabilities to the agent system.
@@ -255,16 +279,6 @@ class AgentToolBridge:
             # Browser
             {"name": "open_url", "description": "Open URL in browser", "parameters": {
                 "url": {"type": "string"}}, "category": "web", "server": "browser"},
-            {"name": "search", "description": "Search the web", "parameters": {
-                "query": {"type": "string"}}, "category": "web", "server": "browser"},
-            {"name": "crawler_query", "description": (
-                "Deep web research crawl for a topic. Plans source URLs from the query, "
-                "crawls them with Crawl4AI, and returns a structured summary with source "
-                "links. Use for 'research', 'everything about', or 'deep dive' requests — "
-                "NOT for a quick factual lookup (use 'search' for that)."
-            ), "parameters": {
-                "query": {"type": "string", "description": "The research topic or question to investigate"}},
-                "category": "web"},
 
             # File Management
             {"name": "read_file", "description": "Read file contents", "parameters": {
@@ -402,6 +416,46 @@ class AgentToolBridge:
         blocked = CapabilitySet.allowed_tools()
         if blocked:
             tools = [t for t in tools if t.get("name") not in blocked]
+
+        # ── Internet-access gate (plan Issue E) ─────────────────────────────
+        # Web search / crawl tools are granted ONLY when the app-wide internet
+        # access flag is ON (flipped by the UI web-mode toggle via
+        # iris_gateway.set_web_mode). When OFF, the agent has zero internet
+        # tools — it cannot reach the web at all.
+        from backend.agent.agent_kernel import get_global_internet_access
+        if get_global_internet_access():
+            tools.extend([
+                {
+                    "name": "search",
+                    "description": "Search the web for a quick factual answer. Returns fetched page content as markdown.",
+                    "parameters": {"query": {"type": "string"}},
+                    "category": "web",
+                    "server": "browser",
+                },
+                {
+                    "name": "crawler_query",
+                    "description": (
+                        "Deep web research crawl for a topic. Plans source URLs from the query, "
+                        "crawls them with Crawl4AI, and returns a structured summary PLUS the full "
+                        "extracted page content (field 'content') with source links. Put 'content' "
+                        "in your 'show' field and 'summary' in 'speak'. Use for 'research', "
+                        "'everything about', or 'deep dive' requests — NOT for a quick factual "
+                        "lookup (use 'search' for that)."
+                    ),
+                    "parameters": {
+                        "query": {"type": "string", "description": "The research topic or question to investigate"}
+                    },
+                    "category": "web",
+                },
+            ])
+
+        # ── Desktop-control gate ─────────────────────────────────────────────
+        # Tools that reach outside the app sandbox (launch the real browser/apps,
+        # open files, drive the GUI/screen) are ONLY exposed when the user has
+        # explicitly granted desktop-control permission.  OFF by default.
+        from backend.agent.agent_kernel import get_desktop_control_enabled
+        if not get_desktop_control_enabled():
+            tools = [t for t in tools if t.get("name") not in DESKTOP_CONTROL_TOOLS]
 
         return tools
 
@@ -815,6 +869,42 @@ class AgentToolBridge:
                 "success": False,
             }
 
+        # ── Internet-access gate (plan Issue E) ──────────────────────────────
+        # Defense-in-depth: even if a web tool is somehow invoked while internet
+        # access is OFF, reject it here. The UI web-mode toggle flips the global
+        # flag via iris_gateway.set_web_mode.
+        if tool_name in ("search", "crawler_query"):
+            from backend.agent.agent_kernel import get_global_internet_access
+            if not get_global_internet_access():
+                logger.warning(
+                    "[InternetGate] Tool '%s' blocked — internet access disabled", tool_name
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Internet access is disabled (web mode off). "
+                        f"Tool '{tool_name}' is unavailable."
+                    ),
+                }
+
+        # ── Desktop-control gate (defense-in-depth) ─────────────────────────
+        # Even if a desktop-control tool is somehow invoked while desktop control
+        # is OFF, reject it here. The UI desktop_control card flips the flag via
+        # iris_gateway.set_desktop_control_enabled; it is OFF by default.
+        if tool_name in DESKTOP_CONTROL_TOOLS:
+            from backend.agent.agent_kernel import get_desktop_control_enabled
+            if not get_desktop_control_enabled():
+                logger.warning(
+                    "[DesktopGate] Tool '%s' blocked — desktop control disabled", tool_name
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Desktop control is disabled. Tool '{tool_name}' "
+                        f"requires explicit desktop-control permission."
+                    ),
+                }
+
         # ── Phase 4: Permission check ──────────────────────────────────────
         try:
             from backend.agent.permissions import (
@@ -913,6 +1003,20 @@ class AgentToolBridge:
                 "github_connect_pat": ("github", "github_connect_pat"),
                 # Internal (handled below with post-broadcast)
             }
+
+            # ── In-app web search (replaces desktop-browser launch) ──────────
+            # The old BrowserServer.search called webbrowser.open() and popped the
+            # user's REAL desktop browser.  Web search is now fully in-app: the
+            # headless Crawl4AI engine fetches the results and returns markdown.
+            # Gated by the internet-access flag (see InternetGate above).  Routed
+            # here BEFORE the MCP dispatch so it never reaches BrowserServer.
+            if tool_name == "search":
+                result = await self._execute_web_search(params, session_id)
+                self._record_tool_event(
+                    session_id, tool_name,
+                    "success" if result.get("success") else "failure", params, result,
+                )
+                return result
 
             if tool_name in mcp_tools:
                 server_name, mcp_tool_name = mcp_tools[tool_name]
@@ -1255,10 +1359,11 @@ class AgentToolBridge:
         ``crawler_query`` is in ``pacman_fragment._EXTERNAL_TOOLS`` (untrusted /
         reference zone) — see plan §6.1.
 
-        NOTE (§6.4, follow-up): progress ``speak`` calls during the crawl
-        (via ``SpeakBroadcaster.forward_external`` on the ``on_page_done``
-        callback) are not yet wired here; the final summary is spoken by the
-        agent's own ``speak`` tool after this returns.
+        NOTE (§6.4, follow-up): progress ``speak`` calls during the crawl ARE
+        wired via the ``on_page_done`` callback below — the agent (and the user,
+        via TTS) hears "Researching — fetched page N of M" as pages come in.
+        The final summary is spoken by the agent's own ``speak`` tool after this
+        returns.
         """
         query = (params.get("query") or "").strip()
         if not query:
@@ -1280,12 +1385,29 @@ class AgentToolBridge:
 
         # Step 2: Crawl.
         try:
+            # Progress utterances: let the user hear that research is happening
+            # (Issue E follow-up — user reported no utterance while searching).
+            # The speak tool is fire-and-forget and rate-limited; if the audio
+            # pipeline is closed it is buffered/suppressed by ConversationKernel.
+            from backend.agent.tools.speak_tool import get_speak_tool
+
+            _speak_tool = get_speak_tool()
+
+            def _on_page_done(url: str, page_number: int, total: int) -> None:
+                try:
+                    _speak_tool.speak(
+                        f"Researching — fetched page {page_number} of {total}.",
+                        priority="low",
+                    )
+                except Exception as _spk_exc:  # pragma: no cover - best effort
+                    logger.debug("[crawler_query] progress speak failed: %s", _spk_exc)
+
             async with CrawlerEngine() as engine:
                 crawl_result = await engine.crawl(
                     query=query,
                     urls=plan.urls,
                     instructions=plan.instructions,
-                    on_page_done=None,
+                    on_page_done=_on_page_done,
                 )
         except CrawlerUnavailable as exc:
             return {"success": False, "error": str(exc)}
@@ -1312,13 +1434,88 @@ class AgentToolBridge:
             else:
                 pages.append({"url": getattr(p, "url", ""), "title": getattr(p, "title", "")})
 
+        # Reconstruct the full extracted content (combined markdown) from the
+        # crawled pages so the agent can surface it in the `show` field. The
+        # DataExtractor uses this same source to build its LLM prompt but does
+        # not return it — so we rebuild it here (capped to match context limits).
+        _CONTENT_CAP = 12_000
+        _content_parts: List[str] = []
+        for _p in getattr(crawl_result, "pages", []):
+            _err = getattr(_p, "error", None)
+            if _err:
+                continue
+            _md = getattr(_p, "markdown", "") or ""
+            if _md:
+                _content_parts.append(f"--- Source: {getattr(_p, 'url', '')} ---\n{_md}")
+        _combined = "\n\n".join(_content_parts)
+        if len(_combined) > _CONTENT_CAP:
+            _combined = _combined[:_CONTENT_CAP] + "\n\n[...truncated...]"
+
         return {
             "success": True,
             "query": query,
             "title": dashboard_data.get("title", plan.title),
             "summary": dashboard_data.get("summary", ""),
+            "content": _combined,
             "pages": pages,
             "links": [pg["url"] for pg in pages if pg.get("url")],
+            "trust": "untrusted",  # external tool result — route to reference zone
+        }
+
+    async def _execute_web_search(self, params: Dict, session_id: str) -> Dict:
+        """Agent tool: quick in-app web search (headless crawl of results).
+
+        Replaces the old ``BrowserServer.search`` which called
+        ``webbrowser.open()`` and launched the user's DESKTOP browser.  Web
+        search is now fully in-app: the headless Crawl4AI engine fetches the
+        search results page and returns the markdown.  Gated by the global
+        internet-access flag (see the InternetGate block in execute_tool), so it
+        is only reachable when web mode is ON.  Never touches the desktop.
+        """
+        query = (params.get("query") or "").strip()
+        if not query:
+            return {"success": False, "error": "search requires a 'query'"}
+
+        try:
+            from backend.crawler.crawler_engine import CrawlerEngine, CrawlerUnavailable
+        except Exception as exc:
+            return {"success": False, "error": f"crawler modules unavailable: {exc}"}
+
+        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        try:
+            async with CrawlerEngine() as engine:
+                crawl_result = await engine.crawl(
+                    query=query,
+                    urls=[search_url],
+                    instructions=(
+                        "Extract the most relevant answer and key facts from the "
+                        "search results page. Prefer concise factual snippets."
+                    ),
+                )
+        except CrawlerUnavailable as exc:
+            return {"success": False, "error": str(exc)}
+        except Exception as exc:
+            logger.error("[web_search] crawl failed: %s", exc)
+            return {"success": False, "error": f"search failed: {exc}"}
+
+        # Rebuild markdown content from the crawled page(s).
+        _CONTENT_CAP = 8_000
+        _content_parts: List[str] = []
+        for _p in getattr(crawl_result, "pages", []):
+            if getattr(_p, "error", None):
+                continue
+            _md = getattr(_p, "markdown", "") or ""
+            if _md:
+                _content_parts.append(f"--- Source: {getattr(_p, 'url', '')} ---\n{_md}")
+        _combined = "\n\n".join(_content_parts)
+        if len(_combined) > _CONTENT_CAP:
+            _combined = _combined[:_CONTENT_CAP] + "\n\n[...truncated...]"
+
+        return {
+            "success": True,
+            "query": query,
+            "content": _combined,
+            "url": search_url,
             "trust": "untrusted",  # external tool result — route to reference zone
         }
 

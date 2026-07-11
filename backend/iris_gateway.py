@@ -133,10 +133,6 @@ class IRISGateway:
         self._ws_bridge = WSEventBridge(self._ws_manager)
         self._ws_bridge.start()
 
-        # Track which sessions have web-mode toggled ON, so STT transcripts
-        # route through the crawler instead of the agent kernel.
-        self._web_mode_sessions: set[str] = set()
-
         # Initialize wake word discovery
         self._wake_word_discovery = WakeWordDiscovery()
         self._wake_word_discovery.scan_directory()
@@ -468,15 +464,17 @@ class IRISGateway:
                 await self._handle_reload_skills(session_id, client_id, message)
 
             elif msg_type == "set_web_mode":
-                # Frontend web-search toggle sync.  When ON, STT transcripts
-                # are routed through the crawler instead of the agent kernel.
+                # Frontend web-search toggle.  This is an internet-access
+                # capability gate (app-wide), NOT a routing switch.  When ON,
+                # the agent kernel is granted web tools (search / crawler_query)
+                # and decides when to use them.  When OFF, the agent has zero
+                # internet tools.  See plan Issue E.
                 enabled = bool(message.get("payload", {}).get("enabled", False))
-                if enabled:
-                    self._web_mode_sessions.add(session_id)
-                else:
-                    self._web_mode_sessions.discard(session_id)
+                from .agent.agent_kernel import set_global_internet_access
+                set_global_internet_access(enabled)
                 self._logger.info(
-                    f"[WebMode] session={session_id} web_mode={enabled}"
+                    f"[WebMode] session={session_id} web_mode={enabled} "
+                    f"(global internet access {'ON' if enabled else 'OFF'})"
                 )
 
             elif msg_type == "get_skills":
@@ -923,6 +921,27 @@ class IRISGateway:
                 except Exception as e:
                     self._logger.error(
                         f"[Session: {session_id}] Error applying TTS config: {e}",
+                        extra={"session_id": session_id, "client_id": client_id},
+                    )
+
+            # Apply desktop_control card values when that section is confirmed.
+            # This is the ONLY place the desktop-control gate is flipped — without
+            # it the agent can launch the user's real browser/apps even when the
+            # card says disabled.  OFF by default (see agent_kernel flag default).
+            elif section_id == "desktop_control" and values:
+                try:
+                    from .agent.agent_kernel import set_desktop_control_enabled
+
+                    enabled = bool(values.get("desktop_control_enabled", False))
+                    set_desktop_control_enabled(enabled)
+                    self._logger.info(
+                        f"[Session: {session_id}] Desktop control "
+                        f"{'enabled' if enabled else 'disabled'}",
+                        extra={"session_id": session_id, "client_id": client_id},
+                    )
+                except Exception as dc_e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying desktop_control: {dc_e}",
                         extra={"session_id": session_id, "client_id": client_id},
                     )
 
@@ -2154,20 +2173,6 @@ class IRISGateway:
                     "payload": {"text": transcript, "sender": "user"},
                 },
             )
-
-            # ── Web mode check: if toggle is on, route STT transcript ──
-            # through the crawler instead of the agent kernel.  Same path
-            # as a typed message with webMode=true in chat-view.tsx.
-            if session_id in self._web_mode_sessions:
-                self._logger.info(
-                    f"[Voice→Crawler] session={session_id} routing STT "
-                    f"transcript to crawler_query"
-                )
-                await self._handle_crawler_query(
-                    session_id, client_id,
-                    {"type": "crawler_query", "payload": {"query": transcript}},
-                )
-                return
 
             enriched = transcript
             if audio_context:
@@ -3854,7 +3859,20 @@ class IRISGateway:
             # After TTS playback, preserve the conversation state instead of
             # forcing "idle". If the user is in an active voice conversation,
             # the orb stays listening so they can respond back.
-            post_tts_state = "listening" if session_id in self._conversation_sessions else "idle"
+            # Show "listening" after TTS when the session is in conversation mode
+            # OR the voice handler is actively recording for this session (the
+            # audio pipeline is open and waiting for the next utterance). This
+            # keeps the orb in sync with the real backend listening state
+            # instead of reporting "idle" while the mic is still hot.
+            _voice_active = (
+                self._voice_handler is not None
+                and getattr(self._voice_handler, "_active_session_id", None) == session_id
+            )
+            post_tts_state = (
+                "listening"
+                if (session_id in self._conversation_sessions or _voice_active)
+                else "idle"
+            )
             _root_log.info(f"[TTS] after play => {post_tts_state} (session_id={session_id})")
             try:
                 await self._ws_manager.send_to_client(

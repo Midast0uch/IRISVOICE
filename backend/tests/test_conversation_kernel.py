@@ -563,6 +563,60 @@ def test_constructor_handles_none_audio_pipeline():
     print("  PASS  None audio_pipeline handled gracefully")
 
 
+# Test 13: Voice state drives the speech-gating Caducean phase (production wiring)
+def test_voice_state_drives_speech_phase():
+    """on_voice_state must set self._current_caducean_phase from the real
+    voice state so filter_speech() actually gates in production.
+
+    Mapping (per plan Issue E):
+      RECORDING  -> COMPRESS  (user speaking; never talk over them)
+      PROCESSING -> EXPAND    (agent thinking; feedback allowed)
+      SUCCESS    -> EXPAND    (TTS; feedback allowed)
+      IDLE       -> EXPAND    (ready; feedback allowed)
+
+    Previously _current_caducean_phase was never set, so filter_speech()
+    was a no-op defaulting to EXPAND. The phase is set from LOCAL state
+    before any FFI call, so it works even without the C++ engine loaded.
+    """
+    from backend.agent.conversation_kernel import ConversationKernel
+    from backend.audio.voice_command import VoiceState
+
+    ap = make_mock_audio_pipeline()
+    vh = make_mock_voice_handler()
+    kernel = ConversationKernel(
+        voice_handler=vh,
+        tts_manager=make_mock_tts_manager(),
+        audio_pipeline=ap,
+        session_id_getter=lambda: "phase_test",
+    )
+    kernel.register_callbacks()
+
+    # Initial phase is EXPAND
+    assert kernel._current_caducean_phase == "EXPAND"
+
+    # RECORDING -> COMPRESS (user speaking; speech suppressed)
+    vh._on_state_change(VoiceState.RECORDING, "user started")
+    assert kernel._current_caducean_phase == "COMPRESS"
+    assert kernel.filter_speech(kernel._current_caducean_phase) is False
+
+    # PROCESSING -> EXPAND (agent thinking; feedback allowed)
+    vh._on_state_change(VoiceState.PROCESSING, "transcribing")
+    assert kernel._current_caducean_phase == "EXPAND"
+    assert kernel.filter_speech(kernel._current_caducean_phase) is True
+
+    # SUCCESS -> EXPAND
+    vh._on_state_change(VoiceState.SUCCESS, "tts")
+    assert kernel._current_caducean_phase == "EXPAND"
+    assert kernel.filter_speech(kernel._current_caducean_phase) is True
+
+    # IDLE -> EXPAND
+    vh._on_state_change(VoiceState.IDLE, "ready")
+    assert kernel._current_caducean_phase == "EXPAND"
+    assert kernel.filter_speech(kernel._current_caducean_phase) is True
+
+    print("  PASS  voice state drives speech phase: RECORDING->COMPRESS, else EXPAND")
+
+
 # ═══════════════════════════════════════════════════════════════════
 # RUNNER
 # ═══════════════════════════════════════════════════════════════════
@@ -584,6 +638,7 @@ def run_all():
         test_barge_in_during_speaking_nudges_params,
         test_mark_speaking_toggles_state,
         test_constructor_handles_none_audio_pipeline,
+        test_voice_state_drives_speech_phase,
     ]
     passed = 0
     failed = 0

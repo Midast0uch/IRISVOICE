@@ -93,6 +93,11 @@ class ConversationKernel:
         self._session_id_getter = session_id_getter
         self._was_speaking = False
         self._current_audio_level = 0.0
+        # Speech-gating phase driven by the voice pipeline state machine
+        # (see on_voice_state). Defaults to EXPAND so speech is allowed
+        # until the first RECORDING transition. Previously this attribute
+        # was never set, so filter_speech() was a no-op. See plan Issue E.
+        self._current_caducean_phase = "EXPAND"
         # Lock for state updates from audio thread (state callbacks may
         # fire from a worker thread; should_halt_on_violation may fire
         # from the TTS loop). The lock is fine-grained: only around the
@@ -191,30 +196,51 @@ class ConversationKernel:
         """
         # Lazy import to avoid circular import
         from backend.audio.voice_command import VoiceState
-        from backend.gateway.iris_ffi import ffi_caducean_update
 
         try:
             session_id = self._session_id_getter()
             if session_id is None:
                 return
-            balance = self._get_current_balance()
             state_value = getattr(state, "value", state)
+            was_speaking = False
+
+            # ── 1. Set the speech-gating phase FIRST (local state) ──
+            # This is the production wiring that was missing: the kernel's
+            # own _current_caducean_phase now tracks the real voice state so
+            # filter_speech() actually gates. RECORDING = user speaking ->
+            # COMPRESS (never talk over the user); every other state ->
+            # EXPAND (agent may give feedback while thinking/working).
             if state_value == VoiceState.RECORDING.value:
-                # User started speaking — bias toward compress
-                ffi_caducean_update(session_id, 1, balance)
                 with self._lock:
                     self._was_speaking = False
+                    self._current_caducean_phase = "COMPRESS"
             elif state_value == VoiceState.IDLE.value:
-                # Turn completed — bias toward expand (or maintain)
                 with self._lock:
                     was_speaking = self._was_speaking
                     self._was_speaking = False
-                # If we were speaking (TTS) and now we're idle, mark turn done
-                if was_speaking:
-                    ffi_caducean_update(session_id, 0, balance)
+                    self._current_caducean_phase = "EXPAND"
             elif state_value in (VoiceState.PROCESSING.value, VoiceState.SUCCESS.value):
-                # These states don't change Caducean phase
-                pass
+                with self._lock:
+                    self._current_caducean_phase = "EXPAND"
+
+            # ── 2. Drive the Caducean engine (best-effort, never blocks) ──
+            # FFI import is lazy + nested so a missing C++ extension can
+            # never prevent the speech-gating phase from being set.
+            try:
+                from backend.gateway.iris_ffi import ffi_caducean_update
+
+                balance = self._get_current_balance()
+                if state_value == VoiceState.RECORDING.value:
+                    # User started speaking — bias toward compress
+                    ffi_caducean_update(session_id, 1, balance)
+                elif state_value == VoiceState.IDLE.value and was_speaking:
+                    # Turn completed after TTS — bias toward expand
+                    ffi_caducean_update(session_id, 0, balance)
+                # PROCESSING / SUCCESS don't change Caducean engine phase
+            except Exception as _ffi_exc:  # noqa: BLE001
+                logger.debug(
+                    "[ConversationKernel] caducean engine update skipped: %s", _ffi_exc
+                )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[ConversationKernel] on_voice_state failed: %s", exc)
 
