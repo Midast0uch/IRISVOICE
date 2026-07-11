@@ -542,16 +542,26 @@ export function DarkGlassDashboard({
   const seededRef = useRef(false);
   useEffect(() => {
     if (!seededRef.current && contextFieldValues && Object.keys(contextFieldValues).length > 0) {
-      const values = { ...contextFieldValues } as Record<string, Record<string, any>>;
-      // Migration: force swarm OFF when an API provider is selected (not "local").
-      // Prevents stale localStorage cache from keeping swarm ON and blocking API routing.
-      const provider = values?.model_selection?.model_provider || '';
-      if (provider && provider !== 'local' && provider !== 'lmstudio') {
-        if (values.inference_mode) {
-          values.inference_mode = { ...values.inference_mode, swarm_enabled: false };
+      setLocalFieldValues((prev) => {
+        // Merge WS-supplied values OVER the localStorage-backed values so a
+        // reopen can never clobber the user's saved settings with backend
+        // defaults. The backend only hydrates field_values that were actually
+        // persisted to disk; if none were (or a section is missing), it sends
+        // defaults — and a naive replace would wipe the user's localStorage.
+        const merged: Record<string, Record<string, any>> = { ...contextFieldValues };
+        for (const [sec, vals] of Object.entries(prev || {})) {
+          merged[sec] = { ...(merged[sec] || {}), ...(vals || {}) };
         }
-      }
-      setLocalFieldValues(values);
+        // Migration: force swarm OFF when an API provider is selected (not "local").
+        // Prevents stale localStorage cache from keeping swarm ON and blocking API routing.
+        const provider = merged?.model_selection?.model_provider || '';
+        if (provider && provider !== 'local' && provider !== 'lmstudio') {
+          if (merged.inference_mode) {
+            merged.inference_mode = { ...merged.inference_mode, swarm_enabled: false };
+          }
+        }
+        return merged;
+      });
       seededRef.current = true;
     }
   }, [contextFieldValues]);

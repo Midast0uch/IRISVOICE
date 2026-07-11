@@ -1739,6 +1739,20 @@ async def api_config_save(body: dict = {}):
             if "memory_count" in values:
                 cfg.memory.max_memories = int(values["memory_count"])
 
+        # ── field_values persistence (ALL sections) ──────────────────────
+        # The dashboard's unmount save (the reliable close-path) POSTs here
+        # for every populated section. Persist the raw form values so they
+        # survive frontend remounts / page reloads — this mirrors the WS
+        # update_field / confirm_card path (save_field_values in iris_config).
+        # Without this, only cfg.inference.* (model_selection etc.) was saved
+        # and every other section's settings were silently dropped on close.
+        try:
+            _base = dict(cfg.field_values or {})
+            _base[section_id] = values
+            cfg.field_values = _base
+        except Exception as _fv_err:
+            logger.warning(f"[Config] Failed to persist field_values for {section_id}: {_fv_err}")
+
         save_config(cfg)
         return {"status": "ok", "section": section_id}
 
