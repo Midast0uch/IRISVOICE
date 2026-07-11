@@ -3834,6 +3834,40 @@ class AgentKernel:
 
             # GAP 4 — route by strategy (do_it_myself → DER; others → ReAct)
             if _plan.strategy == "do_it_myself":
+                # ── Emit TASK_START early so the frontend sees the plan
+                # skeleton BEFORE the DER thread starts executing tools
+                # (fixes Q4 plan-late bug — without this, task:start and
+                # the first tool:call can arrive in the same WS batch,
+                # making the plan card appear to jump straight to "working").
+                try:
+                    from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                    _bus = get_event_bus()
+                    _steps = [
+                        {
+                            "id": s.step_id,
+                            "description": s.description[:120],
+                            "status": "pending",
+                            "toolName": s.tool,
+                            "stepNumber": s.step_number,
+                        }
+                        for s in _plan.steps
+                    ]
+                    _bus.emit(
+                        IRISStreamEvent.TASK_START,
+                        data={
+                            "task_id": task_id or _plan.original_task[:40],
+                            "description": _plan.original_task[:200],
+                            "plan_title": _plan.plan_title[:80] if _plan.plan_title else "",
+                            "mode": _mode_name,
+                            "steps": _steps,
+                            "total_steps": len(_plan.steps),
+                        },
+                        session_id=session_id or self.session_id,
+                    )
+                except Exception:
+                    pass  # never block execution on an event emission failure
+
                 # Use mode name as task_class so DER_TOKEN_BUDGETS[mode] applies.
                 # Falls back to _task_class if mode not in budget table.
                 _der_task_class = (
