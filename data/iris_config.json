@@ -5,18 +5,18 @@
   },
   "inference": {
     "provider": "cerebras",
-    "reasoning_model": "gemma-4-31b",
+    "reasoning_model": "",
     "tool_execution_model": "",
     "api_base_url": "https://api.cerebras.ai/v1",
     "api_key": "csk-wn5m3wp3pkwjepye29vkv4ny68j3xkpwy2j24dy6vrrw35r5",
     "lm_studio_url": "http://localhost:1234",
     "ollama_url": "http://localhost:11434",
-    "local_model_path": "",
+    "local_model_path": "C:\\Users\\midas\\.lmstudio\\models\\LiquidAI\\LFM2.5-230M-GGUF\\LFM2.5-230M-Q8_0.gguf",
     "local_model_id": "",
     "local_model_profile": "balanced",
     "local_model_gpu_layers": -1,
     "local_model_ctx": 16384,
-    "local_model_status": "unloaded",
+    "local_model_status": "loaded",
     "models_directory": "",
     "hardware_profile": "balanced",
     "temperature": 0.6,
@@ -53,11 +53,5 @@
     "backend_port": 8090,
     "brain_port": 18182,
     "vision_port": 18181
-  },
-  "agent": {
-    "multi_step_enabled": true,
-    "default_mode": "agentic",
-    "voice_preference": "auto",
-    "max_tools_per_turn": 10
   }
 }
