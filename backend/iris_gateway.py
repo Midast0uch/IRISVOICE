@@ -7706,38 +7706,14 @@ class IRISGateway:
                 },
             )
 
-            # Persist the selected model path so status/config stay consistent.
-            cfg.inference.local_model_path = model_path
-            save_config(cfg)
-
-            profile = (payload.get("profile") or "balanced").strip()
-            custom_params = payload.get("custom_params") or {}
-
-            async def _progress_cb(event: dict) -> None:
-                try:
-                    await self._ws_manager.broadcast_to_session(
-                        session_id,
-                        {
-                            "type": "model_load_progress",
-                            "title": "Loading Model",
-                            "message": event.get("msg", f"Loading {model_path}..."),
-                            "progress": int(event.get("pct", 0) or 0),
-                            "status": "loading",
-                        },
-                    )
-                except Exception:
-                    pass
-
             await mgr.load_model(
                 model_path=model_path,
-                profile=profile,
-                custom_params=custom_params,
-                progress_cb=_progress_cb,
+                gpu_layers=cfg.inference.local_model_gpu_layers,
+                context_length=cfg.inference.local_model_ctx,
+                hardware_profile=cfg.inference.local_model_profile,
             )
 
-            cfg = load_config()
             cfg.inference.local_model_status = "loaded"
-            cfg.inference.local_model_path = model_path
             save_config(cfg)
 
             await self._ws_manager.broadcast_to_session(
