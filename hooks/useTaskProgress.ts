@@ -25,6 +25,9 @@ export interface TaskProgress {
   steps: TaskStep[]
   mode?: string
   turnId?: string
+  planTitle?: string
+  /** Live action text from `task:progress` (e.g. "Reading example.com (2/5)"). */
+  currentAction?: string
 }
 
 const MAX_STEPS = 50
@@ -33,6 +36,9 @@ interface TaskUpdateDetail {
   type: string
   task_id?: string
   description?: string
+  plan_title?: string
+  action?: string
+  update_step?: boolean
   mode?: string
   steps?: TaskStep[]
   total_steps?: number
@@ -56,6 +62,8 @@ export function useTaskProgress(): TaskProgress {
     currentStep: 0,
     totalSteps: 0,
     steps: [],
+    currentAction: undefined,
+    planTitle: undefined,
   })
   const ref = useRef(state)
   ref.current = state
@@ -79,6 +87,7 @@ export function useTaskProgress(): TaskProgress {
             steps,
             mode: d.mode,
             turnId: d.task_id,
+            planTitle: d.plan_title,
           })
           break
         }
@@ -89,7 +98,16 @@ export function useTaskProgress(): TaskProgress {
           if (steps[idx]) {
             steps[idx] = { ...steps[idx], status: "working" }
             const done = steps.filter((s) => s.status === "done").length
-            setState({ ...prev, steps, currentStep: done, isWorking: true })
+            // Generic live action: any tool call shows what the agent is doing
+            // in the ContextPill (a task can start simple and evolve into a web
+            // search, so this is not crawler-specific).
+            setState({
+              ...prev,
+              steps,
+              currentStep: done,
+              isWorking: true,
+              currentAction: d.description || prev.currentAction,
+            })
           }
           break
         }
@@ -122,10 +140,26 @@ export function useTaskProgress(): TaskProgress {
           }
           break
         }
+        case "task:progress": {
+          // Live action update. Generic tool calls set currentAction only; the
+          // crawler passes update_step=true so the in-progress plan step text is
+          // rewritten with the site being read (e.g. "Reading example.com (2/5)").
+          const action = d.description || d.action
+          if (!action) break
+          const steps = prev.steps.slice()
+          if (d.update_step) {
+            const workingIdx = steps.findIndex((s) => s.status === "working")
+            if (workingIdx >= 0) {
+              steps[workingIdx] = { ...steps[workingIdx], description: action }
+            }
+          }
+          setState({ ...prev, steps, currentAction: action, isWorking: true })
+          break
+        }
         case "task:done":
         case "task:fail": {
-          // Keep steps for display; clear the working flag.
-          setState({ ...prev, isWorking: false })
+          // Keep steps for display; clear the working flag + live action.
+          setState({ ...prev, isWorking: false, currentAction: undefined, planTitle: undefined })
           break
         }
         default:

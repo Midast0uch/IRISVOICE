@@ -850,11 +850,13 @@ class AgentToolBridge:
             logger.warning("[ToolBridge] speak failed: %s", exc)
             return {"status": "error", "reason": str(exc)}
 
-    async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
+    async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "") -> Dict:
         """
         Execute any tool by name with routing to appropriate server.
 
-        Integrates with AgentKernel context for tool results.
+        Integrates with AgentKernel context for tool results.  ``plan_title``
+        (set by the DER planner) is threaded into memory events so tool executions
+        are recallable by plan context in the Immortus thread.
 
         Requirements: 8.3, 8.4, 8.5, 8.6
         """
@@ -949,6 +951,25 @@ class AgentToolBridge:
         except Exception:
             logger.warning("[Permissions] Permission check failed — allowing tool to proceed", exc_info=True)
 
+        # ── Live task progress (generic, ALL tools) ──────────────────────────
+        # Emit a task:progress so the frontend ContextPill + plan card show what
+        # the agent is doing for ANY tool. A task can start as a simple widget
+        # action and evolve into a web search, so this must not be crawler-
+        # specific. The crawler adds finer per-page granularity via its own
+        # task:progress emissions (update_step=True) during the crawl.
+        if tool_name not in ("speak", "ask_user_question"):
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                _label = self._tool_action_label(tool_name, params)
+                get_event_bus().emit(
+                    IRISStreamEvent.TASK_PROGRESS,
+                    data={"description": _label, "action": _label, "plan_title": plan_title},
+                    session_id=session_id,
+                )
+            except Exception:
+                pass  # never block tool execution on an event emit failure
+
         # Map tool names to their execution methods
         vision_tools = ["vision_detect_element", "vision_analyze_screen",
                         "vision_validate_action", "vision_get_context"]
@@ -1015,6 +1036,7 @@ class AgentToolBridge:
                 self._record_tool_event(
                     session_id, tool_name,
                     "success" if result.get("success") else "failure", params, result,
+                    plan_title=plan_title,
                 )
                 return result
 
@@ -1043,7 +1065,7 @@ class AgentToolBridge:
                     except Exception as _e:
                         logger.warning(f"[ToolBridge] skills_reloaded broadcast failed: {_e}")
 
-                self._record_tool_event(session_id, tool_name, "success", params, result)
+                self._record_tool_event(session_id, tool_name, "success", params, result, plan_title=plan_title)
                 return result
 
             # Git + Shell tools — executed inline via subprocess
@@ -1054,7 +1076,7 @@ class AgentToolBridge:
             }
             if tool_name in git_tools:
                 result = await self._execute_dev_tool(tool_name, params, session_id)
-                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result)
+                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
                 return result
 
             if tool_name == "recall_memory":
@@ -1078,12 +1100,12 @@ class AgentToolBridge:
 
             if tool_name == "run_research":
                 result = await self._execute_research_tool(params, session_id)
-                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result)
+                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
                 return result
 
             if tool_name == "crawler_query":
                 result = await self._execute_crawler_query(params, session_id)
-                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result)
+                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
                 return result
 
             error_result = {"error": f"Unknown tool: {tool_name}"}
@@ -1106,7 +1128,7 @@ class AgentToolBridge:
                     risk_score=0.1
                 )
 
-            self._record_tool_event(session_id, tool_name, "failure", params, error_result)
+            self._record_tool_event(session_id, tool_name, "failure", params, error_result, plan_title=plan_title)
             return error_result
 
         except Exception as e:
@@ -1131,21 +1153,28 @@ class AgentToolBridge:
                 )
 
             # FFI auto-record: tool execution failure
-            self._record_tool_event(session_id, tool_name, "failure", params, error_result)
+            self._record_tool_event(session_id, tool_name, "failure", params, error_result, plan_title=plan_title)
 
             return error_result
 
     def _record_tool_event(
         self, session_id: str, tool_name: str, outcome: str,
-        params: Dict, result: Dict
+        params: Dict, result: Dict, plan_title: str = ""
     ) -> None:
         """
         Record a tool execution event via the C++ core FFI bridge.
         Fire-and-forget: never blocks the tool execution path.
+        ``plan_title`` (set by the DER planner) is threaded into the event
+        payload so tool executions are recallable by plan context.
         """
         try:
             from backend.gateway.iris_ffi import ffi_ingest_event
-            payload = json.dumps({"tool": tool_name, "params": params, "result": result})
+            payload = json.dumps({
+                "tool": tool_name,
+                "params": params,
+                "result": result,
+                "plan_title": plan_title,
+            })
             ffi_ingest_event(
                 session_id=session_id,
                 domain="SYSTEM",
@@ -1157,6 +1186,37 @@ class AgentToolBridge:
             )
         except Exception:
             pass  # Never block tool execution on recording failure
+
+    def _tool_action_label(self, tool_name: str, params: Dict) -> str:
+        """Human-readable one-line label for a tool, used for live task progress.
+
+        Kept concise so it fits the ContextPill. Covers every tool the agent
+        can call — a task may begin as a simple widget action and evolve into
+        a web search, so the label must be generic, not crawler-specific.
+        """
+        p = params or {}
+
+        def _base(key: str) -> str:
+            _p = p.get(key) or p.get("file_path") or p.get("path") or "file"
+            return os.path.basename(str(_p)) if _p else "file"
+
+        if tool_name in ("crawler_query", "search", "web_search"):
+            return f"Searching the web: {str(p.get('query', ''))[:60]}"
+        if tool_name in ("write_file", "edit_file", "create_file"):
+            return f"Editing {_base('path')}"
+        if tool_name == "read_file":
+            return f"Reading {_base('path')}"
+        if tool_name in ("open_url", "browser_navigate"):
+            return f"Opening {str(p.get('url', ''))[:60]}"
+        if tool_name in ("run_command", "execute_command", "shell", "dev_cli"):
+            return f"Running: {str(p.get('command', p.get('query', '')))[:60]}"
+        if tool_name in ("list_directory", "create_directory"):
+            return f"Browsing {_base('path')}"
+        if tool_name.startswith("github_"):
+            return f"GitHub: {tool_name[7:]}"
+        if tool_name.startswith("gui_") or tool_name.startswith("vision_"):
+            return f"Controlling UI: {tool_name}"
+        return f"Using {tool_name}"
 
     # ------------------------------------------------------------------
     # Developer tools — git and shell, executed via subprocess
@@ -1390,8 +1450,22 @@ class AgentToolBridge:
             # The speak tool is fire-and-forget and rate-limited; if the audio
             # pipeline is closed it is buffered/suppressed by ConversationKernel.
             from backend.agent.tools.speak_tool import get_speak_tool
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
             _speak_tool = get_speak_tool()
+            _bus = get_event_bus()
+
+            # Flip the orb / ContextPill phase to "processing_tool" (SEARCHING)
+            # so the user sees the assistant is actively researching, not just
+            # "processing my STT". Bridged to the frontend via WSEventBridge.
+            try:
+                _bus.emit(
+                    IRISStreamEvent.LISTENING_STATE,
+                    data={"state": "processing_tool"},
+                    session_id=session_id,
+                )
+            except Exception:
+                pass  # never block the crawl on an event emit failure
 
             def _on_page_done(url: str, page_number: int, total: int) -> None:
                 try:
@@ -1401,6 +1475,27 @@ class AgentToolBridge:
                     )
                 except Exception as _spk_exc:  # pragma: no cover - best effort
                     logger.debug("[crawler_query] progress speak failed: %s", _spk_exc)
+                # Live step feed: update the current working plan step + the
+                # ContextPill action text with the site being read. The frontend
+                # (useTaskProgress) maps this onto the in-progress step so the
+                # plan card shows "Reading <host> (N/M)" as pages arrive.
+                try:
+                    from urllib.parse import urlparse
+
+                    _host = urlparse(url or "").netloc or "source"
+                    _bus.emit(
+                        IRISStreamEvent.TASK_PROGRESS,
+                        data={
+                            "description": f"Reading {_host} ({page_number}/{total})",
+                            "action": f"Reading {_host} ({page_number}/{total})",
+                            # Rewrite the in-progress plan step text so the card
+                            # shows the site being read live (not just the pill).
+                            "update_step": True,
+                        },
+                        session_id=session_id,
+                    )
+                except Exception:
+                    pass  # never block the crawl on an event emit failure
 
             async with CrawlerEngine() as engine:
                 crawl_result = await engine.crawl(
@@ -1409,10 +1504,33 @@ class AgentToolBridge:
                     instructions=plan.instructions,
                     on_page_done=_on_page_done,
                 )
+
+            # Crawl finished — return the phase to "thinking" so the orb reflects
+            # the agent summarising (the DER loop drives speaking next).
+            try:
+                _bus.emit(
+                    IRISStreamEvent.LISTENING_STATE,
+                    data={"state": "processing_conversation"},
+                    session_id=session_id,
+                )
+            except Exception:
+                pass  # never block on an event emit failure
         except CrawlerUnavailable as exc:
+            # If we flipped the orb to processing_tool before the failure,
+            # return it to processing_conversation so the UI doesn't stay stuck.
+            if '_bus' in locals():
+                try:
+                    _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
+                except Exception:
+                    pass
             return {"success": False, "error": str(exc)}
         except Exception as exc:
             logger.error("[crawler_query] crawl failed: %s", exc)
+            if '_bus' in locals():
+                try:
+                    _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
+                except Exception:
+                    pass
             return {"success": False, "error": f"crawl failed: {exc}"}
 
         # Step 3: Extract structured DashboardData.

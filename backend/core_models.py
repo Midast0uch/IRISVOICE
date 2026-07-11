@@ -737,6 +737,7 @@ class ExecutionPlan:
     reasoning: str
     steps: List[PlanStep]           = dc_field(default_factory=list)
     outcome: str                    = "success"
+    plan_title: str                 = ""
 
     def has_failed(self) -> bool:
         return self.outcome == "failure"

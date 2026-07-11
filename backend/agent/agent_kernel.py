@@ -3428,6 +3428,7 @@ class AgentKernel:
             f"{system_prompt}\n\n{planning_prompt}\n\n"
             "Respond with JSON only — no prose, no markdown fences:\n"
             '{"strategy":"do_it_myself|spawn_children|delegate_external",'
+            '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
             '"steps":[{"step_id":"s1","step_number":1,"description":"...","tool":null,"params":{},"critical":true}]}'
         )
@@ -3490,6 +3491,7 @@ class AgentKernel:
                         original_task=text,
                         strategy=data.get("strategy", "do_it_myself"),
                         reasoning=data.get("reasoning", ""),
+                        plan_title=data.get("plan_title", ""),
                         steps=steps,
                     )
         except Exception as _parse_err:
@@ -4522,6 +4524,7 @@ Respond with a JSON object:
                 data={
                     "task_id": _turn_id or plan.original_task[:40],
                     "description": plan.original_task[:200],
+                    "plan_title": plan.plan_title[:80] if plan.plan_title else "",
                     "mode": initial_mode.value,
                     "steps": [
                         {
@@ -4733,6 +4736,7 @@ Respond with a JSON object:
                                 tool_name=item.tool,
                                 params=item.params,
                                 session_id=_session,
+                                plan_title=plan.plan_title if plan else "",
                             )
                         )
                     except RuntimeError as _rte:
@@ -4750,6 +4754,7 @@ Respond with a JSON object:
                                     tool_name=item.tool,
                                     params=item.params,
                                     session_id=_session,
+                                    plan_title=plan.plan_title if plan else "",
                                 ),
                             ).result(timeout=60)
                     step_result = str(raw) if raw is not None else ""

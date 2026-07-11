@@ -91,6 +91,14 @@ class IRISStreamEvent(enum.Enum):
     # ── Context window usage ────────────────────────────────────────────
     CONTEXT_USAGE = "context:usage"
 
+    # ── Voice listening state ──────────────────────────────────────────
+    # Carried by iris_gateway / crawler to drive the orb + ContextPill phase
+    # (idle / listening / processing_conversation / processing_tool /
+    # speaking / error). Bridged to the frontend so the crawler can flip the
+    # phase to "processing_tool" (SEARCHING) while it crawls — otherwise the
+    # UI shows "processing my STT" the whole time the agent is researching.
+    LISTENING_STATE = "listening_state"
+
     # ── DER loop ────────────────────────────────────────────────────────
     DER_STEP = "der:step"
     DER_DONE = "der:done"

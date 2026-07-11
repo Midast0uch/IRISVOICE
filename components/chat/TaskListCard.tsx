@@ -10,6 +10,7 @@ export interface TaskListCardProps {
   turnId?: string
   mode?: string
   defaultCollapsed?: boolean
+  planTitle?: string
 }
 
 const STATUS_META: Record<
@@ -34,6 +35,7 @@ export default function TaskListCard({
   turnId,
   mode,
   defaultCollapsed = true,
+  planTitle,
 }: TaskListCardProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -47,6 +49,7 @@ export default function TaskListCard({
 
   const doneCount = steps.filter((s) => s.status === "done").length
   const failCount = steps.filter((s) => s.status === "fail").length
+  const headerTitle = planTitle || "Plan"
 
   return (
     <motion.div
@@ -95,7 +98,7 @@ export default function TaskListCard({
                 border: `1px solid ${glowColor}30`,
               }}
             >
-              Plan
+              {headerTitle}
             </div>
             {mode ? (
               <span

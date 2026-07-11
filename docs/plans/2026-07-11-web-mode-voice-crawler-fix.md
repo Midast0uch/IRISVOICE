@@ -1,7 +1,7 @@
 # Plan: Web-Mode Voice → Crawler — Orb Stuck + No Spoken Summary
 
 **Date:** 2026-07-11
-**Status:** INVESTIGATION COMPLETE — fix proposed, not yet implemented
+**Status:** §4 (orb-state + spoken summary) + §6.1 (crawler_query agent tool) IMPLEMENTED in `cad8e3d4`. §12 MULTI-STEP TOOL-CALL VISUALIZATION — expanded scope from live testing; fix proposed, not yet implemented.
 **Branch recommendation:** `feat/web-mode-voice-crawler-fix` (do not push without request)
 
 ---
@@ -637,7 +637,182 @@ Add an **automated test** that fails the build if the backend ever emits a
 
 ---
 
-## 10. References
+## 12. Multi-Step Tool-Call Visualization & Live Step Feed (EXPANDED SCOPE — 2026-07-11)
+
+The original plan fixed the *stuck orb* + *no spoken summary* (§4, shipped in
+`cad8e3d4`) and designed the agent-driven relay (§6; §6.1 `crawler_query` tool started in
+`cad8e3d4`). Live testing surfaced a deeper UX gap: **during a multi-step agentic tool
+call (esp. web search), the frontend gives no live sense of what the agent is doing** —
+only a generic "processing" state plus (silently) the orb's working animation. The user
+wants the orb + a context pill to show the current action, a live step feed in chatview,
+and spoken progress updates *during* the search (not just the final summary).
+
+### 12.1 Symptoms (live, 2026-07-11)
+
+1. **Plan display not fluid.** The agent's plan/steps appear in chatview but only
+   *after several prompts* — not immediately when the agent starts working.
+2. **Wrong state label during search.** While the backend is crawling, the frontend
+   shows "processing my STT" (the optimistic `processing_conversation` set the instant
+   speech ends) instead of "searching / working". The orb never flips to a tool state.
+3. **No spoken progress.** During the (long) search the user hears only the orb's
+   processing audio loop — no interim "Found 2 of 5 sources…" / "Reading from <site>…"
+   updates. The final summary speaks, but the *during* is silent.
+4. **No live step feed during search.** The chatview `TaskListCard` (which DOES render
+   for the DER path) stays empty during a voice web-search because the crawler path
+   never emits task-progress events.
+5. **Context pill shows raw phase, not the action.** `ContextPill` is fed
+   `phase={voiceState}` (chat-view.tsx:2979) → it prints `PROCESSING_CONVERSATION`,
+   not "Searching example.com".
+
+### 12.2 What already exists (do NOT rebuild)
+
+- **Backend task events:** `agent_kernel.py` emits `task:start` (4516),
+  `tool:call`/`tool:result` (4781), `task:done`/`task:fail` (5088) on the EventBus
+  (`event_bus.py`: TASK_START / TOOL_CALL / TOOL_RESULT / TASK_DONE / TASK_FAIL).
+- **Bridge:** `ws_event_bridge.py` turns those into `iris:task_update` WS messages
+  (consumed by `useIRISWebSocket.ts`, which dispatches the `iris:task_update` CustomEvent).
+- **Frontend reducer:** `useTaskProgress.ts` reduces `iris:task_update`
+  (`task:start` / `tool:call` / `tool:result` / `task:done`) into
+  `steps: TaskStep[]` (description / status / toolName / resultPreview), `currentStep`,
+  `totalSteps`, `isWorking`, `mode`, `turnId`.
+- **Orb:** `XurOrb.tsx` shows `OrbWorkingIndicator` (orbiting ring) + `OrbBadge`
+  (step counter `currentStep/totalSteps`) whenever `taskProgress.isWorking`
+  (lines 141-148, 472-485).
+- **Chatview:** `TaskListCard.tsx` renders the live step list when
+  `taskProgress.steps.length > 0` (chat-view.tsx:2532).
+- **Crawler progress signal:** `_handle_crawler_query` already emits
+  `crawler_page_fetched` per page (iris_gateway.py:8096-8107) → `iris:crawler_page_fetched`
+  window event (useIRISWebSocket.ts:1112) → consumed by `dashboard-wing.tsx` (history
+  cards). This signal is NOT currently bridged into `taskProgress` or `voiceState`.
+
+### 12.3 Gaps (the actual work)
+
+- **G1 — crawler path bypasses task events.** `_handle_crawler_query` emits
+  `crawler_started` / `crawler_page_fetched` / `open_tab` / `text_response` but NEVER
+  `task:start` / `tool:call` / `tool:result`. So `useTaskProgress` is empty during a
+  voice web-search → `TaskListCard` blank, `OrbBadge` shows no counter. (The DER path
+  emits them; the crawler stopgap does not.)
+- **G2 — wrong `listening_state` during search.** The handler sends
+  `processing_conversation` (iris_gateway.py:8089), not `processing_tool`. The frontend
+  therefore shows the generic "processing" label the whole crawl.
+- **G3 — no progress speaks.** `_on_page` emits `crawler_page_fetched` but no
+  `speak` / `Utterance`. The user hears nothing during the crawl.
+- **G4 — ContextPill shows raw phase.** Fed `voiceState` (chat-view.tsx:2979); needs the
+  live action text instead of (or in addition to) the enum string.
+- **G5 — plan appears late / only after re-prompt.** `task:start` (DER path) may be
+  emitted after the first tool call, or the frontend only renders `TaskListCard` once
+  steps exist — needs the plan to appear the moment the agent starts, and update live.
+
+### 12.4 Backend fix — generic live task progress + listening_state (IMPLEMENTED)
+
+The voice STT path in `_process_voice_transcription` (iris_gateway.py:2123) already routes
+through the agent kernel — no web-mode early-return exists. The gap was that once the agent
+called the `crawler_query` tool, the crawler emitted no live events (no `TASK_PROGRESS`,
+no `processing_tool`), so the frontend saw only a static "processing my STT" label.
+
+The fix is **generic across ALL tools** (not crawler-only), because a task can start as a
+simple widget action and evolve into a web search:
+
+1. **`LISTENING_STATE` EventBus event** (event_bus.py:96-104). New `IRISStreamEvent`
+   value `"listening_state"`, bridged via `WSEventBridge` (ws_event_bridge.py:49), so the
+   crawler can flip the orb/ContextPill phase to `processing_tool` → "SEARCHING" during
+   crawl and back to `processing_conversation` → "WORKING" afterwards.
+
+2. **Generic `task:progress` in `execute_tool`** (tool_bridge.py, after permission
+   check). Every tool call emits a `TASK_PROGRESS` with a human-readable `description` /
+   `action` (via `_tool_action_label`), e.g. "Searching the web: latest news", "Editing
+   app.tsx", "Running: ls -la". This replaces the static "processing my STT" with a live
+   action pill for ANY tool the agent calls.
+
+3. **Crawler per-page `TASK_PROGRESS`** in `_execute_crawler_query._on_page_done`
+   (tool_bridge.py). On each fetched page, emits `TASK_PROGRESS` with `update_step=True`
+   so the plan-card step text rewrites to "Reading example.com (2/5)" live. Also flips
+   `LISTENING_STATE` → `processing_tool` at crawl start → `processing_conversation` at
+   crawl end.
+
+4. **Progress speaks** were already wired in `_on_page_done` (tool_bridge.py:1396-1401):
+   "Researching — fetched page N of M" with priority="low" via `SpeakBroadcaster`.
+
+5. **`_tool_action_label` helper** (tool_bridge.py:1161-1195). Concise label for every
+   tool the agent can call, covering web search, file ops, browser, shell, GitHub, GUI,
+   vision, etc. Returns e.g. "Editing app.tsx", "Searching the web: query".
+
+> This removes G1/G2/G3/G4 at once: the plan card shows the agent's plan steps (from the
+> DER `task:start`) with the working step updating live via the crawler's per-page
+> `task:progress`; the ContextPill shows `processing_tool` → "SEARCHING" during crawl and
+> generic action text for any tool; progress speaks fire during the crawl. The frontend
+> needs no routing knowledge — it just reacts to the events.
+
+### 12.5 Frontend fix (IMPLEMENTED)
+
+- **F1 — ContextPill shows live action.** Added `currentAction?: string` prop. When
+  present (from `taskProgress.currentAction`), rendered instead of the raw phase label
+  in glow color with 160px truncation. (ContextPill.tsx, chat-view.tsx:2976.)
+- **F2 — friendly phase labels.** Added `PHASE_LABELS` map: `processing_conversation` →
+  "WORKING", `processing_tool` → "SEARCHING", `listening` → "LISTENING", `speaking` →
+  "SPEAKING", `error` → "ERROR", `idle` → "IDLE". (ContextPill.tsx.)
+- **F3 — `useTaskProgress` handles `task:progress`.** Updated reducer to:
+  - `task:progress` → set `currentAction`; if `d.update_step === true`, rewrite the
+    in-progress plan step's description (so the plan card shows "Reading host (N/M)" live).
+  - `tool:call` → set `currentAction = d.description` (generic fallback for ALL tools).
+  - `task:done`/`task:fail` → clear `currentAction`.
+  - Added `currentAction?: string` to `TaskProgress` interface.
+- **F4 — TaskListCard live during search.** Already wired (chat-view.tsx:2532); once the
+  DER `task:start` arrives (it does for agent-routed calls) the plan skeleton appears
+  immediately with step descriptions. The crawler's `update_step` ticks the working step
+  text live.
+- **F5 — OrbBadge counter.** Already fed by `taskProgress.currentStep/totalSteps`
+  (XurOrb.tsx:484); populates from the DER `task:start` steps.
+
+### 12.6 Verification (IMPLEMENTED)
+
+- **Backend CDD tests:** `backend/tests/test_crawler_task_progress.py` (3 tests, all pass):
+  - `test_tool_action_label_is_generic` — asserts labels for write_file, read_file,
+    run_command, crawler_query, and a fallback unknown tool.
+  - `test_crawler_query_emits_progress_and_listening_state` — monkeypatches
+    CrawlerEngine + planner + extractor + speak_tool, calls `_execute_crawler_query`,
+    asserts: `LISTENING_STATE` with `processing_tool` → `processing_conversation`,
+    two `TASK_PROGRESS` events (one per page) with `update_step=True` and the host in the
+    description.
+  - `test_execute_tool_emits_generic_progress_for_any_tool` — calls `execute_tool("search")`
+    with a fake bridge, asserts a generic `TASK_PROGRESS` with "Searching the web" in the
+    description.
+- **Frontend typecheck:** `npx tsc --noEmit` — no errors in edited files.
+- **Manual (pending):** web mode ON, wake word, "research X". Confirm: orb shows working
+  ring + step counter; ContextPill shows "SEARCHING" then "Reading <host> (N/M)";
+  TaskListCard lists the agent-planned steps with live ticks; interim spoken "fetched page
+  N of M"; final summary speaks; orb returns to idle.
+- **Regression:** `python -m pytest backend/tests/test_voice_tool_calling.py -v` still
+  passes; no imported modules were changed.
+
+### 12.7 Status
+
+IMPLEMENTED (2026-07-11). The core live-action visualization is now generic across all
+tools. Q1/Q2/Q3 decisions from §12.8 executed. Q4 (plan-late bug under investigation) is
+the remaining open item — the DER `task:start` is emitted during planning; if the plan
+still appears tardy the root cause may be the ReAct loop (which doesn't emit `task:start`)
+or a frontend render timing issue.
+
+### 12.8 Decisions & open questions
+
+- **Q1 (routing) — DECIDED: route through agent (§6.1).** Voice web-search flows into the
+  agent kernel; the agent plans adaptive steps and calls the `crawler_query` tool, which
+  emits live task events + progress speaks. Stopgap `_handle_crawler_query` becomes the
+  tool's backing impl.
+- **Q2 (progress-speak ownership) — DECIDED: crawler emits directly.** `_on_page` fires
+  short `SpeakBroadcaster` utterances (500-char cap, max 3 pending). Non-blocking.
+- **Q3 (ContextPill) — DECIDED: live action text.** Pill shows the current step
+  description (e.g. "Searching example.com") instead of the raw `voiceState` enum; token
+  bar retained.
+- **Q4 (plan-late bug) — OPEN / under investigation.** Is "plan only appears after several
+  prompts" a backend timing issue (`task:start` emitted after first tool call) or a
+  frontend render issue (`TaskListCard` only mounts once `steps.length > 0`)? Need a quick
+  repro to pin down before fixing G5/F3. Likely the DER `task:start` is emitted late or the
+  frontend only renders `TaskListCard` once steps exist.
+
+---
+
+## 13. References
 
 - Pins: `pin_c62a9f7ec0cc` (voice-tts-document-redesign plan, Issue C speak/show),
   `pin_13ed43048e05` (speak tool cap 500 chars), `pin_3be036c8dec5` /

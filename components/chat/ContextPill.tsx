@@ -6,6 +6,8 @@ export interface ContextPillProps {
   usedTokens: number
   maxTokens: number
   phase: string
+  /** Live action text from the agent (e.g. "Reading example.com (2/5)"). */
+  currentAction?: string
 }
 
 function formatTokens(n: number): string {
@@ -19,21 +21,36 @@ function usageColor(pct: number): string {
   return "#f87171" // red
 }
 
+// Friendly phase labels — the raw VoiceState enum ("processing_conversation")
+// reads as "processing my STT" to users; map it to what's actually happening.
+const PHASE_LABELS: Record<string, string> = {
+  idle: "IDLE",
+  listening: "LISTENING",
+  processing_conversation: "WORKING",
+  processing_tool: "SEARCHING",
+  speaking: "SPEAKING",
+  error: "ERROR",
+}
+
 /**
  * ContextPill — compact context-window usage + phase indicator in the chat
- * header. Dark glass, brand-color accents, monospace token count.
+ * header. Dark glass, brand-color accents, monospace token count. When the
+ * agent reports a live `currentAction` (e.g. while crawling), it is shown
+ * instead of the raw phase so the user sees what the assistant is doing.
  */
 export default function ContextPill({
   usedTokens,
   maxTokens,
   phase,
+  currentAction,
 }: ContextPillProps) {
   const { getThemeConfig } = useBrandColor()
   const glowColor = getThemeConfig().glow.color
   const safeMax = maxTokens > 0 ? maxTokens : 1
   const pct = Math.min(1, usedTokens / safeMax)
   const color = usageColor(pct)
-  const phaseLabel = (phase || "idle").toString().toUpperCase()
+  const phaseLabel = PHASE_LABELS[(phase || "idle").toString()] || (phase || "idle").toString().toUpperCase()
+  const actionText = currentAction ? currentAction : phaseLabel
 
   return (
     <div
@@ -44,7 +61,7 @@ export default function ContextPill({
         WebkitBackdropFilter: "blur(12px)",
         border: `1px solid ${glowColor}20`,
       }}
-      title={`Context: ${usedTokens} / ${maxTokens} tokens`}
+      title={currentAction ? `Context: ${usedTokens} / ${maxTokens} tokens — ${currentAction}` : `Context: ${usedTokens} / ${maxTokens} tokens`}
     >
       <span
         className="text-[9px] font-mono tabular-nums tracking-wide"
@@ -62,10 +79,10 @@ export default function ContextPill({
         />
       </div>
       <span
-        className="text-[9px] font-mono uppercase tracking-wide"
+        className="text-[9px] font-mono uppercase tracking-wide max-w-[160px] truncate"
         style={{ color: glowColor }}
       >
-        {phaseLabel}
+        {actionText}
       </span>
     </div>
   )

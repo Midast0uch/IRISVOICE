@@ -2534,6 +2534,7 @@ ${message.text}`;
                       steps={taskProgress.steps}
                       turnId={taskProgress.turnId}
                       mode={taskProgress.mode}
+                      planTitle={taskProgress.planTitle}
                     />
                   )}
 
@@ -2977,6 +2978,7 @@ ${message.text}`;
                       usedTokens={contextUsage.used}
                       maxTokens={contextUsage.max}
                       phase={voiceState}
+                      currentAction={taskProgress.currentAction}
                     />
                   </div>
                 </div>

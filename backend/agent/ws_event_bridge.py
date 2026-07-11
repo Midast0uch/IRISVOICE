@@ -47,6 +47,7 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
     IRISStreamEvent.PERMISSION_DENIED,
     IRISStreamEvent.CONTEXT_USAGE,
     IRISStreamEvent.DOCUMENT_RENDER,
+    IRISStreamEvent.LISTENING_STATE,
 )
 
 # Events added at runtime (e.g. future additions) so the tuple above stays
