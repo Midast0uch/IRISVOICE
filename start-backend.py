@@ -4,29 +4,12 @@ Uses uvicorn programmatically to avoid subprocess Python path issues
 """
 import os
 import sys
-
-# ── Bulletproof UTF-8 mode from ANY shell ──────────────────────────────────
-# On Windows a non-TTY / piped stdout uses a 'charmap' codec that cannot
-# encode non-ASCII (e.g. the '→' arrow in some log lines). That raises
-# UnicodeEncodeError and aborts backend startup depending on how the process
-# was launched. Python's UTF-8 mode (PYTHONUTF8 / -X utf8) makes all stdio
-# UTF-8 at the C level — the only reliable, shell-independent fix.
-# If we weren't started in UTF-8 mode, re-exec ourselves with -X utf8 so the
-# rest of this script (and uvicorn) always runs with UTF-8 stdio.
-if not getattr(sys.flags, "utf8_mode", 0):
-    import subprocess
-
-    # Preserve PYTHONPATH / working dir; re-launch same interpreter + args.
-    os.execl(sys.executable, sys.executable, "-X", "utf8", *sys.argv)
-    # os.execl replaces the process; the line below is unreachable.
-    raise SystemExit(subprocess.call([sys.executable, "-X", "utf8", *sys.argv]))
-
 import io
 import signal
 import asyncio
 from pathlib import Path
 
-# ── Force UTF-8 stdout/stderr (belt-and-suspenders, in case -X utf8 is unavailable) ──
+# ── Force UTF-8 stdout/stderr BEFORE any other imports or logging ──
 # On Windows a non-TTY / piped stdout uses a 'charmap' codec that cannot
 # encode non-ASCII (e.g. the '→' arrow in some log lines). That raises
 # UnicodeEncodeError and aborts backend startup depending on how the
