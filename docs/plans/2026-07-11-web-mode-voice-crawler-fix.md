@@ -240,6 +240,18 @@ the first draft are now **answered by the user (2026-07-11)**:
 > handler wraps `CrawlerEngine` (plan→crawl→extract) and emits progress speaks. This is
 > the single bridge that makes the agent-driven design reuse the existing crawler; no
 > crawler internals change.
+>
+> **IMPLEMENTATION NOTE (2026-07-11):** The plan assumed `crawler_query` could be
+> registered in `tool_executor.py`, but the agent's callable-tool schema is built
+> from `tool_bridge.get_available_tools()` (a hardcoded list in `tool_bridge.py`),
+> which does NOT read `ToolExecutor`. So the actual wiring was: add `crawler_query`
+> to `get_available_tools()` (web category, distinct from lightweight `search`),
+> route it in `execute_tool()` → new `_execute_crawler_query` handler
+> (plan→crawl→extract, returns `{summary, pages, links, trust:"untrusted"}`), and
+> classify it `READ_ONLY` in `permissions.py` (auto-approve, non-mutating web crawl).
+> The `iris_gateway.py` early-return stopgap (§4) is **intentionally kept** for now
+> (user decision) so web-mode voice still works; the routing flip to the agent
+> happens after live web-mode verification.
 
 ### 6.2 Display: chat view is primary, dashboard is history
 - **Chat view** receives BOTH:

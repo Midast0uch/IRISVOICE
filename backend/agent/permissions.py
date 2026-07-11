@@ -92,6 +92,7 @@ _READ_ONLY_TOOLS: set = {
     "read_file",
     "speak",
     "search",
+    "crawler_query",
     "glob",
     "grep",
     "read",

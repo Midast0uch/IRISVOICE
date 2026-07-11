@@ -257,6 +257,14 @@ class AgentToolBridge:
                 "url": {"type": "string"}}, "category": "web", "server": "browser"},
             {"name": "search", "description": "Search the web", "parameters": {
                 "query": {"type": "string"}}, "category": "web", "server": "browser"},
+            {"name": "crawler_query", "description": (
+                "Deep web research crawl for a topic. Plans source URLs from the query, "
+                "crawls them with Crawl4AI, and returns a structured summary with source "
+                "links. Use for 'research', 'everything about', or 'deep dive' requests — "
+                "NOT for a quick factual lookup (use 'search' for that)."
+            ), "parameters": {
+                "query": {"type": "string", "description": "The research topic or question to investigate"}},
+                "category": "web"},
 
             # File Management
             {"name": "read_file", "description": "Read file contents", "parameters": {
@@ -969,6 +977,11 @@ class AgentToolBridge:
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result)
                 return result
 
+            if tool_name == "crawler_query":
+                result = await self._execute_crawler_query(params, session_id)
+                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result)
+                return result
+
             error_result = {"error": f"Unknown tool: {tool_name}"}
 
             # Log unknown tool error
@@ -1231,6 +1244,83 @@ class AgentToolBridge:
                     _ar_mod.BENCHMARK_PROMPTS = _orig_prompts
 
         return {"success": False, "error": f"Unknown action: {action}"}
+
+    async def _execute_crawler_query(self, params: Dict, session_id: str) -> Dict:
+        """Agent tool: deep web research crawl (plan -> crawl -> extract).
+
+        Distinct from the lightweight ``search`` tool: this plans source URLs
+        from the query, crawls them with Crawl4AI, and extracts a structured
+        summary + source links. The agent turns the result into a
+        ``{speak, show}`` response. Trust is threaded automatically because
+        ``crawler_query`` is in ``pacman_fragment._EXTERNAL_TOOLS`` (untrusted /
+        reference zone) — see plan §6.1.
+
+        NOTE (§6.4, follow-up): progress ``speak`` calls during the crawl
+        (via ``SpeakBroadcaster.forward_external`` on the ``on_page_done``
+        callback) are not yet wired here; the final summary is spoken by the
+        agent's own ``speak`` tool after this returns.
+        """
+        query = (params.get("query") or "").strip()
+        if not query:
+            return {"success": False, "error": "crawler_query requires a 'query'"}
+
+        try:
+            from backend.crawler.crawler_engine import CrawlerEngine, CrawlerUnavailable
+            from backend.crawler.crawl_planner import get_crawl_planner
+            from backend.crawler.data_extractor import get_data_extractor
+        except Exception as exc:
+            return {"success": False, "error": f"crawler modules unavailable: {exc}"}
+
+        # Step 1: Plan source URLs + extraction instructions.
+        try:
+            plan = await get_crawl_planner().plan(query)
+        except Exception as exc:
+            logger.error("[crawler_query] planning failed: %s", exc)
+            return {"success": False, "error": f"planning failed: {exc}"}
+
+        # Step 2: Crawl.
+        try:
+            async with CrawlerEngine() as engine:
+                crawl_result = await engine.crawl(
+                    query=query,
+                    urls=plan.urls,
+                    instructions=plan.instructions,
+                    on_page_done=None,
+                )
+        except CrawlerUnavailable as exc:
+            return {"success": False, "error": str(exc)}
+        except Exception as exc:
+            logger.error("[crawler_query] crawl failed: %s", exc)
+            return {"success": False, "error": f"crawl failed: {exc}"}
+
+        # Step 3: Extract structured DashboardData.
+        try:
+            dashboard_data = await get_data_extractor().extract(
+                result=crawl_result,
+                instructions=plan.instructions,
+                result_type=plan.result_type,
+                title=plan.title,
+            )
+        except Exception as exc:
+            logger.error("[crawler_query] extraction failed: %s", exc)
+            return {"success": False, "error": f"extraction failed: {exc}"}
+
+        pages: List[Dict[str, str]] = []
+        for p in dashboard_data.get("pages", []):
+            if isinstance(p, dict):
+                pages.append({"url": p.get("url", ""), "title": p.get("title", "")})
+            else:
+                pages.append({"url": getattr(p, "url", ""), "title": getattr(p, "title", "")})
+
+        return {
+            "success": True,
+            "query": query,
+            "title": dashboard_data.get("title", plan.title),
+            "summary": dashboard_data.get("summary", ""),
+            "pages": pages,
+            "links": [pg["url"] for pg in pages if pg.get("url")],
+            "trust": "untrusted",  # external tool result — route to reference zone
+        }
 
     def get_status(self) -> Dict:
         """

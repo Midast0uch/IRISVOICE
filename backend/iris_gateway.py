@@ -6508,7 +6508,7 @@ class IRISGateway:
                 "load_progress_percent": None,
                 "error_message": None
                 if available
-                else "Vision server not running on port 8081. Start start_vl.bat first.",
+                else f"Vision server not running on port {_VISION_PORT}. Enable Vision from the UI or run start_vl.bat.",
                 "model_name": "lfm2.5-vl",
                 "quantization_enabled": False,
                 "is_available": available,
@@ -7888,6 +7888,43 @@ class IRISGateway:
                 },
             )
 
+    def _ensure_vision_loop(self) -> None:
+        """Capture the running event loop for thread-safe idle-stop broadcasts."""
+        if getattr(self, "_vision_loop", None) is None:
+            try:
+                self._vision_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._vision_loop = None
+
+    def _on_vision_idle_stop(self) -> None:
+        """Called by the vision idle watchdog (daemon thread) when it stops the server."""
+        loop = getattr(self, "_vision_loop", None)
+        if loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._broadcast_vision_idle(), loop)
+        except Exception:
+            pass
+
+    async def _broadcast_vision_idle(self) -> None:
+        """Notify all clients that the vision server idled off (still enabled)."""
+        try:
+            from backend.tools.lfm_vl_provider import _IDLE_TIMEOUT
+            await self._ws_manager.broadcast(
+                {
+                    "type": "vision_status",
+                    "payload": {
+                        "enabled": True,
+                        "running": False,
+                        "status": "idle_stopped",
+                        "port": _VISION_PORT,
+                        "idle_timeout_seconds": _IDLE_TIMEOUT,
+                    },
+                }
+            )
+        except Exception:
+            pass
+
     async def _handle_set_vision_enabled(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -7897,15 +7934,25 @@ class IRISGateway:
         try:
             from .tools.lfm_vl_provider import get_lfm_vl_provider
 
+            from .tools.lfm_vl_provider import get_lfm_vl_provider
+            from backend.tools.lfm_vl_provider import _IDLE_TIMEOUT
             vl = get_lfm_vl_provider()
+            # Register idle-stop broadcaster + capture loop once
+            if not getattr(self, "_vision_idle_cb_registered", False):
+                try:
+                    from backend.tools.lfm_vl_provider import set_vision_idle_callback
+                    set_vision_idle_callback(self._on_vision_idle_stop)
+                    self._vision_idle_cb_registered = True
+                except Exception:
+                    pass
+            self._ensure_vision_loop()
             if enabled:
-                # Start vision server if not already running
-                running = (
-                    await vl.health_check() if hasattr(vl, "health_check") else False
-                )
-                status = "running" if running else "not_started"
+                # Eagerly spawn the llama-server so vision is ready immediately.
+                # It will idle-stop after inactivity and restart on demand.
+                started = vl.start()
+                status = "running" if started else "not_started"
             else:
-                # Signal the provider that vision is disabled
+                # Signal the provider that vision is disabled -> stop server
                 if hasattr(vl, "disable"):
                     vl.disable()
                 status = "stopped"
@@ -7915,9 +7962,10 @@ class IRISGateway:
                     "type": "vision_status",
                     "payload": {
                         "enabled": enabled,
-                        "running": enabled,
+                        "running": status == "running",
                         "port": _VISION_PORT,
                         "status": status,
+                        "idle_timeout_seconds": _IDLE_TIMEOUT,
                     },
                 },
             )
@@ -8004,6 +8052,7 @@ class IRISGateway:
         except Exception as exc:
             self._logger.error("[Crawler] planning failed: %s", exc)
             await send({"type": "crawler_error", "message": f"Planning failed: {exc}"})
+            await send({"type": "listening_state", "payload": {"state": "idle"}})
             return
 
         # Step 2: Notify start
@@ -8013,6 +8062,13 @@ class IRISGateway:
                 "query": query,
                 "url_count": len(plan.urls),
             }
+        )
+
+        # Drive the orb out of "listening" into a processing state. The crawler
+        # handler previously never emitted any listening_state, so the orb stayed
+        # "listening" until a manual click (the original stuck-orb symptom).
+        await send(
+            {"type": "listening_state", "payload": {"state": "processing_conversation"}}
         )
 
         # Step 3: Crawl
@@ -8049,10 +8105,12 @@ class IRISGateway:
                     "sender": "assistant",
                 }
             )
+            await send({"type": "listening_state", "payload": {"state": "idle"}})
             return
         except Exception as exc:
             self._logger.error("[Crawler] crawl failed: %s", exc)
             await send({"type": "crawler_error", "message": f"Crawl failed: {exc}"})
+            await send({"type": "listening_state", "payload": {"state": "idle"}})
             return
 
         # Step 4: Extract structured DashboardData
@@ -8068,6 +8126,7 @@ class IRISGateway:
             await send(
                 {"type": "crawler_error", "message": f"Extraction failed: {exc}"}
             )
+            await send({"type": "listening_state", "payload": {"state": "idle"}})
             return
 
         # Step 5: Open dashboard tab in wing
@@ -8082,19 +8141,53 @@ class IRISGateway:
             }
         )
 
-        # Step 6: Summary text response in ChatView
-        page_count = len(crawl_result.pages)
+        # Step 6: Summary text response in ChatView + speak a short summary.
         summary = dashboard_data.get("summary", "")
+
+        # Short spoken summary (speak/show design): TTS recites the short
+        # summary, NOT the full document. Cap to a spoken length (~500 chars).
+        spoken = (summary or f"Found results for: {query}").strip()
+        if len(spoken) > 500:
+            spoken = spoken[:497].rstrip() + "..."
+        _turn_id = str(uuid.uuid4())
+
         await send(
             {
                 "type": "text_response",
-                "turn_id": get_turn_id(),
+                "turn_id": _turn_id,
                 "text": (
                     f"{summary or f'Found results for: {query}'} â€” see Dashboard â†’"
                 ),
                 "sender": "assistant",
             }
         )
+
+        # Speak the short summary in a worker thread (synthesis blocks). The orb
+        # transitions processing_conversation -> speaking -> idle are driven by
+        # _speak_response; the wrapper guarantees idle even if TTS aborts early
+        # (e.g. no engine.pipeline), so the orb can never get stuck.
+        def _speak_then_idle(text, sid, cid, tid):
+            try:
+                self._speak_response(text, sid, _client_id=cid, _turn_id=tid)
+            finally:
+                try:
+                    _loop = self._main_loop or asyncio.get_event_loop()
+                    asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.send_to_client(
+                            cid,
+                            {"type": "listening_state", "payload": {"state": "idle"}},
+                        ),
+                        _loop,
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_speak_then_idle,
+            args=(spoken, session_id, client_id, _turn_id),
+            daemon=True,
+            name="crawler-tts",
+        ).start()
 
     # â”€â”€ Developer Mode CLI handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
