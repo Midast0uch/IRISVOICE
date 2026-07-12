@@ -169,6 +169,18 @@ class AgentToolBridge:
         except Exception as e:
             logger.error(f"[AgentToolBridge] MCP Servers init failed: {e}")
 
+        # Phase 2: wire registry capability providers to the real kernel flags so
+        # capability_allowed() enforces the live internet/desktop gates.
+        try:
+            from backend.agent.tool_registry import set_capability_providers
+            from backend.agent.agent_kernel import (
+                get_global_internet_access,
+                get_desktop_control_enabled,
+            )
+            set_capability_providers(get_global_internet_access, get_desktop_control_enabled)
+        except Exception as _cap_exc:
+            logger.warning("[AgentToolBridge] capability provider wiring failed: %s", _cap_exc)
+
         self._initialized = True
         logger.info("[AgentToolBridge] Initialization complete.")
 
@@ -860,21 +872,19 @@ class AgentToolBridge:
 
         Requirements: 8.3, 8.4, 8.5, 8.6
         """
-        # ── Tool-name alias normalization ──────────────────────────────────
-        # The DER planner (LLM) frequently emits "web_search" / "google_search",
-        # but the bridge only registers "search" (in-app Crawl4AI web search)
-        # and "crawler_query" (deep crawl).  Normalize up front so every
-        # downstream check (capability gate, internet gate, permissions,
-        # dispatch) sees the canonical name.  Fixes the
-        # "Unknown tool: web_search" / "google_search" failures the agent hit
-        # when the web toggle was ON but the tool names didn't match.
-        _TOOL_ALIASES = {
-            "web_search": "search",
-            "google_search": "search",
-        }
-        tool_name = _TOOL_ALIASES.get(tool_name, tool_name)
+        # ── Phase 2: registry-based name resolution + consolidated gates ──
+        # The DER planner (LLM) frequently emits "web_search" / "google_search";
+        # the registry normalizes these aliases to the canonical "search" so every
+        # downstream check (capability gate, internet/desktop gate, permissions,
+        # dispatch) sees the canonical name.  This replaces the old hardcoded
+        # _TOOL_ALIASES dict and the scattered InternetGate / DesktopGate checks
+        # with a single declarative capability check (Pillar A).
+        from backend.agent.tool_registry import resolve_tool, capability_allowed
+        spec = resolve_tool(tool_name)
+        if spec is not None:
+            tool_name = spec.name  # canonical name (web_search/google_search -> search)
 
-        # [13.3] Runtime capability gate
+        # [13.3] Runtime capability gate (developer-only tools blocked in personal mode)
         from backend.capabilities import CapabilitySet
         if not CapabilitySet.is_tool_allowed(tool_name):
             logger.warning(
@@ -885,13 +895,13 @@ class AgentToolBridge:
                 "success": False,
             }
 
-        # ── Internet-access gate (plan Issue E) ──────────────────────────────
-        # Defense-in-depth: even if a web tool is somehow invoked while internet
-        # access is OFF, reject it here. The UI web-mode toggle flips the global
-        # flag via iris_gateway.set_web_mode.
-        if tool_name in ("search", "crawler_query"):
-            from backend.agent.agent_kernel import get_global_internet_access
-            if not get_global_internet_access():
+        # ── Consolidated internet/desktop gate (Pillar A capability_allowed) ──
+        # Replaces the old inline `if tool_name in ("search","crawler_query")` and
+        # `if tool_name in DESKTOP_CONTROL_TOOLS` checks.  Reads the tool's
+        # requires_internet / requires_desktop flags from the registry and the
+        # real capability flags via injected providers (wired at startup).
+        if spec is not None and not capability_allowed(spec):
+            if spec.requires_internet:
                 logger.warning(
                     "[InternetGate] Tool '%s' blocked — internet access disabled", tool_name
                 )
@@ -902,22 +912,7 @@ class AgentToolBridge:
                         f"Tool '{tool_name}' is unavailable."
                     ),
                 }
-            # Auto-narrate search initiation — give the user active verbal
-            # feedback the instant the agent engages a web search, instead of
-            # leaving only the idle audio loop.  Fires before the crawl, so it
-            # still speaks even if the search subsequently fails.  TTS is
-            # best-effort and never blocks the search.
-            _q = (params or {}).get("query") or ""
-            if _q:
-                self._handle_speak({"text": f"Searching the web for {_q}"}, session_id)
-
-        # ── Desktop-control gate (defense-in-depth) ─────────────────────────
-        # Even if a desktop-control tool is somehow invoked while desktop control
-        # is OFF, reject it here. The UI desktop_control card flips the flag via
-        # iris_gateway.set_desktop_control_enabled; it is OFF by default.
-        if tool_name in DESKTOP_CONTROL_TOOLS:
-            from backend.agent.agent_kernel import get_desktop_control_enabled
-            if not get_desktop_control_enabled():
+            if spec.requires_desktop:
                 logger.warning(
                     "[DesktopGate] Tool '%s' blocked — desktop control disabled", tool_name
                 )
@@ -928,6 +923,15 @@ class AgentToolBridge:
                         f"requires explicit desktop-control permission."
                     ),
                 }
+
+        # ── Auto-narrate search initiation (UX, kept from original InternetGate) ──
+        # Give the user active verbal feedback the instant the agent engages a web
+        # search.  Fires before the crawl so it still speaks even if the search
+        # fails.  TTS is best-effort and never blocks the search.
+        if tool_name in ("search", "crawler_query"):
+            _q = (params or {}).get("query") or ""
+            if _q:
+                self._handle_speak({"text": f"Searching the web for {_q}"}, session_id)
 
         # ── Phase 4: Permission check ──────────────────────────────────────
         try:

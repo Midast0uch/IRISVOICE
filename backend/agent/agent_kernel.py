@@ -2007,10 +2007,7 @@ class AgentKernel:
                                 session_id=self.conversation_id or "voice",
                             ),
                         ).result(timeout=60)
-                if isinstance(_raw, str):
-                    _content = _raw
-                else:
-                    _content = _json.dumps(_raw, ensure_ascii=False, default=str)
+                _content = self._format_tool_result(_raw)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": _tc_id,
@@ -3366,6 +3363,7 @@ class AgentKernel:
         task_class: str = "full",
         context_package=None,
         mode: str = "full",
+        session_id: str = "unknown",
     ):
         """
         DER-aware planning wrapper. Returns ExecutionPlan, never raises.
@@ -3390,6 +3388,13 @@ class AgentKernel:
             "spec": 0.2,
         }
         temperature = _MODE_TEMPERATURES.get(mode, 0.1 if is_mature else 0.25)
+
+        # ── Phase 5: Caducean-governed planning temperature ──
+        # Modulate the base (mode-derived) temperature by the live Caducean
+        # recommendation: COMPRESS (rec==1) -> more deterministic (lower temp);
+        # EXPAND (rec==0) -> more exploratory (higher temp, capped); MAINTAIN
+        # (rec==2) / unknown / TOPO_VIOLATION -> base.  Never raises.
+        temperature = self._caducean_modulate_temperature(temperature, session_id)
 
         # Extract context package fields for the planning prompt
         tier1 = ""
@@ -3833,6 +3838,7 @@ class AgentKernel:
                 task_class=_task_class,
                 context_package=_context_package,
                 mode=_mode_name,
+                session_id=session_id or self.session_id,
             )
 
             # GAP 5 — strategy signal to Mycelium after planning
@@ -4541,6 +4547,11 @@ Respond with a JSON object:
         _tokens_used: int = 0
 
         # Build Director queue from ExecutionPlan steps
+        # Phase 4b: derive parallel_safe from the tool registry (authoritative
+        # source of truth) so concurrency fires for read-only/independent tools
+        # without trusting the LLM planner to emit the flag.
+        from backend.agent.tool_registry import is_parallel_safe
+
         items = [
             QueueItem(
                 step_id=step.step_id,
@@ -4549,6 +4560,7 @@ Respond with a JSON object:
                 tool=step.tool,
                 params=step.params if step.params else {},
                 critical=step.critical,
+                parallel_safe=is_parallel_safe(step.tool),
                 objective_anchor=plan.original_task,
                 coordinate_signal=(
                     getattr(context_package, "topology_position", "") or ""
@@ -4698,7 +4710,7 @@ Respond with a JSON object:
             elif _xi >= _math.pi / 2.0:
                 _phase = 1
 
-            item = queue.next_ready()
+            item = queue.next_ready(_session)
             if item is None:
                 break  # dependency deadlock guard
 
@@ -4812,404 +4824,75 @@ Respond with a JSON object:
             except Exception:
                 pass
 
-            step_result: str = ""
-            step_success: bool = True
-            try:
-                if item.tool and self._tool_bridge is not None:
-                    # Trust-routing W2: mark the turn external when a web/crawler
-                    # tool runs, so later turn-pair fragments land in 'reference'.
-                    self.mark_external_tool(item.tool)
-                    # execute_tool is async — use asyncio.run() since _execute_plan_der
-                    # runs inside run_in_executor (a thread pool thread), making
-                    # asyncio.run() safe here. Same pattern as the ReAct loop (line ~1484).
-                    try:
-                        raw = asyncio.run(
-                            self._tool_bridge.execute_tool(
-                                tool_name=item.tool,
-                                params=item.params,
-                                session_id=_session,
-                                plan_title=plan.plan_title if plan else "",
-                            )
+            # ── Phase 4: execute this step via the shared helper (also used
+            # by the concurrent batch for parallel_safe steps). ──
+            step_result, step_success = self._der_run_step_execution(
+                item, context_package, _session, _turn_id, plan
+            )
+
+            # ── Phase 4: finalize this step via the shared helper (also used
+            # by concurrently-executed parallel_safe steps). ──
+            _tokens_used = self._der_finalize_step(
+                item,
+                step_result,
+                step_success,
+                step_outputs,
+                completed_items,
+                _tokens_used,
+                _token_budget,
+                _session,
+                _turn_id,
+                _phase,
+                is_mature,
+                _live_ctx,
+                plan,
+                context_package,
+                queue,
+                verdict,
+            )
+
+            # ── Phase 4: concurrently execute any ADDITIONAL ready
+            # parallel_safe steps this cycle, then finalize them with the
+            # same helper. The primary `item` above is already finalized.
+            # parallel_safe is derived from the tool registry (is_parallel_safe),
+            # so this batch is ACTIVE for read-only/independent tools
+            # (vision analysis, search, read_file, github reads, git read-only). ──
+            # all_ready_items() may raise TOPO_VIOLATION — let it propagate
+            # exactly like next_ready() does (do NOT swallow it here).
+            _extra_ready = [
+                i for i in queue.all_ready_items(_session)
+                if i.step_id != item.step_id
+                and getattr(i, "parallel_safe", False)
+            ]
+            if _extra_ready:
+                try:
+                    _extra_results = asyncio.run(
+                        self._der_exec_steps_concurrent(
+                            _extra_ready, context_package, _session, _turn_id, plan
                         )
-                    except RuntimeError as _rte:
-                        # asyncio.run() fails if an event loop is already running in
-                        # this thread (shouldn't happen in executor, but guard anyway)
-                        logger.warning(
-                            f"[DER] asyncio.run failed for tool {item.tool}: {_rte} — using executor"
+                    )
+                except Exception as _conc_exc:
+                    logger.warning(
+                        "[DER] Phase 4 concurrent exec failed: %s — "
+                        "falling back to serial",
+                        _conc_exc,
+                    )
+                    _extra_results = {
+                        i.step_id: self._der_run_step_execution(
+                            i, context_package, _session, _turn_id, plan
                         )
-                        import concurrent.futures as _cf
-
-                        with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                            raw = _pool.submit(
-                                asyncio.run,
-                                self._tool_bridge.execute_tool(
-                                    tool_name=item.tool,
-                                    params=item.params,
-                                    session_id=_session,
-                                    plan_title=plan.plan_title if plan else "",
-                                ),
-                            ).result(timeout=60)
-                    step_result = str(raw) if raw is not None else ""
-                    # ── W9 (O3): proactively capture structured tool results ──
-                    # Any non-trivial tool result (web_search, crawler_query,
-                    # read_file, ...) is persisted so it becomes reformat-able
-                    # via the same DocumentDataStore. Skipped results (trivial /
-                    # error / low-relevance) cost nothing. Never blocks the step.
-                    if item.tool and raw is not None:
-                        try:
-                            self._capture_tool_result(
-                                item.tool, raw, self.conversation_id, _turn_id, _session
-                            )
-                        except Exception as _cap_err:
-                            logger.warning(
-                                "[DER] tool-result capture failed: %s", _cap_err
-                            )
-                else:
-                    step_result = self._run_step_direct(item, context_package, _session)
-            except Exception as _ex_err:
-                step_success = False
-                step_result = f"[STEP ERROR: {_ex_err}]"
-                logger.warning(
-                    f"[DER] Step {item.step_number} explorer error: {_ex_err}"
-                )
-
-            step_outputs.append(step_result)
-
-            # ── EventBus: emit tool:result or tool:error ────────────────
-            try:
-                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-                if step_success:
-                    get_event_bus().emit(
-                        IRISStreamEvent.TOOL_RESULT,
-                        data={
-                            "task_id": _turn_id or item.step_id,
-                            "result_summary": step_result[:200],
-                            "tool_name": item.tool or "direct",
-                            "step_number": item.step_number,
-                        },
-                        turn_id=_turn_id,
-                        conversation_id=self.conversation_id,
-                        session_id=_session,
+                        for i in _extra_ready
+                    }
+                for _ei in _extra_ready:
+                    _er, _es = _extra_results[_ei.step_id]
+                    _tokens_used = self._der_finalize_step(
+                        _ei, _er, _es,
+                        step_outputs, completed_items,
+                        _tokens_used, _token_budget,
+                        _session, _turn_id, _phase, is_mature,
+                        _live_ctx, plan, context_package, queue,
+                        ReviewVerdict.PASS,
                     )
-                else:
-                    get_event_bus().emit(
-                        IRISStreamEvent.TOOL_ERROR,
-                        data={
-                            "task_id": _turn_id or item.step_id,
-                            "error": step_result[:200],
-                            "tool_name": item.tool or "direct",
-                            "step_number": item.step_number,
-                        },
-                        turn_id=_turn_id,
-                        conversation_id=self.conversation_id,
-                        session_id=_session,
-                    )
-            except Exception:
-                pass
-
-            # Option B / Pacman: fragment DER step output into vector DB so it can be
-            # retrieved as context in later steps or future sessions.
-            # MCM orchestrator handles fragmentation + compression check when available.
-            try:
-                if step_result and step_success:
-                    _der_text = (
-                        f"[Step {item.step_number}: {item.description[:120]}]"
-                        f"\n{step_result}"
-                    )
-                    # Trust-routing W2: a DER step that used an external/web
-                    # tool stores its output in 'reference', not 'tool'.
-                    _der_zone = (
-                        "reference" if is_external_tool(getattr(item, "tool", "")) else None
-                    )
-                    if self._mcm_orch is not None:
-                        self._mcm_orch.post_turn(
-                            [{"role": "assistant", "content": _der_text}],
-                            response_text=_der_text,
-                            tool_name=getattr(item, "tool_name", ""),
-                            zone=_der_zone,
-                        )
-                    elif (
-                        self._memory_interface is not None
-                        and hasattr(self._memory_interface, "episodic")
-                        and hasattr(
-                            self._memory_interface.episodic, "fragment_and_store"
-                        )
-                    ):
-                        self._memory_interface.episodic.fragment_and_store(
-                            _der_text,
-                            session_id=_session,
-                            chunk_type="der_output",
-                            zone=_der_zone,
-                        )
-            except Exception as _frag_exc:
-                loud_error(_frag_exc, "der_pacman_fragment")
-
-            # ── TOKEN BUDGET: accumulate estimated tokens from step result ──
-            # 4 chars ≈ 1 token; also count prompt overhead per step (~200 tok)
-            _tokens_used += max(200, len(step_result) // 4)
-            # ── EventBus: emit context:usage (token budget progress) ──────
-            try:
-                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-                get_event_bus().emit(
-                    IRISStreamEvent.CONTEXT_USAGE,
-                    data={
-                        "used_tokens": int(_tokens_used),
-                        "max_tokens": int(self.resolve_context_window()),
-                        "step_number": item.step_number,
-                        "total_steps": len(queue.items),
-                    },
-                    turn_id=_turn_id,
-                    conversation_id=self.conversation_id,
-                    session_id=_session,
-                )
-            except Exception:
-                pass  # EventBus is optional — no crash if it fails
-            if _tokens_used >= _token_budget:
-                logger.info(
-                    f"[DER] Token budget exhausted ({_tokens_used}/{_token_budget}) "
-                    f"after step {item.step_number} — stopping early"
-                )
-
-            # ── MYCELIUM SIGNAL: tool call ─────────────────────────────────
-            try:
-                if self._memory_interface:
-                    self._memory_interface.mycelium_ingest_tool_call(
-                        tool_name=item.tool or "none",
-                        success=step_success,
-                        sequence_position=item.step_number,
-                        total_steps=len(queue.items),
-                        session_id=_session,
-                    )
-            except Exception as _wm_exc:
-                loud_error(_wm_exc, "mycelium_working_memory")
-
-            # ── WORKING MEMORY: accumulate findings for later steps ────────
-            # Appends step result to working_history zone so _run_step_direct()
-            # calls on later steps can see what earlier steps discovered.
-            # Skips error outputs to avoid poisoning context with noise.
-            try:
-                if self._memory_interface and step_result and step_success:
-                    _wm_note = (
-                        f"[Step {item.step_number}: {item.description[:80]}]"
-                        f" → {step_result[:400]}"
-                    )
-                    self._memory_interface.append_to_session(
-                        _session, _wm_note, zone="working_history"
-                    )
-            except Exception as _wm2_exc:
-                loud_error(_wm2_exc, "append_working_history")
-
-            queue.mark_complete(item.step_id)
-
-            # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
-            try:
-                from backend.gateway.iris_ffi import (
-                    ffi_caducean_update,
-                    ffi_calculate_eml,
-                    ffi_immortus_chain_append,
-                )
-                from backend.agent.caducean_trajectory import get_trajectory_recorder
-
-                _action = 0
-                if item.tool in ("run_command", "git_commit", "git_push"):
-                    _action = 1
-                elif not step_success:
-                    _action = 2
-                _eml_score, _ex, _ey = ffi_calculate_eml(_session)
-                # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
-                # Note: the v2 baseline divisor is 2.3418 per the field theory
-                # (see docs/cad_v2_architecture.md §2.2). The current EML
-                # returns a raw score, not a balance; the kernel clamps to
-                # the safe range defensively. The TrajectoryController may
-                # override the constant via ffi_caducean_set_params.
-                _balance = max(0.1, min(3.0, _eml_score))
-                ffi_caducean_update(_session, _action, _balance)
-
-                # v2: fetch recommendation code AFTER the update so we can
-                # detect TOPO_VIOLATION (3) and persist the new column.
-                from backend.gateway.iris_ffi import (
-                    ffi_caducean_recommend,
-                    ffi_caducean_get_state,
-                )
-
-                _rec = ffi_caducean_recommend(_session)
-                _state_snapshot = ffi_caducean_get_state(_session)
-                _xi = _state_snapshot.get("xi", 0.0)
-                _u = _state_snapshot.get("u", 0.0)
-
-                get_trajectory_recorder(self._memory_interface).record(
-                    session_id=_session,
-                    step_num=item.step_number,
-                    x=_ex,
-                    y=_ey,
-                    xi=_xi,
-                    u=_u,
-                    action=_action,
-                    outcome="success" if step_success else "failure",
-                    eml_after=_eml_score,
-                    recommendation=_rec,
-                )
-
-                # v2: handle TOPO_VIOLATION (rec=3) by recording the anomaly
-                # to the Mycelium QuorumSensor and halting the loop.
-                if _rec == 3:
-                    try:
-                        self._memory_interface.mycelium_record_anomaly(
-                            _session, "update_velocity_anomaly"
-                        )
-                    except Exception as _anom_exc:  # never block on this
-                        logger.warning(
-                            "[agent_kernel] mycelium_record_anomaly failed: %s",
-                            _anom_exc,
-                        )
-                    from .exceptions import TopologyViolationException
-
-                    raise TopologyViolationException(
-                        session_id=_session,
-                        direction_signal=None,  # full signal in DebugPanel
-                    )
-
-                ffi_immortus_chain_append(
-                    thread_id=_session,
-                    result="success" if step_success else "failure",
-                    coords_from=getattr(item, "coordinate_signal", "") or "",
-                    coords_to=item.tool or "none",
-                    nbl_outcome=f"step_{item.step_number}",
-                    insight=item.description[:120],
-                    file_path=item.params.get("path", "") if item.params else "",
-                    landmark_id="",
-                )
-            except Exception as _cad_exc:
-                loud_error(_cad_exc, "caducean_trajectory_immortus")
-
-            completed_items.append(item)
-
-            # ── Phase 3: escalation + explorer ─────────────────────────
-            # After each step, check if mode escalation is warranted.
-            # If queue is complete but more work is needed in AGENTIC/FULL
-            # mode, re-plan with the LLM.
-            try:
-                _result_summary = (step_outputs[-1] if step_outputs else "")[:200]
-                queue.check_escalation(
-                    review_verdict=verdict,
-                    tool_result_summary=_result_summary,
-                    token_budget_remaining=_tokens_used,
-                    turn_id=_turn_id,
-                )
-
-                # If queue is complete but mode is AGENTIC or FULL,
-                # ask the LLM if more tools are needed.
-                if queue.mode in (
-                    ExecutionMode.AGENTIC, ExecutionMode.FULL,
-                ) and queue.is_complete():
-                    _next_tool = self._der_plan_next_step(
-                        plan.original_task,
-                        completed_items,
-                        queue.mode,
-                        _turn_id,
-                    )
-                    if _next_tool:
-                        _next_item = QueueItem(
-                            step_id=f"explorer_{len(completed_items) + 1}",
-                            step_number=len(completed_items) + 1,
-                            description=_next_tool.get("description", ""),
-                            tool=_next_tool.get("tool"),
-                            params=_next_tool.get("params", {}),
-                            objective_anchor=plan.original_task,
-                        )
-                        queue.add_item(_next_item)
-                        logger.info(
-                            "[DER] Explorer added step %d: %s",
-                            _next_item.step_number,
-                            _next_item.description,
-                        )
-                        # Surface the newly-planned step to the frontend so the
-                        # inline plan card shows the agent's live search/action
-                        # steps as they are discovered — not just the upfront
-                        # planner plan.  Frontend appends it to the to-do list.
-                        # No session_id -> broadcast to all (single-user IRIS).
-                        try:
-                            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-                            get_event_bus().emit(
-                                IRISStreamEvent.TASK_PROGRESS,
-                                data={
-                                    "add_step": True,
-                                    "step_number": _next_item.step_number,
-                                    "description": _next_item.description[:200],
-                                    "tool_name": _next_item.tool,
-                                },
-                            )
-                        except Exception:
-                            pass  # never block the DER loop on an emit failure
-
-                # If mode is FULL and multiple steps completed,
-                # also check for overall progress and re-synthesize.
-                if queue.mode == ExecutionMode.FULL and len(completed_items) >= 3:
-                    self._der_check_full_progress(
-                        plan.original_task,
-                        completed_items,
-                        _turn_id,
-                    )
-            except Exception as _explorer_exc:
-                logger.warning(
-                    "[DER] Explorer escalation failed: %s", _explorer_exc
-                )
-
-            # ── EventBus: emit der:step ────────────────────────────────
-            try:
-                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-                get_event_bus().emit(
-                    IRISStreamEvent.DER_STEP,
-                    data={
-                        "task_id": _turn_id or item.step_id,
-                        "step_number": item.step_number,
-                        "step_description": item.description[:200],
-                        "tool": item.tool,
-                        "success": step_success,
-                        "total_steps": len(queue.items),
-                        "completed": len(completed_items),
-                        "mode": queue.mode.value,
-                    },
-                    turn_id=_turn_id,
-                    conversation_id=self.conversation_id,
-                )
-            except Exception:
-                pass
-
-            # Surface step completion to the frontend plan card so the to-do
-            # list checks the step off as it finishes.  Reuses the bridged
-            # TASK_PROGRESS channel (no new event type needed).
-            try:
-                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-                get_event_bus().emit(
-                    IRISStreamEvent.TASK_PROGRESS,
-                    data={
-                        "step_done": True,
-                        "step_number": item.step_number,
-                        "description": item.description[:200],
-                        "success": step_success,
-                    },
-                )
-            except Exception:
-                pass
-
-            # ── TRAILING DIRECTOR: analyze gaps every TRAILING_GAP_MIN steps ─
-            # Domain 19: phase 4 (crystallization) forces gap analysis;
-            # phase 3 (strict) suppresses adding new gap items.
-            try:
-                _force_gap = _phase == 3
-                _suppress_new = _phase == 2
-                if self._trailing_director is not None and (
-                    _force_gap or len(completed_items) % TRAILING_GAP_MIN == 0
-                ):
-                    gap_items = self._trailing_director.analyze_gaps(
-                        item, plan, context_package, is_mature
-                    )
-                    if not _suppress_new:
-                        for gap_item in gap_items:
-                            queue.add_item(gap_item)
-            except Exception as _gap_exc:
-                loud_error(_gap_exc, "trailing_director_gaps")
 
         # ── OUTCOME RECORDING (ordered per spec: clear → stats → episode)
         # NOTE: _store_task_episode internally calls mycelium_record_outcome
@@ -5341,6 +5024,75 @@ Respond with a JSON object:
             f"{len(completed_items)}/{len(plan.steps)} steps completed."
         )
 
+    @staticmethod
+    def _format_tool_result(raw) -> str:
+        """Phase 4b: normalize a raw tool-bridge result into clean text for
+        downstream consumption (dependent steps, working memory, final answer).
+
+        - strings pass through unchanged
+        - dicts: surface errors explicitly; otherwise extract the most useful
+          content key (result/results/content/output/text/data/response);
+          fall back to compact JSON for unrecognized dicts / lists
+        - never raises; any failure falls back to str(raw)
+
+        Note: the full structured result is still captured verbatim by
+        _capture_tool_result (document store) — this only shapes the textual
+        flow, so nothing is lost for later reformatting.
+        """
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, dict):
+            try:
+                if raw.get("success") is False:
+                    _err = raw.get("error") or raw.get("message") or "unknown error"
+                    return (
+                        _err
+                        if isinstance(_err, str)
+                        else json.dumps(_err, ensure_ascii=False, default=str)
+                    )
+                for _key in (
+                    "result", "results", "content", "output",
+                    "text", "data", "response",
+                ):
+                    _val = raw.get(_key)
+                    if _val is None:
+                        continue
+                    if isinstance(_val, str):
+                        return _val
+                    return json.dumps(_val, ensure_ascii=False, default=str)
+                return json.dumps(raw, ensure_ascii=False, default=str)
+            except Exception:
+                return str(raw)
+        try:
+            return json.dumps(raw, ensure_ascii=False, default=str)
+        except Exception:
+            return str(raw)
+
+    @staticmethod
+    def _caducean_modulate_temperature(base: float, session_id: str) -> float:
+        """Phase 5: modulate planning temperature by the live Caducean recommendation.
+
+        - COMPRESS (rec==1) -> more deterministic (temperature halved)
+        - EXPAND   (rec==0) -> more exploratory (temperature *1.2, capped at 0.6)
+        - MAINTAIN (rec==2) / unknown / TOPO_VIOLATION -> base unchanged
+
+        Pure function of (base, session_id); never raises — returns ``base`` on
+        any error so planning always proceeds.
+        """
+        try:
+            from backend.gateway.iris_ffi import ffi_caducean_recommend
+
+            _rec = ffi_caducean_recommend(session_id)
+            if _rec == 1:  # COMPRESS
+                return max(0.0, base * 0.5)
+            if _rec == 0:  # EXPAND
+                return min(0.6, base * 1.2)
+        except Exception:
+            pass
+        return base
+
     def _run_step_direct(self, item, context_package, session_id: str) -> str:
         """
         Execute a tool-less DER step via direct model inference.
@@ -5380,6 +5132,555 @@ Respond with a JSON object:
         except Exception as _e:
             return f"[step {item.step_number} error: {_e}]"
 
+    # ── Phase 4: concurrent step execution helpers ──────────────────────
+
+    def _der_run_step_execution(
+        self,
+        item: "QueueItem",
+        context_package,
+        _session: str,
+        _turn_id: Optional[str],
+        plan,
+    ) -> tuple:
+        """
+        Phase 4: execute a single DER step's tool/direct action.
+        Returns (step_result: str, step_success: bool).
+        Faithful extraction of the inline execution block from _execute_plan_der.
+        """
+        step_result = ""
+        step_success = True
+        try:
+            if item.tool and self._tool_bridge is not None:
+                # Trust-routing W2: mark the turn external when a web/crawler
+                # tool runs, so later turn-pair fragments land in 'reference'.
+                self.mark_external_tool(item.tool)
+                # execute_tool is async — use asyncio.run() since _execute_plan_der
+                # runs inside run_in_executor (a thread pool thread), making
+                # asyncio.run() safe here. Same pattern as the ReAct loop.
+                try:
+                    raw = asyncio.run(
+                        self._tool_bridge.execute_tool(
+                            tool_name=item.tool,
+                            params=item.params,
+                            session_id=_session,
+                            plan_title=plan.plan_title if plan else "",
+                        )
+                    )
+                except RuntimeError as _rte:
+                    # asyncio.run() fails if an event loop is already running in
+                    # this thread (shouldn't happen in executor, but guard anyway)
+                    logger.warning(
+                        f"[DER] asyncio.run failed for tool {item.tool}: {_rte} — using executor"
+                    )
+                    import concurrent.futures as _cf
+
+                    with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                        raw = _pool.submit(
+                            asyncio.run,
+                            self._tool_bridge.execute_tool(
+                                tool_name=item.tool,
+                                params=item.params,
+                                session_id=_session,
+                                plan_title=plan.plan_title if plan else "",
+                            ),
+                        ).result(timeout=60)
+                step_result = self._format_tool_result(raw) if raw is not None else ""
+                # ── W9 (O3): proactively capture structured tool results ──
+                if item.tool and raw is not None:
+                    try:
+                        self._capture_tool_result(
+                            item.tool, raw, self.conversation_id, _turn_id, _session
+                        )
+                    except Exception as _cap_err:
+                        logger.warning(
+                            "[DER] tool-result capture failed: %s", _cap_err
+                        )
+            else:
+                step_result = self._run_step_direct(item, context_package, _session)
+        except Exception as _ex_err:
+            step_success = False
+            step_result = f"[STEP ERROR: {_ex_err}]"
+            logger.warning(
+                f"[DER] Step {item.step_number} explorer error: {_ex_err}"
+            )
+        return step_result, step_success
+
+    async def _der_run_step_execution_async(
+        self,
+        item: "QueueItem",
+        context_package,
+        _session: str,
+        _turn_id: Optional[str],
+        plan,
+    ) -> tuple:
+        """
+        Phase 4: async variant of _der_run_step_execution for concurrent gather.
+        Awaits execute_tool directly (no nested asyncio.run). Returns
+        (step_id, step_result, step_success).
+        """
+        step_result = ""
+        step_success = True
+        try:
+            if item.tool and self._tool_bridge is not None:
+                self.mark_external_tool(item.tool)
+                raw = await self._tool_bridge.execute_tool(
+                    tool_name=item.tool,
+                    params=item.params,
+                    session_id=_session,
+                    plan_title=plan.plan_title if plan else "",
+                )
+                step_result = self._format_tool_result(raw) if raw is not None else ""
+                if item.tool and raw is not None:
+                    try:
+                        self._capture_tool_result(
+                            item.tool, raw, self.conversation_id, _turn_id, _session
+                        )
+                    except Exception as _cap_err:
+                        logger.warning(
+                            "[DER] tool-result capture failed: %s", _cap_err
+                        )
+            else:
+                loop = asyncio.get_event_loop()
+                step_result = await loop.run_in_executor(
+                    None, self._run_step_direct, item, context_package, _session
+                )
+        except Exception as _ex_err:
+            step_success = False
+            step_result = f"[STEP ERROR: {_ex_err}]"
+            logger.warning(
+                f"[DER] Step {item.step_number} explorer error: {_ex_err}"
+            )
+        return item.step_id, step_result, step_success
+
+    async def _der_exec_steps_concurrent(
+        self,
+        items: list,
+        context_package,
+        _session: str,
+        _turn_id: Optional[str],
+        plan,
+    ) -> dict:
+        """
+        Phase 4: run multiple parallel_safe steps concurrently.
+        Returns {step_id: (step_result, step_success)}.
+        """
+        tasks = [
+            self._der_run_step_execution_async(it, context_package, _session, _turn_id, plan)
+            for it in items
+        ]
+        _completed = await asyncio.gather(*tasks)
+        return {_sid: (_res, _succ) for _sid, _res, _succ in _completed}
+
+    # ── Phase 4: shared per-step finalize (extracted from _execute_plan_der)
+    def _der_finalize_step(
+        self,
+        item: "QueueItem",
+        step_result: str,
+        step_success: bool,
+        step_outputs: list,
+        completed_items: list,
+        _tokens_used: int,
+        _token_budget: int,
+        _session: str,
+        _turn_id: Optional[str],
+        _phase: int,
+        is_mature: bool,
+        _live_ctx,
+        plan,
+        context_package,
+        queue,
+        verdict,
+    ) -> int:
+        """
+        Phase 4: full post-processing for one completed DER step.
+        Faithful extraction of the inline finalize block from _execute_plan_der
+        so both the serial path and concurrently-executed parallel_safe steps
+        share identical post-processing. Returns the updated _tokens_used.
+        """
+        step_outputs.append(step_result)
+
+        # ── EventBus: emit tool:result or tool:error ────────────────
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            if step_success:
+                get_event_bus().emit(
+                    IRISStreamEvent.TOOL_RESULT,
+                    data={
+                        "task_id": _turn_id or item.step_id,
+                        "result_summary": step_result[:200],
+                        "tool_name": item.tool or "direct",
+                        "step_number": item.step_number,
+                    },
+                    turn_id=_turn_id,
+                    conversation_id=self.conversation_id,
+                    session_id=_session,
+                )
+            else:
+                get_event_bus().emit(
+                    IRISStreamEvent.TOOL_ERROR,
+                    data={
+                        "task_id": _turn_id or item.step_id,
+                        "error": step_result[:200],
+                        "tool_name": item.tool or "direct",
+                        "step_number": item.step_number,
+                    },
+                    turn_id=_turn_id,
+                    conversation_id=self.conversation_id,
+                    session_id=_session,
+                )
+        except Exception:
+            pass
+
+        # Option B / Pacman: fragment DER step output into vector DB so it can be
+        # retrieved as context in later steps or future sessions.
+        # MCM orchestrator handles fragmentation + compression check when available.
+        try:
+            if step_result and step_success:
+                _der_text = (
+                    f"[Step {item.step_number}: {item.description[:120]}]"
+                    f"\n{step_result}"
+                )
+                # Trust-routing W2: a DER step that used an external/web
+                # tool stores its output in 'reference', not 'tool'.
+                _der_zone = (
+                    "reference" if is_external_tool(getattr(item, "tool", "")) else None
+                )
+                if self._mcm_orch is not None:
+                    self._mcm_orch.post_turn(
+                        [{"role": "assistant", "content": _der_text}],
+                        response_text=_der_text,
+                        tool_name=getattr(item, "tool_name", ""),
+                        zone=_der_zone,
+                    )
+                elif (
+                    self._memory_interface is not None
+                    and hasattr(self._memory_interface, "episodic")
+                    and hasattr(
+                        self._memory_interface.episodic, "fragment_and_store"
+                    )
+                ):
+                    self._memory_interface.episodic.fragment_and_store(
+                        _der_text,
+                        session_id=_session,
+                        chunk_type="der_output",
+                        zone=_der_zone,
+                    )
+        except Exception as _frag_exc:
+            loud_error(_frag_exc, "der_pacman_fragment")
+
+        # ── TOKEN BUDGET: accumulate estimated tokens from step result ──
+        # 4 chars ≈ 1 token; also count prompt overhead per step (~200 tok)
+        _tokens_used += max(200, len(step_result) // 4)
+        # ── EventBus: emit context:usage (token budget progress) ──────
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            get_event_bus().emit(
+                IRISStreamEvent.CONTEXT_USAGE,
+                data={
+                    "used_tokens": int(_tokens_used),
+                    "max_tokens": int(self.resolve_context_window()),
+                    "step_number": item.step_number,
+                    "total_steps": len(queue.items),
+                },
+                turn_id=_turn_id,
+                conversation_id=self.conversation_id,
+                session_id=_session,
+            )
+        except Exception:
+            pass  # EventBus is optional — no crash if it fails
+        if _tokens_used >= _token_budget:
+            logger.info(
+                f"[DER] Token budget exhausted ({_tokens_used}/{_token_budget}) "
+                f"after step {item.step_number} — stopping early"
+            )
+
+        # ── MYCELIUM SIGNAL: tool call ─────────────────────────────────
+        try:
+            if self._memory_interface:
+                self._memory_interface.mycelium_ingest_tool_call(
+                    tool_name=item.tool or "none",
+                    success=step_success,
+                    sequence_position=item.step_number,
+                    total_steps=len(queue.items),
+                    session_id=_session,
+                )
+        except Exception as _wm_exc:
+            loud_error(_wm_exc, "mycelium_working_memory")
+
+        # ── WORKING MEMORY: accumulate findings for later steps ────────
+        # Appends step result to working_history zone so _run_step_direct()
+        # calls on later steps can see what earlier steps discovered.
+        # Skips error outputs to avoid poisoning context with noise.
+        try:
+            if self._memory_interface and step_result and step_success:
+                _wm_note = (
+                    f"[Step {item.step_number}: {item.description[:80]}]"
+                    f" → {step_result[:400]}"
+                )
+                self._memory_interface.append_to_session(
+                    _session, _wm_note, zone="working_history"
+                )
+        except Exception as _wm2_exc:
+            loud_error(_wm2_exc, "append_working_history")
+
+        # Phase 0 fix (Gap 5): populate step result on the QueueItem so the
+        # TrailingDirector's gap analysis reads real output instead of "no result".
+        item.result = step_result
+        queue.mark_complete(item.step_id)
+
+        # ── Phase 3 (Gap 3): propagate this step's output into dependent
+        # pending steps so later steps consume real results, not static
+        # params. Non-blocking — never fails the step. ──
+        try:
+            queue.resolve_dependent_params(item, step_result)
+        except Exception as _dep_exc:
+            logger.warning(
+                "[DER] resolve_dependent_params failed: %s", _dep_exc
+            )
+
+        # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
+        try:
+            from backend.gateway.iris_ffi import (
+                ffi_caducean_update,
+                ffi_calculate_eml,
+                ffi_immortus_chain_append,
+            )
+            from backend.agent.caducean_trajectory import get_trajectory_recorder
+
+            _action = 0
+            if item.tool in ("run_command", "git_commit", "git_push"):
+                _action = 1
+            elif not step_success:
+                _action = 2
+            _eml_score, _ex, _ey = ffi_calculate_eml(_session)
+            # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
+            # Note: the v2 baseline divisor is 2.3418 per the field theory
+            # (see docs/cad_v2_architecture.md §2.2). The current EML
+            # returns a raw score, not a balance; the kernel clamps to
+            # the safe range defensively. The TrajectoryController may
+            # override the constant via ffi_caducean_set_params.
+            _balance = max(0.1, min(3.0, _eml_score))
+            ffi_caducean_update(_session, _action, _balance)
+
+            # v2: fetch recommendation code AFTER the update so we can
+            # detect TOPO_VIOLATION (3) and persist the new column.
+            from backend.gateway.iris_ffi import (
+                ffi_caducean_recommend,
+                ffi_caducean_get_state,
+            )
+
+            _rec = ffi_caducean_recommend(_session)
+            _state_snapshot = ffi_caducean_get_state(_session)
+            _xi = _state_snapshot.get("xi", 0.0)
+            _u = _state_snapshot.get("u", 0.0)
+
+            get_trajectory_recorder(self._memory_interface).record(
+                session_id=_session,
+                step_num=item.step_number,
+                x=_ex,
+                y=_ey,
+                xi=_xi,
+                u=_u,
+                action=_action,
+                outcome="success" if step_success else "failure",
+                eml_after=_eml_score,
+                recommendation=_rec,
+            )
+
+            # v2: handle TOPO_VIOLATION (rec=3) by recording the anomaly
+            # to the Mycelium QuorumSensor and halting the loop.
+            if _rec == 3:
+                # Phase 5: adapt the Duffing controller on a topological
+                # violation so the engine self-corrects instead of repeatedly
+                # violating the same boundary.
+                try:
+                    from backend.agent.trajectory_controller import TrajectoryController
+
+                    _conn = getattr(
+                        getattr(self._memory_interface, "episodic", None), "db", None
+                    )
+                    if _conn is not None:
+                        TrajectoryController(_conn).tune_dffing_params(_session)
+                except Exception as _tune_exc:
+                    logger.warning(
+                        "[agent_kernel] tune_dffing_params failed: %s", _tune_exc
+                    )
+                try:
+                    self._memory_interface.mycelium_record_anomaly(
+                        _session, "update_velocity_anomaly"
+                    )
+                except Exception as _anom_exc:  # never block on this
+                    logger.warning(
+                        "[agent_kernel] mycelium_record_anomaly failed: %s",
+                        _anom_exc,
+                    )
+                from .exceptions import TopologyViolationException
+
+                raise TopologyViolationException(
+                    session_id=_session,
+                    direction_signal=None,  # full signal in DebugPanel
+                )
+
+            ffi_immortus_chain_append(
+                thread_id=_session,
+                result="success" if step_success else "failure",
+                coords_from=getattr(item, "coordinate_signal", "") or "",
+                coords_to=item.tool or "none",
+                nbl_outcome=f"step_{item.step_number}",
+                insight=item.description[:120],
+                file_path=item.params.get("path", "") if item.params else "",
+                landmark_id="",
+            )
+        except Exception as _cad_exc:
+            loud_error(_cad_exc, "caducean_trajectory_immortus")
+
+        completed_items.append(item)
+
+        # ── Phase 3: escalation + explorer ─────────────────────────
+        # After each step, check if mode escalation is warranted.
+        # If queue is complete but more work is needed in AGENTIC/FULL
+        # mode, re-plan with the LLM.
+        try:
+            _result_summary = (step_outputs[-1] if step_outputs else "")[:200]
+            queue.check_escalation(
+                review_verdict=verdict,
+                tool_result_summary=_result_summary,
+                token_budget_remaining=_tokens_used,
+                turn_id=_turn_id,
+            )
+
+            # If queue is complete but mode is AGENTIC or FULL,
+            # ask the LLM if more tools are needed.
+            # Phase 5: rec-int termination — during COMPRESS (rec==1) the field
+            # is condensing, so do NOT expand the plan with new explorer steps.
+            # (next_ready already defers non-critical steps during COMPRESS; this
+            # stops adding NEW ones, integrating the recommendation into loop
+            # termination.)
+            _rec_now = 2
+            try:
+                from backend.gateway.iris_ffi import ffi_caducean_recommend
+
+                _rec_now = ffi_caducean_recommend(_session)
+            except Exception:
+                _rec_now = 2
+            if _rec_now != 1 and queue.mode in (
+                ExecutionMode.AGENTIC, ExecutionMode.FULL,
+            ) and queue.is_complete():
+                _next_tool = self._der_plan_next_step(
+                    plan.original_task,
+                    completed_items,
+                    queue.mode,
+                    _turn_id,
+                    step_outputs=step_outputs,
+                )
+                if _next_tool:
+                    from backend.agent.tool_registry import is_parallel_safe
+
+                    _next_item = QueueItem(
+                        step_id=f"explorer_{len(completed_items) + 1}",
+                        step_number=len(completed_items) + 1,
+                        description=_next_tool.get("description", ""),
+                        tool=_next_tool.get("tool"),
+                        params=_next_tool.get("params", {}),
+                        parallel_safe=is_parallel_safe(_next_tool.get("tool")),
+                        objective_anchor=plan.original_task,
+                    )
+                    queue.add_item(_next_item)
+                    logger.info(
+                        "[DER] Explorer added step %d: %s",
+                        _next_item.step_number,
+                        _next_item.description,
+                    )
+                    # Surface the newly-planned step to the frontend so the
+                    # inline plan card shows the agent's live search/action
+                    # steps as they are discovered — not just the upfront
+                    # planner plan.  Frontend appends it to the to-do list.
+                    # No session_id -> broadcast to all (single-user IRIS).
+                    try:
+                        from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                        get_event_bus().emit(
+                            IRISStreamEvent.TASK_PROGRESS,
+                            data={
+                                "add_step": True,
+                                "step_number": _next_item.step_number,
+                                "description": _next_item.description[:200],
+                                "tool_name": _next_item.tool,
+                            },
+                        )
+                    except Exception:
+                        pass  # never block the DER loop on an emit failure
+
+            # If mode is FULL and multiple steps completed,
+            # also check for overall progress and re-synthesize.
+            if queue.mode == ExecutionMode.FULL and len(completed_items) >= 3:
+                self._der_check_full_progress(
+                    plan.original_task,
+                    completed_items,
+                    _turn_id,
+                )
+        except Exception as _explorer_exc:
+            logger.warning(
+                "[DER] Explorer escalation failed: %s", _explorer_exc
+            )
+
+        # ── EventBus: emit der:step ────────────────────────────────
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            get_event_bus().emit(
+                IRISStreamEvent.DER_STEP,
+                data={
+                    "task_id": _turn_id or item.step_id,
+                    "step_number": item.step_number,
+                    "step_description": item.description[:200],
+                    "tool": item.tool,
+                    "success": step_success,
+                    "total_steps": len(queue.items),
+                    "completed": len(completed_items),
+                    "mode": queue.mode.value,
+                },
+                turn_id=_turn_id,
+                conversation_id=self.conversation_id,
+            )
+        except Exception:
+            pass
+
+        # Surface step completion to the frontend plan card so the to-do
+        # list checks the step off as it finishes.  Reuses the bridged
+        # TASK_PROGRESS channel (no new event type needed).
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            get_event_bus().emit(
+                IRISStreamEvent.TASK_PROGRESS,
+                data={
+                    "step_done": True,
+                    "step_number": item.step_number,
+                    "description": item.description[:200],
+                    "success": step_success,
+                },
+            )
+        except Exception:
+            pass
+
+        # ── TRAILING DIRECTOR: analyze gaps every TRAILING_GAP_MIN steps ─
+        # Domain 19: phase 4 (crystallization) forces gap analysis;
+        # phase 3 (strict) suppresses adding new gap items.
+        try:
+            _force_gap = _phase == 3
+            _suppress_new = _phase == 2
+            if self._trailing_director is not None and (
+                _force_gap or len(completed_items) % TRAILING_GAP_MIN == 0
+            ):
+                gap_items = self._trailing_director.analyze_gaps(
+                    item, plan, context_package, is_mature
+                )
+                if not _suppress_new:
+                    for gap_item in gap_items:
+                        queue.add_item(gap_item)
+        except Exception as _gap_exc:
+            loud_error(_gap_exc, "trailing_director_gaps")
+
+        return _tokens_used
+
     # ── Phase 3: explorer methods ──────────────────────────────────────
 
     def _der_plan_next_step(
@@ -5388,6 +5689,7 @@ Respond with a JSON object:
         completed_items: List,
         mode: "ExecutionMode",
         turn_id: Optional[str] = None,
+        step_outputs: Optional[List[str]] = None,
     ) -> Optional[Dict]:
         """
         After all planned steps are done, ask the LLM if more tools are
@@ -5405,16 +5707,30 @@ Respond with a JSON object:
 
             from backend.agent.der_constants import ExecutionMode
 
-            # Build a summary of what was done
+            # Build a summary of what was done (include real outputs when present)
             done_summary = "\n".join(
                 f"  Step {i.step_number}: {i.description}"
+                + (f"\n    OUTPUT: {i.result}" if i.result else "")
                 for i in completed_items[-10:]
+            )
+
+            # Phase 3 (Gap 4): surface the actual step outputs to the Explorer
+            # so it can reason about what was really returned, not just the
+            # step descriptions. Bounded to keep the prompt small.
+            outputs_block = (
+                "\n".join(
+                    f"  [{idx + 1}] {out[:600]}" for idx, out in enumerate(step_outputs)
+                )
+                if step_outputs
+                else "  (none captured)"
             )
 
             prompt = (
                 "You are the Explorer. Your job is to decide if more work is needed.\n\n"
                 f"OBJECTIVE: {task_objective}\n\n"
                 f"STEPS COMPLETED ({len(completed_items)} total):\n{done_summary}\n\n"
+                f"ACTUAL STEP OUTPUTS (what each completed step returned):\n"
+                f"{outputs_block}\n\n"
                 f"Current mode: {mode.value if isinstance(mode, (str, ExecutionMode)) else 'agentic'}\n\n"
                 "Is the objective fully met? If yes, respond with {\"done\": true}.\n"
                 "If no, what single tool should run next? Respond with:\n"
@@ -5515,406 +5831,6 @@ Respond with a JSON object:
                 "[DER] _der_check_full_progress failed: %s", exc
             )
             return None
-
-    async def execute_plan(self, plan: Dict[str, Any]) -> List[Any]:
-        """
-        Execute a plan using lfm2.5-1.2b-instruct (execution model).
-
-        Args:
-            plan: Plan dictionary from plan_task()
-
-        Returns:
-            List of execution results for each step
-        """
-        results = []
-        steps = plan.get("steps", [])
-
-        logger.info(f"[AgentKernel] Executing plan with {len(steps)} steps...")
-
-        for step in steps:
-            try:
-                result = await self.execute_step(step)
-                results.append(result)
-                logger.debug(f"[AgentKernel] Step {step.get('step')} completed")
-            except Exception as e:
-                error_result = {"error": f"Step {step.get('step')} failed: {e}"}
-                results.append(error_result)
-                logger.error(f"[AgentKernel] {error_result['error']}")
-
-        return results
-
-    async def execute_step(self, step: Dict[str, Any]) -> Any:
-        """
-        Execute a single plan step using execution model with timeout and error handling.
-
-        Args:
-            step: Step dictionary with action, tool, and parameters
-
-        Returns:
-            Execution result
-
-        Raises:
-            TimeoutError: If execution exceeds timeout
-        """
-        start_time = time.time()
-        # 120s: matches plan_task — LM Studio 9B model can be slow on first token
-        timeout_seconds = 120
-
-        tool_name = step.get("tool")
-        parameters = step.get("parameters", {})
-        action = step.get("action", "")
-
-        # If no tool specified, return the action as response
-        if not tool_name:
-            return {"response": action, "success": True}
-
-        # Get execution model
-        execution_model = None
-        if self._model_router:
-            try:
-                # Use user-selected tool execution model if available
-                if self._selected_tool_execution_model:
-                    execution_model = self._model_router.models.get(
-                        self._selected_tool_execution_model
-                    )
-                    if execution_model:
-                        logger.info(
-                            f"[AgentKernel] Using user-selected tool execution model: {self._selected_tool_execution_model}"
-                        )
-                    else:
-                        # Only fall back to default stub when Ollama/VPS won't handle it.
-                        _sel_exec_check = self._selected_tool_execution_model
-                        _ollama_exec_will_handle = ":" in _sel_exec_check
-                        _vps_exec_will_handle = bool(self._vps_gateway)
-                        _lmstudio_exec_will_handle = self._is_openai_compat()
-                        if (
-                            not _ollama_exec_will_handle
-                            and not _vps_exec_will_handle
-                            and not _lmstudio_exec_will_handle
-                        ):
-                            logger.warning(
-                                f"[AgentKernel] Selected model {_sel_exec_check} unavailable, "
-                                "falling back to default local execution model"
-                            )
-                            execution_model = self._model_router.get_execution_model()
-                            if execution_model:
-                                default_model_id = getattr(
-                                    execution_model, "model_id", "unknown"
-                                )
-                                logger.info(
-                                    f"[AgentKernel] Fallback: using default execution model {default_model_id}"
-                                )
-                        else:
-                            _exec_dest = (
-                                "LM Studio"
-                                if _lmstudio_exec_will_handle
-                                else ("Ollama" if _ollama_exec_will_handle else "VPS")
-                            )
-                            logger.info(
-                                f"[AgentKernel] Exec model '{_sel_exec_check}' not in local cache — "
-                                f"will route to {_exec_dest}"
-                            )
-                else:
-                    # No model selected — use default execution model
-                    execution_model = self._model_router.get_execution_model()
-                    if execution_model:
-                        default_model_id = getattr(
-                            execution_model, "model_id", "unknown"
-                        )
-                        logger.info(
-                            f"[AgentKernel] No model selected, using default tool execution model: {default_model_id}"
-                        )
-            except Exception as e:
-                logger.error(f"[AgentKernel] Error getting execution model: {e}")
-                return {
-                    "error": f"Failed to access execution model: {e}",
-                    "success": False,
-                }
-
-        # Handle model unavailability
-        if not execution_model:
-            if self._single_model_mode and self._available_model_id:
-                # Fall back to the single available local model
-                logger.warning(
-                    "[AgentKernel] Execution model unavailable, using fallback model"
-                )
-                try:
-                    execution_model = self._model_router.models.get(
-                        self._available_model_id
-                    )
-                except Exception as e:
-                    logger.error(f"[AgentKernel] Error accessing fallback model: {e}")
-                    return {
-                        "error": f"Failed to access fallback model: {e}",
-                        "success": False,
-                    }
-            elif self._is_openai_compat():
-                # LM Studio configured — execution_model stays None; LM Studio block handles it.
-                logger.info(
-                    "[AgentKernel] No local execution model; delegating execution to LM Studio"
-                )
-            elif self._vps_gateway:
-                # VPS Gateway is configured — execution_model stays None; handled below.
-                logger.info(
-                    "[AgentKernel] No local execution model; delegating execution to VPS Gateway"
-                )
-            elif self._selected_tool_execution_model and self._model_router:
-                _sel_exec = self._selected_tool_execution_model
-                _is_ollama_exec = ":" in _sel_exec  # ONLY colon-format IDs are Ollama
-                if _is_ollama_exec:
-                    logger.info(
-                        f"[AgentKernel] Ollama execution model '{_sel_exec}' selected; "
-                        "will infer via localhost:11434"
-                    )
-                    # execution_model stays None — Ollama block below handles it
-                else:
-                    # LFM lazy-load for execution model
-                    if not self._model_router.models:
-                        try:
-                            self._model_router.load_models()
-                        except Exception as _le:
-                            logger.warning(
-                                f"[AgentKernel] Lazy load (exec) failed: {_le}"
-                            )
-                    execution_model = self._model_router.models.get(_sel_exec)
-                    if execution_model is None:
-                        _all_exec = list(self._model_router.models.values())
-                        if _all_exec:
-                            # prefer last (smallest/fastest)
-                            execution_model = _all_exec[-1]
-                    if not execution_model:
-                        return {
-                            "error": "Execution model not available",
-                            "success": False,
-                        }
-            else:
-                return {"error": "Execution model not available", "success": False}
-
-        try:
-            # Create execution prompt
-            execution_prompt = f"""Execute the following action:
-
-Action: {action}
-Tool: {tool_name}
-Parameters: {json.dumps(parameters, indent=2)}
-
-Provide the execution result."""
-
-            # Use VPS Gateway for inference if available, otherwise use local model
-            result_text = None
-            if self._vps_gateway:
-                try:
-                    logger.info(
-                        "[AgentKernel] Using VPS Gateway for execution inference..."
-                    )
-                    try:
-                        result_text = asyncio.run(
-                            self._vps_gateway.infer(
-                                model=self._model_router.get_execution_model_id()
-                                or "lfm2.5-1.2b-instruct",
-                                prompt=execution_prompt,
-                                context={},
-                                params={"max_tokens": 512, "temperature": 0.3},
-                                session_id=self.session_id,
-                            )
-                        )
-                        logger.info(
-                            "[AgentKernel] VPS Gateway execution inference complete"
-                        )
-                    except RuntimeError as e:
-                        if "already running" in str(e):
-                            logger.warning(
-                                "[AgentKernel] Event loop conflict — falling back to local model"
-                            )
-                            result_text = None
-                        else:
-                            raise
-                except TimeoutError:
-                    logger.error("[AgentKernel] VPS Gateway execution timed out")
-                    raise
-                except Exception as e:
-                    logger.warning(
-                        f"[AgentKernel] VPS Gateway execution inference failed, falling back to direct model: {e}"
-                    )
-                    result_text = None
-
-            # LM Studio execution inference
-            if result_text is None and self._is_openai_compat():
-                try:
-                    _lms_exec = self._get_lmstudio_client()
-                    _lms_exec_resp = _lms_exec.chat.completions.create(
-                        model=self._selected_tool_execution_model or "local-model",
-                        messages=[{"role": "user", "content": execution_prompt}],
-                        max_tokens=-1,
-                        temperature=0.3,
-                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                    )
-                    result_text = _lms_exec_resp.choices[0].message.content
-                    logger.info(
-                        "[AgentKernel] LM Studio execution inference successful"
-                    )
-                except Exception as _lms_exec_err:
-                    logger.warning(
-                        f"[AgentKernel] LM Studio execution inference failed: {_lms_exec_err}"
-                    )
-
-            # Ollama local execution inference — only for colon-format model IDs.
-            # provider="local" means LFM local file; it does NOT route to Ollama.
-            if (
-                result_text is None
-                and self._selected_tool_execution_model
-                and (":" in self._selected_tool_execution_model)
-            ):
-                try:
-                    import requests as _req
-
-                    _ollama_exec_resp = _req.post(
-                        "http://localhost:11434/api/chat",
-                        json={
-                            "model": self._selected_tool_execution_model,
-                            "messages": [{"role": "user", "content": execution_prompt}],
-                            "stream": False,
-                        },
-                        timeout=60,
-                    )
-                    if _ollama_exec_resp.status_code == 200:
-                        result_text = (
-                            _ollama_exec_resp.json()
-                            .get("message", {})
-                            .get("content", "")
-                        )
-                        logger.info(
-                            f"[AgentKernel] Ollama execution inference successful "
-                            f"(model: {self._selected_tool_execution_model})"
-                        )
-                    else:
-                        logger.warning(
-                            f"[AgentKernel] Ollama execution returned HTTP "
-                            f"{_ollama_exec_resp.status_code}"
-                        )
-                except Exception as _ollama_exec_err:
-                    logger.warning(
-                        f"[AgentKernel] Ollama execution inference failed: {_ollama_exec_err}"
-                    )
-
-            # Fall back to direct model access if VPS Gateway not available or failed
-            if result_text is None:
-                # If VPS failed and there is no local execution model, cannot continue.
-                if execution_model is None:
-                    return {
-                        "tool": tool_name,
-                        "action": action,
-                        "error": (
-                            "VPS inference failed and no local execution model is loaded. "
-                            "Check your VPS connection or configure a local model in Settings."
-                        ),
-                        "success": False,
-                    }
-
-                # Check timeout before loading model
-                elapsed = time.time() - start_time
-                if elapsed > timeout_seconds:
-                    raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
-
-                # Load model if needed with error handling
-                try:
-                    if not execution_model.is_loaded():
-                        logger.info("[AgentKernel] Loading execution model...")
-                        execution_model.load()
-                except Exception as e:
-                    logger.error(f"[AgentKernel] Failed to load execution model: {e}")
-                    return {
-                        "tool": tool_name,
-                        "action": action,
-                        "error": f"Model loading failed: {e}",
-                        "success": False,
-                    }
-
-                # Check timeout before inference
-                elapsed = time.time() - start_time
-                if elapsed > timeout_seconds:
-                    raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
-
-                # Generate execution response with error handling
-                try:
-                    result_text = execution_model.generate(
-                        execution_prompt, max_tokens=-1, temperature=0.3
-                    )
-                except Exception as e:
-                    logger.error(f"[AgentKernel] Model inference failed: {e}")
-                    # Attempt to restart model
-                    try:
-                        logger.info(
-                            "[AgentKernel] Attempting to restart execution model..."
-                        )
-                        execution_model.unload()
-                        execution_model.load()
-                        result_text = execution_model.generate(
-                            execution_prompt, max_tokens=-1, temperature=0.3
-                        )
-                        logger.info("[AgentKernel] Model restarted successfully")
-                    except Exception as restart_error:
-                        logger.error(
-                            f"[AgentKernel] Model restart failed: {restart_error}"
-                        )
-                        return {
-                            "tool": tool_name,
-                            "action": action,
-                            "error": f"Model crashed and restart failed: {restart_error}",
-                            "success": False,
-                        }
-
-            # Check timeout after inference
-            elapsed = time.time() - start_time
-            if elapsed > timeout_seconds:
-                raise TimeoutError(f"Execution timed out after {elapsed:.1f}s")
-
-            # Handle tool execution errors
-            if self._tool_bridge:
-                try:
-                    # Execute tool through tool bridge
-                    tool_result = await self._tool_bridge.execute_tool(
-                        tool_name, parameters
-                    )
-                    if "error" in tool_result:
-                        logger.warning(
-                            f"[AgentKernel] Tool execution error: {tool_result['error']}"
-                        )
-                        return {
-                            "tool": tool_name,
-                            "action": action,
-                            "error": tool_result["error"],
-                            "success": False,
-                        }
-                except Exception as e:
-                    logger.error(f"[AgentKernel] Tool execution failed: {e}")
-                    return {
-                        "tool": tool_name,
-                        "action": action,
-                        "error": f"Tool execution failed: {e}",
-                        "success": False,
-                    }
-
-            logger.info(f"[AgentKernel] Step executed successfully in {elapsed:.2f}s")
-            return {
-                "tool": tool_name,
-                "action": action,
-                "result": result_text,
-                "success": True,
-            }
-
-        except TimeoutError:
-            logger.error(f"[AgentKernel] Execution timed out after {timeout_seconds}s")
-            raise
-        except Exception as e:
-            error_msg = f"Error executing step: {e}"
-            logger.error(f"[AgentKernel] {error_msg}", exc_info=True)
-            return {
-                "tool": tool_name,
-                "action": action,
-                "error": error_msg,
-                "success": False,
-            }
 
     def _generate_response(
         self,

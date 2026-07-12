@@ -237,6 +237,205 @@ def test_queue_item_defaults():
     assert item.params == {}
     assert item.depends_on == []
     assert item.critical is True
+    assert item.parallel_safe is False
     assert item.objective_anchor == ""
     assert item.veto_count == 0
     assert item.refined_description is None
+
+
+# ── Phase 4: all_ready_items (concurrent batch) ────────────────────────────
+
+
+def test_all_ready_items_returns_all_unblocked():
+    """all_ready_items returns every dependency-satisfied, non-done item."""
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="parallel")
+    q.items = [
+        QueueItem(step_id="s1", step_number=1, description="a", parallel_safe=True),
+        QueueItem(step_id="s2", step_number=2, description="b", parallel_safe=True),
+        QueueItem(step_id="s3", step_number=3, description="c",
+                  depends_on=["s1"], parallel_safe=True),
+    ]
+    ready = q.all_ready_items()
+    ids = {i.step_id for i in ready}
+    assert ids == {"s1", "s2"}  # s3 blocked on s1
+    q.mark_complete("s1")
+    ready2 = q.all_ready_items()
+    assert {i.step_id for i in ready2} == {"s2", "s3"}
+
+
+def test_all_ready_items_empty_when_blocked():
+    """No item is ready if the only item has an unmet dependency."""
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="x")
+    q.items = [
+        QueueItem(step_id="s2", step_number=2, description="b", depends_on=["s1"]),
+    ]
+    assert q.all_ready_items() == []
+
+
+def test_all_ready_items_skips_vetoed():
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="x")
+    q.items = [
+        QueueItem(step_id="s1", step_number=1, description="a"),
+        QueueItem(step_id="s2", step_number=2, description="b"),
+    ]
+    q.mark_vetoed("s2")
+    assert {i.step_id for i in q.all_ready_items()} == {"s1"}
+
+
+# ── Phase 3 (Gap 3): resolve_dependent_params ──────────────────────────────
+
+
+def test_resolve_explicit_depends_on():
+    """Completed step output is injected into a step that depends_on it."""
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="research")
+    s1 = QueueItem(step_id="s1", step_number=1, description="search")
+    s2 = QueueItem(step_id="s2", step_number=2, description="read top result",
+                   depends_on=["s1"], params={"path": "PLACEHOLDER"})
+    q.items = [s1, s2]
+    q.mark_complete("s1")
+
+    injected = q.resolve_dependent_params(s1, "TITLE: Best Article\nURL: http://x")
+    assert injected == ["s2"]
+    assert s2.params["_dependency_results"]["s1"] == "TITLE: Best Article\nURL: http://x"
+    # original param untouched
+    assert s2.params["path"] == "PLACEHOLDER"
+
+
+def test_resolve_implicit_sequential():
+    """Linear plan: step N+1 receives step N's output without explicit depends_on."""
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="summarize")
+    s1 = QueueItem(step_id="s1", step_number=1, description="search")
+    s2 = QueueItem(step_id="s2", step_number=2, description="summarize")
+    s3 = QueueItem(step_id="s3", step_number=3, description="format")
+    q.items = [s1, s2, s3]
+    q.mark_complete("s1")
+
+    injected = q.resolve_dependent_params(s1, "search results text")
+    # only the immediate next step (s2) gets it, not s3
+    assert injected == ["s2"]
+    assert s2.params["_dependency_results"]["s1"] == "search results text"
+    assert "_dependency_results" not in s3.params
+
+
+def test_resolve_placeholder_substitution():
+    """{{step_id}} / {{step_number}} placeholders in params get replaced."""
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="research")
+    s1 = QueueItem(step_id="src1", step_number=1, description="search")
+    s2 = QueueItem(step_id="s2", step_number=2, description="read",
+                   depends_on=["src1"],
+                   params={"query": "read {{src1}} and step {{1}}"})
+    q.items = [s1, s2]
+    q.mark_complete("src1")
+
+    q.resolve_dependent_params(s1, "FOUND_URL")
+    assert s2.params["query"] == "read FOUND_URL and step FOUND_URL"
+
+
+def test_resolve_skips_completed_and_vetoed():
+    """Injection never targets already-completed or vetoed items."""
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="x")
+    s1 = QueueItem(step_id="s1", step_number=1, description="a")
+    s2 = QueueItem(step_id="s2", step_number=2, description="b")
+    s3 = QueueItem(step_id="s3", step_number=3, description="c")
+    q.items = [s1, s2, s3]
+    q.mark_complete("s1")
+    q.mark_vetoed("s3")
+
+    injected = q.resolve_dependent_params(s1, "out")
+    # s2 is sequential (step 2) → injected; s3 is vetoed → skipped
+    assert injected == ["s2"]
+    assert "s3" not in injected
+
+
+def test_resolve_noop_on_empty_result():
+    """Empty/None result is a no-op (no mutation)."""
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="x")
+    s1 = QueueItem(step_id="s1", step_number=1, description="a")
+    s2 = QueueItem(step_id="s2", step_number=2, description="b")
+    q.items = [s1, s2]
+    q.mark_complete("s1")
+
+    assert q.resolve_dependent_params(s1, "") == []
+    assert q.resolve_dependent_params(s1, None) == []
+    assert "_dependency_results" not in s2.params
+
+
+def test_resolve_truncates_long_result():
+    """Very long results are truncated to bound param size."""
+    from backend.agent.der_loop import QueueItem, DirectorQueue
+    q = DirectorQueue(objective="x")
+    s1 = QueueItem(step_id="s1", step_number=1, description="a")
+    s2 = QueueItem(step_id="s2", step_number=2, description="b")
+    q.items = [s1, s2]
+    q.mark_complete("s1")
+
+    big = "X" * 10000
+    q.resolve_dependent_params(s1, big, max_result_len=50)
+    assert s2.params["_dependency_results"]["s1"] == "X" * 50
+
+
+# ── Phase 3 (Gap 4): Explorer prompt includes actual step outputs ──────────
+
+
+def test_plan_next_step_includes_step_outputs():
+    """_der_plan_next_step surfaces step_outputs in the Explorer prompt."""
+    from unittest.mock import MagicMock
+    from backend.agent.agent_kernel import AgentKernel
+    from backend.agent.der_loop import QueueItem
+
+    captured = {}
+
+    class FakeKernel:
+        adapter = MagicMock()
+
+        def infer(self, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return MagicMock(raw_text='{"done": true}')
+
+    fake = FakeKernel()
+    AgentKernel._der_plan_next_step(
+        fake,
+        "find the capital of France",
+        [QueueItem(step_id="s1", step_number=1, description="search web")],
+        mode=MagicMock(value="agentic"),
+        turn_id="t1",
+        step_outputs=["Paris is the capital of France per DuckDuckGo"],
+    )
+    assert "Paris is the capital of France" in captured["prompt"]
+    assert "ACTUAL STEP OUTPUTS" in captured["prompt"]
+
+
+def test_plan_next_step_includes_completed_result():
+    """Per-step result is included in the done summary when present."""
+    from unittest.mock import MagicMock
+    from backend.agent.agent_kernel import AgentKernel
+    from backend.agent.der_loop import QueueItem
+
+    captured = {}
+
+    class FakeKernel:
+        adapter = MagicMock()
+
+        def infer(self, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return MagicMock(raw_text='{"done": true}')
+
+    fake = FakeKernel()
+    item = QueueItem(step_id="s1", step_number=1, description="search web")
+    item.result = "RAW_SEARCH_OUTPUT_MARKER"
+    AgentKernel._der_plan_next_step(
+        fake,
+        "objective",
+        [item],
+        mode=MagicMock(value="agentic"),
+        turn_id="t2",
+    )
+    assert "RAW_SEARCH_OUTPUT_MARKER" in captured["prompt"]

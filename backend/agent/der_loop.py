@@ -80,12 +80,14 @@ class QueueItem:
     params: Dict[str, Any] = field(default_factory=dict)
     depends_on: List[str] = field(default_factory=list)
     critical: bool = True
+    parallel_safe: bool = False  # Phase 4: safe to execute concurrently with other ready steps
     objective_anchor: str = ""  # overall task goal — never changes
     coordinate_signal: str = ""  # Mycelium coordinate region targeted
     veto_count: int = 0
     refined_description: Optional[str] = None  # set by Reviewer on REFINE
     depth_layer: int = 1  # trailing crystallizer depth level
     gap_analysis: Optional[str] = None  # trailing Director gap description
+    result: Optional[str] = None  # populated after step execution; consumed by TrailingDirector
 
 
 # ── DirectorQueue ──────────────────────────────────────────────────────────
@@ -372,6 +374,51 @@ class DirectorQueue:
         # EXPAND or MAINTAIN — return first ready
         return ready_items[0]
 
+    def all_ready_items(self, session_id: str = "default") -> List["QueueItem"]:
+        """
+        Phase 4: return ALL items whose dependencies are satisfied and which
+        are not completed/vetoed. Drives concurrent execution of independent
+        (parallel_safe) steps in a single loop cycle.
+
+        Caducean modulation (same semantics as next_ready):
+          - rec == 3 (TOPO_VIOLATION) → raise TopologyViolationException
+          - rec == 1 (CONTRACT) → return only critical items
+        """
+        completed = set(self.completed_ids)
+        ready_items: List["QueueItem"] = []
+        for item in self.items:
+            if item.step_id in self.completed_ids:
+                continue
+            if item.step_id in self.vetoed_ids:
+                continue
+            if all(dep in completed for dep in item.depends_on):
+                ready_items.append(item)
+
+        if not ready_items:
+            return []
+
+        # Caducean modulation: EXPAND=0, CONTRACT=1, MAINTAIN=2, TOPO_VIOLATION=3
+        try:
+            from backend.gateway.iris_ffi import ffi_caducean_recommend
+
+            rec = ffi_caducean_recommend(session_id)
+        except Exception:
+            rec = 2  # MAINTAIN on error
+
+        if rec == 3:  # TOPO_VIOLATION — stop the line
+            from .exceptions import TopologyViolationException
+
+            raise TopologyViolationException(
+                session_id=session_id,
+                direction_signal=None,
+            )
+
+        if rec == 1:  # CONTRACT — only critical items are ready
+            critical = [i for i in ready_items if i.critical]
+            return critical
+
+        return ready_items
+
     def mark_complete(self, step_id: str) -> None:
         if step_id not in self.completed_ids:
             self.completed_ids.append(step_id)
@@ -382,6 +429,62 @@ class DirectorQueue:
 
     def add_item(self, item: QueueItem) -> None:
         self.items.append(item)
+
+    def resolve_dependent_params(
+        self,
+        completed_item: "QueueItem",
+        result: Optional[str],
+        max_result_len: int = 4000,
+    ) -> List[str]:
+        """
+        Phase 3 (Gap 3): propagate a completed step's output into the params of
+        pending steps that depend on it, so later steps consume real results
+        instead of static/empty params.
+
+        A pending item receives the injection if EITHER:
+          1. Explicit: completed_item.step_id is in the pending item's
+             depends_on list.
+          2. Implicit sequential: the pending item has no explicit depends_on
+             and its step_number == completed_item.step_number + 1 (linear plan).
+
+        Injection is non-destructive:
+          - Accumulates into item.params["_dependency_results"][step_id] = result
+            (a dict the downstream tool/step can read by source step id).
+          - Substitutes {{step_id}} / {{step_number}} placeholders found in any
+            string param value with the completed result (truncated).
+
+        Returns the list of step_ids that received the injection.
+        """
+        injected: List[str] = []
+        if completed_item is None or not result:
+            return injected
+        _snippet = result[:max_result_len]
+        _ph_id = "{{" + completed_item.step_id + "}}"
+        _ph_num = "{{" + str(completed_item.step_number) + "}}"
+        for item in self.items:
+            if item.step_id in self.completed_ids or item.step_id in self.vetoed_ids:
+                continue
+            _explicit = completed_item.step_id in item.depends_on
+            _sequential = (
+                not item.depends_on
+                and item.step_number == completed_item.step_number + 1
+            )
+            if not (_explicit or _sequential):
+                continue
+            # 1. accumulate by source step id (read-only reference for tools)
+            dep = item.params.get("_dependency_results")
+            if not isinstance(dep, dict):
+                dep = {}
+                item.params["_dependency_results"] = dep
+            dep[completed_item.step_id] = _snippet
+            # 2. placeholder substitution in string params
+            for _k, _v in list(item.params.items()):
+                if isinstance(_v, str) and (_ph_id in _v or _ph_num in _v):
+                    item.params[_k] = _v.replace(_ph_id, _snippet).replace(
+                        _ph_num, _snippet
+                    )
+            injected.append(item.step_id)
+        return injected
 
     def is_complete(self) -> bool:
         active = [i for i in self.items if i.step_id not in self.vetoed_ids]
