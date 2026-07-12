@@ -22,6 +22,7 @@ const STATUS_META: Record<
   done: { icon: "✓", color: "#34d399", label: "Done" },
   skipped: { icon: "⊘", color: "rgba(255,255,255,0.3)", label: "Skipped" },
   vetoed: { icon: "⊘", color: "#f87171", label: "Vetoed" },
+  error: { icon: "✕", color: "#f87171", label: "Failed" },
   fail: { icon: "✕", color: "#f87171", label: "Failed" },
 }
 
@@ -49,7 +50,7 @@ export default function TaskListCard({
 
   const doneCount = steps.filter((s) => s.status === "done").length
   const failCount = steps.filter((s) => s.status === "fail").length
-  const headerTitle = planTitle || "Plan"
+  const headerTitle = planTitle || "Working"
 
   return (
     <motion.div
@@ -100,14 +101,6 @@ export default function TaskListCard({
             >
               {headerTitle}
             </div>
-            {mode ? (
-              <span
-                className="text-[9px] font-mono uppercase tracking-wide"
-                style={{ color: "rgba(255,255,255,0.5)" }}
-              >
-                {mode}
-              </span>
-            ) : null}
             <span
               className="ml-auto text-[9px] font-mono tabular-nums"
               style={{ color: "rgba(255,255,255,0.6)" }}

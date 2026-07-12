@@ -3408,6 +3408,29 @@ class AgentKernel:
 
         failures = self._get_failure_warnings(text)
 
+        # Build the AVAILABLE TOOLS block so the Director (LLM planner) can
+        # assign REAL tool names to plan steps.  Without this, the planner
+        # returns tool:null for every step, the DER Explorer falls through to
+        # _run_step_direct (text only), and the agent replies "[step N completed]"
+        # instead of actually executing the tool.  This is the root cause of the
+        # "responds to the prompt as step 1 completed, never searches" bug.
+        _tools_block = ""
+        try:
+            if self._tool_bridge is not None:
+                _avail = self._tool_bridge.get_available_tools()
+                if _avail:
+                    _tlines = [
+                        f'  - "{_t.get("name", "")}" [{_t.get("category", "")}]: '
+                        f'{_t.get("description", "")}'
+                        for _t in _avail
+                    ]
+                    _tools_block = (
+                        "AVAILABLE TOOLS — when a step needs a capability, set its "
+                        "\"tool\" to the EXACT name below:\n" + "\n".join(_tlines)
+                    )
+        except Exception as _tb_exc:
+            logger.debug("[AgentKernel._plan_task] tools block build failed: %s", _tb_exc)
+
         planning_prompt = self._build_planning_prompt(
             task=text,
             tier1_directives=tier1,
@@ -3426,11 +3449,17 @@ class AgentKernel:
 
         full_prompt = (
             f"{system_prompt}\n\n{planning_prompt}\n\n"
-            "Respond with JSON only — no prose, no markdown fences:\n"
+            + (f"{_tools_block}\n\n" if _tools_block else "")
+            + "Respond with JSON only — no prose, no markdown fences:\n"
             '{"strategy":"do_it_myself|spawn_children|delegate_external",'
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
-            '"steps":[{"step_id":"s1","step_number":1,"description":"...","tool":null,"params":{},"critical":true}]}'
+            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","tool":"search","params":{"query":"<what to search>"},"critical":true}]}'
+            "\n\n"
+            "RULES:\n"
+            "- If a step requires a capability (web search, open app, screenshot, read file, etc.) set \"tool\" to the EXACT name from AVAILABLE TOOLS. For web searches use \"search\" (or \"web_search\").\n"
+            "- If a step is pure reasoning/synthesis with no tool, set \"tool\":null.\n"
+            "- Always include the needed parameters in \"params\" (web search needs {\"query\":\"...\"}).\n"
         )
 
         plan_raw: Optional[str] = None
@@ -5065,6 +5094,24 @@ Respond with a JSON object:
                             _next_item.step_number,
                             _next_item.description,
                         )
+                        # Surface the newly-planned step to the frontend so the
+                        # inline plan card shows the agent's live search/action
+                        # steps as they are discovered — not just the upfront
+                        # planner plan.  Frontend appends it to the to-do list.
+                        # No session_id -> broadcast to all (single-user IRIS).
+                        try:
+                            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                            get_event_bus().emit(
+                                IRISStreamEvent.TASK_PROGRESS,
+                                data={
+                                    "add_step": True,
+                                    "step_number": _next_item.step_number,
+                                    "description": _next_item.description[:200],
+                                    "tool_name": _next_item.tool,
+                                },
+                            )
+                        except Exception:
+                            pass  # never block the DER loop on an emit failure
 
                 # If mode is FULL and multiple steps completed,
                 # also check for overall progress and re-synthesize.
@@ -5096,6 +5143,23 @@ Respond with a JSON object:
                     },
                     turn_id=_turn_id,
                     conversation_id=self.conversation_id,
+                )
+            except Exception:
+                pass
+
+            # Surface step completion to the frontend plan card so the to-do
+            # list checks the step off as it finishes.  Reuses the bridged
+            # TASK_PROGRESS channel (no new event type needed).
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                get_event_bus().emit(
+                    IRISStreamEvent.TASK_PROGRESS,
+                    data={
+                        "step_done": True,
+                        "step_number": item.step_number,
+                        "description": item.description[:200],
+                        "success": step_success,
+                    },
                 )
             except Exception:
                 pass

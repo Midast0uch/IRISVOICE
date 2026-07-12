@@ -860,6 +860,20 @@ class AgentToolBridge:
 
         Requirements: 8.3, 8.4, 8.5, 8.6
         """
+        # ── Tool-name alias normalization ──────────────────────────────────
+        # The DER planner (LLM) frequently emits "web_search" / "google_search",
+        # but the bridge only registers "search" (in-app Crawl4AI web search)
+        # and "crawler_query" (deep crawl).  Normalize up front so every
+        # downstream check (capability gate, internet gate, permissions,
+        # dispatch) sees the canonical name.  Fixes the
+        # "Unknown tool: web_search" / "google_search" failures the agent hit
+        # when the web toggle was ON but the tool names didn't match.
+        _TOOL_ALIASES = {
+            "web_search": "search",
+            "google_search": "search",
+        }
+        tool_name = _TOOL_ALIASES.get(tool_name, tool_name)
+
         # [13.3] Runtime capability gate
         from backend.capabilities import CapabilitySet
         if not CapabilitySet.is_tool_allowed(tool_name):
@@ -888,6 +902,14 @@ class AgentToolBridge:
                         f"Tool '{tool_name}' is unavailable."
                     ),
                 }
+            # Auto-narrate search initiation — give the user active verbal
+            # feedback the instant the agent engages a web search, instead of
+            # leaving only the idle audio loop.  Fires before the crawl, so it
+            # still speaks even if the search subsequently fails.  TTS is
+            # best-effort and never blocks the search.
+            _q = (params or {}).get("query") or ""
+            if _q:
+                self._handle_speak({"text": f"Searching the web for {_q}"}, session_id)
 
         # ── Desktop-control gate (defense-in-depth) ─────────────────────────
         # Even if a desktop-control tool is somehow invoked while desktop control

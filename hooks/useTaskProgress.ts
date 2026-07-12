@@ -8,6 +8,7 @@ export type TaskStepStatus =
   | "done"
   | "skipped"
   | "vetoed"
+  | "error"
   | "fail"
 
 export interface TaskStep {
@@ -39,6 +40,12 @@ interface TaskUpdateDetail {
   plan_title?: string
   action?: string
   update_step?: boolean
+  /** When true, append a new step (DER discovered a live step). */
+  add_step?: boolean
+  /** When true, mark the step (der-{step_number}) as done/error. */
+  step_done?: boolean
+  /** Step outcome for step_done (false => error state). */
+  success?: boolean
   mode?: string
   steps?: TaskStep[]
   total_steps?: number
@@ -48,6 +55,32 @@ interface TaskUpdateDetail {
   error?: string
   outcome?: string
   steps_completed?: number
+}
+
+// Maps a tool name to a short, human-readable action title for the plan card.
+// Derived from the tool the agent is actually executing (not the user's prompt),
+// so the card reads "WebSearch" / "Drafting" / "Creating Agent" instead of "Plan".
+const TOOL_TITLES: Record<string, string> = {
+  search: "WebSearch",
+  web_search: "WebSearch",
+  google_search: "WebSearch",
+  crawler_query: "WebCrawl",
+  write_file: "Writing File",
+  draft: "Drafting",
+  create_agent: "Creating Agent",
+  read_file: "Reading File",
+  edit_file: "Editing File",
+  run_command: "Running Command",
+  ask_user_question: "Asking You",
+  speak: "Speaking",
+}
+
+// Title-case fallback for any tool not in the map above.
+function titleCaseTool(tool: string): string {
+  return tool
+    .split(/[_\s-]+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ")
 }
 
 /**
@@ -92,23 +125,25 @@ export function useTaskProgress(): TaskProgress {
           break
         }
         case "tool:call": {
-          if (d.step_number == null) break
-          const idx = d.step_number - 1
-          const steps = prev.steps.slice()
-          if (steps[idx]) {
-            steps[idx] = { ...steps[idx], status: "working" }
-            const done = steps.filter((s) => s.status === "done").length
-            // Generic live action: any tool call shows what the agent is doing
-            // in the ContextPill (a task can start simple and evolve into a web
-            // search, so this is not crawler-specific).
-            setState({
-              ...prev,
-              steps,
-              currentStep: done,
-              isWorking: true,
-              currentAction: d.description || prev.currentAction,
-            })
+          const next = { ...prev }
+          // Dynamic action title: reflect what the agent is actually doing
+          // (WebSearch / Drafting / Creating Agent) instead of a static "Plan".
+          if (d.tool_name) {
+            next.planTitle = TOOL_TITLES[d.tool_name] || titleCaseTool(d.tool_name)
           }
+          if (d.step_number != null) {
+            const idx = d.step_number - 1
+            const steps = prev.steps.slice()
+            if (steps[idx]) {
+              steps[idx] = { ...steps[idx], status: "working" }
+              const done = steps.filter((s) => s.status === "done").length
+              next.steps = steps
+              next.currentStep = done
+            }
+          }
+          next.isWorking = true
+          next.currentAction = d.description || prev.currentAction
+          setState(next)
           break
         }
         case "tool:result": {
@@ -141,6 +176,37 @@ export function useTaskProgress(): TaskProgress {
           break
         }
         case "task:progress": {
+          // DER finished a step — check it off in the to-do list.
+          if (d.step_done) {
+            const id = `der-${d.step_number ?? prev.steps.length}`
+            const steps = prev.steps.slice()
+            const idx = steps.findIndex((s) => s.id === id)
+            if (idx >= 0) {
+              steps[idx] = {
+                ...steps[idx],
+                status: d.success === false ? "error" : "done",
+              }
+            }
+            setState({ ...prev, steps })
+            break
+          }
+          // DER discovered a new step — append it to the to-do list so the user
+          // sees the agent's live plan (e.g. the actual search queries) as it is
+          // built, not just the upfront planner plan.
+          if (d.add_step) {
+            const id = `der-${d.step_number ?? prev.steps.length + 1}`
+            const steps = prev.steps.slice()
+            if (!steps.find((s) => s.id === id)) {
+              steps.push({
+                id,
+                description: d.description || "Working…",
+                status: "working",
+                toolName: d.tool_name,
+              })
+            }
+            setState({ ...prev, steps, isWorking: true })
+            break
+          }
           // Live action update. Generic tool calls set currentAction only; the
           // crawler passes update_step=true so the in-progress plan step text is
           // rewritten with the site being read (e.g. "Reading example.com (2/5)").
@@ -158,8 +224,8 @@ export function useTaskProgress(): TaskProgress {
         }
         case "task:done":
         case "task:fail": {
-          // Keep steps for display; clear the working flag + live action.
-          setState({ ...prev, isWorking: false, currentAction: undefined, planTitle: undefined })
+          // Keep steps + planTitle for display; clear the working flag + live action.
+          setState({ ...prev, isWorking: false, currentAction: undefined })
           break
         }
         default:
