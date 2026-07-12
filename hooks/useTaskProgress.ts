@@ -109,19 +109,59 @@ export function useTaskProgress(): TaskProgress {
 
       switch (d.type) {
         case "task:start": {
-          const steps = (d.steps || []).slice(0, MAX_STEPS).map((s) => ({
-            ...s,
-            status: "pending" as TaskStepStatus,
-          }))
-          setState({
-            isWorking: true,
-            currentStep: 0,
-            totalSteps: d.total_steps ?? steps.length,
-            steps,
-            mode: d.mode,
-            turnId: d.task_id,
-            planTitle: d.plan_title,
-          })
+          const incoming = (d.steps || [])
+            .slice(0, MAX_STEPS)
+            .map((s) => ({ ...s, status: "pending" as TaskStepStatus }))
+          // If a task is already active with the same id, RECONCILE instead of
+          // wiping. The backend emits task:start twice for one task — an early
+          // LLM-plan skeleton at plan time, then the DER queue at execution
+          // start. A full reset there makes the plan card flicker. Merging also
+          // lets the agent revise the plan at any time: a later task:start
+          // updates step descriptions / appends newly-discovered steps without
+          // losing live progress (currentStep, already-done steps).
+          const sameActiveTask =
+            prev.turnId === d.task_id && prev.isWorking && prev.steps.length > 0
+          if (sameActiveTask && incoming.length > 0) {
+            const existingById = new Map(prev.steps.map((s) => [s.id, s]))
+            const merged: TaskStep[] = []
+            for (const step of incoming) {
+              const existing = existingById.get(step.id)
+              if (existing) {
+                // Keep live status; refresh plan text/tool from the new plan.
+                merged.push({
+                  ...existing,
+                  description: step.description,
+                  toolName: step.toolName,
+                })
+              } else {
+                merged.push(step)
+              }
+            }
+            // Preserve any steps discovered live (add_step) that aren't in the
+            // incoming plan snapshot.
+            for (const s of prev.steps) {
+              if (!incoming.some((inc) => inc.id === s.id)) merged.push(s)
+            }
+            setState({
+              ...prev,
+              isWorking: true,
+              steps: merged,
+              totalSteps: Math.max(merged.length, prev.currentStep),
+              mode: d.mode ?? prev.mode,
+              turnId: d.task_id,
+              planTitle: d.plan_title || prev.planTitle,
+            })
+          } else {
+            setState({
+              isWorking: true,
+              currentStep: 0,
+              totalSteps: d.total_steps ?? incoming.length,
+              steps: incoming,
+              mode: d.mode,
+              turnId: d.task_id,
+              planTitle: d.plan_title,
+            })
+          }
           break
         }
         case "tool:call": {
@@ -204,7 +244,15 @@ export function useTaskProgress(): TaskProgress {
                 toolName: d.tool_name,
               })
             }
-            setState({ ...prev, steps, isWorking: true })
+            // Keep the orb badge denominator in sync: DER discovers live steps
+            // (e.g. per-page web research) after task:start, so totalSteps must
+            // grow with the list or the badge reads 3/1 instead of 3/3.
+            setState({
+              ...prev,
+              steps,
+              totalSteps: Math.max(prev.totalSteps, steps.length),
+              isWorking: true,
+            })
             break
           }
           // Live action update. Generic tool calls set currentAction only; the

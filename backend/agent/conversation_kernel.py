@@ -305,6 +305,8 @@ class ConversationKernel:
         to the TTS pipeline.  Speech is gated by Caducean phase:
         only EXPAND phase utterances are spoken aloud.
         """
+        if getattr(self, "_event_bus_subscribed", False):
+            return
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -312,17 +314,36 @@ class ConversationKernel:
             bus.subscribe(IRISStreamEvent.UTTERANCE_START, self._on_utterance_start)
             bus.subscribe(IRISStreamEvent.UTTERANCE_CHUNK, self._on_utterance_chunk)
             bus.subscribe(IRISStreamEvent.UTTERANCE_DONE, self._on_utterance_done)
+            self._event_bus_subscribed = True
             logger.info("[ConversationKernel] Subscribed to EventBus utterance events")
         except Exception as exc:
             logger.warning(
                 "[ConversationKernel] EventBus subscription failed: %s", exc
             )
 
+    def _resolve_audio_pipeline(self):
+        """Return the audio playback sink.
+
+        Prefers an explicitly-injected pipeline; otherwise derives it from
+        the voice handler's audio engine (VoiceCommandHandler.audio_engine.pipeline),
+        which is the same AudioPipeline the main response path uses.
+        """
+        p = getattr(self, "_audio_pipeline", None)
+        if p is not None:
+            return p
+        vh = getattr(self, "_voice_handler", None)
+        if vh is not None:
+            engine = getattr(vh, "audio_engine", None)
+            if engine is not None:
+                return getattr(engine, "pipeline", None)
+        return None
+
     def _on_utterance_start(self, payload) -> None:
         """Handle an utterance:start event.
 
-        Only forwards to TTS during EXPAND phase (when the kernel
-        is in its speaking phase, not working phase).
+        Synthesizes the text via TTSManager and plays it through the audio
+        pipeline. Speech is gated by Caducean phase: only EXPAND-phase
+        utterances are spoken aloud (never while the user is recording).
         """
         phase = getattr(self, "_current_caducean_phase", "EXPAND")
         if not self.filter_speech(phase):
@@ -330,53 +351,70 @@ class ConversationKernel:
                 "[ConversationKernel] Suppressed utterance (phase=%s)", phase
             )
             return
-        # Forward to TTS pipeline
         text = (payload.data or {}).get("text", "")
-        if text and hasattr(self, "_tts_manager"):
-            tts = getattr(self, "_tts_manager")
-            if tts:
-                # Issue C.2: high-priority interrupt halts current TTS first.
-                if (payload.data or {}).get("interrupt") and hasattr(tts, "stop"):
-                    try:
-                        tts.stop()
-                    except Exception as exc:
-                        logger.warning(
-                            "[ConversationKernel] TTS stop failed: %s", exc
-                        )
+        logger.debug(
+            "[ConversationKernel] utterance start -> TTS (phase=%s): %s",
+            phase,
+            text[:60],
+        )
+        if not text:
+            return
+        tts = getattr(self, "_tts_manager", None)
+        pipeline = self._resolve_audio_pipeline()
+        if tts is None or pipeline is None:
+            logger.warning(
+                "[ConversationKernel] Dropped utterance (tts=%s, pipeline=%s)",
+                tts is not None,
+                pipeline is not None,
+            )
+            return
+        # Run synthesis + playback off the EventBus dispatch thread so a
+        # multi-second utterance doesn't block other subscribers.
+        threading.Thread(
+            target=self._speak_utterance,
+            args=(text, bool((payload.data or {}).get("interrupt"))),
+            daemon=True,
+            name="ck-utterance",
+        ).start()
+
+    def _speak_utterance(self, text: str, interrupt: bool) -> None:
+        """Synthesize + play a single utterance (runs in a worker thread)."""
+        tts = getattr(self, "_tts_manager", None)
+        pipeline = self._resolve_audio_pipeline()
+        if tts is None or pipeline is None:
+            return
+        try:
+            if interrupt and hasattr(tts, "stop"):
                 try:
-                    tts.speak(text)
+                    tts.stop()
                 except Exception as exc:
-                    logger.warning(
-                        "[ConversationKernel] TTS failed for utterance: %s", exc
-                    )
+                    logger.warning("[ConversationKernel] TTS stop failed: %s", exc)
+            from backend.agent.tts import OUTPUT_SAMPLE_RATE
+
+            pipeline.play_stream(
+                tts.synthesize_stream(text), sample_rate=OUTPUT_SAMPLE_RATE
+            )
+        except Exception as exc:
+            logger.warning(
+                "[ConversationKernel] TTS failed for utterance: %s", exc
+            )
 
     def _on_utterance_chunk(self, payload) -> None:
-        """Handle an utterance:chunk event — incremental TTS streaming."""
-        phase = getattr(self, "_current_caducean_phase", "EXPAND")
-        if not self.filter_speech(phase):
-            return
-        text = (payload.data or {}).get("text", "")
-        if text and hasattr(self, "_tts_manager"):
-            tts = getattr(self, "_tts_manager")
-            if tts:
-                try:
-                    tts.speak(text)
-                except Exception as exc:
-                    logger.warning(
-                        "[ConversationKernel] TTS chunk failed: %s", exc
-                    )
+        """Handle an utterance:chunk event.
+
+        The speak tool emits START + DONE only (no incremental chunks), so
+        this is a no-op. Kept for forward-compatibility with any future
+        streaming emitter.
+        """
+        return
 
     def _on_utterance_done(self, payload) -> None:
-        """Handle an utterance:done event — flush TTS buffer."""
-        if hasattr(self, "_tts_manager"):
-            tts = getattr(self, "_tts_manager")
-            if tts:
-                try:
-                    tts.flush()
-                except Exception as exc:
-                    logger.warning(
-                        "[ConversationKernel] TTS flush failed: %s", exc
-                    )
+        """Handle an utterance:done event.
+
+        Playback is driven by the audio pipeline's play_stream, which owns
+        its own queue/flush — nothing to do here.
+        """
+        return
 
     # ── Registration helpers (no new state machine) ────────────────
 

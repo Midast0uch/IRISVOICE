@@ -1674,12 +1674,20 @@ class IRISGateway:
             audio_pipeline = getattr(self, "_audio_pipeline", None)
             kernel = ConversationKernel(
                 voice_handler=voice_handler,
-                tts_manager=getattr(self, "_tts_manager", None),
+                # Use the canonical TTS singleton (get_tts_manager) so the kernel
+                # shares the same TTS instance the pipeline uses. Previously this
+                # passed getattr(self, "_tts_manager", None) which was always None
+                # (iris_gateway never sets _tts_manager), so agent utterances were
+                # silently dropped — the user never heard progress speaks / narration.
+                tts_manager=get_tts_manager(),
                 audio_pipeline=audio_pipeline,
                 session_id_getter=lambda: getattr(self, "_caducean_session_id", None),
             )
             kernel.register_callbacks()
             set_conversation_kernel(kernel)
+            # Wire the kernel to the EventBus so speak-tool Utterance events reach
+            # local TTS. This was never called in production, leaving narration mute.
+            kernel.subscribe_to_event_bus()
             logger.info("[iris_gateway] ConversationKernel instantiated and wired")
             kernel_ok = True
 
