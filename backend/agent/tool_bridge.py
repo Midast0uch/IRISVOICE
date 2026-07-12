@@ -1621,7 +1621,9 @@ class AgentToolBridge:
         except Exception as exc:
             return {"success": False, "error": f"crawler modules unavailable: {exc}"}
 
-        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        # DuckDuckGo HTML is server-rendered and robots-allowed (Google's /search
+        # is blocked by robots.txt and JS-rendered, yielding empty results).
+        search_url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
         try:
             async with CrawlerEngine() as engine:
                 crawl_result = await engine.crawl(

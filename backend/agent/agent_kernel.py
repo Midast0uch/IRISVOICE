@@ -4560,6 +4560,35 @@ Respond with a JSON object:
         ]
         queue = DirectorQueue(objective=plan.original_task, items=items)
 
+        # Force a real tool for web-search steps the planner left tool-less.
+        # Without this, web-intent steps fall through to _run_step_direct and the
+        # LLM returns empty ("[step N completed]") instead of actually searching.
+        _orig_lc = (plan.original_task or "").lower()
+        _web_intent = any(
+            k in _orig_lc
+            for k in ("search", "look up", "look for", "web search", "browse", "google", "find", "fetch")
+        )
+        if _web_intent:
+            _single = len(queue.items) == 1
+            for _it in queue.items:
+                _t = (_it.tool or "").strip().lower()
+                if _t and _t != "direct":
+                    continue  # already has a real tool assigned
+                _desc_lc = (_it.description or "").lower()
+                _is_search_step = any(
+                    k in _desc_lc
+                    for k in ("search", "look up", "look for", "find", "fetch", "web", "google", "browse", "research")
+                )
+                if _single or _is_search_step:
+                    _q = _it.description or plan.original_task
+                    for _p in ("search the web for ", "search for ", "web search for ", "search ", "look up ", "google ", "find "):
+                        if _q.lower().startswith(_p):
+                            _q = _q[len(_p):]
+                            break
+                    _it.tool = "search"
+                    _it.params = {"query": _q.strip()}
+                    logger.info("[DER] forced tool=search for step %d (query=%r)", _it.step_number, _it.params["query"])
+
         # ── Phase 3: initialize execution mode ────────────────────────
         # Director decides mode dynamically based on task characteristics.
         # Voice no longer caps to 1 step — Director decides based on content.
