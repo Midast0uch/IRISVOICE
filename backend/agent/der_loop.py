@@ -112,6 +112,8 @@ class DirectorQueue:
     items: List[QueueItem] = field(default_factory=list)
     completed_ids: List[str] = field(default_factory=list)
     vetoed_ids: List[str] = field(default_factory=list)
+    failed_ids: List[str] = field(default_factory=list)
+    graft_attempts: int = 0
     cycle_count: int = 0
     max_cycles: int = DER_MAX_CYCLES
     max_veto_per_item: int = DER_MAX_VETO_PER_ITEM
@@ -345,6 +347,8 @@ class DirectorQueue:
                 continue
             if item.step_id in self.vetoed_ids:
                 continue
+            if item.step_id in self.failed_ids:
+                continue
             if all(dep in completed for dep in item.depends_on):
                 ready_items.append(item)
 
@@ -391,6 +395,8 @@ class DirectorQueue:
                 continue
             if item.step_id in self.vetoed_ids:
                 continue
+            if item.step_id in self.failed_ids:
+                continue
             if all(dep in completed for dep in item.depends_on):
                 ready_items.append(item)
 
@@ -426,6 +432,44 @@ class DirectorQueue:
     def mark_vetoed(self, step_id: str) -> None:
         if step_id not in self.vetoed_ids:
             self.vetoed_ids.append(step_id)
+
+    def mark_failed(self, step_id: str) -> None:
+        """Record a step as permanently failed (retry + graft exhausted)."""
+        if step_id not in self.failed_ids:
+            self.failed_ids.append(step_id)
+
+    def abort_descendants(
+        self, failed_step_id: str, reason: str = "[ABORTED: dependency failed]"
+    ) -> List[str]:
+        """
+        Mark every not-yet-completed step that (transitively) depends on
+        `failed_step_id` as failed with an abort reason, so the scheduler
+        skips them. Returns the list of aborted step_ids.
+
+        A step is aborted if any of its depends_on ids is in the failed set
+        (including the originally failed step) and it is not already done.
+        Iterates to a fixpoint so multi-level dependency chains collapse.
+        """
+        aborted: List[str] = []
+        failed = set(self.failed_ids)
+        failed.add(failed_step_id)
+        changed = True
+        while changed:
+            changed = False
+            for item in self.items:
+                if item.step_id in self.completed_ids:
+                    continue
+                if item.step_id in self.vetoed_ids:
+                    continue
+                if item.step_id in failed:
+                    continue
+                if any(dep in failed for dep in item.depends_on):
+                    failed.add(item.step_id)
+                    item.result = reason
+                    self.mark_failed(item.step_id)
+                    aborted.append(item.step_id)
+                    changed = True
+        return aborted
 
     def add_item(self, item: QueueItem) -> None:
         self.items.append(item)
@@ -487,7 +531,12 @@ class DirectorQueue:
         return injected
 
     def is_complete(self) -> bool:
-        active = [i for i in self.items if i.step_id not in self.vetoed_ids]
+        active = [
+            i
+            for i in self.items
+            if i.step_id not in self.vetoed_ids
+            and i.step_id not in self.failed_ids
+        ]
         return all(i.step_id in self.completed_ids for i in active)
 
     def hit_cycle_limit(self) -> bool:

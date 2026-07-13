@@ -387,6 +387,14 @@ class IRISGateway:
             elif msg_type in ["text_message", "clear_chat", "new_conversation"]:
                 await self._handle_chat(session_id, client_id, message)
 
+            elif msg_type == "sync_state":
+                # Phase 4.3: frontend sends this on WS reconnect (and on thread
+                # resume) so the backend re-attaches the correct per-thread
+                # kernel and restores its persisted context.  Without it a
+                # reconnect would silently bind to the session kernel and leak
+                # the wrong conversation's history into the resumed thread.
+                await self._handle_sync_state(session_id, client_id, message)
+
             elif msg_type in [
                 "get_agent_status",
                 "get_agent_tools",
@@ -4071,6 +4079,58 @@ class IRISGateway:
             except Exception:
                 break
 
+    async def _handle_sync_state(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """
+        Phase 4.3: re-attach the per-thread kernel after a WS reconnect (or
+        when the frontend resumes an existing conversation).  Restores the
+        persisted conversation context so the resumed thread continues with
+        its own history instead of the session's default kernel.
+
+        Sends a `sync_state_ack` back so the frontend knows the bind succeeded.
+        """
+        payload = message.get("payload", {}) or {}
+        conversation_id = payload.get("conversation_id") or session_id
+        try:
+            kernel = get_agent_kernel(conversation_id, session_id)
+            kernel.restore_context_from_store(conversation_id)
+            self._logger.info(
+                f"[Chat] sync_state attached conversation {conversation_id} "
+                f"for session {session_id}"
+            )
+            try:
+                self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "sync_state_ack",
+                        "payload": {
+                            "conversation_id": conversation_id,
+                            "status": "attached",
+                        },
+                    },
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            self._logger.warning(
+                f"[Chat] sync_state failed for {conversation_id}: {exc}"
+            )
+            try:
+                self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "sync_state_ack",
+                        "payload": {
+                            "conversation_id": conversation_id,
+                            "status": "error",
+                            "error": str(exc),
+                        },
+                    },
+                )
+            except Exception:
+                pass
+
     async def _handle_chat(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -4161,7 +4221,7 @@ class IRISGateway:
 
                 _t_gate = _time.perf_counter()
 
-                agent_kernel = get_agent_kernel(session_id)
+                agent_kernel = get_agent_kernel(conversation_id, session_id)
                 _t_kernel = _time.perf_counter()
                 self._logger.debug(
                     f"[Timing] get_agent_kernel: {(_t_kernel - _t_gate) * 1000:.1f} ms",

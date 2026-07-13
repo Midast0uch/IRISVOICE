@@ -24,18 +24,21 @@ export default function MermaidDiagram({ chart, glowColor, trust }: MermaidDiagr
     mermaid.initialize({
       startOnLoad: false,
       theme: "dark",
+      // Phase 5.1 / chat-card-redesign §2.8: drive diagram chrome from the
+      // active brand glowColor instead of a hardcoded hex so the diagram
+      // shifts with the orb/theme like every other card.
       themeVariables: {
         primaryColor: "#0a0b16",
         primaryTextColor: "#ffffff",
-        primaryBorderColor: "#00c8ff",
-        lineColor: "#00c8ff",
+        primaryBorderColor: glowColor,
+        lineColor: glowColor,
         secondaryColor: "#0f101c",
         tertiaryColor: "#15162a",
         background: "#0a0b16",
         mainBkg: "#0a0b16",
-        nodeBorder: "#00c8ff",
+        nodeBorder: glowColor,
         clusterBkg: "#0a0b16",
-        titleColor: "#00c8ff",
+        titleColor: glowColor,
         edgeLabelBackground: "#0a0b16",
       },
       securityLevel: trust === "trusted" ? "loose" : "strict",
@@ -70,10 +73,20 @@ export default function MermaidDiagram({ chart, glowColor, trust }: MermaidDiagr
   }
 
   return (
+    // chat-card-redesign §2.8: wrap the diagram in the same Prism Glass card
+    // as RichDocument/DocumentPanel so it matches the document family.
     <div
       ref={containerRef}
-      className="my-2 flex justify-center"
-      style={{ color: glowColor }}
+      className="my-2 flex justify-center rounded-lg overflow-hidden relative"
+      style={{
+        background:
+          "linear-gradient(135deg, rgba(10,11,22,0.6) 0%, rgba(15,16,28,0.65) 100%)",
+        backdropFilter: "blur(24px)",
+        WebkitBackdropFilter: "blur(24px)",
+        borderLeft: `2px solid ${glowColor}`,
+        border: `1px solid ${glowColor}20`,
+        color: glowColor,
+      }}
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   )

@@ -134,6 +134,9 @@ interface DocRender {
   // W4/W5: stable id so reformat can retrieve canonical data by id (no client content).
   documentId?: string
   reformatted?: boolean
+  // Phase 4 (chat-card-redesign): true when the backend revised an existing
+  // document in place, so the card can show an "Updated" indicator.
+  updated?: boolean
   error?: string | null
   // Trust-routing W3: "trusted" vs anything else (web/crawler-sourced).
   trust?: string
@@ -513,23 +516,33 @@ export function ChatWing({
         turn_id?: string
         document_id?: string
         reformatted?: boolean
+        // Phase 4 (chat-card-redesign): backend sets this when it revises an
+        // existing document in place, so the card can show an "Updated" indicator.
+        updated?: boolean
         trust?: string
       } | undefined
       if (!detail?.content) return
       const doc: DocRender = {
-        id: detail.turn_id || `doc-${Date.now()}`,
+        id: detail.turn_id || detail.document_id || `doc-${Date.now()}`,
         format: detail.format || "markdown",
         content: detail.content,
         alternatives: detail.alternatives || [],
         turnId: detail.turn_id,
         documentId: detail.document_id,
         reformatted: detail.reformatted || false,
+        updated: detail.updated || false,
         error: null,
         trust: detail.trust,
       }
       setRenderedDocuments((prev) => {
-        // Update in place if the same turn_id is already rendered (reformat flow)
-        const idx = prev.findIndex((d) => d.turnId && detail.turn_id && d.turnId === detail.turn_id)
+        // Phase 4 (chat-card-redesign): update an existing card in place when the
+        // backend revises a document by id (or re-formats by turn), instead of
+        // appending a duplicate card.
+        const idx = prev.findIndex(
+          (d) =>
+            (detail.document_id && d.documentId === detail.document_id) ||
+            (detail.turn_id && d.turnId === detail.turn_id),
+        )
         if (idx >= 0) {
           const next = [...prev]
           next[idx] = doc
@@ -2477,7 +2490,19 @@ ${message.text}`;
 
                   {/* Rich documents (plan Issue D.3) — inline render with format pills + expand */}
                   {renderedDocuments.map((doc) => (
-                    <div key={doc.id} className="my-3">
+                    <div key={doc.id} className="my-3 relative">
+                      {doc.updated && (
+                        <span
+                          className="absolute -top-2 right-2 z-10 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider"
+                          style={{
+                            color: glowColor,
+                            border: `1px solid ${glowColor}55`,
+                            background: "rgba(10,11,22,0.75)",
+                          }}
+                        >
+                          Updated
+                        </span>
+                      )}
                       <RichDocument
                         content={doc.content}
                         format={doc.format as "markdown" | "html" | "table" | "diagram" | "text"}

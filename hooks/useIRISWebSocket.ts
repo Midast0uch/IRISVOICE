@@ -214,10 +214,21 @@ export function useIRISWebSocket(
   // Deduplicate buffered chat_message replays by turn_id
   const seenTurnIdsRef = useRef<Set<string>>(new Set())
 
+  // Latest active conversation id — read on WS reconnect to re-attach the
+  // correct per-thread kernel via sync_state (Phase 4.3).  Kept in a ref so
+  // the connect() callback (which doesn't depend on currentConversationId)
+  // always sees the current value.
+  const currentConversationIdRef = useRef<string | undefined>(undefined)
+
   // Update ref when callback changes
   useEffect(() => {
     onNativeAudioResponseRef.current = onNativeAudioResponse
   }, [onNativeAudioResponse])
+
+  // Keep the conversation-id ref in sync with state for use inside connect()
+  useEffect(() => {
+    currentConversationIdRef.current = currentConversationId
+  }, [currentConversationId])
 
   // Safety timeout: reset typing indicator if no chat_typing:false event
   // arrives within 30s. Covers the case where backend crashes mid-response
@@ -343,6 +354,20 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production' && queued.length > 0) {
           console.log(`[IRIS WebSocket] Flushed ${queued.length} queued message(s)`)
         }
+
+        // Phase 4.3: re-attach the active conversation's kernel after a
+        // (re)connect so the resumed thread keeps its own history instead of
+        // the session default.  The backend binds the WS kernel to this id
+        // and restores its persisted context.
+        const _convId = currentConversationIdRef.current
+        if (_convId) {
+          ws.send(JSON.stringify({
+            type: "sync_state",
+            payload: { conversation_id: _convId },
+            seq: seqRef.current++,
+          }))
+        }
+
       }
 
       ws.onmessage = (event) => {

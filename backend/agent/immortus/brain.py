@@ -105,9 +105,14 @@ class ImmortusBrain:
     # ── Thread assignment ─────────────────────────────────────────────────
 
     def _assign_thread_id(self, plan_id: str, session_id: str) -> str:
-        prefix = (plan_id or "anon")[:4]
-        origin = (session_id or "0000")[-4:]
-        return f"immortus:thread-{prefix}-{origin}"
+        # Delegate to the shared helper so the thread-id format stays in sync
+        # with the REST chat endpoints (test contract: must call generate_thread_id).
+        from backend.agent.immortus import generate_thread_id
+
+        return generate_thread_id(
+            prefix=(plan_id or "anon"),
+            suffix=(session_id or "0000")[-4:],
+        )
 
     # ── Dependency depth ──────────────────────────────────────────────────
 

@@ -41,6 +41,7 @@ try:
     from backend.agent.der_constants import (
         DER_MAX_CYCLES,
         DER_MAX_VETO_PER_ITEM,
+        DER_MAX_GRAFTS,
         DER_EMERGENCY_STOP,
         DER_TOKEN_BUDGETS,
         TRAILING_GAP_MIN,
@@ -48,6 +49,7 @@ try:
 except Exception:
     DER_MAX_CYCLES = 40
     DER_MAX_VETO_PER_ITEM = 2
+    DER_MAX_GRAFTS = 3
     DER_EMERGENCY_STOP = 200
     DER_TOKEN_BUDGETS: Dict[str, int] = {
         "implement": 40000,
@@ -451,13 +453,22 @@ class AgentKernel:
 
     def clear_conversation(self, conversation_id: Optional[str] = None) -> None:
         """
-        Clear the agent context for a conversation from the persistent store.
-        Called on 'new conversation' or thread switch cleanup.
+        Clear the agent context for a conversation — both the in-memory
+        conversation history and the persistent store.  Called on 'new
+        conversation' or thread switch cleanup so the next turn starts blank.
 
-        Never raises — logs warning on failure.  The in-memory conversation
-        memory still works for the current turn; subsequent turns start fresh.
+        Never raises — logs warning on failure.
         """
         _cid = conversation_id or self.conversation_id
+        # Reset in-memory history immediately so a reused kernel instance
+        # cannot leak the previous thread's messages into the new one.
+        if self._conversation_memory is not None:
+            try:
+                self._conversation_memory.clear()
+            except Exception as _mem_exc:
+                logger.warning(
+                    f"[AgentKernel] in-memory clear failed for {_cid}: {_mem_exc}"
+                )
         try:
             from backend.agent.conversation_context_store import get_context_store
 
@@ -472,16 +483,31 @@ class AgentKernel:
             )
 
     def save_context_to_store(self) -> None:
-        """Persist current conversation context to the store (best-effort)."""
+        """Persist current conversation context (history + token state) to the
+        store (best-effort). Serializes the full message list so a later
+        restore can rebuild the thread's conversation history."""
         try:
             from backend.agent.conversation_context_store import (
                 get_context_store,
                 ConversationContext,
+                ConversationMessage,
             )
 
             store = get_context_store()
+            _msgs = []
+            if self._conversation_memory is not None:
+                for _m in self._conversation_memory.messages:
+                    _msgs.append(
+                        ConversationMessage(
+                            role=getattr(_m, "role", "user"),
+                            content=getattr(_m, "content", "") or "",
+                            timestamp=getattr(_m, "timestamp", time.time()),
+                            turn_id=getattr(_m, "task_id", None),
+                        )
+                    )
             ctx = ConversationContext(
                 conversation_id=self.conversation_id,
+                messages=_msgs,
                 tokens_used=getattr(self, "_tokens_used", 0),
             )
             store.save(self.conversation_id, ctx)
@@ -492,7 +518,9 @@ class AgentKernel:
             )
 
     def restore_context_from_store(self) -> None:
-        """Restore conversation context from the store (best-effort)."""
+        """Restore conversation context (history + token state) from the store
+        (best-effort). Rebuilds self._conversation_memory from the persisted
+        message list so a resumed thread keeps its full history."""
         try:
             from backend.agent.conversation_context_store import get_context_store
 
@@ -500,9 +528,17 @@ class AgentKernel:
             ctx = store.get_or_restore(self.conversation_id)
             if ctx:
                 self._tokens_used = ctx.tokens_used
+                if ctx.messages and self._conversation_memory is not None:
+                    self._conversation_memory.clear()
+                    for _m in ctx.messages:
+                        self._conversation_memory.add_message(
+                            _m.role,
+                            _m.content,
+                            turn_id=getattr(_m, "turn_id", None),
+                        )
                 logger.info(
                     f"[AgentKernel] Restored context for conv={self.conversation_id} "
-                    f"(tokens_used={ctx.tokens_used})"
+                    f"(messages={len(ctx.messages)}, tokens_used={ctx.tokens_used})"
                 )
         except Exception as exc:
             logger.warning(
@@ -1489,13 +1525,59 @@ class AgentKernel:
         _, clean = AgentKernel._parse_thinking(text)
         return clean
 
+    # Pure social/casual phrases that never need planning or tools.
+    _CHITCHAT_PATTERNS = (
+        "hi", "hello", "hey", "yo", "sup", "howdy", "hiya", "greetings",
+        "good morning", "good afternoon", "good evening", "good night",
+        "how are you", "how's it going", "how is it going", "how are things",
+        "how have you been", "how's your day", "what's up", "whats up",
+        "wassup", "what is up", "thanks", "thank you", "thx", "ty",
+        "appreciate it", "appreciate that", "nice", "cool", "great", "awesome",
+        "sweet", "lol", "haha", "hahaha", "lmao", "bye", "goodbye", "see you",
+        "see ya", "cya", "talk later", "take care", "who are you", "what are you",
+    )
+    # Short acknowledgements / confirmations that are not task continuations.
+    _CHITCHAT_ACKS = (
+        "yes", "yeah", "yep", "yup", "no", "nope", "nah", "ok", "okay", "k",
+        "sure", "maybe", "perhaps", "right", "correct", "of course", "got it",
+        "gotcha", "alright", "fine", "agreed", "sounds good", "sure thing",
+    )
+
+    def _is_chitchat(self, text: str) -> bool:
+        """
+        True for pure social/casual messages that need no planning or tools.
+
+        Used by the universal planner (Phase 1.1): every inbound message routes
+        through the planner EXCEPT chit-chat, which keeps the fast direct path.
+        """
+        t = (text or "").lower().strip()
+        if not t:
+            return True
+        if t in self._CHITCHAT_PATTERNS:
+            return True
+        # Starts with a greeting token (e.g. "hey there")
+        _first = t.split()[0] if t.split() else ""
+        if _first in ("hi", "hello", "hey", "yo", "sup", "howdy", "hiya", "greetings"):
+            return True
+        # "how are you" family — social, not a task
+        if t.startswith("how are") or t.startswith("how's") or t.startswith("how is"):
+            return True
+        # Short casual acknowledgement (no tool intent)
+        if t in self._CHITCHAT_ACKS:
+            return True
+        return False
+
     def _needs_planning(self, text: str) -> bool:
         """
-        Return True only when the message explicitly requests a tool-backed action.
-        Conversational messages, greetings, and simple questions bypass planning entirely.
+        Universal planner gate (Phase 1.1).
+
+        In 'auto' mode every inbound message routes through the planner, which
+        now emits `depends_on` and decides tool use itself — EXCEPT pure
+        chit-chat ("hi", "how are you", "thanks"), which keeps the fast direct
+        path to avoid LLM-call latency on social messages.
 
         Respects _tool_mode:
-          auto        → heuristic trigger-based (default)
+          auto        → plan everything except chit-chat (default)
           ask_first   → never auto-plan; user must explicitly request tools
           disabled    → never plan, always direct response
         """
@@ -1507,48 +1589,8 @@ class AgentKernel:
             t = text.lower().strip()
             return t.startswith(("tool:", "run:", "execute:", "plan:"))
 
-        t = text.lower()
-        TOOL_TRIGGERS = [
-            "search",
-            "find",
-            "look up",
-            "look for",
-            "open",
-            "launch",
-            "start app",
-            "create",
-            "write a file",
-            "write file",
-            "run",
-            "execute",
-            "install",
-            "delete",
-            "remove",
-            "screenshot",
-            "take a photo",
-            "click",
-            "automate",
-            "schedule",
-            "remind me",
-            "set alarm",
-            "set timer",
-            "play music",
-            "stop music",
-            "download",
-            "upload",
-            "send email",
-            "browse",
-            "memory",
-            "store",
-            "recall",
-            "remember",
-            "save note",
-            "read file",
-            "list file",
-            "web search",
-            "fetch",
-        ]
-        return any(trigger in t for trigger in TOOL_TRIGGERS)
+        # Universal: plan unless this is pure chit-chat.
+        return not self._is_chitchat(text)
 
     def _broadcast_inference_event(
         self,
@@ -2752,6 +2794,20 @@ class AgentKernel:
             # be stored and later retrieved/reformatted by id.
             import uuid
 
+            # Phase 4 (chat-card-redesign): if the agent includes an existing
+            # document_id in its `show` payload, revise that document in place
+            # (bumped revision + updated:True) instead of rendering a new card.
+            existing_id = show.get("document_id")
+            if existing_id and self.update_document(
+                existing_id,
+                content=show.get("content", ""),
+                fmt=show.get("format"),
+                trust=trust,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                alternatives=show.get("alternatives", []) or [],
+            ):
+                return ""
             document_id = str(uuid.uuid4())
             try:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -2938,6 +2994,60 @@ class AgentKernel:
             )
         except Exception as exc:
             logger.warning("[AgentKernel] document_data Immortus store failed: %s", exc)
+
+    def update_document(self, document_id, content, fmt=None, trust=None, turn_id=None, conversation_id=None, alternatives=None):
+        """Phase 4 (chat-card-redesign): revise an already-rendered document.
+
+        Updates the canonical data in DocumentDataStore (keyed by document_id;
+        revision bumped) and re-emits DOCUMENT_RENDER with ``updated: True`` so the
+        frontend reflects the edit in place (with an 'Updated' indicator) instead
+        of appending a new card.  Returns the document_id, or None if the id is
+        unknown (caller should then do a fresh render).
+        """
+        try:
+            from backend.agent.document_store import DocumentDataStore
+            store = DocumentDataStore.get_for(self._memory)
+            if store is None:
+                return None
+            existing = store.get(document_id)
+            if existing is None:
+                return None
+            new_fmt = fmt or existing.get("format") or "markdown"
+            variants = dict(existing.get("variants") or {})
+            variants[new_fmt] = content
+            store.update(
+                document_id=document_id,
+                content=content,
+                fmt=new_fmt,
+                variants=variants,
+                trust=trust or existing.get("trust") or "trusted",
+            )
+            revision = (existing.get("revision") or 0) + 1
+            payload = {
+                "format": new_fmt,
+                "content": content,
+                "alternatives": alternatives if alternatives is not None else (existing.get("alternatives") or []),
+                "trust": trust or existing.get("trust") or "trusted",
+                "document_id": document_id,
+                "turn_id": turn_id or existing.get("turn_id"),
+                "conversation_id": conversation_id or self.conversation_id,
+                "updated": True,
+                "revision": revision,
+            }
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                get_event_bus().emit(
+                    IRISStreamEvent.DOCUMENT_RENDER,
+                    data=payload,
+                    turn_id=payload["turn_id"],
+                    conversation_id=payload["conversation_id"],
+                )
+            except Exception as exc:
+                logger.warning("[AgentKernel] DOCUMENT_RENDER(update) emit failed: %s", exc)
+            return document_id
+        except Exception as exc:
+            logger.warning(f"[AgentKernel] update_document failed: {exc}")
+            return None
 
     # ── W9 (O3): proactive structured-data capture from ANY tool result ──────
     # Plan W9: extend capture beyond `show` payloads to any tool result
@@ -3304,6 +3414,8 @@ class AgentKernel:
         permissions_list: str = "",
         strategy_hint: str = "",
         task_class: str = "full",
+        context: Optional[List[Dict[str, Any]]] = None,
+        episodic_context: Optional[str] = None,
     ) -> str:
         """
         Build the structured planning prompt for _plan_task().
@@ -3332,6 +3444,29 @@ class AgentKernel:
             sections.append(f"PERMISSIONS:\n{permissions_list}")
 
         sections.append(f"TASK:\n{task}")
+
+        # ── Phase 2.1: full conversation history (no index slicing) ──
+        # The active thread is passed in its entirety so the planner can resolve
+        # references like "do the websearch" / "the pricing of those" back to the
+        # original query from earlier turns (fixes the toggle-restoration context
+        # loss). This is the whole point of the universal DER loop.
+        if context:
+            history_lines = []
+            for msg in context:  # Entire thread history is included
+                role = (msg.get("role") or "user").upper()
+                content = msg.get("content") or ""
+                history_lines.append(f"{role}: {content}")
+            if history_lines:
+                sections.append(
+                    "CONVERSATION HISTORY (full thread):\n"
+                    + "\n".join(history_lines)
+                )
+
+        # ── Phase 2.1: PACMAN semantic recall from past sessions ──
+        if episodic_context:
+            sections.append(
+                f"RECALLED EPISODIC CONTEXT (PACMAN):\n{episodic_context}"
+            )
 
         return "\n\n".join(sections)
 
@@ -3436,6 +3571,19 @@ class AgentKernel:
         except Exception as _tb_exc:
             logger.debug("[AgentKernel._plan_task] tools block build failed: %s", _tb_exc)
 
+        # ── Phase 2.1: PACMAN semantic recall (best-effort, never blocks) ──
+        episodic_context = ""
+        try:
+            if self._memory_interface is not None and hasattr(
+                self._memory_interface, "episodic"
+            ):
+                episodic_context = (
+                    self._memory_interface.episodic.assemble_episodic_context(text)
+                    or ""
+                )
+        except Exception as _ep_exc:
+            logger.debug("[AgentKernel._plan_task] episodic recall failed: %s", _ep_exc)
+
         planning_prompt = self._build_planning_prompt(
             task=text,
             tier1_directives=tier1,
@@ -3443,6 +3591,8 @@ class AgentKernel:
             failure_warnings=failures,
             task_class=task_class,
             strategy_hint=strategy_hint,
+            context=context,
+            episodic_context=episodic_context,
         )
 
         system_prompt = ""
@@ -3459,13 +3609,16 @@ class AgentKernel:
             '{"strategy":"do_it_myself|spawn_children|delegate_external",'
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
-            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","tool":"search","params":{"query":"<what to search>"},"critical":true}]}'
+            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","tool":"search","params":{"query":"<what to search>"},"depends_on":[],"critical":true}]}'
             "\n\n"
-            "RULES:\n"
-            "- If a step requires a capability (web search, open app, screenshot, read file, etc.) set \"tool\" to the EXACT name from AVAILABLE TOOLS. For web searches use \"search\" (or \"web_search\").\n"
-            "- If a step is pure reasoning/synthesis with no tool, set \"tool\":null.\n"
-            "- Always include the needed parameters in \"params\" (web search needs {\"query\":\"...\"}).\n"
-        )
+        "RULES:\n"
+        "- If a step requires a capability (web search, open app, screenshot, read file, etc.) set \"tool\" to the EXACT name from AVAILABLE TOOLS. For web searches use \"search\" (or \"web_search\").\n"
+        "- If a step is pure reasoning/synthesis with no tool, set \"tool\":null.\n"
+        "- Always include the needed parameters in \"params\" (web search needs {\"query\":\"...\"}).\n"
+        "- In 'depends_on', provide a list of step_ids that this step depends on. "
+        "If there are no dependencies, provide an empty array []. A step will not "
+        "start until all steps it depends on have completed.\n"
+    )
 
         plan_raw: Optional[str] = None
         try:
@@ -3518,6 +3671,7 @@ class AgentKernel:
                                 tool=raw_step.get("tool"),
                                 params=raw_step.get("params", {}),
                                 critical=bool(raw_step.get("critical", True)),
+                                depends_on=list(raw_step.get("depends_on", []) or []),
                             )
                         )
                     return ExecutionPlan(
@@ -4560,6 +4714,7 @@ Respond with a JSON object:
                 tool=step.tool,
                 params=step.params if step.params else {},
                 critical=step.critical,
+                depends_on=list(step.depends_on or []),
                 parallel_safe=is_parallel_safe(step.tool),
                 objective_anchor=plan.original_task,
                 coordinate_signal=(
@@ -4588,8 +4743,11 @@ Respond with a JSON object:
             for _it in queue.items:
                 _t = (_it.tool or "").strip().lower()
                 # Treat mode names + None/direct as "no real tool" so the fix-up
-                # overrides with the actual tool ("search") for web-intent steps.
-                if _t and _t not in ("direct", *_MODE_NAMES):
+                # overrides with the actual tool ("crawler_query") for web-intent
+                # steps. crawler_query is the unified web-search flow (quick OR
+                # deep) — it presents results consistently, unlike the legacy
+                # `search` tool which scrapes html.duckduckgo.com directly.
+                if _t and _t not in ("direct", "search", "web_search", *_MODE_NAMES):
                     continue  # already has a real tool assigned
                 _desc_lc = (_it.description or "").lower()
                 _is_search_step = any(
@@ -4615,13 +4773,13 @@ Respond with a JSON object:
                         import re
                         _m = re.search(
                             r"(?:"
-                            r"search\s+(?:the\s+web\s+)?(?:for\s+)?(?:me\s+)?(?:about\s+)?(?:for\s+)?"
+                            r"search\s+(?:the\s+web\s+)?(?:for\s+)?(?:me\s+)?(?:about\s+)?(?:on\s+)?(?:for\s+)?"
                             r"|look\s+(?:up\s+|for\s+)"
                             r"|find\s+(?:me\s+)?"
                             r"|google\s+"
                             r"|browse\s+(?:for\s+)?"
                             r"|research\s+"
-                            r"|(?:do|run)\s+a\s+(?:web\s+)?search\s+(?:for\s+)?(?:me\s+)?(?:about\s+)?(?:for\s+)?"
+                            r"|(?:do|run)\s+a\s+(?:web\s+)?search\s+(?:for\s+)?(?:me\s+)?(?:about\s+)?(?:on\s+)?(?:for\s+)?"
                             r")(.+?)$",
                             _q,
                             re.IGNORECASE | re.DOTALL,
@@ -4634,9 +4792,15 @@ Respond with a JSON object:
                                 r"^(?:could you|can you|would you|i need you to|i want you to|please|hey)\s+",
                                 "", _q, flags=re.I
                             ).strip()
-                    _it.tool = "search"
+                    # ── Phase 2.2: context-aware query refinement ──
+                    # Resolve ambiguous references ("those", "the pricing of it")
+                    # against the full conversation history so a follow-up like
+                    # "do the websearch now" maps back to the original query.
+                    if self._der_query_has_reference(_q):
+                        _q = self._der_refine_query(_q, _session)
+                    _it.tool = "crawler_query"
                     _it.params = {"query": _q.strip()}
-                    logger.info("[DER] forced tool=search for step %d (query=%r)", _it.step_number, _it.params["query"])
+                    logger.info("[DER] forced tool=crawler_query for step %d (query=%r)", _it.step_number, _it.params["query"])
 
         # ── Phase 3: initialize execution mode ────────────────────────
         # Director decides mode dynamically based on task characteristics.
@@ -4861,14 +5025,23 @@ Respond with a JSON object:
             except Exception:
                 pass
 
-            # ── Phase 4: execute this step via the shared helper (also used
-            # by the concurrent batch for parallel_safe steps). ──
+            # ── EXPLORER PHASE: execute primary step (Phase 1.4: one retry) ──
             step_result, step_success = self._der_run_step_execution(
                 item, context_package, _session, _turn_id, plan
             )
+            if not step_success:
+                time.sleep(0.5)  # backoff before a single retry
+                step_result, step_success = self._der_run_step_execution(
+                    item, context_package, _session, _turn_id, plan
+                )
+            if not step_success:
+                # Step failed after retry — mark, abort downstream, graft.
+                self._der_handle_step_failure(
+                    item, queue, plan, _session, _turn_id, context_package
+                )
+                continue  # re-enter loop; grafted steps are now in the queue
 
-            # ── Phase 4: finalize this step via the shared helper (also used
-            # by concurrently-executed parallel_safe steps). ──
+            # ── Phase 4: finalize this step via the shared helper ──
             _tokens_used = self._der_finalize_step(
                 item,
                 step_result,
@@ -4922,6 +5095,19 @@ Respond with a JSON object:
                     }
                 for _ei in _extra_ready:
                     _er, _es = _extra_results[_ei.step_id]
+                    if not _es:
+                        # Phase 1.4: single retry for the extra step
+                        time.sleep(0.5)
+                        _er, _es = self._der_run_step_execution(
+                            _ei, context_package, _session, _turn_id, plan
+                        )
+                    if not _es:
+                        # Failed after retry — handle (mark/abort/graft) and
+                        # skip finalizing this now-terminal step.
+                        self._der_handle_step_failure(
+                            _ei, queue, plan, _session, _turn_id, context_package
+                        )
+                        continue
                     _tokens_used = self._der_finalize_step(
                         _ei, _er, _es,
                         step_outputs, completed_items,
@@ -4934,7 +5120,9 @@ Respond with a JSON object:
         # ── OUTCOME RECORDING (ordered per spec: clear → stats → episode)
         # NOTE: _store_task_episode internally calls mycelium_record_outcome
         # and mycelium_crystallize_landmark, so we do NOT duplicate them here.
-        had_failures = any("[STEP ERROR" in o for o in step_outputs)
+        had_failures = any("[STEP ERROR" in o for o in step_outputs) or bool(
+            queue.failed_ids
+        )
         outcome = "failure" if had_failures else "success"
 
         # ── EventBus: emit task:done / task:fail ────────────────────────
@@ -5054,12 +5242,218 @@ Respond with a JSON object:
         except Exception:
             pass
 
+        # Phase 1.5: if any step failed, synthesize a user-facing summary
+        # that explains what worked, what failed, and what to do next.
+        if queue.failed_ids:
+            _synthesis = self._der_synthesize_outcome(
+                plan, completed_items, queue, _session
+            )
+            if _synthesis:
+                return _synthesis
+
         if step_outputs:
             return "\n".join(o for o in step_outputs if o)
         return (
             f"[DER] {plan.strategy} — "
             f"{len(completed_items)}/{len(plan.steps)} steps completed."
         )
+
+    # ── Phase 1.4: failure handling + plan grafting ──────────────────────
+
+    def _der_handle_step_failure(
+        self,
+        item: "QueueItem",
+        queue,
+        plan,
+        _session: str,
+        _turn_id: Optional[str],
+        context_package,
+    ) -> None:
+        """
+        Handle a step that failed after its single retry.
+
+        Always marks the step failed and aborts any downstream steps that
+        depend on it (so the scheduler skips them). If the step was critical
+        and we haven't exhausted the graft budget, asks the LLM to design a
+        recovery sub-graph and injects those steps into the queue.
+        """
+        queue.mark_failed(item.step_id)
+        aborted = queue.abort_descendants(item.step_id)
+        if aborted:
+            logger.info(
+                "[DER] Aborted %d downstream step(s) after failure of %s: %s",
+                len(aborted), item.step_id, aborted,
+            )
+        if item.critical and queue.graft_attempts < DER_MAX_GRAFTS:
+            try:
+                grafted = self._der_graft_recovery_plan(
+                    plan.original_task, item, item.result or "", _session
+                )
+                if grafted:
+                    queue.graft_attempts += 1
+                    for _g in grafted:
+                        queue.add_item(_g)
+                    logger.info(
+                        "[DER] Grafted %d recovery step(s) for failed %s "
+                        "(graft_attempts=%d)",
+                        len(grafted), item.step_id, queue.graft_attempts,
+                    )
+            except Exception as _graft_exc:
+                logger.warning("[DER] plan grafting failed: %s", _graft_exc)
+
+    def _der_graft_recovery_plan(
+        self,
+        objective: str,
+        failed_item: "QueueItem",
+        error_msg: str,
+        _session: str,
+    ) -> List["QueueItem"]:
+        """
+        Ask the LLM to design a recovery sub-graph for a failed critical step.
+        Returns a list of QueueItem (recovery steps) or [] on any failure.
+        Never raises.
+        """
+        import re as _re
+        from backend.agent.der_loop import QueueItem
+        from backend.agent.tool_registry import is_parallel_safe
+
+        try:
+            prompt = (
+                f"OBJECTIVE: {objective}\n"
+                f"FAILED STEP: {failed_item.description}\n"
+                f"TOOL: {failed_item.tool}\n"
+                f"ERROR: {error_msg}\n\n"
+                "The execution of this step failed. Provide a JSON-only recovery "
+                "sub-graph containing alternative step(s) to achieve the objective "
+                "or gracefully handle the error.\n"
+                'Respond with: {"steps": [{"step_id": "r1", "description": "...", '
+                '"tool": "...", "params": {}, "depends_on": []}]}'
+            )
+            _raw = self.infer(prompt, role="EXECUTION", max_tokens=400, temperature=0.2)
+            _text = _raw.raw_text or ""
+            _m = _re.search(r"\{[\s\S]+\}", _text)
+            if not _m:
+                return []
+            _data = json.loads(_m.group())
+            _steps: List["QueueItem"] = []
+            for _rs in _data.get("steps", []):
+                _steps.append(
+                    QueueItem(
+                        step_id=str(_rs.get("step_id", f"r{len(_steps) + 1}")),
+                        step_number=900 + len(_steps),
+                        description=str(_rs.get("description", "")),
+                        tool=_rs.get("tool"),
+                        params=_rs.get("params", {}) or {},
+                        depends_on=list(_rs.get("depends_on", []) or []),
+                        critical=bool(_rs.get("critical", True)),
+                        parallel_safe=is_parallel_safe(_rs.get("tool")),
+                        objective_anchor=objective,
+                    )
+                )
+            return _steps
+        except Exception as _e:
+            logger.warning("[DER] graft recovery parse failed: %s", _e)
+            return []
+
+    def _der_synthesize_outcome(
+        self,
+        plan,
+        completed_items: list,
+        queue,
+        _session: str,
+    ) -> str:
+        """
+        Phase 1.5: produce a friendly, user-facing summary when one or more
+        steps failed. Explains what was accomplished, what failed, and what
+        to do next. Returns "" on any failure (caller falls back to raw output).
+        """
+        try:
+            _done = "\n".join(
+                f"[Step {ci.step_number}] {ci.description}: {ci.result or '(no result)'}"
+                for ci in completed_items
+            ) or "(none)"
+            _failed_lines = []
+            for _fi in queue.failed_ids:
+                _desc = _fi
+                for _it in queue.items:
+                    if _it.step_id == _fi:
+                        _desc = _it.description or _fi
+                        break
+                _failed_lines.append(f"- {_desc}")
+            _failed = "\n".join(_failed_lines) or "(none)"
+            _prompt = (
+                f"USER TASK: {plan.original_task}\n\n"
+                f"STEPS EXECUTED:\n{_done}\n\n"
+                f"STEPS THAT FAILED:\n{_failed}\n\n"
+                "Provide a friendly, user-facing summary of what was accomplished, "
+                "what failed, and what to do next."
+            )
+            _res = self.infer(_prompt, role="EXECUTION", max_tokens=400, temperature=0.3)
+            return _res.raw_text or ""
+        except Exception as _e:
+            logger.warning("[DER] outcome synthesis failed: %s", _e)
+            return ""
+
+    # ── Phase 2.2: context-aware query refinement ──────────────────────
+
+    @staticmethod
+    def _der_query_has_reference(query: str) -> bool:
+        """Heuristic: does the search query contain an ambiguous reference that
+        needs the conversation history to resolve?"""
+        import re as _re
+
+        _q = query or ""
+        _ref_re = _re.compile(
+            r"\b(it|its|they|them|those|that|this|the same|above|earlier|"
+            r"previous|mentioned|same)\b",
+            _re.IGNORECASE,
+        )
+        if _ref_re.search(_q):
+            return True
+        _ql = _q.lower()
+        return any(
+            _p in _ql
+            for _p in (
+                "pricing of", "price of", "cost of", "the pricing",
+                "the price", "the cost", "do the", "the websearch",
+                "the search", "what we",
+            )
+        )
+
+    def _der_refine_query(self, query: str, _session: str) -> str:
+        """
+        Phase 2.2: resolve ambiguous references in a search query against the
+        full conversation history via a quick LLM call. Returns the refined
+        query, or the original on any failure / no change.
+        """
+        try:
+            _history = []
+            if self._conversation_memory is not None:
+                _history = self._conversation_memory.get_context()
+            if not _history:
+                return query
+            _history_str = "\n".join(
+                f"{(m.get('role') or 'user').upper()}: {m.get('content') or ''}"
+                for m in _history
+            )
+            _refine_prompt = (
+                "CONVERSATION HISTORY (FULL):\n"
+                f"{_history_str}\n\n"
+                f"CURRENT QUERY: {query}\n\n"
+                "Rewrite the search query to resolve any ambiguous pronouns or "
+                "references based on the full conversation history. Output the "
+                "query string only."
+            )
+            _refined = self.infer(
+                _refine_prompt, role="EXECUTION", max_tokens=30, temperature=0.0
+            )
+            _out = (_refined.raw_text or "").strip().strip('"').strip()
+            if _out and _out.lower() != query.lower():
+                logger.info("[DER] refined query %r -> %r", query, _out)
+                return _out
+        except Exception as _e:
+            logger.debug("[DER] query refinement failed: %s", _e)
+        return query
 
     @staticmethod
     def _format_tool_result(raw) -> str:
@@ -5222,6 +5616,11 @@ Respond with a JSON object:
                             ),
                         ).result(timeout=60)
                 step_result = self._format_tool_result(raw) if raw is not None else ""
+                # A tool that returns {"success": False} (rather than raising)
+                # is a genuine failure — surface it as step_success=False so the
+                # retry / plan-grafting path engages instead of reporting success.
+                if isinstance(raw, dict) and raw.get("success") is False:
+                    step_success = False
                 # ── W9 (O3): proactively capture structured tool results ──
                 if item.tool and raw is not None:
                     try:
@@ -5267,6 +5666,8 @@ Respond with a JSON object:
                     plan_title=plan.plan_title if plan else "",
                 )
                 step_result = self._format_tool_result(raw) if raw is not None else ""
+                if isinstance(raw, dict) and raw.get("success") is False:
+                    step_success = False
                 if item.tool and raw is not None:
                     try:
                         self._capture_tool_result(

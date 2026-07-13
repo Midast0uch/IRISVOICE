@@ -864,8 +864,19 @@ app.add_middleware(_IdleTrackerMiddleware)
 @app.get("/health")
 async def health_check():
     """Health check endpoint — used by the frontend WS hook before opening the socket.
-    Returns 200 so the hook proceeds to connect immediately instead of retrying."""
-    return {"status": "ok", "service": "IRIS Backend"}
+    Returns 200 so the hook proceeds to connect immediately instead of retrying.
+
+    Phase 4.1: also reports the model-runner supervisor state + worker memory
+    metric when a supervisor is registered on app.state (otherwise omitted).
+    """
+    payload: dict = {"status": "ok", "service": "IRIS Backend"}
+    sup = getattr(app.state, "model_runner_supervisor", None)
+    if sup is not None:
+        try:
+            payload["model_runner"] = sup.health()
+        except Exception as exc:
+            payload["model_runner"] = {"status": "error", "error": str(exc)}
+    return payload
 
 
 @app.get("/ready")

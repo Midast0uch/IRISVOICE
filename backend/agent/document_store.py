@@ -27,14 +27,15 @@ _MAX_DOCUMENTS = 500
 
 _SQL_CREATE = """
 CREATE TABLE IF NOT EXISTS document_data (
-    document_id   TEXT PRIMARY KEY,
+    document_id TEXT PRIMARY KEY,
     conversation_id TEXT,
-    fmt           TEXT,
-    content       TEXT,
-    variants      TEXT,
-    alternatives  TEXT,
-    trust         TEXT,
-    created_at    REAL
+    fmt TEXT,
+    content TEXT,
+    variants TEXT,
+    alternatives TEXT,
+    trust TEXT,
+    revision INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
 )
 """
 
@@ -63,6 +64,15 @@ class DocumentDataStore:
             self._conn.execute(_SQL_CREATE)
             self._conn.execute(_SQL_CREATE_EDGES)
             self._conn.commit()
+            # Phase 4 (chat-card-redesign): revision column added after launch.
+            try:
+                self._conn.execute(
+                    "ALTER TABLE document_data ADD COLUMN revision INTEGER DEFAULT 0"
+                )
+                self._conn.commit()
+            except Exception:
+                # Column already exists on a fresh DB — safe to ignore.
+                pass
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] ensure_table failed: %s", exc)
 
@@ -75,18 +85,19 @@ class DocumentDataStore:
         variants: Dict[str, str],
         alternatives: list,
         trust: str,
+        revision: int = 0,
     ) -> None:
         """Upsert a document's canonical data + variants (idempotent by id)."""
         try:
             self._conn.execute(
                 "INSERT INTO document_data "
-                "(document_id, conversation_id, fmt, content, variants, alternatives, trust, created_at) "
+                "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(document_id) DO UPDATE SET "
                 "conversation_id=excluded.conversation_id, fmt=excluded.fmt, "
                 "content=excluded.content, variants=excluded.variants, "
                 "alternatives=excluded.alternatives, trust=excluded.trust, "
-                "created_at=excluded.created_at",
+                "revision=document_data.revision",
                 (
                     document_id,
                     conversation_id,
@@ -95,7 +106,7 @@ class DocumentDataStore:
                     json.dumps(variants or {}, ensure_ascii=False),
                     json.dumps(alternatives or [], ensure_ascii=False),
                     trust,
-                    time.time(),
+                    revision,
                 ),
             )
             self._conn.commit()
@@ -103,12 +114,30 @@ class DocumentDataStore:
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] store failed: %s", exc)
 
+    def update(self, document_id: str, content: str, fmt: str, variants: Dict[str, str], trust: str) -> bool:
+        """Phase 4 (chat-card-redesign): revise an existing document's content.
+
+        Bumps ``revision`` so the frontend can show an 'Updated' indicator and
+        later recall sees the latest version.  Returns False if the id is unknown.
+        """
+        try:
+            cur = self._conn.execute(
+                "UPDATE document_data SET content=?, fmt=?, variants=?, trust=?, revision=revision+1 "
+                "WHERE document_id=?",
+                (content, fmt, json.dumps(variants or {}, ensure_ascii=False), trust, document_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[DocumentDataStore] update failed: %s", exc)
+            return False
+
     def get(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Return the full document record, or None if not found."""
         try:
             row = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
-                "alternatives, trust, created_at "
+                "alternatives, trust, revision "
                 "FROM document_data WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
@@ -122,7 +151,7 @@ class DocumentDataStore:
                 "variants": json.loads(row[4] or "{}"),
                 "alternatives": json.loads(row[5] or "[]"),
                 "trust": row[6],
-                "created_at": row[7],
+                "revision": row[7] or 0,
             }
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] get failed: %s", exc)

@@ -1,5 +1,7 @@
 """Immortus 4D routing subsystem."""
 
+import uuid
+
 from .constants import (
     IMMORTUS_DEPTH_THRESHOLD,
     IMMORTUS_CLARITY_THRESHOLD,
@@ -20,6 +22,20 @@ from .session import ImmortusSession
 from .decisions import RouteDecision, ColdStartStrategy, PIVOT
 from .brain import ImmortusBrain
 from .router import SpeculativeRouter
+
+
+def generate_thread_id(prefix: str = "anon", suffix: str | None = None) -> str:
+    """Build a canonical Immortus thread id: ``immortus:thread-<p>-<s>``.
+
+    Both ``prefix`` and ``suffix`` are truncated to 4 chars.  When ``suffix``
+    is omitted a random 4-char suffix is generated, so repeated calls with the
+    same prefix yield distinct ids.  Shared by the REST chat endpoints and
+    ``ImmortusBrain._assign_thread_id`` so the format never drifts.
+    """
+    p = (prefix or "anon")[:4]
+    s = (suffix or uuid.uuid4().hex)[-4:]
+    return f"immortus:thread-{p}-{s}"
+
 
 __all__ = [
     "IMMORTUS_DEPTH_THRESHOLD",
@@ -42,4 +58,5 @@ __all__ = [
     "PIVOT",
     "ImmortusBrain",
     "SpeculativeRouter",
+    "generate_thread_id",
 ]
