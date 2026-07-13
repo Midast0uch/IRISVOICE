@@ -51,6 +51,18 @@ TTS_CHUNK_MIN = 20
 TTS_CHUNK_MAX = 200
 TTS_CHUNK_SCALE = 300  # chunk = clamp(force_magnitude * SCALE, MIN, MAX)
 
+# Serializes all TTS playback (agent-initiated utterances AND the main
+# response stream) so concurrent speech can never overlap or cut another
+# utterance off mid-word.  Acquired for the full duration of a playback in
+# ConversationKernel._speak_utterance and waited-on by iris_gateway before
+# the response starts playing.
+_NARRATION_PLAYBACK_LOCK = threading.Lock()
+
+
+def narration_playback_lock() -> threading.Lock:
+    """Shared lock serializing all TTS playback (agent speech + response)."""
+    return _NARRATION_PLAYBACK_LOCK
+
 
 class ConversationKernel:
     """v2: thin wrapper that adds Caducean phase-awareness to voice.
@@ -71,6 +83,7 @@ class ConversationKernel:
         tts_manager: Any,  # TTSManager (existing, used via callback only)
         audio_pipeline: Any,  # AudioPipeline (existing, for interrupt)
         session_id_getter: Callable[[], Optional[str]],
+        broadcast_event: Optional[Callable[[str, dict], None]] = None,
     ):
         """Constructor takes references to existing singletons.
 
@@ -91,6 +104,7 @@ class ConversationKernel:
         self._tts_manager = tts_manager
         self._audio_pipeline = audio_pipeline
         self._session_id_getter = session_id_getter
+        self._broadcast_event = broadcast_event
         self._was_speaking = False
         self._current_audio_level = 0.0
         # Speech-gating phase driven by the voice pipeline state machine
@@ -377,27 +391,108 @@ class ConversationKernel:
             name="ck-utterance",
         ).start()
 
+    def _broadcast_narration(self, session_id: str, msg: dict) -> None:
+        """Broadcast a WS event for agent speech (audio_envelope / listening_state).
+
+        Uses the bound broadcast callable wired by iris_gateway.set_voice_handler
+        (which wraps _ws_manager.broadcast_to_session in the main-loop coroutine).
+        This is the SAME narration contract the main response path uses, so the
+        orb / chatview "speaking" indicator fires for agent-initiated speech
+        (web-search progress, fillers, background narration) exactly as it does
+        for a normal LLM response. No-op if no broadcaster was wired (e.g. tests).
+        """
+        fn = getattr(self, "_broadcast_event", None)
+        if fn is None:
+            return
+        try:
+            fn(session_id, msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[ConversationKernel] narration broadcast failed: %s", exc)
+
     def _speak_utterance(self, text: str, interrupt: bool) -> None:
-        """Synthesize + play a single utterance (runs in a worker thread)."""
+        """Synthesize + play a single utterance (runs in a worker thread).
+
+        Broadcasts the SAME narration contract the main response path uses
+        (audio_envelope phase speaking→idle + listening_state speaking→idle)
+        so the frontend "speaking" indicator fires for agent-initiated speech.
+        Playback is serialized via the shared narration lock so this utterance
+        can never be cut off by — or cut off — another utterance or the response
+        stream.
+        """
         tts = getattr(self, "_tts_manager", None)
         pipeline = self._resolve_audio_pipeline()
         if tts is None or pipeline is None:
+            logger.warning(
+                "[ConversationKernel] Dropped utterance (tts=%s, pipeline=%s)",
+                tts is not None,
+                pipeline is not None,
+            )
             return
+        session_id = (
+            self._session_id_getter()
+            or getattr(self._voice_handler, "_active_session_id", None)
+            or "default"
+        )
         try:
             if interrupt and hasattr(tts, "stop"):
                 try:
                     tts.stop()
                 except Exception as exc:
                     logger.warning("[ConversationKernel] TTS stop failed: %s", exc)
+
+            # Mark speaking start on the frontend (same contract as _speak_response).
+            self._broadcast_narration(
+                session_id,
+                {"type": "listening_state", "payload": {"state": "speaking"}},
+            )
+            self._broadcast_narration(
+                session_id,
+                {
+                    "type": "audio_envelope",
+                    "payload": {"rms": 0.06, "cadence": 0.06, "phase": "speaking"},
+                },
+            )
+
             from backend.agent.tts import OUTPUT_SAMPLE_RATE
 
-            pipeline.play_stream(
-                tts.synthesize_stream(text), sample_rate=OUTPUT_SAMPLE_RATE
+            # Serialize playback so this utterance can't be cut off by (or cut
+            # off) another utterance or the response stream.
+            with _NARRATION_PLAYBACK_LOCK:
+                pipeline.play_stream(
+                    tts.synthesize_stream(text), sample_rate=OUTPUT_SAMPLE_RATE
+                )
+
+            # Mark speaking end on the frontend.
+            self._broadcast_narration(
+                session_id,
+                {
+                    "type": "audio_envelope",
+                    "payload": {"rms": 0.0, "cadence": 0.0, "phase": "idle"},
+                },
             )
-        except Exception as exc:
+            self._broadcast_narration(
+                session_id,
+                {"type": "listening_state", "payload": {"state": "idle"}},
+            )
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[ConversationKernel] TTS failed for utterance: %s", exc
             )
+            # Best-effort: clear the speaking state so the orb doesn't stick.
+            try:
+                self._broadcast_narration(
+                    session_id,
+                    {
+                        "type": "audio_envelope",
+                        "payload": {"rms": 0.0, "cadence": 0.0, "phase": "idle"},
+                    },
+                )
+                self._broadcast_narration(
+                    session_id,
+                    {"type": "listening_state", "payload": {"state": "idle"}},
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def _on_utterance_chunk(self, payload) -> None:
         """Handle an utterance:chunk event.

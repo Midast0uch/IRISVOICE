@@ -181,6 +181,10 @@ class IRISGateway:
         self._barge_in_stop: Optional[threading.Event] = None
         # Sessions currently in conversation mode (auto-relisten after TTS)
         self._conversation_sessions: set = set()
+        # Sessions in low-power "sleep" listen: VAD/recording/ASR released but
+        # the wake word (Porcupine) stays armed.  Auto-relisten is suppressed
+        # for these sessions until a wake word clears them (see _handle_voice).
+        self._sleeping_sessions: set = set()
         # Track last-seen timestamp for each session (for GC)
         self._session_last_seen: dict[str, float] = {}
         # Session GC task reference
@@ -1672,6 +1676,22 @@ class IRISGateway:
             )
 
             audio_pipeline = getattr(self, "_audio_pipeline", None)
+
+            # Bound broadcaster so agent-initiated speech (SpeakTool / fillers)
+            # can drive the SAME frontend narration contract the response path
+            # uses (audio_envelope + listening_state).  Wraps the WS send in the
+            # main-loop coroutine, matching iris_gateway's own broadcast pattern.
+            def _broadcast_narration_event(session_id: str, msg: dict) -> None:
+                ws = getattr(self, "_ws_manager", None)
+                loop = getattr(self, "_main_loop", None)
+                if ws is None or loop is None or not loop.is_running():
+                    return
+                import asyncio as _asyncio
+
+                _asyncio.run_coroutine_threadsafe(
+                    ws.broadcast_to_session(session_id, msg), loop
+                )
+
             kernel = ConversationKernel(
                 voice_handler=voice_handler,
                 # Use the canonical TTS singleton (get_tts_manager) so the kernel
@@ -1682,6 +1702,7 @@ class IRISGateway:
                 tts_manager=get_tts_manager(),
                 audio_pipeline=audio_pipeline,
                 session_id_getter=lambda: getattr(self, "_caducean_session_id", None),
+                broadcast_event=_broadcast_narration_event,
             )
             kernel.register_callbacks()
             set_conversation_kernel(kernel)
@@ -1862,8 +1883,10 @@ class IRISGateway:
         try:
             if msg_type == "voice_command_start":
                 self._logger.info(f"[Session: {session_id}] Voice command start")
-                # Enable conversation mode â€” will auto-relisten after each TTS response
+                # Enable conversation mode — will auto-relisten after each TTS response
                 self._conversation_sessions.add(session_id)
+                # A wake word / new voice command clears any prior low-power sleep
+                self._sleeping_sessions.discard(session_id)
 
                 # Interrupt TTS only if it is currently playing.
                 # Calling interrupt_speech() unconditionally sets
@@ -2033,6 +2056,102 @@ class IRISGateway:
                 session_id, {"type": "listening_state", "payload": {"state": "error"}}
             )
 
+    # ------------------------------------------------------------------ #
+    # "Stop listening" voice command — hands-free low-power listen.       #
+    # Detected from the transcribed speech text (NOT a wake word), so no  #
+    # extra Porcupine model is required.  When matched, the VAD/recording #
+    # /ASR pipeline is released but the wake word stays armed so "hey     #
+    # iris" reopens the conversation.                                     #
+    # ------------------------------------------------------------------ #
+    _STOP_LISTENING_PHRASES = (
+        "stop listening",
+        "stop listening now",
+        "stop listening please",
+        "go to sleep",
+        "go to sleep now",
+        "sleep now",
+        "sleep mode",
+        "that's all",
+        "thats all",
+        "stop now",
+        "pause listening",
+    )
+    # Leading filler words stripped before phrase matching so "hey iris stop
+    # listening" or "okay go to sleep" still match.
+    _STOP_LISTENING_FILLERS = (
+        "hey iris",
+        "hey irish",
+        "ok",
+        "okay",
+        "please",
+        "iris",
+        "um",
+        "uh",
+        "yo",
+    )
+
+    @staticmethod
+    def _normalize_for_sleep(transcript: str) -> str:
+        text = (transcript or "").lower().strip()
+        # Strip a single leading filler word (only once, to avoid loops).
+        for filler in IRISGateway._STOP_LISTENING_FILLERS:
+            if text == filler:
+                return ""
+            if text.startswith(filler + " "):
+                text = text[len(filler) + 1:].strip()
+                break
+        return text
+
+    def _matches_stop_listening(self, transcript: str) -> bool:
+        norm = self._normalize_for_sleep(transcript)
+        if not norm:
+            return False
+        return any(
+            norm == phrase or norm.startswith(phrase)
+            for phrase in IRISGateway._STOP_LISTENING_PHRASES
+        )
+
+    async def _enter_sleep_mode(self, session_id: str, client_id: str | None) -> None:
+        """
+        Release VAD/recording/ASR for a session but keep the wake word armed.
+        Broadcasts listening_state "idle" (the orb's low-power / waiting-for-
+        wake-word look).  Auto-relisten is suppressed via _sleeping_sessions.
+        """
+        self._sleeping_sessions.add(session_id)
+        self._conversation_sessions.discard(session_id)
+        if self._voice_handler is not None:
+            try:
+                self._voice_handler.cancel_recording()
+            except Exception as _e:
+                self._logger.warning(f"[Voice] sleep cancel_recording error: {_e}")
+        try:
+            await self._ws_manager.broadcast_to_session(
+                session_id,
+                {"type": "listening_state", "payload": {"state": "idle"}},
+            )
+        except Exception as _e:
+            self._logger.warning(f"[Voice] sleep broadcast error: {_e}")
+        self._logger.info(
+            f"[Voice] Session {session_id} entered low-power listen (sleep) — "
+            f"wake word stays armed"
+        )
+
+    def _should_auto_relisten(self, session_id: str, interrupted: "threading.Event") -> bool:
+        """
+        Decide whether _speak_response's finally block should auto-relisten
+        (re-open VAD/recording) after TTS, vs. falling back to idle.
+
+        Auto-relisten requires: conversation mode active, not interrupted, the
+        session is NOT in low-power "sleep" listen, and a voice handler exists.
+        """
+        if session_id not in self._conversation_sessions:
+            return False
+        if interrupted.is_set():
+            return False
+        if session_id in self._sleeping_sessions:
+            return False
+        return self._voice_handler is not None
+
     def _on_voice_result(self, result: dict) -> None:
         """
         Callback fired by VoiceCommandHandler when LFM2-Audio finishes processing.
@@ -2070,6 +2189,20 @@ class IRISGateway:
             if loop is None or not loop.is_running():
                 self._logger.error(
                     "[Voice] _on_voice_result: main event loop not available"
+                )
+                return
+
+            # ── "Stop listening" voice command (hands-free low-power listen) ──
+            # Detected from the transcribed text — no wake word required.  When
+            # matched we release VAD/recording/ASR (keep wake word armed) and
+            # skip the LLM/TTS pipeline entirely.
+            if transcript and self._matches_stop_listening(transcript):
+                self._logger.info(
+                    f"[Voice] 'stop listening' detected for session {session_id} "
+                    f"(transcript={transcript!r}) — entering low-power listen"
+                )
+                asyncio.run_coroutine_threadsafe(
+                    self._enter_sleep_mode(session_id, client_id), loop
                 )
                 return
 
@@ -2725,6 +2858,21 @@ class IRISGateway:
         _playback_event: threading.Event = threading.Event()
 
         def _producer():
+            # Wait for any in-flight agent-initiated utterance (SpeakTool /
+            # fillers) to finish before we start playing the response, so the
+            # response stream can't cut the agent's narration off mid-word
+            # (e.g. web-search "Searching…").  Non-holding wait: we block until
+            # the shared narration lock is free, then release — we do NOT hold it
+            # for the whole response, so the agent can still speak during a long
+            # response if needed.
+            try:
+                from backend.agent.conversation_kernel import narration_playback_lock
+
+                with narration_playback_lock():
+                    pass
+            except Exception:  # noqa: BLE001
+                pass
+
             # Helper: push chunk to native player with auto-fallback to queue
             _last_level_time = [0.0]  # mutable for closure; throttle to ~10 Hz
 
@@ -3591,10 +3739,11 @@ class IRISGateway:
             if session_id and _main_loop:
                 import asyncio as _asyncio
 
-                # Conversation mode: auto-relisten unless interrupted or cancelled
+                # Conversation mode: auto-relisten unless interrupted, cancelled,
+                # or the session is in low-power "sleep" listen.
                 in_conversation = session_id in self._conversation_sessions
                 was_interrupted = interrupted.is_set()
-                if in_conversation and not was_interrupted and self._voice_handler:
+                if self._should_auto_relisten(session_id, interrupted):
                     self._logger.info(
                         f"[Voice] Conversation mode: auto-resuming listen for session {session_id}"
                     )

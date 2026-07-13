@@ -4575,6 +4575,9 @@ Respond with a JSON object:
         # Force a real tool for web-search steps the planner left tool-less.
         # Without this, web-intent steps fall through to _run_step_direct and the
         # LLM returns empty ("[step N completed]") instead of actually searching.
+        # Also catches mode names (agentic / quick / full) that the LLM planner
+        # sometimes assigns instead of the actual tool name.
+        _MODE_NAMES = frozenset({"agentic", "quick", "full"})
         _orig_lc = (plan.original_task or "").lower()
         _web_intent = any(
             k in _orig_lc
@@ -4584,7 +4587,9 @@ Respond with a JSON object:
             _single = len(queue.items) == 1
             for _it in queue.items:
                 _t = (_it.tool or "").strip().lower()
-                if _t and _t != "direct":
+                # Treat mode names + None/direct as "no real tool" so the fix-up
+                # overrides with the actual tool ("search") for web-intent steps.
+                if _t and _t not in ("direct", *_MODE_NAMES):
                     continue  # already has a real tool assigned
                 _desc_lc = (_it.description or "").lower()
                 _is_search_step = any(
@@ -4592,11 +4597,43 @@ Respond with a JSON object:
                     for k in ("search", "look up", "look for", "find", "fetch", "web", "google", "browse", "research")
                 )
                 if _single or _is_search_step:
-                    _q = _it.description or plan.original_task
-                    for _p in ("search the web for ", "search for ", "web search for ", "search ", "look up ", "google ", "find "):
-                        if _q.lower().startswith(_p):
-                            _q = _q[len(_p):]
-                            break
+                    # Prefer the LLM planner's refined query (if it set one),
+                    # fall back to extracting from the step description.
+                    _existing_query = (
+                        _it.params.get("query", "").strip()
+                        if isinstance(_it.params, dict) else ""
+                    )
+                    if _existing_query:
+                        _q = _existing_query
+                    else:
+                        _q = _it.description or plan.original_task
+                        # Extract the core search query from conversational framing
+                        # using regex. Covers patterns like:
+                        #   "Can you do a web search for me for X"
+                        #   "Search the web for X"
+                        #   "Could you look up X"  etc.
+                        import re
+                        _m = re.search(
+                            r"(?:"
+                            r"search\s+(?:the\s+web\s+)?(?:for\s+)?(?:me\s+)?(?:about\s+)?(?:for\s+)?"
+                            r"|look\s+(?:up\s+|for\s+)"
+                            r"|find\s+(?:me\s+)?"
+                            r"|google\s+"
+                            r"|browse\s+(?:for\s+)?"
+                            r"|research\s+"
+                            r"|(?:do|run)\s+a\s+(?:web\s+)?search\s+(?:for\s+)?(?:me\s+)?(?:about\s+)?(?:for\s+)?"
+                            r")(.+?)$",
+                            _q,
+                            re.IGNORECASE | re.DOTALL,
+                        )
+                        if _m:
+                            _q = _m.group(1).strip()
+                        # If nothing extracted, strip generic conversational framing.
+                        if not _m:
+                            _q = re.sub(
+                                r"^(?:could you|can you|would you|i need you to|i want you to|please|hey)\s+",
+                                "", _q, flags=re.I
+                            ).strip()
                     _it.tool = "search"
                     _it.params = {"query": _q.strip()}
                     logger.info("[DER] forced tool=search for step %d (query=%r)", _it.step_number, _it.params["query"])

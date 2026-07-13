@@ -22,6 +22,8 @@ downloaded models (mocked where needed).  Covers:
 
 import sys
 import os
+import asyncio
+import logging
 import threading
 import time
 import types
@@ -2231,3 +2233,167 @@ class TestTTSWordEventIntegration:
             f"tts_play must NOT send listening_state:speaking — it would pollute "
             f"voiceState.  Got {len(speaking_msgs)} speaking state messages."
         )
+
+
+# ---------------------------------------------------------------------------
+# 15. "Stop listening" voice command — hands-free low-power listen
+# ---------------------------------------------------------------------------
+
+
+class TestStopListening:
+    """
+    A spoken "stop listening" (or "go to sleep" / "that's all" / etc.) releases
+    VAD/recording/ASR but keeps the wake word armed.  Detected from the
+    transcribed speech text — NO separate wake word required.
+    """
+
+    def _make_gateway(self):
+        from backend.iris_gateway import IRISGateway
+
+        mock_ws = MagicMock()
+        mock_state = MagicMock()
+        with (
+            patch("backend.iris_gateway.get_websocket_manager", return_value=mock_ws),
+            patch("backend.iris_gateway.get_state_manager", return_value=mock_state),
+            patch("backend.iris_gateway.WakeWordDiscovery"),
+            patch("backend.iris_gateway.CleanupAnalyzer"),
+            patch("backend.iris_gateway.LFMVLProvider"),
+            patch("threading.Thread"),
+        ):
+            gw = IRISGateway.__new__(IRISGateway)
+            gw._ws_manager = mock_ws
+            gw._state_manager = mock_state
+            gw._logger = logging.getLogger("test")
+            gw._voice_handler = MagicMock()
+            gw._conversation_sessions = set()
+            gw._sleeping_sessions = set()
+            gw._active_voice_client = {"default": "client-1"}
+            gw._active_conversation_id = {}
+            gw._relisten_pre_speech_timeout = 8.0
+        return gw
+
+    @staticmethod
+    def _running_loop():
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        return loop
+
+    @pytest.mark.parametrize(
+        "phrase,expected",
+        [
+            ("stop listening", True),
+            ("Stop Listening", True),
+            ("stop listening now", True),
+            ("hey iris stop listening", True),
+            ("okay go to sleep", True),
+            ("go to sleep now", True),
+            ("that's all", True),
+            ("thats all", True),
+            ("pause listening", True),
+            ("what's the weather", False),
+            ("stop the music", False),
+            ("listening", False),
+            ("", False),
+            ("hey iris what time is it", False),
+        ],
+    )
+    def test_matches_stop_listening(self, phrase, expected):
+        gw = self._make_gateway()
+        assert gw._matches_stop_listening(phrase) is expected
+
+    def test_on_voice_result_enters_sleep_and_skips_pipeline(self):
+        gw = self._make_gateway()
+        loop = self._running_loop()
+        gw._main_loop = loop
+        recorded = []
+
+        async def fake_process(self2, *a, **k):
+            recorded.append(a)
+
+        gw._process_voice_transcription = types.MethodType(fake_process, gw)
+
+        gw._on_voice_result(
+            {"transcript": "stop listening", "session_id": "default", "audio_context": ""}
+        )
+        time.sleep(0.25)  # let scheduled coroutine run
+
+        assert "default" in gw._sleeping_sessions
+        assert "default" not in gw._conversation_sessions
+        gw._voice_handler.cancel_recording.assert_called_once()
+        idle_calls = [
+            c
+            for c in gw._ws_manager.broadcast_to_session.call_args_list
+            if c.args[1]["type"] == "listening_state"
+            and c.args[1]["payload"]["state"] == "idle"
+        ]
+        assert idle_calls, "expected listening_state:idle broadcast on sleep"
+        assert recorded == [], "LLM/TTS pipeline must be skipped for stop command"
+        loop.call_soon_threadsafe(loop.stop)
+
+    def test_on_voice_result_normal_command_still_processed(self):
+        gw = self._make_gateway()
+        loop = self._running_loop()
+        gw._main_loop = loop
+        recorded = []
+
+        async def fake_process(self2, *a, **k):
+            recorded.append(a)
+
+        gw._process_voice_transcription = types.MethodType(fake_process, gw)
+
+        gw._on_voice_result(
+            {
+                "transcript": "what time is it",
+                "session_id": "default",
+                "audio_context": "",
+            }
+        )
+        time.sleep(0.25)
+
+        assert "default" not in gw._sleeping_sessions
+        assert recorded, "normal command should still reach the pipeline"
+        loop.call_soon_threadsafe(loop.stop)
+
+    def test_should_auto_relisten_true_in_conversation(self):
+        gw = self._make_gateway()
+        gw._conversation_sessions.add("default")
+        assert gw._should_auto_relisten("default", threading.Event()) is True
+
+    def test_should_auto_relisten_false_when_sleeping(self):
+        gw = self._make_gateway()
+        gw._conversation_sessions.add("default")
+        gw._sleeping_sessions.add("default")
+        assert gw._should_auto_relisten("default", threading.Event()) is False
+
+    def test_should_auto_relisten_false_when_interrupted(self):
+        gw = self._make_gateway()
+        gw._conversation_sessions.add("default")
+        ev = threading.Event()
+        ev.set()
+        assert gw._should_auto_relisten("default", ev) is False
+
+    def test_enter_sleep_mode_clears_conversation_and_broadcasts_idle(self):
+        gw = self._make_gateway()
+        loop = self._running_loop()
+        gw._main_loop = loop
+        gw._conversation_sessions.add("default")
+
+        asyncio.run_coroutine_threadsafe(
+            gw._enter_sleep_mode("default", "client-1"), loop
+        )
+        time.sleep(0.25)
+
+        assert "default" in gw._sleeping_sessions
+        assert "default" not in gw._conversation_sessions
+        gw._voice_handler.cancel_recording.assert_called_once()
+        loop.call_soon_threadsafe(loop.stop)
+
+    def test_wake_word_clears_sleep(self):
+        gw = self._make_gateway()
+        gw._sleeping_sessions.add("default")
+        # Simulate wake-word re-entry (_handle_voice / barge-in)
+        gw._conversation_sessions.add("default")
+        gw._sleeping_sessions.discard("default")
+        assert "default" not in gw._sleeping_sessions
+        assert gw._should_auto_relisten("default", threading.Event()) is True
+

@@ -1,6 +1,6 @@
 # IRIS Voice — Full Audio Pipeline Architecture
 
-> **DEFINITIVE REFERENCE** — Last updated 2026-07-05 (session 155).
+> **DEFINITIVE REFERENCE** — Last updated 2026-07-13 (agent narration unification + stop-listening voice command).
 > This document is the single source of truth for the audio pipeline. If the
 > code and this document ever disagree, treat this as a bug and update both.
 > All values below are verified against `backend/audio/voice_command.py` and
@@ -25,6 +25,8 @@
 13. [Error Recovery](#error-recovery)
 14. [Test Coverage](#test-coverage)
 15. [Known Issues & Recent Fixes](#known-issues--recent-fixes)
+16. [Agent-Initiated Narration](#agent-initiated-narration-speaktool--conversationkernel)
+17. [Stop Listening Voice Command](#stop-listening-voice-command)
 
 ---
 
@@ -61,12 +63,14 @@ WebSocket broadcasts.
 | **VoiceCommandHandler** | `backend/audio/voice_command.py` | VAD, recording, STT orchestration, cadence detection, activation beep | Multi-threaded (VAD + STT + beep) |
 | **ParakeetTranscriber** | `backend/audio/voice_command.py` | In-process GPU ASR (lazy-loaded, ~1.2GB VRAM) | Async |
 | **CadenceDetector** | `backend/audio/cadence_detector.py` | Spectral flux → 0-1 cadence envelope | Inline |
-| **iris_gateway** | `backend/iris_gateway.py` | TTS orchestration, WS events, word timing, state management | Multi-threaded (producer + consumer + word monitor + cadence) |
+| **iris_gateway** | `backend/iris_gateway.py` | TTS orchestration, WS events, word timing, state management, stop-listening sleep state (`_sleeping_sessions`) | Multi-threaded (producer + consumer + word monitor + cadence) |
 | **WS Manager** | `backend/ws_manager.py` | WebSocket broadcast/send with session tracking | Async |
 | **useIRISWebSocket** | `hooks/useIRISWebSocket.ts` | WS event dispatch → React state | React effect |
 | **XurOrb** | `components/iris/XurOrb.tsx` | Orb component, voice state rendering | React |
 | **OrbCanvas** | `components/iris/orb/OrbCanvas.tsx` | Canvas-based 3D orb, breath animations | Canvas RAF |
 | **chat-view** | `components/chat-view.tsx` | Word highlighting, response rendering | React effect |
+| **SpeakTool** | `backend/agent/tools/speak_tool.py` | Agent-initiated TTS speech (fire-and-forget, rate-limited, bounded) | EventBus emit |
+| **ConversationKernel (narration)** | `backend/agent/conversation_kernel.py` | Single narration path for agent speech; broadcasts audio_envelope / listening_state | Worker thread |
 
 ---
 
@@ -294,6 +298,153 @@ TTS echo from the interrupted playback decay before VAD speech detection begins.
 │  ├─ breathMode/breathLevel props → animation driver     │
 │  └─ Smooth interpolation between states                  │
 └──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Agent-Initiated Narration (SpeakTool → ConversationKernel)
+
+Agent-initiated speech — web-search progress ("Searching the web for…"),
+fillers ("One moment"), `ask_user` reminders, and any background narration —
+is the SAME output stream as a normal LLM response. There is ONE frontend
+narration contract; both TTS drivers feed it.
+
+### The single narration contract
+
+The frontend "speaking / thinking" indicator (orb + chatview) is driven ONLY
+by two WS messages:
+
+  * `audio_envelope`  — `{ rms, cadence, phase: "speaking" | "idle" }`
+  * `listening_state` — `{ state: "speaking" | "idle" | ... }`
+
+Both the normal response path (`iris_gateway._speak_response`) and the
+agent-initiated path (`ConversationKernel._speak_utterance`) broadcast these.
+This is the unification: "utterance" and "narration" are one concept — the
+act of the agent speaking.
+
+### SpeakTool (fire-and-forget emitter)
+
+`backend/agent/tools/speak_tool.py`:
+
+  * `speak(text, priority, interrupt)` emits `UTTERANCE_START` on the EventBus
+    and returns immediately (never blocks the DER loop).
+  * Text bounded to `MAX_TEXT_CHARS = 500`; pending speaks rate-limited
+    (`MAX_PENDING = 3` within a 10s window) so a runaway agent can't flood TTS.
+  * `UTTERANCE_START` / `UTTERANCE_DONE` are a BACKEND-INTERNAL contract
+    (consumed by `SpeakBroadcaster` for external channels — Telegram, MCP).
+    The frontend does NOT listen to them; it listens to `audio_envelope` /
+    `listening_state` (above).
+
+### ConversationKernel._speak_utterance (the single narration path)
+
+`backend/agent/conversation_kernel.py`:
+
+  1. `_on_utterance_start` (subscribed to `UTTERANCE_START`) spawns a daemon
+     worker thread → `_speak_utterance(text, interrupt)`.
+  2. Resolves session_id (`session_id_getter` → `voice_handler._active_session_id`
+     → `"default"`).
+  3. Broadcasts `listening_state: speaking` + `audio_envelope` (phase speaking).
+  4. Serializes playback via the shared `_NARRATION_PLAYBACK_LOCK` (below) and
+     calls `pipeline.play_stream(tts.synthesize_stream(text))`.
+  5. Broadcasts `audio_envelope` (phase idle) + `listening_state: idle`.
+
+Because steps 3 and 5 use the SAME messages as `_speak_response`, the orb /
+chatview "speaking" indicator now fires for agent speech exactly as it does
+for a normal response — web search, fillers, and any background task the user
+is waiting on.
+
+### Serialization (no cut-off)
+
+`_NARRATION_PLAYBACK_LOCK` (module-level in `conversation_kernel.py`, exposed
+via `narration_playback_lock()`) serializes ALL TTS playback:
+
+  * `ConversationKernel._speak_utterance` holds it for the full playback.
+  * `iris_gateway._speak_response` waits on it (non-holding) at the start of
+    its producer thread, so a response can't cut an in-flight agent utterance
+    off mid-word (the web-search "Searching…" cut-off bug).
+
+This fixes the TTS utterance cut-off that occurred when the DER loop advanced
+and the next step's audio overlapped the still-playing utterance.
+
+---
+
+## Stop Listening Voice Command
+
+The user can release the microphone hands-free by saying a stop-listening
+phrase. This is detected from the **transcribed speech text** — it does NOT
+require a separate wake word or a second Porcupine model. The wake word
+("Hey Iris") only *opens* the session; a stop-listening phrase *closes* it.
+
+### Trigger phrases
+
+`iris_gateway._STOP_LISTENING_PHRASES` (matched after filler stripping via
+`_normalize_for_sleep`):
+
+- "stop listening" / "stop listening now"
+- "go to sleep" / "sleep now" / "sleep mode"
+- "that's all" / "thats all"
+- "stop now"
+- "pause listening"
+
+Fillers stripped before matching (`_STOP_LISTENING_FILLERS`): "hey iris",
+"okay", "please", "iris", "um", "uh", "yo". So "hey iris stop listening" and
+"okay stop listening now" both match.
+
+### State
+
+`iris_gateway._sleeping_sessions: set` — session IDs that have been put to
+sleep. Initialized in `__init__` alongside the other session-state sets.
+
+### Entering sleep — `_enter_sleep_mode(session_id)`
+
+Async coroutine invoked (via `run_coroutine_threadsafe`) from
+`_on_voice_result` when a stop phrase is detected:
+
+1. `self._sleeping_sessions.add(session_id)`
+2. `self._conversation_sessions.discard(session_id)` — drops conversation
+   mode so the next wake word starts a fresh turn
+3. `voice_handler.cancel_recording()` — releases VAD / recording / ASR
+4. Broadcasts `listening_state: "idle"` — orb returns to idle
+
+**Porcupine stays armed.** Only the heavy VAD/STT/TTS path is released; the
+native C++ wake-word listener keeps running at low power, so a later
+"Hey Iris" re-opens the session.
+
+### Interception point — `_on_voice_result`
+
+After the loop-availability check and BEFORE the empty-transcript branch,
+the transcript is tested with `_matches_stop_listening()`. On a match the
+gateway calls `_enter_sleep_mode(...)` and **returns immediately** — the
+LLM is never queried and TTS never fires. Normal commands fall through to
+the normal pipeline unchanged.
+
+### Auto-relisten suppression — `_should_auto_relisten`
+
+Extracted helper used by the `_speak_response` finally block. Returns
+`True` only when:
+
+- the session is in conversation mode, AND
+- `session_id not in self._sleeping_sessions`
+
+So a response that finished just before the user said "stop listening" will
+NOT auto-relisten and re-open the mic — the session stays asleep until the
+next wake word.
+
+### Wake-word re-entry — `_handle_voice`
+
+On a new wake-word detection, `self._sleeping_sessions.discard(session_id)`
+clears the sleep flag so the session behaves normally again. (Barge-in does
+NOT clear sleep — sleep and an active recording cannot coexist; the user
+must wake the assistant to resume.)
+
+### Voice State Machine addition
+
+A `SLEEP` state is added to the voice state machine (see
+[Voice State Machine](#voice-state-machine) for the full diagram):
+
+```
+SLEEP → (wake word) → RECORDING   (re-opens the session)
+SPEAKING / IDLE → (stop-listening phrase) → SLEEP   (mic released, wake word armed)
 ```
 
 ---
@@ -635,6 +786,10 @@ mechanism).
 IDLE → (wake word / double-click) → RECORDING → PROCESSING → SPEAKING → IDLE
   ↑                                                                          │
   └──────────────────── conversation mode: auto-relisten ────────────────────┘
+  ▲                                                                          │
+  └── stop-listening phrase → SLEEP (mic released, wake word armed) ──────────┘
+
+SLEEP → (wake word) → RECORDING   (re-opens the session)
 
 Error path: any state → ERROR → IDLE (2s delay)
 ```
@@ -648,6 +803,8 @@ Error path: any state → ERROR → IDLE (2s delay)
 | PROCESSING | SPEAKING | LLM response ready, TTS starts |
 | SPEAKING | IDLE | TTS playback complete (single-shot mode) |
 | SPEAKING | RECORDING | Conversation mode auto-relisten |
+| SPEAKING / IDLE | SLEEP | Stop-listening phrase detected in transcript |
+| SLEEP | RECORDING | Wake word ("Hey Iris") detected |
 | any | ERROR | Exception in pipeline |
 | ERROR | IDLE | 2s delay, unsticks orb |
 
@@ -721,6 +878,8 @@ LLM provider memory (separate, user-selected):
 - `backend/tests/test_chunk_callback_nonstreaming.py` — 6 chunk callback / DER path tests
 - `backend/tests/test_barge_in.py` — 40+ tests
 - `backend/tests/test_conversation_kernel.py` — 12 tests
+- `backend/tests/test_voice_pipeline.py::TestStopListening` — 21 tests (phrase match incl. fillers/negatives, pipeline interception skips LLM/TTS, auto-relisten suppression, sleep entry, wake-word re-entry)
+- `backend/tests/test_narration_broadcast.py` — 4 tests (narration speaking→idle order, serialization via `_NARRATION_PLAYBACK_LOCK`, no-broadcast unwired, gateway wires broadcaster)
 
 ### TestWordMonitorCharacterProportional (6 unit tests)
 
@@ -765,6 +924,49 @@ The `_monitor_words` function has a contract comment:
 ---
 
 ## Known Issues & Recent Fixes
+
+### Session 156 (2026-07-13) — Agent Narration Unification
+
+**RESOLVED**:
+- Agent-initiated speech (SpeakTool / fillers / ask_user) now drives the SAME
+  frontend "speaking" indicator as normal LLM responses. Previously
+  `ConversationKernel._speak_utterance` called `pipeline.play_stream()`
+  directly and emitted no `audio_envelope` / `listening_state`, so web-search
+  progress, fillers, and background narration showed no UI. Now it broadcasts
+  `audio_envelope` (phase speaking→idle) + `listening_state` (speaking→idle) —
+  the single narration contract.
+- TTS utterance cut-off fixed via `_NARRATION_PLAYBACK_LOCK` shared between
+  `ConversationKernel._speak_utterance` and `iris_gateway._speak_response`.
+  The response waits for any in-flight agent utterance before playing, so it
+  can't cut narration off mid-word.
+- Design decision: "utterance" == "narration" (one concept). `UTTERANCE_START`
+  / `UTTERANCE_DONE` remain a backend-internal contract for `SpeakBroadcaster`
+  (external channels); the frontend consumes only `audio_envelope` /
+  `listening_state`.
+
+### Session 157 (2026-07-13) — Stop Listening Voice Command
+
+**RESOLVED**:
+- Hands-free "stop listening" voice command, detected from the **transcribed
+  speech text** (no separate wake word / Porcupine model). Phrases: "stop
+  listening", "go to sleep", "that's all", "pause listening", etc. (fillers
+  like "hey iris" / "okay" stripped first via `_normalize_for_sleep`).
+- `iris_gateway._sleeping_sessions: set` tracks asleep sessions.
+  `_enter_sleep_mode()` adds the session, drops conversation mode, calls
+  `voice_handler.cancel_recording()`, and broadcasts `listening_state: idle`.
+  Porcupine stays armed — a later "Hey Iris" re-opens the session.
+- Interception in `_on_voice_result`: a stop phrase returns early (skips
+  LLM/TTS). Normal commands are unaffected.
+- Auto-relisten suppressed via extracted `_should_auto_relisten()` helper
+  (adds `session_id not in self._sleeping_sessions`), so a response that
+  finished just before "stop listening" won't re-open the mic.
+- Wake-word re-entry in `_handle_voice` clears the sleep flag
+  (`_sleeping_sessions.discard`). Barge-in does NOT clear sleep (sleep and an
+  active recording cannot coexist).
+- 25 new tests pass: `TestStopListening` (21) + `test_narration_broadcast.py`
+  (4). Pre-existing failures in `test_domain2_voice.py` (DER_TOKEN_BUDGETS
+  KeyError) and `test_barge_in.py::test_idle_timer_is_daemon` are unrelated to
+  this change.
 
 ### Session 155 (2026-07-05) — Pipeline Solidified (commit 3997c3ca)
 
