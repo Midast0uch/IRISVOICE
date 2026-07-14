@@ -322,9 +322,16 @@ class DirectorQueue:
         if mode_budget > 0 and token_budget_remaining < mode_budget:
             budget_used = max(0, mode_budget - token_budget_remaining)
             budget_used_ratio = budget_used / mode_budget
-            if budget_used_ratio < BUDGET_RATIO_ESCALATE:
+            # M1 FIX: only escalate on unused budget if task is complex
+            # (has enough steps or tool diversity to warrant escalation)
+            _total = len(self.items)
+            _is_complex = _total >= 3 or len(set(
+                i.tool for i in self.items if i.tool
+            )) >= 2
+            if budget_used_ratio < BUDGET_RATIO_ESCALATE and _is_complex:
                 self.escalate(
-                    reason=f"Budget mostly unused ({token_budget_remaining}/{mode_budget}) — escalating",
+                    reason=f"Budget mostly unused ({token_budget_remaining}/{mode_budget}) "
+                           f"and task is complex ({_total} steps) — escalating",
                     turn_id=turn_id,
                     token_budget=token_budget_remaining,
                 )

@@ -65,24 +65,29 @@ class TestDatabaseEncryption:
         # Create encrypted database
         conn1 = open_encrypted_memory(temp_db_path, biometric_key)
         try:
-            # Create a test table and insert data
             conn1.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)")
             conn1.execute("INSERT INTO test (data) VALUES ('secret_data')")
             conn1.commit()
+            # Flush WAL into the main encrypted db so reopen reads only it.
+            conn1.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             conn1.close()
-        
+
+        # Remove WAL/SHM leftovers so reopen uses the encrypted main db only.
+        for _suffix in ("-wal", "-shm"):
+            _wp = temp_db_path + _suffix
+            if os.path.exists(_wp):
+                os.remove(_wp)
+
         # Try to open with wrong key
         wrong_key = b"y" * 32  # Different 32-byte key
-        conn2 = open_encrypted_memory(temp_db_path, wrong_key)
-        try:
-            # Should fail or return garbage when trying to read
-            with pytest.raises(Exception):
+        # Opening with the wrong key must fail (or reading must fail).
+        with pytest.raises(Exception):
+            conn2 = open_encrypted_memory(temp_db_path, wrong_key)
+            try:
                 conn2.execute("SELECT * FROM test")
-        except:
-            pass  # Expected to fail
-        finally:
-            conn2.close()
+            finally:
+                conn2.close()
     
     def test_wal_mode_enabled(self, temp_db_path, biometric_key):
         """Test that WAL mode is enabled."""
@@ -110,7 +115,7 @@ class TestDatabaseEncryption:
         try:
             cursor = conn.execute("PRAGMA cipher_page_size")
             page_size = cursor.fetchone()[0]
-            assert page_size == 4096, f"Page size should be 4096, got {page_size}"
+            assert int(page_size) == 4096, f"Page size should be 4096, got {page_size}"
         finally:
             conn.close()
     
@@ -160,17 +165,19 @@ class TestImportErrorHandling:
         assert not db.is_sqlcipher_available()
     
     def test_open_encrypted_memory_raises_import_error(self, monkeypatch):
-        """Test that open_encrypted_memory raises ImportError when sqlcipher3 missing."""
+        """Test that open_encrypted_memory raises ImportError when sqlcipher3 missing
+        AND encryption is required (IRIS_MEMORY_ENCRYPTION=1)."""
         # Simulate sqlcipher3 not being available
         import sys
         monkeypatch.setitem(sys.modules, "sqlcipher3", None)
-        
+        monkeypatch.setattr("backend.memory.db._REQUIRE_ENCRYPTION", True)
+
         from backend.memory import db
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "test.db")
             key = b"x" * 32
-            
+
             with pytest.raises(ImportError):
                 db.open_encrypted_memory(db_path, key)
 

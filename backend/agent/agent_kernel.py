@@ -45,6 +45,7 @@ try:
         DER_EMERGENCY_STOP,
         DER_TOKEN_BUDGETS,
         TRAILING_GAP_MIN,
+        ExecutionMode,
     )
 except Exception:
     DER_MAX_CYCLES = 40
@@ -1315,66 +1316,99 @@ class AgentKernel:
         task_summary: str,
     ) -> None:
         """
-        After each task, check whether any tool-name pattern has recurred
-        enough times to warrant codifying as a skill.
+        After each task, capture a *verified* reusable skill when the run used
+        >= 3 distinct tools and the sequence is not already a known skill.
+
+        Phase 5.1 (research D1): replaces the old count-based heuristic that
+        merely prompted the LLM to write a SKILL.md.  The new pipeline is
+        deterministic and verified:
+          1. Trigger iff >= 3 DISTINCT tools AND similarity to existing skills
+             < 0.85 (workflow_capture.should_capture).
+          2. Self-test: every step names a tool registered in tool_registry
+             (no unknown tools) — a safe structural replay, no real execution
+             (workflow_capture.self_test_skill).
+          3. Register the verified skill in semantic memory
+             (workflow_capture.register_verified_skill), mirroring
+             SkillCrystalliser's storage so the skill UI / AutoResearchRunner
+             pick it up for continuous refinement (MIN_IMPROVEMENT = 0.05).
 
         tool_sequence is the list of tool-call dicts recorded by the DER loop.
-        Only sequences of 2+ tools are considered (single-tool calls are noise).
-        When a pattern reaches self._skill_trigger_threshold uses this session,
-        the agent is prompted once to create a SKILL.md for it.
         """
+        import json
+
         if not tool_sequence or len(tool_sequence) < 2:
             return
 
-        # Normalise: extract just tool names in order.
-        names = []
-        for tc in tool_sequence:
-            if isinstance(tc, dict):
-                name = (
-                    tc.get("name")
-                    or tc.get("tool")
-                    or tc.get("function", {}).get("name", "")
-                )
-                if name:
-                    names.append(name)
-        if len(names) < 2:
+        # Only capture from successful runs.
+        successful = [
+            s for s in tool_sequence
+            if isinstance(s, dict) and s.get("success", False)
+        ]
+        if len(successful) < 2:
             return
 
+        # In-session dedupe so we don't re-trigger for the same pattern.
+        names = []
+        for tc in successful:
+            name = (
+                tc.get("name")
+                or tc.get("tool")
+                or tc.get("function", {}).get("name", "")
+            )
+            if name:
+                names.append(name)
         pattern_key = " → ".join(names)
+        if pattern_key in self._prompted_skill_patterns:
+            return
+        self._prompted_skill_patterns.add(pattern_key)
 
-        self._session_tool_patterns[pattern_key] = (
-            self._session_tool_patterns.get(pattern_key, 0) + 1
-        )
-        count = self._session_tool_patterns[pattern_key]
+        try:
+            from backend.agent.workflow_capture import capture_workflow
+            from backend.agent.tool_registry import resolve_tool
 
-        if (
-            count >= self._skill_trigger_threshold
-            and pattern_key not in self._prompted_skill_patterns
-        ):
-            self._prompted_skill_patterns.add(pattern_key)
-            prompt = (
-                f"I noticed you used the tool sequence [{pattern_key}] "
-                f"{count} times this session while working on tasks like "
-                f'"{task_summary[:80]}". '
-                "This pattern is a good candidate for a reusable skill. "
-                "Please create a SKILL.md in backend/agent/skills/ that codifies "
-                "this sequence so future sessions can invoke it by name instead of "
-                "repeating the same steps. Name the skill after what it accomplishes."
-            )
-            logger.info(
-                "[AgentKernel] Skill trigger fired for pattern: %s (used %d times)",
-                pattern_key,
-                count,
-            )
-            # Queue the skill-creation prompt as a follow-up message.
-            # We use the internal message queue if available; otherwise log only.
+            memory = self._memory_interface
+            if memory is None or not hasattr(memory, "semantic"):
+                return
+
+            # Existing skills (for similarity de-dup).
+            existing_skills = []
             try:
-                if hasattr(self, "_pending_follow_ups"):
-                    self._pending_follow_ups.append(prompt)
-                else:
-                    self._pending_follow_ups = [prompt]
+                for entry in memory.semantic.get_by_category("named_skills"):
+                    try:
+                        existing_skills.append(json.loads(entry.value))
+                    except Exception:
+                        continue
             except Exception:
-                pass
+                existing_skills = []
+
+            key = capture_workflow(
+                tool_sequence=successful,
+                memory=memory,
+                existing_skills=existing_skills,
+                is_registered=lambda n: resolve_tool(n) is not None,
+            )
+            if key:
+                logger.info(
+                    "[AgentKernel] Verified skill captured: %s (pattern: %s)",
+                    key, pattern_key,
+                )
+                note = (
+                    f"I captured a verified skill from this run "
+                    f"({pattern_key}). It will be reused automatically."
+                )
+                try:
+                    if hasattr(self, "_pending_follow_ups"):
+                        self._pending_follow_ups.append(note)
+                    else:
+                        self._pending_follow_ups = [note]
+                except Exception:
+                    pass
+            else:
+                logger.debug(
+                    "[AgentKernel] Skill capture skipped for pattern: %s", pattern_key
+                )
+        except Exception as e:
+            logger.error("[AgentKernel] Skill capture failed: %s", e, exc_info=True)
 
     # ------------------------------------------------------------------
     # Helpers: thinking-token stripping, planning gate, direct response
@@ -4062,15 +4096,15 @@ class AgentKernel:
                 _der_task_class = (
                     _mode_name if _mode_name in DER_TOKEN_BUDGETS else _task_class
                 )
-                _der_response = self._execute_plan_der(
-                    plan=_plan,
-                    context_package=_context_package,
-                    is_mature=_is_mature,
-                    task_class=_der_task_class,
-                    session_id=session_id or self.session_id,
+                _der_response = self._der_execute_with_recovery(
+                    _plan=_plan,
+                    _context_package=_context_package,
+                    _is_mature=_is_mature,
+                    _der_task_class=_der_task_class,
+                    _session=session_id or self.session_id,
                     from_voice=from_voice,
-                    confidence=_confidence,
-                    turn_id=task_id,
+                    _confidence=_confidence,
+                    task_id=task_id,
                 )
 
         except Exception as _der_err:
@@ -4649,6 +4683,82 @@ Respond with a JSON object:
             logger.error(f"[AgentKernel] {error_msg}", exc_info=True)
             return {"error": error_msg}
 
+    def _der_execute_with_recovery(
+        self,
+        _plan,
+        _context_package,
+        _is_mature,
+        _der_task_class,
+        _session: str,
+        from_voice: bool,
+        _confidence,
+        task_id,
+    ):
+        """
+        Run the DER plan, catching TopologyViolationException (N.4 + O.6 + RC11)
+        with a targeted recovery instead of the blanket ReAct fallback.
+
+        On a topology violation we reset the Caducean session and retry once.
+        If the retry also fails, returns None so the caller falls through to
+        the agentic (ReAct) loop.
+        """
+        from backend.agent.exceptions import TopologyViolationException
+
+        try:
+            return self._execute_plan_der(
+                plan=_plan,
+                context_package=_context_package,
+                is_mature=_is_mature,
+                task_class=_der_task_class,
+                session_id=_session,
+                from_voice=from_voice,
+                confidence=_confidence,
+                turn_id=task_id,
+            )
+        except TopologyViolationException:
+            logger.warning(
+                "[AgentKernel] TopologyViolation — attempting targeted recovery"
+            )
+            try:
+                # RC11 FIX: reset Caducean session state before recovery
+                from backend.gateway.iris_ffi import ffi_caducean_init_session
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                ffi_caducean_init_session(_session)
+                get_event_bus().emit(
+                    IRISStreamEvent.MODE_CHANGED,
+                    data={
+                        "from_mode": "DER",
+                        "to_mode": "DER_RECOVERY",
+                        "reason": "Topological violation — recovering",
+                    },
+                    session_id=_session,
+                )
+                get_event_bus().emit(
+                    IRISStreamEvent.TOPOLOGY_RECOVERY,
+                    data={
+                        "from_mode": "DER",
+                        "to_mode": "DER_RECOVERY",
+                        "reason": "Topological violation — recovering",
+                    },
+                    session_id=_session,
+                )
+                return self._execute_plan_der(
+                    plan=_plan,
+                    context_package=_context_package,
+                    is_mature=_is_mature,
+                    task_class=_der_task_class,
+                    session_id=_session,
+                    from_voice=from_voice,
+                    confidence=_confidence,
+                    turn_id=task_id,
+                )
+            except Exception as _recovery_err:
+                logger.warning(
+                    f"[AgentKernel] Recovery failed, falling back to ReAct: {_recovery_err}"
+                )
+                return None
+
     def _execute_plan_der(
         self,
         plan,
@@ -4950,16 +5060,38 @@ Respond with a JSON object:
                         min_score=_retrieval_score,
                     )
                     if _sub_eps:
-                        _hints = "; ".join(
-                            ep.get("task_summary", "")[:80]
-                            for ep in _sub_eps
-                            if ep.get("task_summary")
-                        )
+                        _hint_parts = []
+                        for ep in _sub_eps:
+                            _ts = ep.get("task_summary", "")[:80]
+                            if _ts:
+                                _hint_parts.append(_ts)
+                            # A2 FIX: surface the proven tool_sequence, not just
+                            # the summary, so the Explorer repeats a known-good path.
+                            _seq = ep.get("tool_sequence", [])
+                            if _seq:
+                                _approach = " → ".join(
+                                    s.get("tool", "?") for s in _seq[:5]
+                                )
+                                _hint_parts.append(f"PROVEN APPROACH: {_approach}")
+                        _hints = "; ".join(_hint_parts)
                         if _hints:
                             _prior = getattr(item, "coordinate_signal", "") or ""
                             item.coordinate_signal = (
                                 _prior + f"\nSUB-TASK HINT: {_hints}"
                             ).strip()
+                    # A1 FIX: inject failure awareness per-step (not just at plan
+                    # time). _get_failure_warnings reads Mycelium high-signal
+                    # failure warnings for this sub-task so the Explorer avoids a
+                    # known-bad approach. Returns "None" on miss; never raises.
+                    try:
+                        _fw = self._get_failure_warnings(item.description)
+                        if _fw and _fw != "None" and len(_fw) > 10:
+                            _prior = getattr(item, "coordinate_signal", "") or ""
+                            item.coordinate_signal = (
+                                _prior + f"\nPAST FAILURE WARNING: {_fw[:300]}"
+                            ).strip()
+                    except Exception as _fw_exc:
+                        loud_error(_fw_exc, "failure_warning_mid_loop")
             except Exception as _explore_exc:
                 loud_error(_explore_exc, "explorer_sub_episodes")
 
@@ -5025,16 +5157,93 @@ Respond with a JSON object:
             except Exception:
                 pass
 
-            # ── EXPLORER PHASE: execute primary step (Phase 1.4: one retry) ──
-            step_result, step_success = self._der_run_step_execution(
-                item, context_package, _session, _turn_id, plan
-            )
-            if not step_success:
-                time.sleep(0.5)  # backoff before a single retry
-                step_result, step_success = self._der_run_step_execution(
+            # ── RC1 FIX: pre-execution validation (catches tool:null / missing
+            # params before runtime). Invalid steps route to graft with the
+            # validation error instead of executing-and-failing. ──
+            if item.tool:
+                from backend.agent.tool_registry import validate_tool_call
+                _valid, _val_err = validate_tool_call(item.tool, item.params or {})
+                if not _valid:
+                    item.result = f"[VALIDATION] {_val_err}"
+                    try:
+                        from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                        get_event_bus().emit(
+                            IRISStreamEvent.VALIDATION_FAILED,
+                            data={
+                                "tool_name": item.tool,
+                                "error": _val_err,
+                                "step_id": item.step_id,
+                                "step_number": item.step_number,
+                            },
+                            session_id=_session,
+                            turn_id=_turn_id,
+                        )
+                    except Exception:
+                        pass
+                    self._der_handle_step_failure(
+                        item, queue, plan, _session, _turn_id, context_package
+                    )
+                    continue
+
+            # ── EXPLORER PHASE: execute primary step with resilience (Phase 1.1) ──
+            # retry_with_backoff_sync retries transient errors (ConnectionError /
+            # TimeoutError / OSError) with exponential backoff and fails fast on
+            # permanent errors (ValueError / PermissionError / etc). _der_run_step
+            # returns (result, success) rather than raising, so _run_step re-raises
+            # a classified exception to drive the retry decision. The sync twin is
+            # used because _der_run_step_execution calls asyncio.run() internally —
+            # nesting asyncio.run would raise RuntimeError in the executor thread.
+            from backend.agent.resilience import retry_with_backoff_sync
+
+            def _run_step():
+                _res, _ok = self._der_run_step_execution(
                     item, context_package, _session, _turn_id, plan
                 )
+                if _ok:
+                    return _res, _ok
+                _err = _res or ""
+                if any(
+                    _k in _err
+                    for _k in (
+                        "ConnectionError", "TimeoutError", "timed out",
+                        "Connection refused", "timeout",
+                    )
+                ):
+                    raise ConnectionError(_err)  # transient -> retry
+                raise ValueError(_err)  # permanent -> fail fast
+
+            try:
+                step_result, step_success = retry_with_backoff_sync(
+                    _run_step,
+                    max_retries=2,
+                    base=1.0,
+                    cap=4.0,
+                    label=f"step_{item.step_number}:{item.tool}",
+                )
+            except Exception as _retry_exc:
+                step_result = str(_retry_exc)
+                step_success = False
+
             if not step_success:
+                # C1 FIX: preserve the real error so the graft recovery prompt
+                # receives it (item.result is otherwise only set on success).
+                item.result = step_result
+                # A3 FIX: fragment the failed output here (the shared
+                # _der_finalize_step helper is only reached for successful
+                # steps, so failures would otherwise never be stored).
+                try:
+                    if self._memory_interface and step_result:
+                        _ep = self._memory_interface.episodic
+                        if hasattr(_ep, "fragment_and_store"):
+                            _ep.fragment_and_store(
+                                content=f"[DER FAIL Step {item.step_number}: "
+                                        f"{item.description[:80]}]\n{step_result[:500]}",
+                                session_id=_session,
+                                chunk_type="der_failure",
+                                zone="tool",
+                            )
+                except Exception:
+                    pass
                 # Step failed after retry — mark, abort downstream, graft.
                 self._der_handle_step_failure(
                     item, queue, plan, _session, _turn_id, context_package
@@ -5102,6 +5311,8 @@ Respond with a JSON object:
                             _ei, context_package, _session, _turn_id, plan
                         )
                     if not _es:
+                        # C1 FIX: preserve the real error for the graft prompt.
+                        _ei.result = _er
                         # Failed after retry — handle (mark/abort/graft) and
                         # skip finalizing this now-terminal step.
                         self._der_handle_step_failure(
@@ -5293,6 +5504,20 @@ Respond with a JSON object:
                     queue.graft_attempts += 1
                     for _g in grafted:
                         queue.add_item(_g)
+                    try:
+                        from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                        get_event_bus().emit(
+                            IRISStreamEvent.RECOVERY_START,
+                            data={
+                                "failed_step": item.step_id,
+                                "graft_attempts": queue.graft_attempts,
+                                "num_grafted": len(grafted),
+                                "critical": item.critical,
+                            },
+                            session_id=_session,
+                        )
+                    except Exception:
+                        pass
                     logger.info(
                         "[DER] Grafted %d recovery step(s) for failed %s "
                         "(graft_attempts=%d)",
@@ -5300,6 +5525,30 @@ Respond with a JSON object:
                     )
             except Exception as _graft_exc:
                 logger.warning("[DER] plan grafting failed: %s", _graft_exc)
+        # M2 FIX: record non-critical failures to memory and signal Caducean
+        # so drift detection accounts for them (otherwise Q never rises on
+        # repeated non-critical failures and TOPO_VIOLATION never fires).
+        if not item.critical:
+            try:
+                if self._memory_interface and item.result:
+                    _ep = self._memory_interface.episodic
+                    if hasattr(_ep, "fragment_and_store"):
+                        _ep.fragment_and_store(
+                            content=f"[NON-CRITICAL FAIL Step {item.step_number}: "
+                                    f"{item.description[:80]}]\n{item.result[:500]}",
+                            session_id=_session,
+                            chunk_type="der_failure",
+                            zone="failure",
+                        )
+            except Exception:
+                pass
+            try:
+                from backend.gateway.iris_ffi import ffi_caducean_update
+
+                # action=1 -> COMPRESS (increments failure accumulator y)
+                ffi_caducean_update(_session, 1, 1.0)
+            except Exception:
+                pass
 
     def _der_graft_recovery_plan(
         self,
@@ -5318,11 +5567,61 @@ Respond with a JSON object:
         from backend.agent.tool_registry import is_parallel_safe
 
         try:
+            # M.3.3 FIX: wire memory into recovery so the graft avoids
+            # previously-failed approaches and can reuse proven ones.
+            _failure_ctx = ""
+            _success_ctx = ""
+            _tools_block = ""
+            try:
+                if self._memory_interface:
+                    _ep = self._memory_interface.episodic
+                    _failures = _ep.retrieve_failures(
+                        task=failed_item.description, limit=2
+                    )
+                    if _failures:
+                        _failure_ctx = "\n".join(
+                            f"  - AVOID: {f.get('task_summary', '')[:100]} "
+                            f"(reason: {f.get('failure_reason', 'unknown')[:100]})"
+                            for f in _failures
+                        )
+                    _successes = _ep.retrieve_similar(
+                        task=failed_item.description, limit=2
+                    )
+                    if _successes:
+                        _success_ctx = "\n".join(
+                            f"  - ALTERNATIVE: {s.get('task_summary', '')[:100]} "
+                            f"(tools: {' -> '.join(str(t.get('tool', '?')) for t in s.get('tool_sequence', [])[:4])})"
+                            for s in _successes
+                        )
+            except Exception:
+                pass  # never block recovery on memory failure
+            try:
+                from backend.agent.tool_registry import get_all_specs
+
+                _specs = get_all_specs()
+                if _specs:
+                    _tools_block = "\n".join(
+                        f"  - {s.name}" for s in _specs[:40]
+                    )
+            except Exception:
+                pass
+
             prompt = (
                 f"OBJECTIVE: {objective}\n"
                 f"FAILED STEP: {failed_item.description}\n"
                 f"TOOL: {failed_item.tool}\n"
                 f"ERROR: {error_msg}\n\n"
+            )
+            if _failure_ctx:
+                prompt += (
+                    f"PAST FAILURES (do NOT repeat these approaches):\n"
+                    f"{_failure_ctx}\n\n"
+                )
+            if _success_ctx:
+                prompt += f"ALTERNATIVE PROVEN APPROACHES:\n{_success_ctx}\n\n"
+            if _tools_block:
+                prompt += f"AVAILABLE TOOLS:\n{_tools_block}\n\n"
+            prompt += (
                 "The execution of this step failed. Provide a JSON-only recovery "
                 "sub-graph containing alternative step(s) to achieve the objective "
                 "or gracefully handle the error.\n"
@@ -5806,6 +6105,31 @@ Respond with a JSON object:
         except Exception as _frag_exc:
             loud_error(_frag_exc, "der_pacman_fragment")
 
+        # A3 FIX: also fragment FAILED outputs so failures are remembered and can
+        # steer future recovery (the success path above skips them). Stored in the
+        # 'tool' zone with chunk_type 'der_failure' for later recall.
+        try:
+            if step_result and not step_success:
+                _fail_text = (
+                    f"[FAILED Step {item.step_number}: {item.description[:120]}]"
+                    f"\n{step_result}"
+                )
+                if (
+                    self._memory_interface is not None
+                    and hasattr(self._memory_interface, "episodic")
+                    and hasattr(
+                        self._memory_interface.episodic, "fragment_and_store"
+                    )
+                ):
+                    self._memory_interface.episodic.fragment_and_store(
+                        _fail_text,
+                        session_id=_session,
+                        chunk_type="der_failure",
+                        zone="tool",
+                    )
+        except Exception as _fail_frag_exc:
+            loud_error(_fail_frag_exc, "der_pacman_fragment_failure")
+
         # ── TOKEN BUDGET: accumulate estimated tokens from step result ──
         # 4 chars ≈ 1 token; also count prompt overhead per step (~200 tok)
         _tokens_used += max(200, len(step_result) // 4)
@@ -5831,6 +6155,31 @@ Respond with a JSON object:
                 f"[DER] Token budget exhausted ({_tokens_used}/{_token_budget}) "
                 f"after step {item.step_number} — stopping early"
             )
+            # RC6 FIX: emit explicit event instead of silent stop
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                _remaining = len([
+                    i for i in queue.items
+                    if i.step_id not in queue.completed_ids
+                    and i.step_id not in queue.failed_ids
+                ])
+                get_event_bus().emit(
+                    IRISStreamEvent.BUDGET_EXHAUSTED,
+                    data={
+                        "task_id": _turn_id,
+                        "steps_completed": len(completed_items),
+                        "steps_remaining": _remaining,
+                        "tokens_used": _tokens_used,
+                        "token_budget": _token_budget,
+                        "message": f"Task incomplete: {_remaining} steps remaining "
+                                   f"(budget {_tokens_used}/{_token_budget} exhausted)",
+                    },
+                    turn_id=_turn_id,
+                    session_id=_session,
+                )
+            except Exception:
+                pass  # EventBus is optional — no crash if it fails
 
         # ── MYCELIUM SIGNAL: tool call ─────────────────────────────────
         try:

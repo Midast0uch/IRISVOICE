@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 from backend.agent.tool_bridge import AgentToolBridge
+from backend.crawler.crawler_engine import CrawlResult
 
 
 def test_tool_action_label_is_generic():
@@ -47,27 +48,21 @@ def test_crawler_query_emits_progress_and_listening_state():
         result_type = "summary"
         title = "Test"
 
-    class _Engine:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def crawl(self, query, urls, instructions, on_page_done):
+    # The crawl now runs in an isolated subprocess (crawl_runner). We mock the
+    # runner's entry point the same way the old test mocked CrawlerEngine: it
+    # reports per-page progress via on_page_done, then returns a CrawlResult.
+    async def _fake_run(query, urls, instructions, on_page_done=None,
+                        max_pages=5, delay_ms=1000, timeout_s=90.0):
+        if on_page_done:
             on_page_done("https://example.com/a", 1, 2)
             on_page_done("https://example.org/b", 2, 2)
-
-            class _R:
-                pages = []
-
-            return _R()
+        return CrawlResult(
+            query=query, pages=[], duration_ms=10,
+            crawled_at="2026-01-01T00:00:00+00:00",
+        )
 
     with patch("backend.crawler.crawl_planner.get_crawl_planner") as gp, patch(
-        "backend.crawler.crawler_engine.CrawlerEngine", _Engine
+        "backend.crawler.crawl_runner.run_crawl_subprocess", _fake_run
     ), patch("backend.crawler.data_extractor.get_data_extractor") as gde, patch(
         "backend.agent.tools.speak_tool.get_speak_tool"
     ) as gst:

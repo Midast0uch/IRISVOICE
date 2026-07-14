@@ -102,6 +102,10 @@ class IRISStreamEvent(enum.Enum):
     # ── DER loop ────────────────────────────────────────────────────────
     DER_STEP = "der:step"
     DER_DONE = "der:done"
+    BUDGET_EXHAUSTED = "plan:budget_exhausted"
+    VALIDATION_FAILED = "plan:validation_failed"
+    RECOVERY_START = "plan:recovery_start"
+    TOPOLOGY_RECOVERY = "plan:topology_recovery"
 
 
 # ── Event payload ──────────────────────────────────────────────────────────

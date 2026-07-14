@@ -60,6 +60,11 @@ next-env.d.ts
 # API keys / model config (contains secrets)
 data/iris_config.json
 
+# Dilithium Post-Quantum identity private key — never commit the real key.
+# Loaded at runtime via IRIS_DILITHIUM_KEY (env hex) or IRIS_DILITHIUM_KEY_FILE
+# (an external path you supply). Raw key-byte files must never enter the repo.
+*.key
+
 # Windows nul file (reserved name bug)
 nul
 NUL

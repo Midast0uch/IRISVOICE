@@ -7,7 +7,7 @@ _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 5.6_
 import pytest
 import tempfile
 import os
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock, MagicMock, patch
 from dataclasses import dataclass
 
 # Skip all tests if dependencies not available
@@ -41,18 +41,25 @@ def biometric_key():
 
 @pytest.fixture
 def memory_interface(mock_adapter, temp_db_path, biometric_key):
-    """Create a MemoryInterface instance for testing."""
-    # Mock the database connection to avoid SQLCipher dependency
-    with Mock() as mock_db:
-        interface = MemoryInterface(
-            adapter=mock_adapter,
-            db_path=temp_db_path,
-            biometric_key=biometric_key
-        )
-        # Mock the database-dependent stores
-        interface.episodic = Mock()
-        interface.semantic = Mock()
-        return interface
+    """Create a MemoryInterface instance for testing.
+
+    Uses an in-memory DB so no SQLCipher files are created on disk (which would
+    leave Windows file locks that block temp-dir teardown).
+    """
+    mock_db = Mock()
+    interface = MemoryInterface(
+        adapter=mock_adapter,
+        db_path=":memory:",
+        biometric_key=biometric_key
+    )
+    interface.episodic = Mock()
+    interface.semantic = Mock()
+    # Realistic defaults so the production code paths actually execute and the
+    # tests genuinely verify behaviour (privacy boundary + store delegation)
+    # instead of crashing on a bare Mock that can't be iterated/subscripted.
+    interface.episodic.retrieve_similar.return_value = []
+    interface.episodic.store.return_value = "ep_00000000"
+    yield interface
 
 
 class TestMemoryInterfaceInitialization:
@@ -125,13 +132,21 @@ class TestGetTaskContextForRemote:
         
         assert "remote task summary" in context
     
-    def test_includes_tool_sequence(self, memory_interface):
-        """Test that get_task_context_for_remote includes tool sequence."""
+    def test_includes_memory_derived_tool_patterns_not_current(self, memory_interface):
+        """Remote context surfaces similar PAST tool patterns (from memory) but must
+        NOT leak the local agent's current tool_sequence to the peer (privacy)."""
+        memory_interface.episodic.retrieve_similar.return_value = [
+            {"tool_sequence": [{"tool": "read_file"}, {"tool": "write_file"}]}
+        ]
         tools = [{"tool": "search", "action": "query"}]
         
         context = memory_interface.get_task_context_for_remote("task", tools)
         
-        assert "search" in context or "tool" in context.lower()
+        # Memory-derived pattern IS included (the actual feature mechanism)
+        assert "read_file" in context
+        # Current task's tool_sequence is NOT leaked to the remote peer
+        assert "search" not in context
+        assert "query" not in context
 
 
 class TestSessionManagement:
@@ -146,12 +161,14 @@ class TestSessionManagement:
         memory_interface.context.append.assert_called_once()
     
     def test_update_tool_state_delegates_to_context(self, memory_interface):
-        """Test that update_tool_state delegates to ContextManager."""
+        """Test that update_tool_state delegates to ContextManager.append."""
         memory_interface.context = Mock()
         
         memory_interface.update_tool_state("session_123", "tool output")
         
-        memory_interface.context.update_tool_state.assert_called_once()
+        memory_interface.context.append.assert_called_once_with(
+            "session_123", "tool output", zone="active_tool_state"
+        )
     
     def test_clear_session_delegates_to_context(self, memory_interface):
         """Test that clear_session delegates to ContextManager."""
@@ -248,7 +265,7 @@ class TestScoreOutcome:
             tool_sequence=[],
             outcome_type="success",
             user_confirmed=False,
-            user_corrected=False,
+            user_corrected=True,
             duration_ms=10000
         )
         
@@ -265,7 +282,7 @@ class TestScoreOutcome:
             tool_sequence=[],
             outcome_type="success",
             user_confirmed=True,
-            user_corrected=False,
+            user_corrected=True,
             duration_ms=10000
         )
         
@@ -316,7 +333,7 @@ class TestScoreOutcome:
             tool_sequence=[],
             outcome_type="failure",
             user_confirmed=False,
-            user_corrected=False,
+            user_corrected=True,
             duration_ms=10000
         )
         

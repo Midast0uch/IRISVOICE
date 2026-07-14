@@ -14,9 +14,21 @@ import hashlib
 import logging
 import os
 import platform
+import socket
+import uuid as _uuid
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
+
+# HKDF (cryptography lib) for deriving the memory key from the Post-Quantum
+# (Dilithium) identity private key. Optional import so the module still loads
+# if cryptography is somehow absent.
+try:
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    _HAVE_CRYPTOGRAPHY = True
+except Exception:
+    _HAVE_CRYPTOGRAPHY = False
 
 # Salt for key derivation - in production, this should be unique per installation
 # and stored in a secure location (keychain, secure enclave, etc.)
@@ -355,26 +367,51 @@ def _derive_machine_key(salt: bytes) -> bytes:
 
 def initialize_memory_encryption(
     db_path: str = "data/memory.db",
-    config_path: str = "data/memory_config.json"
+    config_path: str = "data/memory_config.json",
+    force_pseudo: bool = False
 ) -> bytes:
     """
     Initialize memory encryption with automatic key management.
 
     NON-BLOCKING server-safe priority order:
-    1. IRIS_MEMORY_KEY environment variable (development override)
+    0. (Opt-in) Post-Quantum Identity (Dilithium) private key, if provided by
+       iris-launcher — derived to the memory key via HKDF. This is the intended
+       "quantum key unlocks memory" path. Skipped during development (no key),
+       so the existing data/memory.db always opens with the dev pseudo-key.
+    1. IRIS_MEMORY_KEY environment variable (development override / pseudo key)
     2. Existing key stored in platform keychain
     3. Machine-derived key (hostname + stable UUID) — no user prompt
 
     Args:
         db_path: Path to memory database
         config_path: Path to memory configuration
+        force_pseudo: When True, skip the Dilithium path and use the dev
+            pseudo-key chain. Used as a safety-net fallback if the primary
+            key cannot open the existing DB, so the connection is never lost.
 
     Returns:
         32-byte encryption key
     """
     salt = DEFAULT_SALT
 
-    # 1. Check environment variable (dev override)
+    # 0. (Opt-in) Post-Quantum Identity (Dilithium) -> memory key via HKDF.
+    # Only active when iris-launcher has provided a Dilithium private key.
+    # During development (no key) this is skipped and the dev pseudo-key
+    # below is used, so the existing data/memory.db always opens.
+    if not force_pseudo:
+        _dil = load_dilithium_private_key()
+        if _dil:
+            try:
+                logger.info(
+                    "[Biometric] Deriving memory key from Dilithium private key (HKDF)"
+                )
+                return derive_memory_key_from_dilithium(_dil)
+            except Exception as _e:
+                logger.warning(
+                    "[Biometric] Dilithium key derivation failed, falling back: %s", _e
+                )
+
+    # 1. Check environment variable (dev override / pseudo key)
     env_key = derive_key_from_env()
     if env_key is not None:
         logger.info("[Biometric] Using IRIS_MEMORY_KEY environment variable")
@@ -415,3 +452,125 @@ def derive_key_from_env() -> Optional[bytes]:
         logger.warning("[Biometric] Using key from environment variable (development only)")
         return hashlib.sha256(env_key.encode()).digest()
     return None
+
+
+# ── Post-Quantum Identity (Dilithium) → memory key ───────────────────────────
+# Intended "quantum key unlocks memory" path. iris-launcher generates the
+# Dilithium3 identity keypair; its private key becomes the sole source of the
+# memory-DB encryption key via HKDF. During development (no key provided) this
+# is skipped and the dev pseudo-key chain below is used instead.
+
+def derive_memory_key_from_dilithium(dilithium_priv: bytes) -> bytes:
+    """
+    Derive the 32-byte memory-DB encryption key from the Post-Quantum
+    (Dilithium) identity private key via HKDF-SHA256.
+
+    Deterministic: the same private key always yields the same memory key,
+    so a user holding their Dilithium key can always reopen their memory DB.
+
+    Args:
+        dilithium_priv: Raw Dilithium private-key bytes (from iris-launcher).
+    Returns:
+        32-byte key for AES-256 (sqlcipher3) memory database.
+    """
+    if not _HAVE_CRYPTOGRAPHY:
+        raise RuntimeError(
+            "cryptography library required for Dilithium->memory key derivation"
+        )
+    _hk = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=DEFAULT_SALT,
+        info=b"iris-voice-memory-key-v1",
+    )
+    return _hk.derive(dilithium_priv)
+
+
+def load_dilithium_private_key() -> Optional[bytes]:
+    """
+    Load the Dilithium private key provided by iris-launcher.
+
+    Sources (in order):
+      1. IRIS_DILITHIUM_KEY       — hex-encoded private key (env var)
+      2. IRIS_DILITHIUM_KEY_FILE  — path to a file with raw key bytes
+
+    Returns the raw key bytes, or None when not provided (development mode).
+    """
+    _hex = os.environ.get("IRIS_DILITHIUM_KEY")
+    if _hex:
+        try:
+            return bytes.fromhex(_hex.strip())
+        except Exception as _e:
+            logger.warning("[Biometric] IRIS_DILITHIUM_KEY not valid hex: %s", _e)
+            return None
+    _file = os.environ.get("IRIS_DILITHIUM_KEY_FILE")
+    if _file and os.path.exists(_file):
+        try:
+            with open(_file, "rb") as _f:
+                return _f.read()
+        except Exception as _e:
+            logger.warning("[Biometric] Could not read Dilithium key file: %s", _e)
+    return None
+
+
+def migrate_memory_db_key(
+    db_path: str = "data/memory.db",
+    config_path: str = "data/memory_config.json",
+) -> str:
+    """
+    Migrate data/memory.db from the dev pseudo-key to the Dilithium-derived key.
+
+    This is the runbook step executed once iris-launcher has generated the real
+    Post-Quantum (Dilithium) identity key and exported it via IRIS_DILITHIUM_KEY
+    (hex) or IRIS_DILITHIUM_KEY_FILE. It re-encrypts the existing DB in place using
+    SQLCipher's ``PRAGMA rekey`` so the memory is thereafter protected solely by the
+    Dilithium-derived key — no data is copied or lost.
+
+    Safe to call at any time; it is idempotent and never corrupts the DB:
+      - No Dilithium key configured      -> "no-dilithium"   (nothing done)
+      - DB already Dilithium-protected    -> "already-dilithium"
+      - DB pseudo-protected, rekeyed OK   -> "migrated"
+      - sqlcipher3 absent (plaintext)     -> "failed:sqlcipher3-unavailable"
+      - any open/rekey error              -> "failed:<ErrorType>" (DB untouched)
+
+    Returns:
+        A short status string (see above) for logging / agent decision-making.
+    """
+    if not _HAVE_CRYPTOGRAPHY:
+        return "failed:cryptography-unavailable"
+
+    _dil = load_dilithium_private_key()
+    if not _dil:
+        return "no-dilithium"
+
+    _new_key = derive_memory_key_from_dilithium(_dil)
+
+    # Already migrated? Try opening with the Dilithium key first.
+    try:
+        from backend.memory.db import open_encrypted_memory
+        _probe = open_encrypted_memory(db_path, _new_key)
+        _probe.close()
+        return "already-dilithium"
+    except Exception:
+        pass
+
+    # Not Dilithium-protected: assume pseudo key. Open with pseudo and rekey.
+    try:
+        from backend.memory.db import is_sqlcipher_available
+        if not is_sqlcipher_available():
+            return "failed:sqlcipher3-unavailable"
+
+        _old_key = initialize_memory_encryption(
+            db_path=db_path, config_path=config_path, force_pseudo=True
+        )
+        _conn = open_encrypted_memory(db_path, _old_key)
+        try:
+            _conn.execute(f"PRAGMA rekey='{_new_key.hex()}'")
+            _conn.commit()
+        finally:
+            _conn.close()
+        logger.info("[Biometric] Memory DB re-keyed to Dilithium-derived key")
+        return "migrated"
+    except Exception as _e:
+        logger.error(f"[Biometric] Memory DB re-key failed: {_e}")
+        return f"failed:{type(_e).__name__}"

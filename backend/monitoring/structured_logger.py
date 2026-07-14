@@ -121,7 +121,8 @@ class StructuredLogger:
         if log_file:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             file_handler = logging.handlers.RotatingFileHandler(
-                log_file, maxBytes=max_bytes, backupCount=backup_count
+                log_file, maxBytes=max_bytes, backupCount=backup_count,
+                encoding="utf-8",
             )
             file_handler.setFormatter(formatter)
             self.logger.addHandler(file_handler)

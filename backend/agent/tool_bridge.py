@@ -744,7 +744,19 @@ class AgentToolBridge:
                 params={"name": tool_name, "arguments": params}
             )
 
-            response = await server.handle_request(request)
+            # Phase 1.2 (B2 + RC10): bound in-process MCP calls so a hung server
+            # cannot block the agent indefinitely. 30s default matches
+            # mcp/client.py:141; vision / GUI automation get 60s for long ops.
+            _timeout = 60.0 if server_name in ("vision", "gui_automation") else 30.0
+            try:
+                response = await asyncio.wait_for(
+                    server.handle_request(request), timeout=_timeout
+                )
+            except asyncio.TimeoutError:
+                return {
+                    "success": False,
+                    "error": f"Tool '{tool_name}' timed out after {_timeout}s",
+                }
             result = response.result if response.result else {
                 "error": response.error}
 
@@ -862,7 +874,7 @@ class AgentToolBridge:
             logger.warning("[ToolBridge] speak failed: %s", exc)
             return {"status": "error", "reason": str(exc)}
 
-    async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "") -> Dict:
+    async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "", _skip_resilience: bool = False) -> Dict:
         """
         Execute any tool by name with routing to appropriate server.
 
@@ -1019,6 +1031,12 @@ class AgentToolBridge:
                     return await self.execute_gui_tool(tool_name, params, session_id)
 
             # MCP Tools
+            # Phase 5.3 (research D3): route dispatch through the resilience
+            # wrapper so retries live in one place.  When called recursively
+            # with _skip_resilience, run the dispatch directly (no double-wrap).
+            if not _skip_resilience:
+                return await self._execute_tool_with_resilience(tool_name, params, session_id, plan_title)
+
             mcp_tools = {
                 # Browser
                 "open_url": ("browser", "open_url"),
@@ -1132,6 +1150,17 @@ class AgentToolBridge:
             if tool_name == "crawler_query":
                 result = await self._execute_crawler_query(params, session_id)
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
+                return result
+
+            # ── Multimedia tools (Phase 5.2 / research D2) ────────────────────
+            media_tools = {"transcribe_media", "analyze_video_frames", "clip_video"}
+            if tool_name in media_tools:
+                result = await self._execute_media_tool(tool_name, params, session_id)
+                self._record_tool_event(
+                    session_id, tool_name,
+                    "success" if result.get("success") else "failure", params, result,
+                    plan_title=plan_title,
+                )
                 return result
 
             error_result = {"error": f"Unknown tool: {tool_name}"}
@@ -1370,6 +1399,49 @@ class AgentToolBridge:
 
         return {"error": f"Unknown dev tool: {tool_name}"}
 
+    async def _execute_tool_with_resilience(self, tool_name: str, params: Dict, session_id: str, plan_title: str) -> Dict:
+        """Execute a tool with retry/backoff on transient failures (Phase 5.3 / D3).
+
+        Consolidates resilience in one place: ToolExecutor delegates here and
+        execute_tool routes through here, so retries are not duplicated across
+        the two dispatch paths.
+        """
+        from backend.agent.resilience import retry_with_backoff
+        return await retry_with_backoff(
+            lambda: self.execute_tool(
+                tool_name, params, session_id=session_id, plan_title=plan_title,
+                _skip_resilience=True,
+            ),
+            label=f"tool:{tool_name}",
+        )
+
+    async def _execute_media_tool(self, tool_name: str, params: Dict, session_id: str) -> Dict:
+        """Dispatch the three multimedia tools (Phase 5.2 / research D2)."""
+        try:
+            from backend.tools import media_tools as _mt
+            if tool_name == "transcribe_media":
+                return _mt.transcribe_media(
+                    audio_path=params.get("audio_path", ""),
+                    chunk_seconds=int(params.get("chunk_seconds", _mt.MAX_CHUNK_SECONDS)),
+                )
+            if tool_name == "analyze_video_frames":
+                return _mt.analyze_video_frames(
+                    video_path=params.get("video_path", ""),
+                    question=params.get("question", "What is happening in this frame?"),
+                    frame_interval=float(params.get("frame_interval", 1.0)),
+                )
+            if tool_name == "clip_video":
+                return _mt.clip_video(
+                    video_path=params.get("video_path", ""),
+                    start=params.get("start", "0"),
+                    end=params.get("end", "0"),
+                    output_path=params.get("output_path", ""),
+                )
+            return {"success": False, "error": f"Unknown media tool: {tool_name}"}
+        except Exception as e:
+            logger.error("[ToolBridge] media tool %s failed: %s", tool_name, e, exc_info=True)
+            return {"success": False, "error": str(e)}
+
     async def _execute_research_tool(self, params: Dict, session_id: str) -> Dict:
         """Handle the run_research agent tool — delegates to AutoResearchRunner."""
         action = params.get("action", "status")
@@ -1456,7 +1528,6 @@ class AgentToolBridge:
             return {"success": False, "error": "crawler_query requires a 'query'"}
 
         try:
-            from backend.crawler.crawler_engine import CrawlerEngine, CrawlerUnavailable
             from backend.crawler.crawl_planner import get_crawl_planner
             from backend.crawler.data_extractor import get_data_extractor
         except Exception as exc:
@@ -1469,7 +1540,10 @@ class AgentToolBridge:
             logger.error("[crawler_query] planning failed: %s", exc)
             return {"success": False, "error": f"planning failed: {exc}"}
 
-        # Step 2: Crawl.
+        # Step 2: Crawl — isolated in a SEPARATE PROCESS so a Chromium C-level
+        # crash cannot take down the agent/backend. run_crawl_subprocess relays
+        # per-page progress back via on_page_done and returns a CrawlResult with
+        # .error set on any failure (crash/timeout/unavailable) — it never raises.
         try:
             # Progress utterances: let the user hear that research is happening
             # (Issue E follow-up — user reported no utterance while searching).
@@ -1523,13 +1597,13 @@ class AgentToolBridge:
                 except Exception:
                     pass  # never block the crawl on an event emit failure
 
-            async with CrawlerEngine() as engine:
-                crawl_result = await engine.crawl(
-                    query=query,
-                    urls=plan.urls,
-                    instructions=plan.instructions,
-                    on_page_done=_on_page_done,
-                )
+            from backend.crawler.crawl_runner import run_crawl_subprocess
+            crawl_result = await run_crawl_subprocess(
+                query=query,
+                urls=plan.urls,
+                instructions=plan.instructions,
+                on_page_done=_on_page_done,
+            )
 
             # Crawl finished — return the phase to "thinking" so the orb reflects
             # the agent summarising (the DER loop drives speaking next).
@@ -1541,23 +1615,24 @@ class AgentToolBridge:
                 )
             except Exception:
                 pass  # never block on an event emit failure
-        except CrawlerUnavailable as exc:
-            # If we flipped the orb to processing_tool before the failure,
-            # return it to processing_conversation so the UI doesn't stay stuck.
-            if '_bus' in locals():
-                try:
-                    _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
-                except Exception:
-                    pass
-            return {"success": False, "error": str(exc)}
         except Exception as exc:
-            logger.error("[crawler_query] crawl failed: %s", exc)
-            if '_bus' in locals():
-                try:
-                    _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
-                except Exception:
-                    pass
-            return {"success": False, "error": f"crawl failed: {exc}"}
+            logger.error("[crawler_query] crawl setup failed: %s", exc)
+            try:
+                _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
+            except Exception:
+                pass
+            return {"success": False, "error": f"crawl setup failed: {exc}"}
+
+        # Crawl subprocess reported a failure (crash / timeout / unavailable).
+        # Degrade gracefully: the agent receives success=False and can tell the
+        # user, instead of the whole backend dying.
+        if getattr(crawl_result, "error", None):
+            logger.error("[crawler_query] crawl failed: %s", crawl_result.error)
+            try:
+                _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
+            except Exception:
+                pass
+            return {"success": False, "error": crawl_result.error}
 
         # Step 3: Extract structured DashboardData.
         try:
@@ -1627,17 +1702,24 @@ class AgentToolBridge:
 
         # DuckDuckGo HTML is server-rendered and robots-allowed (Google's /search
         # is blocked by robots.txt and JS-rendered, yielding empty results).
-        search_url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
+        import urllib.parse
+        search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
         try:
             async with CrawlerEngine() as engine:
-                crawl_result = await engine.crawl(
-                    query=query,
-                    urls=[search_url],
-                    instructions=(
-                        "Extract the most relevant answer and key facts from the "
-                        "search results page. Prefer concise factual snippets."
+                crawl_result = await asyncio.wait_for(
+                    engine.crawl(
+                        query=query,
+                        urls=[search_url],
+                        instructions=(
+                            "Extract the most relevant answer and key facts from the "
+                            "search results page. Prefer concise factual snippets."
+                        ),
                     ),
+                    timeout=30.0,
                 )
+        except asyncio.TimeoutError:
+            logger.warning("[web_search] crawl timed out after 30s (query=%r)", query)
+            return {"success": False, "error": "search timed out"}
         except CrawlerUnavailable as exc:
             return {"success": False, "error": str(exc)}
         except Exception as exc:

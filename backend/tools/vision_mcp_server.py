@@ -39,11 +39,15 @@ class VisionMCPServer(BuiltinServer):
         super().__init__("vision")
 
     def _get_provider(self):
-        """Lazy-load LFMVLProvider — avoids import cost if vision is unused."""
+        """Lazy-load LFMVLProvider — avoids import cost if vision is unused.
+
+        Uses the module-level singleton so the gateway and MCP server share one
+        provider (and one idle-lifecycle state).
+        """
         if self._provider is None:
             try:
-                from backend.tools.lfm_vl_provider import LFMVLProvider
-                self._provider = LFMVLProvider()
+                from backend.tools.lfm_vl_provider import get_lfm_vl_provider
+                self._provider = get_lfm_vl_provider()
             except Exception as e:
                 logger.error(f"[VisionMCPServer] Cannot load LFMVLProvider: {e}")
         return self._provider

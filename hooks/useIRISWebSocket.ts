@@ -1254,6 +1254,22 @@ export function useIRISWebSocket(
         break
       }
 
+      // ── Execution-hardening plan events (Phase 4.1) ─────────────────────
+      // VALIDATION_FAILED / RECOVERY_START / TOPOLOGY_RECOVERY / BUDGET_EXHAUSTED
+      // from the agent kernel, bridged via WSEventBridge. Forwarded to
+      // iris:plan_event so chat-view renders them as system messages.
+      case "plan:budget_exhausted":
+      case "plan:validation_failed":
+      case "plan:recovery_start":
+      case "plan:topology_recovery": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:plan_event', {
+            detail: { type, ...(payload as Record<string, unknown>) }
+          }))
+        }
+        break
+      }
+
       case 'cli_output': {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:cli_output', { detail: payload }))

@@ -1,6 +1,6 @@
 """
 LFM2.5-VL Vision Provider
-HTTP client wrapping llama-server on port 8081.
+HTTP client wrapping llama-server on port 18181.
 Provides synchronous screen analysis, UI element detection, OCR, and action suggestion.
 
 Auto-start: If llama-server is not running on port 8081, the provider attempts to
@@ -9,7 +9,9 @@ spawn it using the LFM2.5-VL-450M GGUF model found in ~/models/LFM2.5-VL-450M/.
 import base64
 import logging
 import os
+import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +31,96 @@ _VISION_PORT: int = _load_vl_config().ports.vision_port
 # Tracked so disable() can stop only servers we own — a user-run llama-server on
 # the same port is left alone.
 _VISION_SERVER_PID: Optional[int] = None
+
+
+# ── Idle lifecycle ────────────────────────────────────────────────────────────
+# When vision is enabled, the llama-server is spawned eagerly so it is ready
+# immediately. To avoid holding memory when vision is not actively used, the
+# server auto-stops after IDLE_TIMEOUT seconds of no vision activity, and lazily
+# restarts on the next vision call (small model → fast start/stop).
+_IDLE_TIMEOUT: float = float(os.environ.get("IRIS_VISION_IDLE_TIMEOUT", "120"))
+
+_last_vision_use: float = 0.0
+_idle_timer: Optional[threading.Timer] = None
+_idle_lock = threading.Lock()
+_vision_idle_callback = None  # set by iris_gateway to broadcast idle-stop status
+
+
+def set_vision_idle_callback(cb) -> None:
+    """Register a callback invoked when the idle watchdog stops the server."""
+    global _vision_idle_callback
+    _vision_idle_callback = cb
+
+
+def _touch_vision_use() -> None:
+    """Record a vision use and (re)schedule the idle auto-stop timer.
+
+    Only schedules a timer when IRIS owns the server (_VISION_SERVER_PID set),
+    so a user-run llama-server is never idled out.
+    """
+    global _last_vision_use, _idle_timer
+    with _idle_lock:
+        _last_vision_use = time.monotonic()
+        if _idle_timer is not None:
+            _idle_timer.cancel()
+        if _VISION_SERVER_PID is not None:
+            _idle_timer = threading.Timer(_IDLE_TIMEOUT, _idle_stop)
+            _idle_timer.daemon = True
+            _idle_timer.start()
+
+
+def should_idle_stop() -> bool:
+    """Pure predicate: is the owned server idle past the timeout?"""
+    if _VISION_SERVER_PID is None:
+        return False
+    return (time.monotonic() - _last_vision_use) >= _IDLE_TIMEOUT
+
+
+def _stop_owned_vision_server() -> None:
+    """Kill the llama-server subprocess IRIS spawned (tracked PID only)."""
+    global _VISION_SERVER_PID
+    if _VISION_SERVER_PID is None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(_VISION_SERVER_PID)],
+                capture_output=True,
+            )
+        else:
+            os.kill(_VISION_SERVER_PID, signal.SIGTERM)
+        logger.info(f"[LFMVLProvider] Stopped vision server PID {_VISION_SERVER_PID}")
+    except Exception as e:
+        logger.warning(f"[LFMVLProvider] Failed to stop vision server: {e}")
+    finally:
+        _VISION_SERVER_PID = None
+
+
+def _idle_stop() -> None:
+    """Idle watchdog callback: stop the owned server if it is still idle."""
+    global _idle_timer
+    with _idle_lock:
+        _idle_timer = None
+    if not should_idle_stop():
+        return
+    _stop_owned_vision_server()
+    cb = _vision_idle_callback
+    if cb is not None:
+        try:
+            cb()
+        except Exception:
+            pass
+
+
+_lfm_vl_provider_singleton = None
+
+
+def get_lfm_vl_provider():
+    """Module-level singleton used by both the gateway and VisionMCPServer."""
+    global _lfm_vl_provider_singleton
+    if _lfm_vl_provider_singleton is None:
+        _lfm_vl_provider_singleton = LFMVLProvider()
+    return _lfm_vl_provider_singleton
 
 
 @dataclass
@@ -260,6 +352,8 @@ class LFMVLProvider:
         """
         # Ensure server is running before first call
         _ensure_vision_server_running(self.config.base_url)
+        # Record use so the idle watchdog resets its auto-stop timer
+        _touch_vision_use()
 
         try:
             import httpx
@@ -334,7 +428,10 @@ class LFMVLProvider:
         or successfully spawned); False if the model/binary is missing or the
         server failed to come up in 30 s.
         """
-        return _ensure_vision_server_running(self.config.base_url)
+        ok = _ensure_vision_server_running(self.config.base_url)
+        if ok:
+            _touch_vision_use()
+        return ok
 
     def disable(self) -> None:
         """
@@ -343,25 +440,15 @@ class LFMVLProvider:
         Only terminates a server we started ourselves (tracked by PID).  If the
         user is running their own llama-server on the vision port, we leave it
         alone — health checks will still succeed, but IRIS will not kill it.
-        Safe to call when nothing is running (no-op).
+        Safe to call when nothing is running (no-op).  Also cancels any pending
+        idle auto-stop timer.
         """
-        global _VISION_SERVER_PID
-        if _VISION_SERVER_PID is None:
-            return
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/F", "/PID", str(_VISION_SERVER_PID)],
-                    capture_output=True,
-                )
-            else:
-                import signal
-                os.kill(_VISION_SERVER_PID, signal.SIGTERM)
-            logger.info(f"[LFMVLProvider] Stopped vision server PID {_VISION_SERVER_PID}")
-        except Exception as e:
-            logger.warning(f"[LFMVLProvider] Failed to stop vision server: {e}")
-        finally:
-            _VISION_SERVER_PID = None
+        global _idle_timer
+        with _idle_lock:
+            if _idle_timer is not None:
+                _idle_timer.cancel()
+                _idle_timer = None
+        _stop_owned_vision_server()
 
     def analyze_screen(self, img_bytes: bytes, question: str = "") -> str:
         """

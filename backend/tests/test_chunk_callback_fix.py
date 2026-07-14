@@ -30,6 +30,8 @@ class TestDispatchAPINonStreamingChunkCallback:
         kernel._api_key = "test-key"
         kernel._api_base_url = "https://test.api.com/v1"
         kernel._broadcast_inference_event = MagicMock()
+        kernel._model_provider = "test"
+        kernel._lmstudio_endpoint = "http://localhost:1234"
 
         # Mock httpx to return a non-streaming response
         mock_response = MagicMock()
@@ -43,13 +45,24 @@ class TestDispatchAPINonStreamingChunkCallback:
         def chunk_callback(chunk):
             collected.append(chunk)
 
-        with patch("backend.agent.agent_kernel._httpx") as mock_httpx:
+        with patch("httpx.Client") as mock_client_cls, patch("httpx.Timeout") as mock_timeout:
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock(return_value=False)
             mock_client.post.return_value = mock_response
-            mock_httpx.Client.return_value = mock_client
-            mock_httpx.Timeout.return_value = MagicMock()
+            # Streaming path is taken when chunk_callback is provided; mock it.
+            _stream_obj = MagicMock()
+            _stream_obj.status_code = 200
+            _stream_obj.iter_lines.return_value = [
+                "data: " + json.dumps({"choices": [{"delta": {"content": "Hello, world!"}}]}),
+                "data: [DONE]",
+            ]
+            _stream_cm = MagicMock()
+            _stream_cm.__enter__ = MagicMock(return_value=_stream_obj)
+            _stream_cm.__exit__ = MagicMock(return_value=False)
+            mock_client.stream.return_value = _stream_cm
+            mock_client_cls.return_value = mock_client
+            mock_timeout.return_value = MagicMock()
 
             messages = [{"role": "user", "content": "hi"}]
             result = kernel._dispatch_api(
@@ -82,6 +95,8 @@ class TestDispatchAPINonStreamingChunkCallback:
         kernel._api_key = "test-key"
         kernel._api_base_url = "https://test.api.com/v1"
         kernel._broadcast_inference_event = MagicMock()
+        kernel._model_provider = "test"
+        kernel._lmstudio_endpoint = "http://localhost:1234"
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -90,13 +105,13 @@ class TestDispatchAPINonStreamingChunkCallback:
             "usage": {},
         }
 
-        with patch("backend.agent.agent_kernel._httpx") as mock_httpx:
+        with patch("httpx.Client") as mock_client_cls, patch("httpx.Timeout") as mock_timeout:
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock(return_value=False)
             mock_client.post.return_value = mock_response
-            mock_httpx.Client.return_value = mock_client
-            mock_httpx.Timeout.return_value = MagicMock()
+            mock_client_cls.return_value = mock_client
+            mock_timeout.return_value = MagicMock()
 
             messages = [{"role": "user", "content": "hi"}]
             result = kernel._dispatch_api(
@@ -121,6 +136,8 @@ class TestDispatchOpenAICompatNonStreamingChunkCallback:
         kernel._api_key = "test-key"
         kernel._api_base_url = "http://localhost:1234/v1"
         kernel._broadcast_inference_event = MagicMock()
+        kernel._model_provider = "test"
+        kernel._lmstudio_endpoint = "http://localhost:1234"
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -133,13 +150,24 @@ class TestDispatchOpenAICompatNonStreamingChunkCallback:
         def chunk_callback(chunk):
             collected.append(chunk)
 
-        with patch("backend.agent.agent_kernel._httpx") as mock_httpx:
+        with patch("httpx.Client") as mock_client_cls, patch("httpx.Timeout") as mock_timeout:
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock(return_value=False)
             mock_client.post.return_value = mock_response
-            mock_httpx.Client.return_value = mock_client
-            mock_httpx.Timeout.return_value = MagicMock()
+            # Streaming path is taken when chunk_callback is provided; mock it.
+            _stream_obj = MagicMock()
+            _stream_obj.status_code = 200
+            _stream_obj.iter_lines.return_value = [
+                "data: " + json.dumps({"choices": [{"delta": {"content": "Local model says hello"}}]}),
+                "data: [DONE]",
+            ]
+            _stream_cm = MagicMock()
+            _stream_cm.__enter__ = MagicMock(return_value=_stream_obj)
+            _stream_cm.__exit__ = MagicMock(return_value=False)
+            mock_client.stream.return_value = _stream_cm
+            mock_client_cls.return_value = mock_client
+            mock_timeout.return_value = MagicMock()
 
             messages = [{"role": "user", "content": "hi"}]
             result = kernel._dispatch_openai_compat(

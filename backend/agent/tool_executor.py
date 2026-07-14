@@ -388,28 +388,17 @@ class ToolExecutor:
             # Fall back to basic validation
             return True, None, parameters
 
-    async def execute(
-        self,
-        tool_name: str,
-        parameters: Dict[str, Any],
-        context: Optional[Dict[str, Any]] = None,
-        request_id: Optional[str] = None
-    ) -> ExecutionResult:
-        """
-        Execute a tool with given parameters.
-        
-        Args:
-            tool_name: Name of the tool to execute
-            parameters: Tool parameters (will be validated and sanitized)
-            context: Execution context
-            request_id: Optional request ID for tracking
-            
-        Returns:
-            ExecutionResult with success status, output, and metadata
-        """
-        start_time = time.time()
+    def _to_execution_result(self, tool_name, parameters, bridge_result, start_time) -> "ExecutionResult":
+        execution_time = time.time() - start_time
+        if isinstance(bridge_result, dict) and bridge_result.get("success"):
+            self._record_execution(tool_name, parameters, bridge_result, True, execution_time)
+            return ExecutionResult(success=True, output=bridge_result, execution_time=execution_time)
+        self._record_execution(tool_name, parameters, bridge_result, False, execution_time)
+        err = bridge_result.get("error", "unknown error") if isinstance(bridge_result, dict) else str(bridge_result)
+        return ExecutionResult(success=False, output=None, error=err, execution_time=execution_time)
 
-        # Get tool specification
+    async def _execute_locally(self, tool_name, parameters, context, start_time) -> "ExecutionResult":
+        """Original per-handler execution path (used as a safe fallback)."""
         tool = self.get_tool(tool_name)
         if not tool:
             return ExecutionResult(
@@ -418,8 +407,6 @@ class ToolExecutor:
                 error=f"Tool '{tool_name}' not found",
                 execution_time=time.time() - start_time
             )
-
-        # Validate parameters with JSON Schema validation and sanitization
         valid, error, sanitized_params = self.validate_parameters(tool_name, parameters, sanitize=True)
         if not valid:
             return ExecutionResult(
@@ -428,11 +415,7 @@ class ToolExecutor:
                 error=error,
                 execution_time=time.time() - start_time
             )
-
-        # Use sanitized parameters for execution
         params_to_use = sanitized_params if sanitized_params is not None else parameters
-
-        # Execute the tool
         try:
             if tool.async_handler:
                 output = await tool.async_handler(params_to_use, context or {})
@@ -443,30 +426,65 @@ class ToolExecutor:
                     output = tool.handler(params_to_use, context or {})
             else:
                 output = {"message": f"Tool '{tool_name}' has no handler"}
-
             execution_time = time.time() - start_time
-
-            # Record execution
             self._record_execution(tool_name, parameters, output, True, execution_time)
-
-            return ExecutionResult(
-                success=True,
-                output=output,
-                execution_time=execution_time
-            )
-
+            return ExecutionResult(success=True, output=output, execution_time=execution_time)
         except Exception as e:
             execution_time = time.time() - start_time
             error_msg = f"Error executing tool '{tool_name}': {str(e)}"
             logger.error(f"[ToolExecutor] {error_msg}")
-
             self._record_execution(tool_name, parameters, str(e), False, execution_time)
+            return ExecutionResult(success=False, output=None, error=error_msg, execution_time=execution_time)
 
+    async def execute(
+        self,
+        tool_name: str,
+        parameters: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+        request_id: Optional[str] = None
+    ) -> ExecutionResult:
+        """
+        Execute a tool with given parameters.
+
+        Phase 5.3 (research D3): dispatch is consolidated in AgentToolBridge,
+        which owns the resilience wrapper.  This executor delegates to the
+        bridge and falls back to its own handlers only when the bridge doesn't
+        know the tool or fails — keeping legacy skill tools working.
+
+        Args:
+            tool_name: Name of the tool to execute
+            parameters: Tool parameters (will be validated and sanitized)
+            context: Execution context
+            request_id: Optional request ID for tracking
+
+        Returns:
+            ExecutionResult with success status, output, and metadata
+        """
+        start_time = time.time()
+        try:
+            from backend.agent.tool_bridge import get_agent_tool_bridge
+            bridge = get_agent_tool_bridge()
+            session_id = (context or {}).get("session_id", "unknown")
+            bridge_result = await bridge.execute_tool(
+                tool_name, parameters, session_id=session_id,
+                plan_title=(context or {}).get("plan_title", ""),
+            )
+            if isinstance(bridge_result, dict):
+                if str(bridge_result.get("error", "")).startswith("Unknown tool"):
+                    return await self._execute_locally(tool_name, parameters, context, start_time)
+                if not bridge_result.get("success") and self.get_tool(tool_name):
+                    # Bridge couldn't execute but we have a local handler.
+                    return await self._execute_locally(tool_name, parameters, context, start_time)
+            return self._to_execution_result(tool_name, parameters, bridge_result, start_time)
+        except Exception as e:
+            try:
+                return await self._execute_locally(tool_name, parameters, context, start_time)
+            except Exception:
+                pass
             return ExecutionResult(
-                success=False,
-                output=None,
-                error=error_msg,
-                execution_time=execution_time
+                success=False, output=None,
+                error=f"Error executing tool '{tool_name}': {str(e)}",
+                execution_time=time.time() - start_time,
             )
 
     async def execute_request(self, request: ToolRequest) -> ToolResponse:

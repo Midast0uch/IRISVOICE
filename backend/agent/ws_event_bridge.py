@@ -48,6 +48,16 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
     IRISStreamEvent.CONTEXT_USAGE,
     IRISStreamEvent.DOCUMENT_RENDER,
     IRISStreamEvent.LISTENING_STATE,
+    # ── Execution-hardening plan events (Phase 4.1) ──────────────────────────
+    # Forwarded so the frontend can surface recovery / validation / budget
+    # signals in the chat as system messages.  All four are emitted by the
+    # agent kernel (RC1 validation -> VALIDATION_FAILED, graft recovery ->
+    # RECOVERY_START, Caducean recovery -> TOPOLOGY_RECOVERY, budget exhaustion
+    # -> BUDGET_EXHAUSTED) and must reach the WS to be displayed.
+    IRISStreamEvent.BUDGET_EXHAUSTED,
+    IRISStreamEvent.VALIDATION_FAILED,
+    IRISStreamEvent.RECOVERY_START,
+    IRISStreamEvent.TOPOLOGY_RECOVERY,
 )
 
 # Events added at runtime (e.g. future additions) so the tuple above stays

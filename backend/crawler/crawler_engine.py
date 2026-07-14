@@ -58,6 +58,7 @@ class CrawlResult:
     pages: list[PageData]
     duration_ms: int
     crawled_at: str          # ISO 8601 UTC
+    error: Optional[str] = None  # set when the crawl failed (subprocess crash/timeout/unavailable)
 
 
 class CrawlerEngine:

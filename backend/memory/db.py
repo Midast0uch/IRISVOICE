@@ -56,7 +56,7 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
     # Try sqlcipher3 first
     try:
         import sqlcipher3 as _sqlcipher3
-        conn = _sqlcipher3.connect(str(db_path))
+        conn = _sqlcipher3.connect(str(db_path), check_same_thread=False)
         try:
             key_hex = biometric_key.hex()
             conn.execute(f"PRAGMA key='{key_hex}'")

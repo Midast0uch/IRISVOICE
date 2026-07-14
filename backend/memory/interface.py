@@ -339,6 +339,26 @@ class MemoryInterface:
         score = self._score_outcome(episode)
         episode_id = self.episodic.store(episode, score)
 
+        # PACMAN (Option B / PACMAN.md): fragment the episode into context_chunks so
+        # semantic retrieval (Layer 3) and decay/crystallization actually have data to
+        # work with. fragment_and_store() was previously defined but never called,
+        # leaving context_chunks empty and retrieve_context_chunks() a no-op. The
+        # embedder is already initialised (used by episodic.store above), so this adds
+        # no new dependency. Episode storage is not a hot path, so the extra embeddings
+        # are acceptable. Failures are non-fatal — episode storage must never break.
+        try:
+            _content = episode.full_content or episode.task_summary
+            if _content and _content.strip():
+                _has_tools = bool(getattr(episode, "tool_sequence", None))
+                self.episodic.fragment_and_store(
+                    content=_content,
+                    session_id=episode.session_id,
+                    chunk_type="der_output" if _has_tools else "context_fragment",
+                    zone="tool" if _has_tools else "trusted",
+                )
+        except Exception as _frag_exc:
+            logger.warning(f"[MemoryInterface] PACMAN fragment_and_store failed: {_frag_exc}")
+
         # Mycelium: record outcome → crystallise landmark → clear session (Req 13.4)
         if self._mycelium is not None:
             try:

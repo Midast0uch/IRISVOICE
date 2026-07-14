@@ -73,6 +73,10 @@ const TOOL_TITLES: Record<string, string> = {
   run_command: "Running Command",
   ask_user_question: "Asking You",
   speak: "Speaking",
+  // Mode-name fallbacks for when the backend mode leaks as tool_name.
+  agentic: "WebSearch",
+  quick: "Respond",
+  direct: "Tool",
 }
 
 // Title-case fallback for any tool not in the map above.

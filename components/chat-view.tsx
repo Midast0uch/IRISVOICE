@@ -9,6 +9,7 @@ import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
 import { useBrandColor } from "@/contexts/BrandColorContext";
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
+import { formatPlanEventMessage } from "@/components/chat/planEventMessage";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
 import { SpotlightState, SpotlightStateType } from "@/hooks/useUILayoutState";
@@ -103,7 +104,7 @@ const getNotificationIcon = (type: string, glowColor: string) => {
 interface Message {
   id: string
   text: string
-  sender: "user" | "assistant" | "error"
+  sender: "user" | "assistant" | "error" | "system"
   timestamp: Date
   errorType?: "agent" | "voice" | "validation"
   words?: string[]; // For TTS word highlighting
@@ -652,6 +653,52 @@ export function ChatWing({
     }
     window.addEventListener('iris:voice_final', handleVoiceFinal)
     return () => window.removeEventListener('iris:voice_final', handleVoiceFinal)
+  }, [])
+
+  // Handle execution-hardening plan events (Phase 4.1): validation failures,
+  // recovery starts, topology recovery, and budget exhaustion. Surfaced as
+  // system messages in the chat thread so the user sees why a step was
+  // re-routed or the agent fell back to Voyager continue mode.
+  useEffect(() => {
+    function handlePlanEvent(e: Event) {
+      const detail = (e as CustomEvent<{
+        type?: string
+        tool_name?: string
+        error?: string
+        step_id?: string
+        failed_step?: string
+        num_grafted?: number
+        graft_attempts?: number
+        critical?: boolean
+      }>).detail
+      if (!detail?.type) return
+
+      const text = formatPlanEventMessage(detail)
+      if (!text) return
+
+      const systemMessage: Message = {
+        id: `plan-${Date.now()}-${detail.type}`,
+        text,
+        sender: "system",
+        timestamp: new Date(),
+      }
+
+      const currentActiveId = activeConversationIdRef.current
+      if (currentActiveId) {
+        setConversations(prev => prev.map(conv =>
+          conv.id === currentActiveId
+            ? {
+                ...conv,
+                messages: [...conv.messages, systemMessage],
+                lastMessagePreview: systemMessage.text.substring(0, 60),
+                timestamp: new Date(),
+              }
+            : conv
+        ))
+      }
+    }
+    window.addEventListener('iris:plan_event', handlePlanEvent)
+    return () => window.removeEventListener('iris:plan_event', handlePlanEvent)
   }, [])
 
   // Handle incoming permission requests from ToolPermissionSystem
@@ -2461,6 +2508,25 @@ ${message.text}`;
                                 </button>
                               </div>
                             </div>
+                          </motion.div>
+                        ) : message.sender === 'system' ? (
+                          // System message (plan events: validation/recovery/budget/topology)
+                          <motion.div
+                            initial={{ opacity: prefersReducedMotion ? 1 : 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
+                            className="max-w-[90%] py-2"
+                          >
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <Info size={10} className="text-amber-400" />
+                              <span className="text-[9px] font-semibold text-amber-400">
+                                System
+                              </span>
+                              <span className="text-[8px] text-white/30 tabular-nums ml-auto">
+                                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                              </span>
+                            </div>
+                            <p className="text-[12px] text-amber-100/90 leading-relaxed">{message.text}</p>
                           </motion.div>
                         ) : (
                           // Error message

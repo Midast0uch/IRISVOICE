@@ -534,7 +534,19 @@ class EpisodicStore:
                     ep.setdefault("summary", f"{ep.get('task_summary', '')} — {ep.get('failure_reason', '')}")
                 for ep in successes:
                     ep.setdefault("summary", ep.get("task_summary", ""))
-                return self._mycelium.resonance_scorer.format_context(successes, failures)
+                _ctx = self._mycelium.resonance_scorer.format_context(successes, failures)
+                # RC8 FIX: also surface proven tool sequences (Mycelium path).
+                _seq_lines = []
+                for ep in successes:
+                    _seq = ep.get("tool_sequence") or []
+                    if _seq:
+                        _seq_lines.append(
+                            f"  - {ep.get('task_summary', '')}: "
+                            + " → ".join(str(s.get("tool", "?")) for s in _seq[:6])
+                        )
+                if _seq_lines:
+                    _ctx += "\nPROVEN SEQUENCES:\n" + "\n".join(_seq_lines)
+                return _ctx
             except Exception:
                 pass  # Fallback to plain format below
 
@@ -544,6 +556,12 @@ class EpisodicStore:
             parts.append("RELEVANT PAST SUCCESSES:")
             for ep in successes:
                 parts.append(f"  - {ep['task_summary']} (score: {ep['outcome_score']})")
+                # RC8 FIX: surface the proven tool_sequence so the planner can
+                # replay a known-good method instead of re-deriving it.
+                _seq = ep.get("tool_sequence") or []
+                if _seq:
+                    _names = " → ".join(str(s.get("tool", "?")) for s in _seq[:6])
+                    parts.append(f"    PROVEN SEQUENCE: {_names}")
         if failures:
             parts.append("WARNINGS FROM PAST FAILURES:")
             for ep in failures:

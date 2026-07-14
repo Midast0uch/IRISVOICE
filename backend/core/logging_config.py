@@ -90,7 +90,8 @@ def setup_backend_logging(
         # are captured in irisvoice.log alongside the structured logger output.
         if enable_file_logging:
             _file_handler = logging.handlers.RotatingFileHandler(
-                log_file, maxBytes=10 * 1024 * 1024, backupCount=5
+                log_file, maxBytes=10 * 1024 * 1024, backupCount=5,
+                encoding="utf-8",
             )
             _file_handler.setFormatter(_fmt)
             _root.addHandler(_file_handler)

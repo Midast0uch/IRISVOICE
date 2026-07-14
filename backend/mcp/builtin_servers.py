@@ -380,8 +380,7 @@ class FileManagerServer(BuiltinServer):
         if name == "read_file":
             path = arguments.get("path", "")
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
+                content = await asyncio.to_thread(self._sync_read_file, path)
                 return {"success": True, "content": content, "path": path}
             except Exception as e:
                 return {"success": False, "error": str(e), "path": path}
@@ -390,8 +389,7 @@ class FileManagerServer(BuiltinServer):
             path = arguments.get("path", "")
             content = arguments.get("content", "")
             try:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
+                await asyncio.to_thread(self._sync_write_file, path, content)
                 return {"success": True, "message": f"Written to {path}", "bytes": len(content)}
             except Exception as e:
                 return {"success": False, "error": str(e)}
@@ -400,24 +398,9 @@ class FileManagerServer(BuiltinServer):
             path = arguments.get("path", ".")
             recursive = arguments.get("recursive", False)
             try:
-                items = []
-                p = Path(path)
-                if recursive:
-                    for item in p.rglob("*"):
-                        items.append({
-                            "name": item.name,
-                            "path": str(item),
-                            "type": "directory" if item.is_dir() else "file",
-                            "size": item.stat().st_size if item.is_file() else None
-                        })
-                else:
-                    for item in p.iterdir():
-                        items.append({
-                            "name": item.name,
-                            "path": str(item),
-                            "type": "directory" if item.is_dir() else "file",
-                            "size": item.stat().st_size if item.is_file() else None
-                        })
+                items = await asyncio.to_thread(
+                    self._sync_list_directory, path, recursive
+                )
                 return {"success": True, "items": items, "path": path}
             except Exception as e:
                 return {"success": False, "error": str(e)}
@@ -425,7 +408,7 @@ class FileManagerServer(BuiltinServer):
         elif name == "create_directory":
             path = arguments.get("path", "")
             try:
-                Path(path).mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(self._sync_create_directory, path)
                 return {"success": True, "message": f"Created directory {path}"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
@@ -433,17 +416,51 @@ class FileManagerServer(BuiltinServer):
         elif name == "delete_file":
             path = arguments.get("path", "")
             try:
-                p = Path(path)
-                if p.is_dir():
-                    import shutil
-                    shutil.rmtree(p)
-                else:
-                    p.unlink()
+                await asyncio.to_thread(self._sync_delete_file, path)
                 return {"success": True, "message": f"Deleted {path}"}
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
         return {"error": f"Unknown tool: {name}"}
+
+    # ── Sync helpers: run in a worker thread via asyncio.to_thread so file
+    # I/O never blocks the asyncio event loop (RC10). ──
+    @staticmethod
+    def _sync_read_file(path: str) -> str:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    @staticmethod
+    def _sync_write_file(path: str, content: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    @staticmethod
+    def _sync_list_directory(path: str, recursive: bool) -> list:
+        items = []
+        p = Path(path)
+        it = p.rglob("*") if recursive else p.iterdir()
+        for entry in it:
+            items.append({
+                "name": entry.name,
+                "path": str(entry),
+                "type": "directory" if entry.is_dir() else "file",
+                "size": entry.stat().st_size if entry.is_file() else None,
+            })
+        return items
+
+    @staticmethod
+    def _sync_create_directory(path: str) -> None:
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _sync_delete_file(path: str) -> None:
+        p = Path(path)
+        if p.is_dir():
+            import shutil
+            shutil.rmtree(p)
+        else:
+            p.unlink()
 
 
 class GUIAutomationServer(BuiltinServer):

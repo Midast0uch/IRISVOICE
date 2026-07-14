@@ -106,11 +106,40 @@ async def initialise_memory(
         raise RuntimeError(f"Memory encryption initialization failed: {e}") from e
     
     # Create memory interface
-    _memory_interface = MemoryInterface(
-        adapter=adapter,
-        db_path=db_path,
-        biometric_key=key
-    )
+    try:
+        _memory_interface = MemoryInterface(
+            adapter=adapter,
+            db_path=db_path,
+            biometric_key=key
+        )
+    except Exception as _open_err:
+        # Safety net: if the primary key (e.g. Dilithium-derived) cannot open
+        # the existing DB, fall back to the dev pseudo-key so the connection is
+        # never lost during development. The DB was encrypted with a different
+        # key, so we recover with the pseudo-key and warn clearly.
+        logger.warning(
+            "[Memory] Primary key failed to open DB (%s) — falling back to "
+            "dev pseudo-key", _open_err
+        )
+        try:
+            from backend.core.biometric import initialize_memory_encryption as _init_enc
+            _pseudo_key = _init_enc(
+                db_path=db_path, config_path=config_path, force_pseudo=True
+            )
+            _memory_interface = MemoryInterface(
+                adapter=adapter,
+                db_path=db_path,
+                biometric_key=_pseudo_key
+            )
+            logger.warning(
+                "[Memory] Recovered using dev pseudo-key (DB encrypted with a "
+                "different key than the primary)"
+            )
+        except Exception as _pseudo_err:
+            logger.error(f"[Memory] Dev pseudo-key also failed: {_pseudo_err}")
+            raise RuntimeError(
+                f"Memory initialization failed: {_open_err}"
+            ) from _open_err
     
     # Run data migration (if needed)
     try:

@@ -1,5 +1,109 @@
 # IRIS Changelog
 
+## [Unreleased] — Dilithium Memory Unlock + DER/PACMAN Execution Hardening — 2026-07-13
+
+### feat: Dilithium PQC identity key → memory encryption key
+
+CRYSTALS-Dilithium post-quantum identity key derived into 256-bit AES memory key
+via IdentityKeyDeriver + MemoryMigrationManager (DEFAULT_SALT=b"iris_memory_foundation_v1.0").
+Key loaded from IRIS_DILITHIUM_KEY (env hex) or IRIS_DILITHIUM_KEY_FILE (external path),
+never written to repo. Tests use fake in-memory keys. `*.key` added to `.gitignore`.
+
+#### Files changed
+- **`backend/core/biometric.py`** (+165/-1) — DilithiumIdentityKeyDeriver, MemoryMigrationManager,
+  DEFAULT_SALT, Dilithium sign/verify for memory integrity
+- **`backend/memory/interface.py`** (+20) — IdentityKeyDeriver init on startup; passes AES key to SQLCipher
+- **`backend/memory/db.py`** (+2) — AES key storage for encrypted connections
+- **`backend/memory/episodic.py`** (+20/-4) — Encrypt/decrypt episode data
+- **`backend/memory/__init__.py`** (+39/-6) — Exports IdentityKeyDeriver, DilithiumKeyManager, new modules
+- **`backend/memory/tests/test_dilithium_memory_key.py`** (NEW, 70 lines) — key derivation tests
+- **`backend/memory/tests/test_dilithium_rekey.py`** (NEW, 102 lines) — re-key lifecycle tests
+- **`backend/memory/tests/test_db_thread_safety.py`** (NEW, 59 lines) — thread-safe encrypted DB tests
+- `backend/memory/tests/test_db_encryption.py` — 11 PASS; `test_interface.py` — 24 PASS + 2 new
+- `backend/memory/tests/test_episodic_rc8_tool_sequence.py` (NEW, 70 lines) — proven sequence tests
+
+### feat: DER+PACMAN execution-hardening phases 0–5 + 4.1
+
+Complete multi-phase rollout for agent tool dispatch, workflow capture, and
+plan event pipeline. **148 tests passing across all affected areas.**
+
+#### Phase 4.1 — Plan event bus + frontend wiring
+- **`backend/agent/event_bus.py`** (+4) — IRISStreamEvent 4 plan:* events (PLAN_VALIDATION_FAILED=105,
+  PLAN_RECOVERY_START=106, PLAN_TOPOLOGY_RECOVERY=107, PLAN_RECOVERY_COMPLETE=108)
+- **`backend/agent/agent_kernel.py`** (+483/-144) — 3 plan:* emissions (VALIDATION_FAILED,
+  RECOVERY_START, TOPOLOGY_RECOVERY) wrapped in try/except
+- **`backend/agent/ws_event_bridge.py`** (+10) — _BRIDGED_EVENTS maps 4 plan:* events
+- **`hooks/useIRISWebSocket.ts`** (+16) — plan:* → `iris:plan_event` CustomEvent
+- **`components/chat-view.tsx`** (+68/-37) — `"system"` sender + render + plan event listener
+- **`components/chat/planEventMessage.ts`** (NEW, 29 lines) — `formatPlanEventMessage` pure function
+- **`backend/tests/contract/test_plan_events_bridge.py`** (NEW, 79 lines) — 5 tests
+- **`__tests__/planEventMessage.test.ts`** (NEW, 60 lines) — 7 tests; tsc --noEmit 0 errors
+- **`backend/agent/der_loop.py`** (+11/-1) — M1 fix: only escalate when task is complex (≥3 steps)
+
+#### Phase 5.1 — Verified workflow capture
+- **`backend/agent/workflow_capture.py`** (NEW, 191 lines) — should_capture heuristics (≥3 distinct
+  tools & similarity<0.85), self_test_skill, build_skill_stub, register_verified_skill
+- **`backend/tests/test_workflow_capture.py`** (NEW, 134 lines) — 10 tests
+
+#### Phase 5.2 — Multimedia tool execution
+- **`backend/tools/media_tools.py`** (NEW, 205 lines) — transcribe_media/analyze_video_frames/
+  clip_video via ffmpeg + Parakeet ASR + vision. 3 ToolSpecs (executor="internal")
+- **`backend/tests/test_media_tools.py`** (NEW, 89 lines) — 7 tests
+
+#### Phase 5.3 — Dispatch consolidation + resilience
+- **`backend/agent/tool_bridge.py`** (+150/-64) — _execute_media_tool, _execute_tool_with_resilience
+- **`backend/agent/tool_executor.py`** (+104/-63) — delegates to bridge, ExecutionResult, local fallback
+- **`backend/agent/tool_registry.py`** (+76) — 3 media ToolSpecs, get_all_specs
+- **`backend/agent/resilience.py`** (NEW, 117 lines) — retry_with_backoff (async)
+- **`backend/tests/test_dispatch_consolidation.py`** (NEW, 102 lines) — 3 tests
+
+### fix: test isolation — ToolExecutor singleton leak ROOT CAUSED
+
+`ToolExecutor` is a process-wide singleton (`cls._instance`); `__init__` registers
+built-in tool schemas into the global `InputValidator` singleton.
+`test_dispatch_consolidation.py` monkeypatches the singleton + `AgentToolBridge()` +
+built-in schemas pollute globals. `test_input_validation.py`'s `tool_executor` fixture
+reuses the same singleton (no reset) → 3 tests failed when combined. Fixed by autouse
+`_isolate_globals` fixture resetting `ToolExecutor._instance`, `tool_bridge._agent_tool_bridge`,
+`reset_input_validator()` in setup+teardown. Combined run now 53 passed.
+
+### fix: FileManagerServer async I/O (RC10)
+
+All blocking file I/O (`read_file`, `write_file`, `list_directory`, `create_directory`,
+`delete_file`) refactored through `asyncio.to_thread` with static sync helper methods.
+**`backend/mcp/builtin_servers.py`** (+75/-47).
+
+### feat: Vision idle lifecycle + singleton provider
+
+LFMVLProvider auto-stops the owned llama-server after 120 s of inactivity
+(`IRIS_VISION_IDLE_TIMEOUT`, default 120), lazily restarts on next vision call.
+Module-level `get_lfm_vl_provider()` singleton unifies gateway + MCP server state.
+`backend/tests/test_vision_mcp.py` (+90) — idle lifecycle tests.
+- **`backend/tools/lfm_vl_provider.py`** (+127/-19)
+- **`backend/tools/vision_mcp_server.py`** (+10/-6)
+
+### chore: UTF-8 encoding on rotating log handlers + eslint dep
+
+Root logger (`logging_config.py`) and StructuredLogger (`structured_logger.py`)
+RotatingFileHandlers now specify `encoding="utf-8"`. Added `eslint-plugin-react-hooks`
+dev dependency for frontend linting.
+
+### chore: gitignore *.key for Dilithium secret hygiene
+
+`*.key` added to `.gitignore` (was missing; `*.pem`/`.env*` already ignored).
+Dilithium private key loaded from env/file only, never written to repo.
+
+### test: regression green across all affected areas
+
+| Area | Pass | Files |
+|------|------|-------|
+| Targeted backend | 53 | workflow_capture 10 + media_tools 7 + dispatch 3 + plan_events_bridge 5 + der_phase3 9 + input_validation 19 |
+| Related modules | 88 | tool_registry/bridge_gates/mcp_dispatch/skill_creator 59; der_a1_a2_a3/c1/skill_e2e 9; ui_skill_sync/per_thread 20 |
+| Frontend jest | 7 | planEventMessage.test.ts (node, NOT --experimental-vm-modules) |
+| **Total** | **148** | All green, 0 regressions |
+
+---
+
 ## [Unreleased] — Audio Pipeline Solidification — 2026-07-05
 
 ### fix: word highlighting regression — turn_id propagation through text_response

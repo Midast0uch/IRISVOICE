@@ -106,6 +106,32 @@ def resolve_tool(name: str) -> Optional[ToolSpec]:
     return None
 
 
+def validate_tool_call(
+    tool_name: str, params: Optional[Dict[str, Any]]
+) -> "tuple[bool, str]":
+    """Pre-execution validation for a planned step (RC1).
+
+    Returns (is_valid, error_message). The dominant permanent-error class is an
+    UNKNOWN tool name (the historical ``tool:null`` bug) — a step that names a
+    tool the registry has never heard of can never succeed, so it is routed to
+    graft recovery before execution instead of failing at runtime.
+
+    NOTE: parameter *requiredness* is intentionally NOT enforced here. The
+    registry's ``ToolSpec.parameters`` dict does not distinguish required from
+    optional parameters (e.g. ``speak`` declares ``text``/``priority``/
+    ``interrupt`` but only ``text`` is meaningfully required), so treating every
+    declared parameter as required would wrongly reject valid calls. Tool
+    existence is the safe, high-leverage check; parameter shaping remains the
+    LLM planner's responsibility.
+    """
+    spec = resolve_tool(tool_name)
+    if spec is None:
+        return False, f"Tool '{tool_name}' not found in registry"
+    if params is not None and not isinstance(params, dict):
+        return False, f"Tool '{tool_name}' params must be a dict, got {type(params).__name__}"
+    return True, ""
+
+
 def capability_allowed(spec: ToolSpec) -> bool:
     """Declarative gate consolidation (Pillar A).
 
@@ -584,6 +610,56 @@ def register_builtin_tools() -> None:
             ),
             parameters={"query": {"type": "string", "description": "The research topic or question to investigate"}},
             category="web", executor="crawler", requires_internet=True, parallel_safe=False, critical=True,
+        ),
+    ]
+
+    # ── Multimedia tools (Phase 5.2 / research D2) ───────────────────────────
+    specs += [
+        ToolSpec(
+            name="transcribe_media",
+            description=(
+                "Transcribe an audio or video file to text using the local Parakeet "
+                "ASR service. Automatically chunks long media into <=60s segments. "
+                "Input is a local file path. Returns the full transcript, detected "
+                "language, and duration."
+            ),
+            parameters={
+                "audio_path": {"type": "string", "description": "Path to the audio/video file to transcribe"},
+                "chunk_seconds": {"type": "integer", "description": "Max seconds per ASR chunk (default 55)", "default": 55},
+            },
+            category="media", executor="internal", requires_internet=False,
+            parallel_safe=False, critical=False,
+        ),
+        ToolSpec(
+            name="analyze_video_frames",
+            description=(
+                "Sample frames from a video at a fixed interval and run vision "
+                "analysis on each frame (describe content, read text, detect objects). "
+                "Returns per-frame answers and an aggregated summary. Use for "
+                "'what happens in this video' or 'summarize the screen recording'."
+            ),
+            parameters={
+                "video_path": {"type": "string", "description": "Path to the video file"},
+                "question": {"type": "string", "description": "Question to ask about each frame", "default": "What is happening in this frame?"},
+                "frame_interval": {"type": "number", "description": "Seconds between sampled frames (default 1.0)", "default": 1.0},
+            },
+            category="media", executor="internal", requires_internet=False,
+            parallel_safe=False, critical=False,
+        ),
+        ToolSpec(
+            name="clip_video",
+            description=(
+                "Trim a video to a sub-clip using ffmpeg. Input start/end as "
+                "HH:MM:SS or seconds. Returns the output file path."
+            ),
+            parameters={
+                "video_path": {"type": "string", "description": "Path to the source video"},
+                "start": {"type": "string", "description": "Start time (HH:MM:SS or seconds)"},
+                "end": {"type": "string", "description": "End time (HH:MM:SS or seconds)"},
+                "output_path": {"type": "string", "description": "Destination path for the trimmed clip"},
+            },
+            category="media", executor="internal", requires_internet=False,
+            parallel_safe=False, critical=False,
         ),
     ]
 

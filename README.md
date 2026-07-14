@@ -76,6 +76,7 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
+- **DER+PACMAN Execution Hardening**: Plan events (VALIDATION_FAILED, RECOVERY_START, TOPOLOGY_RECOVERY) streamed to frontend as `iris:plan_event` system messages; verified workflow capture with automatic skill stub generation after ≥3 tools; multimedia tools (transcribe_media, analyze_video_frames, clip_video) via ffmpeg + Parakeet + vision; resilient tool dispatch with `retry_with_backoff`; all file I/O offloaded to worker threads (`asyncio.to_thread`)
 - **Personality System**: Configurable assistant personality and behavior
 - **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
 - **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
@@ -111,6 +112,7 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - **Structured Logging**: JSON-formatted logs with context injection
 - **Performance Optimization**: Sub-50ms WebSocket latency, <5s agent responses
 - **Security**: Tool execution security with allowlists and audit logging
+- **Post-Quantum Memory Encryption**: CRYSTALS-Dilithium identity key derived into 256-bit AES key for SQLCipher memory encryption at rest; key loaded from `IRIS_DILITHIUM_KEY` env var (hex) or `IRIS_DILITHIUM_KEY_FILE` (external path) — never written to disk; fake in-memory keys used in tests
 - **Cleanup System**: Analyze and remove unused files and dependencies to free disk space
 
 ## 📋 Table of Contents
