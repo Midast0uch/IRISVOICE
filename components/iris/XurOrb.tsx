@@ -372,11 +372,17 @@ export function XurOrb({
   // Voice state affects scale/shape only, not color.
   const labelsVisible = !isWingsOpen && !menuOpen
 
-  const orbRetreatScale = isWingsOpen ? 0.85 : 1.0
+  // When voice is active (listening / speaking / processing) the orb must breathe
+  // at FULL prominence — identical to the "hey iris" wake-word flow — even with a
+  // wing open. Only the IDLE orb retreats/dims behind an open wing (the VOICE label
+  // stays hidden there for UX, but the listening animation must stay consistent with
+  // the wake word regardless of orb state). This keeps all three activations
+  // (VOICE label, double-click orb, wake word) visually equivalent.
+  const orbRetreatScale = isWingsOpen && !isVoiceActive ? 0.85 : 1.0
   // Blur removed while wings are open — it made the orb look unfocused.
   // Keep a subtle opacity dip so it reads as background without vanishing.
   const orbBlur = 0
-  const orbOpacity = isWingsOpen ? 0.85 : 1.0
+  const orbOpacity = isWingsOpen && !isVoiceActive ? 0.85 : 1.0
   const baseScale = isExpanded ? 1.1 : 1
   const effectiveScale = isPressed
     ? 0.92
@@ -504,8 +510,17 @@ export function XurOrb({
             <OrbCanvas
               glowColor={glowColor}
               breathMode={isReconnecting ? 'pulse' : cadence.breathMode}
-              breathLevel={isReconnecting ? 2.0 : cadence.breathLevel}
-              isBreathing={isReconnecting ? true : cadence.isBreathing}
+              // Central glow halo = voice active (listening STT OR TTS speaking/
+              // playback). The calm core dot is always drawn by OrbCanvas
+              // regardless. TTS is rendered slightly LARGER than listening
+              // (glowScale) for consistency across voice states. The reconnecting
+              // state must NOT force the halo on (that lit the core at idle
+              // whenever the backend WS was down). Reconnect gets its own shell
+              // pulse cue below.
+              breathLevel={playbackSpeaking ? 0.6 : cadence.breathLevel}
+              isBreathing={cadence.isBreathing || playbackSpeaking}
+              glowActive={isListening || isSpeakingActive}
+              glowScale={isSpeakingActive ? 1.18 : 1.0}
               animationMode={isReconnecting ? 'D' : animationMode}
               animActive={isReconnecting ? true : animActive}
             />

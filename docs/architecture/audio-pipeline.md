@@ -798,7 +798,7 @@ Error path: any state → ERROR → IDLE (2s delay)
 
 | From | To | Trigger |
 |------|-----|---------|
-| IDLE | RECORDING | Wake word detected or orb double-click |
+| IDLE | RECORDING | Wake word detected, orb double-click, or VOICE label click |
 | RECORDING | PROCESSING | VAD detects end-of-speech |
 | PROCESSING | SPEAKING | LLM response ready, TTS starts |
 | SPEAKING | IDLE | TTS playback complete (single-shot mode) |
@@ -813,6 +813,41 @@ Error path: any state → ERROR → IDLE (2s delay)
 `handleOrbClick` in `XurOrb.tsx`:
 - If `isSpeaking` → calls `cancelVoiceCommand()` to stop TTS
 - If idle → calls `startVoiceCommand()` to begin recording
+
+### Three Voice-Activation Triggers (must be visually identical)
+
+All three paths converge on the SAME state machine and the SAME orb rendering,
+so the listening animation (glow halo + cadence breathing) is identical
+regardless of how listening started:
+
+| Trigger | UI action | Code path |
+|---------|-----------|-----------|
+| Wake word | "Hey Iris" (Porcupine) | backend → `voice_command_start` |
+| Double-click | double-click orb (any state) | `handleDoubleClick` → `startVoiceCommand` |
+| VOICE label | click "↑↑ Voice" label (idle only) | `handleLabelClick('voice')` → `startVoiceCommand` |
+
+- `startVoiceCommand` (in `useIRISWebSocket.ts`) optimistically sets
+  `voiceState="listening"`, dispatches `iris:voice_state_change`, and sends
+  `voice_command_start` over the WS. The backend handler
+  `iris_gateway._handle_voice` (line 1863) treats `voice_command_start` from
+  double-click OR wake word identically — it broadcasts `listening_state:
+  listening` and streams `audio_envelope` phase `"listening"` (cadence envelope
+  drives the orb breathing). `useCadenceDetection` + `OrbCanvas` glow refs are
+  shared, so the data/cadence path is already consistent.
+- **Orb prominence fix (2026-07-15):** `XurOrb.tsx` previously forced
+  `orbRetreatScale = 0.85` / `orbOpacity = 0.85` whenever a wing was open —
+  *including during listening* — so a click/double-click with a wing open
+  breathed at reduced prominence versus the wake word (which runs from idle at
+  full prominence). Now `orbRetreatScale` / `orbOpacity` only diminish when the
+  orb is **idle** behind an open wing (`isWingsOpen && !isVoiceActive`); during
+  any voice-active state the orb is full prominence in EVERY orb state
+  (idle / chatview open / dashboard wing open), matching the wake word.
+- The VOICE label stays **hidden** when wings are open (`labelsVisible =
+  !isWingsOpen && !menuOpen`) — intended UX. Double-click still reaches the orb
+  because the orb is at `zIndex: 100` while wings sit at `zIndex: 5–20` and
+  never overlap the orb.
+- Glow color is theme/brand-color driven (`getThemeConfig().glow.color`, default
+  'aether' = cyan `hsl(190,100%,50%)`) and is identical for all three triggers.
 
 ---
 
@@ -924,6 +959,42 @@ The `_monitor_words` function has a contract comment:
 ---
 
 ## Known Issues & Recent Fixes
+
+### Session 158 (2026-07-15) — Orb Listening Animation Consistency (double-click + VOICE label == wake word)
+
+**RESOLVED**:
+- Requirement: the orb's listening animation (glow halo + cadence breathing)
+  must be IDENTICAL for the three voice-activation triggers — "Hey Iris" wake
+  word, double-click orb, and VOICE label click — in EVERY orb state (idle,
+  chatview open, dashboard wing open). The wake word is the proven-consistent
+  reference standard.
+- Root cause of the inconsistency: `XurOrb.tsx` forced `orbRetreatScale = 0.85`
+  and `orbOpacity = 0.85` whenever `isWingsOpen` — *including during
+  listening/speaking* — so a click/double-click with a wing open breathed at
+  reduced prominence versus the wake word (which runs from idle at full
+  prominence). The data layer was already shared (backend
+  `iris_gateway._handle_voice` line 1863 treats `voice_command_start` from
+  double-click OR wake word identically; `useCadenceDetection` + `OrbCanvas`
+  glow refs shared), so only the visual prominence diverged.
+- Fix: `orbRetreatScale` / `orbOpacity` now only diminish when the orb is
+  **idle** behind an open wing (`isWingsOpen && !isVoiceActive`). During any
+  voice-active state the orb is full prominence regardless of wing state, so
+  all three triggers render the same listening animation. VOICE label stays
+  hidden when wings open (intended UX); double-click still reaches the orb at
+  `zIndex: 100` (wings at `zIndex: 5–20`, never overlap).
+- Verification (live, 2026-07-15):
+  - **Backend reaction**: a WebSocket client sent `voice_command_start` to
+    `ws://localhost:8090/ws/<client_id>` and received `listening_state:
+    listening` immediately, then `audio_envelope` phase `"listening"` with a
+    rising cadence envelope (0.0 → 0.75) — the exact signal that drives orb
+    breathing. This is the shared handler for both click/double-click triggers.
+  - **Orb visual**: drove the UI in a browser — double-click orb ×2 and VOICE
+    label click ×2. Screenshots confirm idle = calm dot (no halo); all four
+    listening shots show the identical large glowing/breathing halo,
+    consistent regardless of trigger. Glow color is theme-driven (cyan/teal for
+    the default 'aether' theme, RGB ≈ 21,63,77), identical across triggers.
+  - Each trigger was verified twice, satisfying the "verify each trigger twice"
+    protocol (orb change + backend reaction).
 
 ### Session 156 (2026-07-13) — Agent Narration Unification
 
