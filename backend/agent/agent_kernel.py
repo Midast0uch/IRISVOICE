@@ -19,6 +19,8 @@ from .tool_bridge import AgentToolBridge
 from .mcm_protocol.actions.pacman_fragment import is_external_tool
 from ..llm_service import llm as _llm
 from . import streaming as _streaming
+from backend.agent.inference.router import InferenceRouter
+from backend.iris_config import load_config
 from typing import Any, Dict, Optional, List, Callable, Tuple, Sequence
 import json
 import asyncio
@@ -244,6 +246,13 @@ class AgentKernel:
 
         # Initialize components
         self._initialize_components()
+
+        # Auto-apply a provider configured in iris_config.json so the agentic /
+        # DER loop does not silently fall back to a local OpenAI-compatible model
+        # when a cloud provider is already configured.  Local-only setups (no
+        # provider / no key) are left uninitialized — the existing wait-for-user
+        # (Models-card APPLY / model_selection confirm_card) behaviour is preserved.
+        self._router = InferenceRouter(load_config())
 
     def _initialize_components(self):
         """Initialize all core components with error handling."""
@@ -566,59 +575,18 @@ class AgentKernel:
                 self.raw_text = raw_text
 
         try:
-            # --- Path 1: OpenAI-compatible local servers (LM Studio, IRIS Local, etc.) ---
-            if self._is_openai_compat():
-                _lms = self._get_lmstudio_client()
-                _resp = _lms.chat.completions.create(
-                    model=self._selected_reasoning_model or "local-model",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                )
-                return _InferResult(_resp.choices[0].message.content or "")
+            if not prompt or not prompt.strip():
+                return _InferResult("")
 
-            # --- Path 2: Remote API providers (Cohere, OpenAI, Groq, etc.) ---
-            # Unified via LiteLLM — single call, any provider.
-            if self._is_api_provider():
-                _model = self._selected_reasoning_model or "gpt-4o-mini"
-                try:
-                    _resp = _llm.complete(
-                        model=_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        stream=False,
-                        api_key=self._api_key,
-                        api_base=self._api_base_url,
-                    )
-                    return _InferResult(_resp.choices[0].message.content or "")
-                except Exception as _llm_err:
-                    logger.warning(
-                        f"[AgentKernel.infer] LiteLLM call failed: {_llm_err}"
-                    )
-                    return _InferResult("")
-
-            # --- Path 3: Ollama native API (provider == "local", model has ":") ---
-            if self._selected_reasoning_model and ":" in self._selected_reasoning_model:
-                import requests as _req
-
-                _r = _req.post(
-                    "http://localhost:11434/api/chat",
-                    json={
-                        "model": self._selected_reasoning_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": False,
-                    },
-                    timeout=15,
-                )
-                if _r.status_code == 200:
-                    return _InferResult(_r.json().get("message", {}).get("content", ""))
-
+            messages = [{"role": "user", "content": prompt}]
+            text, _thinking, _tool_calls = self._router.generate(
+                role, messages,
+                max_tokens=max_tokens, temperature=temperature,
+            )
+            return _InferResult(raw_text=text)
         except Exception as _inf_err:
             logger.warning(f"[AgentKernel.infer] inference failed: {_inf_err}")
-
-        return _InferResult("")
+            return _InferResult("")
 
     def _get_memory_context(self, task: str) -> str:
         """
@@ -1970,71 +1938,12 @@ class AgentKernel:
         # Local dispatch wrapper — routes to the correct backend provider and
         # returns (response_text, thinking_text, tool_calls).
         def _call(_msgs: List[Dict], _tools_arg: Optional[List[Dict]]) -> Tuple[str, str, List[Dict]]:
-            if config_mode == "SINGLE_API":
-                if config:
-                    if config.inference.api_base_url:
-                        self._api_base_url = config.inference.api_base_url
-                    if config.inference.api_key:
-                        self._api_key = config.inference.api_key
-                    if config.inference.reasoning_model:
-                        self._selected_reasoning_model = config.inference.reasoning_model
-                return self._dispatch_api(
-                    _msgs, _max_tokens, _temperature, _reasoning_effort_val,
-                    chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
-                    tools=_tools_arg,
-                )
-            if config_mode == "SINGLE_LOCAL":
-                return self._dispatch_inprocess(
-                    _msgs, _max_tokens, _temperature,
-                    chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
-                )
-            sel = self._selected_reasoning_model or "local-model"
-            if self._is_openai_compat():
-                return self._dispatch_openai_compat(
-                    _msgs, _max_tokens, _temperature, _reasoning_effort_val,
-                    chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
-                    tools=_tools_arg,
-                )
-            if self._is_api_provider():
-                return self._dispatch_api(
-                    _msgs, _max_tokens, _temperature, _reasoning_effort_val,
-                    chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
-                    tools=_tools_arg,
-                )
-            if sel and ":" in sel:
-                # Ollama — no tool support
-                import requests as _req
-                _r = _req.post(
-                    "http://localhost:11434/api/chat",
-                    json={"model": sel, "messages": _msgs, "stream": False},
-                    timeout=30,
-                )
-                if _r.status_code == 200:
-                    _reply = _r.json().get("message", {}).get("content", "")
-                    _thinking, _clean = self._parse_thinking(_reply)
-                    return _clean or "(I see.)", _thinking, []
-                return "(I see.)", "", []
-            # Local loaded model — no tool support
-            _rm = None
-            if self._model_router and self._selected_reasoning_model:
-                _rm = self._model_router.models.get(self._selected_reasoning_model)
-            if not _rm and self._model_router:
-                _rm = self._model_router.get_reasoning_model()
-            if _rm:
-                _reply = _rm.generate(_msgs[-1].get("content", "") if _msgs else text)
-                _thinking, _clean = self._parse_thinking(_reply)
-                return _clean or "(I see.)", _thinking, []
-            logger.error(
-                f"[AgentKernel] _respond_direct: no model provider matched for session "
-                f"'{self.session_id}' (provider={self._model_provider!r}, "
-                f"model={self._selected_reasoning_model!r})."
+            _text, _thinking, _tool_calls = self._router.generate(
+                "reasoning", _msgs, tools=_tools_arg,
+                max_tokens=_max_tokens, temperature=_temperature,
+                chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
             )
-            return (
-                "I'm not connected to a language model yet. "
-                "Please select a model in IRIS settings and try again.",
-                "",
-                [],
-            )
+            return _text, _thinking, _tool_calls
 
         # === Initial LLM call ===
         _response, _thinking, _tool_calls = _call(messages, _tools)
@@ -3656,32 +3565,53 @@ class AgentKernel:
 
         plan_raw: Optional[str] = None
         try:
-            if self._is_openai_compat():
-                _lms = self._get_lmstudio_client()
-                _r = _lms.chat.completions.create(
-                    model=self._selected_reasoning_model or "local-model",
-                    messages=[{"role": "user", "content": full_prompt}],
-                    max_tokens=-1,
+            # Primary path: route planning through the unified InferenceRouter so
+            # API providers (Cerebras, OpenAI, …) are used — not just local/Ollama
+            # models. Legacy LM Studio / Ollama branches below remain as fallbacks
+            # for local-model configurations.
+            try:
+                _rt_text, _rt_think, _rt_tools = self._router.generate(
+                    "reasoning",
+                    [{"role": "user", "content": full_prompt}],
+                    max_tokens=4096,
                     temperature=temperature,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
-                plan_raw = _r.choices[0].message.content
-            elif (
-                self._selected_reasoning_model and ":" in self._selected_reasoning_model
-            ):
-                import requests as _req
+                if _rt_text:
+                    plan_raw = _rt_text
+                    logger.info(
+                        "[AgentKernel._plan_task] planned via InferenceRouter"
+                    )
+            except Exception as _rt_err:
+                logger.warning(
+                    f"[AgentKernel._plan_task] router planning failed: {_rt_err}"
+                )
+            if not plan_raw:
+                if self._is_openai_compat():
+                    _lms = self._get_lmstudio_client()
+                    _r = _lms.chat.completions.create(
+                        model=self._selected_reasoning_model or "local-model",
+                        messages=[{"role": "user", "content": full_prompt}],
+                        max_tokens=-1,
+                        temperature=temperature,
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    )
+                    plan_raw = _r.choices[0].message.content
+                elif (
+                    self._selected_reasoning_model and ":" in self._selected_reasoning_model
+                ):
+                    import requests as _req
 
-                _r2 = _req.post(
-                    "http://localhost:11434/api/chat",
-                    json={
-                        "model": self._selected_reasoning_model,
-                        "messages": [{"role": "user", "content": full_prompt}],
-                        "stream": False,
-                    },
-                    timeout=60,
-                )
-                if _r2.status_code == 200:
-                    plan_raw = _r2.json().get("message", {}).get("content", "")
+                    _r2 = _req.post(
+                        "http://localhost:11434/api/chat",
+                        json={
+                            "model": self._selected_reasoning_model,
+                            "messages": [{"role": "user", "content": full_prompt}],
+                            "stream": False,
+                        },
+                        timeout=60,
+                    )
+                    if _r2.status_code == 200:
+                        plan_raw = _r2.json().get("message", {}).get("content", "")
         except Exception as _pe:
             logger.warning(f"[AgentKernel._plan_task] inference failed: {_pe}")
 
@@ -6742,6 +6672,27 @@ If any tools failed, address those issues in your response.
                 )
                 return response
 
+            # Primary path: route synthesis through the unified InferenceRouter so
+            # API providers (Cerebras, OpenAI, …) are used for the brain answer,
+            # not just local/Ollama models. Legacy LM Studio / Ollama branches
+            # below remain as fallbacks for local-model configurations.
+            try:
+                _syn_text, _syn_think, _syn_tools = self._router.generate(
+                    "reasoning",
+                    [{"role": "user", "content": synthesis_prompt}],
+                    max_tokens=4096,
+                    temperature=0.6,
+                )
+                if _syn_text:
+                    logger.info(
+                        "[AgentKernel] Brain synthesized response via InferenceRouter"
+                    )
+                    return self._strip_thinking(_syn_text)
+            except Exception as _syn_err:
+                logger.warning(
+                    f"[AgentKernel] router synthesis failed: {_syn_err}"
+                )
+
             # Try LM Studio synthesis
             _sel_synth = self._selected_reasoning_model or ""
             if not reasoning_model and self._is_openai_compat():
@@ -6928,6 +6879,7 @@ If any tools failed, address those issues in your response.
         reasoning_model: Optional[str] = None,
         tool_execution_model: Optional[str] = None,
         model_provider: Optional[str] = None,
+        api_base_url: Optional[str] = None,
     ) -> bool:
         """
         Set user-selected models for reasoning and tool execution.
@@ -7014,6 +6966,21 @@ If any tools failed, address those issues in your response.
                     logger.debug(
                         f"[AgentKernel] Propagated model config to peer session '{peer_id}'"
                     )
+
+            # Sync the router with the selection so InferenceRouter is always
+            # consistent with the legacy field assignments above.
+            if model_provider:
+                from backend.agent.inference.provider import ProviderInstance, ProviderKind
+
+                _kind = ProviderKind.INPROCESS if model_provider in ("local", "iris_local", "inprocess") else (
+                    ProviderKind.LOCAL_OPENAI if model_provider in ("lmstudio", "openai_compatible", "local_openai") else (
+                    ProviderKind.OLLAMA if model_provider == "ollama" else ProviderKind.API))
+                self._router.add_provider(ProviderInstance(
+                    id=model_provider, label=model_provider, kind=_kind,
+                    model=reasoning_model,
+                    api_base_url=api_base_url or getattr(self, '_api_base_url', '') or ""))
+                self._router.bind_role("reasoning", model_provider)
+                self._router.bind_role("tool_execution", model_provider, model_override=tool_execution_model)
 
             return True
 

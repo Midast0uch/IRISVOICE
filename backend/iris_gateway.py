@@ -1252,12 +1252,37 @@ class IRISGateway:
                     # "local" | "vps" | "api"
                     provider = values.get("model_provider") or values.get("provider")
 
+                    # Resolve the provider base URL so the router instance carries
+                    # the correct endpoint (not the previously configured one).
+                    # Mirrors PROVIDER_ENDPOINTS below; kept inline so the router
+                    # sync in set_model_selection gets the right URL up front.
+                    if provider == "cerebras":
+                        _api_base_url = "https://api.cerebras.ai/v1"
+                    elif provider == "opencodego":
+                        _api_base_url = "https://opencode.ai/zen/go/v1"
+                    elif provider == "chutes":
+                        _api_base_url = "https://llm.chutes.ai/v1"
+                    elif provider == "cohere":
+                        _api_base_url = "https://api.cohere.ai/compatibility/v1"
+                    elif provider == "deepseek":
+                        _api_base_url = "https://api.deepseek.com"
+                    elif provider == "anthropic":
+                        _api_base_url = "https://api.anthropic.com/v1"
+                    elif provider == "lmstudio":
+                        _api_base_url = (
+                            values.get("lmstudio_endpoint", _DEFAULT_LMSTUDIO_URL)
+                            or _DEFAULT_LMSTUDIO_URL
+                        )
+                    else:
+                        _api_base_url = ""
+
                     # Always pass the provider so the kernel knows which inference
                     # backend to route to (Ollama / VPS / OpenAI).
                     kernel.set_model_selection(
                         reasoning_model=reasoning,
                         tool_execution_model=tool_exec,
                         model_provider=provider,
+                        api_base_url=_api_base_url,
                     )
                     self._logger.info(
                         f"[Session: {session_id}] Model selection applied on confirm: "
@@ -7465,6 +7490,68 @@ class IRISGateway:
                 except Exception as kw_err:
                     self._logger.warning(f"[iris_local] Kernel wire failed: {kw_err}")
 
+                # Persist loaded status to config (parity with prior behaviour).
+                try:
+                    from .iris_config import load_config as _lc, save_config as _sc
+
+                    _cfg = _lc()
+                    _cfg.inference.local_model_status = "loaded"
+                    _sc(_cfg)
+                except Exception as cfg_err:
+                    self._logger.debug(f"[iris_local] status save skipped: {cfg_err}")
+
+                # [SLICE 3] Register the loaded local model as a first-class
+                # ProviderInstance in the InferenceRouter registry so the
+                # frontend can bind roles to it and the router can route to it.
+                try:
+                    from pathlib import Path as _Path
+
+                    from .agent import get_agent_kernel as _get_kernel
+                    from .agent.inference.provider import (
+                        ProviderInstance,
+                        ProviderKind,
+                    )
+
+                    _kernel = _get_kernel(session_id)
+                    _router = getattr(_kernel, "_router", None)
+                    if _router is not None:
+                        _inproc = getattr(mgr, "_llm", None) is not None
+                        _local_inst = ProviderInstance(
+                            id="local",
+                            label=f"Local: {_Path(model_path).name}",
+                            kind=(
+                                ProviderKind.INPROCESS
+                                if _inproc
+                                else ProviderKind.LOCAL_OPENAI
+                            ),
+                            model=_Path(model_path).stem,
+                            api_base_url="" if _inproc else mgr.ENDPOINT,
+                        )
+                        _router.add_provider(_local_inst)
+                        if _inproc:
+                            _router.set_inprocess_manager(mgr)
+                        self._logger.info(
+                            f"[SLICE3] Registered local provider 'local' "
+                            f"(kind={_local_inst.kind.value}, session {session_id})"
+                        )
+                        await self._ws_manager.broadcast_to_session(
+                            session_id,
+                            {
+                                "type": "provider_added",
+                                "payload": {
+                                    "id": _local_inst.id,
+                                    "label": _local_inst.label,
+                                    "kind": _local_inst.kind.value,
+                                    "model": _local_inst.model,
+                                    "api_base_url": _local_inst.api_base_url,
+                                },
+                            },
+                        )
+                except Exception as reg_err:
+                    self._logger.warning(
+                        f"[SLICE3] Local provider registration failed: {reg_err}"
+                    )
+
                 await self._handle_get_available_models(session_id, client_id, {})
                 import time as _time
 
@@ -7515,6 +7602,16 @@ class IRISGateway:
                 else None
             )
             await mgr.unload_model()
+
+            # Persist unloaded status to config (parity with load handler).
+            try:
+                from .iris_config import load_config as _lc, save_config as _sc
+
+                _cfg = _lc()
+                _cfg.inference.local_model_status = "unloaded"
+                _sc(_cfg)
+            except Exception as cfg_err:
+                self._logger.debug(f"[iris_local] status save skipped: {cfg_err}")
 
             # [10.7] De-wire the kernel â€” prevent stale requests to dead :8082 endpoint
             # AND release the in-process adapter binding so the next model load
@@ -7898,134 +7995,6 @@ class IRISGateway:
             )
 
     # â”€â”€ Local Model Load/Unload Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    async def _handle_load_local_model(
-        self, session_id: str, client_id: str, message: dict
-    ) -> None:
-        """Load a local GGUF model via the LocalModelManager."""
-        try:
-            from .agent.local_model_manager import get_local_model_manager
-
-            # Use the model_path from the incoming WS message (the frontend
-            # sends load_local_model with { model_path, profile }). Fall back
-            # to the configured local_model_path if the payload omits it.
-            payload = message.get("payload", message)
-            model_path = (payload.get("model_path") or "").strip() or (
-                load_config().inference.local_model_path or ""
-            ).strip()
-            if not model_path:
-                await self._ws_manager.send_to_client(
-                    client_id,
-                    {
-                        "type": "model_load_progress",
-                        "title": "Model Load Error",
-                        "message": "No model selected. Choose a model first.",
-                        "status": "error",
-                        "progress": 0,
-                    },
-                )
-                return
-
-            mgr = get_local_model_manager()
-            self._logger.info(
-                f"[Session: {session_id}] Loading local model: {model_path}"
-            )
-            cfg = load_config()
-            await self._ws_manager.broadcast_to_session(
-                session_id,
-                {
-                    "type": "model_load_progress",
-                    "title": "Loading Model",
-                    "message": f"Loading {model_path}...",
-                    "progress": 10,
-                    "status": "loading",
-                },
-            )
-
-            await mgr.load_model(
-                model_path=model_path,
-                gpu_layers=cfg.inference.local_model_gpu_layers,
-                context_length=cfg.inference.local_model_ctx,
-                hardware_profile=cfg.inference.local_model_profile,
-            )
-
-            cfg.inference.local_model_status = "loaded"
-            save_config(cfg)
-
-            await self._ws_manager.broadcast_to_session(
-                session_id,
-                {
-                    "type": "model_load_progress",
-                    "title": "Model Loaded",
-                    "message": f"{model_path} ready",
-                    "progress": 100,
-                    "status": "loaded",
-                },
-            )
-            self._logger.info(
-                f"[Session: {session_id}] Local model loaded: {model_path}"
-            )
-
-        except Exception as e:
-            self._logger.error(
-                f"[Session: {session_id}] Failed to load local model: {e}",
-                exc_info=True,
-            )
-            cfg = load_config()
-            cfg.inference.local_model_status = "error"
-            save_config(cfg)
-            await self._ws_manager.broadcast_to_session(
-                session_id,
-                {
-                    "type": "model_load_progress",
-                    "title": "Model Load Error",
-                    "message": str(e),
-                    "status": "error",
-                    "progress": 0,
-                },
-            )
-
-    async def _handle_unload_local_model(
-        self, session_id: str, client_id: str, message: dict
-    ) -> None:
-        """Unload the currently loaded local GGUF model."""
-        try:
-            from .agent.local_model_manager import get_local_model_manager
-
-            mgr = get_local_model_manager()
-            self._logger.info(f"[Session: {session_id}] Unloading local model")
-            await mgr.unload_model()
-
-            cfg = load_config()
-            cfg.inference.local_model_status = "unloaded"
-            save_config(cfg)
-
-            await self._ws_manager.broadcast_to_session(
-                session_id,
-                {
-                    "type": "model_load_progress",
-                    "title": "Model Unloaded",
-                    "message": "Local model unloaded successfully",
-                    "progress": 0,
-                    "status": "unloaded",
-                },
-            )
-            self._logger.info(f"[Session: {session_id}] Local model unloaded")
-
-        except Exception as e:
-            self._logger.error(
-                f"[Session: {session_id}] Failed to unload local model: {e}",
-                exc_info=True,
-            )
-            await self._ws_manager.broadcast_to_session(
-                session_id,
-                {
-                    "type": "model_load_progress",
-                    "title": "Unload Error",
-                    "message": str(e),
-                    "status": "error",
-                    "progress": 0,
-                }
-            )
 
     async def _handle_download_gguf_model(
         self, session_id: str, client_id: str, message: dict

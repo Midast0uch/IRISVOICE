@@ -1480,6 +1480,31 @@ async def api_list_models():
         )
 
 
+@app.get("/api/inference/state")
+async def api_inference_state():
+    """Return the live provider registry + role bindings.
+
+    Single source of truth for the frontend's provider/role selection UI.
+    Mirrors the unified status-snapshot pattern (replaces ad-hoc FE polling).
+    """
+    try:
+        from backend.agent import get_agent_kernel
+
+        kernel = get_agent_kernel()
+        router = getattr(kernel, "_router", None)
+        if router is None:
+            return {"providers": [], "role_bindings": [], "default_role": None}
+        return router.snapshot()
+    except Exception as e:
+        from fastapi.responses import JSONResponse
+        import traceback
+
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "traceback": traceback.format_exc()},
+        )
+
+
 @app.post("/api/models/load")
 async def api_load_model(body: dict):
     """Load a GGUF model. Body: { path, profile? }

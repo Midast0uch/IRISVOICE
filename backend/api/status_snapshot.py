@@ -85,6 +85,25 @@ async def build_snapshot() -> dict[str, Any]:
     # pending_writes — hardcoded to 0 for now (no actual tracking yet)
     snap["pending_writes"] = 0
 
+    # inference — provider registry + role bindings (single source of truth
+    # for the frontend's provider/role selection UI).
+    try:
+        from backend.agent import get_agent_kernel
+
+        _kernel = get_agent_kernel()
+        _router = getattr(_kernel, "_router", None)
+        if _router is not None:
+            snap["inference"] = _router.snapshot()
+        else:
+            snap["inference"] = {
+                "providers": [],
+                "role_bindings": [],
+                "default_role": None,
+            }
+    except Exception as e:
+        logger.warning(f"[snapshot] inference state error: {e}")
+        snap["inference"] = {"error": str(e)}
+
     return snap
 
 
