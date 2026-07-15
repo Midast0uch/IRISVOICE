@@ -225,6 +225,10 @@ class InferenceConfig:
     gpu_layers: int = 0
     worker_context: str = "auto"
 
+    # Persisted router role bindings (SLICE 5) — list of
+    # {role, instance_id, model_override} dicts consumed by InferenceRouter.
+    role_bindings: list = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -257,6 +261,7 @@ class InferenceConfig:
             swarm_worker_count=int(d.get("swarm_worker_count", 2)),
             gpu_layers=int(d.get("gpu_layers", 0)),
             worker_context=d.get("worker_context", "auto"),
+            role_bindings=d.get("role_bindings", []),
         )
 
 

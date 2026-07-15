@@ -1035,6 +1035,31 @@ export function useIRISWebSocket(
         break
       }
 
+      case "provider_added": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:provider_added', { detail: payload }))
+        }
+        break
+      }
+      case "role_bindings_updated": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:role_bindings_updated', { detail: payload }))
+        }
+        break
+      }
+      case "role_binding_error": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:role_binding_error', { detail: payload }))
+        }
+        break
+      }
+      case "role_binding_updated": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:role_binding_updated', { detail: payload }))
+        }
+        break
+      }
+
       case "wake_word_selected": {
         // Backend confirms a wake word was selected (e.g., from another client)
         if (typeof window !== 'undefined') {

@@ -361,6 +361,9 @@ class IRISGateway:
             elif msg_type == "set_model_selection":
                 await self._handle_set_model_selection(session_id, client_id, message)
 
+            elif msg_type == "set_role_binding":
+                await self._handle_set_role_binding(session_id, client_id, message)
+
             elif msg_type in [
                 "voice_command_start",
                 "voice_command_end",
@@ -1081,96 +1084,12 @@ class IRISGateway:
                                     f"mode={cfg.mode.value}, director={cfg.director_model or 'API'}, "
                                     f"workers={cfg.worker_model}, worker_ctx={cfg.worker_ctx}"
                                 )
-                                # â”€â”€ Route kernel inference to swarm endpoints â”€â”€
-                                # The kernel currently supports a single OpenAI-compatible
-                                # endpoint.  quality_director â†’ Director (8081) for quality;
-                                # local_fast      â†’ Workers (8082) for speed.
-                                _swarm_ep = (
-                                    cfg.director_endpoint
-                                    if cfg.mode.value == "quality_director"
-                                    else cfg.workers_endpoint
-                                )
-                                kernel.configure_openai_compat(
-                                    _swarm_ep.rstrip("/").removesuffix("/v1"),
-                                    provider_name="iris_local",
-                                )
-                                # Pick model names that llama-server will accept
-                                _dir_name = (
-                                    Path(cfg.director_model).stem
-                                    if cfg.director_model
-                                    else "local-model"
-                                )
-                                _wrk_name = Path(cfg.worker_model).stem
-                                kernel._selected_reasoning_model = _dir_name
-                                kernel._selected_tool_execution_model = _wrk_name
-                                self._logger.info(
-                                    f"[Session: {session_id}] Kernel routed to swarm: "
-                                    f"endpoint={_swarm_ep}, reasoning={_dir_name}, tool={_wrk_name}"
-                                )
-                                # â”€â”€ Persist swarm snapshot for future sessions â”€â”€
-                                # New sessions created after this point will auto-hydrate
-                                # from this snapshot instead of staying "uninitialized".
-                                import backend.agent.agent_kernel as _ak_mod
-
-                                _ak_mod._swarm_config_snapshot = {
-                                    "endpoint": _swarm_ep.rstrip("/").removesuffix(
-                                        "/v1"
-                                    ),
-                                    "reasoning_model": _dir_name,
-                                    "tool_model": _wrk_name,
-                                    "mode": cfg.mode.value,
-                                }
-                                self._logger.info(
-                                    f"[Session: {session_id}] Swarm config snapshot stored: "
-                                    f"{_ak_mod._swarm_config_snapshot}"
-                                )
-                                # â”€â”€ Broadcast swarm config to ALL sessions â”€â”€
-                                # The frontend may have multiple WebSocket connections
-                                # (e.g. one for the UI, one for integration). Ensure every
-                                # session kernel points to the swarm so chat messages
-                                # from any connection reach the local llama-server.
-                                from backend.agent.agent_kernel import (
-                                    _agent_kernel_instances,
-                                )
-
-                                for _sid, _k in _agent_kernel_instances.items():
-                                    if _sid == session_id:
-                                        continue
-                                    _k.configure_openai_compat(
-                                        _swarm_ep.rstrip("/").removesuffix("/v1"),
-                                        provider_name="iris_local",
-                                    )
-                                    _k._selected_reasoning_model = _dir_name
-                                    _k._selected_tool_execution_model = _wrk_name
-                                    # Propagate inference behaviour so all sessions share them.
-                                    _k._thinking_style = kernel._thinking_style
-                                    _k._response_length = kernel._response_length
-                                    _k._reasoning_effort = kernel._reasoning_effort
-                                    _k._tool_mode = kernel._tool_mode
-                                    self._logger.info(
-                                        f"[Session: {_sid}] Kernel also routed to swarm: "
-                                        f"endpoint={_swarm_ep}"
-                                    )
+                            # SLICE 5: route kernel inference through the router
+                            # (replaces configure_openai_compat) for BOTH modes
+                            await self._route_kernel_to_swarm(kernel, session_id, cfg)
                             # Store manager reference on kernel for status queries
                             if hasattr(kernel, "_swarm_inference_mgr"):
                                 kernel._swarm_inference_mgr = mgr
-
-                            # â”€â”€ Defensive re-apply: if swarm is ON but provider drifted, fix it â”€â”€
-                            if (
-                                swarm_on
-                                and getattr(kernel, "_model_provider", "")
-                                != "iris_local"
-                            ):
-                                self._logger.warning(
-                                    f"[Session: {session_id}] Swarm ON but provider="
-                                    f"'{kernel._model_provider}' â€” forcing re-configure to iris_local"
-                                )
-                                kernel.configure_openai_compat(
-                                    _swarm_ep.rstrip("/").removesuffix("/v1"),
-                                    provider_name="iris_local",
-                                )
-                                kernel._selected_reasoning_model = _dir_name
-                                kernel._selected_tool_execution_model = _wrk_name
                         except Exception as _swarm_err:
                             self._logger.error(
                                 f"[Session: {session_id}] Swarm start failed: {_swarm_err}",
@@ -7921,6 +7840,285 @@ class IRISGateway:
             except Exception:
                 pass
 
+    # ── SLICE 5: router-based role binding + swarm routing ──────────────
+
+    async def _persist_and_broadcast_role_bindings(
+        self, session_id: str, kernel: "AgentKernel"
+    ) -> None:
+        """Persist current router role bindings to config and broadcast them.
+
+        Single source of truth for the frontend's provider/role selection UI.
+        """
+        _router = getattr(kernel, "_router", None)
+        if _router is None:
+            return
+        snap = _router.snapshot()
+        try:
+            from .iris_config import load_config as _lc, save_config as _sc
+
+            _cfg = _lc()
+            _cfg.inference.role_bindings = snap["role_bindings"]
+            _sc(_cfg)
+        except Exception as _pe:
+            self._logger.warning(f"[SLICE5] role_bindings persist failed: {_pe}")
+        await self._ws_manager.broadcast_to_session(
+            session_id,
+            {"type": "role_bindings_updated", "payload": snap},
+        )
+
+    async def _route_kernel_to_swarm(
+        self, kernel: "AgentKernel", session_id: str, cfg: Any
+    ) -> None:
+        """Register swarm_director + swarm_worker router instances and bind roles.
+
+        Replaces the legacy ``configure_openai_compat`` swarm routing so all
+        DER/Pacman inference paths (which call ``router.generate``) actually
+        flow through the swarm endpoints instead of being silently bypassed.
+        """
+        from pathlib import Path as _Path
+
+        from .agent.inference.provider import ProviderInstance, ProviderKind
+
+        _router = getattr(kernel, "_router", None)
+        if _router is None:
+            return
+
+        # Capture pre-swarm bindings so stop_swarm can restore them.
+        if not hasattr(_router, "_pre_swarm_bindings"):
+            _router._pre_swarm_bindings = [
+                (b.role, b.instance_id, b.model_override)
+                for b in _router.roles.list()
+            ]
+
+        # Director instance
+        if getattr(cfg, "use_api_director", False):
+            _api_base = getattr(kernel, "_api_base_url", "") or ""
+            if not _api_base:
+                try:
+                    from .iris_config import load_config as _lc
+
+                    _api_base = getattr(_lc().inference, "api_base_url", "") or ""
+                except Exception:
+                    _api_base = ""
+            _dir_inst = ProviderInstance(
+                id="swarm_director",
+                label="Swarm Director (API)",
+                kind=ProviderKind.API,
+                model=getattr(kernel, "_selected_reasoning_model", None)
+                or getattr(cfg, "director_model", None),
+                api_base_url=_api_base,
+            )
+        else:
+            _dir_model = (
+                _Path(getattr(cfg, "director_model", "") or "").stem
+                if getattr(cfg, "director_model", None)
+                else "local-model"
+            )
+            _dir_inst = ProviderInstance(
+                id="swarm_director",
+                label=f"Swarm Director ({_dir_model})",
+                kind=ProviderKind.LOCAL_OPENAI,
+                model=_dir_model,
+                api_base_url=getattr(cfg, "director_endpoint", "") or "",
+            )
+
+        _wrk_model = _Path(getattr(cfg, "worker_model", "") or "").stem or "local-model"
+        _wrk_inst = ProviderInstance(
+            id="swarm_worker",
+            label=f"Swarm Workers ({_wrk_model})",
+            kind=ProviderKind.LOCAL_OPENAI,
+            model=_wrk_model,
+            api_base_url=getattr(cfg, "workers_endpoint", "") or "",
+        )
+
+        _router.add_provider(_dir_inst)
+        _router.add_provider(_wrk_inst)
+        _router.bind_role("reasoning", "swarm_director")
+        _router.bind_role("tool_execution", "swarm_worker")
+
+        # Propagate to peer kernels so every session routes through swarm.
+        try:
+            from backend.agent.agent_kernel import _agent_kernel_instances
+
+            for _sid, _k in _agent_kernel_instances.items():
+                if _k is kernel:
+                    continue
+                _r2 = getattr(_k, "_router", None)
+                if _r2 is not None:
+                    try:
+                        _r2.add_provider(_dir_inst)
+                        _r2.add_provider(_wrk_inst)
+                        _r2.bind_role("reasoning", "swarm_director")
+                        _r2.bind_role("tool_execution", "swarm_worker")
+                    except Exception as _pe:
+                        self._logger.debug(f"[SLICE5] swarm peer propagate skipped: {_pe}")
+        except Exception:
+            pass
+
+        self._logger.info(
+            f"[SLICE5] Kernel routed to swarm via router: "
+            f"director={_dir_inst.kind.value}@{_dir_inst.api_base_url}, "
+            f"worker={_wrk_inst.api_base_url}"
+        )
+        await self._persist_and_broadcast_role_bindings(session_id, kernel)
+
+    async def _unroute_kernel_from_swarm(
+        self, kernel: "AgentKernel", session_id: str
+    ) -> None:
+        """Remove swarm instances and restore pre-swarm role bindings."""
+        _router = getattr(kernel, "_router", None)
+        if _router is None:
+            return
+        # Restore pre-swarm bindings (captured when swarm started)
+        pre = getattr(_router, "_pre_swarm_bindings", None)
+        for b in list(_router.roles.list()):
+            try:
+                _router.roles.unbind(b.role)
+            except Exception:
+                pass
+        if pre:
+            for _role, _inst, _mo in pre:
+                try:
+                    _router.roles.bind(_role, _inst, _mo)
+                except Exception:
+                    pass
+        else:
+            # Fallback: re-bind to the configured default provider
+            try:
+                from .iris_config import load_config as _lc
+
+                _def_id = getattr(_lc().inference, "provider", None)
+                if _def_id and _router.registry.get(_def_id):
+                    _router.bind_role("reasoning", _def_id)
+                    _router.bind_role("tool_execution", _def_id)
+            except Exception:
+                pass
+        _router.registry.remove("swarm_director")
+        _router.registry.remove("swarm_worker")
+        self._logger.info(
+            "[SLICE5] Kernel unrouted from swarm; roles restored to pre-swarm bindings"
+        )
+        await self._persist_and_broadcast_role_bindings(session_id, kernel)
+
+    async def _handle_set_role_binding(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """Bind a capability role to a provider instance (frontend SLICE 5).
+
+        Payload: {role, instance_id, model_override?}.
+        Guards against binding a role to the local instance when no local
+        model is loaded — logs and returns an error instead of a dead binding.
+        """
+        payload = message.get("payload", {})
+        role = payload.get("role")
+        instance_id = payload.get("instance_id")
+        model_override = payload.get("model_override")
+
+        if not role or not instance_id:
+            await self._ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "role_binding_error",
+                    "payload": {
+                        "error": "role and instance_id are required",
+                        "role": role,
+                        "instance_id": instance_id,
+                    },
+                },
+            )
+            return
+
+        try:
+            from .agent import get_agent_kernel
+
+            kernel = get_agent_kernel(session_id)
+            _router = getattr(kernel, "_router", None)
+            if _router is None:
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "role_binding_error",
+                        "payload": {
+                            "error": "router unavailable",
+                            "role": role,
+                            "instance_id": instance_id,
+                        },
+                    },
+                )
+                return
+
+            # Local-override guard: binding to "local" requires a loaded model.
+            if instance_id == "local" and _router.registry.get("local") is None:
+                self._logger.warning(
+                    f"[set_role_binding] rejected: local model not loaded "
+                    f"(role={role}, session={session_id})"
+                )
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "role_binding_error",
+                        "payload": {
+                            "error": (
+                                "Local model is not loaded. Load a local model "
+                                "before binding a role to it."
+                            ),
+                            "role": role,
+                            "instance_id": instance_id,
+                        },
+                    },
+                )
+                return
+
+            # Bind on this kernel
+            _router.bind_role(role, instance_id, model_override)
+
+            # Propagate to peer kernels (parity with set_model_selection)
+            try:
+                from backend.agent.agent_kernel import _agent_kernel_instances
+
+                for _sid, _k in _agent_kernel_instances.items():
+                    if _k is kernel:
+                        continue
+                    _r2 = getattr(_k, "_router", None)
+                    if _r2 is not None:
+                        try:
+                            _r2.bind_role(role, instance_id, model_override)
+                        except Exception as _pe:
+                            self._logger.debug(
+                                f"[set_role_binding] peer propagate skipped: {_pe}"
+                            )
+            except Exception:
+                pass
+
+            await self._persist_and_broadcast_role_bindings(session_id, kernel)
+
+            await self._ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "role_binding_updated",
+                    "payload": {
+                        "success": True,
+                        "role": role,
+                        "instance_id": instance_id,
+                        "model_override": model_override,
+                        "snapshot": _router.snapshot(),
+                    },
+                },
+            )
+        except Exception as e:
+            self._logger.error(f"[set_role_binding] failed: {e}", exc_info=True)
+            await self._ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "role_binding_error",
+                    "payload": {
+                        "error": str(e),
+                        "role": role,
+                        "instance_id": instance_id,
+                    },
+                },
+            )
+
     async def _handle_swarm_action(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -7941,13 +8139,21 @@ class IRISGateway:
                 self._logger.info(
                     f"[Session: {session_id}] Starting swarm (mode={cfg.inference.swarm_mode})"
                 )
-                await mgr.start_swarm(
-                    director_model=cfg.inference.reasoning_model,
-                    worker_count=cfg.inference.swarm_worker_count,
-                    mode=cfg.inference.swarm_mode,
-                )
+                from .agent import get_agent_kernel
+
+                kernel = get_agent_kernel(session_id)
+                mode = cfg.inference.swarm_mode
+                try:
+                    worker_ctx = int(getattr(cfg.inference, "worker_context", "auto"))
+                except (ValueError, TypeError):
+                    worker_ctx = 2048
+                cfg_swarm = mgr.apply_swarm_mode(mode, worker_ctx)
+                await mgr.start_swarm()
                 cfg.inference.swarm_enabled = True
                 save_config(cfg)
+                # SLICE 5: route kernel inference through the router so DER/Pacman
+                # actually use the swarm endpoints (replaces configure_openai_compat).
+                await self._route_kernel_to_swarm(kernel, session_id, cfg_swarm)
                 # Notify dashboard
                 await self._ws_manager.broadcast_to_session(
                     session_id,
@@ -7965,6 +8171,14 @@ class IRISGateway:
                 await mgr.stop_swarm()
                 cfg.inference.swarm_enabled = False
                 save_config(cfg)
+                # SLICE 5: de-wire swarm from the router
+                try:
+                    from .agent import get_agent_kernel
+
+                    kernel = get_agent_kernel(session_id)
+                    await self._unroute_kernel_from_swarm(kernel, session_id)
+                except Exception as _se:
+                    self._logger.warning(f"[SLICE5] swarm unroute failed: {_se}")
                 await self._ws_manager.broadcast_to_session(
                     session_id,
                     {

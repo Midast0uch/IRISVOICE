@@ -24,6 +24,7 @@ export const CARD_TO_SECTION_ID: Record<string, string> = {
   // Agent
   'models-card': 'model_selection',
   'inference-card': 'inference_mode',
+  'model-inference-card': 'model_inference',
   'local-model-card': 'local_model',
   'swarm-setup-card': 'swarm_setup',
   'personality-card': 'identity',
@@ -66,6 +67,7 @@ export const SECTION_TO_LABEL: Record<string, string> = {
   speech: 'Speech',
   model_selection: 'Model Selection',
   inference_mode: 'Inference Mode',
+  model_inference: 'Model & Inference',
   local_model: 'Local Model',
   swarm_setup: 'Swarm Setup',
   identity: 'Identity',
@@ -101,6 +103,7 @@ export const SECTION_TO_ICON: Record<string, string> = {
   speech: 'MessageSquare',
   model_selection: 'Brain',
   inference_mode: 'Cpu',
+  model_inference: 'Brain',
   local_model: 'HardDrive',
   swarm_setup: 'Network',
   identity: 'User',

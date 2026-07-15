@@ -18,6 +18,7 @@ import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { useLauncherMode } from '@/hooks/useLauncherMode';
+import { useInferenceState } from '@/hooks/useInferenceState';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import { MonitorTabContainer } from '@/components/dashboard/MonitorTabContainer';
 import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
@@ -165,7 +166,7 @@ function useSectionsData() {
       activity: ['logs'],
       logs: ['analytics'],
       marketplace: ['updates'],
-      agent: ['model_selection', 'inference_mode', 'local_model', 'swarm_setup', 'identity', 'memory'],
+      agent: ['model_inference', 'local_model', 'swarm_setup', 'identity', 'memory'],
       automate: ['tools', 'vision', 'desktop_control', 'skills', 'profile'],
       system: ['power', 'display', 'storage', 'network'],
       customize: ['theme', 'startup', 'behavior', 'notifications'],
@@ -192,7 +193,7 @@ function getFieldCategory(field: any, sectionId: string): 'config' | 'visualizer
   return 'config';
 }
 
-const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, availableModels, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; availableModels?: (string | {label: string, value: string})[]; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
+const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
   const value = fieldValues && sectionId ? (fieldValues[sectionId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
   
@@ -343,7 +344,6 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
 
   if (field.type === 'dropdown') {
     let options = field.options || [];
-    if (sectionId === 'model_selection' && (field.id === 'reasoning_model' || field.id === 'tool_model' || field.id === 'tool_execution_model')) options = availableModels || [];
     if (sectionId === 'input' && field.id === 'input_device') options = audioInputDevices || [];
     if (sectionId === 'output' && field.id === 'output_device') options = audioOutputDevices || [];
     if (sectionId === 'wake' && (field.id === 'wake_word' || field.id === 'wake_phrase')) options = wakeWords && wakeWords.length > 0 ? wakeWords : (field.options || []);
@@ -411,6 +411,146 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
   );
 });
 
+// ─── Model & Inference Section (custom rendering from useInferenceState) ───
+const ModelInferenceSection = memo(function ModelInferenceSection({
+  providers, role_bindings, loading, sendRoleBinding, glowColor
+}: {
+  providers: { id: string; label: string; kind: string; model: string }[];
+  role_bindings: { role: string; instance_id: string; model_override?: string }[];
+  loading: boolean;
+  sendRoleBinding: (role: string, instanceId: string, modelOverride?: string) => void;
+  glowColor: string;
+}) {
+  const [useSameModel, setUseSameModel] = useState(true);
+  const [bindError, setBindError] = useState<string | null>(null);
+
+  // Listen for role_binding_error to show inline messages (e.g. binding to local with no model loaded)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { error?: string; role?: string; instance_id?: string } | undefined;
+      if (detail?.error) setBindError(detail.error);
+    };
+    window.addEventListener('iris:role_binding_error', handler as EventListener);
+    return () => window.removeEventListener('iris:role_binding_error', handler as EventListener);
+  }, []);
+
+  // Derive current binding values
+  const brainBinding = role_bindings.find((r) => r.role === 'reasoning');
+  const toolBinding = role_bindings.find((r) => r.role === 'tool_execution');
+
+  const getProviderLabel = (instanceId: string) => {
+    const p = providers.find((prov) => prov.id === instanceId);
+    return p ? p.label : instanceId;
+  };
+
+  const providerOptions = providers.map((p) => ({
+    label: p.label,
+    value: p.id,
+  }));
+
+  const handleBrainChange = (value: string) => {
+    setBindError(null);
+    sendRoleBinding('reasoning', value);
+    if (useSameModel) {
+      sendRoleBinding('tool_execution', value);
+    }
+  };
+
+  const handleToolChange = (value: string) => {
+    setBindError(null);
+    sendRoleBinding('tool_execution', value);
+  };
+
+  const handleSameModelToggle = (val: boolean) => {
+    setUseSameModel(val);
+    if (val && brainBinding?.instance_id) {
+      sendRoleBinding('tool_execution', brainBinding.instance_id);
+    }
+  };
+
+  return (
+    <div className="col-span-full space-y-1 w-full">
+      {/* Brain Model dropdown */}
+      <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
+        <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">
+          Brain Model
+        </span>
+        <div className="w-[140px] flex-shrink-0">
+          <CustomDropdown
+            value={brainBinding?.instance_id || ''}
+            options={providerOptions}
+            onChange={handleBrainChange}
+            glowColor={glowColor}
+            className="text-[10px] py-1 px-2 h-7 w-full"
+          />
+        </div>
+      </div>
+
+      {/* Tool Execution Model — hidden when useSameModel is on */}
+      {!useSameModel && (
+        <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
+          <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">
+            Tool Execution Model
+          </span>
+          <div className="w-[140px] flex-shrink-0">
+            <CustomDropdown
+              value={toolBinding?.instance_id || ''}
+              options={providerOptions}
+              onChange={handleToolChange}
+              glowColor={glowColor}
+              className="text-[10px] py-1 px-2 h-7 w-full"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Use Same Model toggle */}
+      <div className="flex items-center justify-between py-1.5 px-1 gap-2">
+        <span className="text-[11px] font-medium text-white/60 flex-1 min-w-0 leading-tight">Use Same Model</span>
+        <button
+          onClick={() => handleSameModelToggle(!useSameModel)}
+          className="relative w-8 h-4 rounded-full transition-colors shrink-0"
+          style={{ backgroundColor: useSameModel ? glowColor : 'rgba(255,255,255,0.1)' }}
+        >
+          <motion.span
+            className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm"
+            animate={{ left: useSameModel ? '18px' : '2px' }}
+          />
+        </button>
+      </div>
+
+      {/* Active Routing — read-only display */}
+      <div className="py-2 col-span-full">
+        <div className="flex flex-col gap-1 px-3 py-2 rounded-xl text-[10px] uppercase tracking-wider"
+          style={{ background: `${glowColor}10`, border: `1px solid ${glowColor}30` }}>
+          <div className="flex items-center justify-between">
+            <span style={{ color: 'rgba(255,255,255,0.5)' }}>BRAIN (reasoning)</span>
+            <span style={{ color: glowColor }}>{brainBinding ? getProviderLabel(brainBinding.instance_id) : '—'}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span style={{ color: 'rgba(255,255,255,0.5)' }}>TOOL EXECUTION</span>
+            <span style={{ color: glowColor }}>{toolBinding ? getProviderLabel(toolBinding.instance_id) : '—'}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Binding error */}
+      {bindError && (
+        <div className="px-3 py-1 col-span-full">
+          <p className="text-[9px] text-red-400">{bindError}</p>
+        </div>
+      )}
+
+      {/* Loading indicator */}
+      {loading && (
+        <div className="px-3 py-1 col-span-full">
+          <span className="text-[9px] text-white/40">Loading providers...</span>
+        </div>
+      )}
+    </div>
+  );
+});
+
 export function DarkGlassDashboard({
   fieldValues: propFieldValues,
   updateField: propUpdateField,
@@ -430,6 +570,8 @@ export function DarkGlassDashboard({
   // useLauncherMode fetches /api/mode so this works even when iris-launcher ran before IRISVOICE loaded.
   const { mode: irisMode } = useLauncherMode();
 
+  const { providers, role_bindings, loading: infLoading, sendRoleBinding } = useInferenceState();
+
   // Persist active tab so the app restores to the last used panel on reopen
   const [activeTab, setActiveTab] = useState<string>(() => {
     if (typeof window === "undefined") return 'voice'
@@ -438,7 +580,7 @@ export function DarkGlassDashboard({
   const [activeSubApp, setActiveSubApp] = useState<string | null>(null);
   const [isRailExpanded, setIsRailExpanded] = useState(true);
   const [isSidebarHidden, setIsSidebarHidden] = useState(false);
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['input', 'model_selection', 'tools', 'power', 'theme', 'analytics']));
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['input', 'model_inference', 'tools', 'power', 'theme', 'analytics']));
   const [isApplying, setIsApplying] = useState(false);
   
   const [browserUrl, setBrowserUrl] = useState<string>('https://www.google.com');
@@ -552,14 +694,6 @@ export function DarkGlassDashboard({
         for (const [sec, vals] of Object.entries(prev || {})) {
           merged[sec] = { ...(merged[sec] || {}), ...(vals || {}) };
         }
-        // Migration: force swarm OFF when an API provider is selected (not "local").
-        // Prevents stale localStorage cache from keeping swarm ON and blocking API routing.
-        const provider = merged?.model_selection?.model_provider || '';
-        if (provider && provider !== 'local' && provider !== 'lmstudio') {
-          if (merged.inference_mode) {
-            merged.inference_mode = { ...merged.inference_mode, swarm_enabled: false };
-          }
-        }
         return merged;
       });
       seededRef.current = true;
@@ -641,84 +775,7 @@ export function DarkGlassDashboard({
   const fieldValues = localFieldValues;
   const updateField = localUpdateField;
 
-  // ── Provider → Models mapping ─────────────────────────────────────
-  // Real model IDs from each provider's official API docs, fetched 2026-05-30.
-  // The dropdown options update immediately when provider changes.
-  const PROVIDER_MODELS: Record<string, (string | {label: string, value: string})[]> = {
-    // OpenCode Go (low-cost plan): https://opencode.ai/docs/go/
-    opencodego: [
-      { label: 'GLM 5.1', value: 'glm-5.1' },
-      { label: 'GLM 5', value: 'glm-5' },
-      { label: 'Kimi K2.5', value: 'kimi-k2.5' },
-      { label: 'Kimi K2.6', value: 'kimi-k2.6' },
-      { label: 'DeepSeek V4 Pro', value: 'deepseek-v4-pro' },
-      { label: 'DeepSeek V4 Flash', value: 'deepseek-v4-flash' },
-      { label: 'MiMo V2.5', value: 'mimo-v2.5' },
-      { label: 'MiMo V2.5 Pro', value: 'mimo-v2.5-pro' },
-      { label: 'MiniMax M2.5', value: 'minimax-m2.5' },
-      { label: 'MiniMax M2.7', value: 'minimax-m2.7' },
-      { label: 'Qwen3.6 Plus', value: 'qwen3.6-plus' },
-      { label: 'Qwen3.7 Max', value: 'qwen3.7-max' },
-    ],
-    // Cerebras: https://inference-docs.cerebras.ai/models/overview
-    cerebras: [
-      { label: 'Gemma 4 31B', value: 'gemma-4-31b' },
-      { label: 'GPT OSS 120B', value: 'gpt-oss-120b' },
-      { label: 'Z.ai GLM 4.7', value: 'zai-glm-4.7' },
-    ],
-    // Chutes AI: https://llm.chutes.ai/v1/models (live, sorted by usage)
-    // Many models have TEE variants (confidential compute) with -TEE suffix.
-    chutes: [
-      { label: 'Kimi K2.6 TEE', value: 'moonshotai/Kimi-K2.6-TEE' },
-      { label: 'Kimi K2.6', value: 'moonshotai/Kimi-K2.6' },
-      { label: 'Kimi K2.5 TEE', value: 'moonshotai/Kimi-K2.5-TEE' },
-      { label: 'MiniMax M2.5 TEE', value: 'MiniMaxAI/MiniMax-M2.5-TEE' },
-      { label: 'DeepSeek R1 TEE', value: 'deepseek-ai/DeepSeek-R1-TEE' },
-      { label: 'DeepSeek R1', value: 'deepseek-ai/DeepSeek-R1' },
-      { label: 'DeepSeek V3 (0324) TEE', value: 'deepseek-ai/DeepSeek-V3-0324-TEE' },
-      { label: 'DeepSeek V3 (0324)', value: 'deepseek-ai/DeepSeek-V3-0324' },
-      { label: 'DeepSeek R1 (0528) TEE', value: 'deepseek-ai/DeepSeek-R1-0528-TEE' },
-      { label: 'DeepSeek R1 (0528)', value: 'deepseek-ai/DeepSeek-R1-0528' },
-      { label: 'Qwen3 Coder 480B (FP8)', value: 'Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8' },
-      { label: 'Kimi K2 Instruct', value: 'moonshotai/Kimi-K2-Instruct' },
-      { label: 'GLM 4.5 (FP8)', value: 'zai-org/GLM-4.5-FP8' },
-      { label: 'Mistral Small 3.1 (24B)', value: 'chutesai/Mistral-Small-3.1-24B-Instruct-2503' },
-      { label: 'Qwen3 235B (A22B)', value: 'Qwen/Qwen3-235B-A22B-Instruct-2507' },
-      { label: 'Qwen3 32B', value: 'Qwen/Qwen3-32B' },
-      { label: 'Qwen3 8B', value: 'Qwen/Qwen3-8B' },
-    ],
-    // Cohere: https://docs.cohere.com/docs/models
-    cohere: [
-      { label: 'Command A (03-2025)', value: 'command-a-03-2025' },
-      { label: 'Command R+ (08-2024)', value: 'command-r-plus-08-2024' },
-      { label: 'Command R (08-2024)', value: 'command-r-08-2024' },
-      { label: 'Command R7B (12-2024)', value: 'command-r7b-12-2024' },
-    ],
-    // DeepSeek: https://api-docs.deepseek.com/
-    deepseek: [
-      { label: 'DeepSeek V4 Pro', value: 'deepseek-v4-pro' },
-      { label: 'DeepSeek V4 Flash', value: 'deepseek-v4-flash' },
-      { label: 'DeepSeek Chat (legacy)', value: 'deepseek-chat' },
-      { label: 'DeepSeek Reasoner (legacy)', value: 'deepseek-reasoner' },
-    ],
-    // Anthropic: https://platform.claude.com/docs/en/api/openai-sdk
-    // Model IDs are aliases (not dated snapshots) for OpenAI-compatible API
-    anthropic: [
-      { label: 'Claude Opus 4.7', value: 'claude-opus-4-7' },
-      { label: 'Claude Opus 4.6', value: 'claude-opus-4-6' },
-      { label: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6' },
-      { label: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5' },
-      { label: 'Claude Haiku 4.5', value: 'claude-haiku-4-5' },
-      { label: 'Claude Opus 4.5', value: 'claude-opus-4-5' },
-      { label: 'Claude Opus 4.1', value: 'claude-opus-4-1' },
-    ],
-  };
-
-  const [availableModels, setAvailableModels] = useState<(string | {label: string, value: string})[]>(
-    PROVIDER_MODELS['opencodego'] || []
-  );
-  // Keep a ref to the current provider so event handlers (which are set up once) can read it
-  const providerRef = useRef('opencodego');
+  // populated from backend available_models WS message (used by local_model section)
   const [audioInputDevices, setAudioInputDevices] = useState<string[]>(['Default Input', 'Internal Microphone']);
   const [audioOutputDevices, setAudioOutputDevices] = useState<string[]>(['Default Output', 'Internal Speakers']);
   const [wakeWords, setWakeWords] = useState<string[]>([]);
@@ -746,20 +803,9 @@ export function DarkGlassDashboard({
       }
     };
 
-    const handleAvailableModels = (event: CustomEvent) => {
-      // Only use backend models when there's no pre-defined list for the current provider.
-      // This prevents the backend's fallback/generic list from overwriting our
-      // provider-specific model lists (which are defined in PROVIDER_MODELS).
-      const currentProvider = providerRef.current || '';
-      if (PROVIDER_MODELS[currentProvider]) return;
-
-      const models = event.detail?.models || [];
-      // Pass {label, value} objects so CustomDropdown sends the model ID (not display name) to the backend
-      const opts = models.map((m: any) => {
-        if (typeof m === 'string') return m;
-        return { label: m.name || m.id || String(m), value: m.id || m.name || String(m) };
-      }).filter(Boolean);
-      if (opts.length > 0) setAvailableModels(opts);
+    const handleAvailableModels = (_event: CustomEvent) => {
+      // available_models event is forwarded to other consumers via iris:ws_message
+      // from the WS hook. No local state needed — model_inference uses useInferenceState.
     };
 
     const handleAudioDevices = (event: CustomEvent) => {
@@ -787,26 +833,13 @@ export function DarkGlassDashboard({
     };
   }, [sendMessage]);
 
-  // Update model dropdown options when provider changes
-  useEffect(() => {
-    let mounted = true;
-    const provider = fieldValues?.model_selection?.model_provider || '';
-    providerRef.current = provider;
-    const models = PROVIDER_MODELS[provider];
-    if (models && mounted) {
-      setAvailableModels(models);
-    }
-    return () => { mounted = false; };
-  }, [fieldValues?.model_selection?.model_provider]);
-
   // Fetch device lists and models whenever the relevant tab is active
   useEffect(() => {
     if (!sendMessage) return;
     if (activeTab === 'agent') {
-      // Send current API config so backend can query the right provider for models
-      const apiBaseUrl = fieldValues?.model_selection?.api_base_url || '';
-      const apiKey = fieldValues?.model_selection?.api_key || '';
-      sendMessage('get_available_models', { api_base_url: apiBaseUrl, api_key: apiKey });
+      // Fetch available models for the local_model section dropdown.
+      // Provider models are now sourced from GET /api/inference/state via useInferenceState().
+      sendMessage('get_available_models', {});
     }
     if (activeTab === 'voice') {
       sendMessage('get_audio_devices', {});
@@ -1131,7 +1164,7 @@ export function DarkGlassDashboard({
             <div className="flex flex-col min-w-0">
               <span className="text-[11px] font-semibold text-white truncate">Online</span>
               <span className="text-[9px] text-white/40 truncate">
-            Model: {(localFieldValues?.model_selection?.reasoning_model as string) || (localFieldValues?.local_model?.local_model_path as string) || 'No model'}
+            Model: {(role_bindings.find(r => r.role === 'reasoning')?.instance_id) || (localFieldValues?.local_model?.local_model_path as string) || 'No model'}
           </span>
             </div>
           )}
@@ -1212,7 +1245,7 @@ export function DarkGlassDashboard({
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
           <Brain className="w-3 h-3" style={{ color: glowColor }} />
           <span className="text-[9px] font-medium tracking-wide text-white/80">
-            {((localFieldValues?.model_selection?.reasoning_model as string) || (localFieldValues?.local_model?.local_model_path as string) || 'No model').toUpperCase()} READY
+            {((role_bindings.find(r => r.role === 'reasoning')?.instance_id) || (localFieldValues?.local_model?.local_model_path as string) || 'No model').toUpperCase()} READY
           </span>
         </div>
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
@@ -1283,15 +1316,25 @@ export function DarkGlassDashboard({
                    <ChevronDown size={13} className="flex-shrink-0 ml-2 text-white/30" style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }} />
                    <div className="absolute bottom-0 left-0 right-0 h-[2px] opacity-0 group-hover/section:opacity-100 transition-all" style={{ background: `linear-gradient(90deg, transparent, ${glowColor}, transparent)` }} />
                  </button>
-                 {isExpanded && (
-                   <div className="px-4 pb-4 pt-2">
-                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-1">
-                       {sectionFields.map((field: any) => (
-                         <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} availableModels={availableModels} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} />
-                       ))}
-                     </div>
-                   </div>
-                 )}
+                  {isExpanded && (
+                    <div className="px-4 pb-4 pt-2">
+                      {section.id === 'model_inference' ? (
+                        <ModelInferenceSection
+                          providers={providers}
+                          role_bindings={role_bindings}
+                          loading={infLoading}
+                          sendRoleBinding={sendRoleBinding}
+                          glowColor={glowColor}
+                        />
+                      ) : (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-1">
+                          {sectionFields.map((field: any) => (
+                            <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })

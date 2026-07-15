@@ -93,3 +93,13 @@ class RoleBindingTable:
     def list(self) -> list[RoleBinding]:
         """Return a snapshot of all current role bindings."""
         return list(self._bindings.values())
+
+    def unbind(self, role: str) -> None:
+        """Remove the binding for *role* (case-insensitive). No-op if unbound."""
+        if role in self._bindings:
+            del self._bindings[role]
+            return
+        for _k in list(self._bindings.keys()):
+            if _k.lower() == role.lower():
+                del self._bindings[_k]
+                return

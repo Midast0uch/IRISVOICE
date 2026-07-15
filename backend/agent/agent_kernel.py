@@ -7225,10 +7225,35 @@ def get_agent_kernel(
                 kernel._model_provider == "uninitialized"
                 and _swarm_config_snapshot is not None
             ):
-                kernel.configure_openai_compat(
-                    _swarm_config_snapshot.get("endpoint"),
-                    provider_name="iris_local",
-                )
+                # SLICE 5: wire the router (not the legacy compat client) so
+                # DER/Pacman inference paths actually use the swarm endpoint.
+                try:
+                    from backend.agent.inference.provider import (
+                        ProviderInstance,
+                        ProviderKind,
+                    )
+
+                    _ep = _swarm_config_snapshot.get("endpoint") or ""
+                    _r_model = _swarm_config_snapshot.get("reasoning_model")
+                    _t_model = _swarm_config_snapshot.get("tool_model")
+                    _inst = ProviderInstance(
+                        id="swarm_director",
+                        label="Swarm (auto-hydrated)",
+                        kind=ProviderKind.LOCAL_OPENAI,
+                        model=_r_model or "local-model",
+                        api_base_url=_ep,
+                    )
+                    _router = getattr(kernel, "_router", None)
+                    if _router is not None:
+                        _router.add_provider(_inst)
+                        _router.bind_role("reasoning", "swarm_director")
+                        _router.bind_role(
+                            "tool_execution", "swarm_director", model_override=_t_model
+                        )
+                except Exception as _sw_err:
+                    logger.warning(
+                        f"[AgentKernel] Swarm auto-hydrate router wire failed: {_sw_err}"
+                    )
                 kernel._selected_reasoning_model = _swarm_config_snapshot.get(
                     "reasoning_model"
                 )

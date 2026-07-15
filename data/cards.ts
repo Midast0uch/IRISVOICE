@@ -180,106 +180,42 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
   // ============================================================================
   // AGENT CATEGORY
 
-  // model_selection section - models-card
-  model_selection: [
+  // model_inference section — merged Model & Inference card
+  // Brain model and tool execution model are sourced from providers at render time
+  // via useInferenceState(). Options and role bindings come from backend.
+  model_inference: [
     {
-      id: 'models-card',
-      label: 'Models',
+      id: 'model-inference-card',
+      label: 'Model & Inference',
       icon: 'Brain',
       fields: [
         {
-          id: 'model_provider',
+          id: 'brain_model',
           type: 'dropdown',
-          label: 'Provider',
-          options: [
-            { label: 'OpenCodeGo', value: 'opencodego' },
-            { label: 'Cerebras', value: 'cerebras' },
-            { label: 'Chutes AI', value: 'chutes' },
-            { label: 'Cohere', value: 'cohere' },
-            { label: 'DeepSeek', value: 'deepseek' },
-            { label: 'Anthropic', value: 'anthropic' },
-            { label: 'LM Studio', value: 'lmstudio' },
-          ],
-          defaultValue: 'opencodego'
+          label: 'Brain Model',
+          description: 'Reasoning model provider (role: reasoning)',
+          options: [], // Populated at render time from useInferenceState().providers
+          defaultValue: '',
         },
         {
-          id: 'api_key',
-          type: 'text',
-          label: 'API Key',
-          placeholder: 'sk-...',
+          id: 'tool_execution_model',
+          type: 'dropdown',
+          label: 'Tool Execution Model',
+          description: 'Tool execution provider (role: tool_execution)',
+          options: [], // Populated at render time from useInferenceState().providers
           defaultValue: '',
-          showIf: { field: 'model_provider', values: ['opencodego', 'cerebras', 'chutes', 'cohere', 'deepseek', 'anthropic'] }
         },
         {
           id: 'use_same_model',
           type: 'toggle',
-          label: 'Use Same Model for Both',
+          label: 'Use Same Model',
           defaultValue: true,
-          showIf: { field: 'model_provider', values: ['opencodego', 'cerebras', 'chutes', 'cohere', 'deepseek', 'anthropic'] }
         },
         {
-          id: 'reasoning_model',
-          type: 'dropdown',
-          label: 'Reasoning Model',
-          options: [], // Populated dynamically by available_models event
-          defaultValue: '',
-          showIf: { field: 'model_provider', values: ['opencodego', 'cerebras', 'chutes', 'cohere', 'deepseek', 'anthropic'] }
+          id: 'active_routing',
+          type: 'custom',
+          label: 'Active Routing',
         },
-        {
-          id: 'tool_model',
-          type: 'dropdown',
-          label: 'Tool Model',
-          options: [], // Populated dynamically
-          defaultValue: '',
-          showIf: { field: 'model_provider', values: ['opencodego', 'cerebras', 'chutes', 'cohere', 'deepseek', 'anthropic'] }
-        },
-        {
-          id: 'lmstudio_endpoint',
-          type: 'text',
-          label: 'Endpoint',
-          placeholder: 'http://localhost:1234',
-          defaultValue: 'http://localhost:1234',
-          showIf: { field: 'model_provider', values: ['lmstudio'] }
-        },
-      ]
-    }
-  ],
-
-  // inference_mode section - inference-card
-  inference_mode: [
-    {
-      id: 'inference-card',
-      label: 'Inference',
-      icon: 'Cpu',
-      fields: [
-        {
-          id: 'agent_thinking_style',
-          type: 'dropdown',
-          label: 'Agent Thinking Style',
-          options: ['concise', 'balanced', 'thorough'],
-          defaultValue: 'balanced'
-        },
-        {
-          id: 'max_response_length',
-          type: 'dropdown',
-          label: 'Max Response Length',
-          options: ['short', 'medium', 'long'],
-          defaultValue: 'medium'
-        },
-        {
-          id: 'reasoning_effort',
-          type: 'dropdown',
-          label: 'Reasoning Effort',
-          options: ['fast', 'balanced', 'accurate'],
-          defaultValue: 'balanced'
-        },
-        {
-          id: 'tool_mode',
-          type: 'dropdown',
-          label: 'Tool Mode',
-          options: ['auto', 'ask_first', 'disabled'],
-          defaultValue: 'auto'
-        }
       ]
     }
   ],

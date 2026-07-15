@@ -52,6 +52,7 @@ export const SECTION_IDS = {
   // Agent category
   AGENT_MODEL_SELECTION: 'model_selection',
   AGENT_INFERENCE_MODE: 'inference_mode',
+  AGENT_MODEL_INFERENCE: 'model_inference',
   AGENT_LOCAL_MODEL: 'local_model',
   AGENT_SWARM_SETUP: 'swarm_setup',
   AGENT_IDENTITY: 'identity',
