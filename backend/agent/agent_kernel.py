@@ -3657,8 +3657,11 @@ class AgentKernel:
                                     raw_step.get("step_number", len(steps) + 1)
                                 ),
                                 description=str(raw_step.get("description", "")),
-                                tool=raw_step.get("tool"),
-                                params=raw_step.get("params", {}),
+                                # Phase 1 (D1.3): planner emits GOALS only. Tool
+                                # selection is a runtime, memory-conditioned policy
+                                # via explorer.propose — never pre-assigned here.
+                                tool=None,
+                                params={},
                                 critical=bool(raw_step.get("critical", True)),
                                 depends_on=list(raw_step.get("depends_on", []) or []),
                             )
@@ -4659,6 +4662,10 @@ Respond with a JSON object:
         """
         from backend.agent.exceptions import TopologyViolationException
 
+        # Phase 1 (D1.6): expose task_class so the runtime resolver
+        # (explorer.propose) can apply the capability-gated web fallback.
+        self._der_task_class = _der_task_class
+
         try:
             return self._execute_plan_der(
                 plan=_plan,
@@ -4807,75 +4814,11 @@ Respond with a JSON object:
         # LLM returns empty ("[step N completed]") instead of actually searching.
         # Also catches mode names (agentic / quick / full) that the LLM planner
         # sometimes assigns instead of the actual tool name.
-        _MODE_NAMES = frozenset({"agentic", "quick", "full"})
-        _orig_lc = (plan.original_task or "").lower()
-        _web_intent = any(
-            k in _orig_lc
-            for k in ("search", "look up", "look for", "web search", "browse", "google", "find", "fetch")
-        )
-        if _web_intent:
-            _single = len(queue.items) == 1
-            for _it in queue.items:
-                _t = (_it.tool or "").strip().lower()
-                # Treat mode names + None/direct as "no real tool" so the fix-up
-                # overrides with the actual tool ("crawler_query") for web-intent
-                # steps. crawler_query is the unified web-search flow (quick OR
-                # deep) — it presents results consistently, unlike the legacy
-                # `search` tool which scrapes html.duckduckgo.com directly.
-                if _t and _t not in ("direct", "search", "web_search", *_MODE_NAMES):
-                    continue  # already has a real tool assigned
-                _desc_lc = (_it.description or "").lower()
-                _is_search_step = any(
-                    k in _desc_lc
-                    for k in ("search", "look up", "look for", "find", "fetch", "web", "google", "browse", "research")
-                )
-                if _single or _is_search_step:
-                    # Prefer the LLM planner's refined query (if it set one),
-                    # fall back to extracting from the step description.
-                    _existing_query = (
-                        _it.params.get("query", "").strip()
-                        if isinstance(_it.params, dict) else ""
-                    )
-                    if _existing_query:
-                        _q = _existing_query
-                    else:
-                        _q = _it.description or plan.original_task
-                        # Extract the core search query from conversational framing
-                        # using regex. Covers patterns like:
-                        #   "Can you do a web search for me for X"
-                        #   "Search the web for X"
-                        #   "Could you look up X"  etc.
-                        import re
-                        _m = re.search(
-                            r"(?:"
-                            r"search\s+(?:the\s+web\s+)?(?:for\s+)?(?:me\s+)?(?:about\s+)?(?:on\s+)?(?:for\s+)?"
-                            r"|look\s+(?:up\s+|for\s+)"
-                            r"|find\s+(?:me\s+)?"
-                            r"|google\s+"
-                            r"|browse\s+(?:for\s+)?"
-                            r"|research\s+"
-                            r"|(?:do|run)\s+a\s+(?:web\s+)?search\s+(?:for\s+)?(?:me\s+)?(?:about\s+)?(?:on\s+)?(?:for\s+)?"
-                            r")(.+?)$",
-                            _q,
-                            re.IGNORECASE | re.DOTALL,
-                        )
-                        if _m:
-                            _q = _m.group(1).strip()
-                        # If nothing extracted, strip generic conversational framing.
-                        if not _m:
-                            _q = re.sub(
-                                r"^(?:could you|can you|would you|i need you to|i want you to|please|hey)\s+",
-                                "", _q, flags=re.I
-                            ).strip()
-                    # ── Phase 2.2: context-aware query refinement ──
-                    # Resolve ambiguous references ("those", "the pricing of it")
-                    # against the full conversation history so a follow-up like
-                    # "do the websearch now" maps back to the original query.
-                    if self._der_query_has_reference(_q):
-                        _q = self._der_refine_query(_q, _session)
-                    _it.tool = "crawler_query"
-                    _it.params = {"query": _q.strip()}
-                    logger.info("[DER] forced tool=crawler_query for step %d (query=%r)", _it.step_number, _it.params["query"])
+        # Phase 1 (D1.4): web-intent regex override DELETED. Tool selection is
+        # now a single runtime authority (explorer.propose), which routes web
+        # intent to crawler_query via the registry's alias + capability system
+        # (capability-gated fallback for research-class goals). No routing is
+        # lost — the registry already canonicalizes web aliases to crawler_query.
 
         # ── Phase 3: initialize execution mode ────────────────────────
         # Director decides mode dynamically based on task characteristics.
@@ -5817,9 +5760,32 @@ Respond with a JSON object:
             except Exception:
                 pass
 
+            # Phase 1 (D1.6): inject the memory-coupled evidence block so the
+            # acting prompt is conditioned on proven paths / failures / state.
+            evidence_str = ""
+            try:
+                from backend.agent.evidence import assemble_evidence
+
+                _myc = getattr(
+                    getattr(self._memory_interface, "_mycelium", None), None
+                )
+                _task_class = getattr(self, "_der_task_class", "full") or "full"
+                _completed = list(getattr(self, "_der_completed_tools", []) or [])
+                evidence_str = assemble_evidence(
+                    goal=item.description or item.objective_anchor or "",
+                    session_id=session_id,
+                    myc=_myc,
+                    completed_tools=_completed,
+                    task_class=_task_class,
+                    memory_interface=self._memory_interface,
+                )
+            except Exception as _ev_err:
+                logger.debug("[DER] evidence build failed: %s", _ev_err)
+
             prompt = (
                 f"{cp_str}\n\n"
                 + (f"SESSION FINDINGS SO FAR:\n{wm_str}\n\n" if wm_str else "")
+                + (f"{evidence_str}\n\n" if evidence_str else "")
                 + f"OBJECTIVE: {item.objective_anchor}\n"
                 f"STEP {item.step_number}: {item.description}\n\n"
                 "Complete this step. Respond with the result only."
@@ -5849,6 +5815,52 @@ Respond with a JSON object:
         step_result = ""
         step_success = True
         try:
+            # ── Phase 1 (D1.6): single runtime tool resolver ──
+            # Planner no longer pre-assigns tools (D1.3). If this step has no
+            # tool yet, resolve it now via explorer.propose — the ONE authority.
+            if not item.tool:
+                try:
+                    from backend.agent.explorer import propose
+                    from backend.agent.evidence import assemble_evidence
+                    from backend.agent.tool_registry import get_registry_tools
+
+                    _myc = getattr(
+                        getattr(self._memory_interface, "_mycelium", None), None
+                    )
+                    _task_class = getattr(self, "_der_task_class", "full") or "full"
+                    _completed = list(getattr(self, "_der_completed_tools", []) or [])
+                    _evidence = assemble_evidence(
+                        goal=item.description or item.objective_anchor or "",
+                        session_id=_session,
+                        myc=_myc,
+                        completed_tools=_completed,
+                        task_class=_task_class,
+                        memory_interface=self._memory_interface,
+                    )
+                    _decision = propose(
+                        goal=item.description or item.objective_anchor or "",
+                        evidence=_evidence,
+                        live_tools=get_registry_tools(),
+                        infer=self.infer,
+                        myc=_myc,
+                        session_id=_session,
+                        task_class=_task_class,
+                        completed_tools=_completed,
+                        memory_interface=self._memory_interface,
+                    )
+                    if _decision.get("kind") == "tool" and _decision.get("tool"):
+                        item.tool = _decision["tool"]
+                        item.params = _decision.get("params") or {}
+                        logger.info(
+                            "[DER] resolver chose tool=%r for step %d (rationale=%s)",
+                            item.tool, item.step_number, _decision.get("rationale", ""),
+                        )
+                except Exception as _res_err:
+                    logger.warning(
+                        "[DER] resolver failed for step %d: %s",
+                        item.step_number, _res_err,
+                    )
+
             if item.tool and self._tool_bridge is not None:
                 # Trust-routing W2: mark the turn external when a web/crawler
                 # tool runs, so later turn-pair fragments land in 'reference'.
