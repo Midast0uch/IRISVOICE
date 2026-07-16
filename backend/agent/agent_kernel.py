@@ -4666,6 +4666,19 @@ Respond with a JSON object:
         # (explorer.propose) can apply the capability-gated web fallback.
         self._der_task_class = _der_task_class
 
+        # Phase 2 (D2.4): unified termination resource DER_WORK_UNITS_0 derived
+        # from the LIVE context window (System Invariant: work units and context
+        # window are the SAME resource). Split prepays width; complete/fail/veto
+        # consumes 1. This is what makes the Lyapunov potential strictly decrease.
+        try:
+            from backend.agent.der_constants import derive_work_units_0
+
+            _cw = self.resolve_context_window()
+            self._der_work_units = derive_work_units_0(_cw)
+        except Exception as _wu_err:
+            logger.warning("[DER] work_units derive failed: %s", _wu_err)
+            self._der_work_units = 0
+
         try:
             return self._execute_plan_der(
                 plan=_plan,
@@ -5461,6 +5474,144 @@ Respond with a JSON object:
                 ffi_caducean_update(_session, 1, 1.0)
             except Exception:
                 pass
+
+    # ── Phase 2: Emergent Shape — growth-width split/execute operator ──────
+    # This is the ONE recursive operator that decides execution-tree *shape*
+    # from the live Caducean state (u,xi). It replaces the former mode-driven
+    # fan-out AND the separate recovery-graft path: both physics-triggered
+    # ("unresolved_u") and verification-failed ("verify_failed") splits use it.
+    # MorphoHDL break: the decision is STATEFUL — width depends on live |u|,
+    # never a fixed stateless predicate.
+
+    def _growth_width(self, u: float) -> int:
+        """Map live |u| to a split width (MorphoHDL athlete rule).
+
+        Bands (reconciles D2.3 with the split decision):
+          |u| < U_SPLIT (0.5)   -> unresolved/oscillating -> split WIDE (3)
+          U_SPLIT <= |u| < 0.85 -> mid-band: atomic step, needs LLM rubric (D2.3)
+          |u| >= 0.85           -> converged: atomic, deterministic verify only
+        """
+        from backend.agent.der_constants import U_SPLIT, U_CONVERGED
+
+        au = abs(u)
+        if au < U_SPLIT:
+            return 3
+        if au < U_CONVERGED:
+            return 1  # atomic; verification strictness handled by D2.3
+        return 1
+
+    def _der_verify_strictness(self, u: float) -> str:
+        """Adaptive verification strictness by |u| band (D2.3).
+
+        |u| < U_SPLIT  -> "wide"   : step was split; children verified individually,
+                                   parent collapses on child consensus (no LLM rubric).
+        U_SPLIT..0.85  -> "rubric" : atomic step, mid-band -> deterministic stub-kill
+                                   PLUS LLM rubric verdict (tier-3 empowered check).
+        >= 0.85        -> "atomic" : converged -> deterministic verify only (no LLM
+                                   rubric; cheap, deterministic).
+        """
+        from backend.agent.der_constants import U_SPLIT, U_CONVERGED
+
+        au = abs(u)
+        if au < U_SPLIT:
+            return "wide"
+        if au < U_CONVERGED:
+            return "rubric"
+        return "atomic"
+
+    def _split_step(
+        self,
+        item: "QueueItem",
+        trigger: str,
+        cad: Dict[str, float],
+        work_units: int,
+    ) -> List["QueueItem"]:
+        """Stateful, physics-driven split operator (D2.1).
+
+        Args:
+            item:       step being split.
+            trigger:    "unresolved_u" | "verify_failed".
+            cad:        live Caducean state {x, y, xi, u, ...}.
+            work_units: remaining unified termination budget (DER_WORK_UNITS_0
+                        minus what has been prepaid). Split is PERMITTED only if
+                        work_units >= width; split PREPAYS ``width`` units up
+                        front (this is what makes the Lyapunov potential Phi
+                        strictly decrease — see Appendix B).
+
+        Returns:
+            List of child QueueItems (Sub-Loops that collapse back to the parent
+            as one COMPRESS). Empty list => split refused, step forced atomic.
+        """
+        from backend.agent.der_constants import (
+            DER_MAX_GRAFTS,
+            MAX_DEPTH,
+        )
+
+        u = cad.get("u", 0.0)
+        width = self._growth_width(u)
+        # Cap at DER_MAX_GRAFTS AND bounded by remaining work units.
+        width = min(width, DER_MAX_GRAFTS, max(0, work_units))
+        if width < 1 or item.depth_layer >= MAX_DEPTH:
+            return []  # refused -> step forced atomic
+
+        from backend.agent.der_loop import QueueItem
+
+        children: List["QueueItem"] = []
+        for i in range(width):
+            child = QueueItem(
+                step_id=f"{item.step_id}_s{i}",
+                step_number=item.step_number,
+                description=f"{item.description} (sub {i + 1})",
+                objective_anchor=item.objective_anchor,
+                depth_layer=item.depth_layer + 1,
+                expected_output=item.expected_output,
+                is_subloop=True,  # collapses back to parent as one COMPRESS
+                critical=item.critical,
+            )
+            children.append(child)
+        logger.info(
+            "[DER] _split_step trigger=%s u=%.2f width=%d depth=%d",
+            trigger, u, width, item.depth_layer,
+        )
+        return children
+
+    def _der_live_cad_state(self, session_id: str) -> Dict[str, float]:
+        """Live Caducean state for the split decision (D2.2).
+
+        Primary: ffi_caducean_get_state (live engine). Fallback: the trajectory
+        recorder's last recorded coordinate (so a split can still be decided if
+        the engine is unavailable). Never raises — returns zeros on total
+        failure.
+        """
+        try:
+            from backend.gateway.iris_ffi import ffi_caducean_get_state
+
+            st = ffi_caducean_get_state(session_id) or {}
+            if st:
+                return {
+                    "x": float(st.get("x", 0.0)),
+                    "y": float(st.get("y", 0.0)),
+                    "xi": float(st.get("xi", 0.0)),
+                    "u": float(st.get("u", 0.0)),
+                }
+        except Exception as _e:
+            logger.debug("[DER] live cad state unavailable: %s", _e)
+        # Fallback: trajectory recorder's latest coordinate.
+        try:
+            from backend.agent.caducean_trajectory import (
+                CaduceanTrajectoryRecorder,
+            )
+
+            rec = CaduceanTrajectoryRecorder()
+            coord = rec.get_latest_coordinate(session_id) or {}
+            return {
+                "x": float(coord.get("x", 0.0)),
+                "y": float(coord.get("y", 0.0)),
+                "xi": float(coord.get("xi", 0.0)),
+                "u": float(coord.get("u", 0.0)),
+            }
+        except Exception:
+            return {"x": 0.0, "y": 0.0, "xi": 0.0, "u": 0.0}
 
     def _der_graft_recovery_plan(
         self,
@@ -6489,6 +6640,27 @@ Respond with a JSON object:
                         queue.add_item(gap_item)
         except Exception as _gap_exc:
             loud_error(_gap_exc, "trailing_director_gaps")
+
+        # ── Phase 2 (D2.1): unified recovery — verification FAILED uses the
+        # SAME _split_step operator as the physics trigger. No separate graft
+        # code path remains. Split prepays work units up front (Lyapunov Phi
+        # strictly decreases). Children are Sub-Loops (is_subloop=True) that
+        # collapse back to this step as ONE COMPRESS. ──
+        if not step_success and not item.is_subloop:
+            try:
+                _cad = self._der_live_cad_state(_session)
+                _wu = getattr(self, "_der_work_units", 0)
+                _children = self._split_step(item, "verify_failed", _cad, _wu)
+                if _children:
+                    for _c in _children:
+                        queue.add_item(_c)
+                    self._der_work_units = _wu - len(_children)
+                    logger.info(
+                        "[DER] verify_failed -> split into %d sub-loops (work_units=%d)",
+                        len(_children), self._der_work_units,
+                    )
+            except Exception as _split_exc:
+                logger.warning("[DER] split-on-failure failed: %s", _split_exc)
 
         return _tokens_used
 

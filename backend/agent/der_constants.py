@@ -18,16 +18,13 @@ from typing import Dict, Optional
 
 
 class ExecutionMode(str, Enum):
-    """Director execution modes for the DER loop.
+    """Director execution modes — DISPLAY LABEL ONLY (Phase 2, D2.4).
 
-    QUICK:    Single tool call, fast response.  For simple Q&A, single-step
-              tool use, voice-first when the task is straightforward.
-    AGENTIC:  Multi-step tool loop with review.  The Director can emit
-              multiple tool calls, review results, and decide to continue
-              or stop.  Default for most tasks.
-    FULL:     Full exploration + research + synthesis.  Multi-cycle with
-              re-planning, web search, deep research, and comprehensive
-              final response.  For complex multi-step tasks.
+    NOTE: ExecutionMode must NOT drive execution-tree *shape*. Shape is decided
+    by the live Caducean state (u,xi) via _split_step / _growth_width (the
+    System Invariant: one recursive operator, physics-driven). Mode here is a
+    telemetry/label and (legacy) budget selector only. Do not add branching on
+    mode that changes split width or verify strictness.
 
     The Director decides the mode dynamically (see _decide_mode in der_loop.py).
     Mode can escalate (QUICK → AGENTIC → FULL) or de-escalate mid-task.
@@ -123,3 +120,41 @@ MESSAGE_LENGTH_LONG = 200            # "research X, write a report, send to Y" �
 # Token budget thresholds for escalation
 BUDGET_RATIO_ESCALATE = 0.3          # escalate if only < 30% of budget used (plenty left)
 BUDGET_ABSOLUTE_MIN = 5_000          # never escalate if budget < 5k remaining
+
+
+# ── Phase 2: Emergent Shape (growth-width split/execute) ───────────────────
+
+# |u| band below which the step is unresolved/oscillating and should split wide.
+# Start 0.5; tuned empirically by the Phase 4 outer loop.
+U_SPLIT = 0.5
+
+# Hard cap on recursion depth for growth-width splits (System Invariant: one
+# recursive operator at bounded scale). Enforced in DirectorQueue + _split_step.
+MAX_DEPTH = 3
+
+# Average token cost of one step — used to derive the work-unit budget from the
+# live context window (DER_WORK_UNITS_0). Phase-4-tunable.
+AVG_STEP_COST = 1500
+
+# High-|u| convergence threshold: at/above this the step is converged (atomic,
+# deterministic verify only). Between U_SPLIT and this => mid-band (atomic +
+# LLM rubric per D2.3).
+U_CONVERGED = 0.85
+
+
+def derive_work_units_0(context_window: int) -> int:
+    """DER_WORK_UNITS_0 (D-1): the unified termination resource.
+
+    Derived from the live context window, NOT hardcoded. The work-unit count
+    and the context window are the SAME resource (System Invariant): splitting
+    prepays ``width`` units, completing/failing/vetoing consumes 1. This is what
+    makes the Lyapunov potential Phi strictly decrease per cycle.
+
+    Args:
+        context_window: effective context window in tokens
+                        (resolve_context_window() on the AgentKernel).
+
+    Returns:
+        int >= 1.
+    """
+    return max(1, int(context_window / AVG_STEP_COST))

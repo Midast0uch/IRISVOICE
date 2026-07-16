@@ -89,6 +89,7 @@ class QueueItem:
     gap_analysis: Optional[str] = None  # trailing Director gap description
     result: Optional[str] = None  # populated after step execution; consumed by TrailingDirector
     expected_output: Optional[str] = None  # DER Phase 0: explicit success criterion; consumed by TrailingDirector.analyze_gaps
+    is_subloop: bool = False  # DER Phase 2: child of a growth-width split; collapses to parent as one COMPRESS
 
 
 # ── DirectorQueue ──────────────────────────────────────────────────────────
