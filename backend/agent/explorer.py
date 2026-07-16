@@ -61,6 +61,8 @@ def _pheromone_top1(
     completed_tools: List[str],
 ) -> Optional[str]:
     """Top-1 predicted next tool via BehavioralPredictor (deterministic backstop)."""
+    if myc is None:
+        return None
     try:
         from backend.memory.mycelium.interpreter import BehavioralPredictor
 

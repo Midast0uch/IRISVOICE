@@ -5917,9 +5917,8 @@ Respond with a JSON object:
             try:
                 from backend.agent.evidence import assemble_evidence
 
-                _myc = getattr(
-                    getattr(self._memory_interface, "_mycelium", None), None
-                )
+                _mi = getattr(self, "_memory_interface", None)
+                _myc = getattr(_mi, "_mycelium", None) if _mi is not None else None
                 _task_class = getattr(self, "_der_task_class", "full") or "full"
                 _completed = list(getattr(self, "_der_completed_tools", []) or [])
                 evidence_str = assemble_evidence(
@@ -5975,9 +5974,8 @@ Respond with a JSON object:
                     from backend.agent.evidence import assemble_evidence
                     from backend.agent.tool_registry import get_registry_tools
 
-                    _myc = getattr(
-                        getattr(self._memory_interface, "_mycelium", None), None
-                    )
+                    _mi = getattr(self, "_memory_interface", None)
+                    _myc = getattr(_mi, "_mycelium", None) if _mi is not None else None
                     _task_class = getattr(self, "_der_task_class", "full") or "full"
                     _completed = list(getattr(self, "_der_completed_tools", []) or [])
                     _evidence = assemble_evidence(

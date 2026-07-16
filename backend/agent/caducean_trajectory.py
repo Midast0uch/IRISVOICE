@@ -103,7 +103,23 @@ class CaduceanTrajectoryRecorder:
 
     _eml_cache: float = 1.0
 
-    def __init__(self, db_conn: sqlite3.Connection) -> None:
+    def __init__(self, db_conn: sqlite3.Connection = None) -> None:
+        # Spec: the recorder is backed by the SAME SQLite DB as MemoryInterface.
+        # When no conn is supplied (ad-hoc call sites), fall back to the project
+        # coordinate DB so the recorder is always usable. This keeps the G5 commit
+        # ledger and D4.0 session-exit ledger writable from any call site.
+        if db_conn is None:
+            import os
+
+            _db_path = os.environ.get(
+                "MCM_DB_PATH",
+                os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                    ".mcm", "coordinates.db",
+                ),
+            )
+            os.makedirs(os.path.dirname(_db_path), exist_ok=True)
+            db_conn = sqlite3.connect(_db_path)
         self._conn = db_conn
         self._ensure_table()
 
