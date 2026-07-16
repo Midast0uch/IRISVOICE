@@ -142,7 +142,18 @@ def register_verified_skill(
 
     Mirrors SkillCrystalliser's storage shape (category="named_skills") so the
     existing skill UI / AutoResearchRunner pick it up.  Returns the skill key.
+
+    DER Phase 3 (D3.3 G4): HARD GATE. A skill is only registered when the step
+    actually reached the VERIFIED state (rubric pass). If ``stub["verified"]``
+    is falsy, registration is refused — no skill is written. This is what stops
+    unverified work from being silently memorized as a "verified" skill.
     """
+    if not stub.get("verified", False):
+        logger.info(
+            "[workflow_capture] refusing skill '%s' — not VERIFIED",
+            stub.get("name", "?"),
+        )
+        return ""
     skill_key = f"skill_{stub['name'].lower().replace(' ', '_')}"
     memory.semantic.update(
         category="named_skills",

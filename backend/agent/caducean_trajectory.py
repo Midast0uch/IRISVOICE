@@ -54,6 +54,22 @@ CREATE TABLE IF NOT EXISTS der_fan_traces (
     xi          REAL
 );
 CREATE INDEX IF NOT EXISTS idx_ft_session ON der_fan_traces(session_id);
+
+-- DER Phase 3 (D3.3 G5): verified-commit ledger. A commit is recorded ONLY when
+-- a step reaches the VERIFIED state (rubric pass). This is the honest audit trail
+-- that replaces the former "auto-commit on completion" behavior — no commit is
+-- written unless the work was actually verified. Store write, never a prompt inject.
+CREATE TABLE IF NOT EXISTS der_commits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL,
+    session_id  TEXT,
+    step_id     TEXT,
+    commit_hash TEXT,
+    message     TEXT,
+    u           REAL,
+    xi          REAL
+);
+CREATE INDEX IF NOT EXISTS idx_dc_session ON der_commits(session_id);
 """
 
 # Idempotent ALTER TABLE for existing DBs that predate the v2 column.
@@ -216,6 +232,35 @@ class CaduceanTrajectoryRecorder:
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] get_latest_coordinate failed: %s", exc)
             return None
+
+    def record_commit(
+        self,
+        session_id: str,
+        step_id: str,
+        commit_hash: str,
+        message: str,
+        u: Optional[float] = None,
+        xi: Optional[float] = None,
+    ) -> None:
+        """DER Phase 3 (D3.3 G5): write a verified-commit ledger entry.
+
+        Called ONLY when a step reaches the VERIFIED state. Store write — never
+        injected into a prompt. Provides the honest audit trail that replaces
+        former auto-commit-on-completion.
+        """
+        try:
+            self._conn.execute(
+                """
+                INSERT INTO der_commits
+                    (ts, session_id, step_id, commit_hash, message, u, xi)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (time.time(), session_id, step_id, commit_hash, message,
+                 u if u is not None else 0.0, xi if xi is not None else 0.0),
+            )
+            self._conn.commit()
+        except Exception as exc:
+            logger.warning("[CaduceanTrajectory] record_commit failed: %s", exc)
 
 
 def get_trajectory_recorder(memory_interface: Any) -> CaduceanTrajectoryRecorder:

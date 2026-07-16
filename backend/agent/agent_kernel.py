@@ -6388,6 +6388,28 @@ Respond with a JSON object:
         if _verified == "FAILED":
             step_success = False
 
+        # ── Phase 3 (D3.3 G5): honest commit ledger ──
+        # A commit is recorded ONLY when the step reaches the VERIFIED state. This
+        # replaces former auto-commit-on-completion: no commit is written unless the
+        # work was actually verified. Store write — never injected into a prompt.
+        if _verified == "VERIFIED":
+            try:
+                from backend.agent.caducean_trajectory import (
+                    CaduceanTrajectoryRecorder,
+                )
+
+                _cad = self._der_live_cad_state(_session)
+                CaduceanTrajectoryRecorder().record_commit(
+                    session_id=_session,
+                    step_id=item.step_id,
+                    commit_hash="",
+                    message=f"VERIFIED step {item.step_number}: {item.description[:80]}",
+                    u=_cad.get("u"),
+                    xi=_cad.get("xi"),
+                )
+            except Exception as _commit_exc:
+                logger.debug("[DER] record_commit failed: %s", _commit_exc)
+
         queue.mark_complete(item.step_id)
 
         # ── Phase 3 (Gap 3): propagate this step's output into dependent
