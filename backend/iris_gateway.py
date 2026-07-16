@@ -1203,6 +1203,19 @@ class IRISGateway:
                         model_provider=provider,
                         api_base_url=_api_base_url,
                     )
+
+                    # Apply per-role bindings AFTER set_model_selection so the
+                    # provider instances are in the registry before bind_role is
+                    # called. This lets Brain=local, Tool=cerebras (or any mix)
+                    # work through the frontend's per-role dropdowns.
+                    if reasoning and reasoning != tool_exec:
+                        kernel.set_role_binding("reasoning", reasoning)
+                    elif reasoning:
+                        kernel.set_role_binding("reasoning", reasoning)
+                    if tool_exec and tool_exec != reasoning:
+                        kernel.set_role_binding("tool_execution", tool_exec)
+                    elif tool_exec:
+                        kernel.set_role_binding("tool_execution", tool_exec)
                     self._logger.info(
                         f"[Session: {session_id}] Model selection applied on confirm: "
                         f"reasoning={reasoning}, tool={tool_exec}, provider={provider}",
@@ -5699,14 +5712,22 @@ class IRISGateway:
         payload = message.get("payload", {})
         reasoning_model = payload.get("reasoning_model")
         tool_execution_model = payload.get("tool_execution_model")
+        # New SLICE 5 fields: register/configure a provider instance at runtime.
+        model_provider = payload.get("model_provider")
+        api_key = payload.get("api_key")
+        api_base_url = payload.get("api_base_url")
 
         try:
             # Get AgentKernel for this session
             agent_kernel = get_agent_kernel(session_id)
 
-            # Set model selection
+            # Set model selection (forwards provider + credentials so the
+            # kernel can register a live ProviderInstance in the router).
             success = agent_kernel.set_model_selection(
-                reasoning_model, tool_execution_model
+                reasoning_model, tool_execution_model,
+                model_provider=model_provider,
+                api_base_url=api_base_url,
+                api_key=api_key,
             )
 
             if success:
@@ -5726,6 +5747,7 @@ class IRISGateway:
                         "payload": {
                             "reasoning_model": reasoning_model,
                             "tool_execution_model": tool_execution_model,
+                            "model_provider": model_provider,
                             "success": True,
                         },
                     },
@@ -5739,6 +5761,7 @@ class IRISGateway:
                         "payload": {
                             "reasoning_model": reasoning_model,
                             "tool_execution_model": tool_execution_model,
+                            "model_provider": model_provider,
                             "success": True,
                         },
                     },
@@ -7542,6 +7565,11 @@ class IRISGateway:
                 kernel.configure_openai_compat(None)
                 if hasattr(kernel, "configure_inprocess_local"):
                     kernel.configure_inprocess_local(None)
+                # Remove the 'local' provider from the router registry
+                # so the Brain/Tool dropdowns no longer list it.
+                router = getattr(kernel, "_router", None)
+                if router is not None:
+                    router.remove_provider("local")
                 self._logger.info(
                     f"[iris_local] Kernel de-wired after unload (session {session_id})"
                 )

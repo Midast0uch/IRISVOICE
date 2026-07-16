@@ -59,13 +59,20 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (!detail || detail.type !== 'model_load_progress') return;
-      const pct = detail.percent ?? 0;
+      // Backend sends "local_model_loading" with { status, pct, msg, phase }.
+      // The WS handler forwards it as iris:ws_message with
+      // detail = { type: "local_model_loading", payload: { pct, msg, ... } }
+      if (!detail) return;
+      const msgType = detail.type ?? '';
+      const payload = detail.payload ?? detail; // normalize nested payload
+      if (!msgType.startsWith('local_model')) return;
+
+      const pct = payload.pct ?? payload.percent ?? 0;
       setLoadPct(pct);
-      setLoadMsg(detail.message || '');
-      setLoadPhase(detail.phase || '');
-      setIsLoading(pct < 100);
-      if (pct >= 100) {
+      setLoadMsg(payload.msg || payload.message || '');
+      setLoadPhase(payload.phase || payload.status || '');
+      setIsLoading(pct < 100 && payload.status !== 'ready');
+      if (pct >= 100 || payload.status === 'ready') {
         setTimeout(() => fetchModels(), 500);
       }
     };

@@ -1489,12 +1489,33 @@ async def api_inference_state():
     """
     try:
         from backend.agent import get_agent_kernel
+        from backend.agent.inference.provider import PROVIDER_PRESETS
 
-        kernel = get_agent_kernel()
+        # The UI configures the "session_iris" kernel over the WS; read that
+        # same kernel so the registry/role bindings the user set are reflected.
+        # Use conversation_id="default" so get_agent_kernel returns the same
+        # instance that the WS message handlers use (get_agent_kernel with
+        # session_id="session_iris" also maps to conversation_id="default").
+        kernel = get_agent_kernel(conversation_id="default")
         router = getattr(kernel, "_router", None)
         if router is None:
-            return {"providers": [], "role_bindings": [], "default_role": None}
-        return router.snapshot()
+            return {"providers": [], "role_bindings": [], "default_role": None,
+                    "provider_presets": PROVIDER_PRESETS}
+        snap = router.snapshot()
+        snap["provider_presets"] = PROVIDER_PRESETS
+        # Attach the local model manager's live status so the frontend knows
+        # when a locally-loaded GGUF is available and its load state.
+        try:
+            from backend.agent.local_model_manager import get_local_model_manager
+            mgr = get_local_model_manager()
+            snap["local_model_loaded"] = mgr.is_loaded()
+            snap["local_model_status"] = "loaded" if mgr.is_loaded() else None
+            snap["local_model_message"] = ""
+        except Exception:
+            snap["local_model_loaded"] = None
+            snap["local_model_status"] = None
+            snap["local_model_message"] = ""
+        return snap
     except Exception as e:
         from fastapi.responses import JSONResponse
         import traceback

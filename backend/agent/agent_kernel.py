@@ -6880,6 +6880,7 @@ If any tools failed, address those issues in your response.
         tool_execution_model: Optional[str] = None,
         model_provider: Optional[str] = None,
         api_base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> bool:
         """
         Set user-selected models for reasoning and tool execution.
@@ -6972,15 +6973,45 @@ If any tools failed, address those issues in your response.
             if model_provider:
                 from backend.agent.inference.provider import ProviderInstance, ProviderKind
 
-                _kind = ProviderKind.INPROCESS if model_provider in ("local", "iris_local", "inprocess") else (
-                    ProviderKind.LOCAL_OPENAI if model_provider in ("lmstudio", "openai_compatible", "local_openai") else (
+                _kind = ProviderKind.INPROCESS if model_provider in ("local", "iris_local", "inprocess") and not api_base_url else (
+                    ProviderKind.LOCAL_OPENAI if model_provider in ("lmstudio", "openai_compatible", "local_openai") or (model_provider == "local" and api_base_url) else (
                     ProviderKind.OLLAMA if model_provider == "ollama" else ProviderKind.API))
-                self._router.add_provider(ProviderInstance(
+                # Persist credentials so the provider instance can authenticate
+                # and the UI can learn the key is already configured.
+                if api_key:
+                    self._api_key = api_key
+                if api_base_url:
+                    self._api_base_url = api_base_url.rstrip("/")
+                # Resolve the effective key: freshly supplied key wins; else the
+                # key already on the kernel; else fall back to IRISConfig ONLY
+                # when this provider is the one configured there (so we don't
+                # falsely report a Cerebras key as valid for, say, DeepSeek).
+                _effective_key = api_key or getattr(self, '_api_key', '') or ""
+                if not _effective_key:
+                    try:
+                        from backend.iris_config import load_config as _lc
+                        _cfg = _lc()
+                        _cfg_key = getattr(_cfg.inference, "api_key", "") or ""
+                        _cfg_provider = getattr(_cfg.inference, "provider", "") or ""
+                        if _cfg_key and model_provider == _cfg_provider:
+                            _effective_key = _cfg_key
+                            self._api_key = _cfg_key
+                    except Exception:
+                        pass
+                _inst = ProviderInstance(
                     id=model_provider, label=model_provider, kind=_kind,
                     model=reasoning_model,
-                    api_base_url=api_base_url or getattr(self, '_api_base_url', '') or ""))
-                self._router.bind_role("reasoning", model_provider)
-                self._router.bind_role("tool_execution", model_provider, model_override=tool_execution_model)
+                    api_base_url=api_base_url or getattr(self, '_api_base_url', '') or "",
+                    api_key=_effective_key)
+                # Register on this kernel's router AND every peer kernel's
+                # router so the provider registry is consistent across all
+                # conversation threads (the /api/inference/state endpoint reads
+                # the "default" kernel, which may differ from the WS session).
+                for _kr in [self] + [pk for pk in _agent_kernel_instances.values() if pk is not self]:
+                    _r = getattr(_kr, "_router", None)
+                    if _r is None:
+                        continue
+                    _r.add_provider(_inst)
 
             return True
 
@@ -6999,6 +7030,34 @@ If any tools failed, address those issues in your response.
             "reasoning_model": self._selected_reasoning_model,
             "tool_execution_model": self._selected_tool_execution_model,
         }
+
+    def set_role_binding(self, role: str, instance_id: str, model_override: Optional[str] = None) -> bool:
+        """
+        Bind a role (reasoning / tool_execution) to a registered provider instance
+        in the InferenceRouter, and propagate the binding to every peer kernel so
+        the router mapping is consistent across all conversation threads.
+
+        Returns False (and the gateway emits role_binding_error) when binding to
+        the local instance without a model loaded.
+        """
+        try:
+            if instance_id == "local" and not getattr(self, "_local_model_loaded", False):
+                logger.warning("[AgentKernel] Refusing to bind role '%s' to local with no model loaded", role)
+                return False
+            for _kr in [self] + [pk for pk in _agent_kernel_instances.values() if pk is not self]:
+                _r = getattr(_kr, "_router", None)
+                if _r is None:
+                    continue
+                _r.bind_role(role, instance_id, model_override=model_override)
+            # Keep legacy field assignments in sync for any code that reads them.
+            if role == "reasoning":
+                self._selected_reasoning_model = instance_id
+            elif role == "tool_execution":
+                self._selected_tool_execution_model = instance_id
+            return True
+        except Exception as e:
+            logger.error(f"[AgentKernel] Failed to set role binding: {e}")
+            return False
 
     def set_internet_access(self, enabled: bool) -> None:
         """

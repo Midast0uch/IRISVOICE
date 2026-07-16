@@ -50,6 +50,22 @@ class RoleBindingTable:
         self._bindings: dict[str, RoleBinding] = {}
         self._registry = registry
 
+    @staticmethod
+    def _canon(role: str) -> str:
+        """Canonicalize a role name so the various spellings used across the
+        codebase resolve to the same binding.
+
+        - reasoning / brain / REASONING / ``"reasoning"`` -> ``reasoning``
+        - tool_execution / tool / execution / EXECUTION / ``"tool_execution"``
+          -> ``tool_execution``
+        """
+        r = (role or "").strip().lower()
+        if r in ("reasoning", "brain", "think", "reason"):
+            return "reasoning"
+        if r in ("tool_execution", "tool", "execution", "exec", "tools"):
+            return "tool_execution"
+        return r
+
     def bind(
         self,
         role: str,
@@ -57,8 +73,9 @@ class RoleBindingTable:
         model_override: Optional[str] = None,
     ) -> None:
         """Bind *role* to the provider instance identified by *instance_id*."""
-        self._bindings[role] = RoleBinding(
-            role=role,
+        canon = self._canon(role)
+        self._bindings[canon] = RoleBinding(
+            role=canon,
             instance_id=instance_id,
             model_override=model_override,
         )
@@ -66,14 +83,15 @@ class RoleBindingTable:
     def resolve(self, role: str) -> ProviderInstance:
         """Resolve *role* to its bound ``ProviderInstance``.
 
-        Resolution is case-insensitive (``"REASONING"`` matches
-        ``"reasoning"``). Raises ``RuntimeError`` if *role* has no binding
-        (and no case-insensitive match) or if the bound instance id no
-        longer exists in the registry.
+        Resolution is case-insensitive and canonicalizes role aliases
+        (``"EXECUTION"`` matches ``"tool_execution"``, ``"REASONING"`` matches
+        ``"reasoning"``). Raises ``RuntimeError`` if *role* has no binding or
+        if the bound instance id no longer exists in the registry.
         """
-        binding = self._bindings.get(role)
+        canon = self._canon(role)
+        binding = self._bindings.get(canon)
         if binding is None:
-            # Case-insensitive fallback
+            # Legacy case-insensitive fallback for any un-canonicalized roles.
             for _k, _v in self._bindings.items():
                 if _k.lower() == role.lower():
                     binding = _v

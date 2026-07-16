@@ -2,6 +2,7 @@
 
 import { useState, memo, useMemo, useCallback, useEffect, useRef } from 'react';
 import { CustomDropdown } from '@/components/ui/CustomDropdown';
+import { ModelInferenceSection } from '@/components/ModelInferenceSection';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { useBrandColor } from '@/contexts/BrandColorContext';
@@ -411,146 +412,6 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
   );
 });
 
-// ─── Model & Inference Section (custom rendering from useInferenceState) ───
-const ModelInferenceSection = memo(function ModelInferenceSection({
-  providers, role_bindings, loading, sendRoleBinding, glowColor
-}: {
-  providers: { id: string; label: string; kind: string; model: string }[];
-  role_bindings: { role: string; instance_id: string; model_override?: string }[];
-  loading: boolean;
-  sendRoleBinding: (role: string, instanceId: string, modelOverride?: string) => void;
-  glowColor: string;
-}) {
-  const [useSameModel, setUseSameModel] = useState(true);
-  const [bindError, setBindError] = useState<string | null>(null);
-
-  // Listen for role_binding_error to show inline messages (e.g. binding to local with no model loaded)
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { error?: string; role?: string; instance_id?: string } | undefined;
-      if (detail?.error) setBindError(detail.error);
-    };
-    window.addEventListener('iris:role_binding_error', handler as EventListener);
-    return () => window.removeEventListener('iris:role_binding_error', handler as EventListener);
-  }, []);
-
-  // Derive current binding values
-  const brainBinding = role_bindings.find((r) => r.role === 'reasoning');
-  const toolBinding = role_bindings.find((r) => r.role === 'tool_execution');
-
-  const getProviderLabel = (instanceId: string) => {
-    const p = providers.find((prov) => prov.id === instanceId);
-    return p ? p.label : instanceId;
-  };
-
-  const providerOptions = providers.map((p) => ({
-    label: p.label,
-    value: p.id,
-  }));
-
-  const handleBrainChange = (value: string) => {
-    setBindError(null);
-    sendRoleBinding('reasoning', value);
-    if (useSameModel) {
-      sendRoleBinding('tool_execution', value);
-    }
-  };
-
-  const handleToolChange = (value: string) => {
-    setBindError(null);
-    sendRoleBinding('tool_execution', value);
-  };
-
-  const handleSameModelToggle = (val: boolean) => {
-    setUseSameModel(val);
-    if (val && brainBinding?.instance_id) {
-      sendRoleBinding('tool_execution', brainBinding.instance_id);
-    }
-  };
-
-  return (
-    <div className="col-span-full space-y-1 w-full">
-      {/* Brain Model dropdown */}
-      <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
-        <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">
-          Brain Model
-        </span>
-        <div className="w-[140px] flex-shrink-0">
-          <CustomDropdown
-            value={brainBinding?.instance_id || ''}
-            options={providerOptions}
-            onChange={handleBrainChange}
-            glowColor={glowColor}
-            className="text-[10px] py-1 px-2 h-7 w-full"
-          />
-        </div>
-      </div>
-
-      {/* Tool Execution Model — hidden when useSameModel is on */}
-      {!useSameModel && (
-        <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
-          <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">
-            Tool Execution Model
-          </span>
-          <div className="w-[140px] flex-shrink-0">
-            <CustomDropdown
-              value={toolBinding?.instance_id || ''}
-              options={providerOptions}
-              onChange={handleToolChange}
-              glowColor={glowColor}
-              className="text-[10px] py-1 px-2 h-7 w-full"
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Use Same Model toggle */}
-      <div className="flex items-center justify-between py-1.5 px-1 gap-2">
-        <span className="text-[11px] font-medium text-white/60 flex-1 min-w-0 leading-tight">Use Same Model</span>
-        <button
-          onClick={() => handleSameModelToggle(!useSameModel)}
-          className="relative w-8 h-4 rounded-full transition-colors shrink-0"
-          style={{ backgroundColor: useSameModel ? glowColor : 'rgba(255,255,255,0.1)' }}
-        >
-          <motion.span
-            className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm"
-            animate={{ left: useSameModel ? '18px' : '2px' }}
-          />
-        </button>
-      </div>
-
-      {/* Active Routing — read-only display */}
-      <div className="py-2 col-span-full">
-        <div className="flex flex-col gap-1 px-3 py-2 rounded-xl text-[10px] uppercase tracking-wider"
-          style={{ background: `${glowColor}10`, border: `1px solid ${glowColor}30` }}>
-          <div className="flex items-center justify-between">
-            <span style={{ color: 'rgba(255,255,255,0.5)' }}>BRAIN (reasoning)</span>
-            <span style={{ color: glowColor }}>{brainBinding ? getProviderLabel(brainBinding.instance_id) : '—'}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span style={{ color: 'rgba(255,255,255,0.5)' }}>TOOL EXECUTION</span>
-            <span style={{ color: glowColor }}>{toolBinding ? getProviderLabel(toolBinding.instance_id) : '—'}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Binding error */}
-      {bindError && (
-        <div className="px-3 py-1 col-span-full">
-          <p className="text-[9px] text-red-400">{bindError}</p>
-        </div>
-      )}
-
-      {/* Loading indicator */}
-      {loading && (
-        <div className="px-3 py-1 col-span-full">
-          <span className="text-[9px] text-white/40">Loading providers...</span>
-        </div>
-      )}
-    </div>
-  );
-});
-
 export function DarkGlassDashboard({
   fieldValues: propFieldValues,
   updateField: propUpdateField,
@@ -570,7 +431,15 @@ export function DarkGlassDashboard({
   // useLauncherMode fetches /api/mode so this works even when iris-launcher ran before IRISVOICE loaded.
   const { mode: irisMode } = useLauncherMode();
 
-  const { providers, role_bindings, loading: infLoading, sendRoleBinding } = useInferenceState();
+  const {
+    providers,
+    role_bindings,
+    loading: infLoading,
+    sendRoleBinding,
+    provider_presets,
+    sendModelSelection,
+    sendInferenceMode,
+  } = useInferenceState();
 
   // Persist active tab so the app restores to the last used panel on reopen
   const [activeTab, setActiveTab] = useState<string>(() => {
@@ -1325,6 +1194,10 @@ export function DarkGlassDashboard({
                           loading={infLoading}
                           sendRoleBinding={sendRoleBinding}
                           glowColor={glowColor}
+                          provider_presets={provider_presets}
+                          sendModelSelection={sendModelSelection}
+                          sendInferenceMode={sendInferenceMode}
+                          inferenceValues={fieldValues?.inference_mode}
                         />
                       ) : (
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-1">
@@ -1422,7 +1295,27 @@ export function DarkGlassDashboard({
                          try {
                            if (iframeRef.current?.contentWindow) {
                              window.history.back()
-                           }
+      }
+      
+      // ── Per-role model routing (override unified set_model_selection) ──
+      // The confirm_card above sends set_model_selection which binds BOTH
+      // reasoning + tool_execution to the SAME provider, overriding any
+      // per-role selections the user made in the Brain/Tool dropdowns.
+      // Re-apply individual role bindings so each role keeps its chosen provider.
+      if (sendMessage && role_bindings) {
+        const brainBinding = role_bindings.find((b) => b.role === 'reasoning');
+        const toolBinding = role_bindings.find((b) => b.role === 'tool_execution');
+        if (brainBinding?.instance_id) {
+          sendMessage('set_role_binding', {
+            role: 'reasoning', instance_id: brainBinding.instance_id,
+          });
+        }
+        if (toolBinding?.instance_id && toolBinding.instance_id !== brainBinding?.instance_id) {
+          sendMessage('set_role_binding', {
+            role: 'tool_execution', instance_id: toolBinding.instance_id,
+          });
+        }
+      }
                          } catch (e) {
                            console.warn("Cross-origin navigation blocked", e)
                          }

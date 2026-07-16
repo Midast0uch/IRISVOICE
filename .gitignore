@@ -96,3 +96,5 @@ llama-cpp-turboquant/
 build_*.bat
 bench_*.bat
 **/__pycache__/
+
+llama.cpp-prismml-src/

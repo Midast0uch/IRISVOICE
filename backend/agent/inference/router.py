@@ -239,6 +239,10 @@ class InferenceRouter:
         """Thin wrapper around registry.add()."""
         self._registry.add(inst)
 
+    def remove_provider(self, id: str) -> None:
+        """Remove a registered provider by id. No-op if unknown."""
+        self._registry.remove(id)
+
     def bind_role(
         self,
         role: str,
