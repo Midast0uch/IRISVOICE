@@ -38,6 +38,22 @@ CREATE TABLE IF NOT EXISTS caducean_trajectories (
 );
 CREATE INDEX IF NOT EXISTS idx_ct_session ON caducean_trajectories(session_id);
 CREATE INDEX IF NOT EXISTS idx_ct_ts      ON caducean_trajectories(ts);
+
+-- DER Phase 0 (D0.8): fan-trace store. When DCP prunes/dedups a tool-call message, we
+-- write a compact structural trace so the agent "still sees the fanning" after compaction.
+-- This is a STORE write, never a prompt injection (zero standing token cost).
+CREATE TABLE IF NOT EXISTS der_fan_traces (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL,
+    session_id  TEXT,
+    step_id     TEXT,
+    tool        TEXT,
+    args_hash   TEXT,
+    outcome     TEXT,
+    u           REAL,
+    xi          REAL
+);
+CREATE INDEX IF NOT EXISTS idx_ft_session ON der_fan_traces(session_id);
 """
 
 # Idempotent ALTER TABLE for existing DBs that predate the v2 column.
@@ -114,6 +130,29 @@ class CaduceanTrajectoryRecorder:
             CaduceanTrajectoryRecorder._eml_cache = float(eml_after)
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record failed: %s", exc)
+
+    def record_fan_trace(
+        self,
+        session_id: str,
+        step_id: str,
+        tool: str,
+        args_hash: str,
+        outcome: str,
+        u: Optional[float] = None,
+        xi: Optional[float] = None,
+    ) -> None:
+        """DER Phase 0 (D0.8): write a structural trace of a tool call that DCP is about
+        to prune/drop. Preserves the fan shape without bloating the prompt. Cheap, WAL-safe."""
+        try:
+            self._conn.execute(
+                "INSERT INTO der_fan_traces "
+                "(ts, session_id, step_id, tool, args_hash, outcome, u, xi) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (time.time(), session_id, step_id, tool, args_hash, outcome, u, xi),
+            )
+            self._conn.commit()
+        except Exception as exc:
+            logger.warning("[CaduceanTrajectory] record_fan_trace failed: %s", exc)
 
     def trajectory_count(self) -> int:
         try:

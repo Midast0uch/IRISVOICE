@@ -322,12 +322,17 @@ class EpisodicStore:
         duplicate = self._find_duplicate(embedding)
         if duplicate:
             episode_id, similarity = duplicate
-            # Update existing episode with new information
+            # Update existing episode with new information.
+            # DER Phase 0 (D0.5): use EWMA for outcome_score (so failure can ratchet
+            # DOWN, not just up) and update outcome_type to the latest value (so the
+            # memory can UNLEARN a previously-successful pattern). This is the
+            # anti-forgetting-with-provenance fix.
             self.db.execute("""
                 UPDATE episodes SET
                     task_summary = ?,
                     full_content = full_content || ?,
-                    outcome_score = MAX(outcome_score, ?),
+                    outcome_score = (0.7 * outcome_score) + (0.3 * ?),
+                    outcome_type = ?,
                     user_corrected = MAX(user_corrected, ?),
                     user_confirmed = MAX(user_confirmed, ?),
                     timestamp = CURRENT_TIMESTAMP
@@ -336,6 +341,7 @@ class EpisodicStore:
                 episode.task_summary,
                 f"\n---\n{episode.full_content}",
                 score,
+                episode.outcome_type,
                 int(episode.user_corrected),
                 int(episode.user_confirmed),
                 episode_id
@@ -691,6 +697,7 @@ class EpisodicStore:
         min_similarity: float = 0.25,
         chunk_types: Optional[List[str]] = None,
         zones: Optional[List[str]] = None,
+        max_context_tokens: Optional[int] = None,
     ) -> List[str]:
         """
         Retrieve the most semantically relevant context chunks for a query.
@@ -779,6 +786,24 @@ class EpisodicStore:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[:limit]
+
+        # Token-aware cap: if a model context window is provided, keep only as
+        # many top chunks as fit, reserving headroom for the prompt + response.
+        # This prevents overflow on small local models (which would otherwise
+        # get up to `limit` chunks regardless of their real window). When
+        # max_context_tokens is None we fall back to the hard `limit` count.
+        if max_context_tokens is not None and max_context_tokens > 0:
+            _budget = max_context_tokens
+            _kept: List[Tuple[float, str, Any]] = []
+            _used = 0
+            for _score, _content, _id in top:
+                _chunk_tokens = max(1, len(_content) // self._CHARS_PER_TOKEN)
+                if _used + _chunk_tokens > _budget:
+                    break
+                _kept.append((_score, _content, _id))
+                _used += _chunk_tokens
+            top = _kept
+
         results = [content for _, content, _ in top]
 
         # Increment retrieval_count for returned chunks (usage tracking for decay/crystallization)

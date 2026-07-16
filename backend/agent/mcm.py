@@ -142,6 +142,11 @@ class MCM:
             nbl, active_task, active_files, unverified_edits, warnings
         )
 
+        # DER Phase 0 (D0.9): embed a FAN SUMMARY in the recovery preamble so the
+        # post-compaction agent still sees the SHAPE of its tool-call tree. Pulled from
+        # der_fan_traces (written by DCP Pass 4). Mode-agnostic.
+        fan_summary = self._build_fan_summary(self.session_id)
+
         return {
             "nbl": nbl,
             "active_task": active_task,
@@ -149,6 +154,7 @@ class MCM:
             "unverified_edits": unverified_edits,
             "warnings": warnings,
             "recovery_preamble": recovery_preamble,
+            "fan_summary": fan_summary,
             "compressed_at": time.time(),
         }
 
@@ -223,6 +229,12 @@ class MCM:
         system_msg = messages[0]
         task = compressed.get("active_task") or "Continue previous task."
         preamble = compressed.get("recovery_preamble", "")
+
+        # DER Phase 0 (D0.9): append FAN SUMMARY so the agent sees the tool-call shape
+        # after the hard context replace.
+        fan_summary = compressed.get("fan_summary", "")
+        if fan_summary:
+            preamble = f"{preamble}\n{fan_summary}" if preamble else fan_summary
 
         recovered = [
             system_msg,
@@ -357,3 +369,32 @@ class MCM:
 
         lines.append("Trust the NBL above — do NOT re-read files already in active_files.")
         return "\n".join(lines)
+
+    def _build_fan_summary(self, session_id: Optional[str], rec=None) -> str:
+        """DER Phase 0 (D0.9): structural summary of the tool-call fan from der_fan_traces.
+        Lets the post-compaction agent see the SHAPE of its tool tree without re-injecting
+        every dropped message. Returns '' if no traces (no token cost when empty).
+        `rec` may be injected (test seam); otherwise a fresh recorder is used."""
+        if not session_id:
+            return ""
+        try:
+            if rec is None:
+                from backend.agent.caducean_trajectory import CaduceanTrajectoryRecorder
+                rec = CaduceanTrajectoryRecorder()
+            rows = rec._conn.execute(
+                "SELECT tool, outcome, u FROM der_fan_traces "
+                "WHERE session_id = ? ORDER BY ts",
+                (session_id,),
+            ).fetchall()
+            if not rows:
+                return ""
+            parts = []
+            for r in rows:
+                tool = r[0] or "?"
+                outcome = r[1] or "?"
+                u = f"u={r[2]:.2f}" if r[2] is not None else ""
+                parts.append(f"{tool}({outcome}{(' ' + u) if u else ''})")
+            return "FAN SUMMARY: " + " → ".join(parts)
+        except Exception as exc:
+            logger.debug("[MCM] fan_summary build skipped: %s", exc)
+            return ""

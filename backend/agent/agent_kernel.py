@@ -9,6 +9,8 @@ Orchestrates the dual-LLM system with:
 - Model failure fallback to single-model mode
 """
 
+import re
+
 from .model_conversation import ModelConversation
 from .inter_model_communication import InterModelCommunicator
 from .vps_gateway import VPSGateway, VPSConfig
@@ -912,7 +914,26 @@ class AgentKernel:
             ):
                 return tokens
 
-        # 3. Fallback: try to detect from local_model_manager profiles
+        # 3. For a LOCAL provider, trust the ACTUAL loaded context window from
+        #    the live model manager — it is the source of truth (the model was
+        #    launched with a specific n_ctx, e.g. 32768 for a ternary bonsai).
+        #    Substring guessing (step 2) is unreliable for custom GGUF names and
+        #    would otherwise under/over-size the budget vs the real window.
+        if provider == "local":
+            try:
+                from .local_model_manager import get_local_model_manager
+
+                mgr = get_local_model_manager()
+                if getattr(mgr, "is_loaded", lambda: False)() and getattr(
+                    mgr, "_current_params", None
+                ):
+                    _n_ctx = int(mgr._current_params.get("n_ctx", 0))
+                    if _n_ctx and _n_ctx > 0:
+                        return _n_ctx
+            except Exception:
+                pass
+
+        # 4. Fallback: try to detect from local_model_manager profiles
         try:
             from .local_model_manager import LocalModelManager
 
@@ -923,7 +944,7 @@ class AgentKernel:
         except Exception:
             pass
 
-        # 4. Safe default — 8k for unknown models
+        # 5. Safe default — 8k for unknown models
         logger.info(
             f"[AgentKernel] No context window known for provider={provider} "
             f"model={model} — using default 8192"
@@ -1701,6 +1722,10 @@ class AgentKernel:
                     session_id=getattr(self, "session_id", None),
                     limit=6,
                     min_similarity=0.25,
+                    # Token-aware: cap retrieved chunks to fit the model's real
+                    # context window (reserve ~40% for prompt + response so the
+                    # agent's own reasoning space isn't crowded out by memory).
+                    max_context_tokens=int(self.resolve_context_window() * 0.6),
                 )
                 if _chunks:
                     chunk_text = "\n---\n".join(_chunks)
@@ -4735,9 +4760,19 @@ Respond with a JSON object:
         # Token budget — spec [1.2]: enforce DER_TOKEN_BUDGETS[task_class]
         # Tokens are estimated from step result length (4 chars ≈ 1 token).
         # Budget is a ceiling; the loop exits early if exceeded.
-        _token_budget: int = DER_TOKEN_BUDGETS.get(
+        # DER budget is derived from the MODEL'S ACTUAL CONTEXT WINDOW, not a
+        # hardcoded per-mode cap. DER exists to execute tasks in alignment with
+        # memory (Pacman filters tokens into the context window that then feeds
+        # coordinate memory.db) — so each model should be allowed to use its full
+        # window for reasoning across steps. The flat DER_TOKEN_BUDGETS values
+        # are kept only as a SAFETY FLOOR (never go below a sane minimum), never
+        # as a ceiling. No upper cap: a 256k model gets ~230k of step budget, a
+        # 32k local model gets ~29k — each uses its real capacity.
+        _model_window = self.resolve_context_window()
+        _floor = DER_TOKEN_BUDGETS.get(
             task_class, DER_TOKEN_BUDGETS.get("full", 50000)
         )
+        _token_budget: int = max(int(_model_window * 0.9), _floor)
         _tokens_used: int = 0
 
         # Build Director queue from ExecutionPlan steps
@@ -5043,18 +5078,14 @@ Respond with a JSON object:
                         f"[DER] Step {item.step_number} VETOED "
                         f"(count={item.veto_count}, reason={feedback})"
                     )
-                    # Emit veto signal to Mycelium
-                    try:
-                        if self._memory_interface:
-                            self._memory_interface.mycelium_ingest_tool_call(
-                                tool_name=item.tool or "unknown",
-                                success=False,
-                                sequence_position=item.step_number,
-                                total_steps=len(queue.items),
-                                session_id=_session,
-                            )
-                    except Exception as _rev_exc:
-                        loud_error(_rev_exc, "reviewer_trajectory_record")
+                    # DER Phase 0 (D0.2): a VETO means the action was NEVER executed.
+                    # Do NOT emit a tool-outcome record (that would be a lie — a
+                    # success=False edge for a tool that never ran). The veto decision is
+                    # logged for audit only; it is not a tool outcome.
+                    logger.debug(
+                        f"[DER] veto audit: step {item.step_number} not executed "
+                        f"(reason={feedback})"
+                    )
 
                     if item.veto_count <= queue.max_veto_per_item:
                         # Keep in queue for Director to reroute next cycle
@@ -5261,10 +5292,18 @@ Respond with a JSON object:
         # ── OUTCOME RECORDING (ordered per spec: clear → stats → episode)
         # NOTE: _store_task_episode internally calls mycelium_record_outcome
         # and mycelium_crystallize_landmark, so we do NOT duplicate them here.
-        had_failures = any("[STEP ERROR" in o for o in step_outputs) or bool(
-            queue.failed_ids
-        )
-        outcome = "failure" if had_failures else "success"
+        # DER Phase 0 (D0.6): coarsen outcome from verified_fraction, not a binary
+        # "[STEP ERROR" substring. hit (>=0.8) / partial (0.3-0.8) / miss (<0.3).
+        _joined = "\n".join(step_outputs)
+        _frac = self._verified_fraction(item.expected_output, _joined) if step_outputs else 0.0
+        if queue.failed_ids:
+            outcome = "failure"
+        elif _frac >= 0.8:
+            outcome = "success"
+        elif _frac >= 0.3:
+            outcome = "partial"
+        else:
+            outcome = "failure"
 
         # ── EventBus: emit task:done / task:fail ────────────────────────
         try:
@@ -5468,7 +5507,7 @@ Respond with a JSON object:
                                     f"{item.description[:80]}]\n{item.result[:500]}",
                             session_id=_session,
                             chunk_type="der_failure",
-                            zone="failure",
+                            zone="der_failure",
                         )
             except Exception:
                 pass
@@ -5938,6 +5977,41 @@ Respond with a JSON object:
         _completed = await asyncio.gather(*tasks)
         return {_sid: (_res, _succ) for _sid, _res, _succ in _completed}
 
+    # ── DER Phase 0: verification (stub-kill + coarsened outcome) ──────────────
+    _STUB_RE = re.compile(r"\[step\s+\d+\s+completed\]", re.IGNORECASE)
+
+    def _verified_fraction(self, expected: Optional[str], result: str) -> float:
+        """DER Phase 0 (D0.6): fraction of checkable assertions from expected_output
+        that the result satisfies. Deterministic, no LLM. Assertions split on ';'."""
+        if not result:
+            return 0.0
+        if not expected:
+            return 0.0 if self._STUB_RE.search(result) else 1.0
+        _assertions = [a.strip() for a in expected.split(";") if a.strip()]
+        if not _assertions:
+            return 0.0 if self._STUB_RE.search(result) else 1.0
+        _satisfied = sum(1 for a in _assertions if a.lower() in result.lower())
+        return _satisfied / len(_assertions)
+
+    def _verify_step_result(
+        self, goal: str, expected: Optional[str], result: str
+    ) -> str:
+        """DER Phase 0 (D0.1): classify a step result.
+        Returns VERIFIED | UNVERIFIED | FAILED.
+        A stub pattern with no real output is ALWAYS FAILED (no silent success)."""
+        if not result:
+            return "FAILED"
+        # Strip the marker; if nothing substantial remains, it was a bare stub -> FAILED.
+        _without_marker = self._STUB_RE.sub("", result).strip()
+        if not _without_marker:
+            return "FAILED"
+        _frac = self._verified_fraction(expected, result)
+        if _frac >= 0.8:
+            return "VERIFIED"
+        if _frac >= 0.3:
+            return "UNVERIFIED"
+        return "FAILED"
+
     # ── Phase 4: shared per-step finalize (extracted from _execute_plan_der)
     def _der_finalize_step(
         self,
@@ -6143,6 +6217,14 @@ Respond with a JSON object:
         # Phase 0 fix (Gap 5): populate step result on the QueueItem so the
         # TrailingDirector's gap analysis reads real output instead of "no result".
         item.result = step_result
+
+        # DER Phase 0 (D0.1): verify the result. A stub pattern with no real output
+        # is FAILED -> step_success forced False so it cannot be marked complete as a
+        # success (no silent success edge). This is the honest-signal fix.
+        _verified = self._verify_step_result(item.description, item.expected_output, step_result)
+        if _verified == "FAILED":
+            step_success = False
+
         queue.mark_complete(item.step_id)
 
         # ── Phase 3 (Gap 3): propagate this step's output into dependent
@@ -6262,7 +6344,7 @@ Respond with a JSON object:
             queue.check_escalation(
                 review_verdict=verdict,
                 tool_result_summary=_result_summary,
-                token_budget_remaining=_tokens_used,
+                token_budget_remaining=_token_budget - _tokens_used,
                 turn_id=_turn_id,
             )
 
