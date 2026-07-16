@@ -295,6 +295,25 @@ class ConversationMemory:
             }
             with open(archive_file, 'w') as f:
                 json.dump(data, f, indent=2)
+            # DER Phase 4 (D4.0): record session exit for the outer loop (AIDE^2).
+            # The outer loop fires on this signal (not the MCM 70% cadence) and
+            # learns U_SPLIT/width/verify-strictness from the ledgers.
+            try:
+                from backend.agent.caducean_trajectory import (
+                    CaduceanTrajectoryRecorder,
+                )
+
+                _domain = getattr(self, "domain", None) or "general"
+                _natural = bool(getattr(self, "natural_exit", False))
+                CaduceanTrajectoryRecorder().record_session_exit(
+                    session_id=self.session_id,
+                    domain=_domain,
+                    natural_exit=_natural,
+                    route_score=float(getattr(self, "route_score", 0.0) or 0.0),
+                    drift=float(getattr(self, "drift", 0.0) or 0.0),
+                )
+            except Exception as _se_exc:
+                logger.debug("[ConversationMemory] record_session_exit failed: %s", _se_exc)
             return True
         except Exception as e:
             logger.error(f"[ConversationMemory] Archive failed: {e}")

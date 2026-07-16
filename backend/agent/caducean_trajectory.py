@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS caducean_trajectories (
     action          INTEGER,
     outcome         TEXT,
     eml_after       REAL,
-    recommendation  INTEGER
+    recommendation  INTEGER,
+    domain          TEXT DEFAULT 'general'
 );
 CREATE INDEX IF NOT EXISTS idx_ct_session ON caducean_trajectories(session_id);
 CREATE INDEX IF NOT EXISTS idx_ct_ts      ON caducean_trajectories(ts);
@@ -70,6 +71,21 @@ CREATE TABLE IF NOT EXISTS der_commits (
     xi          REAL
 );
 CREATE INDEX IF NOT EXISTS idx_dc_session ON der_commits(session_id);
+
+-- DER Phase 4 (D4.0): session-exit ledger. Written by record_session_exit when a
+-- session ends (hooked from ConversationMemory.archive_on_session_end). The outer
+-- loop (AIDE^2) reads this to compute the held-out metric (natural_exit_rate) and
+-- to learn U_SPLIT/width/verify-strictness. Store write — never a prompt inject.
+CREATE TABLE IF NOT EXISTS caducean_session_exits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL,
+    session_id  TEXT,
+    domain      TEXT,
+    natural_exit INTEGER,   -- 1 if the session ended via a natural exit, else 0
+    route_score  REAL,
+    drift        REAL
+);
+CREATE INDEX IF NOT EXISTS idx_se_session ON caducean_session_exits(session_id);
 """
 
 # Idempotent ALTER TABLE for existing DBs that predate the v2 column.
@@ -117,6 +133,7 @@ class CaduceanTrajectoryRecorder:
         outcome: str,
         eml_after: float,
         recommendation: int = 2,  # default CONTINUE
+        domain: str = "general",  # DER Phase 4 (D4.1c): domain tag for outer-loop learning
     ) -> None:
         """Write one transition record. <2ms on WAL-mode SSD.
 
@@ -126,8 +143,8 @@ class CaduceanTrajectoryRecorder:
         try:
             self._conn.execute(
                 "INSERT INTO caducean_trajectories "
-                "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after, recommendation) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after, recommendation, domain) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     time.time(),
                     session_id,
@@ -140,6 +157,7 @@ class CaduceanTrajectoryRecorder:
                     outcome,
                     eml_after,
                     recommendation,
+                    domain,
                 ),
             )
             self._conn.commit()
@@ -180,15 +198,24 @@ class CaduceanTrajectoryRecorder:
             return 0
 
     def get_trajectories(
-        self, min_count: int = 100, session_id: Optional[str] = None
+        self,
+        min_count: int = 100,
+        session_id: Optional[str] = None,
+        domain: Optional[str] = None,  # DER Phase 4 (D4.1c): filter by domain
     ) -> List[Dict[str, Any]]:
-        """Return list of trajectory dicts, optionally filtered by session."""
+        """Return list of trajectory dicts, optionally filtered by session/domain."""
         try:
             if session_id:
                 rows = self._conn.execute(
                     "SELECT * FROM caducean_trajectories WHERE session_id = ? "
                     "ORDER BY ts",
                     (session_id,),
+                ).fetchall()
+            elif domain:
+                rows = self._conn.execute(
+                    "SELECT * FROM caducean_trajectories WHERE domain = ? "
+                    "ORDER BY ts",
+                    (domain,),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
@@ -261,6 +288,67 @@ class CaduceanTrajectoryRecorder:
             self._conn.commit()
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_commit failed: %s", exc)
+
+    def record_session_exit(
+        self,
+        session_id: str,
+        domain: str,
+        natural_exit: bool,
+        route_score: float = 0.0,
+        drift: float = 0.0,
+    ) -> None:
+        """DER Phase 4 (D4.0): write a session-exit ledger entry.
+
+        Called when a session ends (hooked from ConversationMemory.archive_on_
+        session_end). The outer loop reads these to compute the held-out metric
+        (natural_exit_rate) and to learn the physics parameters. Store write —
+        never injected into a prompt.
+        """
+        try:
+            self._conn.execute(
+                """
+                INSERT INTO caducean_session_exits
+                    (ts, session_id, domain, natural_exit, route_score, drift)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (time.time(), session_id, domain,
+                 int(bool(natural_exit)), float(route_score), float(drift)),
+            )
+            self._conn.commit()
+        except Exception as exc:
+            logger.warning("[CaduceanTrajectory] record_session_exit failed: %s", exc)
+
+    def get_session_exits(
+        self, domain: Optional[str] = None, limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """DER Phase 4: read session-exit ledger rows (optionally by domain)."""
+        try:
+            if domain:
+                cur = self._conn.execute(
+                    "SELECT session_id, domain, natural_exit, route_score, drift "
+                    "FROM caducean_session_exits WHERE domain = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (domain, limit),
+                )
+            else:
+                cur = self._conn.execute(
+                    "SELECT session_id, domain, natural_exit, route_score, drift "
+                    "FROM caducean_session_exits ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                )
+            return [
+                {
+                    "session_id": r[0],
+                    "domain": r[1],
+                    "natural_exit": bool(r[2]),
+                    "route_score": r[3],
+                    "drift": r[4],
+                }
+                for r in cur.fetchall()
+            ]
+        except Exception as exc:
+            logger.warning("[CaduceanTrajectory] get_session_exits failed: %s", exc)
+            return []
 
 
 def get_trajectory_recorder(memory_interface: Any) -> CaduceanTrajectoryRecorder:
