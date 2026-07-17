@@ -93,11 +93,13 @@ def test_funnel_order_and_events(events, emitter):
     assert result.credibility_map is not None
     assert result.credibility_map.per_source, "per-source credibility computed"
 
-    # event sequence parity (REQ-10..13)
+    # event sequence parity (REQ-10..13, REQ-29/30)
     ev_types = [e[0] for e in events]
     assert ev_types[0] == "CRAWLER_STARTED"
     assert ev_types.count("CRAWLER_PAGE_FETCHED") == 2
-    assert ev_types[-1] == "OPEN_TAB"
+    # OPEN_TAB precedes the terminal CRAWLER_COMPLETE signal (REQ-29/30).
+    assert "OPEN_TAB" in ev_types
+    assert ev_types[-1] == "CRAWLER_COMPLETE"
     # full URL present (REQ-11)
     pf = [p for e, p in events if e == "CRAWLER_PAGE_FETCHED"]
     assert pf[0]["url"].startswith("https://")

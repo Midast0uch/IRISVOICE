@@ -31,6 +31,7 @@ from typing import Callable, Literal, Optional
 
 from .crawler_engine import CrawlResult, PageData
 from .crawl_planner import CrawlPlan, get_crawl_planner
+from .event_log import get_event_log
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ class CrawlOrchestrator:
     ) -> CrawlResult:
         """Run the full funnel. Never raises for crawl failures (REQ-17 AC1)."""
         t_start = time.monotonic()
-        _emit = self._make_emitter(on_progress)
+        _emit = self._make_emitter(on_progress, session_id)
 
         # 1) PLAN (REQ-2)
         plan: CrawlPlan = await self._plan(query)
@@ -205,6 +206,14 @@ class CrawlOrchestrator:
             "tab_type": "dashboard", "id": session_id or query,
             "title": plan.title, "data": dashboard_data,
         })
+        # REQ-29/30: signal completion so a reconnecting client (SSE/WS) knows
+        # the job finished and can fetch the result without re-crawling.
+        _emit("CRAWLER_COMPLETE", {
+            "query": query,
+            "summary": dashboard_data.get("summary", ""),
+            "cited_markdown": cited_markdown,
+            "credibility_top_score": cred_map.top_score,
+        })
         return result
 
     # -- helpers ----------------------------------------------------------
@@ -233,10 +242,22 @@ class CrawlOrchestrator:
                 ))
         return passages
 
-    def _make_emitter(self, on_progress):
-        if on_progress is None:
-            return lambda event, payload: None
-        return lambda event, payload: _safe(on_progress, CrawlProgress(event, payload))
+    def _make_emitter(self, on_progress, session_id: str = ""):
+        # REQ-31: every progress event is also appended to the resilient
+        # server-side event log so a disconnecting/reconnecting client can
+        # replay missed events (partial replay, not full re-crawl).
+        log = get_event_log() if session_id else None
+
+        def _emit(event: str, payload: dict) -> None:
+            if log is not None:
+                try:
+                    asyncio.ensure_future(log.append(session_id, event, payload))
+                except Exception:  # noqa: BLE001
+                    pass  # never block the funnel on a log write failure
+            if on_progress is not None:
+                _safe(on_progress, CrawlProgress(event, payload))
+
+        return _emit
 
     def _page_emitter(self, emit):
         def _cb(url, page_number, total):

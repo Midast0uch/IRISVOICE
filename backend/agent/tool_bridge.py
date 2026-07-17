@@ -1518,7 +1518,9 @@ class AgentToolBridge:
 
         return {"success": False, "error": f"Unknown action: {action}"}
 
-    async def _execute_crawler_query(self, params: Dict, session_id: str) -> Dict:
+    async def _execute_crawler_query(
+        self, params: Dict, session_id: str, background: bool = False
+    ) -> Dict:
         """Agent tool: deep web research crawl (plan -> crawl -> extract).
 
         Distinct from the lightweight ``search`` tool: this plans source URLs
@@ -1533,10 +1535,25 @@ class AgentToolBridge:
         via TTS) hears "Researching — fetched page N of M" as pages come in.
         The final summary is spoken by the agent's own ``speak`` tool after this
         returns.
+
+        ``background`` (REQ-29): when True the crawl runs to completion and the
+        result is stored in the JobRegistry keyed by job_id; the client can
+        fetch it via GET /api/crawl/result/{job_id} after reconnecting, instead
+        of re-running the crawl. The returned dict carries ``job_id``.
         """
         query = (params.get("query") or "").strip()
         if not query:
             return {"success": False, "error": "crawler_query requires a 'query'"}
+
+        # REQ-29: register a background job so the result survives disconnects.
+        job_id = f"crawl_{session_id}_{abs(hash(query)) % 10**8}"
+        _registry = None
+        try:
+            from backend.crawler.job_registry import get_job_registry
+            _registry = get_job_registry()
+            await _registry.register(job_id, session_id, query)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[crawler_query] job registry unavailable: %s", exc)
 
         try:
             from backend.crawler.orchestrator import get_crawl_orchestrator, CrawlProgress
@@ -1606,11 +1623,13 @@ class AgentToolBridge:
             )
         except Exception as exc:
             logger.error("[crawler_query] research failed: %s", exc)
+            if _registry is not None:
+                await _registry.fail(job_id, f"research failed: {exc}")
             try:
                 _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
             except Exception:
                 pass
-            return {"success": False, "error": f"research failed: {exc}"}
+            return {"success": False, "error": f"research failed: {exc}", "job_id": job_id}
 
         # Return phase to "thinking" so the orb reflects the agent summarising.
         try:
@@ -1620,7 +1639,9 @@ class AgentToolBridge:
 
         if result.error:
             logger.error("[crawler_query] crawl failed: %s", result.error)
-            return {"success": False, "error": result.error}
+            if _registry is not None:
+                await _registry.fail(job_id, result.error)
+            return {"success": False, "error": result.error, "job_id": job_id}
 
         crawl_result = result
         dashboard_data = result.dashboard_data or {}
@@ -1649,6 +1670,21 @@ class AgentToolBridge:
         if len(_combined) > _CONTENT_CAP:
             _combined = _combined[:_CONTENT_CAP] + "\n\n[...truncated...]"
 
+        # REQ-29: store the completed result in the registry so a reconnecting
+        # client can fetch it via GET /api/crawl/result/{job_id} (background).
+        if _registry is not None:
+            await _registry.complete(job_id, {
+                "query": query,
+                "title": dashboard_data.get("title", query),
+                "summary": dashboard_data.get("summary", ""),
+                "content": _combined,
+                "pages": pages,
+                "links": [pg["url"] for pg in pages if pg.get("url")],
+                "cited_markdown": result.cited_markdown,
+                "credibility_map": getattr(crawl_result, "credibility_map", None),
+                "citation_index": getattr(crawl_result, "citation_index", None),
+            })
+
         return {
             "success": True,
             "query": query,
@@ -1658,6 +1694,7 @@ class AgentToolBridge:
             "pages": pages,
             "links": [pg["url"] for pg in pages if pg.get("url")],
             "trust": "untrusted",  # external tool result — route to reference zone
+            "job_id": job_id,  # REQ-29: client can fetch result after reconnect
             # REQ-22: untrusted web scoring forwarded to pacman for persistence
             # in the 'reference' zone (credibility_map + citation_index).
             "credibility_map": getattr(crawl_result, "credibility_map", None),

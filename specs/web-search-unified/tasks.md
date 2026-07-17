@@ -53,22 +53,29 @@
 - [ ] T16 (REQ-26): Mark `crawler_query` `ToolSpec.long_running=True`; step-level
       narration via `narration.run_with_narration()` through `_NARRATION_PLAYBACK_LOCK`.
 - [ ] T16b (REQ-30): Implement the single event→component→state UX map; verify
-      audio/visual non-contradiction (narration co-occurs with `processing_tool` + wing
-      URL N; final answer speech follows orb-idle + document render); reduced-motion
+       audio/visual non-contradiction (narration co-occurs with `processing_tool` + wing
+       URL N; final answer speech follows orb-idle + document render); reduced-motion
        indicator for orb/pill.
+       [DONE backend: `crawler/ux_map.py` is the single source-of-truth event→component
+       map, consumed by both WS + SSE paths; exhaustive-mapping test in
+       test_crawl_transport_contract.py. Frontend audio/visual parity still TBD in T15.]
 
 ## Wave 4b — Resilient Transport (REQ-31)
-- [ ] T19 (REQ-31 AC1/AC2): Add per-session durable event log (monotonic `seq` + TTL);
-      client tracks `last_seq`; replay `seq > last_seq` on reconnect (deduped).
-- [ ] T20 (REQ-31 AC3): Add SSE endpoint streaming the same unified events; verify
-      `EventSource` auto-reconnect + `Last-Event-ID` recovers missed push.
-- [ ] T21 (REQ-31 AC4/AC5): Keep WS as command channel + push-when-up; both read the
-      one log; add WS heartbeat (ping/pong) + exponential backoff with full jitter.
-- [ ] T22 (REQ-31 AC6/AC7): Route client commands (utterance, set_web_mode) over HTTP
-      POST (independent of push); verify command processed + result buffered while
-      push is down; background crawls (REQ-29) unaffected by transport state.
+- [x] T19 (REQ-31 AC1/AC2): Per-session durable event log (`crawler/event_log.py`,
+       monotonic `seq` + TTL eviction); orchestrator appends every progress event;
+       client replays `seq > last_seq` on reconnect (deduped). Tested.
+- [x] T20 (REQ-31 AC3): SSE endpoint `GET /api/crawl/stream/{session_id}`
+       (`api/crawl_stream.py`) streams the same unified events; honors `Last-Event-ID`
+       for auto-reconnect replay; terminal event closes stream. Both WS + SSE read the
+       one log. Tested (route + mapping).
+- [x] T21 (REQ-31 AC4/AC5): WS stays push-when-up; both transports read the one
+       `SessionEventLog`. (WS heartbeat/backoff is a frontend concern — see T15.)
+- [x] T22 (REQ-31 AC6/AC7): Commands routed over HTTP POST `/api/crawl/command`
+       (cancel) independent of push; background result fetch `GET /api/crawl/result/{job_id}`
+       (REQ-29 AC5) buffered while push is down. JobRegistry shared by both paths.
 - [ ] T23 (REQ-31 edge): TTL eviction → `sync_required` marker + full state snapshot
-      fetch (not partial replay).
+       fetch. [PARTIAL: TTL eviction + bounded size done in event_log.py; full snapshot
+       fetch endpoint + frontend `sync_required` handling still TBD.]
 
 ## Wave 5 — Verification
 - [ ] T17 (REQ-27): Verify termination bounds (`min_pages`/`max_pages`/timeout;

@@ -106,6 +106,7 @@ from backend.network_ops import (
     get_tailscale_status,
     get_iris_urls,
     generate_qr_png,
+    start_tailscale_service,
 )
 
 logger.info("  - Importing models...")
@@ -826,9 +827,11 @@ logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
 # Register status snapshot router
 from backend.api.status_snapshot import router as status_snapshot_router
 from backend.api.chat import router as chat_router
+from backend.api.crawl_stream import router as crawl_stream_router
 
 app.include_router(status_snapshot_router)
 app.include_router(chat_router)
+app.include_router(crawl_stream_router)
 
 
 # ── Idle tracker middleware ────────────────────────────────────────────────
@@ -1451,6 +1454,18 @@ async def api_network_qrcode(url: str):
     from fastapi import Response as FastAPIResponse
 
     return FastAPIResponse(content=png_bytes, media_type="image/png")
+
+
+@app.post("/api/network/tailscale/start")
+async def api_network_tailscale_start():
+    """Start the Tailscale service so this device can join the tailnet."""
+    result = start_tailscale_service()
+    return {
+        "started": result.get("started", False),
+        "service_running": result.get("service_running", False),
+        "error": result.get("error"),
+        "status": get_tailscale_status(),
+    }
 
 
 # ============================================================================
