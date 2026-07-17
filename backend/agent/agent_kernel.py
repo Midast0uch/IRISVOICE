@@ -4916,14 +4916,16 @@ Respond with a JSON object:
                 ws = get_websocket_manager()
                 if ws is None:
                     return True  # no WS manager → non-WS path, keep running
-                # ── Immortus threads are conversation IDs for DB storage ──────
+                # ── Conversation / thread IDs used as kernel sessions ──────────
                 # The WS handler (iris_gateway.py:4450) passes the WS client ID
-                # as session_id and the Immortus thread as conversation_id, so
-                # Immortus thread IDs never appear as the kernel session there.
-                # The REST handler (chat.py:305) uses the Immortus thread ID as
-                # the kernel session_id — these sessions have no WS client and
+                # as session_id and the conversation/thread ID as conversation_id,
+                # so thread IDs never appear as the kernel session there.
+                # The REST handler (chat.py:305) uses the thread/conversation ID
+                # as the kernel session_id — these sessions have no WS client and
                 # must keep running (their output is returned synchronously).
-                if isinstance(_session, str) and _session.startswith("immortus:"):
+                if isinstance(_session, str) and (
+                    _session.startswith("immortus:") or _session.startswith("conv_")
+                ):
                     return True
                 return len(ws.get_clients_for_session(_session)) > 0
             except Exception:

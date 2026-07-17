@@ -372,6 +372,22 @@ async def chat(request: ChatRequest) -> ChatResponse:
     if content:
         _ = asyncio.create_task(_fire_tts_background(content, thread_id))
 
+    # ── 8. Notify frontend task is done via WS (if connected) ────────────
+    # The REST path completes synchronously, so the frontend's task progress
+    # hook never receives the task:done WS event that WS path sends.  Emit it
+    # here to clear the "working" flag and enable the textarea for follow-ups.
+    try:
+        from backend.ws_manager import get_websocket_manager
+
+        _ws_mgr = get_websocket_manager()
+        if _ws_mgr:
+            await _ws_mgr.broadcast_to_session(
+                "iris",
+                {"type": "task:done", "payload": {"outcome": "success", "thread_id": thread_id}},
+            )
+    except Exception:
+        _lg.getLogger("irisvoice").info("[ChatREST] Could not emit task:done via WS")
+
     return ChatResponse(
         content=content,
         thinking=thinking,
