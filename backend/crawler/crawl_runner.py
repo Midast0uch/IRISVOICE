@@ -36,7 +36,27 @@ _DEFAULT_TIMEOUT_S = float(os.environ.get("CRAWL_SUBPROCESS_TIMEOUT_S", "90"))
 # Concurrency cap (REQ-17 AC3): parallel DER Sub-Loop children must not OOM the
 # host. Bound simultaneous crawl subprocesses. Override via env for testing.
 _MAX_CONCURRENT_CRAWLS = int(os.environ.get("CRAWL_MAX_CONCURRENT", "2"))
-_crawl_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CRAWLS)
+
+# Per-event-loop semaphore (REQ-17 AC3). A module-level asyncio.Semaphore is
+# bound to the loop that exists at import time; under asyncio.run() (fresh loop
+# per call) that binding is stale and raises "bound to a different event loop".
+# Lazily create one semaphore per running loop instead.
+_crawl_semaphores: dict = {}
+
+
+def _get_crawl_semaphore() -> asyncio.Semaphore:
+    # Use get_running_loop() (the loop actually driving the coroutine) and bind
+    # the semaphore to it explicitly. asyncio.Semaphore() with no loop arg can
+    # bind to a different loop object than get_event_loop() returns, which would
+    # defeat per-loop sharing. Key the cache by the running loop's id.
+    loop = asyncio.get_running_loop()
+    key = id(loop)
+    sem = _crawl_semaphores.get(key)
+    if sem is None:
+        # Created inside the running loop, so it binds to `loop` automatically.
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_CRAWLS)
+        _crawl_semaphores[key] = sem
+    return sem
 
 # On Windows, spawn the worker in its own process group so we can tear down the
 # ENTIRE tree (Chromium renderer/GPU children) on timeout/crash — a bare
@@ -147,7 +167,7 @@ async def run_crawl_subprocess(
     error_msg: Optional[str] = None
     # Concurrency cap (REQ-17 AC3): block until a crawl slot is free so parallel
     # DER Sub-Loop children cannot exhaust host memory.
-    async with _crawl_semaphore:
+    async with _get_crawl_semaphore():
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,

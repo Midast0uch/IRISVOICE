@@ -19,7 +19,10 @@ from .memory import ConversationMemory, TaskRecord
 from .model_router import ModelRouter
 from .tool_bridge import AgentToolBridge
 from .mcm_protocol.actions.pacman_fragment import is_external_tool
-from ..llm_service import llm as _llm
+try:
+    from backend.llm_service import llm as _llm
+except ImportError:  # top-level import (tests run with backend/ on sys.path)
+    from llm_service import llm as _llm
 from . import streaming as _streaming
 from backend.agent.inference.router import InferenceRouter
 from backend.iris_config import load_config

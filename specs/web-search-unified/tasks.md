@@ -80,14 +80,16 @@
        (test_crawl_transport_contract.py: sync_required + snapshot).
 
 ## Wave 5 — Verification
-- [ ] T17 (REQ-27): Verify termination bounds (`min_pages`/`max_pages`/timeout;
-      `DER_MAX_CYCLES=40`; `work_units` cap) — no infinite loop.
-- [ ] T17b (REQ-29): Verify background completion — WS disconnect mid-crawl: agent
-      path continues + persists (AC1); WS `crawl_research` mid-crawl disconnect is
-      HANDED TO the shared Job Registry and NEVER cancelled (AC2); ONE shared job
-      registry for both paths (AC5); result replays on reconnect (AC3); new user
-      utterance accepted + processed while crawl runs, orb reflects new state (AC4).
-- [ ] T18 (REQ-28): Implement the 4-tier verification suite:
+- [x] T17 (REQ-27): Verify termination bounds (`min_pages`/`max_pages`/timeout;
+       `DER_MAX_CYCLES=40`; `work_units` cap) — no infinite loop.
+       (tests/integration/test_crawl_integration.py: termination + timeout tests PASS)
+- [x] T17b (REQ-29): Verify background completion — WS disconnect mid-crawl: agent
+       path continues + persists (AC1); WS `crawl_research` mid-crawl disconnect is
+       HANDED TO the shared Job Registry and NEVER cancelled (AC2); ONE shared job
+       registry for both paths (AC5); result replays on reconnect (AC3); new user
+       utterance accepted + processed while crawl runs, orb reflects new state (AC4).
+       (tests/integration: background completion + command-over-HTTP + JobRegistry PASS)
+- [x] T18 (REQ-28): Implement the 4-tier verification suite:
       - Tier 1 Unit: funnel order, CredibilityScorer monotonicity, rerank threshold,
         cite completeness, FetchBackend swap, heartbeat/backoff (mock collaborators).
       - Tier 2 Contract: event-stream parity WS vs agent; DER tool `|u|`-band consume;
