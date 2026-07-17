@@ -1958,7 +1958,7 @@ class AgentKernel:
         # crawler_query; when OFF, those are omitted. The agent decides when to
         # use them via the ReAct loop below. See plan Issue E.
         import json as _json
-        _tools = self._get_openai_tools()
+        _tools = self._get_openai_tools(text)
 
         # Local dispatch wrapper — routes to the correct backend provider and
         # returns (response_text, thinking_text, tool_calls).
@@ -2596,11 +2596,16 @@ class AgentKernel:
 
     # ── Tool definitions for OpenAI-compatible function calling ─────────────
 
-    def _get_openai_tools(self) -> List[Dict]:
+    def _get_openai_tools(self, text: str = "") -> List[Dict]:
         """Convert tool_bridge tool list to OpenAI-compatible function-calling format.
 
+        When `text` is provided, web search / crawler tools are included only
+        if the text explicitly asks for a web search. This prevents the model
+        from calling web tools unnecessarily for simple conversational prompts
+        even when the web toggle is ON.
+
         Each entry becomes:
-          {"type": "function", "function": {"name": …, "description": …, "parameters": {…}}}
+          {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
         """
         if not self._tool_bridge:
             # Lazy-initialize the tool bridge on first access.
@@ -2649,6 +2654,17 @@ class AgentKernel:
                     },
                 }
             )
+        # ── Filter web tools when not explicitly requested ──────────────
+        # Even when the web toggle is ON, exclude search/crawler tools
+        # unless the user's text explicitly asks for a web search.
+        # The model otherwise calls web_search unnecessarily for simple
+        # conversational prompts.
+        if text and not self._is_web_search_request(text):
+            openai_tools = [
+                t
+                for t in openai_tools
+                if t.get("function", {}).get("name") not in ("search", "crawler_query")
+            ]
         return openai_tools
 
     # ── ReAct agentic loop ───────────────────────────────────────────────────
