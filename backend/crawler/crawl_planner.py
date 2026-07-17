@@ -29,6 +29,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Lazy-imported: SourceRegistry, SearchProvider, get_search_provider
+
 _MAX_PAGES = int(os.environ.get("CRAWL4AI_MAX_PAGES", "5"))
 
 
@@ -65,19 +67,52 @@ class CrawlPlanner:
     """Generates a CrawlPlan for a user query via LLM."""
 
     async def plan(self, query: str) -> CrawlPlan:
+        """Plan a crawl, using cached sources from the SourceRegistry when possible.
+
+        1. Check SourceRegistry first — if known URLs exist with sufficient
+           coverage, return a CrawlPlan from cache (skip LLM).
+        2. On MISS, call the LLM to generate URLs.
+        3. Learn from the result so the next similar query hits the cache.
         """
-        Call the agent kernel to plan the crawl.
-        Returns a CrawlPlan (falls back to a minimal plan on error).
-        """
+        # ── Step 1: SourceRegistry check ───────────────────────────────
+        from backend.crawler.source_registry import get_source_registry
+
+        registry = get_source_registry()
+        res = await registry.resolve(query)
+
+        if res["hit"]:
+            urls = [s["url"] for s in res["sources"]]
+            logger.info(
+                "[CrawlPlanner] cache HIT for %r — %d URL(s) from registry",
+                query[:60], len(urls),
+            )
+            return CrawlPlan(
+                urls=urls[:_MAX_PAGES],
+                instructions="Extract all relevant information from the provided pages.",
+                result_type="mixed",
+                title=query[:60],
+            )
+
+        # ── Step 2: MISS — call LLM for URL generation ─────────────────
         prompt = _PLAN_PROMPT.format(today=date.today().isoformat(), query=query)
+        plan: CrawlPlan
         try:
             raw = await asyncio.get_event_loop().run_in_executor(
                 None, self._call_llm, prompt
             )
-            return self._parse(raw, query)
+            plan = self._parse(raw, query)
         except Exception as exc:
             logger.warning("[CrawlPlanner] LLM call failed: %s — using fallback plan", exc)
-            return self._fallback_plan(query)
+            plan = self._fallback_plan(query)
+
+        # ── Step 3: Learn from the LLM result (if any) ─────────────────
+        if plan.urls:
+            from backend.crawler.search_providers.base import SearchResult, SearchResultItem
+
+            items = [SearchResultItem(url=u) for u in plan.urls]
+            await registry.learn(query, SearchResult(query=query, results=items, provider="llm"))
+
+        return plan
 
     def _call_llm(self, prompt: str) -> str:
         from backend.agent import get_agent_kernel  # lazy import
@@ -109,22 +144,24 @@ class CrawlPlanner:
             return self._fallback_plan(query)
 
     def _fallback_plan(self, query: str) -> CrawlPlan:
-        """Minimal safe fallback when LLM planning fails.
+        """Fallback when LLM planning fails.
 
-        Crawl DuckDuckGo lite (a parseable results page) rather than the raw
-        ``/html/?q=`` search page, so DataExtractor can pull real result cards
-        (titles + snippets + URLs) instead of the user's literal query being
-        shown back in the browser tab.
+        No search engine is used (DuckDuckGo was removed — see REQ-32 follow-up:
+        the project uses LLM-generated URLs as the sole source so web search stays
+        free and key-less). When the LLM cannot produce URLs we return an empty
+        plan; the orchestrator then emits CRAWLER_ERROR "no candidate urls" rather
+        than silently querying a search engine the user opted out of.
         """
-        encoded = query.replace(" ", "+")
+        logger.warning(
+            "[CrawlPlanner] LLM planning produced no URLs for %r; "
+            "no search-engine fallback (DuckDuckGo removed). Crawl will report "
+            "'no candidate urls'.", query
+        )
         return CrawlPlan(
-            urls=[f"https://lite.duckduckgo.com/lite/?q={encoded}"],
-            instructions=(
-                f"Extract the top web search results for: {query}. "
-                "For each result capture title, url, and a short snippet."
-            ),
-            result_type="cards",
-            title=f"Web results: {query[:48]}",
+            urls=[],
+            instructions="Extract all relevant information.",
+            result_type="mixed",
+            title=query[:48],
         )
 
 

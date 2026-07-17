@@ -374,16 +374,15 @@ class AgentToolBridge:
                 "server": "internal",
             },
 
-            # AutoResearch — general-purpose improvement loop
+            # AutoResearch — general-purpose self-improvement loop (no web access)
             {
-                "name": "run_research",
+                "name": "improve_self",
                 "description": (
-                    "Run the AutoResearch improvement loop on anything — skills, behaviours, explanations, "
-                    "processes, response styles, or any topic you want to get better at. "
-                    "Use action='run_now' with topic+content to immediately research and improve any text or concept. "
-                    "Use action='start' to begin the background timer loop (auto-picks the lowest-confidence stored item each cycle), "
-                    "action='stop' to halt it, or action='status' to see recent results. "
-                    "Examples: improve how IRIS handles Python debugging, improve a response template, improve a workflow."
+                    "SELF-IMPROVEMENT ONLY — does NOT browse the web. Runs the AutoResearch loop to improve "
+                    "skills, behaviours, explanations, processes, or response styles using locally stored "
+                    "benchmark prompts. Use action='run_now' with topic+content to improve a text/concept, "
+                    "action='start' for the background timer loop, action='stop' to halt it, or "
+                    "action='status' for recent results. For web research use 'crawler_query'."
                 ),
                 "parameters": {
                     "action": {"type": "string", "enum": ["run_now", "start", "stop", "status"], "description": "What to do"},
@@ -1142,7 +1141,7 @@ class AgentToolBridge:
                     ) or []
                 return {"success": True, "results": results}
 
-            if tool_name == "run_research":
+            if tool_name == "improve_self":
                 result = await self._execute_research_tool(params, session_id)
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
                 return result
@@ -1454,7 +1453,7 @@ class AgentToolBridge:
             return {"success": False, "error": str(e)}
 
     async def _execute_research_tool(self, params: Dict, session_id: str) -> Dict:
-        """Handle the run_research agent tool — delegates to AutoResearchRunner."""
+        """Handle the improve_self agent tool — delegates to AutoResearchRunner."""
         action = params.get("action", "status")
         try:
             from backend.agent.auto_research import get_auto_research_runner
@@ -1685,6 +1684,23 @@ class AgentToolBridge:
                 "citation_index": getattr(crawl_result, "citation_index", None),
             })
 
+        # REQ-13: feed crawl results into the SourceRegistry so the system
+        # learns which URLs are credible for which topics. Runs best-effort.
+        try:
+            from backend.crawler.source_registry import get_source_registry
+            from backend.crawler.search_providers.base import SearchResult, SearchResultItem
+
+            _urls = [pg["url"] for pg in pages if pg.get("url")]
+            if _urls:
+                _items = [SearchResultItem(url=u) for u in _urls]
+                await get_source_registry().learn(
+                    query,
+                    SearchResult(query=query, results=_items, provider="exa"),
+                    getattr(crawl_result, "credibility_map", None),
+                )
+        except Exception as _learn_exc:
+            logger.debug("[crawler_query] registry learn skipped: %s", _learn_exc)
+
         return {
             "success": True,
             "query": query,
@@ -1716,35 +1732,30 @@ class AgentToolBridge:
             return {"success": False, "error": "search requires a 'query'"}
 
         try:
-            from backend.crawler.crawler_engine import CrawlerEngine, CrawlerUnavailable
+            from backend.crawler.orchestrator import CrawlOrchestrator
         except Exception as exc:
             return {"success": False, "error": f"crawler modules unavailable: {exc}"}
 
-        # DuckDuckGo HTML is server-rendered and robots-allowed (Google's /search
-        # is blocked by robots.txt and JS-rendered, yielding empty results).
-        import urllib.parse
-        search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
         try:
-            async with CrawlerEngine() as engine:
-                crawl_result = await asyncio.wait_for(
-                    engine.crawl(
-                        query=query,
-                        urls=[search_url],
-                        instructions=(
-                            "Extract the most relevant answer and key facts from the "
-                            "search results page. Prefer concise factual snippets."
-                        ),
-                    ),
-                    timeout=30.0,
-                )
-        except asyncio.TimeoutError:
-            logger.warning("[web_search] crawl timed out after 30s (query=%r)", query)
-            return {"success": False, "error": "search timed out"}
-        except CrawlerUnavailable as exc:
-            return {"success": False, "error": str(exc)}
+            # Route through CrawlOrchestrator — the SAME Crawl4AI subprocess path
+            # crawler_query uses. It plans URLs via the LLM (Cerebras); NO search
+            # engine / DuckDuckGo is involved (see crawl_planner._fallback_plan).
+            # The crawl runs in a killable subprocess so a stalled fetch cannot
+            # block the event loop (spec REQ-17 + DER _split_step). session_id tags
+            # the crawl + its memory per-thread (REQ-32).
+            orch = CrawlOrchestrator()
+            crawl_result = await orch.research(
+                query=query,
+                mode="agent",
+                session_id=session_id,
+            )
         except Exception as exc:
             logger.error("[web_search] crawl failed: %s", exc)
             return {"success": False, "error": f"search failed: {exc}"}
+
+        if getattr(crawl_result, "error", None):
+            logger.warning("[web_search] crawl error (query=%r): %s", query, crawl_result.error)
+            return {"success": False, "error": crawl_result.error}
 
         # Rebuild markdown content from the crawled page(s).
         _CONTENT_CAP = 8_000
@@ -1759,11 +1770,14 @@ class AgentToolBridge:
         if len(_combined) > _CONTENT_CAP:
             _combined = _combined[:_CONTENT_CAP] + "\n\n[...truncated...]"
 
+        _sources = [getattr(_p, "url", "") for _p in getattr(crawl_result, "pages", []) if getattr(_p, "url", "")]
+
         return {
             "success": True,
             "query": query,
             "content": _combined,
-            "url": search_url,
+            "url": _sources[0] if _sources else "",
+            "sources": _sources,
             "trust": "untrusted",  # external tool result — route to reference zone
         }
 
