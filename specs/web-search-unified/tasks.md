@@ -17,27 +17,25 @@
       `chunk_id`→URL bindings; flag unsourced claims `[?]`.
 
 ## Wave 2 — Entry Point Refactors
-- [ ] T5 (REQ-15, REQ-10, REQ-11, REQ-12, REQ-13): Refactor `iris_gateway.py:8685`
+- [x] T5 (REQ-15, REQ-10, REQ-11, REQ-12, REQ-13): Refactor `iris_gateway.py:8685`
       `crawl_research` to call `CrawlOrchestrator.research(mode="ws")` with an
       `on_progress` that emits the unified event set.
-- [ ] T6 (REQ-16, REQ-10, REQ-11, REQ-12): Refactor `tool_bridge.py:_execute_crawler_query`
+- [x] T6 (REQ-16, REQ-10, REQ-11, REQ-12): Refactor `tool_bridge.py:_execute_crawler_query`
       to call `CrawlOrchestrator.research(mode="agent")` and emit `crawler_started` /
       `crawler_page_fetched` / `open_tab` (previously WS-only).
 
 ## Wave 3 — DER Integration + Memory
-- [ ] T7 (REQ-19): Confirm `crawler_query` is a single atomic tool; update
-      `explorer.propose()` web fallback to `_is_web_intent(goal)` (no mode switch).
-- [ ] T8 (REQ-20, REQ-21): Verify `_split_step` / `_growth_width` drive web fan-out
-      via `u/ξ`; confirm `_verify_step_result` `|u|`-band path handles web steps
-      (no separate web verifier); VETO routes to `_split_step`.
-- [ ] T9 (REQ-17): Add subprocess crash/timeout handling → `CrawlResult.error` set,
-      never raise; per-batch timeout KILLS the process TREE (job object / pgid) so
-      orphaned Chromium children are reaped; add concurrency cap (default 2) so
-      parallel DER Sub-Loop children cannot OOM the host.
-- [ ] T10 (REQ-18): Confirm web-gate fail-closed (`_internet_provider` default False);
-      agent returns `success:False` "web access disabled" when gate closed.
-- [ ] T11 (REQ-22): Persist `credibility_map` + `citation_index` on pacman
-      `reference` (untrusted) fragment via `_capture_tool_result`.
+- [x] T7 (REQ-19): Confirmed `crawler_query` is a single atomic tool; `explorer.propose()`
+      web fallback uses `_is_web_intent(goal)` (no mode switch). No code change needed.
+- [x] T8 (REQ-20, REQ-21): Verified no separate web verifier; DER treats `crawler_query`
+      generically (physics-driven fan-out via u/ξ). No code change needed.
+- [x] T9 (REQ-17): Subprocess crash/timeout → `CrawlResult.error` set, never raise;
+      per-batch timeout KILLS the process TREE (taskkill /T /F / pgid) so orphaned
+      Chromium children are reaped; concurrency cap (default 2) added. Tested.
+- [x] T10 (REQ-18): Confirmed web-gate fail-closed (`_internet_provider` default False);
+      agent returns `success:False` "web access disabled" when gate closed. No change needed.
+- [x] T11 (REQ-22): Persist `credibility_map` + `citation_index` on pacman `reference`
+      (untrusted) fragment. Wired via post_turn → pacman_fragment.execute. Tested.
 
 ## Wave 4 — Frontend Feedback
 - [ ] T12 (REQ-14): Remove `task:progress` "Reading host (N/M)" overwrite in
