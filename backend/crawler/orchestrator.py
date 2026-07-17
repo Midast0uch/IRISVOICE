@@ -199,6 +199,8 @@ class CrawlOrchestrator:
         result.dashboard_data = dashboard_data
         result.cited_markdown = cited_markdown
         result.credibility_map = cred_map
+        # REQ-22: chunk_id -> url provenance map for pacman persistence.
+        result.citation_index = {p.chunk_id: p.url for p in passages if p.chunk_id}
         _emit("OPEN_TAB", {
             "tab_type": "dashboard", "id": session_id or query,
             "title": plan.title, "data": dashboard_data,

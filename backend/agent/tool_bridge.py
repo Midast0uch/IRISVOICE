@@ -1652,12 +1652,16 @@ class AgentToolBridge:
         return {
             "success": True,
             "query": query,
-            "title": dashboard_data.get("title", plan.title),
+            "title": dashboard_data.get("title", query),
             "summary": dashboard_data.get("summary", ""),
             "content": _combined,
             "pages": pages,
             "links": [pg["url"] for pg in pages if pg.get("url")],
             "trust": "untrusted",  # external tool result — route to reference zone
+            # REQ-22: untrusted web scoring forwarded to pacman for persistence
+            # in the 'reference' zone (credibility_map + citation_index).
+            "credibility_map": getattr(crawl_result, "credibility_map", None),
+            "citation_index": getattr(crawl_result, "citation_index", None),
         }
 
     async def _execute_web_search(self, params: Dict, session_id: str) -> Dict:

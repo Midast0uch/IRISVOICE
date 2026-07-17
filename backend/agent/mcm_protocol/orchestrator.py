@@ -68,6 +68,8 @@ class MCMOrchestrator:
         response_text: str = "",
         tool_name: str = "",
         zone: Optional[str] = None,
+        credibility_map: object = None,
+        citation_index: object = None,
     ) -> bool:
         """
         Run post_turn_flow workflow.
@@ -77,12 +79,18 @@ class MCMOrchestrator:
         touched external/web sources the caller passes 'reference' so the
         downstream pacman_fragment action stores the fragment outside the
         trusted zone. Ignored when None.
+
+        ``credibility_map`` / ``citation_index`` (REQ-22) are forwarded to the
+        pacman_fragment action so untrusted web scoring is persisted in the
+        'reference' zone alongside the content. Ignored when None.
         """
         ctx = self._make_ctx(
             messages=messages,
             response_text=response_text,
             tool_name=tool_name,
             zone=zone,
+            credibility_map=credibility_map,
+            citation_index=citation_index,
         )
         result = self.run_workflow("post_turn_flow", ctx)
         # Propagate compressed messages back to caller's list

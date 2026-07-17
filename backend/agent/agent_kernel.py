@@ -1290,7 +1290,19 @@ class AgentKernel:
             "The `speak` field is what the user HEARS via TTS — keep it brief "
             "and natural (1-3 sentences). The `show` field is what renders "
             "visually — put the detail there. For short conversational replies, "
-            "respond with plain text (no JSON)."
+            "respond with plain text (no JSON).\n"
+            "\n"
+            "[WEB SEARCH RESULTS]\n"
+            "When you present web-search / web-crawl results, you MUST render them "
+            "via a `show` payload and CHOOSE the best format yourself:\n"
+            "  - prose / articles / summaries -> 'markdown'\n"
+            "  - data, comparisons, stats -> 'table'\n"
+            "  - flows, architectures, relationships -> 'diagram'\n"
+            "  - raw web page content -> 'html' (untrusted, sanitized)\n"
+            "If you are unsure which format fits best, DO NOT guess — call "
+            "`ask_user_question` with the format options (markdown/table/html/"
+            "diagram/text) so the user chooses. Never return a bare .md file "
+            "without a `show` format choice."
         )
 
         return base
@@ -2761,6 +2773,10 @@ class AgentKernel:
         if not response:
             return response or ""
 
+        # Reset the per-response render flag; set True below if a DOCUMENT_RENDER
+        # is emitted (agent's format choice). Used by _maybe_escalate_web_format.
+        self._last_render_emitted = False
+
         from backend.agent.structured_response import parse_structured_response
 
         speak, show = parse_structured_response(response)
@@ -2810,6 +2826,10 @@ class AgentKernel:
                     turn_id=turn_id,
                     conversation_id=conversation_id,
                 )
+                # Mark that the agent rendered a document this turn (its CHOICE of
+                # format). Used by _maybe_escalate_web_format to detect when the
+                # agent returned a web result without choosing a format.
+                self._last_render_emitted = True
             except Exception as exc:
                 logger.warning("[AgentKernel] DOCUMENT_RENDER emit failed: %s", exc)
             # W4: persist the canonical DATA (underlying structured content),
@@ -3096,6 +3116,18 @@ class AgentKernel:
         capture-worthiness gate. All failures are swallowed — capture must never
         block the tool result from reaching the agent.
         """
+        # ── ChatCard redesign (pin_9e97e21340e7): external/web tool results are
+        # captured into the document store (reformat-able) so the agent can
+        # render them as a Prism Glass document card via its own `show` choice.
+        # The RENDER itself is the agent's decision — it must emit a `show`
+        # payload choosing the format (markdown/table/html/diagram/text). If the
+        # agent does NOT choose a format (returns plain text), we escalate to a
+        # QuestionCard (ask_user_question) offering the format options, rather
+        # than silently dumping a raw .md file. We only track the pending web
+        # doc_id here; the escalation check runs after the agent's response is
+        # processed in _process_structured_response (see _maybe_escalate_web_format).
+        is_external = is_external_tool(tool_name)
+
         if not self._is_capture_worthy(tool_name, result):
             return None
         import uuid
@@ -3111,13 +3143,56 @@ class AgentKernel:
             "variants": {fmt: content},
             "source_tool": tool_name,
         }
-        trust = "untrusted" if is_external_tool(tool_name) else "trusted"
+        trust = "untrusted" if is_external else "trusted"
         try:
             self._store_document_data(document_id, show, trust, turn_id, conversation_id)
         except Exception as exc:
             logger.warning("[AgentKernel] tool-result capture failed: %s", exc)
             return None
+        # Track external/web results for the post-response escalation check.
+        # If the agent's final response does not render this document (no `show`
+        # payload), _maybe_escalate_web_format() will ask the user which format
+        # they want via a QuestionCard (pin_9e97e21340e7).
+        if is_external:
+            self._pending_web_doc_id = document_id
         return document_id
+
+    def _maybe_escalate_web_format(self, turn_id: str, conversation_id: str) -> None:
+        """Escalate a web result's format choice to the user via a QuestionCard.
+
+        Called after the agent's response is processed. If a web/crawler result
+        was captured this turn (``_pending_web_doc_id`` set) but the agent did
+        NOT render it as a document (``_last_render_emitted`` is False — i.e. it
+        returned plain text without a ``show`` format choice), we ask the user
+        which format they want. This honors the ChatCard redesign: the rendered
+        document is the agent's choice, and when the agent is unsure it escalates
+        to a multiple-choice QuestionCard (pin_9e97e21340e7).
+
+        Non-blocking: we emit the question and let the frontend collect the
+        answer asynchronously (the agent's response continues).
+        """
+        pending = getattr(self, "_pending_web_doc_id", None)
+        # Clear the flag regardless — each web result gets at most one escalation.
+        self._pending_web_doc_id = None
+        if not pending:
+            return
+        if getattr(self, "_last_render_emitted", False):
+            # Agent already chose a format and rendered the document. No escalation.
+            return
+        try:
+            from backend.agent.tools.ask_user_tool import get_ask_user_tool
+
+            tool = get_ask_user_tool()
+            tool.ask(
+                text="I found web results. How would you like me to present them?",
+                options=["Markdown", "Table", "HTML", "Diagram", "Plain text"],
+                allow_other=False,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                context={"document_id": pending, "source": "web_format_escalation"},
+            )
+        except Exception as exc:
+            logger.warning("[AgentKernel] web format escalation failed: %s", exc)
 
     def reformat_document(
         self,
@@ -3875,6 +3950,9 @@ class AgentKernel:
             response = self._process_structured_response(
                 response, turn_id=task_id, conversation_id=_conv_id
             )
+            # Escalate web-format choice to the user if the agent returned a web
+            # result without rendering it as a document (pin_9e97e21340e7).
+            self._maybe_escalate_web_format(task_id, _conv_id)
             # Never store error or empty responses in conversation memory.
             # They break role alternation and accumulate into garbage context
             # on subsequent turns, causing Cohere/OpenAI 400 errors.
@@ -4179,6 +4257,9 @@ class AgentKernel:
                 _der_response = self._process_structured_response(
                     _der_response, turn_id=task_id, conversation_id=_conv_id
                 )
+                # Escalate web-format choice to the user if the agent returned a
+                # web result without rendering it as a document (pin_9e97e21340e7).
+                self._maybe_escalate_web_format(task_id, _conv_id)
                 return _der_response
 
         # If DER produced empty/failed response, return error instead of
@@ -6312,11 +6393,21 @@ Respond with a JSON object:
                     "reference" if is_external_tool(getattr(item, "tool", "")) else None
                 )
                 if self._mcm_orch is not None:
+                    # REQ-22: forward untrusted web scoring into the pacman
+                    # fragment so credibility_map / citation_index persist in
+                    # the 'reference' zone (only when the step used a web tool).
+                    _cm = None
+                    _ci = None
+                    if isinstance(step_result, dict):
+                        _cm = step_result.get("credibility_map")
+                        _ci = step_result.get("citation_index")
                     self._mcm_orch.post_turn(
                         [{"role": "assistant", "content": _der_text}],
                         response_text=_der_text,
                         tool_name=getattr(item, "tool_name", ""),
                         zone=_der_zone,
+                        credibility_map=_cm,
+                        citation_index=_ci,
                     )
                 elif (
                     self._memory_interface is not None
@@ -6706,6 +6797,21 @@ Respond with a JSON object:
                     "success": step_success,
                 },
             )
+        except Exception:
+            pass
+
+        # ── Step-level audio narration (pin_9e97e21340e7) ────────────────────
+        # Long DER tasks previously went silent between the start and the final
+        # answer. Speak a brief, low-priority status at each step completion so
+        # the user HEARS the agent driving the app. Funneled through SpeakTool
+        # (serialized by the narration lock) so it never conflicts with web-
+        # search progress or the final answer. Kept short to respect the rate
+        # limiter and not interrupt the conclusion.
+        try:
+            from backend.agent.tools.speak_tool import get_speak_tool
+            _verb = "Completed" if step_success else "Couldn't complete"
+            _label = (item.description or f"step {item.step_number}")[:80]
+            get_speak_tool().speak(f"{_verb} step {item.step_number}: {_label}.", priority="low")
         except Exception:
             pass
 

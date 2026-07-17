@@ -48,6 +48,53 @@ def is_external_tool(tool_name: str) -> bool:
     return bool(tool_name) and tool_name in _EXTERNAL_TOOLS
 
 
+def _serialize_credibility(meta: dict) -> str:
+    """Compact, stable JSON for credibility/citation metadata (REQ-22)."""
+    import json
+    try:
+        return json.dumps(meta, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        return json.dumps({"_unserializable": True}, default=str)
+
+
+def _store_credibility_metadata(episodic, session_id: str, tool_name: str,
+                                 credibility_map, citation_index) -> None:
+    """Persist credibility + citation provenance to the 'reference' (untrusted)
+    zone so untrusted web scoring is recallable but never mixed into trusted
+    zones (REQ-22). Never raises.
+    """
+    try:
+        payload: dict = {}
+        if credibility_map is not None:
+            # CredibilityMap may be a dataclass or dict; normalize to primitives.
+            if hasattr(credibility_map, "__dict__"):
+                cm = {k: v for k, v in vars(credibility_map).items()
+                      if not k.startswith("_")}
+            elif isinstance(credibility_map, dict):
+                cm = credibility_map
+            else:
+                cm = {"value": str(credibility_map)}
+            payload["credibility_map"] = cm
+        if citation_index is not None:
+            payload["citation_index"] = citation_index
+        if not payload:
+            return
+        blob = (
+            f"<CREDIBILITY_META tool={tool_name}>\n"
+            f"{_serialize_credibility(payload)}\n"
+            f"</CREDIBILITY_META>"
+        )
+        episodic.fragment_and_store(
+            content=blob,
+            session_id=session_id,
+            chunk_type="der_output",
+            zone=_EXTERNAL_ZONE,  # reference / untrusted
+            tool_name=tool_name or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[pacman_fragment] credibility metadata skipped: %s", exc)
+
+
 def _is_fragment_candidate(text: str) -> bool:
     """Return True if text looks like a DER step output worth storing."""
     if len(text) < _MIN_FRAGMENT_CHARS:
@@ -73,6 +120,18 @@ def execute(ctx: dict, params: dict) -> dict:
         episodic = getattr(mi, "episodic", None)
         if not episodic or not hasattr(episodic, "fragment_and_store"):
             return ctx
+
+        # Persist credibility/citation provenance for external/web tools
+        # (REQ-22) BEFORE the content fragment, so the untrusted scoring is
+        # recallable in the reference zone. Never blocks the content store.
+        if is_external_tool(tool_name):
+            _store_credibility_metadata(
+                episodic,
+                session_id,
+                tool_name,
+                ctx.get("credibility_map"),
+                ctx.get("citation_index"),
+            )
 
         # Strip MCM_MITO tags before storing
         import re

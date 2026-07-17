@@ -64,6 +64,7 @@ class CrawlResult:
     dashboard_data: dict = field(default_factory=dict)  # DashboardData from DataExtractor
     cited_markdown: Optional[str] = None                # citation-bound markdown (REQ-8)
     credibility_map: Optional[object] = None            # CredibilityMap (REQ-5)
+    citation_index: Optional[object] = None             # chunk_id -> url map (REQ-22)
 
 
 class CrawlerEngine:

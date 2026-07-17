@@ -87,6 +87,21 @@ def run_fragment(tool_name):
     return ep
 
 
+def run_fragment_with_meta(tool_name, credibility_map, citation_index):
+    ep = FakeEpisodic()
+    mi = make_mi(ep)
+    ctx = {
+        "mi": mi,
+        "session_id": "s1",
+        "response_text": _SAMPLE,
+        "tool_name": tool_name,
+        "credibility_map": credibility_map,
+        "citation_index": citation_index,
+    }
+    pacman_fragment.execute(ctx, {})
+    return ep
+
+
 def main():
     # ── T2: external tools -> 'reference' zone ───────────────────────────
     for tool in ("web_search", "crawler_query"):
@@ -116,6 +131,36 @@ def main():
     check("T3 external never trusted",
           all(z != "trusted" for z in zones),
           str(zones))
+
+    # ── T11 (REQ-22): credibility_map + citation_index persisted to
+    #    'reference' zone for external/web tools, never trusted ──────────
+    ep = run_fragment_with_meta(
+        "crawler_query",
+        credibility_map={"per_source": {"https://nasa.gov": 0.9}, "top_score": 0.9},
+        citation_index={"u#0": "https://nasa.gov/doc"},
+    )
+    meta_calls = [c for c in ep.calls if "CREDIBILITY_META" in c["content"]]
+    check("T11 credibility metadata stored",
+          len(meta_calls) == 1,
+          f"{len(meta_calls)} meta fragments")
+    if meta_calls:
+        check("T11 meta in reference zone (untrusted)",
+              meta_calls[0]["zone"] == "reference",
+              meta_calls[0]["zone"])
+        check("T11 meta carries credibility_map",
+              "credibility_map" in meta_calls[0]["content"]
+              and "citation_index" in meta_calls[0]["content"],
+              "payload keys present")
+    # Local tool must NOT persist credibility metadata even if passed.
+    ep = run_fragment_with_meta(
+        "file_read",
+        credibility_map={"per_source": {}},
+        citation_index={},
+    )
+    meta_calls = [c for c in ep.calls if "CREDIBILITY_META" in c["content"]]
+    check("T11 local tool skips credibility meta",
+          len(meta_calls) == 0,
+          f"{len(meta_calls)} meta fragments")
 
     failed = [r for r in results if not r[1]]
     print("\n=== W1 ZONE ROUTING SUMMARY ===")
