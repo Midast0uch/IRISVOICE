@@ -59,6 +59,11 @@ class CrawlResult:
     duration_ms: int
     crawled_at: str          # ISO 8601 UTC
     error: Optional[str] = None  # set when the crawl failed (subprocess crash/timeout/unavailable)
+    # --- Unified-spec extensions (optional; single source of truth, design D1) ---
+    passages: list = field(default_factory=list)        # list[Passage] from orchestrator
+    dashboard_data: dict = field(default_factory=dict)  # DashboardData from DataExtractor
+    cited_markdown: Optional[str] = None                # citation-bound markdown (REQ-8)
+    credibility_map: Optional[object] = None            # CredibilityMap (REQ-5)
 
 
 class CrawlerEngine:
