@@ -154,7 +154,7 @@ class CrawlOrchestrator:
             _emit("CRAWLER_ERROR", {"message": "no candidate urls"})
             return self._empty(query, t_start, "no candidate urls")
 
-        _emit("CRAWLER_STARTED", {"query": query, "url_count": len(plan.urls)})
+        _emit("CRAWLER_STARTED", {"query": query, "url_count": len(plan.urls), "session_id": session_id})
 
         # 2) FETCH (REQ-3) via swappable backend (REQ-17 AC4)
         backend = self._backend_override or _BACKENDS[mode]()

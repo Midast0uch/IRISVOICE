@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react"
-import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg } from "@/types/iris"
+import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg, CrawlerCompleteMsg } from "@/types/iris"
 
 // WebSocket connection states
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error"
@@ -1110,7 +1110,37 @@ export function useIRISWebSocket(
       // ModelsScreen and InferenceConsolePanel receive them without prop-drilling.
       case "local_models_list":
       case "hardware_info":
-      case "local_model_status":
+      case "local_model_status": {
+        // Drive the dashboard "MODEL STATUS" badge (field local_model_status
+        // under the 'local_model' section). The backend sends an object
+        // {status, loaded, model_path, ...}; the badge expects a string status
+        // (loaded/unloaded/loading/error). Without this, the badge stays
+        // "unloaded" forever after a successful load (pin_9e97e21340e7).
+        const p = payload || {}
+        let status: string
+        if (typeof p === 'string') {
+          status = p
+        } else if (typeof p.status === 'string') {
+          status = p.status
+        } else if (p.loaded === true) {
+          status = 'loaded'
+        } else if (p.loaded === false && (p.status === 'error' || p.error)) {
+          status = 'error'
+        } else {
+          status = 'unloaded'
+        }
+        setFieldValues((prev) => ({
+          ...prev,
+          local_model: { ...(prev.local_model || {}), local_model_status: status },
+        }))
+        // Forward to any panel that listens on iris:ws_message
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:ws_message', {
+            detail: { type, payload }
+          }))
+        }
+        break
+      }
       case "local_model_loading":
       case "gguf_download_progress":
       case "model_pin_updated":
@@ -1172,6 +1202,18 @@ export function useIRISWebSocket(
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:crawler_error', {
             detail: message as unknown as CrawlerErrorMsg
+          }))
+        }
+        break
+      }
+
+      // Terminal event (REQ-29/30): crawl finished. Reset the orb phase to
+      // idle/thinking and surface the summary + citations. Dispatched so the
+      // useCrawl hook (and SSE fallback) can finalize crawl state.
+      case "crawler_complete": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_complete', {
+            detail: message as unknown as CrawlerCompleteMsg
           }))
         }
         break

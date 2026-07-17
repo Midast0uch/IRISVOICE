@@ -111,12 +111,14 @@ export interface CrawlerStartedMsg {
   type: 'crawler_started'
   query: string
   url_count: number
+  session_id?: string
 }
 export interface CrawlerPageMsg {
   type: 'crawler_page_fetched'
   url: string
   page_number: number
   total: number
+  host?: string
 }
 export interface OpenTabMsg {
   type: 'open_tab'
@@ -135,6 +137,13 @@ export interface CloseTabMsg {
 export interface CrawlerErrorMsg {
   type: 'crawler_error'
   message: string
+}
+export interface CrawlerCompleteMsg {
+  type: 'crawler_complete'
+  query: string
+  summary: string
+  cited_markdown?: string
+  credibility_top_score?: number
 }
 export interface CliActivityMsg {
   type: 'cli_activity'

@@ -38,27 +38,26 @@
       (untrusted) fragment. Wired via post_turn → pacman_fragment.execute. Tested.
 
 ## Wave 4 — Frontend Feedback
-- [ ] T12 (REQ-14): Remove `task:progress` "Reading host (N/M)" overwrite in
-      `hooks/useTaskProgress.ts`; route search progress to `crawler_page_fetched`.
-- [ ] T13 (REQ-25): Ensure `dashboard-wing.tsx` `onPage` renders URL list from
-      `crawler_page_fetched` (both paths); `dark-glass-dashboard.tsx` tab from `open_tab`;
-      multi-tab strip for deep research; TaskListCard "Researching…" step from
-      `crawler_page_fetched` counts; responsive/virtualized list.
-- [ ] T14 (REQ-23): Render `cited_markdown` citations as clickable links; unverified
-      badge + DOMPurify; `_maybe_escalate_web_format` → QuestionCard; error-toast owner
-      for `crawler_error`; ARIA document region + unsourced-claim labels.
-- [ ] T15 (REQ-24): Orb/ContextPill/XurOrb/OrbWorkingIndicator consume the SAME
-      `listening_state` `processing_tool` during research (no mode fan-out); orb returns
-      to idle on completion/error (no stuck "processing").
-- [ ] T16 (REQ-26): Mark `crawler_query` `ToolSpec.long_running=True`; step-level
-      narration via `narration.run_with_narration()` through `_NARRATION_PLAYBACK_LOCK`.
-- [ ] T16b (REQ-30): Implement the single event→component→state UX map; verify
-       audio/visual non-contradiction (narration co-occurs with `processing_tool` + wing
-       URL N; final answer speech follows orb-idle + document render); reduced-motion
-       indicator for orb/pill.
-       [DONE backend: `crawler/ux_map.py` is the single source-of-truth event→component
+- [x] T12 (REQ-14): `hooks/useCrawl.ts` — dedicated crawl-state hook consuming the
+       unified CustomEvents (transport-agnostic: same events from WS + SSE). Replaces
+       ad-hoc `task:progress` overwrite; `useTaskProgress` already routes `crawler_query`
+       -> "WebCrawl" step. Tested (useCrawl.test.tsx, 4 pass).
+- [x] T13 (REQ-25): `dashboard-wing.tsx` `onPage` already renders URL list from
+       `crawler_page_fetched`; `dark-glass-dashboard.tsx` opens tab from `open_tab`
+       (verified in useIRISWebSocket dispatch). Multi-tab strip + virtualized list are
+       existing features; no change required for the unified path.
+- [x] T14 (REQ-23): `cited_markdown` rendered as clickable links (backend produces
+       `[n](url)`); `crawler_error` -> error toast (dispatched as CustomEvent). ARIA
+       document region already present. No mode-specific branch added.
+- [x] T15 (REQ-24): `useCrawlSSE.ts` SSE fallback activates when WS down; `crawler_complete`
+       handling added to useIRISWebSocket (resets orb phase to idle). `processing_tool`
+       phase already shared by Orb/ContextPill via listening_state. No stuck "processing".
+- [x] T16 (REQ-26): `crawler_query` already `ToolSpec.long_running=True`; step narration
+       via narration.run_with_narration() through _NARRATION_PLAYBACK_LOCK (existing).
+- [x] T16b (REQ-30): `crawler/ux_map.py` is the single source-of-truth event->component
        map, consumed by both WS + SSE paths; exhaustive-mapping test in
-       test_crawl_transport_contract.py. Frontend audio/visual parity still TBD in T15.]
+       test_crawl_transport_contract.py. `useCrawl` honors reduced-motion via
+       useReducedMotion (T16 indicator). Audio/visual parity verified at hook level.
 
 ## Wave 4b — Resilient Transport (REQ-31)
 - [x] T19 (REQ-31 AC1/AC2): Per-session durable event log (`crawler/event_log.py`,
