@@ -1,21 +1,31 @@
-# Design: Exa Search Provider Integration
+# Design: Exa Search + Smart Source Registry
 
 ## Context
 
-IRIS Voice currently generates search URLs via the LLM (Cerebras) using a
-prompt that asks for authoritative URLs (`CrawlPlanner._call_llm`). This is
-free but depends on the LLM's parametric knowledge — it cannot discover new
-or obscure pages. Exa provides a neural embedding search API that finds pages
-by *meaning*, includes built-in content extraction (highlights + full text),
-and returns results in ~1s. This design adds Exa as a **configurable,
-drop-in replacement** for the URL-generation step, while keeping the existing
-Crawl4AI subprocess pipeline for deep content extraction.
+IRIS Voice currently generates search URLs via the LLM (Cerebras) or via a
+hardcoded DuckDuckGo scrape (now removed). This design adds two layers above
+the existing Crawl4AI pipeline:
+
+1. **SearchProvider abstraction** — Exa (and future providers) as pluggable
+   search backends for URL discovery.
+2. **SourceRegistry** — a learned topic→URL knowledge base stored in semantic
+   memory, updated after every crawl, so the system intelligently decides
+   whether to search fresh or reuse known sources.
+
+The SourceRegistry connects to three existing memory layers:
+- **Semantic memory** (`memory/semantic.py`) — stores topic→URL mappings
+  cross-session (category `"source_registry"`).
+- **Episodic memory / reference zone** (`memory/episodic.py`, zone `"reference"`)
+  — stores per-URL credibility and citation provenance from past crawls.
+- **PacmanFragment** (`actions/pacman_fragment.py`) — writes crawl credibility
+  and citations to the reference zone; the SourceRegistry reads from it.
 
 **Constraints:**
-- API key must not be in git-tracked files (matches `PICOVOICE_ACCESS_KEY` in `.env`).
-- Provider must be switchable at runtime (no restart).
-- The `search` tool (quick lookup) should be fast (~1s) — use Exa content directly.
-- The `crawler_query` tool (deep crawl) should use Crawl4AI for full extraction.
+- API key in `.env` (not git-tracked).
+- Provider switchable at runtime.
+- `search` tool (quick): ~1s via Exa content directly.
+- `crawler_query` tool (deep): Exa URLs → Crawl4AI subprocess.
+- SourceRegistry learns automatically — no manual configuration needed.
 - All 28 existing crawl tests must still pass.
 
 ---
@@ -23,96 +33,147 @@ Crawl4AI subprocess pipeline for deep content extraction.
 ## Architecture Overview
 
 ```
-┌───────────────────────────────────────────────────────────────────────┐
-│                      SEARCH PROVIDER LAYER (NEW)                     │
-│                                                                       │
-│  SearchProvider (ABC) ←──── LLMSearchProvider (existing _call_llm)   │
-│       ▲                    └─── ExaSearchProvider (new — Exa API)     │
-│       │                    └─── BraveSearchProvider (future)           │
-│       │                    └─── TavilySearchProvider (future)          │
-│       │                                                               │
-│  search(query, max_results) → SearchResult { items[] }               │
-└───────────────────────┬───────────────────────────────────────────────┘
-                        │
-          ┌─────────────┴─────────────┐
-          │                           │
-          ▼                           ▼
-┌──────────────────┐      ┌──────────────────────────────┐
-│  search TOOL     │      │  crawler_query TOOL          │
-│  (quick lookup)  │      │  (deep research)             │
-│                  │      │                              │
-│  Exa → content   │      │  Exa → URLs → CrawlPlan     │
-│  ↓               │      │                ↓             │
-│  return text     │      │  CrawlOrchestrator           │
-│                  │      │  └─ Crawl4AI subprocess      │
-└──────────────────┘      │  └─ extract/cite/score      │
-                          │  └─ CRAWLER_COMPLETE         │
-                          └──────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                      SOURCE REGISTRY (NEW)                          │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  SourceRegistry.resolve(query)                                │   │
+│  │    ├─ LLM extracts topics                                     │   │
+│  │    ├─ SemanticStore.lookup(topic) → known URLs                │   │
+│  │    ├─ Reference zone lookup → credibility scores              │   │
+│  │    ├─ Compute coverage score (credibility × freshness)        │   │
+│  │    └─ Return HIT (sources) or MISS                            │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                        │                                            │
+│              ┌─────────┴─────────┐                                  │
+│              ▼                   ▼                                  │
+│         HIT (cache)          MISS (search)                          │
+│              │                   │                                  │
+│              ▼                   ▼                                  │
+│      CrawlPlan from       SearchProvider.search(query)              │
+│      cached URLs              │                                     │
+│              │                ▼                                     │
+│              │         CrawlOrchestrator                             │
+│              │         └─ Crawl4AI subprocess                        │
+│              │         └─ extract/cite/score                         │
+│              │         └─ CRAWLER_COMPLETE                           │
+│              │                │                                     │
+│              └──────┬────────┘                                     │
+│                     ▼                                               │
+│              SourceRegistry.learn(query, result, credibility)        │
+│                ├─ Save topic→URL mappings to SemanticStore          │
+│                └─ (credibility already in reference zone)           │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      MEMORY LAYER (EXISTING)                        │
+│                                                                     │
+│  ┌──────────────────┐  ┌────────────────────┐  ┌────────────────┐  │
+│  │  Semantic Store  │  │  Episodic / Ref    │  │  Working       │  │
+│  │                  │  │                    │  │                │  │
+│  │  source_registry │  │  credibility_map   │  │  current       │  │
+│  │  topic→URL maps  │  │  citation_index    │  │  conversation  │  │
+│  │  (cross-session) │  │  per-URL scores    │  │  (per-thread)  │  │
+│  └──────────────────┘  └────────────────────┘  └────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### File map (new/changed)
+### File map
 
 | File | Status | Role |
 |------|--------|------|
-| `backend/crawler/search_providers/__init__.py` | **NEW** | Package init, factory function `get_search_provider()` |
-| `backend/crawler/search_providers/base.py` | **NEW** | `SearchProvider` ABC, `SearchResult`, `SearchResultItem`, `SearchProviderError` |
+| `backend/crawler/search_providers/__init__.py` | **NEW** | Package init + `get_search_provider()` factory |
+| `backend/crawler/search_providers/base.py` | **NEW** | `SearchProvider` ABC, `SearchResult`, `SearchResultItem` |
 | `backend/crawler/search_providers/exa.py` | **NEW** | `ExaSearchProvider` — Exa API client |
-| `backend/crawler/search_providers/llm.py` | **NEW** | `LLMSearchProvider` — moves `_call_llm` + `_parse` + `_fallback_plan` from `crawl_planner.py` |
-| `backend/crawler/crawl_planner.py` | **MODIFIED** | `CrawlPlanner.plan()` delegates to active `SearchProvider` |
-| `backend/crawler/orchestrator.py` | **MODIFIED** | `CrawlOrchestrator` passes `session_id` to planner for provider selection |
-| `backend/agent/tool_bridge.py` | **MODIFIED** | `_execute_web_search` uses `SearchProvider` directly when Exa is active |
-| `backend/iris_config.json` | **MODIFIED** | New `search.provider` config key |
+| `backend/crawler/search_providers/llm.py` | **NEW** | `LLMSearchProvider` — existing `_call_llm` logic |
+| `backend/crawler/source_registry.py` | **NEW** | `SourceRegistry` — topic→URL knowledge base, resolve + learn |
+| `backend/crawler/crawl_planner.py` | **MODIFIED** | `plan()` delegates to `SourceRegistry` first, then `SearchProvider` |
+| `backend/crawler/orchestrator.py` | **MODIFIED** | `research()` calls `SourceRegistry.learn()` after completion |
+| `backend/agent/tool_bridge.py` | **MODIFIED** | `_execute_web_search` + `_execute_crawler_query` use registry |
+| `backend/memory/semantic.py` | **MODIFIED** | New category `"source_registry"` added to `HEADER_CATEGORIES` |
+| `backend/iris_config.json` | **MODIFIED** | New `search.*` config keys |
 | `.env` | **MODIFIED** | New `EXA_API_KEY` env var (gitignored) |
-| `components/wheel-view/SidePanel.tsx` | **MODIFIED** | New "Search" section with provider dropdown + API key input |
-| `hooks/useSettings.ts` or equivalent | **MODIFIED** | New WS message types for saving search config |
-| `backend/tests/contract/test_exa_provider.py` | **NEW** | Contract tests for ExaSearchProvider |
-| `backend/tests/integration/test_search_providers.py` | **NEW** | Integration tests for fallback + provider switching |
+| `components/wheel-view/SidePanel.tsx` | **MODIFIED** | "Search" settings section |
+| `backend/tests/contract/test_exa_provider.py` | **NEW** | Exa provider contract tests |
+| `backend/tests/contract/test_source_registry.py` | **NEW** | SourceRegistry unit tests |
+| `backend/tests/integration/test_search_providers.py` | **NEW** | Provider switching + fallback tests |
 
 ---
 
 ## Data Models
 
 ```python
-# backend/crawler/search_providers/base.py
-
-from dataclasses import dataclass, field
-from abc import ABC, abstractmethod
-from typing import Optional
-
+# ── SearchProvider layer ──────────────────────────────────────────────
 
 @dataclass
 class SearchResultItem:
-    """One search result from any provider."""
     url: str
     title: str = ""
-    snippet: str = ""          # Short excerpt (for quick display)
-    content: str = ""          # Full extracted text (for deep use)
-    score: float = 0.0         # Relevance score [0, 1] from provider
-    published_date: str = ""   # ISO date string or empty
-    metadata: dict = field(default_factory=dict)  # Provider-specific extras
-
+    snippet: str = ""          # highlights / short excerpt
+    content: str = ""          # full extracted text (from Exa or Crawl4AI)
+    score: float = 0.0         # provider relevance [0, 1]
+    published_date: str = ""   # ISO date
 
 @dataclass
 class SearchResult:
-    """Normalised result from any SearchProvider."""
     query: str
     results: list[SearchResultItem] = field(default_factory=list)
-    provider: str = ""          # "exa", "llm", etc.
-    total: int = 0              # Total results available (if known)
-
-
-class SearchProviderError(Exception):
-    """Raised when a search provider fails (auth, rate-limit, timeout, etc.)."""
-    def __init__(self, message: str, retry_after: Optional[float] = None):
-        super().__init__(message)
-        self.retry_after = retry_after
-
+    provider: str = ""          # "exa", "llm"
 
 class SearchProvider(ABC):
-    """Abstract base for all search backends."""
+    async def search(self, query: str, max_results: int = 10) -> SearchResult: ...
 
-    @abstractmethod
-    async def search(self, query: str, max_results: int = 10) -> SearchResult:
+class SearchProviderError(Exception):
+    def __init__(self, message: str, retry_after: Optional[float] = None): ...
+
+# ── SourceRegistry layer ──────────────────────────────────────────────
+
+@dataclass
+class RegisteredSource:
+    """A URL known to be useful for specific topics."""
+    url: str
+    domain: str                    # bloomberg.com
+    topics: list[str]              # ["finance", "market share"]
+    credibility: float             # 0-1 weighted running average
+    last_crawled: str              # ISO timestamp
+    crawl_count: int               # times successfully crawled
+    last_error: str = ""           # last error message (if failed)
+
+@dataclass
+class ResolveResult:
+    hit: bool
+    sources: list[RegisteredSource] = field(default_factory=list)
+    coverage_score: float = 0.0
+    topics: list[str] = field(default_factory=list)
+
+class SourceRegistry:
+    """Learned topic→URL mappings, stored in semantic memory."""
+
+    async def resolve(self, query: str) -> ResolveResult:
+        """Given a query, determine if known sources suffice."""
+        topics = await self._extract_topics(query)          # LLM call
+        sources = await self._lookup_topics(topics)         # SemanticStore read
+        coverage = self._score_coverage(sources)            # credibility × freshness
+        if coverage >= self._threshold:
+            return ResolveResult(hit=True, sources=sources, coverage_score=coverage, topics=topics)
+        return ResolveResult(hit=False, topics=topics, coverage_score=coverage)
+
+    async def learn(self, query: str, search_result: SearchResult,
+                    credibility_map: dict[str, float]):
+        """Save successful URLs to the registry."""
+        topics = await self._extract_topics(query)
+        for item in search_result.results:
+            cred = credibility_map.get(extract_domain(item.url), 0.5)
+            if cred >= 0.3:
+                self._save_entry(item.url, extract_domain(item.url), topics, cred, item)
+
+    async def _extract_topics(self, query: str) -> list[str]:
+        """LLM: extract 3-5 key topics from the query."""
+        ...
+
+    def _score_coverage(self, sources: list[RegisteredSource]) -> float:
+        """Weighted score: credibility × freshness × diversity."""
         ...
 ```
 
@@ -120,86 +181,174 @@ class SearchProvider(ABC):
 
 ## Sequence Diagrams
 
-### Flow A: `search` tool with Exa (quick lookup)
+### Flow 1: First search on a new topic (MISS → Exa → learn)
 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant DER as DER Loop
-    participant TB as tool_bridge
-    participant Exa as ExaSearchProvider
-    participant Return
-
-    U->>DER: "what are the top AI companies?"
-    DER->>TB: _execute_web_search(query, "exa")
-    TB->>Exa: search(query, max_results=5)
-    Exa->>Exa: POST /search {query, numResults, contents}
-    Exa-->>TB: SearchResult (5 items with URLs + highlights + text)
-    TB->>TB: Build content string from highlights
-    TB-->>DER: {success: true, content, sources}
-    DER-->>U: Responds with answer + cites
-```
-
-### Flow B: `crawler_query` tool with Exa + Crawl4AI (deep crawl)
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant DER as DER Loop
-    participant TB as tool_bridge
-    participant CP as CrawlPlanner
-    participant Exa as ExaSearchProvider
+    participant DER as DER / Tool
+    participant SR as SourceRegistry
+    participant LLM as LLM (topic extraction)
+    participant SMem as SemanticStore
+    participant Prov as SearchProvider (Exa)
     participant OC as CrawlOrchestrator
-    participant SF as SubprocessFetchBackend
-    participant CR as crawl_runner (subprocess)
+    participant Mem as Memory (reference zone)
 
-    U->>DER: "deep research on Nvidia competitors"
-    DER->>TB: _execute_crawler_query(query)
-    TB->>CP: plan(query)
-    CP->>Exa: search(query, max_results=10)
-    Exa-->>CP: SearchResult (10 items with URLs)
-    CP-->>TB: CrawlPlan(urls=[...], instructions=...)
-    TB->>OC: research(query, mode="agent", ..., urls=plan.urls)
-    OC->>SF: fetch(plan.urls)
-    SF->>CR: spawn crawl_worker.py
-    CR-->>SF: CrawlResult (pages with markdown)
-    SF-->>OC: CrawlResult
-    OC->>OC: extract, cite, score, dashboard
-    OC-->>TB: CrawlResult (complete, with cited_markdown)
-    TB-->>DER: result dict
-    DER-->>U: Deep research response
+    U->>DER: "what's happening in AI hardware?"
+    DER->>SR: resolve("AI hardware market share 2026")
+    SR->>LLM: extract topics("AI hardware market share 2026")
+    LLM-->>SR: ["semiconductor", "market share", "GPU", "Nvidia"]
+    SR->>SMem: lookup(["semiconductor", ...])
+    SMem-->>SR: []  (no entries — first time)
+    SR-->>DER: MISS (coverage=0.0)
+    DER->>Prov: search("AI hardware market share 2026")
+    Prov-->>DER: SearchResult (10 URLs: Gartner, Reuters, AnandTech, ...)
+    DER->>OC: research(query, urls=[...])
+    OC->>OC: Crawl4AI subprocess → extract → cite → score → dashboard
+    OC-->>DER: CrawlResult (pages + credibility_map + citation_index)
+    OC->>Mem: pacman_fragment → reference zone (credibility persistence)
+    DER->>SR: learn(query, search_result, credibility_map)
+    SR->>LLM: extract topics
+    SR->>SMem: store topic→URL mappings
+    SR-->>DER: done
+    DER-->>U: "Gartner reports Nvidia 85% market share..."
+    Note over SR,SMem: Next "AI hardware" query → HIT (cached URLs)
 ```
 
-### Flow C: Fallback when Exa fails
+### Flow 2: Second search on related topic (HIT → skip search)
 
 ```mermaid
 sequenceDiagram
-    participant TB as tool_bridge / CrawlPlanner
-    participant Exa as ExaSearchProvider
-    participant LLM as LLMSearchProvider
-    participant Log as Logger
+    participant U as User
+    participant DER as DER / Tool
+    participant SR as SourceRegistry
+    participant SMem as SemanticStore
+    participant OC as CrawlOrchestrator
 
-    TB->>Exa: search(query)
-    Exa-->>TB: RAISE SearchProviderError (timeout / 429 / 401)
-    TB->>Log: WARNING "Exa failed: ... falling back to LLM"
-    TB->>LLM: search(query)
-    LLM-->>TB: SearchResult (URLs from Cerebras)
-    TB->>TB: Continue with LLM result
+    U->>DER: "how is TSMC doing vs Samsung foundry?"
+    DER->>SR: resolve("TSMC vs Samsung foundry market share")
+    SR->>SR: extract topics → ["semiconductor", "foundry", "TSMC", "Samsung"]
+    SR->>SMem: lookup(["semiconductor", "foundry", ...])
+    SMem-->>SR: [gartner.com (0.92), anandtech.com (0.88), tsmc.com (0.85)]
+    SR->>SR: score coverage → 2.65 ≥ 2.0 → HIT
+    SR-->>DER: HIT (sources=[gartner, anandtech, tsmc])
+    Note over DER,OC: No Exa call fired — zero cost
+    DER->>OC: research(query, urls=[gartner, anandtech, tsmc])
+    OC-->>DER: CrawlResult (crawled from known URLs)
+    DER-->>U: "TSMC holds 90% of advanced foundry market..."
+    Note over SR,SMem: Crawl refreshes last_crawled timestamps
 ```
+
+### Flow 3: Known topic but stale (partial HIT → merge + search)
+
+```mermaid
+sequenceDiagram
+    participant DER as DER / Tool
+    participant SR as SourceRegistry
+    participant Prov as SearchProvider
+    participant OC as CrawlOrchestrator
+
+    DER->>SR: resolve("Nvidia quarterly earnings")
+    SR->>SR: extract topics → ["Nvidia", "earnings", "GPU", "semiconductor"]
+    SR->>SR: lookup → gartner.com (cred=0.92, age=12 days > TTL=7)
+    SR->>SR: score → 0.92 halved = 0.46 < 2.0 → MISS
+    SR-->>DER: MISS (partial sources=[gartner.com], topics=[...])
+    Note over DER,Prov: Registry returned gartner as seed but MISS due to staleness
+    DER->>Prov: search("Nvidia quarterly earnings")
+    Prov-->>DER: SearchResult (new URLs + Nvidia IR page)
+    DER->>OC: research(query, urls=[gartner + new])
+    DER->>SR: learn(query, result, credibility) → refreshes gartner, adds new sources
+    SR-->>DER: done
+```
+
+---
+
+## Decision Function (resolve algorithm)
+
+```
+resolve(query):
+  1. LLM: extract_topics(query) → ["topic_a", "topic_b", "topic_c", ...]
+  
+  2. For each topic, lookup in SemanticStore("source_registry", "topic:<normalized>")
+     → List of RegisteredSource[url, domain, credibility, last_crawled, crawl_count]
+  
+  3. For each source, apply freshness decay:
+     age_days = now - last_crawled
+     if age_days > TTL (7): credibility *= 0.5    # stale, penalize
+     if age_days > TTL * 2: credibility *= 0.1     # very stale, nearly worthless
+  
+  4. Coverage score = Σ(credibility × log(crawl_count + 1)) for all unique URLs
+     (log factor rewards frequently-successful URLs)
+  
+  5. Topic coverage: what fraction of topics have ≥1 source with credibility > 0.4?
+     if topic_coverage < 0.5: coverage *= 0.5   # penalty for partial topic coverage
+  
+  6. if coverage ≥ threshold (default 2.0): return HIT(sources)
+     else: return MISS(seed_sources=sources)     # MISS but pass known URLs as seeds
+```
+
+---
+
+## Connection to Mycelium Memory
+
+```
+SourceRegistry
+  │
+  ├── WRITE topic→URL mappings
+  │     → SemanticStore.store(category="source_registry", key="topic:<normalized>", value=json)
+  │     → Cross-session, survives restarts
+  │
+  ├── READ topic→URL mappings
+  │     → SemanticStore.retrieve(category="source_registry", key="topic:<normalized>")
+  │
+  ├── READ credibility scores
+  │     → EpisodicStore / reference zone → already stored by pacman_fragment.execute()
+  │     → query by domain to get historical credibility
+  │
+  └── WRITE updated credibility (after crawl)
+        → Already handled by pacman_fragment.execute() — no change needed
+        → SourceRegistry.learn() just reads back from it
+```
+
+The SourceRegistry does NOT duplicate credibility data — it reads from the
+reference zone at resolve time and writes only the topic→URL mappings to
+semantic memory. This keeps the memory framework the single source of truth.
 
 ---
 
 ## Key Decisions
 
-| # | Decision | Rationale | Rejected alternatives |
-|---|----------|-----------|----------------------|
-| D1 | `SearchProvider` ABC with `search(query, max_results)` | Single uniform interface for all providers. New provider = one class. | Making `CrawlPlanner` call Exa directly (tight coupling). |
-| D2 | `search` tool uses Exa content directly (no Crawl4AI) | ~1s vs ~30s latency for quick lookups. Exa content is sufficient for snippets. | Always routing through Crawl4AI (slow for quick questions). |
-| D3 | `crawler_query` uses Exa URLs + Crawl4AI extraction | Best of both: Exa's semantic URL discovery + Crawl4AI's thorough extraction. | Only using Exa content (less thorough than Crawl4AI). |
-| D4 | API key in `.env` (not keyring) | Matches `PICOVOICE_ACCESS_KEY` pattern. Simple, no additional deps. | OS keyring (more complex, no existing pattern). |
-| D5 | Fallback chain: Exa → LLM → empty | Graceful degradation. LLM is free and always available. | Fail open (return error) — bad UX; fail closed (no search) — worse. |
-| D6 | Runtime config from `iris_config.json` | Config changes take effect immediately on next search. No restart. | Environment variable only (requires restart to change). |
-| D7 | Exa `type: "auto"` (default search mode) | Best balance of speed (~1s) and quality. Exa's neural search used. | `deep` mode (4-15s, overkill for most queries). |
+| # | Decision | Rationale | Alternatives |
+|---|----------|-----------|-------------|
+| D1 | `SourceRegistry` in semantic memory (category `"source_registry"`) | Cross-session persistence; built-in versioning; no new DB schema | JSON file (not in memory framework); episodic memory (session-scoped) |
+| D2 | Topic extraction via LLM (Cerebras) | LLM is already warm; a single cheap classification call | Keyword extract (less accurate); Exa categories (1 extra API call) |
+| D3 | Coverage score: weighted sum of credibility × freshness | Simple to compute and tune; single threshold parameter | ML scoring (over-engineered); Boolean logic (too rigid) |
+| D4 | Exa for search → Crawl4AI for extraction (deep path only) | Best latency for quick lookups (1s); best thoroughness for deep crawls | Always Crawl4AI (slow for quick queries); always Exa (less thorough) |
+| D5 | Fallback chain: SourceRegistry → SearchProvider → LLM → empty | Graceful degradation at every layer | Only one path (brittle) |
+| D6 | Credibility from reference zone, not duplicated | Single source of truth for crawl quality data │ | Storing credibility in SourceRegistry (duplicated, stale risk) |
+| D7 | Seed URLs passed from MISS ResolveResult | Even partial coverage is useful — known URLs are not discarded | Drop known URLs on MISS (waste of learned knowledge) |
+
+---
+
+## Configuration
+
+### `iris_config.json` additions
+```json
+{
+  ...existing...,
+  "search": {
+    "provider": "exa",              // "llm" | "exa"
+    "registry_threshold": 2.0,      // coverage score threshold for HIT
+    "registry_ttl_days": 7,         // days before URL freshness decays
+    "enabled": true
+  }
+}
+```
+
+### `.env` addition
+```
+EXA_API_KEY=sk-your-key-here
+```
 
 ---
 
@@ -207,49 +356,14 @@ sequenceDiagram
 
 | Failure | Detection | Response | Recovery |
 |---------|-----------|----------|----------|
-| Exa API key missing | `EXA_API_KEY` env var not set | `ExaSearchProvider.__init__` raises `ValueError` | Factory catches, logs warning, returns `LLMSearchProvider` |
-| Exa HTTP 401 (invalid key) | `httpx` response status | `SearchProviderError("invalid API key")` | Fall back to LLM, log error |
-| Exa HTTP 429 (rate limited) | `httpx` response status + `Retry-After` header | `SearchProviderError("rate limited", retry_after=N)` | Fall back to LLM, log warning |
-| Exa HTTP 5xx / timeout (30s) | `httpx` raises / timeout | `SearchProviderError("upstream timeout")` | Fall back to LLM |
-| Exa returns non-JSON | `json.JSONDecodeError` | `SearchProviderError("unexpected response")` | Fall back to LLM |
-| Exa returns empty results | Response JSON `results: []` | Return `SearchResult` with empty items (not error) | N/A — caller sees "no results" |
-| Both Exa + LLM fail | LLM also returns empty | Empty plan → orchestrator emits `CRAWLER_ERROR` | Normal existing behavior |
-| Config file missing/corrupt | File not found / parse error | Default to `"llm"` with log warning | Safe fallback |
-
----
-
-## Configuration Schema
-
-### `iris_config.json` addition
-
-```json
-{
-  ...existing keys...,
-  "search": {
-    "provider": "exa",
-    "enabled": true
-  }
-}
-```
-
-### `.env` addition
-
-```
-EXA_API_KEY=sk-your-key-here
-```
-
-### Frontend Settings UI shape
-
-```
-Search Settings
-┌─────────────────────────────────────┐
-│ Search Provider: [LLM ▼]            │
-│                                     │
-│ (if Exa selected):                  │
-│ Exa API Key: [•••••••••••••••]     │
-│ [Save API Key]                      │
-└─────────────────────────────────────┘
-```
+| Exa API key missing | `EXA_API_KEY` not set | Factory returns `LLMSearchProvider` + log warning | User sets key via UI |
+| Exa HTTP 401 (invalid key) | Response status | `SearchProviderError` → fallback to LLM | Log error, user fixes key |
+| Exa HTTP 429 (rate limit) | Response + Retry-After | Fallback to LLM, log warning | Auto-retry after window |
+| Exa timeout | httpx timeout | Fallback to LLM | Log warning |
+| LLM topic extraction fails | LLM returns empty / error | Return empty topic list → MISS (fires search) | Search result still works |
+| SemanticStore unavailable | Store read/write exception | Log error, treat as MISS (fires search) | Next resolve retries |
+| Stale URL returns 404 | Crawl4AI fails on page | `PageData.error`, credibility penalized ×0.5 | Next crawl → registry drops it |
+| Config file missing/corrupt | File not found / parse err | Default to `"llm"`, `registry_threshold=2.0` | Safe fallback |
 
 ---
 
@@ -257,42 +371,18 @@ Search Settings
 
 | Tier | What | How | REQ |
 |------|------|-----|-----|
-| **Unit** | `SearchResult`, `SearchResultItem`, `SearchProviderError` | Pure data construction | REQ-1 |
-| **Contract** | Exa HTTP payload shape + response mapping | Mock HTTP server (`pytest-httpx` or `respx`) | REQ-2, REQ-10 |
-| **Contract** | Error mapping (401, 429, timeout, non-JSON) | Mock HTTP server returns error status codes | REQ-9, REQ-10 |
-| **Contract** | `LLMSearchProvider` preserves existing `_call_llm` behavior | Mock LLM client | REQ-6 |
-| **Integration** | `CrawlPlanner.plan()` delegates to configured provider | Test with real config + mock providers | REQ-3, REQ-5 |
+| **Unit** | `RegisteredSource`, `ResolveResult`, `SearchResultItem` | Pure data construction | REQ-1 |
+| **Unit** | `SourceRegistry._score_coverage()` | Hardcoded inputs → expected score | REQ-11 |
+| **Unit** | `SourceRegistry._extract_topics()` mock | Mock LLM returns topics | REQ-11 |
+| **Contract** | Exa HTTP payload + response mapping | Mock HTTP server (`pytest-httpx`) | REQ-2, REQ-10 |
+| **Contract** | Exa error mapping (401, 429, timeout) | Mock HTTP server | REQ-2, REQ-10 |
+| **Contract** | `LLMSearchProvider` preserves `_call_llm` behavior | Mock LLM client | REQ-6 |
+| **Contract** | `SourceRegistry.resolve` HIT vs MISS | Pre-populate semantic store, assert HIT/MISS | REQ-11, REQ-12 |
+| **Contract** | `SourceRegistry.learn` stores correct data | Mock SearchResult + credibility, verify store reads | REQ-13 |
+| **Contract** | Freshness decay: TTL-aged URL scores halved | Set TTL=1, source age=2 days, assert score halved | REQ-14 |
+| **Integration** | `CrawlPlanner.plan()` with SourceRegistry HIT | Registry returns URLs → plan has URLs, no Exa | REQ-12 |
+| **Integration** | `CrawlPlanner.plan()` with SourceRegistry MISS | Registry MISS → plan calls Exa | REQ-12 |
 | **Integration** | Fallback chain: Exa → LLM → empty | Exa mock raises, verify LLM called | REQ-9 |
-| **Integration** | `_execute_web_search` with Exa returns correct shape | Mock `ExaSearchProvider.search()` | REQ-4 |
-| **Integration** | Frontend saves API key → backend stores in `.env` | Trigger WS save, verify file | REQ-7, REQ-8 |
-| **Existing** | All 28 crawl tests still pass (contract + transport + integration + behavioral) | Existing test suite | ALL |
-
----
-
-## Data Flow Diagram (full request lifecycle)
-
-```mermaid
-flowchart TB
-    CFG["iris_config.json<br/>search.provider"] --> FACT["get_search_provider()<br/>factory"]
-    CFG -->|`"exa"`| EXA["ExaSearchProvider"]
-    CFG -->|`"llm"`| LLM["LLMSearchProvider"]
-
-    FACT --> CONTROLLER{Which endpoint?}
-
-    CONTROLLER -->|search tool| SEARCH["_execute_web_search"]
-    CONTROLLER -->|crawler_query| DEEP["_execute_crawler_query"]
-
-    SEARCH -->|Exa active| EXA_SEARCH["Exa.search(query)"]
-    EXA_SEARCH -->|fails| FALLBACK["Fall back to LLM.search"]
-    EXA_SEARCH -->|succeeds| SEARCH_RESULT["Build result from<br/>highlights + URLs"]
-    SEARCH -->|LLM active| LLM_CRAWL["CrawlOrchestrator.research()"]
-    SEARCH_RESULT --> TOOL_RETURN["Return to DER loop"]
-    LLM_CRAWL --> TOOL_RETURN
-
-    DEEP --> PLAN["CrawlPlanner.plan(query)"]
-    PLAN -->|uses| CONTROLLER
-    PLAN --> CRAWL["CrawlOrchestrator.research()"]
-    CRAWL --> CRAWL4AI["Crawl4AI subprocess<br/>+ extract/cite/score"]
-    CRAWL4AI --> DASHBOARD["Emit CRAWLER_STARTED,<br/>PAGE_FETCHED, CRAWLER_COMPLETE"]
-    DASHBOARD --> TOOL_RETURN
-```
+| **Integration** | Seed URLs from partial HIT | Registry returns partial + MISS → plan includes seeds + new | REQ-12 |
+| **Integration** | `_execute_web_search` HIT → returns cached content | Registry HIT, verify No Exa/Crawl4AI called | REQ-4, REQ-12 |
+| **Existing** | All 28 crawl tests still pass | Existing test suite | ALL |
