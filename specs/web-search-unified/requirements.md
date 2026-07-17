@@ -511,19 +511,62 @@ loops.
 **Edge Cases:** VETO storm → `DER_MAX_CYCLES` bounds it; `work_units` hit zero →
 force terminal.
 
-### REQ-28: Contract Tests
-**User Story:** As the project, I want the unification proven by tests, so
-regressions are caught.
+### REQ-28: Layered Verification Strategy (unit / contract / integration / behavioral)
+**User Story:** As the project, I want the unification verified at every layer AND
+at the seams between layers, so both isolated behavior and cross-layer interaction
+are proven and regressions are caught.
+
+**Context (why layered):** The feature is a stack of SEPARATE layers — CrawlOrchestrator
+funnel, event bus, DER loop, pacman store, WS/SSE transport, frontend components —
+that ALSO interact. A test that only checks one layer in isolation misses seam bugs
+(event emitted but not consumed; DER step returns but pacman stores wrong trust);
+a test that only checks the end-to-end path misses layer-internal regressions. The
+spec therefore mandates FOUR tiers, each with a defined scope, method, and proof
+obligation, plus explicit CROSS-LAYER interaction tests.
 
 **Acceptance Criteria:**
-- AC1: THE SYSTEM SHALL add contract tests for: (a) unified event-stream parity
-  between WS and agent paths; (b) citation-binding completeness (every factual
-  sentence has a `chunk_id`); (c) credibility scoring monotonicity
-  (primary_official > forum); (d) DER convergence/termination (no infinite loop
-  under VETO storm); (e) web-gate fail-closed.
-- AC2: ALL contract tests SHALL pass before crystallization.
 
-**Edge Cases:** flaky network in tests → mock the fetch engine, never hit live web.
+- **Tier 1 — Unit (layer-internal):** THE SYSTEM SHALL unit-test each layer in
+  isolation with collaborators stubbed: `CrawlOrchestrator` funnel order (REQ-1
+  AC5); `CredibilityScorer` type classification + monotonicity (REQ-5/6); passage
+  rerank threshold + re-query (REQ-7); `cited_markdown` binding completeness
+  (REQ-8); `FetchBackend` swap (REQ-17 AC4); heartbeat/backoff-jitter logic
+  (REQ-31 AC5). Method: real module + stubbed `CrawlPlanner`/`DataExtractor`/
+  fetch; assert return structures, NOT events.
+- **Tier 2 — Contract (layer boundary / event contract):** THE SYSTEM SHALL
+  contract-test each layer's PUBLIC CONTRACT against stubbed neighbors using the
+  repo convention (real instance + stubbed collaborator + event-bus subscription
+  asserting emitted events, anchored to a pin): (a) unified event-stream parity —
+  WS and agent paths emit the IDENTICAL `crawler_started`→`crawler_page_fetched`→
+  `open_tab`→`crawler_error` sequence for the same query (REQ-10–13); (b) DER
+  `crawler_query` contract — given a web goal, the tool returns `CrawlResult` and
+  the verifier consumes it via the `|u|`-band path (REQ-19/21); (c) pacman
+  contract — `crawler_query` fragment lands in `reference` zone tagged
+  `trust:"untrusted"` with `credibility_map` (REQ-22); (d) transport contract —
+  event log replays `seq > last_seq` and SSE streams the same events (REQ-31
+  AC1/AC3).
+- **Tier 3 — Integration (cross-layer, in-process):** THE SYSTEM SHALL integration-
+  test pairs of layers wired together WITHOUT a live network: orchestrator→event
+  bus→a fake consumer asserting the wing/tab received the events (REQ-11/12);
+  DER loop→`crawler_query`→pacman proving a VETO storm terminates within
+  `DER_MAX_CYCLES` and persists (REQ-20/21/22/27); WS disconnect→Job Registry
+  handoff→persist, NEVER cancelled (REQ-29 AC2); command-over-HTTP-POST processed
+  while push down, result buffered (REQ-31 AC6/AC7). Method: in-process wiring,
+  mock the fetch engine (never hit live web).
+- **Tier 4 — Behavioral (end-to-end, live):** THE SYSTEM SHALL behavioral-test the
+  FULL path against a running backend over the real WS/SSE transport, asserting the
+  ORDERED event sequence a client receives (mirroring `scripts/ws_behavioral_test.py`):
+  web OFF → no `crawler_started` on plain text; web ON → `crawler_started` → N×
+  `crawler_page_fetched` (full URL) → `open_tab` → `document:render`; disconnect
+  mid-crawl → reconnect → missed events replayed; new utterance during crawl →
+  processed, orb reflects new state (REQ-29/30/31). Method: live connection, real
+  or recorded fetch, assert event TYPE ORDER and payload invariants.
+- **AC-Last:** ALL four tiers SHALL pass before crystallization; Tier 2/3/4 tests
+  SHALL be anchored to a PiN recording the contract they enforce.
+
+**Edge Cases:** flaky network → Tier 1–3 mock the fetch engine, never hit live web;
+Tier 4 may use a recorded/replayed fetch; a contract test that emits an event the
+consumer ignores SHALL FAIL (proves the seam, not just the emitter).
 
 ### REQ-29: Background Completion & Disconnect Tolerance (true background)
 **User Story:** As the user, I want a crawl to keep running and persist its result

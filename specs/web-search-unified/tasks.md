@@ -80,8 +80,18 @@
       HANDED TO the shared Job Registry and NEVER cancelled (AC2); ONE shared job
       registry for both paths (AC5); result replays on reconnect (AC3); new user
       utterance accepted + processed while crawl runs, orb reflects new state (AC4).
-- [ ] T18 (REQ-28, REQ-30): Add contract tests: (a) event-stream parity WS vs agent,
-      (b) citation-binding completeness, (c) credibility monotonicity,
-      (d) DER convergence/termination, (e) web-gate fail-closed,
-      (f) UX layer-map parity + audio/visual non-contradiction. Run full suite;
-      zero regressions before crystallization.
+- [ ] T18 (REQ-28): Implement the 4-tier verification suite:
+      - Tier 1 Unit: funnel order, CredibilityScorer monotonicity, rerank threshold,
+        cite completeness, FetchBackend swap, heartbeat/backoff (mock collaborators).
+      - Tier 2 Contract: event-stream parity WS vs agent; DER tool `|u|`-band consume;
+        pacman `reference`/`untrusted`/`credibility_map`; event-log replay + SSE;
+        UX layer-map parity + audio/visual non-contradiction; web-gate fail-closed.
+        (real instance + stubbed collaborator + event-bus assert; anchor each to a PiN)
+      - Tier 3 Integration (in-process, mock fetch): orchestrator→bus→consumer;
+        DER→tool→pacman VETO-storm termination+persist; WS→JobRegistry handoff never
+        cancel; command-over-HTTP-POST while push down; process-tree kill; concurrency
+        cap; agent `crawler_query`→wing+tab.
+      - Tier 4 Behavioral (live backend, assert event ORDER): gate OFF→no start; gate
+        ON→start→N×page_fetched→open_tab→document:render; disconnect→reconnect→replay;
+        new utterance during crawl→processed, orb reflects new state.
+      Run full suite; zero regressions before crystallization.

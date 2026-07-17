@@ -309,31 +309,53 @@ flowchart TB
 
 ---
 
-## Testing Strategy
+## Verification Strategy (4 tiers — isolated layers + cross-layer seams)
 
+The feature is a stack of SEPARATE layers that ALSO interact. Testing must prove
+both: each layer in isolation (Tiers 1–2) AND the seams between them (Tiers 3–4).
+A contract test that emits an event the consumer ignores MUST FAIL — it proves the
+seam, not just the emitter. Repo convention: real instance + stubbed collaborator +
+event-bus subscription asserting emitted events, anchored to a PiN
+(see `backend/tests/contract/test_document_render_contract.py`).
+
+### Tier 1 — Unit (layer-internal, collaborators stubbed)
 | Layer | Test | Verifies |
 |---|---|---|
-| Contract | unified event-stream parity (WS vs agent) | REQ-10–13 identical sequences |
-| Contract | citation-binding completeness | REQ-8: every factual sentence has `chunk_id` |
-| Contract | credibility monotonicity | REQ-5/6: primary_official > forum |
-| Contract | DER convergence/termination | REQ-20/27: no infinite loop under VETO storm |
-| Contract | web-gate fail-closed | REQ-18: no fetch when gate closed |
-| Unit | `CrawlOrchestrator.research` funnel order | REQ-1 AC5 |
-| Unit | `FetchBackend` swap (subprocess↔in-process) | REQ-17 AC4 |
-| Integration | process-tree kill on timeout; no orphan chromium | REQ-17 AC2 |
-| Integration | concurrency cap enforced (≤2 processes) | REQ-17 AC5 |
-| Integration | WS disconnect → crawl continues + persists (agent) | REQ-29 AC1 |
-| Integration | WS `crawl_research` mid-crawl disconnect → handed to Job Registry, NEVER cancelled | REQ-29 AC2 |
-| Integration | new utterance accepted + processed while crawl runs (orb reflects new state) | REQ-29 AC4 |
-| Integration | ONE shared job registry for WS + agent paths | REQ-29 AC5 |
-| Integration | result replays on reconnect | REQ-29 AC3 |
-| Contract | event log replay: missed events recovered after drop (seq>last_seq) | REQ-31 AC1/AC2 |
-| Integration | SSE endpoint streams same events; EventSource auto-reconnect | REQ-31 AC3 |
-| Integration | command over HTTP POST processed while push down; result buffered | REQ-31 AC6/AC7 |
-| Unit | heartbeat + backoff-with-jitter reconnect logic | REQ-31 AC5 |
-| Contract | UX layer map parity (event→component→state, both paths) | REQ-30 AC1/AC4 |
-| Contract | audio/visual non-contradiction (narration vs orb/wing) | REQ-30 AC2 |
-| Unit | `CredibilityScorer` type classification | REQ-6 |
-| Integration | `crawler_query` → wing URL list + tab | REQ-16, REQ-25 |
+| Orchestrator | `research` funnel order Plan→Fetch→Split→Score→Rerank→Cite→Return | REQ-1 AC5 |
+| Credibility | `CredibilityScorer` type classification + monotonicity (primary_official > forum) | REQ-5/6 |
+| Rerank | passage threshold drop + re-query-on-low-score | REQ-7 |
+| Cite | `cited_markdown` binding completeness (every sentence has `chunk_id`) | REQ-8 |
+| Fetch | `FetchBackend` swap (subprocess ↔ in-process) | REQ-17 AC4 |
+| Transport | heartbeat + backoff-with-jitter reconnect logic | REQ-31 AC5 |
 
-All contract tests MUST pass before crystallization (REQ-28).
+### Tier 2 — Contract (layer PUBLIC boundary, stubbed neighbors, event-bus assert)
+| Contract | Test | Verifies |
+|---|---|---|
+| Event parity | WS & agent emit identical `crawler_started`→`page_fetched`→`open_tab`→`error` | REQ-10–13 |
+| DER tool | web goal → `crawler_query` returns `CrawlResult`, verifier consumes via `\|u\|`-band | REQ-19/21 |
+| PacMan | fragment lands `reference` zone, `trust:"untrusted"`, `credibility_map` | REQ-22 |
+| Transport | event log replays `seq>last_seq`; SSE streams same events | REQ-31 AC1/AC3 |
+| UX map | event→component→state parity (both paths); audio/visual non-contradiction | REQ-30 |
+| Web gate | gate closed → no fetch, `success:False` | REQ-18 |
+
+### Tier 3 — Integration (cross-layer, in-process, mock fetch — NO live web)
+| Seam | Test | Verifies |
+|---|---|---|
+| Orchestrator→Bus→Consumer | `crawler_page_fetched`/`open_tab` received by fake wing/tab | REQ-11/12 |
+| DER→tool→PacMan | VETO storm terminates within `DER_MAX_CYCLES` + persists | REQ-20/21/22/27 |
+| WS→JobRegistry | mid-crawl disconnect handed off, NEVER cancelled, persists | REQ-29 AC2 |
+| Command↔Push | HTTP-POST command processed while push down; result buffered | REQ-31 AC6/7 |
+| Crash | process-tree kill on timeout; no orphan chromium | REQ-17 AC2 |
+| Concurrency | cap ≤2 chromium processes | REQ-17 AC5 |
+| Agent path | `crawler_query` → wing URL list + tab | REQ-16/25 |
+
+### Tier 4 — Behavioral (end-to-end, LIVE backend over real WS/SSE; assert event ORDER)
+| Path | Test | Verifies |
+|---|---|---|
+| Gate OFF | plain text → NO `crawler_started` | REQ-18 |
+| Gate ON | `crawler_started` → N×`crawler_page_fetched`(full URL) → `open_tab` → `document:render` | REQ-10–13,23 |
+| Resume | disconnect mid-crawl → reconnect → missed events replayed | REQ-29/31 |
+| Concurrent | new utterance during crawl → processed, orb reflects new state | REQ-29 AC4/30 |
+
+**Rule:** ALL four tiers MUST pass before crystallization (REQ-28). Tier 2/3/4
+contract tests anchored to a PiN recording the enforced contract.
