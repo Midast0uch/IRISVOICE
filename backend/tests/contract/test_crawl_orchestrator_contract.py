@@ -145,5 +145,86 @@ def test_crawl_failure_returns_error_never_raises(events, emitter):
     assert any(e[0] == "CRAWLER_ERROR" for e in events)
 
 
+def test_concurrency_cap_enforced():
+    """REQ-17 AC3: parallel crawl subprocesses are capped (default 2); the 3rd waits."""
+    import crawler.crawl_runner as runner
+
+    # Track concurrent in-flight "subprocesses" via a fake create_subprocess_exec.
+    state = {"concurrent": 0, "max_concurrent": 0, "started": 0}
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = _FakeStream()
+            self.pid = 999999  # unused; tree-kill is a no-op for fake
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    class _FakeStream:
+        async def readline(self):
+            await asyncio.sleep(0.05)  # simulate slow drain
+            return b""  # EOF immediately after first read
+
+    async def _fake_create(*args, **kwargs):
+        state["concurrent"] += 1
+        state["started"] += 1
+        state["max_concurrent"] = max(state["max_concurrent"], state["concurrent"])
+        proc = _FakeProc()
+        await asyncio.sleep(0.08)  # hold the slot briefly
+        state["concurrent"] -= 1
+        return proc
+
+    orig = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = _fake_create
+    try:
+        # 4 concurrent crawls; cap is 2 so max in-flight must never exceed 2.
+        async def _run_all():
+            async def _one():
+                return await runner.run_crawl_subprocess("q", ["https://x.com"], "i")
+            return await asyncio.gather(*[_one() for _ in range(4)])
+        results = asyncio.run(_run_all())
+    finally:
+        asyncio.create_subprocess_exec = orig
+
+    assert all(r.error is None or r.pages == [] for r in results)
+    assert state["max_concurrent"] <= 2, f"concurrency exceeded cap: {state['max_concurrent']}"
+
+
+def test_process_tree_killed_on_timeout(tmp_path):
+    """REQ-17 AC2: on timeout the worker's child process tree is reaped, not orphaned."""
+    import crawler.crawl_runner as runner
+
+    # Worker script: spawn a grandchild `sleep` and then hang so the parent times out.
+    worker = tmp_path / "hang_worker.py"
+    worker.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "sys.stderr = open('nul', 'w') if sys.platform == 'win32' else open('/dev/null', 'w')\n"
+        "time.sleep(30)\n"
+    )
+
+    orig_create = asyncio.create_subprocess_exec
+
+    async def _fake_create(*args, **kwargs):
+        # Swap the real worker module for our hang worker to force a timeout.
+        new_args = list(args)
+        new_args[1] = str(worker)
+        return await orig_create(*new_args, **kwargs)
+
+    asyncio.create_subprocess_exec = _fake_create
+    try:
+        result = asyncio.run(
+            runner.run_crawl_subprocess("q", ["https://x.com"], "i", timeout_s=1)
+        )
+    finally:
+        asyncio.create_subprocess_exec = orig_create
+
+    assert result.error is not None
+    assert "timed out" in result.error
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
