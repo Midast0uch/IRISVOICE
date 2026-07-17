@@ -57,6 +57,7 @@ export const SECTION_IDS = {
   AGENT_SWARM_SETUP: 'swarm_setup',
   AGENT_IDENTITY: 'identity',
   AGENT_MEMORY: 'memory',
+  AGENT_SEARCH: 'search',
 
   // Automate category
   AUTOMATE_TOOLS: 'tools',

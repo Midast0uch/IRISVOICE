@@ -283,7 +283,7 @@
       "models_directory": " "
     },
     "search": {
-      "provider": "llm",
+      "provider": "exa",
       "enabled": true,
       "registry_threshold": 2.0,
       "registry_ttl_days": 7

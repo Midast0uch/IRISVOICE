@@ -29,6 +29,7 @@ export const CARD_TO_SECTION_ID: Record<string, string> = {
   'swarm-setup-card': 'swarm_setup',
   'personality-card': 'identity',
   'memory-card': 'memory',
+  'search-card': 'search',
 
   // Automate
   'tool-permissions-card': 'tools',
@@ -72,6 +73,7 @@ export const SECTION_TO_LABEL: Record<string, string> = {
   swarm_setup: 'Swarm Setup',
   identity: 'Identity',
   memory: 'Memory',
+  search: 'Web Search',
   tools: 'Tools',
   vision: 'Vision',
   desktop_control: 'Desktop Control',
@@ -108,6 +110,7 @@ export const SECTION_TO_ICON: Record<string, string> = {
   swarm_setup: 'Network',
   identity: 'User',
   memory: 'Database',
+  search: 'Search',
   tools: 'Tool',
   vision: 'Eye',
   desktop_control: 'Monitor',

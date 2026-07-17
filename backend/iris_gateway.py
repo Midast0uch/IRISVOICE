@@ -878,6 +878,44 @@ class IRISGateway:
 
                     response_value = mask_api_key(value)
 
+                # REQ-7: persist the Exa API key to .env when saved from settings.
+                if field_id == "exa_api_key" and value:
+                    try:
+                        from pathlib import Path
+
+                        env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+                        current = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+                        if "EXA_API_KEY=" in current:
+                            # Update existing line
+                            lines = current.splitlines()
+                            new_lines = []
+                            found = False
+                            for line in lines:
+                                if line.startswith("EXA_API_KEY="):
+                                    new_lines.append(f"EXA_API_KEY={value}")
+                                    found = True
+                                else:
+                                    new_lines.append(line)
+                            if not found:
+                                new_lines.append(f"EXA_API_KEY={value}")
+                            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                        else:
+                            with open(env_path, "a", encoding="utf-8") as f:
+                                f.write(f"\nEXA_API_KEY={value}\n")
+                        # Clear the cached provider so it picks up the new key.
+                        from backend.crawler.search_providers import clear_search_provider_cache
+
+                        clear_search_provider_cache()
+                        logger.info("[SearchConfig] Exa API key saved to .env")
+                    except Exception as exc:
+                        logger.warning("[SearchConfig] failed to save Exa key to .env: %s", exc)
+
+                # Clear provider cache when provider selection changes.
+                if field_id == "provider" and value:
+                    from backend.crawler.search_providers import clear_search_provider_cache
+                    clear_search_provider_cache()
+                    logger.info("[SearchConfig] Search provider changed to %r", value)
+
                 # Send confirmation with timestamp - include both new and legacy field names
                 await self._ws_manager.send_to_client(
                     client_id,

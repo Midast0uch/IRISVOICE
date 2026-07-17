@@ -34,15 +34,31 @@ _CONFIG_FILE = _PROJECT_ROOT / "data" / "iris_config.json"
 def _read_search_config() -> dict:
     """Read the ``search`` section of ``iris_config.json``.
 
+    Also checks ``field_values`` in the config for ``search.*`` overrides
+    set by the frontend settings panel (e.g. ``search.provider``,
+    ``search.exa_api_key``).
+
     Returns an empty dict on any read/parse error (safe fallback).
     """
     try:
         with open(_CONFIG_FILE) as f:
             cfg = json.load(f)
-        return cfg.get("search", {})
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         logger.warning("[SearchProvider] cannot read config: %s — using defaults", exc)
         return {}
+
+    search_cfg = dict(cfg.get("search", {}))
+
+    # Merge field_values overrides (set by frontend settings card).
+    fv = cfg.get("field_values", {})
+    search_fv = fv.get("search", {})
+
+    if search_fv.get("provider"):
+        search_cfg["provider"] = search_fv["provider"]
+    if search_fv.get("exa_api_key"):
+        search_cfg["exa_api_key"] = search_fv["exa_api_key"]
+
+    return search_cfg
 
 
 def get_search_provider() -> SearchProvider:
@@ -75,7 +91,11 @@ def get_search_provider() -> SearchProvider:
         try:
             from backend.crawler.search_providers.exa import ExaSearchProvider
 
-            _provider_instance = ExaSearchProvider()
+            # Try env first, then config field_values (from frontend settings).
+            import os
+
+            exa_key = os.environ.get("EXA_API_KEY") or config.get("exa_api_key") or ""
+            _provider_instance = ExaSearchProvider(api_key=exa_key)
             logger.info("[SearchProvider] using Exa neural search")
         except ValueError as exc:
             logger.warning(
