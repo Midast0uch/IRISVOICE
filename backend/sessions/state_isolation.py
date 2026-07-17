@@ -190,6 +190,16 @@ class IsolatedStateManager:
         fv = getattr(self._state, "field_values", None) or {}
         return fv.get(section_id, {}).get(field_id, default)
 
+    def set_field_value(self, section_id: str, field_id: str, value: Any) -> None:
+        """Set a field value in the session state and mark it for persistence."""
+        field_values = getattr(self._state, "field_values", None)
+        if field_values is None:
+            self._state.field_values = {section_id: {field_id: value}}
+            return
+        if section_id not in field_values:
+            field_values[section_id] = {}
+        field_values[section_id][field_id] = value
+
     def get_section_field_values(self, section_id: str) -> Dict[str, Any]:
         fv = getattr(self._state, "field_values", None) or {}
         return dict(fv.get(section_id, {}))
