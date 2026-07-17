@@ -1148,7 +1148,18 @@ class AgentToolBridge:
                 return result
 
             if tool_name == "crawler_query":
-                result = await self._execute_crawler_query(params, session_id)
+                # Long-running tool: wrap with the generic narration heartbeat
+                # (backend/agent/narration.py), driven by the ToolSpec.long_running
+                # capability — NOT a web-mode override. This keeps the DER operator
+                # uniform (blueprint: no mode-driven fan-out). The heartbeat speaks
+                # periodic progress through the SpeakTool while the crawl runs.
+                from backend.agent.narration import run_with_narration
+
+                result = await run_with_narration(
+                    lambda: self._execute_crawler_query(params, session_id),
+                    speak=self._speak_tool.speak,
+                    tool_name=tool_name,
+                )
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
                 return result
 
@@ -1528,123 +1539,91 @@ class AgentToolBridge:
             return {"success": False, "error": "crawler_query requires a 'query'"}
 
         try:
-            from backend.crawler.crawl_planner import get_crawl_planner
-            from backend.crawler.data_extractor import get_data_extractor
+            from backend.crawler.orchestrator import get_crawl_orchestrator, CrawlProgress
+            from backend.agent.tools.speak_tool import get_speak_tool
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
         except Exception as exc:
             return {"success": False, "error": f"crawler modules unavailable: {exc}"}
 
-        # Step 1: Plan source URLs + extraction instructions.
+        _speak_tool = get_speak_tool()
+        _bus = get_event_bus()
+
+        # Flip the orb / ContextPill phase to "processing_tool" (SEARCHING) so the
+        # user sees the assistant is actively researching, not just "processing
+        # my STT". Bridged to the frontend via WSEventBridge.
         try:
-            plan = await get_crawl_planner().plan(query)
-        except Exception as exc:
-            logger.error("[crawler_query] planning failed: %s", exc)
-            return {"success": False, "error": f"planning failed: {exc}"}
+            _bus.emit(
+                IRISStreamEvent.LISTENING_STATE,
+                data={"state": "processing_tool"},
+                session_id=session_id,
+            )
+        except Exception:
+            pass  # never block the crawl on an event emit failure
 
-        # Step 2: Crawl — isolated in a SEPARATE PROCESS so a Chromium C-level
-        # crash cannot take down the agent/backend. run_crawl_subprocess relays
-        # per-page progress back via on_page_done and returns a CrawlResult with
-        # .error set on any failure (crash/timeout/unavailable) — it never raises.
-        try:
-            # Progress utterances: let the user hear that research is happening
-            # (Issue E follow-up — user reported no utterance while searching).
-            # The speak tool is fire-and-forget and rate-limited; if the audio
-            # pipeline is closed it is buffered/suppressed by ConversationKernel.
-            from backend.agent.tools.speak_tool import get_speak_tool
-            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-
-            _speak_tool = get_speak_tool()
-            _bus = get_event_bus()
-
-            # Flip the orb / ContextPill phase to "processing_tool" (SEARCHING)
-            # so the user sees the assistant is actively researching, not just
-            # "processing my STT". Bridged to the frontend via WSEventBridge.
+        def _on_page_done(url: str, page_number: int, total: int) -> None:
             try:
+                _speak_tool.speak(
+                    f"Researching — fetched page {page_number} of {total}.",
+                    priority="low",
+                )
+            except Exception as _spk_exc:  # pragma: no cover - best effort
+                logger.debug("[crawler_query] progress speak failed: %s", _spk_exc)
+            # Live step feed: update the current working plan step + the
+            # ContextPill action text with the site being read. The frontend
+            # (useTaskProgress) maps this onto the in-progress step so the
+            # plan card shows "Reading <host> (N/M)" as pages arrive.
+            try:
+                from urllib.parse import urlparse
+
+                _host = urlparse(url or "").netloc or "source"
                 _bus.emit(
-                    IRISStreamEvent.LISTENING_STATE,
-                    data={"state": "processing_tool"},
+                    IRISStreamEvent.TASK_PROGRESS,
+                    data={
+                        "description": f"Reading {_host} ({page_number}/{total})",
+                        "action": f"Reading {_host} ({page_number}/{total})",
+                        "update_step": True,
+                    },
                     session_id=session_id,
                 )
             except Exception:
                 pass  # never block the crawl on an event emit failure
 
-            def _on_page_done(url: str, page_number: int, total: int) -> None:
-                try:
-                    _speak_tool.speak(
-                        f"Researching — fetched page {page_number} of {total}.",
-                        priority="low",
-                    )
-                except Exception as _spk_exc:  # pragma: no cover - best effort
-                    logger.debug("[crawler_query] progress speak failed: %s", _spk_exc)
-                # Live step feed: update the current working plan step + the
-                # ContextPill action text with the site being read. The frontend
-                # (useTaskProgress) maps this onto the in-progress step so the
-                # plan card shows "Reading <host> (N/M)" as pages arrive.
-                try:
-                    from urllib.parse import urlparse
+        def _on_progress(progress: CrawlProgress) -> None:
+            ev = progress.event
+            pl = progress.payload
+            if ev == "CRAWLER_PAGE_FETCHED":
+                _on_page_done(pl["url"], pl["page_number"], pl["total"])
+            elif ev == "CRAWLER_ERROR":
+                logger.error("[crawler_query] %s", pl.get("message", "error"))
 
-                    _host = urlparse(url or "").netloc or "source"
-                    _bus.emit(
-                        IRISStreamEvent.TASK_PROGRESS,
-                        data={
-                            "description": f"Reading {_host} ({page_number}/{total})",
-                            "action": f"Reading {_host} ({page_number}/{total})",
-                            # Rewrite the in-progress plan step text so the card
-                            # shows the site being read live (not just the pill).
-                            "update_step": True,
-                        },
-                        session_id=session_id,
-                    )
-                except Exception:
-                    pass  # never block the crawl on an event emit failure
-
-            from backend.crawler.crawl_runner import run_crawl_subprocess
-            crawl_result = await run_crawl_subprocess(
-                query=query,
-                urls=plan.urls,
-                instructions=plan.instructions,
-                on_page_done=_on_page_done,
-            )
-
-            # Crawl finished — return the phase to "thinking" so the orb reflects
-            # the agent summarising (the DER loop drives speaking next).
-            try:
-                _bus.emit(
-                    IRISStreamEvent.LISTENING_STATE,
-                    data={"state": "processing_conversation"},
-                    session_id=session_id,
-                )
-            except Exception:
-                pass  # never block on an event emit failure
-        except Exception as exc:
-            logger.error("[crawler_query] crawl setup failed: %s", exc)
-            try:
-                _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
-            except Exception:
-                pass
-            return {"success": False, "error": f"crawl setup failed: {exc}"}
-
-        # Crawl subprocess reported a failure (crash / timeout / unavailable).
-        # Degrade gracefully: the agent receives success=False and can tell the
-        # user, instead of the whole backend dying.
-        if getattr(crawl_result, "error", None):
-            logger.error("[crawler_query] crawl failed: %s", crawl_result.error)
-            try:
-                _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
-            except Exception:
-                pass
-            return {"success": False, "error": crawl_result.error}
-
-        # Step 3: Extract structured DashboardData.
+        # Unified path: CrawlOrchestrator runs plan -> fetch -> split -> score ->
+        # rerank -> cite -> extract in one place (REQ-15). mode="agent" uses the
+        # subprocess fetch backend for C-level crash isolation (REQ-17). Narration
+        # stays blueprint-pure: no web-mode override in the tool layer.
         try:
-            dashboard_data = await get_data_extractor().extract(
-                result=crawl_result,
-                instructions=plan.instructions,
-                result_type=plan.result_type,
-                title=plan.title,
+            result = await get_crawl_orchestrator().research(
+                query, mode="agent", session_id=session_id, on_progress=_on_progress,
             )
         except Exception as exc:
-            logger.error("[crawler_query] extraction failed: %s", exc)
-            return {"success": False, "error": f"extraction failed: {exc}"}
+            logger.error("[crawler_query] research failed: %s", exc)
+            try:
+                _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
+            except Exception:
+                pass
+            return {"success": False, "error": f"research failed: {exc}"}
+
+        # Return phase to "thinking" so the orb reflects the agent summarising.
+        try:
+            _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
+        except Exception:
+            pass  # never block on an event emit failure
+
+        if result.error:
+            logger.error("[crawler_query] crawl failed: %s", result.error)
+            return {"success": False, "error": result.error}
+
+        crawl_result = result
+        dashboard_data = result.dashboard_data or {}
 
         pages: List[Dict[str, str]] = []
         for p in dashboard_data.get("pages", []):
