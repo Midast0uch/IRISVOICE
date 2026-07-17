@@ -2823,8 +2823,12 @@ class AgentKernel:
         # final output.  If the JSON carries a "spoken" field, extract and
         # return it as the display text (the TTS already spoke it; this gives
         # the ChatView the same text to show).
-        if isinstance(parsed, dict) and "spoken" in parsed:
-            return parsed["spoken"]
+        try:
+            _parsed = json.loads(response)
+            if isinstance(_parsed, dict) and "spoken" in _parsed:
+                return _parsed["spoken"]
+        except (json.JSONDecodeError, TypeError):
+            pass
         # speak is None.  If a visual document was emitted above, say nothing —
         # never return the raw JSON, or it would be spoken by TTS and shown in
         # chat as the assistant's message.  Otherwise fall back to the plain
