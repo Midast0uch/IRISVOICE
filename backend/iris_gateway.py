@@ -8698,100 +8698,43 @@ class IRISGateway:
         async def send(msg: dict) -> None:
             await self._ws_manager.send_to_client(client_id, msg)
 
-        # Step 1: Plan
-        try:
-            plan = await get_crawl_planner().plan(query)
-        except Exception as exc:
-            self._logger.error("[Crawler] planning failed: %s", exc)
-            await send({"type": "crawler_error", "message": f"Planning failed: {exc}"})
-            await send({"type": "listening_state", "payload": {"state": "idle"}})
-            return
+        # --- Unified path: delegate to CrawlOrchestrator (REQ-15, REQ-1) ---
+        from .crawler.orchestrator import get_crawl_orchestrator, CrawlProgress
 
-        # Step 2: Notify start
-        await send(
-            {
-                "type": "crawler_started",
-                "query": query,
-                "url_count": len(plan.urls),
-            }
+        # listening_state -> processing_tool while researching (REQ-24)
+        await send({"type": "listening_state", "payload": {"state": "processing_tool"}})
+
+        def _on_progress(progress: CrawlProgress) -> None:
+            ev = progress.event
+            pl = progress.payload
+            if ev == "CRAWLER_STARTED":
+                asyncio.ensure_future(send(
+                    {"type": "crawler_started", "query": pl["query"], "url_count": pl["url_count"]}
+                ))
+            elif ev == "CRAWLER_PAGE_FETCHED":
+                asyncio.ensure_future(send(
+                    {"type": "crawler_page_fetched", "url": pl["url"],
+                     "page_number": pl["page_number"], "total": pl["total"], "host": pl["host"]}
+                ))
+            elif ev == "OPEN_TAB":
+                asyncio.ensure_future(send(
+                    {"type": "open_tab", "tab_type": pl["tab_type"],
+                     "id": pl["id"], "title": pl["title"], "data": pl["data"]}
+                ))
+            elif ev == "CRAWLER_ERROR":
+                asyncio.ensure_future(send({"type": "crawler_error", "message": pl["message"]}))
+
+        result = await get_crawl_orchestrator().research(
+            query, mode="ws", session_id=session_id, on_progress=_on_progress,
         )
 
-        # Drive the orb out of "listening" into a processing state. The crawler
-        # handler previously never emitted any listening_state, so the orb stayed
-        # "listening" until a manual click (the original stuck-orb symptom).
-        await send(
-            {"type": "listening_state", "payload": {"state": "processing_conversation"}}
-        )
-
-        # Step 3: Crawl
-        try:
-            loop = asyncio.get_running_loop()
-
-            def _on_page(url: str, page_num: int, total: int) -> None:
-                asyncio.run_coroutine_threadsafe(
-                    send(
-                        {
-                            "type": "crawler_page_fetched",
-                            "url": url,
-                            "page_number": page_num,
-                            "total": total,
-                        }
-                    ),
-                    loop,
-                )
-
-            async with CrawlerEngine() as engine:
-                crawl_result = await engine.crawl(
-                    query=query,
-                    urls=plan.urls,
-                    instructions=plan.instructions,
-                    on_page_done=_on_page,
-                )
-        except CrawlerUnavailable as exc:
-            await send({"type": "crawler_error", "message": str(exc)})
-            await send(
-                {
-                    "type": "text_response",
-                    "turn_id": get_turn_id(),
-                    "text": str(exc),
-                    "sender": "assistant",
-                }
-            )
-            await send({"type": "listening_state", "payload": {"state": "idle"}})
-            return
-        except Exception as exc:
-            self._logger.error("[Crawler] crawl failed: %s", exc)
-            await send({"type": "crawler_error", "message": f"Crawl failed: {exc}"})
+        if result.error:
+            await send({"type": "crawler_error", "message": result.error})
             await send({"type": "listening_state", "payload": {"state": "idle"}})
             return
 
-        # Step 4: Extract structured DashboardData
-        try:
-            dashboard_data = await get_data_extractor().extract(
-                result=crawl_result,
-                instructions=plan.instructions,
-                result_type=plan.result_type,
-                title=plan.title,
-            )
-        except Exception as exc:
-            self._logger.error("[Crawler] extraction failed: %s", exc)
-            await send(
-                {"type": "crawler_error", "message": f"Extraction failed: {exc}"}
-            )
-            await send({"type": "listening_state", "payload": {"state": "idle"}})
-            return
-
-        # Step 5: Open dashboard tab in wing
-        tab_id = str(uuid.uuid4())
-        await send(
-            {
-                "type": "open_tab",
-                "tab_type": "dashboard",
-                "id": tab_id,
-                "title": plan.title,
-                "data": dashboard_data,
-            }
-        )
+        dashboard_data = result.dashboard_data or {}
+        cited_markdown = result.cited_markdown or ""
 
         # Step 6: Summary text response in ChatView + speak a short summary.
         summary = dashboard_data.get("summary", "")
