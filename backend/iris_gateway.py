@@ -239,6 +239,110 @@ class IRISGateway:
         if not self._tts_prewarmed:
             pass  # Pocket-TTS loads in ~1s â€” no startup prewarm
 
+        # Re-discover a local model that was loaded in a previous backend run.
+        # The llama-server subprocess can outlive a backend restart, and config
+        # keeps local_model_status="loaded", but the in-memory router registration
+        # is lost on restart -> the local provider never reappears in the
+        # Brain/Tool dropdowns. Probe the server and re-register if reachable.
+        try:
+            loop.create_task(self._hydrate_local_provider_on_startup())
+        except Exception as e:  # never block startup on this
+            self._logger.warning(f"[IRISGateway] local hydrate schedule failed: {e}")
+
+    async def _hydrate_local_provider_on_startup(self) -> None:
+        """Re-register the 'local' provider after a backend restart.
+
+        Triggered only when config says a local model is loaded AND the local
+        inference server is actually reachable. Registers into every peer kernel
+        (same as the live load path) and emits provider_added so the frontend
+        dropdown populates without the user re-loading.
+        """
+        try:
+            from .iris_config import load_config as _lc
+            from backend.agent.local_model_manager import (
+                get_local_model_manager,
+                LocalModelManager,
+            )
+            from backend.agent.inference.provider import (
+                ProviderInstance,
+                ProviderKind,
+            )
+            from pathlib import Path as _Path
+
+            _cfg = _lc()
+            _status = getattr(_cfg, "local_model_status", None)
+            if _status != "loaded":
+                return
+            _mgr = get_local_model_manager()
+            _endpoint = getattr(_mgr, "ENDPOINT", "http://127.0.0.1:8091/v1")
+            # Probe the server (manager.is_loaded() is False after restart because
+            # it tracks the subprocess it launched, which is gone).
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as _c:
+                    _r = await _c.get(_endpoint.rstrip("/") + "/models")
+                if _r.status_code >= 400:
+                    self._logger.info(
+                        f"[LocalHydrate] server at {_endpoint} responded "
+                        f"{_r.status_code} — skipping re-register"
+                    )
+                    return
+            except Exception as _e:
+                self._logger.info(
+                    f"[LocalHydrate] local server not reachable ({_e}) — skipping"
+                )
+                return
+
+            _model_path = (
+                getattr(_cfg, "local_model_path", None)
+                or (_cfg.field_values or {}).get("iris_local_model_path")
+                or getattr(_mgr, "_current_model_path", None)
+            )
+            _model_name = (
+                _Path(_model_path).stem if _model_path else "local-model"
+            )
+            _inproc = getattr(_mgr, "_llm", None) is not None
+            _local_inst = ProviderInstance(
+                id="local",
+                label=f"Local: {_model_name}",
+                kind=(
+                    ProviderKind.INPROCESS if _inproc else ProviderKind.LOCAL_OPENAI
+                ),
+                model=_model_name,
+                api_base_url="" if _inproc else _endpoint,
+            )
+            _kernels = [self] + [
+                pk for pk in _agent_kernel_instances.values() if pk is not self
+            ]
+            for _kr in _kernels:
+                _r = getattr(_kr, "_router", None)
+                if _r is None:
+                    continue
+                _r.add_provider(_local_inst)
+                if _inproc:
+                    _r.set_inprocess_manager(_mgr)
+            self._logger.info(
+                f"[LocalHydrate] re-registered local provider 'local' "
+                f"(kind={_local_inst.kind.value}) across {len(_kernels)} kernel(s)"
+            )
+            # Notify the frontend so the dropdown populates.
+            try:
+                await self._ws_manager.broadcast(
+                    {
+                        "type": "provider_added",
+                        "payload": {
+                            "id": _local_inst.id,
+                            "label": _local_inst.label,
+                            "kind": _local_inst.kind.value,
+                            "model": _local_inst.model,
+                            "api_base_url": _local_inst.api_base_url,
+                        },
+                    }
+                )
+            except Exception as _be:
+                self._logger.warning(f"[LocalHydrate] broadcast failed: {_be}")
+        except Exception as e:
+            self._logger.warning(f"[LocalHydrate] error: {e}")
+
     def _touch_session(self, session_id: str) -> None:
         """Update the last-seen timestamp for a session."""
         self._session_last_seen[session_id] = time.monotonic()
@@ -1204,25 +1308,87 @@ class IRISGateway:
                         api_base_url=_api_base_url,
                     )
 
-                    # Apply per-role bindings AFTER set_model_selection so the
-                    # provider instances are in the registry before bind_role is
-                    # called. This lets Brain=local, Tool=cerebras (or any mix)
-                    # work through the frontend's per-role dropdowns.
-                    if reasoning and reasoning != tool_exec:
-                        kernel.set_role_binding("reasoning", reasoning)
-                    elif reasoning:
-                        kernel.set_role_binding("reasoning", reasoning)
-                    if tool_exec and tool_exec != reasoning:
-                        kernel.set_role_binding("tool_execution", tool_exec)
-                    elif tool_exec:
-                        kernel.set_role_binding("tool_execution", tool_exec)
+                    # Apply role bindings AFTER set_model_selection so the
+                    # provider instance is registered in the router before we
+                    # bind roles to it.
+                    #
+                    # CRITICAL: bind roles to the PROVIDER INSTANCE ID
+                    # (`provider`, e.g. "cerebras" / "local"), NOT to the model
+                    # display name (`reasoning` / `tool_exec`, e.g. "gemma-4-31b").
+                    # The router only knows provider-instance IDs; binding a role
+                    # to a bare model name creates a dangling binding that
+                    # resolve() cannot find, collapsing both roles onto the
+                    # default and silently overriding the user's per-role picks.
+                    #
+                    # Preserve a deliberate Brain != Tool selection: if the
+                    # router already holds DISTINCT reasoning/tool_execution
+                    # bindings (set by the Brain/Tool dropdowns via
+                    # sendRoleBinding), do NOT clobber them with the single
+                    # `provider` from this confirm_card.
+                    _existing = {}
+                    try:
+                        _rt = getattr(kernel, "_router", None)
+                        if _rt is not None and hasattr(_rt, "_roles"):
+                            for _b in _rt._roles.list():
+                                _existing[_b.role] = _b.instance_id
+                    except Exception:
+                        _existing = {}
+                    _per_role_distinct = (
+                        _existing.get("reasoning")
+                        and _existing.get("tool_execution")
+                        and _existing["reasoning"] != _existing["tool_execution"]
+                    )
+                    if not _per_role_distinct and provider:
+                        # Single-provider selection (Use Same Model, or no
+                        # per-role override yet): bind BOTH roles to the
+                        # provider instance ID, carrying the chosen model as an
+                        # override so per-role models are still honoured.
+                        kernel.set_role_binding(
+                            "reasoning", provider, model_override=reasoning
+                        )
+                        kernel.set_role_binding(
+                            "tool_execution", provider, model_override=tool_exec
+                        )
+                    else:
+                        self._logger.info(
+                            f"[Session: {session_id}] Preserving existing per-role "
+                            f"bindings (reasoning={_existing.get('reasoning')}, "
+                            f"tool={_existing.get('tool_execution')}); model_selection "
+                            f"confirm_card will not override them.",
+                            extra={"session_id": session_id, "client_id": client_id},
+                        )
                     self._logger.info(
                         f"[Session: {session_id}] Model selection applied on confirm: "
                         f"reasoning={reasoning}, tool={tool_exec}, provider={provider}",
                         extra={"session_id": session_id, "client_id": client_id},
                     )
+                    try:
+                        _ssm = await self._state_manager._get_session_state_manager(
+                            session_id
+                        )
+                        if _ssm:
+                            _ssm.set_field_value(
+                                "model_selection", "model_provider", provider
+                            )
+                            if reasoning:
+                                _ssm.set_field_value(
+                                    "model_selection", "reasoning_model", reasoning
+                                )
+                            if tool_exec:
+                                _ssm.set_field_value(
+                                    "model_selection",
+                                    "tool_execution_model",
+                                    tool_exec,
+                                )
+                    except Exception:
+                        self._logger.warning(
+                            "[Session: %s] Failed to persist model_selection "
+                            "to session state (confirm_card)",
+                            session_id,
+                            exc_info=True,
+                        )
 
-                    # â”€â”€ Provider URL map â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    # ─── Provider URL map ───
                     # Named providers with well-known endpoints.
                     # Each maps to a base URL; the user only needs to provide an API key.
                     PROVIDER_ENDPOINTS = {
@@ -5731,8 +5897,35 @@ class IRISGateway:
             )
 
             if success:
-                # Update state manager with model selection
-                pass
+                # Persist to session state so downstream handlers
+                # (e.g. get_available_models) read the correct provider
+                # instead of falling back to "lmstudio".
+                try:
+                    _ssm = await self._state_manager._get_session_state_manager(
+                        session_id
+                    )
+                    if _ssm:
+                        _ssm.set_field_value(
+                            "model_selection", "model_provider", model_provider
+                        )
+                        if reasoning_model:
+                            _ssm.set_field_value(
+                                "model_selection",
+                                "reasoning_model",
+                                reasoning_model,
+                            )
+                        if tool_execution_model:
+                            _ssm.set_field_value(
+                                "model_selection",
+                                "tool_execution_model",
+                                tool_execution_model,
+                            )
+                except Exception:
+                    self._logger.warning(
+                        "[Session: %s] Failed to persist model_selection to session state",
+                        session_id,
+                        exc_info=True,
+                    )
             state = await self._state_manager.get_state(session_id)
             if state:
                 state.selected_reasoning_model = reasoning_model
@@ -7469,12 +7662,25 @@ class IRISGateway:
                             model=_Path(model_path).stem,
                             api_base_url="" if _inproc else mgr.ENDPOINT,
                         )
-                        _router.add_provider(_local_inst)
-                        if _inproc:
-                            _router.set_inprocess_manager(mgr)
+                        # Register on this kernel's router AND every peer kernel's
+                        # router so the local provider is visible across all
+                        # conversation threads. The /api/inference/state endpoint
+                        # reads the "default" kernel, which may differ from the WS
+                        # session kernel — without peer propagation the local model
+                        # never appears in the Brain/Tool dropdowns. (Same fix
+                        # pattern already applied to set_model_selection and
+                        # set_role_binding.)
+                        for _kr in [self] + [pk for pk in _agent_kernel_instances.values() if pk is not self]:
+                            _r = getattr(_kr, "_router", None)
+                            if _r is None:
+                                continue
+                            _r.add_provider(_local_inst)
+                            if _inproc:
+                                _r.set_inprocess_manager(mgr)
                         self._logger.info(
                             f"[SLICE3] Registered local provider 'local' "
-                            f"(kind={_local_inst.kind.value}, session {session_id})"
+                            f"(kind={_local_inst.kind.value}, session {session_id}) "
+                            f"across {len(_agent_kernel_instances)} kernel(s)"
                         )
                         await self._ws_manager.broadcast_to_session(
                             session_id,

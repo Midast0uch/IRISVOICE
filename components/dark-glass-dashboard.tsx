@@ -197,6 +197,7 @@ function getFieldCategory(field: any, sectionId: string): 'config' | 'visualizer
 const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, sendMessage, audioInputDevices, audioOutputDevices, wakeWords }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[] }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
   const value = fieldValues && sectionId ? (fieldValues[sectionId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
+  const [btnFeedback, setBtnFeedback] = useState<string | null>(null);
   
   const errorKey = sectionId && field.id ? `${sectionId}:${field.id}` : null;
   const errorMessage = errorKey && fieldErrors ? fieldErrors[errorKey] : null;
@@ -308,6 +309,8 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
       <div className="py-2 col-span-full">
         <button
           onClick={() => {
+            setBtnFeedback("clicked");
+            setTimeout(() => setBtnFeedback(null), 2000);
             if (field.action) {
               window.dispatchEvent(new CustomEvent('iris:card_action', { detail: { action: field.action, fieldId: field.id } }));
             } else {
@@ -315,11 +318,15 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
             }
           }}
           className="w-full py-2 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all"
-          style={{ background: `${glowColor}15`, border: `1px solid ${glowColor}44`, color: glowColor }}
-          onMouseEnter={e => { e.currentTarget.style.background = `${glowColor}25`; e.currentTarget.style.borderColor = `${glowColor}66`; }}
-          onMouseLeave={e => { e.currentTarget.style.background = `${glowColor}15`; e.currentTarget.style.borderColor = `${glowColor}44`; }}
+          style={{
+            background: btnFeedback ? `${glowColor}30` : `${glowColor}15`,
+            border: `1px solid ${btnFeedback ? glowColor : `${glowColor}44`}`,
+            color: glowColor,
+          }}
+          onMouseEnter={e => { if (!btnFeedback) { e.currentTarget.style.background = `${glowColor}25`; e.currentTarget.style.borderColor = `${glowColor}66`; }}}
+          onMouseLeave={e => { if (!btnFeedback) { e.currentTarget.style.background = `${glowColor}15`; e.currentTarget.style.borderColor = `${glowColor}44`; }}}
         >
-          {field.label}
+          {btnFeedback ? `✓ ${field.label}` : field.label}
         </button>
       </div>
     );
@@ -451,6 +458,7 @@ export function DarkGlassDashboard({
   const [isSidebarHidden, setIsSidebarHidden] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['input', 'model_inference', 'tools', 'power', 'theme', 'analytics']));
   const [isApplying, setIsApplying] = useState(false);
+  const [applyStatus, setApplyStatus] = useState<"idle" | "applying" | "applied">("idle");
   
   const [browserUrl, setBrowserUrl] = useState<string>('https://www.google.com');
   const [browserInput, setBrowserInput] = useState<string>('https://www.google.com');
@@ -758,6 +766,14 @@ export function DarkGlassDashboard({
       } else if (action === 'test_input') {
         // Test input device: send WS message to capture and report mic level
         sendMessage?.('test_audio', { type: 'input' });
+      } else if (action === 'load_local_model') {
+        console.warn('[dashboard] load_local_model action: use Model Browser panel instead');
+      } else if (action === 'unload_local_model') {
+        console.warn('[dashboard] unload_local_model action: use Model Browser panel instead');
+      } else if (action === 'start_swarm') {
+        console.warn('[dashboard] start_swarm: swarm sub-app not wired yet');
+      } else if (action === 'stop_swarm') {
+        console.warn('[dashboard] stop_swarm: swarm sub-app not wired yet');
       }
     };
     window.addEventListener('iris:card_action', handler as EventListener);
@@ -797,7 +813,7 @@ export function DarkGlassDashboard({
     if (applyCooldownRef.current) return;
     applyCooldownRef.current = true;
 
-    setIsApplying(true);
+    setApplyStatus("applying");
     try {
       // Send 'confirm_card' for EVERY section that has values, not just the
       // currently-visible tab.  This way voice / model / theme changes are
@@ -840,6 +856,8 @@ export function DarkGlassDashboard({
       console.error("[DarkGlassDashboard] Apply failed:", error);
     } finally {
       setIsApplying(false);
+      setApplyStatus("applied");
+      setTimeout(() => setApplyStatus("idle"), 2000);
       setTimeout(() => { applyCooldownRef.current = false; }, 2000);
     }
   }, [sendMessage, activeSections, localFieldValues]);
@@ -1140,19 +1158,17 @@ export function DarkGlassDashboard({
       <div className="flex items-center gap-4 ml-auto">
         <button 
           onClick={handleApplySettings} 
-          disabled={isApplying} 
-          className="px-8 py-2.5 rounded-lg text-[11px] font-bold tracking-wider transition-all disabled:opacity-50 text-white hover:text-black border border-white/10 hover:border-transparent" 
+          disabled={applyStatus === "applying"} 
+          className="px-8 py-2.5 rounded-lg text-[11px] font-bold tracking-wider transition-all disabled:opacity-50"
           style={{ 
-            backgroundColor: 'transparent',
+            backgroundColor: applyStatus === "applied" ? `${glowColor}30` : 'transparent',
+            border: `1px solid ${applyStatus === "applied" ? glowColor : 'rgba(255,255,255,0.1)'}`,
+            color: applyStatus === "applied" ? glowColor : 'rgba(255,255,255,0.7)',
           }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = glowColor;
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = 'transparent';
-          }}
+          onMouseEnter={(e) => { if (applyStatus !== "applied") e.currentTarget.style.backgroundColor = glowColor; e.currentTarget.style.color = '#000'; }}
+          onMouseLeave={(e) => { if (applyStatus !== "applied") { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; } }}
         >
-          {isApplying ? 'COMMITTING...' : 'APPLY'}
+          {applyStatus === "applying" ? 'COMMITTING...' : applyStatus === "applied" ? '✓ Applied' : 'APPLY'}
         </button>
       </div>
     </div>
@@ -1293,28 +1309,8 @@ export function DarkGlassDashboard({
                      <button
                        onClick={() => {
                          try {
-                           if (iframeRef.current?.contentWindow) {
-                             window.history.back()
-      }
-      
-      // ── Per-role model routing (override unified set_model_selection) ──
-      // The confirm_card above sends set_model_selection which binds BOTH
-      // reasoning + tool_execution to the SAME provider, overriding any
-      // per-role selections the user made in the Brain/Tool dropdowns.
-      // Re-apply individual role bindings so each role keeps its chosen provider.
-      if (sendMessage && role_bindings) {
-        const brainBinding = role_bindings.find((b) => b.role === 'reasoning');
-        const toolBinding = role_bindings.find((b) => b.role === 'tool_execution');
-        if (brainBinding?.instance_id) {
-          sendMessage('set_role_binding', {
-            role: 'reasoning', instance_id: brainBinding.instance_id,
-          });
-        }
-        if (toolBinding?.instance_id && toolBinding.instance_id !== brainBinding?.instance_id) {
-          sendMessage('set_role_binding', {
-            role: 'tool_execution', instance_id: toolBinding.instance_id,
-          });
-        }
+                            if (iframeRef.current?.contentWindow) {
+                              window.history.back()
       }
                          } catch (e) {
                            console.warn("Cross-origin navigation blocked", e)

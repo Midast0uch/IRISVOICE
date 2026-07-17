@@ -4905,6 +4905,15 @@ Respond with a JSON object:
                 ws = get_websocket_manager()
                 if ws is None:
                     return True  # no WS manager → non-WS path, keep running
+                # ── Immortus threads are conversation IDs for DB storage ──────
+                # The WS handler (iris_gateway.py:4450) passes the WS client ID
+                # as session_id and the Immortus thread as conversation_id, so
+                # Immortus thread IDs never appear as the kernel session there.
+                # The REST handler (chat.py:305) uses the Immortus thread ID as
+                # the kernel session_id — these sessions have no WS client and
+                # must keep running (their output is returned synchronously).
+                if isinstance(_session, str) and _session.startswith("immortus:"):
+                    return True
                 return len(ws.get_clients_for_session(_session)) > 0
             except Exception:
                 return True
@@ -5420,15 +5429,21 @@ Respond with a JSON object:
                 "[DER] Aborted %d downstream step(s) after failure of %s: %s",
                 len(aborted), item.step_id, aborted,
             )
+        # Phase 2 (D2.1) + Spec D1.2: critical failure recovery uses the SAME
+        # unified _split_step operator as the physics trigger — NOT a separate
+        # graft path that assigns tools directly. Children carry tool=None and
+        # resolve via the single resolver (explorer.propose) when executed, so
+        # there is exactly ONE tool-assignment authority (F6 / System Invariant).
         if item.critical and queue.graft_attempts < DER_MAX_GRAFTS:
             try:
-                grafted = self._der_graft_recovery_plan(
-                    plan.original_task, item, item.result or "", _session
-                )
-                if grafted:
+                _cad = self._der_live_cad_state(_session)
+                _wu = getattr(self, "_der_work_units", 0)
+                _children = self._split_step(item, "verify_failed", _cad, _wu)
+                if _children:
                     queue.graft_attempts += 1
-                    for _g in grafted:
-                        queue.add_item(_g)
+                    for _c in _children:
+                        queue.add_item(_c)
+                    self._der_work_units = _wu - len(_children)
                     try:
                         from backend.agent.event_bus import get_event_bus, IRISStreamEvent
                         get_event_bus().emit(
@@ -5436,7 +5451,7 @@ Respond with a JSON object:
                             data={
                                 "failed_step": item.step_id,
                                 "graft_attempts": queue.graft_attempts,
-                                "num_grafted": len(grafted),
+                                "num_grafted": len(_children),
                                 "critical": item.critical,
                             },
                             session_id=_session,
@@ -5444,15 +5459,21 @@ Respond with a JSON object:
                     except Exception:
                         pass
                     logger.info(
-                        "[DER] Grafted %d recovery step(s) for failed %s "
-                        "(graft_attempts=%d)",
-                        len(grafted), item.step_id, queue.graft_attempts,
+                        "[DER] Critical-failure recovery -> split into %d sub-loop(s) "
+                        "for failed %s (graft_attempts=%d, work_units=%d)",
+                        len(_children), item.step_id, queue.graft_attempts,
+                        self._der_work_units,
                     )
             except Exception as _graft_exc:
-                logger.warning("[DER] plan grafting failed: %s", _graft_exc)
+                logger.warning("[DER] critical-failure split failed: %s", _graft_exc)
         # M2 FIX: record non-critical failures to memory and signal Caducean
         # so drift detection accounts for them (otherwise Q never rises on
         # repeated non-critical failures and TOPO_VIOLATION never fires).
+        # PACMAN alignment: a failure pattern is the user's own hard-won lesson
+        # (corrective action encoded) -> it belongs in the TRUSTED membrane
+        # (PACMAN.md: trusted://episodic/failures, Tier 3), NOT an off-membrane
+        # "der_failure" zone the router cannot navigate/tier. chunk_type stays
+        # "der_failure" as the content-type discriminator; zone is the membrane.
         if not item.critical:
             try:
                 if self._memory_interface and item.result:
@@ -5463,7 +5484,7 @@ Respond with a JSON object:
                                     f"{item.description[:80]}]\n{item.result[:500]}",
                             session_id=_session,
                             chunk_type="der_failure",
-                            zone="der_failure",
+                            zone="trusted",
                         )
             except Exception:
                 pass
@@ -5621,13 +5642,18 @@ Respond with a JSON object:
         _session: str,
     ) -> List["QueueItem"]:
         """
-        Ask the LLM to design a recovery sub-graph for a failed critical step.
+        Legacy recovery-subgraph helper (kept for the M.3.3 memory-aware
+        recovery prompt tests). It asks the LLM for ALTERNATIVE recovery
+        STEPS but returns them as GOALS ONLY (tool=None, params={}) so they
+        resolve through the single resolver (explorer.propose) when executed.
+        It must NOT assign tools directly — that would violate F6 / the
+        System Invariant. The live critical-failure path routes through
+        _split_step instead; this method is a goal-only fallback.
         Returns a list of QueueItem (recovery steps) or [] on any failure.
         Never raises.
         """
         import re as _re
         from backend.agent.der_loop import QueueItem
-        from backend.agent.tool_registry import is_parallel_safe
 
         try:
             # M.3.3 FIX: wire memory into recovery so the graft avoids
@@ -5699,16 +5725,20 @@ Respond with a JSON object:
             _data = json.loads(_m.group())
             _steps: List["QueueItem"] = []
             for _rs in _data.get("steps", []):
+                # GOALS ONLY: do NOT assign tool/params here. The single
+                # resolver (explorer.propose) picks the tool when the step
+                # executes (F6 / System Invariant). tool=None forces that path.
+                _desc = str(_rs.get("description", ""))
                 _steps.append(
                     QueueItem(
                         step_id=str(_rs.get("step_id", f"r{len(_steps) + 1}")),
                         step_number=900 + len(_steps),
-                        description=str(_rs.get("description", "")),
-                        tool=_rs.get("tool"),
-                        params=_rs.get("params", {}) or {},
+                        description=_desc,
+                        tool=None,
+                        params={},
                         depends_on=list(_rs.get("depends_on", []) or []),
                         critical=bool(_rs.get("critical", True)),
-                        parallel_safe=is_parallel_safe(_rs.get("tool")),
+                        parallel_safe=False,
                         objective_anchor=objective,
                     )
                 )
@@ -6556,15 +6586,17 @@ Respond with a JSON object:
                     step_outputs=step_outputs,
                 )
                 if _next_tool:
-                    from backend.agent.tool_registry import is_parallel_safe
-
+                    # GOAL ONLY: the continuation step carries no tool/params.
+                    # _der_run_step_execution resolves it via the single resolver
+                    # (explorer.propose) — F6 / System Invariant. We never take a
+                    # tool from the Explorer's continuation dict.
                     _next_item = QueueItem(
                         step_id=f"explorer_{len(completed_items) + 1}",
                         step_number=len(completed_items) + 1,
                         description=_next_tool.get("description", ""),
-                        tool=_next_tool.get("tool"),
-                        params=_next_tool.get("params", {}),
-                        parallel_safe=is_parallel_safe(_next_tool.get("tool")),
+                        tool=None,
+                        params={},
+                        parallel_safe=False,
                         objective_anchor=plan.original_task,
                     )
                     queue.add_item(_next_item)
@@ -6695,14 +6727,15 @@ Respond with a JSON object:
         step_outputs: Optional[List[str]] = None,
     ) -> Optional[Dict]:
         """
-        After all planned steps are done, ask the LLM if more tools are
+        After all planned steps are done, ask the LLM if more work is
         needed to satisfy the original objective.
 
-        Returns a dict with 'tool', 'description', 'params' if another
-        tool is needed, or None if done.
-
-        This is the key method for AGENTIC mode — it enables the multi-step
-        tool loop without a hardcoded limit.
+        Returns a dict with 'description' (a GOAL) if more work is needed,
+        or None if done. It MUST NOT return a 'tool'/'params' — tool
+        selection is the single resolver's job (explorer.propose), fired
+        when the continuation step executes (F6 / System Invariant). This
+        is the key method for AGENTIC mode — it enables the multi-step tool
+        loop without a hardcoded limit, while keeping one tool authority.
         """
         try:
             if not completed_items:
@@ -6736,11 +6769,10 @@ Respond with a JSON object:
                 f"{outputs_block}\n\n"
                 f"Current mode: {mode.value if isinstance(mode, (str, ExecutionMode)) else 'agentic'}\n\n"
                 "Is the objective fully met? If yes, respond with {\"done\": true}.\n"
-                "If no, what single tool should run next? Respond with:\n"
-                '{"done": false, "tool": "tool_name", "description": "what to do", '
-                '"params": {"key": "value"}}\n'
-                "Choose the tool that makes the most progress toward the objective.\n"
-                "Be specific about parameters.\n\n"
+                "If no, describe the SINGLE next goal to make progress (do NOT name a\n"
+                'tool). Respond with:\n'
+                '{"done": false, "description": "what goal to pursue next"}\n'
+                "Be specific about the outcome the next step should achieve.\n\n"
                 "Respond with JSON only."
             )
 
@@ -6761,11 +6793,12 @@ Respond with a JSON object:
             if data.get("done") is True:
                 return None
 
-            return {
-                "tool": data.get("tool"),
-                "description": data.get("description", "Continue"),
-                "params": data.get("params", {}),
-            }
+            _desc = data.get("description")
+            if not _desc or not str(_desc).strip():
+                return None
+
+            # GOAL ONLY — no tool/params. The resolver picks the tool on exec.
+            return {"description": str(_desc).strip()}
 
         except Exception as exc:
             logger.warning(
