@@ -130,8 +130,28 @@ export function useCrawl(wsConnected: boolean = true) {
       }))
     }
     function onSyncRequired() {
-      // REQ-31 edge: TTL eviction — partial replay insufficient; full sync.
+      // REQ-31 edge / T23: TTL eviction dropped events we never replayed, so
+      // partial SSE replay is insufficient. Fetch the FULL snapshot and apply
+      // every buffered event as a complete re-sync.
+      const sid = sessionIdRef.current
+      if (!sid) {
+        setState((s) => ({ ...s, syncRequired: true }))
+        return
+      }
       setState((s) => ({ ...s, syncRequired: true }))
+      fetch(`/api/crawl/snapshot/${encodeURIComponent(sid)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((snap) => {
+          if (!snap || !snap.ok) return
+          // Re-apply every buffered event as a full sync (idempotent: handlers
+          // dedupe by url / overwrite by field). This restores complete state.
+          for (const ev of snap.events as Array<{ type: string; payload: any }>) {
+            window.dispatchEvent(new CustomEvent(`iris:${ev.type}`, { detail: ev.payload }))
+          }
+        })
+        .catch(() => {
+          /* leave syncRequired set; next reconnect retries */
+        })
     }
 
     const t: EventTarget = window

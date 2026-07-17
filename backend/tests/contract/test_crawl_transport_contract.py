@@ -118,5 +118,37 @@ def test_ux_map_msg_types_unique_per_component():
     assert len(types) == len(set(types)), types
 
 
+# ── REQ-31 edge / T23: TTL eviction -> sync_required + full snapshot ───────
+def test_event_log_sync_required_on_eviction():
+    """When TTL eviction drops un-replayed events, sync_required is flagged."""
+    log = SessionEventLog(ttl_s=0.05)
+    asyncio.run(log.append("s1", "CRAWLER_STARTED", {"query": "q"}))
+    asyncio.run(asyncio.sleep(0.1))
+    # append triggers eviction of the stale event -> sync_required set
+    asyncio.run(log.append("s1", "CRAWLER_PAGE_FETCHED", {"url": "u1"}))
+    flag = asyncio.run(log.consume_sync_required("s1"))
+    assert flag is True
+    # consume clears it
+    assert asyncio.run(log.consume_sync_required("s1")) is False
+
+
+def test_event_log_snapshot_returns_full_state():
+    """snapshot() returns all current events + sync_required flag."""
+    log = SessionEventLog(ttl_s=60)
+    asyncio.run(log.append("s1", "CRAWLER_STARTED", {"query": "q"}))
+    asyncio.run(log.append("s1", "CRAWLER_PAGE_FETCHED", {"url": "u1", "page_number": 1, "total": 1}))
+
+    async def _run():
+        last, events, sync = await log.snapshot("s1")
+        flag = await log.consume_sync_required("s1")
+        return last, events, sync, flag
+
+    last, events, sync, flag = asyncio.run(_run())
+    assert last == 2
+    assert len(events) == 2
+    assert sync is False
+    assert flag is False
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

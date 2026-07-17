@@ -72,9 +72,12 @@
 - [x] T22 (REQ-31 AC6/AC7): Commands routed over HTTP POST `/api/crawl/command`
        (cancel) independent of push; background result fetch `GET /api/crawl/result/{job_id}`
        (REQ-29 AC5) buffered while push is down. JobRegistry shared by both paths.
-- [ ] T23 (REQ-31 edge): TTL eviction → `sync_required` marker + full state snapshot
-       fetch. [PARTIAL: TTL eviction + bounded size done in event_log.py; full snapshot
-       fetch endpoint + frontend `sync_required` handling still TBD.]
+- [x] T23 (REQ-31 edge): TTL eviction → `sync_required` marker + full state snapshot
+       fetch. `event_log.py` sets `_sync_required` on eviction (consume_sync_required
+       clears it); SSE endpoint emits `crawler_sync_required` when set; new
+       `GET /api/crawl/snapshot/{session_id}` returns full buffered state; `useCrawl`
+       fetches the snapshot and re-applies all events as a full sync. Tested
+       (test_crawl_transport_contract.py: sync_required + snapshot).
 
 ## Wave 5 — Verification
 - [ ] T17 (REQ-27): Verify termination bounds (`min_pages`/`max_pages`/timeout;

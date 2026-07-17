@@ -55,6 +55,10 @@ class SessionEventLog:
         # session_id -> {seq: LoggedEvent}
         self._store: Dict[str, Dict[int, LoggedEvent]] = {}
         self._counters: Dict[str, int] = {}
+        # session_id -> True once TTL eviction has dropped events a client may
+        # not have replayed. The SSE endpoint emits crawler_sync_required and the
+        # client does a full snapshot fetch instead of trusting partial replay.
+        self._sync_required: Dict[str, bool] = {}
 
     async def append(
         self, session_id: str, event: str, payload: dict
@@ -79,19 +83,27 @@ class SessionEventLog:
             bucket = self._store.get(session_id, {})
             return [bucket[s] for s in sorted(bucket) if s > after_seq]
 
-    async def snapshot(self, session_id: str) -> Tuple[int, List[LoggedEvent]]:
-        """Return (last_seq, all current events) for a full sync check."""
+    async def snapshot(self, session_id: str) -> Tuple[int, List[LoggedEvent], bool]:
+        """Return (last_seq, all current events, sync_required) for a full sync."""
         async with self._lock:
             self._evict(session_id)
             bucket = self._store.get(session_id, {})
             events = [bucket[s] for s in sorted(bucket)]
             last = self._counters.get(session_id, 0)
-            return last, events
+            sync = self._sync_required.get(session_id, False)
+            return last, events, sync
+
+    async def consume_sync_required(self, session_id: str) -> bool:
+        """Return (and clear) the sync_required flag for a session."""
+        async with self._lock:
+            flag = self._sync_required.pop(session_id, False)
+            return flag
 
     async def clear(self, session_id: str) -> None:
         async with self._lock:
             self._store.pop(session_id, None)
             self._counters.pop(session_id, None)
+            self._sync_required.pop(session_id, None)
 
     def _evict(self, session_id: str) -> None:
         """Drop events older than TTL. Caller must hold self._lock."""
@@ -100,6 +112,11 @@ class SessionEventLog:
             return
         cutoff = time.time() - self._ttl_s
         expired = [s for s, ev in bucket.items() if ev.ts < cutoff]
+        if expired:
+            # Events were dropped before the client replayed them -> partial
+            # replay is now insufficient; the client must do a full snapshot
+            # sync instead (REQ-31 edge / T23).
+            self._sync_required[session_id] = True
         for s in expired:
             bucket.pop(s, None)
         if not bucket:

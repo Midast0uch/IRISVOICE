@@ -58,12 +58,17 @@ async def crawl_stream(session_id: str, request: Request):
         after_seq = 0
 
     async def _gen():
+        # 0) If TTL eviction already dropped events this client never replayed,
+        #    partial replay is insufficient — tell the client to do a full
+        #    snapshot sync instead (REQ-31 edge / T23).
+        if await log.consume_sync_required(session_id):
+            yield _sse(0, "crawler_sync_required", {"session_id": session_id})
         # 1) Replay any events missed since last_seq (partial replay).
         for ev in await log.replay(session_id, after_seq=after_seq):
             mapping = map_event(ev.event)
             yield _sse(ev.seq, mapping.msg_type, ev.payload)
         # 2) Stream new events until the client disconnects or the job ends.
-        last_seq, _ = await log.snapshot(session_id)
+        last_seq, _, _ = await log.snapshot(session_id)
         while True:
             if await request.is_disconnected():
                 return
@@ -125,3 +130,27 @@ async def crawl_result(job_id: str):
     return JSONResponse(
         {"ok": True, "status": "complete", "result": job.result, "job_id": job_id}
     )
+
+
+@router.get("/snapshot/{session_id}")
+async def crawl_snapshot(session_id: str):
+    """Full state snapshot fetch (REQ-31 edge / T23).
+
+    When TTL eviction has dropped events a client has not replayed, partial
+    SSE replay is insufficient. The client calls this endpoint to receive the
+    COMPLETE current crawl state (all buffered events + sync_required flag) and
+    re-applies it as a full sync. This is the recovery path after a
+    ``crawler_sync_required`` signal.
+    """
+    log = get_event_log()
+    last_seq, events, sync_required = await log.snapshot(session_id)
+    return JSONResponse({
+        "ok": True,
+        "session_id": session_id,
+        "last_seq": last_seq,
+        "sync_required": sync_required,
+        "events": [
+            {"seq": ev.seq, "type": map_event(ev.event).msg_type, "payload": ev.payload}
+            for ev in events
+        ],
+    })
