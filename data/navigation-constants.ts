@@ -110,7 +110,7 @@ export const SECTION_TO_ICON: Record<string, string> = {
   swarm_setup: 'Network',
   identity: 'User',
   memory: 'Database',
-  search: 'Search',
+  search: 'Globe',
   tools: 'Tool',
   vision: 'Eye',
   desktop_control: 'Monitor',

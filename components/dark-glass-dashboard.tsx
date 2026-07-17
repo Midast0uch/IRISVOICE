@@ -167,7 +167,7 @@ function useSectionsData() {
       activity: ['logs'],
       logs: ['analytics'],
       marketplace: ['updates'],
-      agent: ['model_inference', 'local_model', 'swarm_setup', 'identity', 'memory'],
+      agent: ['model_inference', 'local_model', 'swarm_setup', 'identity', 'memory', 'search'],
       automate: ['tools', 'vision', 'desktop_control', 'skills', 'profile'],
       system: ['power', 'display', 'storage', 'network'],
       customize: ['theme', 'startup', 'behavior', 'notifications'],
