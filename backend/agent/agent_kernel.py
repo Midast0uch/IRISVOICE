@@ -2818,6 +2818,13 @@ class AgentKernel:
             except Exception as exc:
                 logger.warning("[AgentKernel] speak broadcast failed: %s", exc)
             return speak
+        # ── speak_tool / tool result ──────────────────────────────────────────
+        # The DER tool-calling path may return the speak_tool's result as its
+        # final output.  If the JSON carries a "spoken" field, extract and
+        # return it as the display text (the TTS already spoke it; this gives
+        # the ChatView the same text to show).
+        if isinstance(parsed, dict) and "spoken" in parsed:
+            return parsed["spoken"]
         # speak is None.  If a visual document was emitted above, say nothing —
         # never return the raw JSON, or it would be spoken by TTS and shown in
         # chat as the assistant's message.  Otherwise fall back to the plain

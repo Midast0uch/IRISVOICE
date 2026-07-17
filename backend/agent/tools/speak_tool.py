@@ -92,7 +92,7 @@ class SpeakTool:
         except Exception as exc:
             logger.warning("[SpeakTool] emit failed: %s", exc)
             return {"status": "error", "reason": str(exc)}
-        return {"status": "ok", "utterance_id": uid}
+        return {"status": "ok", "utterance_id": uid, "spoken": text}
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────
