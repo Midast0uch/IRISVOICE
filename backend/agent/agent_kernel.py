@@ -3742,6 +3742,11 @@ class AgentKernel:
             "find on the internet",
             "browse the web",
             "do a web search",
+            "research ",
+            "do research",
+            "do some research",
+            "find information about",
+            "look up information",
         ]
         return any(t in _lower for t in _triggers)
 
