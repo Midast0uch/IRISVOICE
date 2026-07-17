@@ -2003,11 +2003,15 @@ async def _on_wake_word_async(wake_word_name: str):
         )
         ws_manager = get_websocket_manager()
 
-        # Priority 1: canonical main-UI session for client "iris"
+        # Priority 1: canonical main-UI session for client "iris".
+        # get_session_id_for_client may return a stale session from a WS that
+        # disconnected without cleanup. Verify it's still active.
         session_id = ws_manager.get_session_id_for_client("iris")
+        if session_id and session_id not in ws_manager.get_active_session_ids():
+            session_id = None  # stale mapping — fall through
 
         if not session_id:
-            # Priority 2: any active session that is not an integration session
+            # Priority 2: any active session.
             active_sessions = ws_manager.get_active_session_ids()
             if not active_sessions:
                 # Priority 3: headless mode — no browser connected
@@ -2018,10 +2022,7 @@ async def _on_wake_word_async(wake_word_name: str):
                     f"(session={session_id}, client={client_id})"
                 )
             else:
-                session_id = next(
-                    (s for s in active_sessions if "integration" not in s),
-                    active_sessions[0],
-                )
+                session_id = active_sessions[0]
 
         if "client_id" not in locals():
             client_ids = ws_manager.get_clients_for_session(session_id)
