@@ -290,6 +290,43 @@ triggers fire and what was spoken — and use that to tune the narration thresho
 - High-volume tasks: log write MUST stay off the critical path (async/queue); never delay a
   narration or step.
 
+## REQ-11 — ContextPill shows REAL context + compact phase code (Wave 8)
+
+**As a** user watching the chat widget, **I want** the context-usage pill to
+reflect the *actual* model context window in use and to stay compact, **so
+that** I can trust the budget number and the pill doesn't overflow with
+verbose phase text.
+
+**Acceptance Criteria:**
+- **AC1:** The pill denominator SHALL be the real `max_tokens` reported
+  by the backend (`context:usage` event → `iris:context_usage`), sourced
+  from `resolve_context_window()` (the model in use), NOT a hardcoded 128k.
+  The `128000` literal in `chat-view.tsx` is ONLY the pre-first-event
+  placeholder/fallback and MUST never be treated as the real value.
+- **AC2:** The phase label SHALL be a 2-3 letter code — `WRK` (working),
+  `SRH` (searching), `SPK` (speaking), `IDL` (idle), `ERR` (error),
+  `BLC` (balanced) — never a full word (`WORKING`/`SEARCHING`/
+  `BALANCED`) that overflows the `max-w-[160px]` pill at `text-[9px]`.
+  The full phase name stays in the `title` tooltip only.
+- **AC3:** `currentAction` (the live "Reading example.com (2/5)" style
+  string) SHALL be truncated to a fixed cap (e.g. 24 chars + ellipsis)
+  for the *visible* label, with the untruncated string in `title` only.
+  A long action string MUST NEVER render as a full sentence in the pill body.
+- **AC4:** The unit/contract test `tests/components/ContextPill.test.tsx`
+  SHALL assert: (a) `maxTokens` prop drives the denominator exactly
+  (`128000` → `128.0k`, `200000` → `200.0k`); (b) phase→code
+  mapping is correct; (c) a 60-char `currentAction` is truncated in
+  the visible label but full in `title`. The stale `128k` assertion
+  (component now formats with one decimal) MUST be fixed.
+
+**Edge Cases:**
+- Backend `context:usage` not yet received (cold start): pill shows the
+  `128000` placeholder; the moment the first event arrives it switches to
+  the real window. No crash, no stuck placeholder after a real event.
+- `max_tokens` missing from payload: fall back to `resolve_context_window()`
+  default, never to a silent 128k assumption in display logic.
+- `currentAction` absent: pill shows the phase code only (no empty/overflow).
+
 ## Non-Requirements (Out of Scope)
 - Rewriting the four-scale recursive operator or the Caducean `u`/`ξ` split physics.
 - Changing the single-resolver architecture or deleting the web-regex override (already done).

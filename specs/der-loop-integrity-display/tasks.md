@@ -118,3 +118,30 @@
 - Tests organized as tests/unit/ + tests/contract/ + tests/behavioral/; the CDD harness (T23)
   wires them together and runs on every change.
 - T22 (invariants) must pass before T24 final commit.
+
+## Wave 8 - ContextPill hardening (REQ-11)
+- [ ] T25 (REQ-11): ContextPill SHALL render the REAL agent context window,
+  not a hardcoded 128k. Backend already emits `context:usage` with
+  `max_tokens = resolve_context_window()` (agent_kernel.py:6532) + live
+  `used_tokens`; WS bridge forwards it; chat-view.tsx listens on
+  `iris:context_usage` and feeds `ContextPill` maxTokens. Verify the pill
+  reflects the model in use (e.g. a 200k model shows 200.0k, not 128.0k)
+  when the kernel reports it. The `128000` in chat-view.tsx:368 is ONLY the
+  pre-first-event placeholder and MUST stay as a fallback, never a literal.
+- [ ] T26 (REQ-11): ContextPill phase label SHALL be a 2-3 letter code
+  (WRK / SRH / SPK / IDL / ERR / BLC), never a full word (WORKING /
+  SEARCHING / BALANCED). The verbose word overflows the max-w-[160px]
+  pill at text-[9px]. Letter code is the visible label; full phase name
+  stays in the `title` tooltip only.
+- [ ] T27 (REQ-11): ContextPill SHALL cap/truncate `currentAction`
+  so it can NEVER render a full sentence into the pill. Long action text
+  is truncated to N chars (e.g. 24) with an ellipsis for the visible
+  label; the untruncated string stays in `title` only. This closes the
+  'phase label displayed a full sentence' defect.
+- [ ] T28 (REQ-11): Unit/contract `tests/components/ContextPill.test.tsx`
+  SHALL assert: (a) maxTokens from props drives the denominator exactly
+  (128000 -> '128.0k', 200000 -> '200.0k'); (b) phase code maps
+  correctly (working->WRK, searching->SRH, balanced->BLC, idle->IDL,
+  error->ERR); (c) a 60-char currentAction is truncated in the visible
+  label but full in title. Fix the stale '128k' assertion (component now
+  formats with one decimal).
