@@ -4261,7 +4261,7 @@ class IRISGateway:
                 f"for session {session_id}"
             )
             try:
-                self._ws_manager.send_to_client(
+                await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "sync_state_ack",
@@ -4278,7 +4278,7 @@ class IRISGateway:
                 f"[Chat] sync_state failed for {conversation_id}: {exc}"
             )
             try:
-                self._ws_manager.send_to_client(
+                await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "sync_state_ack",
@@ -4320,15 +4320,21 @@ class IRISGateway:
                 self._logger.warning(
                     f"[Chat] Failed to save context for {old_conv_id}: {exc}"
                 )
+            # Keep the wake-word voice path pointed at the switched thread.
+            # _handle_voice falls back to _active_conversation_id[session_id]
+            # when a voice_command_start carries no conversation_id, so without
+            # this a wake-word response would land in the OLD conversation.
+            if new_conv_id:
+                self._active_conversation_id[session_id] = new_conv_id
             # Acknowledge switch to frontend
             try:
-                self._ws_manager.send_to_client(
+                await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "conversation_switched",
                         "payload": {
-                            "conversation_id": new_conv_id,
-                            "status": "context_saved"
+                            "conversation_id": conversation_id,
+                            "status": "switched",
                         },
                     },
                 )
@@ -4353,6 +4359,12 @@ class IRISGateway:
             # voice command or text message starts fresh.  The frontend sends
             # this when the user creates a "New Conversation" in the chat UI.
             conversation_id = payload.get("conversation_id") or session_id
+            # Point the wake-word voice path at the new thread (same reason as
+            # switch_conversation): _handle_voice falls back to
+            # _active_conversation_id[session_id] when voice_command_start has
+            # no conversation_id, so a wake-word response must target the fresh
+            # conversation, not the one that was just cleared.
+            self._active_conversation_id[session_id] = conversation_id
             try:
                 agent_kernel = get_agent_kernel(conversation_id, session_id)
                 agent_kernel.clear_conversation(conversation_id)
@@ -6144,11 +6156,23 @@ class IRISGateway:
                 if section_id in state.field_values:
                     state.field_values[section_id].update(fields)
 
+        # Include the authoritative active conversation id so the frontend can
+        # adopt it on (re)connect.  The backend owns _active_conversation_id per
+        # session (updated on new_conversation / switch_conversation), so this is
+        # the tiebreaker when the frontend's localStorage and the backend disagree
+        # after a backend restart, drag-induced remount, or reconnect.  Without
+        # this the frontend could keep its stale id while the backend is pointed
+        # elsewhere, causing a wake-word response to land in the WRONG thread.
+        active_cid = self._active_conversation_id.get(session_id)
+
         await self._ws_manager.send_to_client(
             client_id,
             {
                 "type": "initial_state",
-                "payload": {"state": state.model_dump() if state else {}},
+                "payload": {
+                    "state": state.model_dump() if state else {},
+                    "current_conversation_id": active_cid,
+                },
             },
         )
 
