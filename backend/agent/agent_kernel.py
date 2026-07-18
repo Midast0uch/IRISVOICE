@@ -52,6 +52,8 @@ try:
         DER_EMERGENCY_STOP,
         DER_TOKEN_BUDGETS,
         TRAILING_GAP_MIN,
+        AVG_STEP_COST,
+        debit_work_units,
         ExecutionMode,
     )
 except Exception:
@@ -5561,7 +5563,9 @@ Respond with a JSON object:
                     queue.graft_attempts += 1
                     for _c in _children:
                         queue.add_item(_c)
-                    self._der_work_units = _wu - len(_children)
+                    # REQ-3: debit measured tokens, not a flat child count.
+                    _measured = max(200, len(step_result) // 4)
+                    self._der_work_units = debit_work_units(_wu, _measured)
                     try:
                         from backend.agent.event_bus import get_event_bus, IRISStreamEvent
                         get_event_bus().emit(
@@ -6545,26 +6549,29 @@ Respond with a JSON object:
             step_success = False
 
         # ── Phase 3 (D3.3 G5): honest commit ledger ──
-        # A commit is recorded ONLY when the step reaches the VERIFIED state. This
-        # replaces former auto-commit-on-completion: no commit is written unless the
-        # work was actually verified. Store write — never injected into a prompt.
-        if _verified == "VERIFIED":
-            try:
-                from backend.agent.caducean_trajectory import (
-                    CaduceanTrajectoryRecorder,
-                )
+        # REQ-1: a commit is recorded for EVERY executed action with its true label
+        # (VERIFIED / UNVERIFIED / FAILED) — not only VERIFIED. This is the learning
+        # signal the outer loop and the AVOID/edge-miss path consume; gating it on
+        # VERIFIED starves failure learning. Crystallization + hit-scoring remain
+        # gated on VERIFIED elsewhere (_capture_verified_skill). Store write — never
+        # injected into a prompt.
+        try:
+            from backend.agent.caducean_trajectory import (
+                CaduceanTrajectoryRecorder,
+            )
 
-                _cad = self._der_live_cad_state(_session)
-                CaduceanTrajectoryRecorder().record_commit(
-                    session_id=_session,
-                    step_id=item.step_id,
-                    commit_hash="",
-                    message=f"VERIFIED step {item.step_number}: {item.description[:80]}",
-                    u=_cad.get("u"),
-                    xi=_cad.get("xi"),
-                )
-            except Exception as _commit_exc:
-                logger.debug("[DER] record_commit failed: %s", _commit_exc)
+            _cad = self._der_live_cad_state(_session)
+            CaduceanTrajectoryRecorder().record_commit(
+                session_id=_session,
+                step_id=item.step_id,
+                commit_hash="",
+                message=f"{_verified} step {item.step_number}: {item.description[:80]}",
+                u=_cad.get("u"),
+                xi=_cad.get("xi"),
+                verified_label=_verified,
+            )
+        except Exception as _commit_exc:
+            logger.debug("[DER] record_commit failed: %s", _commit_exc)
 
         queue.mark_complete(item.step_id)
 
@@ -6849,7 +6856,9 @@ Respond with a JSON object:
                 if _children:
                     for _c in _children:
                         queue.add_item(_c)
-                    self._der_work_units = _wu - len(_children)
+                    # REQ-3: debit measured tokens, not a flat child count.
+                    _measured = max(200, len(step_result) // 4)
+                    self._der_work_units = debit_work_units(_wu, _measured)
                     logger.info(
                         "[DER] verify_failed -> split into %d sub-loops (work_units=%d)",
                         len(_children), self._der_work_units,

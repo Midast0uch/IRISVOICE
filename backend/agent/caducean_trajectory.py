@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS der_commits (
     commit_hash TEXT,
     message     TEXT,
     u           REAL,
-    xi          REAL
+    xi          REAL,
+    verified_label TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dc_session ON der_commits(session_id);
 
@@ -83,7 +84,9 @@ CREATE TABLE IF NOT EXISTS caducean_session_exits (
     domain      TEXT,
     natural_exit INTEGER,   -- 1 if the session ended via a natural exit, else 0
     route_score  REAL,
-    drift        REAL
+    drift        REAL,
+    tokens_total  REAL,     -- total LLM tokens consumed in the session
+    verified_count INTEGER  -- count of VERIFIED steps (from der_commits)
 );
 CREATE INDEX IF NOT EXISTS idx_se_session ON caducean_session_exits(session_id);
 """
@@ -136,6 +139,18 @@ class CaduceanTrajectoryRecorder:
             self._conn.commit()
         except Exception:
             pass  # column already exists — expected on v2+ fresh installs
+        # REQ-1 / REQ-2: add new ledger columns to existing DBs. Each wrapped
+        # individually so one missing column doesn't block the others.
+        for _alter in (
+            "ALTER TABLE der_commits ADD COLUMN verified_label TEXT",
+            "ALTER TABLE caducean_session_exits ADD COLUMN tokens_total REAL",
+            "ALTER TABLE caducean_session_exits ADD COLUMN verified_count INTEGER",
+        ):
+            try:
+                self._conn.execute(_alter)
+                self._conn.commit()
+            except Exception:
+                pass  # column already exists — expected on fresh installs
 
     def record(
         self,
@@ -284,22 +299,26 @@ class CaduceanTrajectoryRecorder:
         message: str,
         u: Optional[float] = None,
         xi: Optional[float] = None,
+        verified_label: str = "VERIFIED",
     ) -> None:
-        """DER Phase 3 (D3.3 G5): write a verified-commit ledger entry.
+        """DER Phase 3 (D3.3 G5): write a commit-ledger entry for EVERY executed action.
 
-        Called ONLY when a step reaches the VERIFIED state. Store write — never
-        injected into a prompt. Provides the honest audit trail that replaces
-        former auto-commit-on-completion.
+        REQ-1: called for VERIFIED / UNVERIFIED / FAILED alike (the label is recorded,
+        not used to gate the write). This is the honest audit trail + learning signal
+        the outer loop and the AVOID/edge-miss path consume. Crystallization + hit-
+        scoring stay gated on VERIFIED at the caller. Store write — never injected
+        into a prompt.
         """
         try:
             self._conn.execute(
                 """
                 INSERT INTO der_commits
-                    (ts, session_id, step_id, commit_hash, message, u, xi)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (ts, session_id, step_id, commit_hash, message, u, xi, verified_label)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (time.time(), session_id, step_id, commit_hash, message,
-                 u if u is not None else 0.0, xi if xi is not None else 0.0),
+                 u if u is not None else 0.0, xi if xi is not None else 0.0,
+                 verified_label),
             )
             self._conn.commit()
         except Exception as exc:
@@ -312,23 +331,43 @@ class CaduceanTrajectoryRecorder:
         natural_exit: bool,
         route_score: float = 0.0,
         drift: float = 0.0,
+        tokens_total: float = 0.0,
+        verified_count: int = 0,
     ) -> None:
-        """DER Phase 4 (D4.0): write a session-exit ledger entry.
+        """DER Phase4 (D4.0): write a session-exit ledger entry.
 
         Called when a session ends (hooked from ConversationMemory.archive_on_
         session_end). The outer loop reads these to compute the held-out metric
         (natural_exit_rate) and to learn the physics parameters. Store write —
         never injected into a prompt.
+
+        REQ-2: tokens_total + verified_count let the outer loop compute
+        tokens_per_verified_step and verified_fraction for the compound gate.
         """
         try:
+            # REQ-2: derive verified_count from the honest commit ledger so the
+            # outer loop's verified_fraction / tokens_per_verified_step metrics are
+            # computed from the same source of truth as the ledger write.
+            if verified_count <= 0:
+                try:
+                    _vc = self._conn.execute(
+                        "SELECT COUNT(*) FROM der_commits "
+                        "WHERE session_id = ? AND verified_label = 'VERIFIED'",
+                        (session_id,),
+                    ).fetchone()
+                    verified_count = int(_vc[0]) if _vc else 0
+                except Exception:
+                    verified_count = 0
             self._conn.execute(
                 """
                 INSERT INTO caducean_session_exits
-                    (ts, session_id, domain, natural_exit, route_score, drift)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (ts, session_id, domain, natural_exit, route_score, drift,
+                     tokens_total, verified_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (time.time(), session_id, domain,
-                 int(bool(natural_exit)), float(route_score), float(drift)),
+                 int(bool(natural_exit)), float(route_score), float(drift),
+                 float(tokens_total), int(verified_count)),
             )
             self._conn.commit()
         except Exception as exc:
@@ -341,14 +380,16 @@ class CaduceanTrajectoryRecorder:
         try:
             if domain:
                 cur = self._conn.execute(
-                    "SELECT session_id, domain, natural_exit, route_score, drift "
+                    "SELECT session_id, domain, natural_exit, route_score, drift, "
+                    "tokens_total, verified_count "
                     "FROM caducean_session_exits WHERE domain = ? "
                     "ORDER BY id DESC LIMIT ?",
                     (domain, limit),
                 )
             else:
                 cur = self._conn.execute(
-                    "SELECT session_id, domain, natural_exit, route_score, drift "
+                    "SELECT session_id, domain, natural_exit, route_score, drift, "
+                    "tokens_total, verified_count "
                     "FROM caducean_session_exits ORDER BY id DESC LIMIT ?",
                     (limit,),
                 )
@@ -359,6 +400,8 @@ class CaduceanTrajectoryRecorder:
                     "natural_exit": bool(r[2]),
                     "route_score": r[3],
                     "drift": r[4],
+                    "tokens_total": float(r[5] or 0.0),
+                    "verified_count": int(r[6] or 0),
                 }
                 for r in cur.fetchall()
             ]

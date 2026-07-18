@@ -147,8 +147,13 @@ def test_integration_full_cycle():
 
     _commit_calls = []
 
-    def _spy_record_commit(self, session_id, step_id, commit_hash, message, u=None, xi=None):
-        _commit_calls.append((session_id, step_id, commit_hash, message))
+    def _spy_record_commit(
+        self, session_id, step_id, commit_hash, message, u=None, xi=None,
+        verified_label="VERIFIED",
+    ):
+        _commit_calls.append(
+            (session_id, step_id, commit_hash, message, verified_label)
+        )
 
     _orig_record_commit = CaduceanTrajectoryRecorder.record_commit
     CaduceanTrajectoryRecorder.record_commit = _spy_record_commit
@@ -181,8 +186,10 @@ def test_integration_full_cycle():
     # Split must have appended Sub-Loop children (Phase 2)
     assert len(queue2.items) >= 1, "verify_failed must trigger _split_step"
     assert any(c.is_subloop for c in queue2.items), "children are Sub-Loops"
-    # G5: NO commit written on FAILED
-    assert len(_commit_calls) == 0, "no commit on FAILED (G5)"
+    # REQ-1 (fixes audit B): a FAILED step DOES write a commit — with the
+    # honest FAILED label, not silence. The ledger records every outcome.
+    assert len(_commit_calls) == 1, "FAILED step writes a commit (REQ-1)"
+    assert _commit_calls[0][4] == "FAILED", "commit label is FAILED"
 
     # ── G5: a VERIFIED step writes a commit ──
     ok_item = QueueItem(
@@ -209,7 +216,9 @@ def test_integration_full_cycle():
         queue3,
         None,
     )
-    assert len(_commit_calls) == 1, "VERIFIED step writes a commit (G5)"
+    # REQ-1: VERIFIED step writes a commit (now the 2nd call), labeled VERIFIED.
+    assert len(_commit_calls) == 2, "VERIFIED step writes a commit (REQ-1)"
+    assert _commit_calls[1][4] == "VERIFIED", "commit label is VERIFIED"
 
     # restore the real method
     CaduceanTrajectoryRecorder.record_commit = _orig_record_commit

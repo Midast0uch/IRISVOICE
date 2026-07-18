@@ -158,3 +158,22 @@ def derive_work_units_0(context_window: int) -> int:
         int >= 1.
     """
     return max(1, int(context_window / AVG_STEP_COST))
+
+
+def debit_work_units(current: int, measured_tokens: int) -> int:
+    """REQ-3: consume work-units proportional to MEASURED token cost, not a flat
+    child count.
+
+    One work-unit ≈ AVG_STEP_COST tokens. A step always costs ≥1 unit (a step
+    that did nothing still consumed a cycle). The result is clamped at 0 — the
+    budget can never go negative.
+
+    Args:
+        current: work-units remaining before this step.
+        measured_tokens: tokens this step actually spent.
+
+    Returns:
+        int >= 0 — remaining work-units.
+    """
+    _cost = max(1, measured_tokens // AVG_STEP_COST)
+    return max(0, current - _cost)

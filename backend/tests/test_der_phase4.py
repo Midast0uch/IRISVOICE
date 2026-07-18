@@ -59,13 +59,13 @@ def test_outer_tuner_proposes_one():
         assert change["key"] in tuner.params
 
 
-# ── D4.3: held-out metric = natural_exit_rate, drift/route_score excluded ────
+# ── D4.3 / REQ-2: held-out metric is compound; drift/route_score excluded ───
 def test_heldout_metric_excludes_drift():
     from backend.agent.outer_loop import OuterTuner
 
     rec = _recorder()
     # 4 sessions: 2 natural exits, 2 not. drift/route_score vary wildly but must
-    # NOT affect the score.
+    # NOT affect the primary metric (natural_exit_rate) nor the guard signals.
     rec.record_session_exit("a", "general", natural_exit=True, drift=0.99, route_score=0.01)
     rec.record_session_exit("b", "general", natural_exit=True, drift=0.01, route_score=0.99)
     rec.record_session_exit("c", "general", natural_exit=False, drift=0.5, route_score=0.5)
@@ -73,8 +73,13 @@ def test_heldout_metric_excludes_drift():
     tuner = OuterTuner(recorder=rec, held_out_count=3)
     held_out = tuner._heldout_batch(tuner._ledger()["exits"])
     score = tuner._score(held_out)
-    # held-out = most recent 3: d(False), c(False), b(True) -> 1/3
-    assert abs(score - (1 / 3)) < 1e-9, "score is natural_exit_rate only"
+    # held-out = most recent 3: d(False), c(False), b(True) -> natural_exit_rate 1/3
+    assert abs(score["natural_exit_rate"] - (1 / 3)) < 1e-9, (
+        "primary metric is natural_exit_rate only"
+    )
+    # Guard signals present and neutral (no verified/token data seeded here).
+    assert "verified_fraction" in score
+    assert "tokens_per_verified" in score
     # Confirm drift/route_score are NOT in the whitelist-driven computation.
     from backend.agent.outer_loop import HELD_OUT_WHITELIST
 

