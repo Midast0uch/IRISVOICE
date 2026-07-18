@@ -4176,34 +4176,59 @@ class AgentKernel:
                 # (fixes Q4 plan-late bug — without this, task:start and
                 # the first tool:call can arrive in the same WS batch,
                 # making the plan card appear to jump straight to "working").
-                try:
-                    from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-
-                    _bus = get_event_bus()
-                    _steps = [
-                        {
-                            "id": s.step_id,
-                            "description": s.description[:120],
-                            "status": "pending",
-                            "toolName": s.tool,
-                            "stepNumber": s.step_number,
-                        }
-                        for s in _plan.steps
-                    ]
-                    _bus.emit(
-                        IRISStreamEvent.TASK_START,
-                        data={
-                            "task_id": task_id or _plan.original_task[:40],
-                            "description": _plan.original_task[:200],
-                            "plan_title": _plan.plan_title[:80] if _plan.plan_title else "",
-                            "mode": _mode_name,
-                            "steps": _steps,
-                            "total_steps": len(_plan.steps),
-                        },
-                        session_id=session_id or self.session_id,
+                # FIX B (Wave 10): a trivial prompt can route to DER yet
+                # produce a plan with ZERO executable steps (der_steps=0).
+                # Rendering a TaskListCard for that is wrong — fall through
+                # to the direct response path instead of emitting a card.
+                if not _plan.steps:
+                    logger.info(
+                        "[AgentKernel] plan has 0 steps — skipping DER/card, "
+                        "falling through to direct response (trivial prompt)"
                     )
-                except Exception:
-                    pass  # never block execution on an event emission failure
+                    _der_response = ""  # forces the direct path below
+                else:
+                    try:
+                        from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                        _bus = get_event_bus()
+                        _steps = [
+                            {
+                                "id": s.step_id,
+                                "description": s.description[:120],
+                                "status": "pending",
+                                "toolName": s.tool,
+                                "stepNumber": s.step_number,
+                            }
+                            for s in _plan.steps
+                        ]
+                        # FIX A (Wave 10): structured log of the card/plan
+                        # CONTENT so live-test screenshots can be correlated
+                        # to the actual task text + thread. Previously the
+                        # plan title/steps were emitted to WS only, never logged.
+                        logger.info(
+                            "[AgentKernel] TASK_CARD ts=%.3f conv=%s turn=%s "
+                            "title=%r steps=%d :: %s",
+                            time.time(),
+                            self.conversation_id,
+                            getattr(self, "_current_turn_id", None),
+                            (_plan.plan_title or "")[:80],
+                            len(_steps),
+                            " | ".join(s["description"] for s in _steps)[:300],
+                        )
+                        _bus.emit(
+                            IRISStreamEvent.TASK_START,
+                            data={
+                                "task_id": task_id or _plan.original_task[:40],
+                                "description": _plan.original_task[:200],
+                                "plan_title": _plan.plan_title[:80] if _plan.plan_title else "",
+                                "mode": _mode_name,
+                                "steps": _steps,
+                                "total_steps": len(_plan.steps),
+                            },
+                            session_id=session_id or self.session_id,
+                        )
+                    except Exception:
+                        pass  # never block execution on an event emission failure
 
                 # Use mode name as task_class so DER_TOKEN_BUDGETS[mode] applies.
                 # Falls back to _task_class if mode not in budget table.
