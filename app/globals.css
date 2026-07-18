@@ -220,6 +220,24 @@ html.in-browser body {
   }
 }
 
+/* REQ-8: quiet breathing pulse for the live learning-signal border on the
+   TaskListCard. Slow + low-opacity so it reads as a Pacman OrbCanvas
+   particle hint, not a spinner. */
+@keyframes irisSignalPulse {
+  0%, 100% {
+    opacity: 0.45;
+    box-shadow:
+      0 0 10px var(--signal, #3b82f6)33,
+      inset 0 0 5px var(--signal, #3b82f6)1f;
+  }
+  50% {
+    opacity: 0.9;
+    box-shadow:
+      0 0 18px var(--signal, #3b82f6)44,
+      inset 0 0 8px var(--signal, #3b82f6)2a;
+  }
+}
+
 @keyframes draw-line {
   from {
     stroke-dashoffset: 100;

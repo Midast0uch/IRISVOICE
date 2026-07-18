@@ -74,6 +74,11 @@ class IRISStreamEvent(enum.Enum):
     TASK_MILESTONE = "task:milestone"
     TASK_DONE = "task:done"
     TASK_FAIL = "task:fail"
+    # REQ-8: honest learning signal. Emitted when a DER step is avoided
+    # (FAILED -> AVOID), retried (verify_failed -> split into Sub-Loops), or
+    # crystallized (VERIFIED -> skill captured). Drives the Pacman OrbCanvas
+    # particles on the TaskListCard border. Carries real state, never narration.
+    TASK_LEARNING = "task:learning"
 
     # ── Permissions ─────────────────────────────────────────────────────
     PERMISSION_REQUEST = "permission:request"

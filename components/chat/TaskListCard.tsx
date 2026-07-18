@@ -11,6 +11,8 @@ export interface TaskListCardProps {
   mode?: string
   defaultCollapsed?: boolean
   planTitle?: string
+  /** REQ-8: honest learning signal (avoided / retried / crystallized). */
+  learningSignal?: "avoided" | "retried" | "crystallized" | null
 }
 
 const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
@@ -35,6 +37,7 @@ export default function TaskListCard({
   mode,
   defaultCollapsed = true,
   planTitle,
+  learningSignal,
 }: TaskListCardProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -48,6 +51,20 @@ export default function TaskListCard({
   // Action-only header, derived from the agent's live tool (never "Plan").
   const headerTitle = planTitle || mode?.toUpperCase() || "TASK"
 
+  // REQ-8: honest learning signal -> subtle Pacman OrbCanvas-style border
+  // particles on the card. The signal is real state (avoided / retried /
+  // crystallized), never narration. Tint follows the signal kind.
+  const signalTint: Record<string, string> = {
+    avoided: "#f59e0b", // amber — a step was avoided (AVOID)
+    retried: "#3b82f6", // blue — split into Sub-Loops
+    crystallized: "#22c55e", // green — skill captured
+  }
+  const signalLabel: Record<string, string> = {
+    avoided: "avoided",
+    retried: "retried",
+    crystallized: "crystallized",
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -56,6 +73,20 @@ export default function TaskListCard({
       transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
       className="my-2 w-full"
     >
+      {/* REQ-8: subtle Pacman OrbCanvas-style border particles on live
+          learning signal. Absolutely positioned so it never shifts layout. */}
+      {learningSignal && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 rounded-2xl"
+          style={{
+            border: `1px solid ${signalTint[learningSignal]}55`,
+            boxShadow: `0 0 14px ${signalTint[learningSignal]}33, inset 0 0 6px ${signalTint[learningSignal]}22`,
+            // slow breathing pulse — quiet, not a spinner
+            animation: "irisSignalPulse 2.4s ease-in-out infinite",
+          }}
+        />
+      )}
       {/* Header: action core (identity marker) + action badge + progress + collapse toggle */}
       <div className="flex items-center gap-2.5 mb-2.5">
         <span
@@ -100,6 +131,20 @@ export default function TaskListCard({
           {doneCount}/{steps.length}
           {failCount > 0 ? ` · ${failCount}✕` : ""}
         </span>
+        {/* REQ-8: honest learning-signal badge (real state, not narration) */}
+        {learningSignal && (
+          <span
+            className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold tracking-wide uppercase"
+            style={{
+              color: signalTint[learningSignal],
+              backgroundColor: `${signalTint[learningSignal]}1a`,
+              border: `1px solid ${signalTint[learningSignal]}40`,
+            }}
+            title={`Learning signal: ${signalLabel[learningSignal]}`}
+          >
+            {signalLabel[learningSignal]}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}

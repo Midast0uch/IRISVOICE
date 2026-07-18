@@ -161,7 +161,19 @@ export function useIRISWebSocket(
   // True while a text_message is being processed — drives ChatView typing indicator
   // independently of voiceState so the IrisOrb never animates for typed messages.
   const [isChatTyping, setIsChatTyping] = useState<boolean>(false)
-  const [currentConversationId, setCurrentConversationId] = useState<string | undefined>(undefined)
+  // Single source of truth for the ACTIVE conversation thread.  Initialized
+  // from localStorage so thread identity survives component unmounts, widget
+  // drags, Tauri window reopens, and WS reconnects — the active thread must
+  // NOT reset to undefined on any of those (it would let the backend fall
+  // back to a stale/old conversation).  chat-view also keeps its own copy,
+  // but the WS hook is authoritative: every switch/new writes here AND back
+  // to the same localStorage key chat-view uses, keeping them in lockstep.
+  const ACTIVE_ID_KEY = "iris_active_conversation_id_v1"
+  const [currentConversationId, setCurrentConversationId] = useState<string | undefined>(() => {
+    if (typeof window === "undefined") return undefined
+    const stored = localStorage.getItem(ACTIVE_ID_KEY)
+    return stored || undefined
+  })
   
   // Agent state
   const [agentStatus, setAgentStatus] = useState<Record<string, unknown> | null>(null)
@@ -228,6 +240,24 @@ export function useIRISWebSocket(
   // Keep the conversation-id ref in sync with state for use inside connect()
   useEffect(() => {
     currentConversationIdRef.current = currentConversationId
+  }, [currentConversationId])
+
+  // Persist the active conversation id to the SAME localStorage key chat-view
+  // uses, so thread identity survives unmounts/drags/reconnects.  The hook is
+  // the authoritative writer; chat-view reads this on next mount.  This closes
+  // the gap where the WS sync_state could fire with an undefined id after a
+  // remount, causing the backend to fall back to a stale/old conversation.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      if (currentConversationId) {
+        localStorage.setItem(ACTIVE_ID_KEY, currentConversationId)
+      } else {
+        localStorage.removeItem(ACTIVE_ID_KEY)
+      }
+    } catch {
+      // localStorage unavailable — non-fatal, in-memory state still works
+    }
   }, [currentConversationId])
 
   // Safety timeout: reset typing indicator if no chat_typing:false event
@@ -448,7 +478,19 @@ export function useIRISWebSocket(
         if (state && state.sections) setSections(state.sections)
         if (state && state.current_category !== undefined) setCurrentCategory(state.current_category)
         if (state && state.current_section !== undefined) setCurrentSection(state.current_section)
-        
+
+        // Adopt the backend's authoritative active conversation id.  The backend
+        // owns _active_conversation_id per session (set on new_conversation /
+        // switch_conversation), so on (re)connect this is the tiebreaker that
+        // keeps the frontend and backend in lockstep — preventing a wake-word
+        // response from landing in a stale/old thread after a drag, remount, or
+        // backend restart.  Only override when the backend actually has an id,
+        // so we never clobber a legitimate in-flight frontend-led switch.
+        const backendCid = (payload as Record<string, unknown>)?.current_conversation_id as string | undefined
+        if (backendCid && backendCid !== currentConversationIdRef.current) {
+          setCurrentConversationId(backendCid)
+        }
+
         // Dispatch CustomEvent for SidePanel listeners
         if (typeof window !== 'undefined' && state) {
           window.dispatchEvent(new CustomEvent('iris:initial_state', {
@@ -1280,6 +1322,7 @@ export function useIRISWebSocket(
       case "task:milestone":
       case "task:done":
       case "task:fail":
+      case "task:learning":
       case "tool:call":
       case "tool:result":
       case "tool:error": {

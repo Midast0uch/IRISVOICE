@@ -6578,6 +6578,37 @@ Respond with a JSON object:
 
         queue.mark_complete(item.step_id)
 
+        # ── REQ-8: honest learning signal (task:learning) ───────────────
+        # Emited (never injected into a prompt) so the frontend can show the real
+        # card state + Pacman OrbCanvas particles on the border. Three signals:
+        #   avoided    — FAILED step (no children, not a subloop) -> AVOID
+        #   retried    — verify_failed -> split into Sub-Loops
+        #   crystallized— VERIFIED step -> skill captured
+        # Off the critical path; a bus failure must never block the step result.
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            if _verified == "VERIFIED":
+                _signal = "crystallized"
+            elif _children:
+                _signal = "retried"
+            else:
+                _signal = "avoided"
+            get_event_bus().emit(
+                IRISStreamEvent.TASK_LEARNING,
+                {
+                    "session_id": _session,
+                    "step_id": item.step_id,
+                    "step_number": item.step_number,
+                    "signal": _signal,
+                    "verified_label": _verified,
+                    "description": item.description or "",
+                    "is_subloop": bool(getattr(item, "is_subloop", False)),
+                },
+            )
+        except Exception as _learn_exc:
+            logger.debug("[DER] task:learning emit failed: %s", _learn_exc)
+
         # ── Phase 3 (Gap 3): propagate this step's output into dependent
         # pending steps so later steps consume real results, not static
         # params. Non-blocking — never fails the step. ──

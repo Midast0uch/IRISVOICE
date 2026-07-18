@@ -2626,6 +2626,7 @@ ${message.text}`;
                       turnId={taskProgress.turnId}
                       mode={taskProgress.mode}
                       planTitle={taskProgress.planTitle}
+                      learningSignal={taskProgress.learningSignal}
                     />
                   )}
 

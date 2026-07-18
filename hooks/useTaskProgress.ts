@@ -29,6 +29,12 @@ export interface TaskProgress {
   planTitle?: string
   /** Live action text from `task:progress` (e.g. "Reading example.com (2/5)"). */
   currentAction?: string
+  /**
+   * REQ-8: honest learning signal from `task:learning` (avoided / retried /
+   * crystallized). Drives the Pacman OrbCanvas particles on the TaskListCard
+   * border. `null` when no live signal this task.
+   */
+  learningSignal?: "avoided" | "retried" | "crystallized" | null
 }
 
 const MAX_STEPS = 50
@@ -55,6 +61,8 @@ interface TaskUpdateDetail {
   error?: string
   outcome?: string
   steps_completed?: number
+  /** REQ-8: honest learning signal from `task:learning`. */
+  signal?: "avoided" | "retried" | "crystallized" | null
 }
 
 // Maps a tool name to a short, human-readable action title for the plan card.
@@ -278,6 +286,18 @@ export function useTaskProgress(): TaskProgress {
         case "task:fail": {
           // Keep steps + planTitle for display; clear the working flag + live action.
           setState({ ...prev, isWorking: false, currentAction: undefined })
+          break
+        }
+        case "task:learning": {
+          // REQ-8: honest learning signal. Surface it for the card border
+          // particles; do NOT clear steps or working state.
+          const sig = d.signal as
+            | "avoided"
+            | "retried"
+            | "crystallized"
+            | null
+            | undefined
+          setState({ ...prev, learningSignal: sig ?? null, isWorking: true })
           break
         }
         default:
