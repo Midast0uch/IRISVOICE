@@ -5295,7 +5295,8 @@ Respond with a JSON object:
                     pass
                 # Step failed after retry — mark, abort downstream, graft.
                 self._der_handle_step_failure(
-                    item, queue, plan, _session, _turn_id, context_package
+                    item, queue, plan, _session, _turn_id, context_package,
+                    step_result=step_result,
                 )
                 continue  # re-enter loop; grafted steps are now in the queue
 
@@ -5536,6 +5537,7 @@ Respond with a JSON object:
         _session: str,
         _turn_id: Optional[str],
         context_package,
+        step_result: Optional[str] = None,
     ) -> None:
         """
         Handle a step that failed after its single retry.
@@ -5567,7 +5569,8 @@ Respond with a JSON object:
                     for _c in _children:
                         queue.add_item(_c)
                     # REQ-3: debit measured tokens, not a flat child count.
-                    _measured = max(200, len(step_result) // 4)
+                    _result_len = len(step_result) if step_result else 0
+                    _measured = max(200, _result_len // 4)
                     self._der_work_units = debit_work_units(_wu, _measured)
                     try:
                         from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -5591,6 +5594,69 @@ Respond with a JSON object:
                     )
             except Exception as _graft_exc:
                 logger.warning("[DER] critical-failure split failed: %s", _graft_exc)
+        # ── REQ-10: escalate a STUCK critical step to the user ───────
+        # If the step was critical AND we have exhausted the recovery budget
+        # (grafts spent, or cycle limit reached with this step still unmet),
+        # the agent MUST NOT silently report partial completion. It escalates
+        # to the user with concrete alternative options so THEY decide:
+        # retry with a different tool, relax a constraint, supply missing
+        # input, or abort. This is the loop-closing seam — "persist and
+        # retry" is bounded; a real substantial blocker is handed back.
+        if item.critical and queue.graft_attempts >= DER_MAX_GRAFTS:
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                _opts = [
+                    "Retry the failed step with a different tool or approach",
+                    "Relax a constraint / change the success criterion",
+                    "Provide the missing input or credential the step needs",
+                    "Abort this step and continue with the rest of the task",
+                ]
+                _reason = (
+                    f"Critical step '{item.step_id}' "
+                    f"({item.description[:80]}) failed after "
+                    f"{queue.graft_attempts} recovery attempt(s). "
+                    f"Last error: {(step_result or '')[:200]}"
+                )
+                get_event_bus().emit(
+                    IRISStreamEvent.TASK_BLOCKED,
+                    data={
+                        "session_id": _session,
+                        "failed_step": item.step_id,
+                        "description": item.description or "",
+                        "graft_attempts": queue.graft_attempts,
+                        "reason": _reason,
+                        "options": _opts,
+                    },
+                    turn_id=_turn_id,
+                    session_id=_session,
+                )
+                # Surface the decision to the user via the ask_user tool so a
+                # QuestionCard appears with the concrete alternatives.
+                try:
+                    from backend.agent.tools.ask_user_tool import (
+                        get_ask_user_tool,
+                    )
+
+                    _tool = get_ask_user_tool()
+                    if _tool is not None:
+                        _tool.ask(
+                            text=_reason,
+                            options=_opts,
+                            allow_other=True,
+                            turn_id=_turn_id,
+                        )
+                except Exception as _ask_exc:
+                    logger.warning(
+                        "[DER] REQ-10 ask_user failed: %s", _ask_exc
+                    )
+                logger.info(
+                    "[DER] REQ-10 escalation: critical step %s blocked after "
+                    "%d grafts — escalated to user with %d options",
+                    item.step_id, queue.graft_attempts, len(_opts),
+                )
+            except Exception as _block_exc:
+                logger.warning("[DER] REQ-10 escalation failed: %s", _block_exc)
         # M2 FIX: record non-critical failures to memory and signal Caducean
         # so drift detection accounts for them (otherwise Q never rises on
         # repeated non-critical failures and TOPO_VIOLATION never fires).

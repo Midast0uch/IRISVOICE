@@ -79,6 +79,11 @@ class IRISStreamEvent(enum.Enum):
     # crystallized (VERIFIED -> skill captured). Drives the Pacman OrbCanvas
     # particles on the TaskListCard border. Carries real state, never narration.
     TASK_LEARNING = "task:learning"
+    # REQ-10: a critical step failed past the recovery budget (grafts
+    # exhausted / cycle limit hit with incomplete critical work). The agent
+    # MUST NOT silently report partial completion — it escalates to the user
+    # with concrete alternative options (see agent_kernel._der_handle_step_failure).
+    TASK_BLOCKED = "task:blocked"
 
     # ── Permissions ─────────────────────────────────────────────────────
     PERMISSION_REQUEST = "permission:request"
