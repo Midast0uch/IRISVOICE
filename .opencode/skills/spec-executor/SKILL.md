@@ -17,6 +17,9 @@ honored.
   waves", or post-compaction "implement the spec".
 - A `specs/<feature>/` directory exists with `requirements.md`, `design.md`,
   `tasks.md`.
+- ALSO use the Phase -1 (Spec Crafting) discipline whenever a spec is being
+  CREATED or is suspected stale — a spec built without verifying against the
+  actual code is how silent drift and phantom requirements enter the system.
 
 ## Invocation after compaction
 This skill is designed to be invoked RIGHT AFTER `mcm_compress()` (the user's
@@ -25,7 +28,41 @@ re-loads the spec from disk (not from memory) so implementation starts from the
 authoritative files. If you cannot recall the spec path, run
 `mcm_recall("<feature> spec")` or `mcm_recall("spec path")` to recover it.
 
-## Execution protocol (STRICT ORDER)
+## Phase -1 — Spec Crafting (do this BEFORE Phase 0 if the spec is new or stale)
+A spec is only as good as its grounding in the actual code. The best specs we
+have built followed this discipline — it is what separates a real contract from
+a wish-list. Run it before execution whenever the spec has not been verified
+against the as-built system.
+
+1. **Verify against actual code, not the blueprint.** Read the real modules the
+   spec/blueprint claims exist. Trace the actual control flow. A design audit
+   (against a blueprint or doc) is NOT proof of as-built behavior — auditors are
+   frequently wrong or stale. For every claimed gap/finding, classify it as:
+   REAL GAP / ALREADY FIXED / BLUEPRINT-DIVERGENT / CANNOT VERIFY, with
+   file:line evidence. Do not trust "the doc says it's done."
+2. **Establish a green baseline first.** Run the existing test suite BEFORE
+   proposing changes. Distinguish real code breaks from stale-test artifacts
+   (relative-path bugs, outdated mocks). Report the true baseline; do not let
+   "3 failures" hide behind "the suite is green" — verify each failure's cause.
+3. **User-in-the-loop decision gates.** Surface Open Questions explicitly and let
+   the user resolve the UX / communication / threshold decisions. Capture each
+   resolution back into the spec (not just in chat). The user's domain calls
+   (e.g. "narration triggers on physics events", "Pacman = subtle OrbCanvas
+   particles", "post-step hook but watch latency") are the highest-value inputs
+   and must be locked into requirements, not guessed.
+4. **Instrument for tuning.** A good spec includes observability so the NEXT
+   iteration can improve (e.g. a timestamped narration+TTS log scoped by
+   conversation thread, enabling trigger-frequency analysis). Treat "how will we
+   know if this is tuned right?" as a first-class requirement, not an afterthought.
+5. **Preserve fundamental values; fix integrity + display.** When a blueprint is
+   stale, keep the architecture the user values (single operator, u/ξ physics,
+   evidence-conditioned acting) and target only the broken/regressed layers
+   (learning integrity, honest display, communication discipline). Do not rewrite
+   what works to fix what's broken.
+6. **Write the three artifacts** (requirements.md EARS + design.md + tasks.md)
+   per the kiro-spec-writer skill, then document the contract+behavioral+CDD
+   testing philosophy (see Phase 2 step 5 below) in the project's CLAUDE.md and
+   AGENTS.md if not already present.
 
 ### Phase 0 — Load all three files
 1. Read `requirements.md` fully. Build a REQ-ID → acceptance-criteria map.
@@ -33,9 +70,11 @@ authoritative files. If you cannot recall the spec path, run
    (D1..Dn), UX/UI/Audio Layer Map, Resilient Transport, Verification Strategy
    (4 tiers). These decisions OVERRIDE any tempting shortcut.
 3. Read `tasks.md` fully. Note the waves and each task's `(REQ-x, REQ-y)` links.
-4. Cross-check: every REQ in requirements.md should be covered by ≥1 task; every
-   task should link to ≥1 REQ. If a gap exists, note it but do NOT silently skip —
-   flag it to the user.
+   4. Cross-check: every REQ in requirements.md should be covered by ≥1 task; every
+    task should link to ≥1 REQ. If a gap exists, note it but do NOT silently skip —
+    flag it to the user. If the spec was just crafted (Phase -1), confirm the
+    REAL-GAP / ALREADY-FIXED / STALE classifications were resolved and the user's
+    decision gates were locked into the requirements.
 
 ### Phase 1 — Build the execution ledger
 - Create a todo list (`todowrite`) with one item per task, tagged by wave.
@@ -60,13 +99,28 @@ authoritative files. If you cannot recall the spec path, run
      [ ] no shared mutable state across sessions  [ ] memory bounded
      [ ] async/sync boundary correct  [ ] structured logging
      [ ] nothing can crash and block a user response
-  5. Write/run the test from design.md Verification Strategy for that layer:
-     - Tier 1 (unit) for layer-internal tasks.
-     - Tier 2 (contract) for boundary tasks — real instance + stubbed collaborator
-       + event-bus subscription asserting emitted events; anchor to a PiN.
-     - Tier 3 (integration) for cross-layer seam tasks — in-process, MOCK the fetch
-       engine, never hit live web.
-     - Tier 4 (behavioral) only when the full path is wired and a backend can run.
+   5. Write/run the test from design.md Verification Strategy for that layer. This
+      system is ONE recursive operator at four scales; bugs live in the SEAMS
+      between parts, not inside them. Unit tests alone are insufficient. Use the
+      contract + behavioral + intertwined model (documented in CLAUDE.md/AGENTS.md):
+      - **Unit** (`tests/unit/`) for layer-internal pure logic only.
+      - **Contract** (`tests/contract/`) for boundary tasks — pin every interface
+        shape (backend→frontend event, agent→TTS text, loop→ledger record). Real
+        instance + stubbed collaborator + event-bus subscription asserting emitted
+        events; anchor to a PiN. A contract break is caught at the interface, BEFORE
+        behavior.
+      - **Behavioral** (`tests/behavioral/`) for cross-layer seam tasks — drive a
+        FULL task through the real loop and assert EMERGENT properties (no phantom
+        card, spoken ⊆ visible, failure recorded AND shown, self-tuning REJECTS the
+        hack). Mock the fetch engine; never hit live web.
+      - **Intertwined rule:** contract + behavioral share fixtures/assertions. Every
+        behavioral gap found DECOMPOSES into the contract test that would have caught
+        it — the gap becomes a permanent guard.
+      - **Physics-aware:** inject Caducean u/ξ trajectory states and assert
+        system-level outcome (split when oscillating, silence when converged).
+      - **Standing CDD harness** (`scripts/validate_der_*.py` family): replays
+        recorded trajectories through the FULL stack and asserts contracts +
+        behaviors on EVERY run. This is the gap-finding instrument.
   6. On test PASS: `record_test(file, 'pass', covers=[...])`, `record_edit(file)`,
      and `pin_add(title='<feature>:<req>', type='decision', content='what held')`.
   7. On test FAIL: fix the CODE, not the test (the test is the requirement). After
