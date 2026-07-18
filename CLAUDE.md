@@ -13,7 +13,7 @@ You are working on **IRIS Voice**, a voice-controlled desktop assistant.
 - **Desktop**: Tauri (Rust) — borderless widget, system tray, global shortcuts
 - **Audio**: Porcupine wake word, WebRTC/STT pipeline, WebSocket streaming
 - **Auth**: OAuth handlers, OS keyring for secure credential storage
-- **Database**: MCM SDK coordinate graph at `data/databases/coordinates.db`
+- **Database**: MCM SDK coordinate graph at `.mcm/coordinates.db` (project-local; set `MCM_DB_PATH=C:\dev\IRISVOICE\.mcm\coordinates.db`)
 
 Read bootstrap/GOALS.md for the full roadmap, current gate, and domain breakdown.
 
@@ -90,15 +90,51 @@ Never write new tests to match your code.
 Never modify existing tests to make them pass.
 The test is the requirement.
 
-  # Complete a work item after passing:
-  complete_task(item_id, agent_id, 'success')
-  # Then add landmark:
-  pin_add(title='feature_name', pin_type='decision', file_refs=['file.py'])
+  # After a test passes, anchor the outcome (inline recording is already done above):
+  pin_add(title='feature_name', type='decision')
+  # Stamp the feature onto the event chain BEFORE crystallizing (this produces feature_id):
+  mcm_define_feature(name='feature_name', seed_files=['file1.py', 'file2.py'], thread_id='<session-id>')
+  # Crystallize a verified feature into a permanent landmark (>=1 edit + >=1 test pass + >=1 file):
+  mcm_crystallize_landmark(feature_id, name, description)
+  # Checkpoint + trigger on-demand pruning:
+  mcm_compress(active_task='what was just completed', active_files=['file1.py', 'file2.py'])
 
   # Record a failure that revealed something:
-  complete_task(item_id, agent_id, 'failure')
+  record_test(test_file, test_name, outcome='fail', description='what the failure revealed')
   # Then add warning:
   health.add_warning(space='domain', description='what failed', approach='tried', correction='what worked')
+
+---
+
+CONTRACT-DRIVEN + BEHAVIORAL TESTING — REQUIRED FOR RECURSIVE SYSTEMS
+This project's core loops (DER execution, Sub-Loop fold-back, context pruning, outer
+self-tuning) are ONE recursive operator at four scales. Bugs live in the SEAMS between
+parts, not inside them. A green unit suite that misses a phantom UI card, a success spoken
+after a failure, or a self-tuning constant that cheats its own metric is WORSE than honest —
+it hides the real break. Therefore testing is layered and cross-cutting, never unit-only:
+
+  1. CONTRACT TESTS — pin every boundary with an explicit contract:
+     - backend → frontend event shape (IRISStreamEvent.TOOL_CALL / result / VALIDATION_FAILED)
+     - agent → TTS text shape (speak vs display split; speak never internal narration)
+     - loop → ledger record shape (state, action, verified_label for ALL outcomes)
+     A contract break is caught at the interface, BEFORE behavior.
+  2. BEHAVIORAL TESTS — drive a FULL task through the real loop (plan → execute → verify →
+     commit → narrate → display) and assert EMERGENT properties: no phantom card, spoken ⊆
+     visible, failure recorded AND shown, self-tuning REJECTS the hack. Run the system as it
+     actually runs.
+  3. INTERTWINED — contract and behavioral share fixtures and assertions. Every behavioral
+     gap found DECOMPOSES into the contract test that would have caught it, so the gap becomes
+     a permanent guard. Contract tests are derived from real behavioral traces, not invented.
+  4. PHYSICS-AWARE — inject Caducean u/ξ trajectory states and assert system-level outcome
+     (split when oscillating, silence when converged, narration fires on band crossing).
+  5. STANDING CDD HARNESS — a replay harness (scripts/validate_der_*.py family) replays
+     recorded trajectories through the FULL stack and asserts contracts + behaviors on EVERY
+     run. This is the gap-finding instrument: if we test correctly, we find the gaps and errors.
+     Organize tests as: tests/contract/ (boundary pins) + tests/behavioral/ (full-loop) +
+     tests/unit/ (pure logic only). The harness wires them together.
+
+A passing unit test on unoptimized code is not done. A green suite that misses a cross-layer
+failure is not done. Quality check is not optional.
 
 ---
 
@@ -147,37 +183,50 @@ Every tool response includes `_ctx`:
 
 | Field | Meaning | When to act |
 |-------|---------|-------------|
-| `gov` | OK / LOOP / RAPID / PIVOT / EXIT | PIVOT/EXIT -> compress immediately |
+| `gov` | OK / LOOP / RAPID / TIMEOUT / OVERLOAD / EXIT | OVERLOAD/EXIT -> compress immediately |
 | `bal` | Balance 0.5-2.5+ | >2.0 -> compress soon |
 | `fail` | Consecutive failures | >=2 -> check approach |
 | `ferr` | Last error type | e.g. "ImportError" |
 | `lock` | Pattern lock | Same error >=4x -> force compress |
 | `stuck` | Work assessment | Engine thinks you are stuck |
 
-**gov="PIVOT"**: Pattern lock - 4x same error, edits blocked. Call mcm_compress() to reset.
+**gov="OVERLOAD"**: Pattern lock - 4x same error, edits blocked. Call mcm_compress() to reset.
 
 ## BREAKING OUT OF FAILURE SPIRALS
 
-1. Same error keeps repeating -> gov="PIVOT" at 4x
-2. mcm_compress() - saves failure state, clears lock
+1. Same error keeps repeating -> gov="LOOP" / "OVERLOAD" at 4x
+2. mcm_compress() - saves failure state, clears lock, force-prunes context
 3. mcm_recall("ErrorName") - see clustered failures with error types and files
 4. navigate(file) - check region_failures and failure_trails
 5. Do NOT edit the same file again - investigate the topology first
 
-## PRUNE TOOL (DIAGNOSTIC)
+## CONTEXT PRUNING (AUTOMATIC + ON-DEMAND)
 
-prune(messages=[...]) returns tokens_before/after, real_percent, pruned_count, breakdown.
-Cannot shrink context (MCP limitation). Full originals saved by prune_id.
-Use to check pressure before compacting.
+Pruning is handled by the `mcm-pruning` OpenCode plugin (register it in this project's
+`opencode.json` with `MCM_DB_PATH=C:\dev\IRISVOICE\.mcm\coordinates.db`). You do NOT call a
+prune tool manually — the plugin hooks OpenCode's `messages.transform`.
+
+- **Automatic**: when context hits the nudge threshold (55% of the model window, ~70k/128k
+  tokens) the plugin prunes older, low-value messages in place. At the hard threshold (65%)
+  it prunes more aggressively. The model window is auto-detected from `chat.params`
+  (`Model.limit.context`).
+- **On-demand**: call `mcm_compress()` to checkpoint AND force-prune immediately. It writes a
+  `.mcm_prune_pending.json` marker in the worktree; the plugin consumes and deletes it next turn.
+- **What is kept**: the last `recencyWindowTurns` (4) turns, tool calls/results for
+  HIGH_KEEP_TOOLS (`task`), and high-salience messages. Everything else is summarized or dropped
+  to free tokens.
+- **DB isolation**: pruning reads/writes ONLY this project's `.mcm/coordinates.db`. It never
+  touches other projects' databases.
 
 ---
 
 CONTEXT WINDOW MANAGEMENT
 
 
-At ~50k tokens used or when NBL pos 28 > 800:
-  mcm_compress(active_task='what was just completed', active_files=['file1.py', 'file2.py'])
-Then condense. After condensing, call mcm_recall(query) to recover knowledge.
+Automatic pruning triggers at 55% (nudge) / 65% (threshold) of the model window (128k tokens
+by default; auto-detected from `chat.params` -> `Model.limit.context`). For an explicit
+checkpoint + immediate force-prune: `mcm_compress(active_task='...', active_files=[...])`.
+After condensing, call mcm_recall(query) to recover knowledge.
 
 Loop prevention — same error twice in a row = change approach:
   health.add_warning(space='conduct', description='loop detected', approach='repeated', correction='try different approach')
@@ -259,7 +308,7 @@ The three layers should all be present:
   LANDMARK:  permanent landmarks for every verified feature
 
 When the project reaches its completion condition (defined in GOALS.md),
-data/databases/coordinates.db transfers to the application's runtime memory store.
+.mcm/coordinates.db transfers to the application's runtime memory store.
 Same schema. No migration. The build memory becomes the app memory.
 
 ---
