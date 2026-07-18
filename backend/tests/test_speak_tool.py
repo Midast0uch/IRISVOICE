@@ -77,3 +77,42 @@ def test_empty_text_errors():
     tool = SpeakTool(event_bus=bus)
     assert tool.speak("")["status"] == "error"
     assert tool.speak(None)["status"] == "error"
+
+
+def test_correlation_fields_in_payload():
+    """REQ-12 live-testing support: speak() carries conversation_id +
+    turn_id in the emitted event so TTS playback can be correlated to a
+    conversation thread during manual testing."""
+    bus = EventBus()
+    start = _capture(bus, IRISStreamEvent.UTTERANCE_START)
+    tool = SpeakTool(event_bus=bus)
+    result = tool.speak(
+        "Now opening the file", conversation_id="conv_42", turn_id="turn_7"
+    )
+    assert result["status"] == "ok"
+    assert start[0].data["conversation_id"] == "conv_42"
+    assert start[0].data["turn_id"] == "turn_7"
+
+
+def test_resolves_active_kernel_without_creating_one():
+    """When conv/turn omitted, speak() resolves the EXISTING kernel
+    instance for correlation — it must NOT create a new heavy kernel
+    (memory wiring) as a side effect of a log call."""
+    import backend.agent.agent_kernel as ak
+
+    # Seed one fake existing instance (no real __init__).
+    class _FakeKernel:
+        conversation_id = "conv_existing"
+        _current_turn_id = "turn_existing"
+
+    ak._agent_kernel_instances["conv_existing"] = _FakeKernel()
+    bus = EventBus()
+    start = _capture(bus, IRISStreamEvent.UTTERANCE_START)
+    tool = SpeakTool(event_bus=bus)
+    result = tool.speak("Resolved thread")
+    assert result["status"] == "ok"
+    assert start[0].data["conversation_id"] == "conv_existing"
+    assert start[0].data["turn_id"] == "turn_existing"
+    # No extra kernel created beyond the one we seeded.
+    assert len(ak._agent_kernel_instances) == 1
+    del ak._agent_kernel_instances["conv_existing"]

@@ -689,6 +689,16 @@ class TTSManager:
                     f"({_total_samples/OUTPUT_SAMPLE_RATE:.1f}s audio) "
                     f"in {_t_elapsed:.2f}s"
                 )
+                # Structured playback log: when audio REALLY flowed, with the
+                # spoken text + wall-clock timestamp. Pairs with the SpeakTool
+                # SPEAK-intent log so live-test screenshots can be correlated
+                # to which thread/text played and exactly when.
+                logger.info(
+                    "[TTSManager] PLAYBACK ts=%.3f dur=%.2fs text=%r",
+                    time.time(),
+                    _t_elapsed,
+                    (text or "")[:80],
+                )
             # Diagnostic dump: save first TTS call's raw output to .wav
             if _should_dump and _dump_chunks:
                 try:

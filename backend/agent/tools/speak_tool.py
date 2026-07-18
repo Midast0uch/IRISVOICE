@@ -48,6 +48,8 @@ class SpeakTool:
         text: str,
         priority: str = "normal",
         interrupt: bool = False,
+        conversation_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Emit a `speak` utterance for TTS. Fire-and-forget.
 
@@ -56,12 +58,43 @@ class SpeakTool:
             priority: "normal" | "high" | "low" (default "normal").
             interrupt: If True and priority is "high", halts current TTS
                 before speaking (best-effort).
+            conversation_id: thread the utterance belongs to. If omitted,
+                resolved from the active AgentKernel so the TTS log can be
+                correlated to a conversation thread during live testing.
+            turn_id: turn the utterance belongs to. If omitted, resolved
+                from the active AgentKernel.
 
-        Returns a status dict.  Never raises — speech is best-effort.
+        Returns a status dict. Never raises — speech is best-effort.
         """
         if not text or not isinstance(text, str):
             return {"status": "error", "reason": "text (str) is required"}
         text = text[:MAX_TEXT_CHARS]
+
+        # Resolve thread/turn for correlation when not explicitly passed.
+        # NOTE: look up the EXISTING kernel instance only — never call
+        # get_agent_kernel() with an empty/id string, as that would CREATE
+        # a new heavy kernel (memory wiring) as a side effect of a log call.
+        if conversation_id is None or turn_id is None:
+            try:
+                from backend.agent.agent_kernel import _agent_kernel_instances
+
+                _active = None
+                if conversation_id and conversation_id in _agent_kernel_instances:
+                    _active = _agent_kernel_instances[conversation_id]
+                elif _agent_kernel_instances:
+                    # Fall back to the most recently created instance.
+                    _active = next(
+                        reversed(_agent_kernel_instances.values())
+                    )
+                if _active is not None:
+                    conversation_id = conversation_id or getattr(
+                        _active, "conversation_id", None
+                    )
+                    turn_id = turn_id or getattr(
+                        _active, "_current_turn_id", None
+                    )
+            except Exception:
+                pass
 
         self._prune_pending()
         if len(self._pending) >= MAX_PENDING:
@@ -70,6 +103,19 @@ class SpeakTool:
 
         uid = f"spk_{uuid.uuid4().hex[:8]}"
         self._pending.append(time.time())
+        # Structured correlation log: intent (what the agent decided to say,
+        # for which thread/turn, at what wall-clock time). Pairs with the
+        # TTSManager playback log so screenshots <-> thread <-> TTS <-> text
+        # can be reconstructed during manual live testing.
+        logger.info(
+            "[SpeakTool] SPEAK intent ts=%.3f conv=%s turn=%s prio=%s uid=%s text=%r",
+            time.time(),
+            conversation_id,
+            turn_id,
+            priority,
+            uid,
+            text[:80],
+        )
         try:
             self._bus.emit(
                 self._IRISStreamEvent.UTTERANCE_START,
@@ -78,6 +124,8 @@ class SpeakTool:
                     "priority": priority,
                     "interrupt": bool(interrupt),
                     "utterance_id": uid,
+                    "conversation_id": conversation_id,
+                    "turn_id": turn_id,
                 },
             )
             self._bus.emit(
@@ -87,6 +135,8 @@ class SpeakTool:
                     "priority": priority,
                     "interrupt": bool(interrupt),
                     "utterance_id": uid,
+                    "conversation_id": conversation_id,
+                    "turn_id": turn_id,
                 },
             )
         except Exception as exc:
