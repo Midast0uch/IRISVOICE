@@ -2565,12 +2565,19 @@ class IRISGateway:
                         _loop_count += 1
                         _sd2.play(_sttproc_data, _sttproc_sr, device=_sttproc_dev, blocking=True)
                         _min_played = True
-                        # Check AFTER playback â€” ensures current iteration finishes
-                        # and gives TTS a moment to start before we go silent.
-                        if _min_played and _sttproc_stop.is_set():
-                            # Play one more short overlap to avoid dead silence gap
-                            _sttproc_stop.wait(0.3)
-                            break
+                        # Sync: keep the "processing" chime alive UNTIL the real
+                        # TTS playback actually starts (first chunk reaches the
+                        # device). This ties the chime thread to the TTS thread
+                        # via _playback_event so they don't drift apart — the
+                        # chime no longer ends on a blind 2-iteration count while
+                        # TTS is still thinking (silence gap) or clashes with it.
+                        # Timeout = safety net if TTS never starts.
+                        if _min_played:
+                            _playback_event.wait(timeout=4.0)
+                            if _sttproc_stop.is_set() or _playback_event.is_set():
+                                # One short overlap to avoid a dead-silence gap.
+                                _sttproc_stop.wait(0.3)
+                                break
                     self._logger.info(f"[STTPROC] Loop ended ({_loop_count} iterations)")
                 except Exception as _stt_err:
                     self._logger.warning(f"[STTPROC] Playback error: {_stt_err}")

@@ -4177,13 +4177,21 @@ class AgentKernel:
                 # the first tool:call can arrive in the same WS batch,
                 # making the plan card appear to jump straight to "working").
                 # FIX B (Wave 10): a trivial prompt can route to DER yet
-                # produce a plan with ZERO executable steps (der_steps=0).
-                # Rendering a TaskListCard for that is wrong — fall through
-                # to the direct response path instead of emitting a card.
-                if not _plan.steps:
+                # produce a plan whose ONLY step is a `speak` (e.g. "respond
+                # to user", "confirm presence"). Rendering a TaskListCard for a
+                # pure-voice reply is wrong — fall through to the direct
+                # response path (just speak) instead of emitting a card.
+                _voice_only = bool(_plan.steps) and all(
+                    (s.tool or "").lower() in ("speak", "speak_tool", "tts", "")
+                    for s in _plan.steps
+                )
+                if not _plan.steps or _voice_only:
                     logger.info(
-                        "[AgentKernel] plan has 0 steps — skipping DER/card, "
-                        "falling through to direct response (trivial prompt)"
+                        "[AgentKernel] plan is voice-only/trivial (steps=%d, "
+                        "voice_only=%s) — skipping DER/card, falling through "
+                        "to direct response",
+                        len(_plan.steps),
+                        _voice_only,
                     )
                     _der_response = ""  # forces the direct path below
                 else:
