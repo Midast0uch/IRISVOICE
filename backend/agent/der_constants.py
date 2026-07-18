@@ -177,3 +177,60 @@ def debit_work_units(current: int, measured_tokens: int) -> int:
     """
     _cost = max(1, measured_tokens // AVG_STEP_COST)
     return max(0, current - _cost)
+
+
+def detect_physics_narration(
+    prev_u_mag: Optional[float],
+    u_mag: float,
+    n_children: int,
+    is_subloop: bool,
+) -> Optional[str]:
+    """REQ-7: agent-driven PHYSICS-EVENT narration trigger.
+
+    Returns the spoken line to emit at a DER step boundary, or ``None`` when
+    nothing physics-meaningful happened (so the agent stays SILENT on ordinary
+    steps — no per-step heartbeat).
+
+    Triggers (in precedence order):
+      1. Split — step spawned Sub-Loop children -> "now moving into a sub-task".
+      2. Sub-Loop collapse — a sub-loop item finalized with no children ->
+         "folding back into the main thread".
+      3. |u| transition oscillating -> converged -> "settling into the answer".
+      4. |u| transition converged -> oscillating -> "re-opening the search".
+
+    Thresholds reuse U_SPLIT (above = oscillating) and U_CONVERGED
+    (at/above = converged). ``prev_u_mag is None`` (first step) yields no
+    transition line.
+
+    Invariant: spoken ⊆ visible — every returned line is a real transition,
+    never filler.
+
+    Args:
+        prev_u_mag: |u| from the previous step (None on first step).
+        u_mag: |u| at the current step (non-negative).
+        n_children: number of Sub-Loop children spawned this finalize (0 = none).
+        is_subloop: the finalized item is itself a Sub-Loop.
+
+    Returns:
+        str | None — the line to speak, or None to stay silent.
+    """
+    # Structural events take precedence.
+    if n_children and n_children > 0:
+        return (
+            f"Now moving into a sub-task — splitting into {n_children} parts."
+        )
+    if is_subloop and not n_children:
+        return "Sub-task done; folding back into the main thread."
+    if prev_u_mag is None:
+        return None
+    # Bands: converged = |u| >= U_CONVERGED; oscillating = U_SPLIT < |u|
+    # < U_CONVERGED; below U_SPLIT is the split/deep-oscillation zone.
+    _was_conv = prev_u_mag >= U_CONVERGED
+    _was_osc = (prev_u_mag > U_SPLIT) and (prev_u_mag < U_CONVERGED)
+    _now_conv = u_mag >= U_CONVERGED
+    _now_osc = (u_mag > U_SPLIT) and (u_mag < U_CONVERGED)
+    if _was_osc and _now_conv:
+        return "Settling into the answer now."
+    if _was_conv and _now_osc:
+        return "Re-opening the search."
+    return None

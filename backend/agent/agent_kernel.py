@@ -4796,6 +4796,9 @@ Respond with a JSON object:
         except Exception as _wu_err:
             logger.warning("[DER] work_units derive failed: %s", _wu_err)
             self._der_work_units = 0
+        # REQ-7: previous step's |u| magnitude, for physics-event narration
+        # transition detection (oscillating -> converged). None until first step.
+        self._der_last_u_mag = None
 
         try:
             return self._execute_plan_der(
@@ -6810,20 +6813,37 @@ Respond with a JSON object:
         except Exception:
             pass
 
-        # ── Step-level audio narration (pin_9e97e21340e7) ────────────────────
-        # Long DER tasks previously went silent between the start and the final
-        # answer. Speak a brief, low-priority status at each step completion so
-        # the user HEARS the agent driving the app. Funneled through SpeakTool
-        # (serialized by the narration lock) so it never conflicts with web-
-        # search progress or the final answer. Kept short to respect the rate
-        # limiter and not interrupt the conclusion.
+        # ── REQ-7: agent-driven PHYSICS-EVENT narration (post-step hook) ──
+        # Replaces the flat per-step heartbeat. The agent speaks ONLY on a physics
+        # event — a |u| transition (oscillating -> converged) or a structural
+        # event (split into Sub-Loops, or a Sub-Loop collapsing). This is the
+        # "now moving into a sub-task" / "settling into the answer" signal. It is
+        # latency-cheap (pure arithmetic on already-fetched caducean state), off
+        # the critical path (try/except), and funneled through SpeakTool (narration
+        # lock) so it never conflicts with web-search progress or the final answer.
+        # Invariant: spoken ⊆ visible — every spoken line is a real transition.
         try:
-            from backend.agent.tools.speak_tool import get_speak_tool
-            _verb = "Completed" if step_success else "Couldn't complete"
-            _label = (item.description or f"step {item.step_number}")[:80]
-            get_speak_tool().speak(f"{_verb} step {item.step_number}: {_label}.", priority="low")
-        except Exception:
-            pass
+            from backend.agent.der_constants import detect_physics_narration
+
+            _u_mag = abs(float(_u)) if _u is not None else 0.0
+            _narrate = detect_physics_narration(
+                self._der_last_u_mag, _u_mag, len(_children),
+                bool(getattr(item, "is_subloop", False)),
+            )
+            if _narrate:
+                from backend.agent.tools.speak_tool import get_speak_tool
+
+                get_speak_tool().speak(_narrate, priority="low")
+            self._der_last_u_mag = _u_mag
+        except Exception as _narr_exc:
+            logger.debug("[DER] physics-event narration skipped: %s", _narr_exc)
+            # Never let narration block the step result.
+            try:
+                self._der_last_u_mag = (
+                    abs(float(_u)) if _u is not None else 0.0
+                )
+            except Exception:
+                pass
 
         # ── TRAILING DIRECTOR: analyze gaps every TRAILING_GAP_MIN steps ─
         # Domain 19: phase 4 (crystallization) forces gap analysis;
