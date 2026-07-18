@@ -172,7 +172,8 @@ def test_outcome_coarsening(monkeypatch):
 
 def test_failure_zone_canonical(monkeypatch):
     import pathlib
-    src = pathlib.Path("backend/agent/agent_kernel.py").read_text()
+    _root = pathlib.Path(__file__).resolve().parents[2]
+    src = (_root / "backend/agent/agent_kernel.py").read_text()
     assert 'zone="failure"' not in src, "off-vocab failure zone must be removed"
 
 
@@ -223,6 +224,7 @@ def test_recovery_has_fan_summary(monkeypatch, tmp_path):
 
 def test_layers_share_resource(monkeypatch):
     import pathlib
-    dcp_src = pathlib.Path("backend/agent/dcp.py").read_text()
+    _root = pathlib.Path(__file__).resolve().parents[2]
+    dcp_src = (_root / "backend/agent/dcp.py").read_text()
     assert "resolve_context_window()" in dcp_src, "DCP must derive budget from context window"
     assert "turn_protection = max(4, int(resolve_context_window() / 6000))" in dcp_src
