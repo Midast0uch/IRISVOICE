@@ -2573,8 +2573,8 @@ class IRISGateway:
                         # TTS is still thinking (silence gap) or clashes with it.
                         # Timeout = safety net if TTS never starts.
                         if _min_played:
-                            _playback_event.wait(timeout=4.0)
-                            if _sttproc_stop.is_set() or _playback_event.is_set():
+                            self._playback_event.wait(timeout=4.0)
+                            if _sttproc_stop.is_set() or self._playback_event.is_set():
                                 # One short overlap to avoid a dead-silence gap.
                                 _sttproc_stop.wait(0.3)
                                 break
@@ -3031,7 +3031,10 @@ class IRISGateway:
 
         # Synchronization event: set when first audio chunk reaches the device.
         # Word-highlight threads wait on this instead of hardcoded sleep(0.15).
-        _playback_event: threading.Event = threading.Event()
+        # Instance attribute (not local) so the nested STTPROC chime loop
+        # can reference it reliably across thread boundaries.
+        self._playback_event: threading.Event = threading.Event()
+        _playback_event = self._playback_event
 
         def _producer():
             # Wait for any in-flight agent-initiated utterance (SpeakTool /
