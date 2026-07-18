@@ -7918,6 +7918,15 @@ def get_desktop_control_enabled() -> bool:
 # inheritance (which fails if all peers were also created post-swarm).
 _swarm_config_snapshot: Optional[dict] = None
 
+# Normal (non-swarm) persisted model config snapshot. Set at startup
+# from iris_config.json. Any kernel lazily created by a WebSocket
+# client (e.g. session_iris) whose provider is still "uninitialized"
+# reads from this snapshot — so it inherits cerebras/gemma (the
+# "use same model" setting) instead of falling back to a local
+# model or staying uninitialized. Mirrors _swarm_config_snapshot
+# but for the standard launch path.
+_model_config_snapshot: Optional[dict] = None
+
 
 def get_agent_kernel(
     conversation_id: str = "default",
@@ -8048,6 +8057,50 @@ def get_agent_kernel(
                     f"swarm snapshot (provider='iris_local', "
                     f"endpoint={_swarm_config_snapshot.get('endpoint')!r})"
                 )
+
+            # Normal (non-swarm) persisted config snapshot. Set at
+            # startup from iris_config.json. Any kernel lazily created
+            # by a WebSocket client (e.g. session_iris) whose
+            # provider is still "uninitialized" reads from this snapshot
+            # so it inherits cerebras/gemma (the "use same model"
+            # setting) instead of falling back to a local model or
+            # staying uninitialized. This is the fix for DER tool
+            # calls failing with provider=uninitialized / RotorQuant
+            # available=False — the execution model must be the
+            # configured remote model, never a hardcoded local one.
+            if (
+                kernel._model_provider == "uninitialized"
+                and _model_config_snapshot is not None
+            ):
+                try:
+                    kernel.set_model_selection(
+                        reasoning_model=_model_config_snapshot.get(
+                            "reasoning_model"
+                        ),
+                        tool_execution_model=_model_config_snapshot.get(
+                            "tool_model"
+                        ),
+                        provider=_model_config_snapshot.get("provider"),
+                        api_base_url=_model_config_snapshot.get("api_base_url"),
+                        api_key=_model_config_snapshot.get("api_key"),
+                        thinking_style=_model_config_snapshot.get(
+                            "thinking_style"
+                        ),
+                        response_length=_model_config_snapshot.get(
+                            "response_length"
+                        ),
+                        tool_mode=_model_config_snapshot.get("tool_mode"),
+                    )
+                    logger.info(
+                        f"[AgentKernel] Conv '{conversation_id}' hydrated "
+                        f"from model snapshot "
+                        f"(provider={_model_config_snapshot.get('provider')!r}, "
+                        f"model={_model_config_snapshot.get('reasoning_model')!r})"
+                    )
+                except Exception as _snap_err:
+                    logger.warning(
+                        f"[AgentKernel] model snapshot hydrate failed: {_snap_err}"
+                    )
 
         _agent_kernel_instances[conversation_id] = kernel
 

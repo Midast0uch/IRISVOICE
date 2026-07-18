@@ -594,6 +594,36 @@ async def lifespan(app: FastAPI):
                         _configure_kernel(_iris_kernel)
                         logger.info(f"    [Model] Also configured session_iris kernel")
 
+                    # Stash the persisted model config as a global snapshot
+                    # so any kernel lazily created later by a WebSocket
+                    # client (e.g. session_iris) inherits cerebras/gemma
+                    # (the "use same model" setting) instead of staying
+                    # "uninitialized" and falling back to a local model.
+                    try:
+                        from backend.agent.agent_kernel import (
+                            _model_config_snapshot as _mcs,
+                        )
+                        _mcs = {
+                            "provider": _provider,
+                            "reasoning_model": _reasoning,
+                            "tool_model": _tool_exec,
+                            "api_base_url": _api_base,
+                            "api_key": _api_key,
+                            "thinking_style": _thinking_style,
+                            "response_length": _response_length,
+                            "tool_mode": _tool_mode,
+                        }
+                        import backend.agent.agent_kernel as _ak_mod
+                        _ak_mod._model_config_snapshot = _mcs
+                        logger.info(
+                            f"    [Model] Snapshot stashed for lazy kernels "
+                            f"(provider={_provider!r}, model={_reasoning!r})"
+                        )
+                    except Exception as _snap_err:
+                        logger.warning(
+                            f"    [Model] Snapshot stash failed: {_snap_err}"
+                        )
+
                     logger.info(
                         f"    [Model] Restored provider={_provider} "
                         f"reasoning={_reasoning} tool={_tool_exec}"
