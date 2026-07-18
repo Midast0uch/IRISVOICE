@@ -6861,11 +6861,52 @@ Respond with a JSON object:
                 self._der_last_u_mag, _u_mag, len(_children),
                 bool(getattr(item, "is_subloop", False)),
             )
+            _tts_played = False
             if _narrate:
                 from backend.agent.tools.speak_tool import get_speak_tool
 
                 get_speak_tool().speak(_narrate, priority="low")
+                _tts_played = True
             self._der_last_u_mag = _u_mag
+            # REQ-9: record the narration decision (incl. SILENCE) to the
+            # conversation-scoped observability log. Off the critical path
+            # (async fire-and-forget). u/xi carried on split/collapse.
+            try:
+                from backend.agent.narration import NarrationLog
+
+                _nlog = NarrationLog(self.conversation_id)
+                _decision = "brief" if _narrate else "silence"
+                # u/xi only meaningful on a structural event.
+                _has_struct = bool(_children) or bool(
+                    getattr(item, "is_subloop", False)
+                )
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    _nlog._write,
+                    {
+                        "ts": time.time(),
+                        "conversation_id": self.conversation_id,
+                        "step_id": item.step_id,
+                        "decision": _decision,
+                        "signal": (
+                            "retried"
+                            if _children
+                            else (
+                                "crystallized"
+                                if _verified == "VERIFIED"
+                                else "avoided"
+                            )
+                        )
+                        if _has_struct
+                        else None,
+                        "u": float(_u) if _u is not None else None,
+                        "xi": float(_xi) if _xi is not None else None,
+                        "text": _narrate or "",
+                        "tts_played": _tts_played,
+                    },
+                )
+            except Exception as _nlog_exc:
+                logger.debug("[DER] narration log skipped: %s", _nlog_exc)
         except Exception as _narr_exc:
             logger.debug("[DER] physics-event narration skipped: %s", _narr_exc)
             # Never let narration block the step result.
