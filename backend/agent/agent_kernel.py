@@ -3810,6 +3810,33 @@ class AgentKernel:
                                 depends_on=list(raw_step.get("depends_on", []) or []),
                             )
                         )
+                    # FIX (Wave 10): a web-search / research task whose
+                    # planner returned VALID JSON but an EMPTY steps array
+                    # (der_steps=0) would run DER with nothing to do, so
+                    # the agent falls back to writing links into a markdown
+                    # doc itself and never crawls. Force a real search step
+                    # so crawling/extraction/render actually happen.
+                    _is_web = bool(
+                        re.search(r"\b(web|search|research|look up|find (online|on the web))\b",
+                                  (text or ""), re.IGNORECASE)
+                        or str(task_class).lower() in ("research_task", "web_task")
+                    )
+                    if not steps and _is_web:
+                        logger.warning(
+                            "[AgentKernel._plan_task] empty steps for web "
+                            "task -> injecting forced crawler_query step"
+                        )
+                        steps.append(
+                            PlanStep(
+                                step_id="s1",
+                                step_number=1,
+                                description=f"Search the web for: {text}",
+                                tool="crawler_query",
+                                params={"query": (text or "")[:200]},
+                                critical=True,
+                                depends_on=[],
+                            )
+                        )
                     return ExecutionPlan(
                         plan_id=str(_uuid.uuid4()),
                         original_task=text,
