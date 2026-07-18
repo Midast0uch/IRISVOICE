@@ -964,6 +964,43 @@ class AgentKernel:
         """
         return int(self.resolve_context_window() * fraction)
 
+    def _emit_context_usage(self, step_number: int = 0, total_steps: int = 0) -> None:
+        """Emit a `context:usage` event with the REAL per-thread token state.
+
+        REQ-12 (Wave 9): makes the ContextPill live on EVERY model response,
+        not just inside the DER loop. Single emitter so DER and non-DER paths
+        share the SAME event contract (same shape, same `resolve_context_window()`
+        denominator, same `self._tokens_used` numerator) — they intertwine via
+        the contract, not duplicated logic.
+
+        - `max_tokens` = resolve_context_window() (the model in use) — never a
+          hardcoded 128k.
+        - `used_tokens` = self._tokens_used, the kernel's real per-thread count,
+          restored from the context store per conversation_id (agent_kernel.py:547).
+          An ACTIVE or SWITCHED thread therefore shows its real usage and NEVER 0.
+          Only a genuinely brand-new thread (no history) may report 0, which is
+          honest.
+
+        Fire-and-forget: EventBus failure must never crash the response path.
+        """
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            get_event_bus().emit(
+                IRISStreamEvent.CONTEXT_USAGE,
+                data={
+                    "used_tokens": int(getattr(self, "_tokens_used", 0) or 0),
+                    "max_tokens": int(self.resolve_context_window()),
+                    "step_number": step_number,
+                    "total_steps": total_steps,
+                },
+                turn_id=getattr(self, "_current_turn_id", None),
+                conversation_id=self.conversation_id,
+                session_id=self.session_id,
+            )
+        except Exception:
+            pass  # EventBus is optional — no crash if it fails
+
     @staticmethod
     def _extract_chunk_text(chunk):
         """Delegate to streaming module."""
@@ -4008,6 +4045,10 @@ class AgentKernel:
             metrics.path = "direct"
             logger.info(f"[AgentKernel] Direct response: {response[:50]}...")
             logger.info(metrics.to_log_line())
+            # REQ-12 (Wave 9): emit live context usage on every non-DER
+            # response so the pill is live from the first reply. Uses the real
+            # per-thread self._tokens_used (never 0 for an active thread).
+            self._emit_context_usage()
             return response
 
         # ── Internet-access gate check (runs before DER to save cost) ──────
@@ -5510,6 +5551,16 @@ Respond with a JSON object:
             )
         except Exception:
             pass
+
+        # REQ-12 (Wave 9): emit final context usage for the DER task.
+        # Covers the "zero steps executed" case (plan rejected before any
+        # step ran) where the per-step emit never fired. Uses the real
+        # per-thread self._tokens_used — never 0 for an active thread.
+        # All return paths below are preceded by this single emit.
+        self._emit_context_usage(
+            step_number=len(completed_items),
+            total_steps=len(queue.items),
+        )
 
         # Phase 1.5: if any step failed, synthesize a user-facing summary
         # that explains what worked, what failed, and what to do next.

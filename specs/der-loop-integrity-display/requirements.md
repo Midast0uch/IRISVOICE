@@ -327,6 +327,43 @@ verbose phase text.
   default, never to a silent 128k assumption in display logic.
 - `currentAction` absent: pill shows the phase code only (no empty/overflow).
 
+## REQ-12 — ContextPill live on EVERY model response (Wave 9)
+
+**As a** user, **I want** the context pill to reflect real usage on every
+model response (not just inside the DER loop), **so that** the budget number
+is live from the first reply and stays correct when I switch conversation threads.
+
+**Acceptance Criteria:**
+- **AC1:** The backend SHALL emit `context:usage` (`IRISStreamEvent.CONTEXT_USAGE`)
+  at the completion of EVERY non-DER model response (the direct path in
+  `process_text_message`), in addition to the existing per-step DER emit.
+  Same event shape, same `max_tokens = resolve_context_window()` denominator.
+- **AC2:** The numerator SHALL be the kernel's real per-thread token count
+  `self._tokens_used` (restored from the context store per conversation_id,
+  agent_kernel.py:547) — NOT a hardcoded 0.
+- **AC3 (the "never 0" rule):** When a conversation thread is ACTIVE
+  (has history) or the user switches to a DIFFERENT thread, the pill SHALL
+  show that thread's real `used_tokens` — it MUST NEVER display 0 for an
+  active/switched thread. Only a genuinely brand-new thread with no history
+  may report 0 (which is honest — nothing has happened yet).
+- **AC4:** DER and non-DER paths SHALL share the SAME event contract
+  (same shape, same `resolve_context_window()` denominator, same
+  `self._tokens_used` numerator). They need not share logic — intertwine
+  via the contract, not via duplicated code. A single helper
+  `_emit_context_usage()` SHALL be the only emitter so the shape cannot drift.
+
+**Edge Cases:**
+- Switching threads: `restore_context_from_store()` runs, `self._tokens_used`
+  becomes that thread's real count → emit reflects it. Never 0 for a thread
+  that has history.
+- DER task with zero steps (plan rejected before execution): the final
+  `_emit_context_usage()` at `_execute_plan_der` return still fires, so the
+  pill shows real usage even when no step emitted.
+- Cold start (no thread, no history): `self._tokens_used` defaults to 0 →
+  pill shows 0/real-window. This is the ONLY legitimate 0 and is honest.
+- EventBus unavailable: emit is wrapped in try/except (no crash, matches
+  existing DER emit pattern at agent_kernel.py:6547).
+
 ## Non-Requirements (Out of Scope)
 - Rewriting the four-scale recursive operator or the Caducean `u`/`ξ` split physics.
 - Changing the single-resolver architecture or deleting the web-regex override (already done).

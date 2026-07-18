@@ -145,3 +145,24 @@
   error->ERR); (c) a 60-char currentAction is truncated in the visible
   label but full in title. Fix the stale '128k' assertion (component now
   formats with one decimal).
+
+## Wave 9 - ContextPill live on every response (REQ-12)
+- [ ] T29 (REQ-12): Add `_emit_context_usage()` helper in agent_kernel.py
+  that emits `IRISStreamEvent.CONTEXT_USAGE` with
+  `used_tokens = self._tokens_used` (real per-thread, restored at :547) and
+  `max_tokens = self.resolve_context_window()`. Wrapped in try/except so
+  EventBus failure never crashes the response path.
+- [ ] T30 (REQ-12 AC1/AC2): Call `_emit_context_usage()` at the end of
+  the non-DER direct response path in `process_text_message` (before the
+  `return response` at ~:4011), so the pill is live from the first reply.
+- [ ] T31 (REQ-12 AC3): Verify thread-switch keeps real `used_tokens`
+  (restore_context_from_store sets self._tokens_used; emit reflects it;
+  never 0 for a thread with history). Add a unit test asserting a restored
+  conversation emits its real token count, not 0.
+- [ ] T32 (REQ-12 AC4): Call `_emit_context_usage()` at the return of
+  `_execute_plan_der` (~:7302) so DER tasks with zero steps still emit
+  final state. Confirm DER per-step emit (:6535) and this final emit share
+  the same helper/shape (no drift).
+- [ ] T33 (REQ-12): Backend unit test for `_emit_context_usage` — asserts
+  event fired with correct used/max, and that an active (restored) thread
+  emits non-zero used_tokens while a fresh thread may emit 0.
