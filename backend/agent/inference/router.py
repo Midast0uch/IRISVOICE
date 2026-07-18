@@ -273,6 +273,38 @@ class InferenceRouter:
         """Set the local model manager for ``INPROCESS`` transport."""
         self._inprocess_mgr = mgr
 
+    def health_check_provider(self, role: str = "reasoning") -> Dict[str, Any]:
+        """Lightweight pre-flight check for *role*.
+
+        Returns ``{"ok": bool, "provider": str, "model": str, "error": str}``.
+
+        Catches the "provider=uninitialized" case where no config has been
+        applied.  If the provider *is* bound but its endpoint happens to be
+        dead, ``ok`` may still be ``True`` — the deep reachability check is
+        deferred to step execution (timeout will surface it).
+        """
+        try:
+            inst = self.resolve(role)
+            if not inst:
+                return {
+                    "ok": False, "provider": "", "model": "",
+                    "error": f"No provider instance for role '{role}'",
+                }
+            ok = bool(getattr(inst, "api_base_url", None)) or bool(getattr(inst, "id", None))
+            return {
+                "ok": ok,
+                "provider": getattr(inst, "id", "") or str(getattr(inst, "kind", "")),
+                "model": getattr(inst, "model", "") or "",
+                "error": "" if ok else f"Provider '{inst.id}' has no endpoint configured",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "provider": "",
+                "model": "",
+                "error": f"resolve('{role}') failed: {exc}",
+            }
+
     # -- Transport construction (cached per kind+endpoint) --------------
 
     def _build_transport(self, inst: ProviderInstance) -> Any:

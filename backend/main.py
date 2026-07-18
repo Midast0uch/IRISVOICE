@@ -561,11 +561,20 @@ async def lifespan(app: FastAPI):
         # Apply persisted model configuration from iris_config.json
         try:
             _mc = _load_iris_config()
-            _provider = _mc.get("active_provider", "")
-            _reasoning = _mc.get("reasoning_model", "")
-            _tool_exec = _mc.get("tool_execution_model", "")
-            _api_key = _mc.get("api_key", "")
-            _api_base_url = _mc.get("api_base_url", "")
+            # Config lives under the "inference" block (cerebras/gemma by
+            # default). The legacy top-level keys (active_provider, etc.) no
+            # longer exist in iris_config.json, so reading them returned ""
+            # and silently skipped model restoration — leaving the kernel
+            # "uninitialized" and breaking DER tool calls.
+            _inf = (_mc.get("inference") or {}) if isinstance(_mc, dict) else {}
+            _provider = _inf.get("provider", "")
+            _reasoning = _inf.get("reasoning_model", "")
+            _tool_exec = _inf.get("tool_execution_model", "")
+            _api_key = _inf.get("api_key", "")
+            _api_base_url = _inf.get("api_base_url", "")
+            _thinking_style = _inf.get("thinking_style", "")
+            _response_length = _inf.get("response_length", "")
+            _tool_mode = _inf.get("tool_mode", "")
             if _provider and _reasoning and hasattr(app.state, "agent_kernel"):
 
                 def _configure_kernel(kernel):
@@ -607,7 +616,7 @@ async def lifespan(app: FastAPI):
                             "provider": _provider,
                             "reasoning_model": _reasoning,
                             "tool_model": _tool_exec,
-                            "api_base_url": _api_base,
+                            "api_base_url": _api_base_url,
                             "api_key": _api_key,
                             "thinking_style": _thinking_style,
                             "response_length": _response_length,

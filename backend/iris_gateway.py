@@ -4265,7 +4265,10 @@ class IRISGateway:
         conversation_id = payload.get("conversation_id") or session_id
         try:
             kernel = get_agent_kernel(conversation_id, session_id)
-            kernel.restore_context_from_store(conversation_id)
+            # restore_context_from_store() takes only `self` and restores the
+            # kernel's own conversation_id context. Passing conversation_id as
+            # a 2nd positional arg raised TypeError and broke sync_state.
+            kernel.restore_context_from_store()
             self._logger.info(
                 f"[Chat] sync_state attached conversation {conversation_id} "
                 f"for session {session_id}"

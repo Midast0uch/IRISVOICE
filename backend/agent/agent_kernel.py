@@ -9,7 +9,10 @@ Orchestrates the dual-LLM system with:
 - Model failure fallback to single-model mode
 """
 
+from __future__ import annotations
+
 import re
+import hashlib
 
 from .model_conversation import ModelConversation
 from .inter_model_communication import InterModelCommunicator
@@ -25,6 +28,7 @@ except ImportError:  # top-level import (tests run with backend/ on sys.path)
     from llm_service import llm as _llm
 from . import streaming as _streaming
 from backend.agent.inference.router import InferenceRouter
+from backend.agent.tool_decision import ToolDecisionBox, Decision, DecisionKind, DispatchResult
 from backend.iris_config import load_config
 from typing import Any, Dict, Optional, List, Callable, Tuple, Sequence
 import json
@@ -3611,9 +3615,9 @@ class AgentKernel:
         context_package=None,
         mode: str = "full",
         session_id: str = "unknown",
-    ):
+    ) -> Optional[ExecutionPlan]:
         """
-        DER-aware planning wrapper. Returns ExecutionPlan, never raises.
+        DER-aware planning wrapper. Returns ExecutionPlan (or None on failure).
         Mode + maturity-aware temperature:
           debug/review  → 0.0  (deterministic — finding bugs, not exploring)
           implement      → 0.1  (low — structured code generation)
@@ -3831,22 +3835,12 @@ class AgentKernel:
         except Exception as _parse_err:
             logger.warning(f"[AgentKernel._plan_task] parse failed: {_parse_err}")
 
-        # Fallback: minimal single-step plan so DER cycle can still proceed
-        return ExecutionPlan(
-            plan_id=str(_uuid.uuid4()),
-            original_task=text,
-            strategy="do_it_myself",
-            reasoning="_plan_task fallback — model returned non-JSON",
-            steps=[
-                PlanStep(
-                    step_id="s1",
-                    step_number=1,
-                    description=text,
-                    tool=None,
-                    critical=True,
-                )
-            ],
+        # Fallback: return None to signal plan error (REQ-2 — no silent self-do)
+        logger.warning(
+            "[_plan_task] planner returned no valid plan for: %.150s",
+            text,
         )
+        return None
 
     def _is_web_search_request(self, text: str) -> bool:
         """Quick heuristic: does the user message explicitly request a web search?
@@ -4152,6 +4146,11 @@ class AgentKernel:
                 mode=_mode_name,
                 session_id=session_id or self.session_id,
             )
+            if _plan is None:
+                # REQ-2: planner failure → return ERROR, no silent self-do
+                msg = "[IRIS error] The planner returned no valid plan."
+                logger.warning("[process_text_message] %s", msg)
+                return msg
 
             # GAP 5 — strategy signal to Mycelium after planning
             try:
@@ -5000,6 +4999,22 @@ Respond with a JSON object:
         _token_budget: int = max(int(_model_window * 0.9), _floor)
         _tokens_used: int = 0
 
+        # ── REQ-1: pre-flight — is the reasoning provider usable? ────────
+        if not getattr(self, "_router", None):
+            logger.warning("[DER] pre-flight FAILED — no router configured")
+            return "[DER unavailable] No inference router configured"
+        try:
+            _hc = self._router.health_check_provider("reasoning")
+        except Exception as _hc_err:
+            _hc = {"ok": False, "error": str(_hc_err)[:200]}
+        if not _hc.get("ok"):
+            _reason = _hc.get("error", "no reason")
+            logger.warning(
+                "[DER] pre-flight FAILED — reasoning provider unavailable: %s",
+                _reason,
+            )
+            return f"[DER unavailable] {_reason}"
+
         # Build Director queue from ExecutionPlan steps
         # Phase 4b: derive parallel_safe from the tool registry (authoritative
         # source of truth) so concurrency fires for read-only/independent tools
@@ -5588,6 +5603,12 @@ Respond with a JSON object:
                         }
                         for c in queue.mode_history
                     ],
+                    # ToolCallTree (REQ-13): structured snapshot of all tool calls
+                    "tool_call_tree": (
+                        self._get_tool_box().get_tool_call_tree(
+                            conversation_id=self.conversation_id
+                        )
+                    ),
                 },
                 turn_id=_turn_id,
                 conversation_id=self.conversation_id,
@@ -5879,6 +5900,12 @@ Respond with a JSON object:
             "[DER] _split_step trigger=%s u=%.2f width=%d depth=%d",
             trigger, u, width, item.depth_layer,
         )
+        # Reset failure counters so Sub-Loops aren't penalized as parent continuation (REQ-12 AC3)
+        try:
+            if hasattr(self, "_get_tool_box"):
+                self._get_tool_box().reset_failure_counters()
+        except Exception:
+            pass
         return children
 
     def _der_live_cad_state(self, session_id: str) -> Dict[str, float]:
@@ -6262,6 +6289,83 @@ Respond with a JSON object:
         except Exception as _e:
             return f"[step {item.step_number} error: {_e}]"
 
+    # ── ToolDecisionBox lazy factory ─────────────────────────────────────
+
+    def _get_tool_box(self) -> ToolDecisionBox:
+        """Return (caching) the ToolDecisionBox for this conversation.
+
+        Lazy-constructs on first call so the box is available even when
+        created before ``set_model_selection`` has run.  All dependencies
+        are fetched at construction time from the kernel's current state.
+        """
+        if hasattr(self, "_tool_box") and self._tool_box is not None:
+            return self._tool_box
+        from backend.agent.tool_registry import get_registry_tools, validate_tool_call
+
+        # memory_lookup_fn — consults mycelium / pheromone for tool suggestions
+        # (REQ-4 AC6: memory as pre-filter, not fallback; SourceRegistry-like).
+        def _mem_lookup(goal: str) -> Optional[Dict[str, Any]]:
+            try:
+                mi = getattr(self, "_memory_interface", None)
+                if mi is None:
+                    return None
+                myc = getattr(mi, "_mycelium", None)
+                if myc is None:
+                    return None
+                from backend.agent.explorer import _pheromone_top1, _is_web_intent
+
+                # Web-intent → crawler_query (capability-gated, not a silent fallback)
+                if _is_web_intent(goal):
+                    from backend.agent.tool_registry import resolve_tool, capability_allowed
+                    spec = resolve_tool("crawler_query")
+                    if spec and capability_allowed(spec):
+                        params: Dict[str, Any] = {"query": goal}
+                        # Consult SourceRegistry for known URLs (learned knowledge)
+                        try:
+                            from backend.crawler.source_registry import get_source_registry
+                            import asyncio as _asyncio
+                            sr = get_source_registry()
+                            sr_result = _asyncio.run(sr.resolve(goal))
+                            if sr_result.get("hit") and sr_result.get("sources"):
+                                known_urls = [
+                                    s["url"] for s in sr_result["sources"]
+                                    if isinstance(s, dict) and "url" in s
+                                ][:3]
+                                if known_urls:
+                                    params["known_urls"] = known_urls
+                        except Exception:
+                            pass  # SourceRegistry failure is non-fatal
+                        return {
+                            "tool": "crawler_query",
+                            "params": params,
+                            "rationale": "web-intent (memory pre-filter)",
+                        }
+
+                # Pheromone top-1 prediction (deterministic backstop)
+                _session = getattr(self, "session_id", "") or ""
+                _task = getattr(self, "_der_task_class", "full") or "full"
+                _completed = list(getattr(self, "_der_completed_tools", []) or [])
+                top1 = _pheromone_top1(myc, _session, _task, _completed)
+                if top1:
+                    return {
+                        "tool": top1,
+                        "params": {},
+                        "rationale": "pheromone top-1 (memory pre-filter)",
+                    }
+                return None
+            except Exception:
+                return None
+
+        self._tool_box = ToolDecisionBox(
+            router=self._router,
+            tool_bridge=self._tool_bridge,
+            get_available_tools=get_registry_tools,
+            validate_tool_call=validate_tool_call,
+            infer_fn=self.infer,
+            memory_lookup_fn=_mem_lookup,
+        )
+        return self._tool_box
+
     # ── Phase 4: concurrent step execution helpers ──────────────────────
 
     def _der_run_step_execution(
@@ -6280,78 +6384,75 @@ Respond with a JSON object:
         step_result = ""
         step_success = True
         try:
-            # ── Phase 1 (D1.6): single runtime tool resolver ──
-            # Planner no longer pre-assigns tools (D1.3). If this step has no
-            # tool yet, resolve it now via explorer.propose — the ONE authority.
+            # ── Phase 1 (D1.6): resolve via ToolDecisionBox ──────────────
             if not item.tool:
                 try:
-                    from backend.agent.explorer import propose
-                    from backend.agent.evidence import assemble_evidence
-                    from backend.agent.tool_registry import get_registry_tools
-
-                    _mi = getattr(self, "_memory_interface", None)
-                    _myc = getattr(_mi, "_mycelium", None) if _mi is not None else None
-                    _task_class = getattr(self, "_der_task_class", "full") or "full"
-                    _completed = list(getattr(self, "_der_completed_tools", []) or [])
-                    _evidence = assemble_evidence(
-                        goal=item.description or item.objective_anchor or "",
+                    _box = self._get_tool_box()
+                    _decision = _box.resolve(
+                        step={
+                            "description": item.description or item.objective_anchor or "",
+                            "step_number": item.step_number,
+                        },
+                        evidence={
+                            "session_id": _session,
+                            "turn_id": _turn_id,
+                            "task_class": getattr(self, "_der_task_class", "full"),
+                        },
                         session_id=_session,
-                        myc=_myc,
-                        completed_tools=_completed,
-                        task_class=_task_class,
-                        memory_interface=self._memory_interface,
+                        conversation_id=self.conversation_id,
                     )
-                    _decision = propose(
-                        goal=item.description or item.objective_anchor or "",
-                        evidence=_evidence,
-                        live_tools=get_registry_tools(),
-                        infer=self.infer,
-                        myc=_myc,
-                        session_id=_session,
-                        task_class=_task_class,
-                        completed_tools=_completed,
-                        memory_interface=self._memory_interface,
-                    )
-                    if _decision.get("kind") == "tool" and _decision.get("tool"):
-                        item.tool = _decision["tool"]
-                        item.params = _decision.get("params") or {}
-                        logger.info(
-                            "[DER] resolver chose tool=%r for step %d (rationale=%s)",
-                            item.tool, item.step_number, _decision.get("rationale", ""),
-                        )
-                except Exception as _res_err:
+                except Exception as _box_err:
                     logger.warning(
-                        "[DER] resolver failed for step %d: %s",
-                        item.step_number, _res_err,
+                        "[DER] box.resolve crashed for step %d: %s",
+                        item.step_number, _box_err,
                     )
+                    step_success = False
+                    step_result = f"[STEP ERROR: tool resolution crashed — {_box_err}]"
+                    return step_result, step_success
 
+                if _decision.kind == DecisionKind.FAIL:
+                    # FAIL → route to DER recovery (graft / escalate REQ-10)
+                    step_success = False
+                    step_result = f"[STEP ERROR: tool resolution failed — {_decision.error}]"
+                    return step_result, step_success
+
+                if _decision.kind == DecisionKind.TOOL:
+                    item.tool = _decision.tool
+                    item.params = _decision.params
+                    logger.info(
+                        "[DER] box resolved tool=%r for step %d (source=%s)",
+                        item.tool, item.step_number, _decision.source,
+                    )
+                # REASON: item.tool stays None → falls to _run_step_direct below
+
+            # ── Phase 2: dispatch (TOOL) or direct (REASON) ──────────────
             if item.tool and self._tool_bridge is not None:
-                # Trust-routing W2: mark the turn external when a web/crawler
-                # tool runs, so later turn-pair fragments land in 'reference'.
+                # Trust-routing W2: mark external for web/crawler tools
                 self.mark_external_tool(item.tool)
-                # execute_tool is async — use asyncio.run() since _execute_plan_der
-                # runs inside run_in_executor (a thread pool thread), making
-                # asyncio.run() safe here. Same pattern as the ReAct loop.
                 try:
-                    raw = asyncio.run(
-                        self._tool_bridge.execute_tool(
-                            tool_name=item.tool,
+                    _dr = self._get_tool_box().dispatch(
+                        Decision(
+                            kind=DecisionKind.TOOL,
+                            tool=item.tool,
                             params=item.params,
-                            session_id=_session,
-                            plan_title=plan.plan_title if plan else "",
-                        )
+                        ),
+                        session_id=_session,
+                        conversation_id=self.conversation_id,
+                        turn_id=_turn_id,
                     )
                 except RuntimeError as _rte:
-                    # asyncio.run() fails if an event loop is already running in
-                    # this thread (shouldn't happen in executor, but guard anyway)
+                    # asyncio.run() inside box may fail if an event loop is
+                    # already running in this thread — executor fallback
                     logger.warning(
-                        f"[DER] asyncio.run failed for tool {item.tool}: {_rte} — using executor"
+                        "[DER] box.dispatch RuntimeError for %s: %s — using executor",
+                        item.tool, _rte,
                     )
                     import concurrent.futures as _cf
+                    import asyncio as _asyncio
 
                     with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                        raw = _pool.submit(
-                            asyncio.run,
+                        _raw_dr = _pool.submit(
+                            _asyncio.run,
                             self._tool_bridge.execute_tool(
                                 tool_name=item.tool,
                                 params=item.params,
@@ -6359,23 +6460,50 @@ Respond with a JSON object:
                                 plan_title=plan.plan_title if plan else "",
                             ),
                         ).result(timeout=60)
-                step_result = self._format_tool_result(raw) if raw is not None else ""
-                # A tool that returns {"success": False} (rather than raising)
-                # is a genuine failure — surface it as step_success=False so the
-                # retry / plan-grafting path engages instead of reporting success.
-                if isinstance(raw, dict) and raw.get("success") is False:
+                        _dr = DispatchResult(
+                            success=isinstance(_raw_dr, dict) and _raw_dr.get("success") is not False,
+                            result=_raw_dr,
+                        )
+                # ── Record tool call for ToolCallTree (REQ-13) ──────────
+                if _dr:
+                    try:
+                        _step_id = str(getattr(item, "step_id", "")) or ""
+                        _parent_id = str(getattr(item, "parent_step_id", "")) or None
+                        _depth = int(getattr(item, "depth_layer", 0)) or 0
+                        _hash = hashlib.md5(
+                            str(item.params).encode()
+                        ).hexdigest()[:12]
+                        _result_str = str(getattr(_dr, "result", ""))[:200] or str(getattr(_dr, "error", ""))[:200]
+                        self._get_tool_box().record_tool_call(
+                            step_id=_step_id,
+                            tool=item.tool,
+                            args_hash=_hash,
+                            result_summary=_result_str,
+                            error_type=getattr(_dr, "error_type", None),
+                            source="tool",
+                            split_depth=_depth,
+                            parent_step_id=_parent_id,
+                        )
+                    except Exception as _rc_err:
+                        logger.warning("[DER] record_tool_call failed: %s", _rc_err)
+                step_result = self._format_tool_result(
+                    getattr(_dr, "result", None)
+                ) if _dr else ""
+                if _dr and not _dr.success:
                     step_success = False
-                # ── W9 (O3): proactively capture structured tool results ──
-                if item.tool and raw is not None:
+                # W9 (O3): capture structured tool results
+                if item.tool and _dr and _dr.result is not None:
                     try:
                         self._capture_tool_result(
-                            item.tool, raw, self.conversation_id, _turn_id, _session
+                            item.tool, _dr.result,
+                            self.conversation_id, _turn_id, _session,
                         )
                     except Exception as _cap_err:
                         logger.warning(
-                            "[DER] tool-result capture failed: %s", _cap_err
+                            "[DER] tool-result capture failed: %s", _cap_err,
                         )
             else:
+                # REASON (no tool) or no tool_bridge — direct reasoning
                 step_result = self._run_step_direct(item, context_package, _session)
         except Exception as _ex_err:
             step_success = False
@@ -7186,7 +7314,6 @@ Respond with a JSON object:
             raw = response.raw_text or ""
 
             # Parse JSON from response
-            import re
             import json as _json
 
             m = re.search(r"\{[\s\S]+\}", raw)
