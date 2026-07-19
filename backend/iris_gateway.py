@@ -124,6 +124,14 @@ class IRISGateway:
         """
         self._ws_manager = ws_manager or get_websocket_manager()
         self._state_manager = state_manager or get_state_manager()
+        # REQ-8 AC5: wire the reconnect-replacement hook so a stale socket's
+        # in-flight DER loop is soft-cancelled when a new socket replaces it
+        # (e.g. flipping localhost -> Tailscale mid-response). The incoming
+        # sync_state re-binds / cancels as needed (T19/T20).
+        try:
+            self._ws_manager.on_client_replace = self._on_client_replace
+        except Exception:
+            pass
         self._logger = logging.getLogger(__name__)
 
         # Bus -> WebSocket bridge: delivers task/question/permission/context
@@ -346,6 +354,15 @@ class IRISGateway:
     def _touch_session(self, session_id: str) -> None:
         """Update the last-seen timestamp for a session."""
         self._session_last_seen[session_id] = time.monotonic()
+        # Keep the recency pointer current so the wake-word handler can bind to the
+        # user's most recently active conversation thread (REQ-1/REQ-2). Guarded so a
+        # missing SessionManager attribute can never break the hot path.
+        try:
+            mgr = getattr(self, "_session_manager", None)
+            if mgr is not None and hasattr(mgr, "_mark_active"):
+                mgr._mark_active(session_id)
+        except Exception:
+            pass
 
     async def _session_gc_loop(self) -> None:
         """Background task to clean up stale sessions every 5 minutes."""
@@ -491,7 +508,7 @@ class IRISGateway:
                 else:
                     await self._handle_execute_cleanup(session_id, client_id, message)
 
-            elif msg_type in ["text_message", "clear_chat", "new_conversation"]:
+            elif msg_type in ["text_message", "clear_chat", "new_conversation", "switch_conversation"]:
                 await self._handle_chat(session_id, client_id, message)
 
             elif msg_type == "sync_state":
@@ -4250,6 +4267,31 @@ class IRISGateway:
             except Exception:
                 break
 
+    def _on_client_replace(self, client_id: str) -> None:
+        """REQ-8 AC5: a stale socket for client_id was replaced by a new one.
+
+        Soft-cancel the previously-active thread's in-flight DER loop for this
+        session. The incoming sync_state will re-bind (and cancel if different).
+        Called synchronously from WebSocketManager on reconnect-replacement.
+        """
+        try:
+            session_id = f"session_{client_id}"
+            prev_active = self._active_conversation_id.get(session_id)
+            if not prev_active:
+                return
+            old_kernel = get_agent_kernel(prev_active, session_id)
+            cancel_flag = getattr(old_kernel, "_cancel_requested", None)
+            if cancel_flag is not None:
+                cancel_flag.set()
+                self._logger.info(
+                    f"[Chat] client_replace cancelled in-flight thread "
+                    f"{prev_active} for session {session_id}"
+                )
+        except Exception as exc:
+            self._logger.warning(
+                f"[Chat] _on_client_replace cancel failed: {exc}"
+            )
+
     async def _handle_sync_state(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -4265,6 +4307,30 @@ class IRISGateway:
         conversation_id = payload.get("conversation_id") or session_id
         try:
             kernel = get_agent_kernel(conversation_id, session_id)
+            # REQ-8: re-point the session at the resumed thread. The frontend owns
+            # the UI thread; the backend owns this binding (set on new_conversation /
+            # switch_conversation / sync_state). Without this, a reconnect leaves
+            # _active_conversation_id stale and a post-reconnect wake-word resolves
+            # to the wrong thread.
+            prev_active = self._active_conversation_id.get(session_id)
+            if conversation_id:
+                self._active_conversation_id[session_id] = conversation_id
+            # REQ-8 AC3: if sync_state re-binds to a DIFFERENT thread than was
+            # active, soft-cancel the previously-active thread's in-flight work.
+            if prev_active and prev_active != conversation_id:
+                try:
+                    old_kernel = get_agent_kernel(prev_active, session_id)
+                    cancel_flag = getattr(old_kernel, "_cancel_requested", None)
+                    if cancel_flag is not None:
+                        cancel_flag.set()
+                        self._logger.info(
+                            f"[Chat] sync_state re-bind cancelled old thread "
+                            f"{prev_active} for session {session_id}"
+                        )
+                except Exception as exc:
+                    self._logger.warning(
+                        f"[Chat] sync_state failed to cancel old thread {prev_active}: {exc}"
+                    )
             # restore_context_from_store() takes only `self` and restores the
             # kernel's own conversation_id context. Passing conversation_id as
             # a 2nd positional arg raised TypeError and broke sync_state.
@@ -4280,6 +4346,7 @@ class IRISGateway:
                         "type": "sync_state_ack",
                         "payload": {
                             "conversation_id": conversation_id,
+                            "current_conversation_id": conversation_id,
                             "status": "attached",
                         },
                     },
@@ -4323,36 +4390,72 @@ class IRISGateway:
             new_conv_id = payload.get("conversation_id")
             old_conv_id = payload.get("old_conversation_id") or session_id
             self._logger.info(
-                f"[Chat] Switching conversation from {old_conv_id} to {new_conv_id}"
+                f"[Chat] Switching conversation from {old_conv_id} to {new_conv_id} "
+                f"(session={session_id})"
             )
-            # Save old context to store (best-effort)
+            # Save old context to store (best-effort) — REQ-5
+            context_saved = False
             try:
                 old_kernel = get_agent_kernel(old_conv_id, session_id)
                 old_kernel.save_context_to_store()
+                context_saved = True
             except Exception as exc:
                 self._logger.warning(
                     f"[Chat] Failed to save context for {old_conv_id}: {exc}"
                 )
+            # REQ-6 (soft-cancel): signal the OLD thread's in-flight DER loop to
+            # stop. Synchronous + non-blocking — the switch returns immediately and
+            # the old loop exits at its next step boundary. SOFT cancel: an
+            # in-flight tool subprocess is allowed to finish once.
+            old_canceled = False
+            try:
+                if old_conv_id != new_conv_id:
+                    old_kernel = get_agent_kernel(old_conv_id, session_id)
+                    cancel_flag = getattr(old_kernel, "_cancel_requested", None)
+                    if cancel_flag is not None:
+                        cancel_flag.set()
+                        old_canceled = True
+            except Exception as exc:
+                self._logger.warning(
+                    f"[Chat] Failed to cancel old thread {old_conv_id}: {exc}"
+                )
+            # REQ-3: stop any TTS currently playing for the OLD thread BEFORE
+            # re-pointing, so old-thread audio does not bleed into the new thread.
+            tts_interrupted = False
+            try:
+                from .audio.engine import get_audio_engine
+                engine = get_audio_engine()
+                if engine is not None and getattr(engine, "_tts_active", False):
+                    engine.interrupt_speech()
+                    tts_interrupted = True
+            except Exception:
+                pass  # non-fatal — audio engine may not be up yet
             # Keep the wake-word voice path pointed at the switched thread.
             # _handle_voice falls back to _active_conversation_id[session_id]
             # when a voice_command_start carries no conversation_id, so without
             # this a wake-word response would land in the OLD conversation.
             if new_conv_id:
                 self._active_conversation_id[session_id] = new_conv_id
-            # Acknowledge switch to frontend
+            # Acknowledge switch to frontend — REQ-4 (fix undefined conversation_id)
             try:
                 await self._ws_manager.send_to_client(
                     client_id,
                     {
                         "type": "conversation_switched",
                         "payload": {
-                            "conversation_id": conversation_id,
-                            "status": "switched",
+                            "conversation_id": new_conv_id,
+                            "status": "context_saved" if context_saved else "switched",
+                            "old_conversation_id": old_conv_id,
                         },
                     },
                 )
             except Exception:
                 pass
+            self._logger.info(
+                f"[Chat] Switch complete session={session_id} "
+                f"old={old_conv_id} new={new_conv_id} "
+                f"tts_interrupted={tts_interrupted} old_canceled={old_canceled}"
+            )
             return
 
         if msg_type == "settings_sync":
@@ -5651,63 +5754,35 @@ class IRISGateway:
                 self._logger.info(f"[Session: {session_id}] Diagnostics pushed to UI ({len(health_checks)} checks)")
 
             elif section_id == "logs":
-                # â”€â”€ Read logs from actual log files on disk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Read logs from the in-memory LogManager ──────────────────────
+                # The LogManager is fed live by the LogManagerHandler bridge
+                # (attached to the root logger in logging_config.setup_backend_logging),
+                # so it captures ALL backend modules — including the tool-resolution
+                # tree — organized by the Monitor's source buckets
+                # (system / voice / mcp / agent). This no longer depends on
+                # irisvoice.log existing on disk.
                 import json
-                import os as _os
                 system_logs = []
                 error_logs = []
 
                 try:
-                    from pathlib import Path as _Path
-                    log_dir = _Path(__file__).parent / "logs"
-
-                    # Try the live structured log file first, then rotated backups
-                    log_files = sorted(
-                        log_dir.glob("irisvoice.log*"),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    )
-                    parsed = []
-                    for lf in log_files[:3]:  # up to 3 rotated files
-                        try:
-                            with open(lf, "r", encoding="utf-8", errors="replace") as f:
-                                for line in f:
-                                    line = line.strip()
-                                    if not line:
-                                        continue
-                                    try:
-                                        entry = json.loads(line)
-                                        ts = entry.get("timestamp", "")
-                                        lvl = entry.get("level", "INFO").upper()
-                                        msg = entry.get("message", "")
-                                        mod = entry.get("module", "")
-                                        fn = entry.get("function", "")
-                                        source = mod.split(".")[0] if mod else "system"
-                                        parsed.append({
-                                            "timestamp": ts,
-                                            "level": lvl,
-                                            "source": source,
-                                            "message": f"[{fn}] {msg}" if fn else msg,
-                                        })
-                                    except json.JSONDecodeError:
-                                        # Plain text line â€” wrap as INFO
-                                        parsed.append({
-                                            "timestamp": "",
-                                            "level": "INFO",
-                                            "source": "system",
-                                            "message": line,
-                                        })
-                        except (OSError, PermissionError):
-                            continue
-
-                    # Sort newest first, take top 50 for system, top 40 for errors
-                    parsed.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
-                    system_logs = parsed[:50]
-                    error_logs = [
-                        e for e in parsed
-                        if e["level"] in ("ERROR", "CRITICAL", "FATAL", "WARNING")
-                    ][:40]
-
+                    from backend.monitor.logs import get_log_manager
+                    mgr = get_log_manager()
+                    # get_logs returns newest-first already; pull a generous
+                    # window and split into system + error streams for the UI.
+                    all_logs = mgr.get_logs(limit=200)
+                    for e in all_logs:
+                        entry = {
+                            "timestamp": e.get("timestamp", ""),
+                            "level": (e.get("level") or "INFO").upper(),
+                            "source": e.get("source") or "system",
+                            "message": e.get("message", ""),
+                        }
+                        if entry["level"] in ("ERROR", "CRITICAL", "FATAL", "WARNING"):
+                            if len(error_logs) < 40:
+                                error_logs.append(entry)
+                        elif len(system_logs) < 50:
+                            system_logs.append(entry)
                 except Exception as _le:
                     system_logs = [{
                         "timestamp": "",

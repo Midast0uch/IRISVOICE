@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import hashlib
+import threading
 
 from .model_conversation import ModelConversation
 from .inter_model_communication import InterModelCommunicator
@@ -153,6 +154,12 @@ class AgentKernel:
         self.config_path = config_path
         self.session_id = session_id
         self.conversation_id = conversation_id or session_id
+
+        # REQ-6: per-conversation soft-cancel flag. Set by the gateway when the
+        # user switches away from this thread (switch_conversation / sync_state /
+        # new_conversation / clear_chat). The DER loop polls this between steps and
+        # exits cleanly without emitting further events for this conversation.
+        self._cancel_requested = threading.Event()
 
         # Core components
         self._model_router: Optional[ModelRouter] = None
@@ -5450,6 +5457,18 @@ Respond with a JSON object:
 
             # ── RC1 FIX: pre-execution validation (catches tool:null / missing
             # params before runtime). Invalid steps route to graft with the
+            # REQ-6 (soft-cancel): if the user switched away from this conversation,
+            # stop issuing further steps. An in-flight tool subprocess is allowed to
+            # finish once (SOFT cancel) but no subsequent step or recovery narrative
+            # is produced for this thread. We check here, at the top of each item
+            # iteration, so the loop exits cleanly without emitting further events.
+            if self._cancel_requested.is_set():
+                self._logger.info(
+                    f"[DER] Cancel requested for conversation {self.conversation_id}; "
+                    f"halting DER loop after current step."
+                )
+                break
+
             # validation error instead of executing-and-failing. ──
             if item.tool:
                 from backend.agent.tool_registry import validate_tool_call

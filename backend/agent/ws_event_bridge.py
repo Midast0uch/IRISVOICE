@@ -114,6 +114,16 @@ class WSEventBridge:
             try:
                 session_id = getattr(payload, "session_id", None)
                 data = getattr(payload, "data", None) or {}
+                # REQ-6 AC3: carry conversation_id on every bridged event so the
+                # frontend can drop stale events from a cancelled/old thread. The
+                # EventPayload already carries conversation_id (event_bus.py:131);
+                # surface it on the wire even when the emit site omitted it from data.
+                conv_id = getattr(payload, "conversation_id", None) or data.get(
+                    "conversation_id"
+                )
+                if conv_id and "conversation_id" not in data:
+                    data = dict(data)
+                    data["conversation_id"] = conv_id
                 msg = {"type": evt.value, "payload": data}
                 loop = self._main_loop
                 if loop is None:

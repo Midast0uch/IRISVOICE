@@ -41,6 +41,10 @@ class WebSocketManager:
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
         self._last_pong: Dict[str, datetime] = {}
         self._last_activity: Dict[str, float] = {}
+        # REQ-8 AC5: hook invoked when a stale connection for client_id is replaced
+        # by a new socket (reconnect). Set by IRISGateway to soft-cancel the
+        # previously-active thread's in-flight work. None-safe.
+        self.on_client_replace: Optional[callable] = None
         
         logger.info(f"[WebSocketManager] Initialization complete (elapsed: {time.time() - start_time:.3f}s)")
     
@@ -72,6 +76,18 @@ class WebSocketManager:
                     f"Client {client_id} reconnecting — replacing stale connection entry"
                 )
                 self.active_connections.pop(client_id)
+                # REQ-8 AC5: a new socket replacing a stale one means the old
+                # connection's in-flight DER loop may still be broadcasting to this
+                # session. Notify the gateway so it can soft-cancel the previously
+                # active thread (the incoming sync_state will re-bind / cancel as
+                # needed). The hook is set by IRISGateway; None-safe if unset.
+                if self.on_client_replace is not None:
+                    try:
+                        self.on_client_replace(client_id)
+                    except Exception as exc:
+                        logger.warning(
+                            f"[WebSocketManager] on_client_replace hook failed: {exc}"
+                        )
                 # Cancel the stale heartbeat task.
                 if client_id in self._heartbeat_tasks:
                     self._heartbeat_tasks[client_id].cancel()
