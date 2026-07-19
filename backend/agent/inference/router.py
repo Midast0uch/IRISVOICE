@@ -378,15 +378,60 @@ class InferenceRouter:
             type(transport).__name__,
         )
 
+        # Normalize tools ONCE here, for EVERY provider (Cerebras, OpenAI,
+        # LM Studio, Ollama, in-process local models, ...).  Callers may pass
+        # either IRIS *internal* tool dicts ({name, description, parameters,
+        # category}) or already-OpenAI-formatted tools ({type:"function",
+        # function:{...}}).  The OpenAI function-calling schema is the de-facto
+        # standard every compatible transport expects, so this single
+        # normalization keeps tool-calling provider-agnostic — no per-provider
+        # hardcoding.  Idempotent: already-normalized tools pass through.
+        normalized_tools = self._normalize_tools(tools)
+
         return transport.generate(
             effective_model,
             messages,
-            tools,
+            normalized_tools,
             max_tokens=max_tokens,
             temperature=temperature,
             chunk_callback=chunk_callback,
             reasoning_callback=reasoning_callback,
         )
+
+    @staticmethod
+    def _normalize_tools(tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+        """
+        Coerce a tools list into the OpenAI function-calling schema that all
+        transports expect: [{"type": "function", "function": {name, description,
+        parameters}}].
+
+        Handles three input shapes:
+          - None / empty            -> None (no tools)
+          - already OpenAI format   -> returned unchanged (idempotent)
+          - IRIS internal format     -> wrapped into OpenAI format
+
+        This is the single normalization point so tool-calling works uniformly
+        across Cerebras, OpenAI, Groq, LM Studio, Ollama (OpenAI-compat), vLLM,
+        and in-process local models — without any provider-specific branching.
+        """
+        if not tools:
+            return None
+        out: List[Dict[str, Any]] = []
+        for t in tools:
+            if not isinstance(t, dict):
+                continue
+            # Already OpenAI-format? (has the {"type":"function","function":{...}} shape)
+            if t.get("type") == "function" and "function" in t:
+                out.append(t)
+                continue
+            # IRIS internal format: {name, description, parameters, category, ...}
+            fn = {
+                "name": t.get("name", ""),
+                "description": t.get("description", ""),
+                "parameters": t.get("parameters") or {"type": "object", "properties": {}},
+            }
+            out.append({"type": "function", "function": fn})
+        return out or None
 
     # -- Convenience accessors ------------------------------------------
 

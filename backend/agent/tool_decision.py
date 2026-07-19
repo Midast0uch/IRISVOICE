@@ -13,6 +13,7 @@ Spec: specs/der-tool-resolution-blackbox/
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -214,6 +215,29 @@ class ToolDecisionBox:
         self._tool_fails: Dict[str, int] = {}  # tool_name -> consecutive failures REQ-12
         self._last_call: Dict[str, tuple[str, bool, int]] = {}  # tool -> (args_hash, success, repeat_count) REQ-12
         self._tool_call_nodes: list[ToolCallNode] = []  # REQ-13
+
+    @staticmethod
+    def _run_async(coro):
+        """
+        Run an async tool coroutine to completion from (possibly) sync context.
+
+        Tool implementations are async (execute_tool is a coroutine).  When this
+        dispatch method is called from a thread with NO running event loop,
+        asyncio.run() is correct.  When called from inside the DER async loop
+        (a loop is already running on this thread), asyncio.run() would raise
+        "cannot be called from a running event loop" — so we schedule the
+        coroutine on a fresh loop in a worker thread via run_coroutine_threadsafe.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = asyncio.run_coroutine_threadsafe(coro, asyncio.new_event_loop())
+                    return future.result(timeout=120)
+        except RuntimeError:
+            pass
+        return asyncio.run(coro)
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -500,7 +524,17 @@ class ToolDecisionBox:
                     dr.duration_ms = int((time.perf_counter() - start) * 1000)
                     return dr
 
-                result = self._tool_bridge.execute_tool(decision.tool, decision.params)
+                # execute_tool is a coroutine — it MUST be awaited, not called
+                # bare (a bare call returns a coroutine object, which previously
+                # surfaced as "Unexpected tool result type: <class 'coroutine'>"
+                # and failed every tool dispatch instantly).  Run it
+                # loop-aware: asyncio.run() when no loop is active in this
+                # thread, otherwise run it in a worker thread via
+                # run_coroutine_threadsafe so we don't clash with the DER loop
+                # already driving this call.
+                result = self._run_async(
+                    self._tool_bridge.execute_tool(decision.tool, decision.params)
+                )
 
                 if not isinstance(result, dict):
                     result = {"success": False, "error": f"Unexpected tool result type: {type(result)}"}
