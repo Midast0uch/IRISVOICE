@@ -301,8 +301,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
     # ── 2. Save user message ───────────────────────────────────────────
     add_message(thread_id, "user", request.text, turn_id=turn_id, source="rest_api")
 
-    # ── 3. Get / create agent kernel for this session ──────────────────
-    kernel = get_agent_kernel(session_id=thread_id)
+    # ── 3. Get / create agent kernel for this conversation ─────────────
+    # Wave 5: key by conversation_id (thread_id), NOT session_id, so the REST
+    # chat path shares the same kernel as the WS voice/text path for the thread
+    # instead of spawning a disconnected "default" kernel.
+    kernel = get_agent_kernel(conversation_id=thread_id, session_id=thread_id)
 
     # ── 4. Process the message (in thread pool — synchronous method) ───
     try:

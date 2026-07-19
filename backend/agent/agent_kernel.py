@@ -8396,6 +8396,42 @@ def get_agent_kernel(
     return _agent_kernel_instances[conversation_id]
 
 
+# ── Session → active conversation registry ───────────────────────────────
+# Wave 5 (session-conversation-switching spec): eliminates the phantom
+# "default" kernel.  Callers that only knew a session_id (e.g. a wake-word
+# voice path, a reconnect, a REST chat request) were calling
+# get_agent_kernel(session_id=...) which fell back to conversation_id="default",
+# creating a kernel the active thread never used.  The gateway owns the
+# authoritative session→active-conversation binding (_active_conversation_id);
+# it mirrors that binding here (module-level, no circular import) so any
+# caller can resolve the *real* active kernel for a session via
+# get_active_kernel(session_id) instead of spawning a "default" ghost.
+_session_active_conversation: dict = {}
+
+
+def set_active_conversation(session_id: str, conversation_id: str) -> None:
+    """Mirror the gateway's session→active-conversation binding into this
+    module-level registry.  Called by the gateway whenever it (re)points a
+    session at a conversation (new_conversation / switch_conversation /
+    sync_state / voice_command_start / connect)."""
+    global _session_active_conversation
+    if session_id:
+        _session_active_conversation[session_id] = conversation_id
+
+
+def get_active_kernel(session_id: str) -> "AgentKernel":
+    """Resolve the kernel for a session's *currently active* conversation.
+
+    Falls back to conversation_id="default" only when no active conversation
+    has been registered for the session (e.g. a brand-new session before the
+    first new_conversation / sync_state).  This is the correct replacement for
+    the old get_agent_kernel(session_id=...) pattern that silently created a
+    phantom "default" kernel disconnected from the active thread.
+    """
+    conv_id = _session_active_conversation.get(session_id) or "default"
+    return get_agent_kernel(conversation_id=conv_id, session_id=session_id)
+
+
 def cleanup_agent_kernel(
     conversation_id: str,
     session_id: Optional[str] = None,

@@ -88,9 +88,11 @@ async def build_snapshot() -> dict[str, Any]:
     # inference — provider registry + role bindings (single source of truth
     # for the frontend's provider/role selection UI).
     try:
-        from backend.agent import get_agent_kernel
+        from backend.agent import get_active_kernel
 
-        _kernel = get_agent_kernel()
+        # Wave 5: resolve the active session's kernel instead of always
+        # materialising a phantom "default" kernel just to read router state.
+        _kernel = get_active_kernel("session_iris")
         _router = getattr(_kernel, "_router", None)
         if _router is not None:
             snap["inference"] = _router.snapshot()

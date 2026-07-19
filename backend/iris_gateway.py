@@ -10,7 +10,7 @@ from .tools.cleanup_analyzer import CleanupAnalyzer
 from .voice.wake_word_discovery import WakeWordDiscovery
 from .audio.pipeline import AudioPipeline
 from .agent.tts import get_tts_manager
-from .agent import get_agent_kernel
+from .agent import get_agent_kernel, get_active_kernel, set_active_conversation
 from .agent.conversation_context_store import get_context_store
 from .agent.swarm_inference_manager import SwarmInferenceManager
 from .core_models import Category, get_sections_for_category
@@ -2108,6 +2108,7 @@ class IRISGateway:
                     self._voice_handler.set_active_session(session_id)
                     if conversation_id:
                         self._active_conversation_id[session_id] = conversation_id
+                        set_active_conversation(session_id, conversation_id)
                     kw = {"auto_stop": auto_stop}
                     if pre_speech_timeout_sec is not None:
                         kw["pre_speech_timeout_sec"] = pre_speech_timeout_sec
@@ -4315,6 +4316,7 @@ class IRISGateway:
             prev_active = self._active_conversation_id.get(session_id)
             if conversation_id:
                 self._active_conversation_id[session_id] = conversation_id
+                set_active_conversation(session_id, conversation_id)
             # REQ-8 AC3: if sync_state re-binds to a DIFFERENT thread than was
             # active, soft-cancel the previously-active thread's in-flight work.
             if prev_active and prev_active != conversation_id:
@@ -4436,6 +4438,7 @@ class IRISGateway:
             # this a wake-word response would land in the OLD conversation.
             if new_conv_id:
                 self._active_conversation_id[session_id] = new_conv_id
+                set_active_conversation(session_id, new_conv_id)
             # Acknowledge switch to frontend — REQ-4 (fix undefined conversation_id)
             try:
                 await self._ws_manager.send_to_client(
@@ -4481,6 +4484,7 @@ class IRISGateway:
             # no conversation_id, so a wake-word response must target the fresh
             # conversation, not the one that was just cleared.
             self._active_conversation_id[session_id] = conversation_id
+            set_active_conversation(session_id, conversation_id)
             try:
                 agent_kernel = get_agent_kernel(conversation_id, session_id)
                 agent_kernel.clear_conversation(conversation_id)
