@@ -1648,17 +1648,132 @@ class AgentKernel:
             return True
         return False
 
-    def _needs_planning(self, text: str) -> bool:
-        """
-        Universal planner gate (Phase 1.1).
+    # Action/tool intent markers — prompts containing these need the DER
+    # planning/tool loop. Everything else (simple questions, factual lookups,
+    # conversation) takes the fast direct-response path (1 Cerebras call, no
+    # "Working on it" filler, no rate-limit burst).
+    _ACTION_VERBS = (
+        "search", "google", "lookup", "find", "open", "launch", "start",
+        "create", "make", "build", "generate", "write", "send", "email",
+        "message", "text", "call", "schedule", "remind", "set", "add",
+        "delete", "remove", "update", "edit", "change", "list", "play", "show me",
+        "book", "order", "buy", "download", "upload", "post", "tweet",
+        "run", "execute", "deploy", "install", "configure", "toggle",
+        "turn on", "turn off", "switch", "navigate", "go to", "browse",
+        "scrape", "fetch", "pull", "sync", "backup", "translate", "summarize",
+        "analyze", "compare", "calculate", "convert",
+    )
 
-        In 'auto' mode every inbound message routes through the planner, which
-        now emits `depends_on` and decides tool use itself — EXCEPT pure
-        chit-chat ("hi", "how are you", "thanks"), which keeps the fast direct
-        path to avoid LLM-call latency on social messages.
+    # Follow-up / anaphora markers — these signal the user is continuing a
+    # PRIOR task ("now do it for the sales team", "yes, schedule that",
+    # "what about the other one"). They carry no action verb of their own but
+    # are clearly NOT standalone questions, so they must route to DER (the safe
+    # fallback) rather than the dumb direct path. This is the "inertia" the
+    # field's routing systems use to avoid misrouting mid-conversation.
+    _FOLLOWUP_MARKERS = (
+        "now", "then", "also", "too", "as well", "instead", "again",
+        "what about", "how about", "and the", "for the", "with the",
+        "yes", "yeah", "yep", "sure", "ok", "okay", "do it", "go ahead",
+        "proceed", "confirm", "that one", "the other one", "the same",
+    )
+    _ANAPHORA_PRONOUNS = ("it", "that", "this", "them", "they", "those", "these", "him", "her")
+
+    def _is_followup_to_task(self, text: str, context) -> bool:
+        """
+        Cheap rule check: does this message continue a prior task rather than
+        start a fresh standalone question?  Used to keep multi-turn task flow
+        in the DER loop even when the follow-up has no action verb of its own.
+
+        Returns True when the message is short, anaphoric (references "it/that/
+        them"), or a confirmation/continuation marker AND the recent context
+        shows an active task.  Free (0 model calls).
+        """
+        t = (text or "").lower().strip()
+        if not t or len(t.split()) > 25:
+            return False
+        # Anaphora: a pronoun with no noun is almost always a continuation.
+        words = set(t.split())
+        if words & set(self._ANAPHORA_PRONOUNS) and not any(
+            v in t for v in self._ACTION_VERBS
+        ):
+            # "do it", "change that", "what about them" — continuation.
+            if any(m in t for m in ("do", "change", "update", "edit", "what about",
+                                    "how about", "send", "for", "with", "the")):
+                return True
+        # Explicit continuation/confirmation markers.
+        if any(t.startswith(m) or f" {m} " in f" {t} " for m in self._FOLLOWUP_MARKERS):
+            return True
+        # Prior task context: if the last assistant turn was a plan/tool result,
+        # a short user reply is overwhelmingly a follow-up, not a new question.
+        if context:
+            try:
+                last = context[-1] if isinstance(context, (list, tuple)) else None
+                if isinstance(last, dict) and last.get("role") == "assistant":
+                    c = (last.get("content") or "")
+                    if any(k in c.lower() for k in ("plan", "tool", "step", "task", "i'll", "i will")):
+                        if len(t.split()) <= 12:
+                            return True
+            except Exception:
+                pass
+        return False
+
+    def _classify_intent(self, text: str, context=None) -> str:
+        """
+        Layered, rule-first intent classifier (0 model calls) — the "router"
+        pattern used by mature agent frameworks (Hermes ARC, Anthropic
+        agentic patterns, LangChain routing).  Intent is resolved by the
+        CHEAPEST matching layer; the LLM/DER is the *fallback*, not the first
+        responder (negative routing).
+
+        Returns one of: "chat" | "action" | "followup" | "question"
+          chat     → direct path (greetings, thanks, social)
+          action   → DER (explicit tool/action request)
+          followup → DER (continues a prior task; safe to plan)
+          question → direct path (standalone factual question, no task anchor)
+
+        Design notes from field research:
+          - Misrouting is worse than no routing → ambiguous middle defaults to
+            DER (the safe, general-purpose path), never to the dumb direct path.
+          - Rule-first cascade: explicit prefix → keyword → follow-up context →
+            default. Most traffic resolves in the first two layers.
+        """
+        t = (text or "").lower().strip()
+        if not t:
+            return "chat"
+
+        # Layer 1 — deterministic rules.
+        if t.startswith(("tool:", "run:", "execute:", "plan:")):
+            return "action"
+        if self._is_chitchat(text):
+            return "chat"
+
+        # Layer 2 — cheap keyword/intent match.
+        if self._is_web_search_request(text):
+            return "action"
+        if any(verb in t for verb in self._ACTION_VERBS):
+            return "action"
+
+        # Layer 3 — ambiguous middle: follow-up to a prior task → DER (safe).
+        if self._is_followup_to_task(text, context):
+            return "followup"
+
+        # Layer 4 — default: standalone question → direct path.
+        return "question"
+
+    def _needs_planning(self, text: str, context=None) -> bool:
+        """
+        Planner gate (router pattern).
+
+        Direct path (default): chat + standalone questions take the fast
+        `_respond_direct` path (1 Cerebras call, no "Working on it" filler).
+        DER loop: explicit action/tool requests AND follow-ups that continue a
+        prior task.  This prevents the multi-stage Cerebras burst from
+        exhausting the 5/min rate limit on every prompt, while keeping the
+        agent able to engage dynamically mid-conversation (it never drops a
+        follow-up into the dumb path).
 
         Respects _tool_mode:
-          auto        → plan everything except chit-chat (default)
+          auto        → DER for action + followup intents (default)
           ask_first   → never auto-plan; user must explicitly request tools
           disabled    → never plan, always direct response
         """
@@ -1670,8 +1785,9 @@ class AgentKernel:
             t = text.lower().strip()
             return t.startswith(("tool:", "run:", "execute:", "plan:"))
 
-        # Universal: plan unless this is pure chit-chat.
-        return not self._is_chitchat(text)
+        intent = self._classify_intent(text, context)
+        # "question" and "chat" → direct; "action" and "followup" → DER.
+        return intent in ("action", "followup")
 
     def _broadcast_inference_event(
         self,
@@ -2289,12 +2405,39 @@ class AgentKernel:
                     with _httpx.Client(timeout=_httpx.Timeout(60.0), verify=get_ssl_context()) as _client:
                         _resp = _client.post(_url, headers=_headers, json=_body)
                         if _resp.status_code == 429:
+                            # Rate-limit-aware backoff (REQ-5): wait for the
+                            # provider's reset window instead of a fixed 1-2s sleep
+                            # that burns attempts without relief. Prefer
+                            # x-ratelimit-reset (epoch seconds) or Retry-After
+                            # (seconds); fall back to bounded exponential backoff.
+                            _reset = _resp.headers.get("x-ratelimit-reset")
+                            _retry_after = _resp.headers.get("Retry-After")
+                            _wait = None
+                            if _retry_after and str(_retry_after).isdigit():
+                                _wait = float(_retry_after)
+                            elif _reset:
+                                try:
+                                    _reset_ts = float(_reset)
+                                    # x-ratelimit-reset may be epoch seconds or
+                                    # seconds-remaining depending on provider.
+                                    _now = time.time()
+                                    if _reset_ts > _now:  # epoch seconds
+                                        _wait = _reset_ts - _now
+                                    else:  # seconds remaining
+                                        _wait = _reset_ts
+                                except (ValueError, TypeError):
+                                    _wait = None
+                            if _wait is None:
+                                _wait = min(1.0 * (2 ** _attempt), 30.0)
+                            _wait = max(0.0, min(_wait, 60.0))  # hard cap 60s
                             logger.warning(
-                                "[DispatchAPI] 429 rate-limit (attempt %d/3) — retrying",
+                                "[DispatchAPI] 429 rate-limit (attempt %d/3) — "
+                                "waiting %.1fs for reset window",
                                 _attempt + 1,
+                                _wait,
                             )
                             if _attempt < 2:
-                                _perf_t.sleep(1.0 * (2 ** _attempt))
+                                _perf_t.sleep(_wait)
                             continue
                         if _resp.status_code != 200:
                             raise RuntimeError(
@@ -3969,7 +4112,7 @@ class AgentKernel:
         # action (search, open, create, etc.).  Everything else — greetings,
         # questions, conversation — goes straight to _respond_direct() which
         # calls the model with no JSON schema overhead.
-        if not self._needs_planning(text):
+        if not self._needs_planning(text, context):
             logger.info("[AgentKernel] Direct response path (no planning needed)")
             try:
                 _t_llm_start = time.perf_counter()
