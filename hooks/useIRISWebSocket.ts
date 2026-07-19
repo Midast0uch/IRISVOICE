@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
 import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg, CrawlerCompleteMsg } from "@/types/iris"
 
 // WebSocket connection states
@@ -34,6 +34,41 @@ interface IRISState {
 
 // Hook return type
 type VoiceState = "idle" | "listening" | "processing_conversation" | "processing_tool" | "speaking" | "error"
+
+// ── Shared voiceState singleton ──────────────────────────────────────────────
+// useIRISWebSocket is instantiated by multiple components (NavigationContext,
+// orbit-node, useInferenceState). Each instance opens its OWN WebSocket as
+// client="iris", and the backend keeps only the LAST-connected socket
+// (ws_manager.py replaces the prior connection). So a `wake_detected` broadcast
+// reaches only ONE instance — usually not the NavigationContext instance that
+// drives the orb / text area / ContextPill. That made the wake word fail to
+// update the UI on most triggers (and especially after a thread switch, which
+// remounts/reconnects the sockets).
+//
+// Fix: voiceState is a SINGLE source of truth at module scope, shared by every
+// useIRISWebSocket instance via useSyncExternalStore. Any instance that receives
+// `wake_detected` (or calls startVoiceCommand) updates the shared store, and ALL
+// instances — including NavigationContext — re-render. This makes the wake word
+// drive the UI reliably on every trigger and every conversation thread.
+let _voiceState: VoiceState = "idle"
+const _voiceStateSubs = new Set<() => void>()
+
+function _emitVoiceState(next: VoiceState) {
+  if (_voiceState === next) return
+  _voiceState = next
+  _voiceStateSubs.forEach((cb) => {
+    try { cb() } catch { /* subscriber error must not break the emit */ }
+  })
+}
+
+function _subscribeVoiceState(cb: () => void): () => void {
+  _voiceStateSubs.add(cb)
+  return () => { _voiceStateSubs.delete(cb) }
+}
+
+function _getVoiceState(): VoiceState {
+  return _voiceState
+}
 
 // Text response message type
 interface TextResponseMessage {
@@ -149,7 +184,13 @@ export function useIRISWebSocket(
   const [sections, setSections] = useState<Record<string, Record<string, unknown>[]>>({})
   const [currentCategory, setCurrentCategory] = useState<string | null>(null)
   const [currentSection, setCurrentSection] = useState<string | null>(null)
-  const [voiceState, setVoiceState] = useState<VoiceState>("idle")
+  // voiceState is a SHARED singleton (see module-level store above) so every
+  // useIRISWebSocket instance — including NavigationContext — sees the same
+  // value. This is what makes the wake word reliably drive the UI.
+  const voiceState = useSyncExternalStore(_subscribeVoiceState, _getVoiceState, _getVoiceState)
+  const setVoiceState = useCallback((next: VoiceState) => {
+    _emitVoiceState(next)
+  }, [])
   const [audioLevel, setAudioLevel] = useState<number>(0)
   // Cadence (spectral flux) during listening — from backend audio_envelope WS
   const [cadenceLevel, setCadenceLevel] = useState<number>(0)
@@ -1437,6 +1478,31 @@ export function useIRISWebSocket(
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:system_status', { detail: payload }))
         }
+        break
+      }
+
+      case 'error': {
+        // Backend error notification (parakeet_service, iris_gateway, crawler).
+        // Shapes vary: { error: "..." } or { payload: { message: "..." } }.
+        // Surface it as a CustomEvent so UI components can react, and log it
+        // properly instead of falling through to "Unknown message type".
+        const msg =
+          (payload as any)?.error ??
+          (payload as any)?.payload?.message ??
+          (payload as any)?.message ??
+          'Unknown backend error'
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('[IRIS WebSocket] backend error:', msg)
+        }
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:error', { detail: { message: msg, raw: payload } }))
+        }
+        break
+      }
+
+      case 'sync_state_ack': {
+        // Backend acknowledgment that a session bind/attach succeeded.
+        // No UI action needed — silently acknowledge.
         break
       }
 

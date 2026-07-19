@@ -58,11 +58,13 @@ export default function RootLayout({
           page isn't blank white. Tauri keeps transparent background so the
           desktop shows through the glass UI.
         */}
-        {/* Runs synchronously before first paint — sets .in-browser on <html> when
+        {/* Runs before first paint — sets .in-browser on <html> when
             not running inside Tauri so body gets a dark background in browser dev mode.
-            Tauri keeps transparent background so the desktop shows through. */}
-        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
-        <script
+            Tauri keeps transparent background so the desktop shows through.
+            Uses next/script beforeInteractive to avoid the raw-<script> SSR warning. */}
+        <Script
+          id="tauri-detect"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: `(function(){try{if(!window.__TAURI_INTERNALS__)document.documentElement.classList.add('in-browser');}catch(e){document.documentElement.classList.add('in-browser');}})();`
           }}
