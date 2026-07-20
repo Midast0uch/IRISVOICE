@@ -62,6 +62,12 @@ class ToolSpec:
     critical: bool = False
     # Phase 4 concurrent execution: safe to run via asyncio.gather
     parallel_safe: bool = False
+    # Long-running tools (e.g. crawler_query) may block for up to a minute. When
+    # True, execute_tool wraps the run with a periodic narration heartbeat so the
+    # user hears progress instead of silence. This is a tool CAPABILITY, not a
+    # mode check — the DER operator reads it uniformly (blueprint: no mode-driven
+    # fan-out; all behavior collapses into the one operator). See pin_9e97e21340e7.
+    long_running: bool = False
 
 
 # ── Registry storage ────────────────────────────────────────────────────────
@@ -69,9 +75,13 @@ _REGISTRY: Dict[str, ToolSpec] = {}
 _ALIAS_INDEX: Dict[str, str] = {}
 
 # Capability flag providers — injected at runtime to avoid an import cycle with
-# agent_kernel.  Defaults are permissive so the registry is usable before wiring.
-_internet_provider: Callable[[], bool] = lambda: True
-_desktop_provider: Callable[[], bool] = lambda: True
+# agent_kernel.  Defaults are FAIL-CLOSED: if a provider is not wired, the
+# capability is DENIED.  The web-mode gate is an open/close switch controlled by
+# the frontend toggle (set_web_mode -> set_global_internet_access). When unwired
+# or off, the agent must have ZERO internet tools — never fail open
+# (see pin_9e97e21340e7).
+_internet_provider: Callable[[], bool] = lambda: False
+_desktop_provider: Callable[[], bool] = lambda: False
 
 
 def set_capability_providers(
@@ -268,7 +278,14 @@ def register_builtin_tools() -> None:
     specs += [
         ToolSpec(
             name="take_screenshot",
-            description="Take a screenshot of the current screen",
+            description=(
+                "Capture a screenshot of the user's screen so IRIS can SEE what is "
+                "on the desktop. ONLY use when the user explicitly wants IRIS to look "
+                "at or interact with the screen (e.g. 'look at my screen', 'what's on "
+                "my desktop', 'click that button'). For FINDING INFORMATION or ANSWERING "
+                "QUESTIONS, use the 'web_search' tool (exa) instead — do NOT screenshot "
+                "to research a topic."
+            ),
             parameters={}, category="vision", executor="gui",
             requires_desktop=True, parallel_safe=False,
         ),
@@ -543,13 +560,16 @@ def register_builtin_tools() -> None:
             parallel_safe=True, critical=True,
         ),
         ToolSpec(
-            name="run_research",
+            name="improve_self",
             description=(
-                "Run the AutoResearch improvement loop on anything — skills, behaviours, explanations, "
-                "processes, response styles, or any topic you want to get better at. "
-                "Use action='run_now' with topic+content to immediately research and improve any text or concept. "
-                "Use action='start' to begin the background timer loop (auto-picks the lowest-confidence stored item each cycle), "
-                "action='stop' to halt it, or action='status' to see recent results."
+                "SELF-IMPROVEMENT ONLY — does NOT browse the web or fetch external information. "
+                "Improves the agent's own skills, behaviours, explanations, processes, or response "
+                "styles using locally stored benchmark prompts (AutoResearch loop). "
+                "Use action='run_now' with topic+content to improve a specific piece of text/concept, "
+                "action='start' for the background timer loop, action='stop' to halt it, or "
+                "action='status' for recent results. "
+                "For fetching real-world data, web pages, or researching a company/topic from the internet, "
+                "use 'crawler_query' instead — this tool cannot access the web."
             ),
             parameters={
                 "action": {"type": "string", "enum": ["run_now", "start", "stop", "status"], "description": "What to do"},
@@ -601,15 +621,18 @@ def register_builtin_tools() -> None:
         ToolSpec(
             name="crawler_query",
             description=(
-                "Deep web research crawl for a topic. Plans source URLs from the query, "
-                "crawls them with Crawl4AI, and returns a structured summary PLUS the full "
-                "extracted page content (field 'content') with source links. Put 'content' "
-                "in your 'show' field and 'summary' in 'speak'. Use for 'research', "
-                "'everything about', or 'deep dive' requests — NOT for a quick factual "
-                "lookup (use 'search' for that)."
+                "DEEP WEB RESEARCH CRAWL — the tool to use when the user wants real-world data "
+                "fetched from the internet (e.g. 'research companies', 'deep dive on a topic', "
+                "'gather everything about X', 'crawl the web for Y'). Plans source URLs from the "
+                "query, crawls them with Crawl4AI, and returns a structured summary PLUS the full "
+                "extracted page content (field 'content') with source links. Emits live progress "
+                "events to the UI (crawler_started, page_fetched, open_tab, crawler_complete) so the "
+                "user sees the search happening. Put 'content' in your 'show' field and 'summary' in "
+                "'speak'. NOT for a quick factual lookup (use 'search' for that). Requires internet access."
             ),
             parameters={"query": {"type": "string", "description": "The research topic or question to investigate"}},
-            category="web", executor="crawler", requires_internet=True, parallel_safe=False, critical=True,
+            category="web", executor="crawler", requires_internet=True, parallel_safe=False,
+            critical=True, long_running=True,
         ),
     ]
 
@@ -620,11 +643,13 @@ def register_builtin_tools() -> None:
             description=(
                 "Transcribe an audio or video file to text using the local Parakeet "
                 "ASR service. Automatically chunks long media into <=60s segments. "
-                "Input is a local file path. Returns the full transcript, detected "
-                "language, and duration."
+                "Input is a local file path OR a URL (http/https, incl. YouTube) — the "
+                "media pipeline resolves either to a local file automatically. Returns "
+                "the full transcript, detected language, and duration."
             ),
             parameters={
-                "audio_path": {"type": "string", "description": "Path to the audio/video file to transcribe"},
+                "audio_path": {"type": "string", "description": "Path or URL to the audio/video file to transcribe"},
+                "uri": {"type": "string", "description": "Alias for audio_path (any media file or URL)"},
                 "chunk_seconds": {"type": "integer", "description": "Max seconds per ASR chunk (default 55)", "default": 55},
             },
             category="media", executor="internal", requires_internet=False,
@@ -636,10 +661,12 @@ def register_builtin_tools() -> None:
                 "Sample frames from a video at a fixed interval and run vision "
                 "analysis on each frame (describe content, read text, detect objects). "
                 "Returns per-frame answers and an aggregated summary. Use for "
-                "'what happens in this video' or 'summarize the screen recording'."
+                "'what happens in this video' or 'summarize the screen recording'. "
+                "Input is a local file path OR a URL (http/https, incl. YouTube)."
             ),
             parameters={
-                "video_path": {"type": "string", "description": "Path to the video file"},
+                "video_path": {"type": "string", "description": "Path or URL to the video file"},
+                "uri": {"type": "string", "description": "Alias for video_path (any media file or URL)"},
                 "question": {"type": "string", "description": "Question to ask about each frame", "default": "What is happening in this frame?"},
                 "frame_interval": {"type": "number", "description": "Seconds between sampled frames (default 1.0)", "default": 1.0},
             },
@@ -650,13 +677,15 @@ def register_builtin_tools() -> None:
             name="clip_video",
             description=(
                 "Trim a video to a sub-clip using ffmpeg. Input start/end as "
-                "HH:MM:SS or seconds. Returns the output file path."
+                "HH:MM:SS or seconds. Returns the output file path. Input is a local "
+                "file path OR a URL (http/https, incl. YouTube)."
             ),
             parameters={
-                "video_path": {"type": "string", "description": "Path to the source video"},
+                "video_path": {"type": "string", "description": "Path or URL to the source video"},
+                "uri": {"type": "string", "description": "Alias for video_path (any media file or URL)"},
                 "start": {"type": "string", "description": "Start time (HH:MM:SS or seconds)"},
                 "end": {"type": "string", "description": "End time (HH:MM:SS or seconds)"},
-                "output_path": {"type": "string", "description": "Destination path for the trimmed clip"},
+                "output_path": {"type": "string", "description": "Destination path for the trimmed clip (auto-generated if omitted)"},
             },
             category="media", executor="internal", requires_internet=False,
             parallel_safe=False, critical=False,

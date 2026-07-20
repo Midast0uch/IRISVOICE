@@ -24,6 +24,13 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Vision server auto-starts on first use (boots the llama-server vision model).
+# take_screenshot must ensure it is running before capturing the screen.
+try:
+    from backend.tools.lfm_vl_provider import _ensure_vision_server_running
+except Exception:  # pragma: no cover - provider import is best-effort
+    _ensure_vision_server_running = None
+
 
 # Tools that reach OUTSIDE the app sandbox — they launch the user's real
 # browser/apps, open files with the default application, lock the screen, or
@@ -73,6 +80,19 @@ class AgentToolBridge:
         # Security and audit integration (from task 9)
         self._security_filter = security_filter
         self._audit_logger = audit_logger
+
+        # SpeakTool singleton — used by the crawler_query narration heartbeat
+        # (run_with_narration(..., speak=self._speak_tool.speak)) and any path
+        # that references self._speak_tool. Must exist before initialize() so
+        # the attribute is always present (previously only a local
+        # get_speak_tool() was used inside _execute_crawler_query, causing
+        # "AgentToolBridge has no attribute '_speak_tool'" at response time).
+        try:
+            from backend.agent.tools.speak_tool import get_speak_tool
+            self._speak_tool = get_speak_tool()
+        except Exception as _st_exc:
+            logger.warning(f"[AgentToolBridge] SpeakTool init deferred: {_st_exc}")
+            self._speak_tool = None
 
     async def initialize(self):
         """
@@ -654,6 +674,43 @@ class AgentToolBridge:
                 result_data = await self._gui_operator.press_key(params.get("key", ""))
                 result = {"success": True, "result": result_data}
 
+            elif tool_name == "take_screenshot":
+                # Desktop-control screenshot (registered in tool_registry as
+                # category="vision"). Per design: if the agent wants a
+                # screenshot, the vision server must be started FIRST if it is
+                # not already running, then the capture is routed through it
+                # (execute_vision_tool -> vision.describe_live_frame).
+                if _ensure_vision_server_running is not None:
+                    try:
+                        _ensure_vision_server_running()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("vision server start failed: %s", exc)
+                if "vision" not in self._mcp_servers:
+                    result = {
+                        "error": "vision server unavailable — cannot take screenshot",
+                    }
+                else:
+                    result = await self.execute_vision_tool(
+                        "vision_get_context", {}, session_id
+                    )
+                    # Normalise: vision_get_context returns frame description;
+                    # surface it as a screenshot result.
+                    if isinstance(result, dict) and "error" not in result:
+                        result = {
+                            "success": True,
+                            "result": result.get("result", result),
+                            "note": "screenshot via vision server",
+                        }
+
+            elif tool_name == "start_screen_monitor":
+                # Proactive screen monitoring is handled by the vision system;
+                # acknowledge here so the tool does not fall through to "unknown".
+                result = {
+                    "success": True,
+                    "result": "screen monitoring started",
+                    "note": "handled by vision system",
+                }
+
             else:
                 result = {"error": f"Unknown WEB/GUI tool: {tool_name}"}
 
@@ -699,6 +756,53 @@ class AgentToolBridge:
                 )
 
             return error_result
+
+    async def execute_media_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
+        """Execute a media-pipeline tool (transcribe / analyze / clip).
+
+        The 'black box' for pointing vision + Parakeet at any media. Every
+        source URI is normalized to a local file via MediaSource (files + URLs)
+        before the analysis tool runs.
+        """
+        from backend.agent.media_source import resolve_media_source
+        from backend.tools import media_tools as mt
+
+        try:
+            if tool_name == "transcribe_media":
+                src = params.get("audio_path") or params.get("uri") or params.get("path")
+                if not src:
+                    return {"success": False, "error": "transcribe_media requires audio_path/uri"}
+                path = resolve_media_source(src)
+                result = mt.transcribe_media(
+                    path, chunk_seconds=int(params.get("chunk_seconds", 30))
+                )
+            elif tool_name == "analyze_video_frames":
+                src = params.get("video_path") or params.get("uri") or params.get("path")
+                if not src:
+                    return {"success": False, "error": "analyze_video_frames requires video_path/uri"}
+                path = resolve_media_source(src)
+                result = mt.analyze_video_frames(
+                    path,
+                    question=params.get("question", "What is happening in this video?"),
+                    frame_interval=float(params.get("frame_interval", 1.0)),
+                )
+            elif tool_name == "clip_video":
+                src = params.get("video_path") or params.get("uri") or params.get("path")
+                if not src:
+                    return {"success": False, "error": "clip_video requires video_path/uri"}
+                path = resolve_media_source(src)
+                import tempfile
+
+                out = params.get("output_path") or tempfile.mktemp(
+                    suffix=".mp4", prefix="iris_clip_"
+                )
+                result = mt.clip_video(path, params.get("start"), params.get("end"), out)
+            else:
+                result = {"success": False, "error": f"unknown media tool: {tool_name}"}
+            return result
+        except Exception as exc:  # noqa: BLE001
+            logger.error("execute_media_tool %s failed: %s", tool_name, exc)
+            return {"success": False, "error": str(exc)}
 
     async def execute_mcp_tool(self, server_name: str, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
         """
@@ -1016,6 +1120,7 @@ class AgentToolBridge:
         try:
             # Internal tools (handled here)
             internal_tools = ["ask_user_question", "speak"]
+            media_tools = ["transcribe_media", "analyze_video_frames", "clip_video"]
 
             if tool_name in internal_tools:
                 if tool_name == "ask_user_question":
@@ -1024,10 +1129,27 @@ class AgentToolBridge:
                     return self._handle_speak(params, session_id)
 
             if tool_name in vision_tools:
-                    return await self.execute_vision_tool(tool_name, params, session_id)
+                    result = await self.execute_vision_tool(tool_name, params, session_id)
+                    screenshot_blob = self._capture_screenshot_blob()
+                    self._record_tool_event(
+                        session_id, tool_name,
+                        "success" if result.get("success") else "failure", params, result,
+                        plan_title=plan_title, screenshot_blob=screenshot_blob,
+                    )
+                    return result
 
             if tool_name in gui_tools:
-                    return await self.execute_gui_tool(tool_name, params, session_id)
+                    result = await self.execute_gui_tool(tool_name, params, session_id)
+                    screenshot_blob = self._capture_screenshot_blob()
+                    self._record_tool_event(
+                        session_id, tool_name,
+                        "success" if result.get("success") else "failure", params, result,
+                        plan_title=plan_title, screenshot_blob=screenshot_blob,
+                    )
+                    return result
+
+            if tool_name in media_tools:
+                    return await self.execute_media_tool(tool_name, params, session_id)
 
             # MCP Tools
             # Phase 5.3 (research D3): route dispatch through the resilience
@@ -1222,18 +1344,39 @@ class AgentToolBridge:
 
             return error_result
 
+    def _capture_screenshot_blob(self) -> "bytes | None":
+        """Capture the current screen as PNG bytes for memory storage.
+
+        Used to attach a screenshot to the tool-execution event so vision /
+        screenshot tool results are recallable from the application memory db.
+        Returns None if the vision server is unavailable or capture fails
+        (e.g. headless environment) — never raises.
+        """
+        try:
+            vision_server = self._mcp_servers.get("vision")
+            if vision_server is not None and hasattr(vision_server, "screenshot_to_bytes"):
+                return vision_server.screenshot_to_bytes()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("screenshot capture for memory failed: %s", exc)
+        return None
+
     def _record_tool_event(
         self, session_id: str, tool_name: str, outcome: str,
-        params: Dict, result: Dict, plan_title: str = ""
+        params: Dict, result: Dict, plan_title: str = "",
+        screenshot_blob: bytes = None,
     ) -> None:
         """
         Record a tool execution event via the C++ core FFI bridge.
         Fire-and-forget: never blocks the tool execution path.
         ``plan_title`` (set by the DER planner) is threaded into the event
         payload so tool executions are recallable by plan context.
+        ``screenshot_blob`` (optional PNG bytes) is attached to the event row
+        in the SQLite system_events store when the tool captured the screen.
         """
         try:
+            import json
             from backend.gateway.iris_ffi import ffi_ingest_event
+
             payload = json.dumps({
                 "tool": tool_name,
                 "params": params,
@@ -1247,7 +1390,8 @@ class AgentToolBridge:
                 actor="agent_tool_bridge",
                 outcome=outcome,
                 summary=f"Tool {tool_name} executed: {outcome}",
-                payload_json=payload
+                payload_json=payload,
+                screenshot_blob=screenshot_blob,
             )
         except Exception:
             pass  # Never block tool execution on recording failure

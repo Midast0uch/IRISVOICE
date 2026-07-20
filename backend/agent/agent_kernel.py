@@ -161,6 +161,10 @@ class AgentKernel:
         # exits cleanly without emitting further events for this conversation.
         self._cancel_requested = threading.Event()
 
+        # Structured logger (module-level logger bound to the instance so the
+        # DER soft-cancel path and any other self._logger call sites work).
+        self._logger = logging.getLogger(__name__)
+
         # Core components
         self._model_router: Optional[ModelRouter] = None
         self._vps_gateway: Optional[VPSGateway] = None

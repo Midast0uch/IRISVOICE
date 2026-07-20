@@ -613,10 +613,19 @@ class _PythonFallbackEngine:
         );
         """
         self._conn.executescript(sql)
-        self._conn.commit()
+        # Add screenshot BLOB column (idempotent — SQLite has no IF NOT EXISTS
+        # for columns, so guard with try/except). Vision/screenshot tool events
+        # store the captured frame here, attached to the event row.
+        try:
+            self._conn.execute("ALTER TABLE system_events ADD COLUMN screenshot BLOB")
+            self._conn.commit()
+        except Exception:
+            # Column already exists — harmless.
+            pass
 
     def ingest_event(
-        self, session_id, domain, event_type, actor, outcome, summary, payload_json
+        self, session_id, domain, event_type, actor, outcome, summary, payload_json,
+        screenshot_blob=None,
     ) -> int:
         if not self._conn:
             return -1
@@ -626,7 +635,7 @@ class _PythonFallbackEngine:
         self._conn.execute(
             "INSERT INTO system_events (event_id, session_id, event_domain, "
             "event_type, actor, outcome, sanitization_state, summary, "
-            "interaction_payload) VALUES (?,?,?,?,?,?,?,?,?)",
+            "interaction_payload, screenshot) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 event_id,
                 session_id,
@@ -637,6 +646,7 @@ class _PythonFallbackEngine:
                 "clean",
                 summary,
                 payload_json,
+                screenshot_blob,
             ),
         )
         self._conn.commit()
@@ -896,9 +906,19 @@ class IrisCoreEngine:
         outcome: str = "pending",
         summary: str = "",
         payload_json: str = "{}",
+        screenshot_blob: bytes = None,
     ) -> bool:
         if not self._initialized:
             return False
+        # Screenshots must land in the SQLite system_events store, so route
+        # screenshot-bearing events through the fallback writer regardless of
+        # whether the C++ core is active.
+        if screenshot_blob is not None and self._fallback:
+            rc = self._fallback.ingest_event(
+                session_id, domain, event_type, actor, outcome, summary,
+                payload_json, screenshot_blob,
+            )
+            return rc == 0
         if self._ffi:
             rc = self._ffi.ingest_event(
                 session_id, domain, event_type, actor, outcome, summary, payload_json
@@ -1121,11 +1141,13 @@ def ffi_ingest_event(
     outcome: str = "pending",
     summary: str = "",
     payload_json: str = "{}",
+    screenshot_blob: bytes = None,
 ) -> bool:
     if _engine is None:
         return False
     return _engine.ingest_event(
-        session_id, domain, event_type, actor, outcome, summary, payload_json
+        session_id, domain, event_type, actor, outcome, summary, payload_json,
+        screenshot_blob,
     )
 
 
