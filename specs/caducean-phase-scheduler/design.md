@@ -242,7 +242,8 @@ accidentally privileged (REQ-14 AC3).
 @dataclass
 class PhaseOscillator:
     oscillator_id: str
-    provider_id: str
+    quota_id: str         # REQ-6 AC1 quota identity — the coupling GROUP key (see D-9)
+    provider_label: str   # ProviderInstance.id — logs and error messages only (REQ-6 AC1b)
     call_class: CallClass
     theta: float          # [0, 2π) — the scheduler's OWN phase, never Caducean ξ
     omega: float          # 2π / natural_period_s
@@ -260,9 +261,23 @@ that for consistency and allocation cost.
 ### `ProviderWindow` — `backend/agent/rate_meter.py` (NEW)
 
 ```python
+def quota_key(inst: ProviderInstance) -> str:
+    """REQ-6 AC1: the identity that actually owns a rate limit.
+
+    NOT ProviderInstance.id — two logical instances may share one endpoint AND
+    credential (e.g. cerebras-fast / cerebras-big) and therefore one real quota.
+    NOT api_base_url alone — same endpoint, different keys = different accounts.
+    The credential is fingerprinted; never stored or logged in clear.
+    """
+    cred = get_secret(inst.id) or inst.api_key or ""
+    fp = hashlib.sha256(cred.encode()).hexdigest()[:12] if cred else "nokey"
+    return f"{inst.api_base_url}|{fp}"
+
+
 @dataclass
 class ProviderWindow:
-    provider_id: str
+    quota_id: str                    # quota_key() — the metering AND ceiling key
+    label_ids: Set[str]              # ProviderInstance.ids on this quota — LOGS ONLY (REQ-6 AC1b)
     metered: bool                    # False for LOCAL_OPENAI / OLLAMA / INPROCESS
     samples: Deque[Sample]           # bounded by METER_MAX_SAMPLES, evicted by age
     ceiling_rpm: float               # learned (AIMD)
@@ -303,7 +318,7 @@ class BatchGroup:
     join_point: str
     children: List[QueueItem]        # ≤ BATCH_MAX_CHILDREN
     opened_at: float                 # for BATCH_MAX_HOLD_S expiry
-    provider_id: str
+    quota_id: str                    # children may only batch within one quota
 ```
 
 ### Constants — module-level in `phase_manager.py` / `rate_meter.py`
@@ -472,14 +487,57 @@ the classification later.
 `Retry-After` header is only visible at the transport, and the transport already correctly
 retries transient stream errors (`transport.py:319-330`) which must be preserved.
 
-### D-8: Coupling is computed per provider, not globally
+### D-9: Meter by quota identity; leave the transport cache untouched
+
+**Decision.** The meter and the learned ceiling are keyed by
+`quota_key(inst) = (api_base_url, credential-fingerprint)`. The transport cache
+([`router.py:49-62`](backend/agent/inference/router.py:49)) is **not modified**.
+
+**Rationale.** Transports are cached by `(kind, api_base_url)`, so two logical provider
+instances at the same endpoint already share one transport object. An earlier draft of this
+spec offered two fixes for that — "include `inst.id` in the cache key" or "pass `provider_id`
+per call" — and **both were wrong**:
+
+- Keying the meter by `inst.id` **over-partitions.** `cerebras-fast` and `cerebras-big` at the
+  same endpoint with the same key draw from **one real quota**. Two separate ceilings each learn
+  from half the traffic, so neither ever discovers the actual limit, and the sum of the two
+  ceilings can exceed it — producing `429`s that the learner cannot explain.
+- Keying by `api_base_url` alone **under-partitions.** Two accounts at the same provider have
+  independent quotas; one account's `429` would wrongly shrink the other's ceiling.
+
+Quota identity is the only key correct in both directions, and it makes the transport-cache
+question moot: the transport can stay shared, because the thing being keyed is no longer the
+transport. This is strictly simpler than either rejected option — one fewer file changed.
+
+**Consequence.** The transport needs the quota key at `429` time. Pass it at construction in
+`_build_transport` ([`router.py:310-339`](backend/agent/inference/router.py:310)), where `inst` is
+in scope. Because the key is derived from `(base_url, credential)` — exactly the fields the cache
+already keys on, plus the credential — a shared transport shares the correct quota key by
+construction. No per-call threading required.
+
+**Security note.** The credential is SHA-256'd and truncated to 12 hex chars for use as a dict
+key. It is never persisted (REQ-7 AC5 writes ceilings keyed by this fingerprint, not by the
+secret) and never logged — logs use `label_ids` instead (REQ-6 AC1b).
+
+### D-8: Coupling is computed per quota, not globally — and not per provider *instance*
 
 **Decision.** The coupling sum in REQ-12 AC2 runs only over oscillators sharing the same
-`provider_id`.
+`quota_id` (D-9's quota identity).
 
-**Rationale.** Spacing a Cerebras call away from an Ollama call accomplishes nothing —
+**Why not global.** Spacing a Cerebras call away from an Ollama call accomplishes nothing —
 Ollama has no limit to protect (`provider.py:16-22`, no `429` branch in `OllamaTransport`).
-Global coupling would add wait time for zero benefit, and with mixed local/cloud plans (the
+Global coupling would add wait time for zero benefit.
+
+**Why not per provider instance — the sharper half.** Grouping by `ProviderInstance.id` would
+**under-couple exactly the case the scheduler exists for.** Two instances at one endpoint sharing
+one credential (`cerebras-fast`, `cerebras-big`) draw from a single real quota. Under an
+instance-id grouping their oscillators land in separate coupling groups, never see each other as
+neighbours in the sine term, and are therefore free to fire at the same instant into the one limit
+being protected. The bug would present as "the scheduler is enabled and we still get bursts," with
+every unit test green. Quota grouping fixes it for the same reason quota metering fixes the ceiling
+(D-9): the group must match the thing that actually rate-limits.
+
+**Rationale (continued).** With mixed local/cloud plans (the
 common case for this project) it would be actively harmful.
 
 ---
@@ -577,8 +635,16 @@ sparser root `tests/`.
 - `test_retry_after_parse.py` — delta-seconds, HTTP-date, absent, negative, unparseable,
   hostile-large (clamped) (REQ-2 AC2/AC3/AC4).
 - `test_ceiling_aimd.py` — multiplicative decrease on `429`, additive increase after
-  `CEILING_PROBE_S`, floors and caps hold, and **one provider's `429` leaves others untouched**
+  `CEILING_PROBE_S`, floors and caps hold, and **one quota's `429` leaves others untouched**
   (REQ-7 AC6).
+- `test_quota_key.py` — the D-9 partitioning rules, all four cases:
+  - same `api_base_url` + same credential → **same** `quota_id` (they share one real quota);
+  - same `api_base_url` + different credentials → **different** `quota_id` (separate accounts);
+  - different `api_base_url` → different `quota_id`;
+  - no credential → a stable `"nokey"` fingerprint rather than a crash or a collision with a
+    real key.
+  Plus: the raw credential never appears in the returned key, and `quota_id` is stable across
+  calls for the same instance.
 - `test_meter_window.py` — eviction by age, `METER_MAX_SAMPLES` bound, backwards clock
   tolerance, estimated-token marking (REQ-6 AC5, edge cases).
 
@@ -595,6 +661,7 @@ sparser root `tests/`.
 | **CT-7** | Commit-ledger record for a rate-limited step | Row written with `verified_label="FAILED"`, preserving the `specs/der-loop-integrity-display` REQ-1 contract (REQ-3 AC5). |
 | **CT-8** | Batch prompt/response contract | Composed prompt contains one `step_id`-keyed fence per child; parser maps segments by id not position (REQ-19 AC1/AC2, edge case). |
 | **CT-9** | Gate twins | Both `acquire` and `acquire_async` exist with identical semantics; `acquire_async` never calls `time.sleep` (asserted by patching `time.sleep` and failing on invocation) (REQ-13 AC2/AC3). |
+| **CT-10** | Quota key is the grouping/metering key, and credentials never leak | Meter windows, learned ceilings, and coupling groups are all keyed by `quota_id`, never by `ProviderInstance.id` (REQ-6 AC1, REQ-7 AC6, REQ-12 AC6). No log line, persisted file, or exception message contains a raw credential; logs carry `provider_label` instead (REQ-6 AC1b, REQ-20 AC5). |
 
 ### Behavioral — full-loop, emergent properties (`backend/tests/behavioral/`)
 
@@ -618,6 +685,13 @@ sparser root `tests/`.
   Assert peak concurrent in-flight never exceeds 3 and all 8 results return (REQ-5).
 - `test_local_provider_never_gated.py` — an LM Studio / Ollama provider under a saturated
   *cloud* window is admitted with zero wait (REQ-8 AC2, edge case: mixed plan).
+- `test_shared_quota_is_coupled.py` — **the D-8 under-coupling guard.** Register two oscillators
+  on two *different* `ProviderInstance.id`s that resolve to the *same* `quota_id`
+  (same endpoint, same credential). Assert they land in **one** coupling group and are spread
+  apart in θ. Then register two on the same endpoint with *different* credentials and assert they
+  land in **separate** groups and are *not* spread against each other. This is the test that
+  distinguishes quota grouping from instance grouping; under an instance-id implementation the
+  first half fails while every unit test still passes.
 - `test_flag_off_is_identical.py` — run the existing DER suite with `IRIS_PHASE_SCHEDULER=0`
   and assert no gate, meter, or coupling code executes (patch and fail on call) (REQ-17 AC2/AC4).
 - `test_batch_attribution.py` — three independent Sub-Loop children batched into one call.

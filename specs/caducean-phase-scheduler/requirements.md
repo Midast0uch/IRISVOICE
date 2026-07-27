@@ -269,13 +269,26 @@ accounting exists but only per-session and after the fact:
 a live rolling window, and none is keyed by provider.
 
 **Acceptance Criteria:**
-- AC1: THE SYSTEM SHALL maintain, per `ProviderInstance.id`, a sliding-window meter of
-  requests issued and tokens consumed over the trailing `METER_WINDOW_S` (default 60 s).
+- AC1: THE SYSTEM SHALL maintain a sliding-window meter of requests issued and tokens consumed
+  over the trailing `METER_WINDOW_S` (default 60 s), keyed by **quota identity** — the
+  `(api_base_url, credential-fingerprint)` pair — **not** by `ProviderInstance.id`.
+  **Why (verified):** transports are cached by `(kind, api_base_url)`
+  ([`router.py:49-62`](backend/agent/inference/router.py:49)), and two logical provider instances
+  may legitimately point at the same endpoint (e.g. `cerebras-fast` and `cerebras-big`, both at
+  `api.cerebras.ai`). If they share a credential they share the provider's **real** quota, so the
+  meter must aggregate them — keying by instance id would give each a separate ceiling, each
+  learning half the truth, and neither ever seeing the real limit. If their credentials differ
+  they are separate accounts with separate quotas and must be metered separately. Quota identity
+  is the only key that gets both cases right. The credential is fingerprinted (hashed, truncated),
+  never stored or logged in clear.
+- AC1b: THE SYSTEM SHALL retain the `ProviderInstance.id` alongside each window for
+  **observability only** (REQ-20), so logs remain human-readable, and SHALL NOT use it as the
+  metering or ceiling key.
 - AC2: THE SYSTEM SHALL record every LLM request against its resolved provider instance id
   at the single inference chokepoint, regardless of which loop or role initiated it.
 - AC3: THE SYSTEM SHALL count **priority-lane** calls in the meter even though they are
   never gated, so that background amplitudes correctly ease off in response to user traffic.
-- AC4: THE SYSTEM SHALL expose `draw(provider_id) -> {requests, tokens, window_s}` as a
+- AC4: THE SYSTEM SHALL expose `draw(quota_id) -> {requests, tokens, window_s}` as a
   read-only snapshot with no side effects.
 - AC5: THE SYSTEM SHALL bound meter memory: each provider window retains at most
   `METER_MAX_SAMPLES` entries and evicts by age, so the meter can never grow unbounded.
@@ -320,8 +333,10 @@ rate-limit fields exist on `ProviderInstance` (`provider.py:25-42`) or `Inferenc
   `.mcm/` params-store pattern the outer loop already uses (`outer_loop.py:62-64`,
   `.mcm/der_params.json`), in a separate file, and SHALL fall back to defaults if the file
   is missing or corrupt.
-- AC6: THE SYSTEM SHALL keep each provider's ceiling fully independent — a `429` from one
-  provider SHALL NOT reduce any other provider's ceiling.
+- AC6: THE SYSTEM SHALL keep each ceiling fully independent **per quota identity** (REQ-6 AC1) —
+  a `429` from one quota identity SHALL NOT reduce any other's. Two provider instances sharing an
+  endpoint *and* a credential share one ceiling by design, because they share one real quota;
+  two sharing an endpoint with *different* credentials get separate ceilings.
 
 **Edge Cases:**
 - First-ever run, no persisted file → initialize from defaults; do not block startup.
@@ -442,8 +457,10 @@ already exists and is the model to follow: `CoupledTrajectoryRegistry` at
 `unregister_session`, `list_sessions`, singleton accessor at `coupled_registry.py:225`).
 
 **Acceptance Criteria:**
-- AC1: THE SYSTEM SHALL provide `register(oscillator_id, natural_period_s, provider_id,
+- AC1: THE SYSTEM SHALL provide `register(oscillator_id, natural_period_s, quota_id,
   call_class, join_point=None, independent=False)` returning the oscillator's initial state.
+  `quota_id` is the REQ-6 AC1 quota identity, **not** a `ProviderInstance.id` — see REQ-12 AC6
+  for why this distinction is load-bearing for coupling, not just for metering.
 - AC2: WHEN registering the *N*-th oscillator THEN THE SYSTEM SHALL place its phase
   deterministically at the widest available gap in the current phase distribution, rather
   than randomly, so the splay condition holds from the first tick.
@@ -452,7 +469,7 @@ already exists and is the model to follow: `CoupledTrajectoryRegistry` at
 - AC4: THE SYSTEM SHALL provide `unregister(oscillator_id)` that is a no-op for unknown ids
   and never raises.
 - AC5: THE SYSTEM SHALL expose `snapshot()` returning every oscillator's
-  `(id, theta, omega, amplitude, provider_id, call_class, last_fired_at)` for tests and
+  `(id, theta, omega, amplitude, quota_id, call_class, last_fired_at)` for tests and
   observability, with no side effects.
 - AC6: THE SYSTEM SHALL be a process-wide singleton with a `reset_*_for_testing()` accessor,
   matching the pattern at `coupled_registry.py:225-238`.
@@ -494,8 +511,16 @@ manager from touching reasoning-state decisions, so θ must be independent.
 - AC5: WHEN all oscillators sharing a provider are evenly spread THEN the coupling term SHALL
   evaluate to approximately zero, so the nudging stops once collisions are no longer likely.
 - AC6: THE SYSTEM SHALL compute the coupling sum only over oscillators sharing the same
-  `provider_id`, because spacing traffic against a provider that is not shared has no effect
-  on that provider's limit.
+  **`quota_id`** (REQ-6 AC1), because spacing traffic against a quota that is not shared has no
+  effect on that quota's limit.
+  **This is load-bearing, not a rename.** Grouping by `ProviderInstance.id` instead would
+  **under-couple the case that matters most**: two instances at one endpoint with one credential
+  (e.g. `cerebras-fast` and `cerebras-big`) draw from a single real quota, so their oscillators
+  *must* be spread against each other — yet an instance-id grouping would place them in separate
+  coupling groups where the sine term never sees them as neighbours, and they would be free to
+  fire simultaneously into the one limit the scheduler exists to protect. Conversely, two
+  instances at one endpoint with *different* credentials have independent quotas and correctly end
+  up in separate groups. Same key, same reason, as REQ-6 AC1 and REQ-7 AC6.
 
 **Edge Cases:**
 - Two oscillators at exactly the same θ → `sin(0) = 0` yields no repulsion; the
@@ -606,7 +631,7 @@ they all funnel through `router.generate` (`router.py:343`).
   any loop's own code.
 - AC4: THE SYSTEM SHALL NOT branch on registrant identity, kind, or name anywhere in the
   coupling or gating path; behavior SHALL depend only on `(theta, omega, amplitude,
-  provider_id, call_class)`.
+  quota_id, call_class)`.
 - AC5: A contract test SHALL assert AC4 by registering an oscillator with an arbitrary
   unknown id and verifying it is gated identically to a known one.
 
@@ -768,9 +793,11 @@ in REQ-7 are learned rather than configured.
 - AC4: THE SYSTEM SHALL expose a `metrics()` snapshot providing, per provider: current draw,
   learned ceiling, count of `429`s in the window, gate admissions, gate waits, total wait
   time, and mean/stddev of inter-request gaps.
-- AC5: THE SYSTEM SHALL scope every log line by `provider_id` and by conversation or session
-  id where available, matching the structured-logging convention required by
-  `CLAUDE.md` ("context identifier in every log line").
+- AC5: THE SYSTEM SHALL scope every log line by the **human-readable provider label**
+  (`ProviderInstance.id`, per REQ-6 AC1b) and by conversation or session id where available,
+  matching the structured-logging convention required by `CLAUDE.md` ("context identifier in every
+  log line"). THE SYSTEM SHALL NOT log the raw `quota_id`, since it embeds a credential
+  fingerprint — log the label, key the data structures by the quota id.
 - AC6: THE SYSTEM SHALL record the inter-request gap distribution needed to verify the
   ≥50% stddev-reduction success criterion, so that criterion is checkable rather than
   aspirational.

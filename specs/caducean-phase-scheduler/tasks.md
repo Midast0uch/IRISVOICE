@@ -136,8 +136,10 @@ starting Wave 2.
   `kind`, so registering a cloud proxy as `local_openai` is a documented misconfiguration, not
   a code branch. Include a `reset_*_for_testing()` accessor per `coupled_registry.py:234`.
 
-- [ ] **T2.2** (REQ-6 AC1/AC4) Implement `record_request(provider_id, tokens, priority,
-  estimated)` and `draw(provider_id) -> {requests, tokens, window_s}`. Token count from the
+- [ ] **T2.2** (REQ-6 AC1/AC4) Implement `record_request(quota_id, tokens, priority,
+  estimated, label=None)` and `draw(quota_id) -> {requests, tokens, window_s}`, both keyed by
+  quota identity (REQ-6 AC1, design D-9) — never by `ProviderInstance.id`. The optional `label`
+  is the instance id, retained for logs only (REQ-6 AC1b). Token count from the
   provider's usage block when available, else estimated from character length using the
   existing 4-chars≈1-token convention (`agent_kernel.py:5283`), flagged `estimated=True`.
   RIPPLE: `draw()` must be side-effect free — it is called from the coupling path on every
@@ -156,16 +158,22 @@ starting Wave 2.
   RIPPLE: **separate file** from `.mcm/der_params.json` — do not touch the outer loop's store.
   Unknown keys in a file written by a future version must be ignored, not fatal.
 
-- [ ] **T2.5** (REQ-2 AC5, REQ-7 AC2) Wire the transport's `429` observation into the meter:
-  `observe_429(provider_id, retry_after)` called from every `429` branch. The transport needs
-  the provider instance id, which `router._build_transport` knows but the transport currently
-  does not.
-  RIPPLE: **decide the plumbing deliberately.** Preferred: pass `provider_id` into the
-  transport constructor at `router._build_transport` (`router.py:310-339`) so it is available
-  without threading it through `generate()`. Note that transports are **cached by
-  `(kind, api_base_url)`** (`router.py:49-62`), so two provider instances sharing a base URL
-  would share a transport and therefore a `provider_id` — either include `inst.id` in the cache
-  key or pass `provider_id` per call. Pick one and write the reason into the module docstring.
+- [ ] **T2.5** (REQ-2 AC5, REQ-6 AC1, REQ-7 AC2) Wire the transport's `429` observation into the
+  meter: `observe_429(quota_id, retry_after)` from every `429` branch. Implement
+  `quota_key(inst) = f"{inst.api_base_url}|{sha256(credential)[:12]}"` and pass it into the
+  transport constructor at `router._build_transport`
+  ([router.py:310-339](backend/agent/inference/router.py:310)), where `inst` is in scope.
+  RIPPLE: **do NOT change the transport cache key.** Transports are cached by
+  `(kind, api_base_url)` ([router.py:49-62](backend/agent/inference/router.py:49)) and that is
+  fine — the meter is keyed by *quota identity*, not by transport or instance, so the shared-cache
+  question is moot (design **D-9**). Two earlier candidate fixes are explicitly rejected there and
+  should not be re-derived: keying by `inst.id` **over-partitions** (two instances on one real
+  quota each learn half the truth, and their summed ceilings can exceed the real limit, producing
+  unexplainable `429`s); keying by `api_base_url` alone **under-partitions** (two accounts at one
+  provider would corrupt each other's ceiling). Because the quota key is derived from
+  `(base_url, credential)`, a shared transport carries the *correct* key by construction — no
+  per-call threading. Credential is hashed, never logged (logs use `label_ids`, REQ-6 AC1b) and
+  never persisted in clear (REQ-7 AC5 keys the ceilings file by fingerprint).
 
 - [ ] **T2.6** (REQ-10) Implement the hard rail: `PHASE_HARD_MAX_RPM` per provider, never
   raised by learning. Log at WARNING once per provider when the rail is the binding constraint
@@ -176,10 +184,18 @@ starting Wave 2.
 
 - [ ] **T2.7** (REQ-6, REQ-7, REQ-8, REQ-10) Tests:
   - `backend/tests/unit/test_meter_window.py` — eviction, bound, clock skew, estimation flag.
-  - `backend/tests/unit/test_ceiling_aimd.py` — MD/AI, floors, caps, **cross-provider isolation**.
+  - `backend/tests/unit/test_ceiling_aimd.py` — MD/AI, floors, caps, **cross-quota isolation**.
+  - `backend/tests/unit/test_quota_key.py` — all four D-9 partitioning cases (same endpoint +
+    same key → same quota; same endpoint + different keys → different quotas; different endpoints
+    → different; no credential → stable `"nokey"`), plus: the raw credential never appears in the
+    key.
   - `backend/tests/behavioral/test_local_provider_never_gated.py` — mixed cloud/local plan.
-  RIPPLE: the mixed-plan test is the one that catches an accidental global ceiling — the
-  failure mode Decision Locked #2 exists to prevent.
+  - `backend/tests/contract/test_quota_key_contract.py` — CT-10: meter windows, ceilings, and
+    coupling groups are all keyed by `quota_id` and never by `ProviderInstance.id`; no credential
+    appears in any log line, persisted file, or exception message.
+  RIPPLE: the mixed-plan test catches an accidental global ceiling (Decision Locked #2). CT-10 is
+  the guard against the two rejected keying schemes in design **D-9** creeping back in — both are
+  easy to reach for and each is wrong in a different direction.
 
 ---
 
@@ -200,10 +216,16 @@ starting Wave 2.
   RIPPLE: no API may let one registrant address another (REQ-15 AC2) — this is enforced by
   omission, so review the public surface deliberately. `MIN_PERIOD_S` clamp prevents divide-by-
   zero on `natural_period_s <= 0`. Include `reset_*_for_testing()`.
+  ⚠️ **Group by `quota_id`, not `ProviderInstance.id`** (REQ-11 AC1, REQ-12 AC6, design D-8/D-9).
+  Instance grouping under-couples two instances that share one real quota — they would land in
+  separate coupling groups and be free to fire simultaneously into the one limit the scheduler
+  protects, with every unit test still green. `test_shared_quota_is_coupled.py` (T3.9) is the guard.
+  Keep `provider_label` on the oscillator for logs only.
 
 - [ ] **T3.3** (REQ-12) Implement `advance()` with the repulsive Kuramoto rule
   `dθᵢ/dt = ωᵢ_eff + (K/N)·Σ_{j≠i} sin(θᵢ − θⱼ)`, `K > 0`, summed **only** over oscillators
-  sharing the same `provider_id` (D-8). Lazy `dt` from elapsed wall-clock, clamped to
+  sharing the same `quota_id` (D-8 — **not** `ProviderInstance.id`; instance grouping under-couples
+  two instances on one real quota). Lazy `dt` from elapsed wall-clock, clamped to
   `TICK_MAX_DT_S`. `N` recomputed live per advance (REQ-16 AC3).
   **Import the coupling kernel from `backend/agent/trig_coupling.py`** — do NOT inline the sine
   math. If that module does not exist yet, land
@@ -241,13 +263,35 @@ starting Wave 2.
   before and after.
 
 - [ ] **T3.7** (REQ-14 AC4) Set the call class explicitly at the top of `_execute_plan_der`
-  (`agent_kernel.py:5239`) and at the user-turn entry point, and set `CallClass.SUBLOOP` on
-  Sub-Loop children. Set `CallClass.SPEAK` around `speak_tool`'s output path
-  (`backend/agent/tools/speak_tool.py:46`).
-  RIPPLE: **`loop.run_in_executor` does not copy `contextvars`** (used at
-  `agent_kernel.py:6949`), unlike `asyncio.to_thread`. The explicit set inside the executor
-  entry point is what makes the priority lane correct there — `test_contextvar_across_executor`
-  (T3.9) asserts that removing it breaks the behavior, so the set is provably load-bearing.
+  ([agent_kernel.py:5239](backend/agent/agent_kernel.py:5239)) and at the user-turn entry point,
+  and set `CallClass.SUBLOOP` on Sub-Loop children. Set `CallClass.SPEAK` around `speak_tool`'s
+  output path ([speak_tool.py:46](backend/agent/tools/speak_tool.py:46)).
+  RIPPLE — **two distinct executor hops; the first is confirmed and load-bearing, the second is
+  defensive:**
+  1. **Entry hop (CONFIRMED reachable).** The whole DER loop runs off the event loop. The REST
+     path is an explicit `await loop.run_in_executor(None, lambda: kernel.process_text_message(...))`
+     ([api/chat.py:199](backend/api/chat.py:199)); the WS paths call
+     `process_text_message` synchronously from a worker thread
+     ([iris_gateway.py:2699](backend/iris_gateway.py:2699),
+     [:4623](backend/iris_gateway.py:4623)). `run_in_executor` does **not** copy `contextvars`
+     (unlike `asyncio.to_thread`), so a ContextVar set on the event loop is invisible in that
+     thread and `call_class()` returns the `BACKGROUND` default. **This is why the explicit set
+     must happen inside `_execute_plan_der`, in that thread.** `test_contextvar_across_executor`
+     (T3.9) asserts that removing the set breaks the behavior, so it is provably load-bearing.
+  2. **Nested hop (defensive — currently NOT reachable in normal config).** Also set the call
+     class at the top of `_run_step_direct`
+     ([agent_kernel.py:6626](backend/agent/agent_kernel.py:6626)), taking it as a parameter.
+     Reason: `_der_run_step_execution_async` reaches `_run_step_direct` through a *second*
+     `loop.run_in_executor` ([:6947-6951](backend/agent/agent_kernel.py:6947)), which loses the
+     context again. **Verified currently unreachable** — that branch needs a `parallel_safe` step
+     with no tool, and `is_parallel_safe(None)` returns `False` (fail-closed,
+     [tool_registry.py:159-179](backend/agent/tool_registry.py:159)), so tool-less steps never
+     enter the concurrent batch. It becomes reachable if `_tool_bridge is None` (degraded/test
+     config) or if a reasoning step is ever marked parallel_safe. The serial path is safe — it
+     calls `_run_step_direct` **directly**, same thread
+     ([:6905](backend/agent/agent_kernel.py:6905)). Add the guard anyway: it is one parameter, and
+     the failure mode if the path ever opens is silent (a user turn quietly gets gated, no error
+     anywhere).
 
 - [ ] **T3.8** (REQ-17) Feature flag `IRIS_PHASE_SCHEDULER`, default disabled. Flag-off makes
   `acquire`/`acquire_async` immediate no-ops with no advance, no metering, no coupling. Log the
@@ -272,6 +316,10 @@ starting Wave 2.
   - `backend/tests/behavioral/test_phase_physics_invariance.py` — inject `u ∈ {−1, 0, +1}`
     and assert identical θ/wait/amplitude; and assert `|u| < U_SPLIT` still yields split
     width 3 with the flag on (`agent_kernel.py:6170-6185`).
+  - `backend/tests/behavioral/test_shared_quota_is_coupled.py` — two oscillators on **different
+    `ProviderInstance.id`s resolving to the same `quota_id`** land in ONE coupling group and are
+    spread in θ; two on the same endpoint with **different credentials** land in separate groups
+    and are NOT spread. Distinguishes quota grouping from instance grouping (design D-8).
   - Rebalance test for REQ-16 AC4 (three → two converge to ~π within `REBALANCE_TICKS`).
   RIPPLE: `test_scheduler_isolation` is the enforceable form of D-2. Without it, "the scheduler
   does not read reasoning state" is an intention rather than a property.
@@ -320,10 +368,23 @@ starting Wave 2.
   logging at WARNING with the child ids. Never populate a child's result from a partial parse
   or infer it from siblings. Unmatched *extra* segments are ignored and do not themselves
   trigger the fallback.
-  RIPPLE: `QueueItem.result` (`der_loop.py:90`) feeds `resolve_dependent_params`
-  (`der_loop.py:486-540`) and `TrailingDirector.analyze_gaps` — a wrongly attributed result
-  propagates into a downstream step's params (CT-5, CT-8). Each child then runs its normal
-  `_verify_step_result` unchanged (REQ-19 AC5).
+  RIPPLE — **the propagation path is NOT `depends_on`; know the real one before you start.**
+  `_split_step` creates children with **no `depends_on`** and with
+  `step_number = parent.step_number` ([agent_kernel.py:6245-6254](backend/agent/agent_kernel.py:6245)).
+  `resolve_dependent_params` injects a completed item's result into a pending item when *either*
+  the pending item lists it in `depends_on` **or** — the reachable case here — the pending item has
+  **no `depends_on` and `step_number == completed.step_number + 1`**
+  ([der_loop.py:519-525](backend/agent/der_loop.py:519)). Since every child carries the parent's
+  `step_number`, a child's result is injected into **the step following the parent**, via that
+  implicit-sequential rule. It lands in `params["_dependency_results"][child_step_id]` and also
+  substitutes any `{{step_id}}` / `{{step_number}}` placeholder in string params
+  ([der_loop.py:534-538](backend/agent/der_loop.py:534)). `resolve_dependent_params` is called for
+  **every** finalized item including children
+  ([agent_kernel.py:7299](backend/agent/agent_kernel.py:7299)), so there is no path where a
+  misattributed child result stays contained. That is why REQ-19 AC3's fallback discards the whole
+  batch rather than salvaging part of it — a partial attribution is not a degraded result, it is
+  wrong input to a later step, surfacing far from its cause. Each child then runs its normal
+  `_verify_step_result` unchanged (REQ-19 AC5). Pinned by CT-5, CT-8.
 
 - [ ] **T4.5** (REQ-18 AC5/AC6) Integrate the batcher into the DER path so batching is
   transparent to the parent: the parent still observes exactly **one** collapse into a single
@@ -423,17 +484,48 @@ should see at a glance that these are not being modified):
 | `_split_step` / `_growth_width` — physics-driven shape, out of scope | physics-invariance test | T3.9 |
 | `ws_event_bridge.py` + frontend — no new bridged event | none needed | — |
 
-**Riskiest tasks, flagged for extra review:**
+**Riskiest tasks, flagged for extra review.** Each was re-validated against the code on
+2026-07-27; the notes below record what is confirmed, what is conditional, and — for T3.3 — where
+the earlier draft of this list was **wrong**.
 
-1. **T3.3** — the coupling sign. A flipped sign silently produces synchronization, which is the
-   exact opposite of the goal, and every higher-level test would still "pass" in the sense of
-   not crashing.
-2. **T2.5** — the transport cache key. Transports are cached by `(kind, api_base_url)`
-   (`router.py:49-62`), so two provider instances sharing a base URL currently share a
-   transport. Attributing a `429` to the wrong provider would corrupt both ceilings.
-3. **T3.7** — the `contextvars` / `run_in_executor` boundary. Silent failure mode: the priority
-   lane simply stops working inside the DER thread and every user turn gets gated, with no
-   error anywhere. `test_contextvar_across_executor` exists specifically to make this loud.
-4. **T4.4** — batch attribution. A wrongly attributed child result propagates into a downstream
-   step's params via `resolve_dependent_params` (`der_loop.py:486-540`), so the damage surfaces
-   far from its cause. The discard-everything fallback is deliberately blunt for this reason.
+1. **T3.3 — the coupling sign. VALID, but this list previously overstated it.**
+   The earlier wording claimed "every higher-level test would still pass." **That is false**, and
+   an implementer should know the guards exist rather than inventing new ones:
+   - `test_phase_math.py` (T3.9) asserts two oscillators at Δθ=0.1 **separate**. A flipped sign
+     makes them converge → this test fails. It is the cheap, primary guard.
+   - Harness assertion 6 (`validate_phase_scheduler.py`, T4.6) requires inter-request-gap stddev
+     to *fall* ≥50%. Synchronization *raises* stddev, so the harness fails too.
+   What remains true is the narrower and still-important point: **no behavioral test catches it**,
+   because sync and splay both produce "calls were made, nothing crashed." Get the sign right by
+   construction, then let `test_phase_math.py` confirm it before anything else is wired.
+   **The sign in REQ-12 AC2 is correct as written — verified by hand:** with
+   `dθᵢ/dt = ωᵢ_eff + (K/N)·Σ sin(θᵢ − θⱼ)`, `K > 0`, and N=2 at θ₁=0, θ₂=0.1 —
+   θ₁ gets `+(K/2)·sin(−0.1) < 0` (moves down), θ₂ gets `+(K/2)·sin(+0.1) > 0` (moves up) →
+   they separate. At Δθ=π, `sin(±π) = 0` → coupling vanishes (splay fixed point). At 2π/3 spacing
+   with N=3, `sin(−2π/3) + sin(−4π/3) = −0.866 + 0.866 = 0` → also vanishes. Note the argument
+   order is `(θᵢ − θⱼ)`; the **standard sync** form is `sin(θⱼ − θᵢ)`. Reversing the subtraction
+   is exactly the bug.
+
+2. **T2.5 — VALID, and the fix changed.** The risk is real: attributing a `429` to the wrong
+   quota corrupts a learned ceiling. But **both remedies this list originally proposed were
+   wrong** — keying by `inst.id` over-partitions a shared quota; keying by `api_base_url` alone
+   under-partitions separate accounts. Superseded by design **D-9**: key the meter by
+   `quota_key(inst) = (api_base_url, credential-fingerprint)` and **leave the transport cache
+   alone**. Do not re-derive the rejected options.
+
+3. **T3.7 — VALID and confirmed, with a second hop that is currently unreachable.**
+   Hop 1 (entry) is confirmed: [api/chat.py:199](backend/api/chat.py:199) is an explicit
+   `run_in_executor`, so the DER loop runs off the event loop and a ContextVar set there is
+   invisible. Silent failure mode: the priority lane stops working and every user turn gets gated,
+   with no error anywhere. `test_contextvar_across_executor` (T3.9) makes it loud.
+   Hop 2 (nested, [:6947-6951](backend/agent/agent_kernel.py:6947)) is real but **verified
+   currently unreachable** — it needs a tool-less `parallel_safe` step and
+   `is_parallel_safe(None)` returns `False` (fail-closed). Guard it anyway; see T3.7 for why.
+
+4. **T4.4 — VALID, and the propagation path is not the obvious one.** Children have **no
+   `depends_on`**; they inherit the parent's `step_number`, so results propagate through
+   `resolve_dependent_params`' **implicit-sequential** rule
+   ([der_loop.py:519-525](backend/agent/der_loop.py:519)) into the step *after the parent* — not
+   through an explicit dependency edge. An implementer looking only at `depends_on` would conclude
+   children are isolated and that the blunt discard-everything fallback is over-engineering. It is
+   not. See T4.4's ripple note.
