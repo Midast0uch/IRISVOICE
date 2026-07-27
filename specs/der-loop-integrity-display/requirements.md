@@ -364,6 +364,75 @@ is live from the first reply and stays correct when I switch conversation thread
 - EventBus unavailable: emit is wrapped in try/except (no crash, matches
   existing DER emit pattern at agent_kernel.py:6547).
 
+## REQ-13 — Ledger-learning signals are real measurements, not constants (Wave 10)
+
+**User Story:** As the coach process I want all three of my anti-hack guards to be live
+measurements from the ledgers so that the compound gate REQ-2 specifies actually gates,
+instead of appearing to gate while only one signal can ever fire.
+
+**Verified:** REAL GAP — REQ-2's *intent* is right and `_compound_accepts` exists, but
+**only 1 of its 3 guards is functional**. Traced against code:
+
+| REQ-2 guard | Status | Evidence |
+|---|---|---|
+| `natural_exit_rate` improves | **LIVE** | `ne_hits / n` from a real ledger column ([outer_loop.py:130-141](backend/agent/outer_loop.py:130)) |
+| `verified_fraction` does not degrade | **DEAD — hardcoded constant** | [outer_loop.py:136](backend/agent/outer_loop.py:136): `vf_sum += 1.0 if vc == 0 else 1.0` — **both ternary branches are `1.0`**, so `verified_fraction` is always exactly 1.0. The check `proposed < baseline - tol` becomes `1.0 < 1.0 - 1e-6`, which is never true. The comment explains the `vc == 0` case; the `else` branch is an unfilled stub. |
+| `tokens_per_verified` does not degrade | **DEAD — input never populated** | `tpv_sum += (tt / vc) if vc > 0 else 0.0` at [outer_loop.py:137](backend/agent/outer_loop.py:137) reads `tokens_total`, but the **only production caller** of `record_session_exit` ([memory.py:329-336](backend/agent/memory.py:329)) omits the `tokens_total` argument, so it defaults to `0.0` ([caducean_trajectory.py:333](backend/agent/caducean_trajectory.py:333)). The check `proposed > baseline + tol` becomes `0.0 > 0.0 + 1e-6`, never true. |
+
+Two further REQ-2 acceptance criteria are also unmet:
+
+- **AC4 (per-domain gate)** is unimplemented. `run_once` accepts a `domain` and passes it to
+  `_ledger` ([outer_loop.py:184](backend/agent/outer_loop.py:184)), but there is no iteration
+  over domains and no "≥2 sessions per domain" requirement. Every production caller
+  (`run_outer_loop`, [outer_loop.py:261](backend/agent/outer_loop.py:261)) passes `domain=None`,
+  so the gate is always pooled.
+- **AC5 (reject "never split")** is unreachable rather than guarded. `U_SPLIT` candidates are
+  `[0.4, 0.5, 0.6, 0.7]` ([outer_loop.py:39](backend/agent/outer_loop.py:39)) — `1.0` cannot be
+  proposed, so the hack the AC names is prevented by the proposal list, not rejected by the
+  gate. `verified_count` *is* correctly derived from the honest `der_commits` ledger
+  ([caducean_trajectory.py:351-360](backend/agent/caducean_trajectory.py:351)), so the input
+  for a real `verified_fraction` is already available — it is simply not used.
+
+Net effect: the outer loop currently accepts any proposal that raises `natural_exit_rate`,
+which is precisely the single-metric reward-hacking REQ-2 was written to prevent. Tasks T3
+and T19 remain unchecked in `tasks.md`, so this is a half-executed requirement rather than a
+regression.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL record `tokens_total` at session exit from the session's real
+  accumulated LLM token count, so `tokens_per_verified` has a non-zero input.
+- AC2: THE SYSTEM SHALL compute `verified_fraction` as the actual ratio of VERIFIED steps to
+  total executed steps for each held-out session, read from the `der_commits` ledger, and
+  SHALL NOT return a constant for any input.
+- AC3: WHERE a held-out session has zero executed steps THEN THE SYSTEM SHALL treat its
+  `verified_fraction` as neutral (excluded from the mean rather than counted as 1.0), so a
+  fresh session neither penalizes nor inflates the guard.
+- AC4: THE SYSTEM SHALL apply the compound gate per domain for every domain with ≥2 held-out
+  sessions, and SHALL reject the proposal if the gate fails in ANY such domain (REQ-2 AC4).
+- AC5: WHERE fewer than 2 sessions exist in every domain THEN THE SYSTEM SHALL fall back to
+  the pooled compound gate, preserving current behavior.
+- AC6: THE SYSTEM SHALL include a proposal value in `_PROPOSALS["U_SPLIT"]` that constitutes
+  the "never split" hack (a value at or above the point where no split can occur), so REQ-2
+  AC5 is enforced by the gate rather than by omission from the candidate list — and the
+  behavioral test SHALL assert the gate rejects it.
+- AC7: THE SYSTEM SHALL assert, by test, that each of the three guards can independently
+  reject a proposal — a proposal that improves `natural_exit_rate` while degrading
+  `verified_fraction` SHALL be rejected, and likewise for `tokens_per_verified`.
+- AC8: THE SYSTEM SHALL log every rejection with which guard(s) failed and the numeric
+  baseline/proposed values, so a gate that never fires is visible in the logs. (The current
+  dead guards were invisible precisely because rejection reasons were not itemized.)
+
+**Edge Cases:**
+- Sessions archived before AC1 lands have `tokens_total = 0` → excluded from the
+  `tokens_per_verified` mean rather than pulling it to 0, so historical rows cannot
+  permanently disable the guard.
+- A domain with exactly 2 sessions → gate applies (AC4 boundary is inclusive).
+- Token count unavailable for a session (no tokenizer / streaming with no usage block) →
+  estimate via the existing 4-chars≈1-token convention (`agent_kernel.py:5283`) and mark the
+  row estimated; do not write 0, which would look like a real measurement of zero.
+- All three guards passing trivially because the held-out set is homogeneous → AC8's logging
+  makes this observable; not a correctness failure, but it must not be silent.
+
 ## Non-Requirements (Out of Scope)
 - Rewriting the four-scale recursive operator or the Caducean `u`/`ξ` split physics.
 - Changing the single-resolver architecture or deleting the web-regex override (already done).

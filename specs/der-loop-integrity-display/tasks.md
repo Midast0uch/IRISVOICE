@@ -166,3 +166,83 @@
 - [ ] T33 (REQ-12): Backend unit test for `_emit_context_usage` — asserts
   event fired with correct used/max, and that an active (restored) thread
   emits non-zero used_tokens while a fresh thread may emit 0.
+
+## Wave 10 — Ledger-learning: make all three anti-hack guards live (REQ-13)
+
+> Context: REQ-2 specified a three-signal compound gate. Verification found **only 1 of 3
+> guards is functional** — `verified_fraction` is a hardcoded constant and
+> `tokens_per_verified` reads a column nothing populates. T3 and T19 above remain unchecked;
+> this wave completes them properly rather than re-stating them.
+>
+> Wave 10 is backend-only and independent of Waves 4/8/9 (frontend). It may run in parallel
+> with them.
+
+- [ ] T34 (REQ-13 AC1): Pass a real `tokens_total` into `record_session_exit` at
+  [memory.py:329-336](backend/agent/memory.py:329). The call currently omits the argument, so
+  it defaults to `0.0` ([caducean_trajectory.py:333](backend/agent/caducean_trajectory.py:333)).
+  Source the value from the session's accumulated LLM token count (`self._tokens_used` /
+  `_der_tokens_used`, `agent_kernel.py:396`). Mark estimated counts per REQ-13 edge case.
+  RIPPLE: `record_session_exit`'s signature already accepts `tokens_total`
+  ([caducean_trajectory.py:327-335](backend/agent/caducean_trajectory.py:327)) and the column
+  already exists in the schema ([caducean_trajectory.py:88](backend/agent/caducean_trajectory.py:88))
+  — **no schema migration is needed**, only the caller. Existing rows keep `0`, which AC/edge-case
+  handling must exclude rather than treat as a measurement.
+
+- [ ] T35 (REQ-13 AC2/AC3): Replace the constant `verified_fraction` at
+  [outer_loop.py:136](backend/agent/outer_loop.py:136) (`vf_sum += 1.0 if vc == 0 else 1.0` —
+  both branches `1.0`) with the real ratio of VERIFIED steps to total executed steps per
+  session, read from `der_commits`. Exclude zero-step sessions from the mean (AC3) rather than
+  scoring them 1.0.
+  RIPPLE: `verified_count` is already derived from the honest ledger inside
+  `record_session_exit` ([caducean_trajectory.py:351-360](backend/agent/caducean_trajectory.py:351)),
+  so the numerator exists. The **denominator** (total executed steps) is not currently on the
+  session-exit row — read it by counting all `der_commits` rows for the session regardless of
+  label, which REQ-1 guarantees exists for every executed action. Do not add a column.
+
+- [ ] T36 (REQ-13 AC4/AC5): Implement the per-domain compound gate. Group held-out sessions by
+  `domain`, apply `_compound_accepts` within each domain having ≥2 sessions, and reject if the
+  gate fails in **any** such domain. Fall back to the pooled gate when no domain reaches 2.
+  RIPPLE: `run_once` already threads a `domain` into `_ledger`
+  ([outer_loop.py:184](backend/agent/outer_loop.py:184)) but never iterates; every production
+  caller passes `domain=None` ([outer_loop.py:261](backend/agent/outer_loop.py:261)), so the
+  gate is pooled today. The `domain` column exists on both ledgers
+  (`caducean_trajectories.domain`, `caducean_session_exits.domain`) — no schema change.
+
+- [ ] T37 (REQ-13 AC6): Add the "never split" value to `_PROPOSALS["U_SPLIT"]`
+  ([outer_loop.py:39](backend/agent/outer_loop.py:39), currently `[0.4, 0.5, 0.6, 0.7]`) so the
+  hack REQ-2 AC5 names is **proposable and rejected by the gate**, not merely absent from the
+  candidate list.
+  RIPPLE: this deliberately makes a bad proposal reachable — it is only safe once T35 lands, or
+  the dead `verified_fraction` guard would let it through. **Sequence T35 before T37.**
+
+- [ ] T38 (REQ-13 AC8): Itemize rejection logging in `_compound_accepts` / `run_once`: which
+  guard(s) failed, with baseline and proposed values for all three signals.
+  RIPPLE: the current `logger.info("[outer_loop] rejected %s=%s (compound gate failed: %s)")`
+  at [outer_loop.py:220-223](backend/agent/outer_loop.py:220) prints the metrics dict but not
+  *which* guard tripped — which is why two permanently-passing guards went unnoticed. This task
+  is the observability fix that makes a dead guard visible next time.
+
+- [ ] T39 (REQ-13 AC7): Complete `tests/behavioral/test_outer_loop_hack.py` (T19's real
+  content). Assert **each guard independently rejects**:
+  - a proposal improving `natural_exit_rate` while degrading `verified_fraction` → rejected;
+  - a proposal improving `natural_exit_rate` while degrading `tokens_per_verified` → rejected;
+  - the "never split" `U_SPLIT` proposal from T37 → rejected;
+  - a genuinely better proposal → accepted.
+  Plus a regression assertion that `verified_fraction` is **not constant** across two
+  differently-composed held-out sets — the single assertion that would have caught
+  [outer_loop.py:136](backend/agent/outer_loop.py:136).
+  RIPPLE: `tests/behavioral/test_outer_loop_hack.py` already exists and calls
+  `record_session_exit` ([test_outer_loop_hack.py:28](backend/tests/behavioral/test_outer_loop_hack.py:28))
+  — extend it; do not rewrite it, and do not weaken any assertion it already makes.
+
+- [ ] T40 (REQ-13): Contract test `tests/contract/test_ledger_signals_contract.py` — every
+  `caducean_session_exits` row written by production code has `tokens_total > 0` OR is
+  explicitly marked estimated; `_score` returns three signals of which none is constant across
+  varied inputs.
+  RIPPLE: pins the boundary so a future refactor cannot re-stub a metric. Pairs with T39 as the
+  contract decomposition of that behavioral gap.
+
+- [ ] T41 (REQ-13): Run the full DER suite plus `scripts/validate_der_integrity.py`. Zero new
+  failures. Then mark T3 and T19 above as complete, since Wave 10 fulfills them, and record the
+  pre-fix constant-`verified_fraction` failure via
+  `record_test(..., outcome='fail', description='verified_fraction was a hardcoded constant; 2 of 3 anti-hack guards could never fire')`.
