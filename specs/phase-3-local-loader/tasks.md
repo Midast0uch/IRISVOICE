@@ -3,8 +3,7 @@
 > **Blocked on Phase 1 Wave 5** (registry, namespaced ids, `purpose`). Independent of Phase 2 —
 > may run in parallel with it.
 >
-> Supersedes `local-model-provider-parity` REQ-4/5/5b/6/7/8/9. Everything needed is in this spec —
-> **do not open that document.**
+> Everything needed is in this spec.
 
 ---
 

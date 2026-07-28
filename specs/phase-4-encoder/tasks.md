@@ -1,7 +1,6 @@
 # Tasks: Phase 4 — LFM2.5 Encoder Integration
 
 > **Blocked on Phase 1** (registry, namespaced ids, `purpose`) **and Phase 3** (CPU device policy).
-> Supersedes `lfm25-encoder-integration/` entirely — everything needed is in this spec.
 
 ---
 

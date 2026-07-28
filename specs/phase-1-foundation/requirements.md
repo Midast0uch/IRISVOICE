@@ -3,10 +3,7 @@
 > **Execution position: FIRST.** Nothing in this spec is blocked on another spec.
 > Phases 2–5 are all blocked on this one. Do not start them until this is green.
 >
-> **Supersedes** the corresponding requirements in `local-model-provider-parity`
-> (REQ-1/2/3), `contextpill-model-switcher` (REQ-5/6/7/8), and
-> `der-loop-integrity-display` (REQ-3, REQ-5, REQ-14, REQ-15). Those documents remain for history; **this
-> file is authoritative for Phase 1.**
+> **This file is authoritative for Phase 1.** Everything needed is here.
 
 ## Decisions Locked
 
@@ -158,7 +155,7 @@ remains.
 **User Story:** As the termination resource I want each step to consume its real token cost, so
 that a 50k-char crawler result and a 200-char `read_file` are not billed equally.
 
-**Verified:** Folded from `der-loop-integrity-display` REQ-3 (audit G). Belongs here because
+**Verified:** Folded from the DER integrity audit (finding G). Belongs here because
 `work_units` and the token budget must stay coupled to the **same** `resolve_context_window()`
 resource (REQ-1 AC4) — splitting them across phases is how they drifted 5x apart in the first place.
 
@@ -184,7 +181,7 @@ resource (REQ-1 AC4) — splitting them across phases is how they drifted 5x apa
 **User Story:** As the resolver I want the safe fallback for a non-web goal to be reasoning, so
 that I do not inject a tool preference at the wrong layer.
 
-**Verified:** Folded from `der-loop-integrity-display` REQ-5 (audit E). Belongs here because it is
+**Verified:** Folded from the DER integrity audit (finding E). Belongs here because it is
 the same defect shape as REQ-2 — a fallback outranking a better-informed answer.
 
 **Acceptance Criteria:**

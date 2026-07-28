@@ -3,8 +3,7 @@
 > **Execution position: FOURTH.** Blocked on Phase 1 (registry, ids, `purpose`) and Phase 3
 > (CPU device policy).
 >
-> **Supersedes** `lfm25-encoder-integration/` entirely. That document is history; **this file is
-> authoritative.** Everything needed is here — do not open it.
+> **This file is authoritative for Phase 4.** Everything needed is here.
 
 ## Decisions Locked
 

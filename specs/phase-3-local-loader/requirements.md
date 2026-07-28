@@ -3,8 +3,7 @@
 > **Execution position: THIRD.** Blocked on Phase 1 Wave 5 (registry, ids, `purpose`).
 > Independent of Phase 2 — may run in parallel with it.
 >
-> **Supersedes** `local-model-provider-parity` REQ-4/5/5b/6/7/8/9. That document is history;
-> **this file is authoritative.** Everything needed is here — do not open it.
+> **This file is authoritative for Phase 3.** Everything needed is here.
 
 ## Decisions Locked
 

@@ -1,80 +1,145 @@
 # Execution Phases — read this before opening any spec
 
-Specs are cut by **execution order**, not by topic. Each phase is self-contained: its
-`requirements.md` / `design.md` / `tasks.md` carry everything needed to execute it, with no
-"blocked on another spec" references.
+Specs are cut by **execution order**. Each phase is self-contained: its `requirements.md` /
+`design.md` / `tasks.md` carry everything needed to execute it. There are no "blocked on another
+spec" references and nothing else to consult.
 
 **Execute in order. Do not start a phase until the previous one's final wave is green.**
 
-| Phase | Spec | Status | Unblocks |
+| Phase | Spec | Blocked on | Unblocks |
 |---|---|---|---|
-| **1** | [`phase-1-foundation/`](phase-1-foundation/) | **READY** — Wave 1 partially landed (`01e6625b`) | everything |
-| **2** | [`phase-2-instrument/`](phase-2-instrument/) | **READY** | 3, 4, 5 validation |
-| **3** | [`phase-3-local-loader/`](phase-3-local-loader/) | **READY** | 4, 5 |
-| **4** | [`phase-4-encoder/`](phase-4-encoder/) | **READY** | 5 |
-| 5 | `phase-5-switcher/` | not yet written | — |
-| 6 | `phase-6-der-integrity/` | not yet written | — |
+| **1** | [`phase-1-foundation/`](phase-1-foundation/) | — | everything |
+| **2** | [`phase-2-instrument/`](phase-2-instrument/) | 1 | validation of 3–6 |
+| **3** | [`phase-3-local-loader/`](phase-3-local-loader/) | 1 | 4, 5 |
+| **4** | [`phase-4-encoder/`](phase-4-encoder/) | 1, 3 | 5, 6 |
+| **5** | [`phase-5-switcher/`](phase-5-switcher/) | 1, 3, 4 | — |
+| **6** | [`phase-6-der-integrity/`](phase-6-der-integrity/) | 2, 4 | — |
+
+**Phases 2 and 3 can run in parallel** once Phase 1 is green — different files, no shared state.
+
+---
 
 ## What each phase covers
 
-**Phase 1 — Foundation: budget, context window, provider registry.**
-DER's budget derived from the real window; context-window precedence (override → authoritative →
-table → default); local providers declarative rather than a side effect of loading; namespaced ids +
-`purpose`; one process-wide registry; one provider collection keyed by id with atomic
-endpoint+credential writes; flat-config migration; routing mode frozen.
-*First because everything downstream is measured in tokens or looked up in the registry.*
+**1 — Foundation.** DER's budget derived from the real context window (fractional per-class
+ceilings); context-window precedence (override → authoritative → table → default); measured-cost
+work-unit debit; resolver fallback ordering; local providers declarative rather than a side effect
+of loading; namespaced ids + `purpose`; one process-wide registry; one provider collection keyed by
+id with atomic endpoint+credential writes; flat-config migration; routing mode frozen.
 
-**Phase 2 — The instrument: narration + honest live display.**
-Agent-driven communication (text + TTS); task cards driven by real `TOOL_CALL` / ledger records;
-live status without phantom cards; Pacman learning signal made visible; closing
-`cross-thread-crawl-fix` T36 and the stale narration tests.
-*Second because Phases 3–5 are validated by watching IRIS work, and the card currently misreports.*
+**2 — The instrument.** Agent-driven narration (text + TTS); task cards driven by real `TOOL_CALL`
+records; plan text immutable while live progress rotates beside the tool name; phase transitions
+emitted from long tool calls; sub-loop steps appended to the same card; learning signals visible;
+**the frontend test suite made to run at all**.
 
-**Phase 3 — Local model loader.**
-Config derivation from parsed model metadata + hardware; GPU-only degradation ladder (ctx → batch)
-scoped to `purpose == "chat"`; VRAM estimation including KV cache; per-model config cache;
-symlink-aware folder scan; measured-throughput feedback loop.
+**3 — Local model loader.** Config derivation from parsed metadata + hardware; GPU-only degradation
+ladder (ctx → batch) scoped to `purpose == "chat"`; VRAM estimation including KV cache; per-model
+config cache; symlink-aware folder scan; measured-throughput feedback loop.
 
-**Phase 4 — Encoder.**
-LFM2.5 Embedding-350M replacing BGE-M3 (CPU); chunk + max-pool for the 21% of PiNs over 512 tokens;
-background re-index with dual-read and cross-space refusal; Encoder-350M for semantic step
-verification and task classification; ColBERT deferred behind a measured quality gate.
+**4 — Encoder.** LFM2.5 Embedding-350M replacing BGE-M3 (CPU); chunk + max-pool for the 21% of PiNs
+over 512 tokens; background re-index with dual-read and cross-space refusal; Encoder-350M for
+semantic step verification and task classification; ColBERT deferred behind a measured quality gate.
 
-**Phase 5 — Switcher UI.**
-Remove the redundant Send pill; model switcher in the chat input row over configured API providers
-and loaded local models; ContextPill design preserved.
+**5 — Switcher UI.** Send pill removed (its guards moved into the send path first); model switcher
+in the chat input row; ContextPill design preserved, showing the real window and live on **every**
+response.
 
-## Superseded documents
+**6 — DER integrity + self-tuning.** Every executed action commits a labeled outcome; the outer
+loop's compound acceptance gate repaired from **1 live guard to 3**; per-domain gating; the
+"never split" reward-hack rejected by the gate rather than absent from the candidate list; depth
+check on VERIFIED-but-shallow steps.
 
-These remain in the repo for history. **They are not authoritative and must not be executed
-directly** — their requirements are redistributed across the phases above, and their cross-spec
-"blocked on" notes no longer apply.
+---
 
-| Superseded | Redistributed into |
+## For the executing agent — read this section
+
+### The recurring defect in this codebase
+
+**An authoritative value exists and a guess outranks it**, or **a value is computed and discarded.**
+Nearly every requirement across all six phases is one of those two shapes. When you find something
+that looks broken, check first whether the correct code already exists and is simply ordered wrong,
+unused, or unreachable. Several times it did:
+
+- `resolve_context_window` had the authoritative branch **below** the substring guess.
+- `record_tps` measured throughput and only warned.
+- `verified_count` was correctly derived from the ledger and then replaced by a literal `1.0`.
+- The keyring was already keyed by provider id; only the config could not hold two providers.
+
+**Prefer reordering, wiring, or consuming an existing value over writing a new one.**
+
+### Failures that produce no error
+
+These are the ones that survived for months. Each phase's harness has an assertion aimed at them:
+
+| Failure | Phase | Why it is silent |
+|---|---|---|
+| Budget exceeding the context window | 1 | Steps keep issuing while every call truncates |
+| A credential written to a config file | 1 | Nothing reads it back that would notice |
+| One provider's URL paired with another's key | 1 | The request succeeds — at the wrong vendor |
+| Plan text overwritten by live progress | 2 | The card still renders, just not the plan |
+| A swallowed speech exception | 2 | 100% failure presents as intermittence |
+| CPU model counted against VRAM | 3 | Chat context is quietly smaller forever |
+| Cross-space vector comparison | 4 | Both backends are 1024-dim — returns a plausible number |
+| A truncated document | 4 | The vector is valid; the document is unfindable |
+| Send guards deleted with the button | 5 | `Enter` sends mid-response, no error |
+| A guard reporting pass with no input | 6 | The gate looks compound and gates on one signal |
+
+### Three fixes are already live and were **untested** at the time of writing
+
+Landed in `01e6625b` and `a7c6d853`, all with silent failure modes. Their pinning tests are the
+first tasks of their phases — **do these before new work**:
+
+| Fix | Pinned by |
 |---|---|
-| `local-model-provider-parity/` | Phase 1 (REQ-1/2/3) + Phase 3 (the loader) |
-| `contextpill-model-switcher/` | Phase 1 (REQ-5/6/7/8) + Phase 5 (the UI) |
-| `lfm25-encoder-integration/` | Phase 4 |
-| `der-loop-integrity-display/` REQ-3, REQ-5, REQ-14, REQ-15 | Phase 1 |
-| `der-loop-integrity-display/` REQ-6, REQ-7, REQ-8, REQ-9 | Phase 2 |
-| `der-loop-integrity-display/` REQ-11, REQ-12 | Phase 5 |
-| `der-loop-integrity-display/` REQ-1, REQ-2, REQ-4, REQ-13 | Phase 6 |
-| `cross-thread-crawl-fix/` T36-T38 | Phase 2 |
-| `MODEL_SPEC_RECONCILIATION.md` | mostly dissolved — see below |
+| DER budget from the real window (fractional ceilings) | Phase 1 **T1.3** |
+| Plan immutability; resolved `toolName`; `speak()` emitting | Phase 2 **T1.2 / T1.3 / T1.4** |
 
-## Why the re-cut
+### Test rules that apply to every phase
 
-The previous specs were organised by topic (local models / encoder / UI). Each was internally
-coherent, but a single dependency chain ran through all three, so executing one meant stopping
-partway to do half of another. `MODEL_SPEC_RECONCILIATION.md` existed only to explain how they
-interlocked — which was the signal that the cut lines were wrong.
+- **Never modify a test to make it pass.** A test's INPUTS are part of it — reducing a parametrize
+  matrix, loosening a tolerance, or stubbing a dependency that could fail all count.
+- Several phases say "dropping a case from the parametrize list is a test modification." Those
+  matrices are load-bearing: Phase 6's two dead guards survived precisely because the compound gate
+  was only ever tested end-to-end.
+- **When a test and a spec genuinely conflict, report it — do not reconcile it.** Phase 2 T4.1 is
+  the worked example: two tests assert narration wording that a requirement explicitly removed. The
+  tests move, the implementation does not.
+- Assert the **effect**, never the computation. Phase 3 T4.2: a test that checks `record_tps` logs a
+  warning passes without the feedback loop closing.
 
-Two of the conflicts it documents **dissolve** under the phase cut rather than needing resolution:
+### Known pre-existing failures
 
-- **M1** (two config collections both migrating `local_model_*`) — both sides are now Phase 1 REQ-6
-  and REQ-8, one collection, one migrator.
-- **M2** (encoders appearing in the settings Brain/Tool dropdown) — registration and the
-  `purpose === "chat"` filter are both Phase 4.
+Not caused by this work. Do not "fix" them by editing assertions:
 
-The rest survive as ordinary within-phase requirements. The reconciliation doc is kept as the record
-of *why* these decisions are what they are, not as something to execute against.
+| Failure | Resolved by |
+|---|---|
+| `test_narration_contract`, `test_narration_flow` — assert superseded wording | Phase 2 T4.1 |
+| `test_kernel_separation_behavior` — asserts sync `tts.speak`; dispatch is now threaded | Phase 2 T4.2 |
+| `test_crawler_task_progress` ×2 — stale stub signature, `InternetGate` in-fixture | Phase 2 T4.3 |
+| `npx jest` runs **0 tests** (7/7 suites fail to parse) | Phase 2 T1.1 |
+| `pytest_httpx` missing → `test_exa_provider.py` collection error | not scheduled; ignore that file |
+
+### Environment notes
+
+- `npx tsc --noEmit` reports errors in vendored `llama.cpp-prismml-src/` and `data/cards.ts`. Filter
+  to `components/`, `hooks/`, `app/` for this project's gate.
+- Never `pip install` or `npm install` without checking first.
+- `git push` is currently blocked by a machine-wide TLS failure. Commit locally; do not attempt
+  workarounds.
+
+### A NO-CHANGE claim expires
+
+Each phase's Ripple-Effect Map marks areas **NO CHANGE (verified)** with file:line proof. That
+verification is valid **against the change that made it**, not forever. The worked example:
+`ModelInferenceSection.tsx:80` maps providers unfiltered — genuinely NO-CHANGE for Phases 1 and 3,
+and wrong the moment Phase 4 registers a non-chat provider. Phase 4 T2.2 owns the fix and must land
+in the same change as registration.
+
+When a later phase contradicts an earlier NO-CHANGE, the later phase wins and says so explicitly.
+
+### Open Questions are decisions, not blockers
+
+Each phase carries a short OQ list. They are things that must be decided **from data during
+execution** rather than guessed up front — chunk size from the probe set, a confidence floor from
+rollout disagreement, a depth threshold from post-Phase-4 labels. Record the answer in the spec when
+you resolve it.

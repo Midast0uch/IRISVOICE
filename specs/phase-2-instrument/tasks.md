@@ -1,7 +1,6 @@
 # Tasks: Phase 2 — The Instrument
 
 > **Blocked on Phase 1 Wave 5.** Nothing else blocks it.
-> Supersedes `der-loop-integrity-display` REQ-7/8/9 and `cross-thread-crawl-fix` T36–T38.
 >
 > **Three fixes already landed in `01e6625b` and have NO tests.** Wave 1 exists to protect them
 > before anything new is built on top.

@@ -40,7 +40,10 @@ streams URLs to the wing.
 flowchart TB
     subgraph Entry["Entry Points (refactored)"]
         WS["crawl_research WS<br/>iris_gateway.py:8685"]
-        AG["crawler_query tool<br/>tool_bridge.py:1521"]
+        AG["crawler_query tool (WEB CRAWL)<br/>tool_bridge.py:1521"]
+    end
+    subgraph Self["Self-improvement (separate, NO web)"]
+        IS["improve_self tool (was run_research)<br/>AutoResearchRunner — local benchmarks only"]
     end
     subgraph Core["CrawlOrchestrator (NEW core)"]
         PLAN["CrawlPlanner LLM"]
@@ -181,6 +184,85 @@ classDiagram
 | D7 | Deprecate `TASK_PROGRESS` "Reading host" overwrite | One source of truth for search progress | Keep both streams (inconsistent UI) |
 | D8 | Subprocess fetch behind swappable `FetchBackend`; process-TREE kill + concurrency cap | Crash-isolation + background reliability now; daemon-promotable later | Thread pool (shares crash domain) / in-process only (backend death risk) |
 | D9 | Single event→component→state UX map (REQ-30) | One owner per layer; audio+visual never contradict | Per-component ad-hoc search UI (divergence) |
+| D10 | `run_research` (legacy AutoResearch self-improvement loop) renamed to **`improve_self`** and explicitly marked "no web access" | Removes the "research" name collision that let the DER resolver pick the wrong tool for web-research goals; `crawler_query` is the ONLY web-crawl tool | Leave two tools both named "research" (DER picks wrong one → no crawl events, no UI feedback) |
+
+---
+
+## Tool Routing Boundary (web research vs. self-improvement)
+
+There are TWO tools whose names/descriptions could be confused by the LLM-driven
+DER resolver. They are **fundamentally different** and must never be conflated:
+
+| Tool | Purpose | Accesses web? | Emits crawl events? | Handler |
+|---|---|---|---|---|
+| **`crawler_query`** | Deep web research crawl (the spec's ONE atomic DER web tool, REQ-19) | YES | YES — `crawler_started` / `crawler_page_fetched` / `open_tab` / `crawler_complete` | `CrawlOrchestrator.research` |
+| **`improve_self`** (was `run_research`) | AutoResearch self-improvement benchmark loop — improves the agent's own skills/variants via locally stored `BENCHMARK_PROMPTS` | **NO** | NO | `AutoResearchRunner` |
+
+**Invariant (enforced by tool description + name):**
+- A user request to *fetch real-world data / research a topic or company from the
+  internet* resolves to **`crawler_query`** and produces live crawl events the UI
+  renders.
+- `improve_self` is reachable only for *"improve how I do X" / "get better at Y"*
+  self-improvement requests. Its description states it cannot access the web, so the
+  resolver cannot mistake it for web research.
+- The frontend never references either tool by name; it only consumes the crawl
+  WebSocket events emitted by `crawler_query`.
+
+```mermaid
+flowchart TB
+    GOAL["User goal"] --> RES{"DER resolver<br/>(LLM, description-driven)"}
+    RES -->|"web research intent<br/>(research / deep dive / gather data)"| CQ["crawler_query<br/>(WEB CRAWL)"]
+    RES -->|"self-improvement intent<br/>(improve how I / get better at)"| IS["improve_self<br/>(NO WEB)"]
+    CQ --> CO["CrawlOrchestrator.research"]
+    CO --> EV["crawler_started → page_fetched → open_tab → complete"]
+    EV --> UI["Wing / Orb / Tab / document:render"]
+    IS --> AR["AutoResearchRunner<br/>(local BENCHMARK_PROMPTS)"]
+    AR -->|"no web, no crawl events"| LOC["stored improvement fragment"]
+```
+
+> **Why this matters (post-implementation finding):** an earlier build left the
+> legacy loop named `run_research` with a generic "research anything" description.
+> The DER resolver then selected `run_research` for a web-research goal; that tool
+> returns status without crawling and emits **no** crawl events, so the UI showed no
+> search feedback while the orb kept spinning. Renaming to `improve_self` + the
+> explicit "no web" description closes the collision. A Tier-4 behavioral test now
+> drives the resolver with a web goal and asserts it selects `crawler_query`.
+
+---
+
+## Per-Thread Conversation Scoping (REQ-32)
+
+Conversation threading exists at the routing layer (`POST /api/chat` accepts
+`thread_id`; `get_agent_kernel(conversation_id=thread_id)` returns one kernel per
+thread). The leak observed in practice: the agent referenced a *previous* web search
+inside a *new* thread. Root cause is **not** the thread router — it is that web-search
+findings are persisted to **global** memory (Mycelium semantic/episodic store + the
+`reference`-zone credibility map / citation index) and retrieved into the prompt
+regardless of thread, plus `activeConversationId` is restored from `localStorage`
+across sessions so a stale thread id can be reused.
+
+**Fix shape:** tag every crawl result / credibility map / citation index with the
+originating `thread_id`; retrieve memory into a thread's prompt only after filtering by
+that `thread_id`; create a fresh thread id for each new chat/session (do not auto-reuse
+a restored `activeConversationId`).
+
+```mermaid
+flowchart TB
+    U["User message"] --> F["ChatView: thread_id = activeConversationId"]
+    F --> CH["POST /api/chat {text, thread_id}"]
+    CH --> KR["get_agent_kernel(conversation_id=thread_id)<br/>(one kernel per thread)"]
+    KR --> MEM["Thread-local context<br/>+ memory filtered by thread_id"]
+    MEM --> P["Prompt assembled from THREAD-ONLY context"]
+    P --> A["Agent responds from active thread only"]
+    A -.->|"explicit user ask:<br/>'what did we find earlier?'"| X["opt-in cross-thread recall"]
+    CRAWL["crawler_query result"] --> TAG["tagged with thread_id"]
+    TAG --> REF["reference zone / Mycelium<br/>(NOT retrieved into other threads)"]
+```
+
+> **Invariant:** the agent responds from the active thread's own context unless the
+> user explicitly requests cross-thread recall. Global memory is opt-in, never default.
+
+
 
 ---
 
@@ -333,6 +415,7 @@ event-bus subscription asserting emitted events, anchored to a PiN
 |---|---|---|
 | Event parity | WS & agent emit identical `crawler_started`→`page_fetched`→`open_tab`→`error` | REQ-10–13 |
 | DER tool | web goal → `crawler_query` returns `CrawlResult`, verifier consumes via `\|u\|`-band | REQ-19/21 |
+| DER routing | web goal → resolver selects `crawler_query` (NOT `improve_self`); `improve_self` selected only for self-improvement intent | REQ-19 (routing boundary) |
 | PacMan | fragment lands `reference` zone, `trust:"untrusted"`, `credibility_map` | REQ-22 |
 | Transport | event log replays `seq>last_seq`; SSE streams same events | REQ-31 AC1/AC3 |
 | UX map | event→component→state parity (both paths); audio/visual non-contradiction | REQ-30 |
@@ -356,6 +439,8 @@ event-bus subscription asserting emitted events, anchored to a PiN
 | Gate ON | `crawler_started` → N×`crawler_page_fetched`(full URL) → `open_tab` → `document:render` | REQ-10–13,23 |
 | Resume | disconnect mid-crawl → reconnect → missed events replayed | REQ-29/31 |
 | Concurrent | new utterance during crawl → processed, orb reflects new state | REQ-29 AC4/30 |
+| DER routing | web goal → resolver selects `crawler_query` (emits crawl events); `improve_self` selected only for self-improvement intent, never for web research | REQ-19 (routing boundary) |
+| Per-thread scope | web search in thread A; new thread B generic question → response contains NO findings from A; memory filtered by thread_id | REQ-32 |
 
 **Rule:** ALL four tiers MUST pass before crystallization (REQ-28). Tier 2/3/4
 contract tests anchored to a PiN recording the enforced contract.

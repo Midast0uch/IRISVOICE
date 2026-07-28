@@ -2,9 +2,7 @@
 
 > Each task links to a requirement. Waves are dependency-ordered.
 >
-> **This spec has NO external blockers.** Everything needed is in this repo today. Do not consult
-> `local-model-provider-parity`, `contextpill-model-switcher`, or `der-loop-integrity-display` for
-> Phase 1 scope — this file supersedes them for these requirements.
+> **This spec has NO external blockers.** Everything needed is in this repo today.
 >
 > **Nothing in Phases 2–5 may start until Wave 5 is green.**
 

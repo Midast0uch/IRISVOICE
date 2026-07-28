@@ -694,6 +694,54 @@ of a partial replay.
 
 ---
 
+## REQ-32: Per-Thread Conversation Scoping (no cross-thread context bleed)
+
+**Problem observed:** the agent referenced a *previous* web-search result inside a
+*new* conversation thread. Conversation threading exists at the routing layer
+(`POST /api/chat` accepts `thread_id`; `get_agent_kernel(conversation_id=thread_id)`
+returns one kernel per thread), but context still leaks across threads because
+(a) web-search findings are persisted to **global** memory (Mycelium semantic/episodic
+store + the `reference`-zone credibility map / citation index) and are retrieved into
+the prompt regardless of thread, and (b) `activeConversationId` is restored from
+`localStorage` across sessions, so a stale thread id can be reused for a new session's
+first message.
+
+### Requirements
+
+- **REQ-32.1 (scope):** The agent MUST respond using ONLY the active conversation
+  thread's own context (messages + thread-local memory). It MUST NOT surface content
+  from a different thread unless the user explicitly asks (e.g. "what did we find in
+  the other thread?" / "summarise my previous research").
+- **REQ-32.2 (memory isolation):** Web-search results, citations, and credibility maps
+  written by a crawl MUST be tagged with the originating `thread_id` and MUST NOT be
+  retrieved into the prompt of a different thread by default. Cross-thread retrieval is
+  opt-in only.
+- **REQ-32.3 (fresh session):** Starting a new chat (or a new session) MUST create a
+  NEW thread id; a previously persisted `activeConversationId` from another session
+  MUST NOT be auto-reused as the active thread for a new session.
+- **REQ-32.4 (explicit override):** When the user references another thread or asks the
+  agent to recall prior research, the agent MAY cross-reference, but this is an explicit
+  user-initiated action, not default behavior.
+
+### Acceptance Criteria
+
+- AC1: Send a web-search request in thread A; open a NEW thread B and ask a generic
+  question → the agent's response contains NO findings from thread A's search.
+- AC2: Inspect the prompt/context assembled for thread B → it contains only thread B's
+  messages + thread-B-local memory; no `reference`-zone credibility map from thread A.
+- AC3: Reload the app / start a new session → the first message lands in a freshly
+  generated thread id, not a restored stale thread.
+- AC4: Explicit "what did we find earlier?" → agent may retrieve across threads (opt-in).
+
+### Anti-requirements
+
+- Do NOT make the agent kernel a global singleton that shares `ConversationMemory`
+  across threads (already avoided: kernel is keyed by `conversation_id`).
+- Do NOT retrieve global Mycelium memory into a thread's prompt without the
+  `thread_id` tag filter.
+
+---
+
 ## Open Questions (for implementation session, not blocking)
 
 1. Cross-encoder reranker: local model (Ollama) or lightweight hosted? Latency

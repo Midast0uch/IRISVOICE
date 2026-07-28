@@ -3,8 +3,7 @@
 > **Execution position: SECOND.** Blocked only on Phase 1 Wave 5.
 > Phases 3–5 are validated by watching IRIS work; this phase is what makes watching reliable.
 >
-> **Supersedes** `der-loop-integrity-display` REQ-7/8/9 and `cross-thread-crawl-fix` REQ-8 (T36–T38).
-> Those documents remain for history; **this file is authoritative for Phase 2.**
+> **This file is authoritative for Phase 2.** Everything needed is here.
 
 ## Decisions Locked
 
@@ -239,7 +238,7 @@ without receiving them, raising above the inner try/except so `UTTERANCE_START` 
 `tool_bridge` swallowed it as a WARNING, so it read as inconsistency. The crawl progress narration at
 [`tool_bridge.py:1757`](backend/agent/tool_bridge.py:1757) has therefore **never** spoken.
 
-`cross-thread-crawl-fix` REQ-8 AC5 / T36 already requires replacing the generic
+`cross-thread-crawl-fix` REQ-8 AC5 (task T36) already requires replacing the generic
 `"Still researching the web."` heartbeat with real progress; the implementation did so
 ([`narration.py:140`](backend/agent/narration.py:140)) but **T36 is still unchecked** and two tests
 still assert the old wording.
@@ -317,8 +316,8 @@ raised the `NameError`; it now works.
 - **The model switcher, Send-pill removal, ContextPill redesign** → Phase 5.
 - **The local model loader** → Phase 3.
 - **Changing DER band thresholds** (`0.8` / `0.3`) or the mode table.
-- **Outer-loop guard repair** (`der-loop-integrity-display` REQ-13 / Wave 10) — separate concern,
-  unblocked but not scheduled here.
+- **Outer-loop guard repair** → **Phase 6**. This phase makes the displayed label honest;
+  Phase 6 repairs the guards that consume it.
 
 ## Open Questions
 
