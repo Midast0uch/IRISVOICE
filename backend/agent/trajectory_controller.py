@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from backend.agent.param_homeostasis import get_param_homeostasis
+
 logger = logging.getLogger(__name__)
 
 _MIN_FOR_FIT = 100
@@ -59,6 +61,10 @@ class TrajectoryController:
         self._last_fit_count: int = 0
         self._last_fire_ts: float = 0.0
         self._target_category: Optional[str] = None
+        # High-water mark of violation row ids already charged, per session.
+        # Prevents re-charging the same violation on every call (a compounding
+        # ratchet). See REQ-21.
+        self._last_charged_violation_id: Dict[str, int] = {}
 
     # ── Data access ───────────────────────────────────────────────────
 
@@ -229,15 +235,21 @@ class TrajectoryController:
             return None
 
         try:
-            # Count recent TOPO_VIOLATIONs for this session.
+            # Count only TOPO_VIOLATIONs NEW since the last charge for this
+            # session (row id > high-water mark). Re-counting the whole lookback
+            # on every call double-charges the same violation — a compounding
+            # ratchet no relaxation constant can offset (REQ-21).
+            last_id = self._last_charged_violation_id.get(session_id, 0)
             rows = self._conn.execute(
-                "SELECT recommendation FROM caducean_trajectories "
-                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-                (session_id, lookback),
+                "SELECT id FROM caducean_trajectories "
+                "WHERE session_id = ? AND id > ? AND recommendation = 3 "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, last_id, lookback),
             ).fetchall()
-            violation_count = sum(1 for r in rows if r[0] == 3)
-            if violation_count == 0:
-                # No violations — engine is well-tuned, no action needed.
+            new_violation_ids = [r[0] for r in rows]
+            new_count = len(new_violation_ids)
+            if new_count == 0:
+                # No NEW violations since last charge — idempotent, no action.
                 return None
 
             # Fetch current params (or use defaults if session unknown).
@@ -246,21 +258,27 @@ class TrajectoryController:
             cur_b = state.get("b", 2.0)
             cur_s = state.get("s", 0.35)
 
-            # Apply the v2 update rule with explicit clamp.
-            new_a = max(1.0, min(4.0, cur_a + 0.10 * violation_count))
-            new_b = max(1.0, min(4.0, cur_b + 0.05 * violation_count))
-            new_s = max(0.1, min(0.8, cur_s - 0.01 * violation_count))
+            # Apply the v2 update rule with explicit clamp — charge ONLY the
+            # new violations.
+            new_a = max(1.0, min(4.0, cur_a + 0.10 * new_count))
+            new_b = max(1.0, min(4.0, cur_b + 0.05 * new_count))
+            new_s = max(0.1, min(0.8, cur_s - 0.01 * new_count))
 
             # Push to the engine.
             ok = ffi_caducean_set_params(session_id, new_a, new_b, new_s)
             if not ok:
                 return None
 
+            # Advance the high-water mark so these violations are not charged
+            # again (REQ-21 idempotency). Only after the engine accepts the
+            # write, so a failed write is retried, not silently dropped.
+            self._last_charged_violation_id[session_id] = max(new_violation_ids)
+
             # Log the tuning (v2: log to file; v3: persist to table).
             logger.info(
-                "[TrajectoryController] tuned %s: violations=%d a=%.2f->%.2f b=%.2f->%.2f s=%.2f->%.2f",
+                "[TrajectoryController] tuned %s: new_violations=%d a=%.2f->%.2f b=%.2f->%.2f s=%.2f->%.2f",
                 session_id,
-                violation_count,
+                new_count,
                 cur_a,
                 new_a,
                 cur_b,
@@ -268,6 +286,13 @@ class TrajectoryController:
                 cur_s,
                 new_s,
             )
+            # Register this perturbation with the homeostat (REQ-15 AC1).
+            try:
+                get_param_homeostasis().register_perturbation(
+                    session_id, "violation_tune"
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return (new_a, new_b, new_s)
         except Exception as exc:
             logger.warning("[TrajectoryController] tune_dffing_params failed: %s", exc)

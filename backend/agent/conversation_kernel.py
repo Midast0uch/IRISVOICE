@@ -43,6 +43,7 @@ from backend.gateway.iris_ffi import (
     ffi_caducean_recommend,
     ffi_caducean_get_direction_signal,
 )
+from backend.agent.param_homeostasis import get_param_homeostasis
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class ConversationKernel:
             session_id = self._session_id_getter()
             if session_id is None:
                 return TTS_CHUNK_MAX // 2  # 100 — reasonable default
-            sig = ffi_caducean_get_direction_signal(session_id, balance=1.0)
+            sig = ffi_caducean_get_direction_signal(session_id, balance=self._get_current_balance())
             raw = int(sig.force_magnitude * TTS_CHUNK_SCALE)
             return max(TTS_CHUNK_MIN, min(TTS_CHUNK_MAX, raw))
         except Exception as exc:  # noqa: BLE001
@@ -290,6 +291,13 @@ class ConversationKernel:
                     ffi_caducean_set_params(
                         session_id, state.get("a", 2.0), state.get("b", 2.0), new_s
                     )
+                    # Register this perturbation with the homeostat (REQ-15 AC1).
+                    try:
+                        get_param_homeostasis().register_perturbation(
+                            session_id, "barge_in"
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[ConversationKernel] barge-in nudge failed: %s", exc)
 

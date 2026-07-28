@@ -40,9 +40,12 @@ than two hand-rolled approximations of the same equation.
 
 ### Success criteria
 
-- A 200-step session with 10 barge-ins and 5 TOPO_VIOLATIONs ends with `(a, b, s)` within
-  ±0.15 of baseline `(2.0, 2.0, 0.35)`, instead of pinned at the `s=0.1` floor and
-  `a→4.0` ceiling.
+- A 200-step session with 10 barge-ins and 5 TOPO_VIOLATIONs, **FOLLOWED BY 30 QUIET CYCLES**,
+  ends with `(a, b, s)` within ±0.15 of baseline `(2.0, 2.0, 0.35)`, instead of pinned at the
+  `s=0.1` floor and `a→4.0` ceiling. The 30-cycle settling window is part of the criterion: it
+  measures whether the restoring force *recovers*, not whether the last perturbation happened to
+  land early. (See Q1 — without the window the instantaneous measurement at cycle 200 gives the
+  final perturbations zero recovery time, so no RELAX_STEP satisfies it robustly.)
 - `ConversationKernel.get_tts_chunk_size()` reads live EML balance; a behavioral test shows
   chunk size responding to balance, which it provably cannot do today.
 - Two coupled sessions with rationally-related `c_eff` produce **exactly one nucleus and one
@@ -97,6 +100,19 @@ nothing pushes back:
 `s` decays monotonically toward its 0.1 floor and `a`/`b` climb toward 4.0. Since
 `Twrap = 2π / (s · c_eff · balance)` (overview §4), wrap time inflates without bound. The
 engine's *state* `u` has a restoring force; its *parameters* have none.
+
+**Criterion table (explicit — the narrative sentence above hides three unstated assumptions, all
+rediscovered during implementation; see Q1):**
+
+| Field | Value |
+|---|---|
+| Load | 200 perturbation steps: 10 barge-ins (−0.05 s each), 5 TOPO_VIOLATIONs (+0.10 a, +0.05 b, −0.01 s each) |
+| Schedule | perturbations may land anywhere in the 200 steps (NOT assumed evenly spread) |
+| Settle | 30 QUIET cycles after the 200 (no perturbations; relaxation continues) — measurement point is AFTER settle |
+| Measured params | `(a, b, s)` read after the settle window |
+| Bound | within ±0.15 of baseline `(2.0, 2.0, 0.35)` |
+| Assert order | `a` first (binding constraint; fails first) |
+| Constant | `RELAX_STEP = 0.25` (raised from 0.10 after REQ-21 made charging idempotent) |
 
 **Acceptance Criteria:**
 - AC1: THE SYSTEM SHALL provide a single `relax_params(session_id)` operation that moves
@@ -759,9 +775,22 @@ to drift.
 
 ## Open Questions
 
-- **Q1 — Relaxation rate.** `RELAX_STEP = 0.10` per 10 updates gives ~250-update recovery from
-  a pinned floor. Too slow to matter in a 40-cycle DER run; appropriate for a long voice
-  session. Non-blocking: REQ-15 AC6 data settles whether a faster rate is safe.
+- **Q1 — Relaxation rate & measurement point.** RESOLVED (two parts).
+  *Part A — rate.* The REQ-1 drift was NOT the relaxation rate but `tune_dffing_params`
+  double-charging the lookback (REQ-21). After making charging idempotent, `RELAX_STEP` raised
+  `0.10 → 0.25` (param_homeostasis.py:55). Chosen `0.25`; `0.30` holds a 2x load but is NOT used
+  (see Part B — bumping the constant only biases the flake rate, it does not remove it).
+  *Part B — measurement point (the real root cause).* The original criterion measured the
+  INSTANTANEOUS `(a,b,s)` at the exact cycle perturbations stop, so the final perturbations get
+  zero recovery time by construction. No `RELAX_STEP` satisfies this robustly: in the degenerate
+  case (all 5 violations inside the last relaxation interval) drift is 0.50 regardless of tuning,
+  and over 200 random seeds `0.25` failed 8.0% (max 0.192), `0.30` failed 2.5% (max 0.168) — a
+  coin flip, not a fix. FIX: the criterion now includes a **30-cycle settling window** after the
+  200 perturbation steps; the measurement point is AFTER settle. With `0.25 + 30 settle`, 200
+  seeds → median drift 0.039, max 0.081, **zero failures**. The load (200/10/5), the bound
+  (±0.15), and the assert-`a`-first ordering are UNCHANGED — adding the window *specifies* the
+  criterion, it does not weaken it. The test is now seed-independent (parametrized over ≥20
+  seeds), so an 8% failure rate can no longer hide behind one lucky seed.
 - **Q2 — Which identifier is canonical for REQ-4/REQ-6?** The session id is what the trajectory
   recorder writes; the conversation id is what the document query filters on. Both defensible.
   Recommendation is to resolve conversation → session through the active-kernel registry
@@ -778,3 +807,240 @@ to drift.
   elsewhere. A direct `u` injection would need a new FFI export (deferred to v3 per
   [coupled_registry.py:166-169](backend/agent/coupled_registry.py:166)). Left as-is; REQ-1 now
   makes its ratcheting harmless.
+
+---
+
+# Amendment — 2026-07-27: the shared trig module was built defectively
+
+`backend/agent/trig_coupling.py` **already exists**, delivered by
+`specs/caducean-phase-scheduler/` Wave 3 ahead of this spec (per the reconciliation doc's
+recommended order, step 3). It satisfies REQ-7 AC2 — imports are `math` and `typing` only, so
+**CU-1 holds and the scheduler's CT-4 isolation is intact**.
+
+But it does **not** satisfy REQ-7 AC1 or AC3 in the form REQ-8 needs, and an implementation of
+REQ-8/REQ-9 that simply imports it as-is would **reproduce the exact bug this spec exists to
+fix** (overview finding F4: no nucleus is ever produced).
+
+## The defect, and why it defeats REQ-8 specifically
+
+Both kernels return a **single non-negative scalar** built from absolute values:
+
+```python
+splay_coupling(thetas, k) = (k/N) * sum_i | sum_j sin(theta_j - theta_i) |   # >= 0
+align_coupling(thetas, k) = -splay_coupling(thetas, k)                      # <= 0
+```
+
+Three consequences, verified empirically in the phase-scheduler audit (a 200-tick simulation
+left the relative phase of two oscillators unchanged at 0.100000):
+
+1. **A scalar cannot differentiate.** REQ-8/REQ-9 require one session to become the *nucleus*
+   (compression-biased, `u` pushed down) and the other the *barrier* (expansion-biased, `u`
+   pushed up). A single value applied to both pushes them the **same** direction — which is
+   precisely the F4 bug in `coupled_registry.py:188-194`, where `nudge_nucleus` is computed and
+   never applied so both sessions become barriers. Importing `align_coupling` as-is moves that
+   bug from the registry into the shared module rather than fixing it.
+2. **The sign convention is inverted, then hidden.** The inner term is
+   `sin(theta_j - theta_i)` — the standard **attractive** convention — inside `splay_coupling`,
+   which is documented as *repulsive*. `abs()` then masks the contradiction, so neither the name
+   nor a positivity test reveals it. REQ-7 AC3 ("document the sign convention explicitly") is
+   not met: the docstring states the opposite of what the code computes.
+3. **`align = -splay` is not the attractive counterpart.** Because `splay` is already
+   `|·|`-folded, `align` is `-|sum|`, which is non-positive *regardless of the actual direction
+   of attraction*. It is not the sign-flip of a signed force; it is the negation of a magnitude.
+
+## REQ-18: The shared kernel must expose a signed, per-oscillator primitive
+
+**User Story:** As either consumer I want a coupling primitive that tells a *specific*
+oscillator which way to move, so that repulsion can spread phases and attraction can
+differentiate roles.
+
+**Verified:** REAL GAP — [trig_coupling.py:37-88](backend/agent/trig_coupling.py:37), and the
+empirical inertness result in `specs/caducean-phase-scheduler/` "Implementation Audit" F1.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL export a **signed per-oscillator** primitive of the form
+  `pair_force(theta_i, theta_j) = sin(theta_i - theta_j)`, or an equivalent
+  `forces(thetas, k) -> List[float]` returning one signed value per oscillator.
+- AC2: THE SYSTEM SHALL derive both the repulsive and attractive kernels from that one signed
+  primitive by sign alone, so they can never diverge in convention.
+- AC3: THE SYSTEM SHALL NOT apply `abs()` to any value used to advance a phase or nudge a
+  parameter. A magnitude-only aggregate MAY be exported for diagnostics, clearly named as such
+  (e.g. `coupling_magnitude`), and SHALL NOT be used by either consumer's update path.
+- AC4: THE SYSTEM SHALL make the docstring's stated sign convention match the computed
+  expression, and a unit test SHALL assert the direction (not merely the sign of an aggregate):
+  for two oscillators, the **leading** one's repulsive force SHALL have the **opposite sign** to
+  the **trailing** one's.
+- AC5: WHEN REQ-9's differentiation is applied THEN the two coupled sessions SHALL receive
+  **opposite-signed** nudges from a single call, so nucleus and barrier roles emerge from one
+  computation rather than from two independent calls that each nudge toward barrier.
+- AC6: THE SYSTEM SHALL keep the module import-pure (REQ-7 AC2 / CU-1) — this amendment changes
+  the function shapes, never the import surface.
+
+**Edge Cases:**
+- Two oscillators at identical phase → `sin(0) = 0`, no force. Differentiation must not depend
+  on coupling alone at exact ties; REQ-9's symmetry-breaker (lower-energy session takes the
+  negative nudge) is what resolves them.
+- N=1 → empty sum, zero force. Correct, and distinct from the phase-scheduler's F2 defect where
+  *every* group had size 1.
+- Wrap-around pairs (one near 0, one near 2π) → `circular_delta` is already correct
+  ([trig_coupling.py:27-34](backend/agent/trig_coupling.py:27)); the signed primitive must be
+  wrap-aware too (REQ-8 AC2).
+
+## Sequencing consequence
+
+**`specs/caducean-phase-scheduler/` T6.1 (Wave 6 repair) and this REQ-18 are the same change.**
+Whichever spec is executed first should land the signed per-oscillator kernel, and the other
+should consume it rather than re-deriving it. Do **not** implement REQ-8/REQ-9 against the
+current scalar kernels — the result would pass a positivity test and produce no
+differentiation, which is indistinguishable from today's F4 bug.
+
+Recorded as conflict **C10** in
+[`specs/CADUCEAN_SPEC_RECONCILIATION.md`](../CADUCEAN_SPEC_RECONCILIATION.md).
+
+---
+
+# REQ-18 status update — 2026-07-27: SATISFIED, with one live trap
+
+The phase-scheduler's Wave 6 repair landed the signed per-oscillator kernel, so **REQ-18 AC1–AC6
+are met** and reconciliation conflict **C10 is resolved**. This spec's dependency is in place.
+
+Delivered in `backend/agent/trig_coupling.py`:
+
+```python
+splay_force(theta_i, others, k)  # (k/N) * sum_j sin(theta_i - theta_j)   REPULSIVE, signed
+align_force(theta_i, others, k)  # -splay_force(...)                      ATTRACTIVE, signed
+```
+
+Verified: for two oscillators 0.1 rad apart, `splay_force` returns `+0.029950` for the leading
+one and `-0.029950` for the trailing one — genuinely opposite signs, which is exactly what REQ-9's
+nucleus/barrier differentiation needs. The module remains import-pure (`math`, `typing` only), so
+**CU-1 holds and the scheduler's CT-4 isolation is intact**.
+
+## ⚠️ Trap: do NOT use `align_coupling` — use `align_force`
+
+Both original names survive as **backward-compatible aliases to the magnitude aggregates**:
+
+```python
+splay_coupling = splay_coupling_magnitude   # mean |force| — NON-NEGATIVE scalar
+align_coupling = align_coupling_magnitude   # mean |force| — NON-NEGATIVE scalar
+```
+
+REQ-7 and REQ-8 were written before the repair and name `align_coupling`. **Calling it would
+reintroduce exactly the F4 bug this spec exists to fix** — a single non-negative magnitude
+applied to both sessions pushes them the same direction, so both become barriers and no nucleus
+is ever produced. The alias is not a signed force and cannot differentiate.
+
+**Binding correction to REQ-7/REQ-8/REQ-9:** every update path SHALL call `align_force`
+(per-oscillator, signed). `align_coupling` / `splay_coupling` / `*_magnitude` are diagnostic-only
+and SHALL NOT be used to nudge a parameter or advance a phase. This mirrors REQ-18 AC3.
+
+## REQ-19: Do not repeat the compute-but-never-use failure (learned from N1)
+
+**User Story:** As a reviewer I want a computed physics signal to demonstrably change behavior, so
+that a quantity can never be relaxed, logged, and silently ignored.
+
+**Verified:** REAL PRECEDENT — the phase-scheduler's Wave 6 repair fixed the coupling sign but
+**dropped amplitude from the velocity term**. `r` was computed, relaxed toward `1 − load_fraction`,
+and logged for a full review cycle while affecting nothing; `_estimate_wait`'s docstring even
+stated *"the amplitude does NOT scale velocity"* as though intended. Every test passed. See that
+spec's review finding **N1** and fix **REQ-22 AC1**.
+
+This spec has two requirements with the same shape — REQ-12 (`|u|` band → TTS chunk size) and
+REQ-3 (live balance → `get_direction_signal`) — where a value could be computed correctly and then
+not actually consumed.
+
+**Acceptance Criteria:**
+- AC1: FOR EACH physics signal this spec introduces or repairs, THE SYSTEM SHALL have at least one
+  test that varies the **input** signal and asserts the **output behavior** changes — not merely
+  that the signal is computed, stored, or logged.
+- AC2: REQ-3 SHALL be covered by a test that drives EML balance to two different values and
+  asserts `get_tts_chunk_size()` returns two different chunk sizes.
+- AC3: REQ-12 SHALL be covered by a test that places `|u|` in each band and asserts a distinct
+  chunk size per band — in particular that `u ≈ 0` and `u ≈ ±1` map to **different** sizes, which
+  the `force_magnitude` formula provably could not distinguish (overview finding F3).
+- AC4: REQ-9 SHALL be covered by a test asserting the two coupled sessions receive
+  **opposite-signed** nudges from a single differentiation call (not two same-signed nudges).
+- AC5: WHERE a computed value is intentionally diagnostic-only THEN its name SHALL say so
+  (`*_magnitude`, `*_metrics`, `*_staleness`) and a comment SHALL state that it must not drive
+  behavior.
+
+**Edge Cases:**
+- A signal legitimately inert when a feature flag is off → the test asserts the behavior change
+  with the flag **on**; flag-off inertness is a separate assertion.
+- A clamped signal at the edge of its range (e.g. `r = R_MIN`) → assert the clamp holds *and* that
+  behavior still differs from the unclamped case.
+
+## REQ-20: Register this spec's global state with the shared test-isolation fixture
+
+**User Story:** As the test suite I want every new process-wide singleton reset between tests, so
+the suite stays order-independent as this spec adds state.
+
+**Verified:** REAL PRECEDENT — the scheduler's singletons plus a persisted ceilings file plus an
+unrestored `ContextVar` made the suite order-dependent: two tests **passed alone and failed in the
+full run**. Fixed by the shared autouse fixture `_caducean_scheduler_isolation` now in
+[`backend/tests/conftest.py`](backend/tests/conftest.py) (phase-scheduler REQ-22 AC3/AC4).
+
+This spec adds at least two more global stores: `param_homeostasis` baselines (REQ-2) and the
+per-session EML cache (REQ-16).
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL extend `_caducean_scheduler_isolation` (or add a sibling autouse fixture)
+  to reset the homeostasis baselines and the EML cache around every test.
+- AC2: EVERY new global store SHALL expose a `reset_*_for_testing()` accessor, matching
+  `coupled_registry.py:234` / `rate_meter.py:311`.
+- AC3: TESTS SHALL set environment variables via `monkeypatch.setenv` and SHALL NOT write
+  `os.environ` directly.
+- AC4: TESTS SHALL use unique per-test keys (session ids, quota ids) rather than shared literals
+  like `"test_id"`, so a thread leaked from an unrelated test cannot collide on a global registry.
+- AC5: THE SYSTEM SHALL verify order-independence by running this spec's tests in forward and
+  reversed collection order, as `scripts/validate_phase_scheduler.py` Phase 6 now does.
+
+**Edge Cases:**
+- Persisted state (a params file on disk) → the reset must delete the file, not only clear memory;
+  a singleton reloads from disk on reconstruction.
+- A `ContextVar` set by a test → pytest runs one thread, so an unrestored value leaks to the next
+  test. Reset it in the fixture (this is how the scheduler's N4 leak surfaced).
+
+## REQ-21: tune_dffing_params must charge each violation exactly once (idempotent)
+
+**User Story:** As the engine I want a TOPO_VIOLATION to move the Duffing parameters by a
+fixed amount exactly once, so that the same violation is never billed repeatedly and the
+parameters cannot ratchet without bound.
+
+**Verified:** REAL DEFECT — `tune_dffing_params` (trajectory_controller.py:233) counted the
+entire 100-row lookback on every call and applied `0.10 * violation_count` (a += 0.10, b += 0.05,
+s -= 0.01 per violation in the lookback). Because the lookback count grows as violations
+accumulate, each call re-charged ALL prior violations, so a single violation was billed on every
+subsequent call — a compounding ratchet. With the literal REQ-1 load (200 steps, 10 barge-ins,
+5 violations) this drove `a` to the 4.0 ceiling regardless of relaxation rate (RELAX_STEP
+0.20/0.25/0.30/all still failed on `a`). Distinct from the REQ-1 "no restoring force" ratchet:
+that is "relaxation too weak"; this is "the same perturbation billed repeatedly".
+
+**Acceptance Criteria:**
+- AC1: FOR EACH session, tune_dffing_params SHALL charge only violations with row id greater than
+  the highest id it has already charged for that session (a per-session high-water mark), NOT the
+  full lookback count.
+- AC2: TWO consecutive calls with no new violations between them SHALL produce no parameter change
+  on the second call (idempotent).
+- AC3: AFTER the fix, the REQ-1 success criterion (200 steps, 10 barge-ins, 5 violations →
+  (a,b,s) within ±0.15 of baseline) is reachable with RELAX_STEP=0.25.
+- AC4: THE SYSTEM SHALL advance the high-water mark only after the engine accepts the write
+  (ffi_caducean_set_params returns truthy), so a failed write is retried, not silently dropped.
+
+**Edge Cases:**
+- Controller recreated mid-session → high-water mark resets; the next call re-charges the lookback
+  once (a one-time charge, not compounding). Acceptable; persistence is out of scope.
+- Violation rows pruned/rotated out of the lookback → ids are monotonic, so the high-water mark
+  still excludes already-charged rows.
+
+## Readiness
+
+**This spec is ready for implementation.** Its one hard external dependency (the signed
+per-oscillator kernel, C10 / REQ-18) is delivered and verified. Sequencing from
+`CADUCEAN_SPEC_RECONCILIATION.md` is unchanged except that step 3 (`trig_coupling`) is **done** —
+start at Wave 0/1 (baseline, then parameter homeostasis).
+
+Two things to carry in before writing code:
+1. Use `align_force`, never `align_coupling` (the trap above).
+2. Apply REQ-19 to every signal this spec touches — the N1 precedent shows a correct computation
+   that changes nothing still passes a full review.

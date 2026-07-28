@@ -578,16 +578,21 @@ async def lifespan(app: FastAPI):
             if _provider and _reasoning and hasattr(app.state, "agent_kernel"):
 
                 def _configure_kernel(kernel):
+                    # CRITICAL: pass api_base_url and api_key here so the
+                    # InferenceRouter's ProviderInstance gets the CORRECT
+                    # endpoint and key. Without these, set_model_selection
+                    # creates a provider with api_base_url="" which falls
+                    # back to self._api_base_url (default = OpenAI).
+                    # The old `if _provider == "api"` branch was dead code
+                    # because _provider is "cerebras" (or another named
+                    # provider), never the literal "api".
                     kernel.set_model_selection(
                         reasoning_model=_reasoning,
                         tool_execution_model=_tool_exec or _reasoning,
                         model_provider=_provider,
+                        api_base_url=_api_base_url or "",
+                        api_key=_api_key or "",
                     )
-                    if _provider == "api" and _api_key:
-                        kernel.configure_api(
-                            api_key=_api_key,
-                            base_url=_api_base_url or "https://api.openai.com/v1",
-                        )
 
                 try:
                     # Configure the default kernel (used during startup)
@@ -1889,6 +1894,7 @@ from backend.conversation_store import (
     delete_conversation,
     update_conversation_title,
     toggle_pin_conversation,
+    truncate_conversation,
 )
 
 
@@ -1924,8 +1930,9 @@ async def api_get_conversation(conversation_id: str):
 async def api_add_message(conversation_id: str, request: dict):
     """Append a message to a conversation."""
     text = request.get("text", "").strip()
-    sender = request.get("sender", "")
-    if not text or sender not in ("user", "assistant", "error"):
+    # Accept either `role` (canonical, matches add_message()) or `sender` (legacy alias).
+    role = request.get("role") or request.get("sender") or ""
+    if not text or role not in ("user", "assistant", "error"):
         from fastapi import Response as FastAPIResponse
 
         return FastAPIResponse(
@@ -1935,7 +1942,7 @@ async def api_add_message(conversation_id: str, request: dict):
         )
     return add_message(
         conversation_id,
-        role=sender,
+        role=role,
         text=text,
         thinking=request.get("thinking", ""),
         feedback=request.get("feedback"),
@@ -1958,6 +1965,19 @@ async def api_patch_conversation(conversation_id: str, request: dict):
         toggle_pin_conversation(conversation_id)
     conv = get_conversation(conversation_id)
     return conv or {"error": "not found"}
+
+
+@app.post("/api/conversations/{conversation_id}/truncate")
+async def api_truncate_conversation(conversation_id: str, request: dict):
+    """Delete all messages after `keep_until_message_id`."""
+    keep_until = request.get("keep_until_message_id", "")
+    if not keep_until:
+        return {"error": "keep_until_message_id is required"}, 400
+    try:
+        result = truncate_conversation(conversation_id, keep_until)
+        return result
+    except ValueError as e:
+        return {"error": str(e)}, 404
 
 
 # ============================================================================
@@ -2042,57 +2062,72 @@ async def _on_wake_word_async(wake_word_name: str):
         )
         ws_manager = get_websocket_manager()
 
-        # Priority 1: canonical main-UI session for client "iris".
-        # get_session_id_for_client may return a stale session from a WS that
-        # disconnected without cleanup. Verify it's still active.
-        session_id = ws_manager.get_session_id_for_client("iris")
-        if session_id and session_id not in ws_manager.get_active_session_ids():
-            session_id = None  # stale mapping — fall through
+        # Resolve the conversation thread to attach the wake word to.
+        # Priority 1: the most recently active session (set on connect / every
+        #   message via SessionManager._mark_active). This is what makes the wake
+        #   word work at STARTUP and with a freshly-created frontend thread,
+        #   instead of only after a manual trigger. (REQ-1, REQ-2)
+        # Priority 2: most recent active session from the WS manager.
+        # Priority 3: headless mode (no browser connected).
+        session_manager = getattr(ws_manager, "_session_manager", None)
+        session_id = None
+        resolution_source = "none"
+        if session_manager is not None and hasattr(session_manager, "get_last_active_session_id"):
+            session_id = session_manager.get_last_active_session_id()
+            if session_id:
+                resolution_source = "last_active"
 
         if not session_id:
-            # Priority 2: any active session.
             active_sessions = ws_manager.get_active_session_ids()
-            if not active_sessions:
-                # Priority 3: headless mode — no browser connected
-                session_id = "voice_headless"
-                client_id = "voice_headless_client"
-                logger.info(
-                    "[WakeWord] No active sessions — entering headless voice mode "
-                    f"(session={session_id}, client={client_id})"
-                )
-            else:
-                session_id = active_sessions[0]
+            if active_sessions:
+                # Most recently active, not insertion order [0].
+                session_id = active_sessions[-1]
+                resolution_source = "active_list"
 
-        if "client_id" not in locals():
-            client_ids = ws_manager.get_clients_for_session(session_id)
-            client_id = client_ids[0] if client_ids else "voice_headless_client"
+        if not session_id:
+            # Priority 3: headless mode — no browser connected.
+            session_id = "voice_headless"
+            resolution_source = "headless"
+            logger.info(
+                "[WakeWord] No active sessions — entering headless voice mode "
+                f"(session={session_id})"
+            )
 
-        if client_id:
-            logger.info(
-                f"[WakeWord] '{wake_word_name}' -> triggering voice for session {session_id}"
-            )
-            # Notify frontend that wake word was detected — triggers the same
-            # visual feedback as double-click (flash animation + listening state).
-            try:
-                await ws_manager.send_to_client(
-                    client_id,
-                    {"type": "wake_detected", "payload": {"keyword": wake_word_name}},
-                )
-            except Exception:
-                pass  # headless — no WS to notify
-            iris_gateway = get_iris_gateway()
-            logger.info(
-                f"[WakeWord] Routing to iris_gateway._handle_voice "
-                f"(session={session_id}, client={client_id})"
-            )
-            await iris_gateway._handle_voice(
+        logger.info(
+            f"[WakeWord] '{wake_word_name}' -> resolved session {session_id} "
+            f"(source={resolution_source})"
+        )
+
+        # Notify ALL clients in the session that the wake word was detected —
+        # triggers the same visual feedback as double-click (flash + listening
+        # state). Broadcasting (not a single client_id) guarantees the frontend
+        # reacts even if the session/client mapping was established late. (REQ-1)
+        try:
+            await ws_manager.broadcast_to_session(
                 session_id,
-                client_id,
-                {"type": "voice_command_start"},
-                auto_stop=True,
-                pre_speech_timeout_sec=3.0,
+                {"type": "wake_detected", "payload": {"keyword": wake_word_name}},
             )
-            logger.info(f"[WakeWord] _handle_voice returned for session={session_id}")
+        except Exception as e:
+            # Headless mode has no WS clients — this is expected, not an error.
+            if resolution_source != "headless":
+                logger.warning(f"[WakeWord] wake_detected broadcast failed: {e}")
+
+        iris_gateway = get_iris_gateway()
+        # Resolve a concrete client_id for the voice handler (headless fallback).
+        client_ids = ws_manager.get_clients_for_session(session_id)
+        client_id = client_ids[0] if client_ids else "voice_headless_client"
+        logger.info(
+            f"[WakeWord] Routing to iris_gateway._handle_voice "
+            f"(session={session_id}, client={client_id})"
+        )
+        await iris_gateway._handle_voice(
+            session_id,
+            client_id,
+            {"type": "voice_command_start"},
+            auto_stop=True,
+            pre_speech_timeout_sec=3.0,
+        )
+        logger.info(f"[WakeWord] _handle_voice returned for session={session_id}")
     except Exception as e:
         logger.error(f"[WakeWord] Error routing wake word: {e}", exc_info=True)
 
@@ -2458,6 +2493,20 @@ async def api_caducean_params(body: dict = {}):
             return {"ok": False, "session_id": session_id, "applied": None}
         # Read back to confirm clamping
         new_state = ffi_caducean_get_state(session_id)
+        # Re-anchor the homeostat baseline to the clamped values (REQ-2 AC1).
+        # Uses the FFI-read-back values, not the requested ones, so relaxation
+        # targets a reachable point.
+        try:
+            from backend.agent.param_homeostasis import get_param_homeostasis
+
+            get_param_homeostasis().set_baseline(
+                session_id,
+                new_state.get("a", a),
+                new_state.get("b", b),
+                new_state.get("s", s),
+            )
+        except Exception:
+            logger.debug("[caducean] set_baseline failed for %s", session_id)
         return {
             "ok": True,
             "session_id": session_id,
