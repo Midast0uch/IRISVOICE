@@ -48,7 +48,7 @@ import os
 import threading
 from typing import Dict, List, Optional, Tuple
 
-from backend.agent.trig_coupling import align_force
+from backend.agent.trig_coupling import align_force, circular_delta
 
 logger = logging.getLogger(__name__)
 
@@ -288,14 +288,21 @@ class CoupledTrajectoryRegistry:
                 except Exception:
                     pass
                 events += 1
-                logger.debug(
-                    "[CoupledRegistry] %s (c_eff=%.3f, %s) coupled with %s "
-                    "(c_eff=%.3f); nudge=%.4f",
+                # REQ-15 AC3/AC4: coupling events logged at INFO with both
+                # session ids, both c_eff, the rational/irrational verdict, the
+                # wrap-aware phase difference, the assigned roles, and the applied
+                # delta (self; partner receives the opposite sign).
+                logger.info(
+                    "[CoupledRegistry] coupled %s (c_eff=%.3f, %s) <-> %s "
+                    "(c_eff=%.3f, %s): rational=%s phase_diff=%.4f nudge=%.4f",
                     session_id,
                     c1,
                     "nucleus" if self_is_nucleus else "barrier",
                     other.session_id,
                     c2,
+                    "barrier" if self_is_nucleus else "nucleus",
+                    _is_rational_ratio(c1, c2),
+                    circular_delta(xi1, xi2),
                     self_sign * magnitude,
                 )
             else:
@@ -303,13 +310,14 @@ class CoupledTrajectoryRegistry:
                 new_s = max(0.1, min(0.8, cur_s - _IRRATIONAL_DAMPING))
                 ffi_caducean_set_params(session_id, cur_a, cur_b, new_s)
                 events += 1
-                logger.debug(
+                logger.info(
                     "[CoupledRegistry] %s (c_eff=%.3f) irrational with %s "
-                    "(c_eff=%.3f); damping",
+                    "(c_eff=%.3f); damping s by %.4f",
                     session_id,
                     c1,
                     other.session_id,
                     c2,
+                    _IRRATIONAL_DAMPING,
                 )
         return events
 

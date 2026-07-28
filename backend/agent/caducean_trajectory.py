@@ -517,3 +517,16 @@ def get_trajectory_recorder(memory_interface: Any) -> CaduceanTrajectoryRecorder
             raise RuntimeError("MemoryInterface must have an active SQLite connection")
         _recorders[key] = CaduceanTrajectoryRecorder(conn)
     return _recorders[key]
+
+
+def reset_eml_cache_for_testing() -> None:
+    """Clear the EML cache (process-wide + per-session) for test isolation.
+
+    REQ-20 AC2 — every new global store exposes a reset accessor so the shared
+    autouse fixture can return the suite to identical state between tests. The
+    cache lives on the CaduceanTrajectoryRecorder class, so we reset the class
+    attributes directly (not a module-level alias).
+    """
+    CaduceanTrajectoryRecorder._eml_cache = 1.0
+    CaduceanTrajectoryRecorder._eml_cache_per_session = {}
+    CaduceanTrajectoryRecorder._eml_cache_timestamps = {}

@@ -157,6 +157,16 @@ class ParamHomeostasis:
             rec = self._baselines[session_id]
             rec.perturbations[writer] = rec.perturbations.get(writer, 0) + 1
             rec.last_touched = time.time()
+            count = rec.perturbations[writer]
+        # REQ-15 AC4: perturbations are logged at INFO (relaxation steps stay at
+        # DEBUG). Logged outside the lock so a slow handler cannot stall the
+        # homeostat.
+        logger.info(
+            "[ParamHomeostasis] perturbation for %s by writer=%s (cumulative=%d)",
+            session_id,
+            writer,
+            count,
+        )
 
     def record_relaxation(self, session_id: str) -> None:
         """Increment the relaxation counter for *session_id*.
@@ -283,10 +293,16 @@ class ParamHomeostasis:
 
             self.record_relaxation(session_id)
 
+            # REQ-15 AC1/AC6: report distance from baseline so the REQ-1 success
+            # criterion (params within +/-0.15 of baseline) is verifiable from
+            # logs without extra instrumentation.
+            _dist = (
+                abs(new_a - base_a) + abs(new_b - base_b) + abs(new_s - base_s)
+            )
             logger.debug(
                 "[ParamHomeostasis] relaxed %s: "
                 "a=%.3f->%.3f b=%.3f->%.3f s=%.3f->%.3f "
-                "(baseline a=%.3f b=%.3f s=%.3f)",
+                "(baseline a=%.3f b=%.3f s=%.3f, dist_from_baseline=%.4f)",
                 session_id,
                 cur_a,
                 new_a,
@@ -297,6 +313,7 @@ class ParamHomeostasis:
                 base_a,
                 base_b,
                 base_s,
+                _dist,
             )
         except Exception as exc:
             logger.debug(
