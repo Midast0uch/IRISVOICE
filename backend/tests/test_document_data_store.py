@@ -1,34 +1,60 @@
-#!/usr/bin/env python3
-"""Standalone test for W4: store canonical DATA keyed by document_id.
+"""Pytest tests for W4 document data store (T1, T9, W4 coordinate contract).
 
-Run:  python backend/tests/test_document_data_store.py
-NOT collected by pytest (no test_ prefix) to avoid the full-backend memory spike.
+Converted from a standalone check()-based script to proper pytest test functions.
 
 Covers:
-  T1 (contract): DOCUMENT_RENDER payload includes `document_id` + `trust`.
-  T9 (data-centric): canonical data stored in Mycelium (fragment_and_store,
-    chunk_type=document_data, zone by trust) and Immortus (immortus_chain_append,
-    file_path=document_id) keyed by document_id. The stored record carries the
-    same document_id as the emitted render (source-of-truth linkage, G4).
+  T1  — DOCUMENT_RENDER payload includes document_id + trust.
+  T9  — Mycelium stores canonical data keyed by document_id
+        (fragment_and_store, chunk_type=document_data, zone by trust).
+        Immortus chain append carries document_id, thread_id, and the
+        canonical coordinate string (coords_from) from format_coords.
+  W4  — Coordinate round-trip through format_coords/parse_coords and
+        the document-store coordinate thread (coords_from on chain).
 """
-import sys
-import os
 import json
 import uuid
+from unittest import mock
 
-REPO_ROOT = r"C:\dev\IRISVOICE"
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
+import pytest
 
-import unittest.mock as mock
 from backend.agent.agent_kernel import AgentKernel
+from backend.agent.caducean_trajectory import format_coords, parse_coords
 
-results = []
+
+# ── Sample data ────────────────────────────────────────────────────────
+
+SAMPLE_COORD = {"x": 0.12, "y": 0.34, "xi": 0.5, "u": 0.7}
+EXPECTED_COORD_STR = format_coords(0.12, 0.34, 0.5, 0.7)
+# "0.12,0.34,0.50,0.70"
 
 
-def check(name, cond, detail=""):
-    results.append((name, bool(cond), detail))
-    print(("PASS" if cond else "FAIL"), name, ("- " + str(detail)) if detail else "")
+# ── Fixtures ───────────────────────────────────────────────────────────
+
+class FakeRecorder:
+    def __init__(self, coord):
+        self._coord = coord
+    def get_latest_coordinate(self, session_id):
+        return self._coord
+
+
+class FakeEventBus:
+    def __init__(self):
+        self.events = []
+    def emit(self, event, data=None, turn_id=None, conversation_id=None, **kw):
+        self.events.append({"event": event, "data": data, "turn_id": turn_id, "conversation_id": conversation_id})
+
+
+class FakeEpisodic:
+    def __init__(self):
+        self.calls = []
+    def fragment_and_store(self, content, session_id, chunk_type="context_fragment", zone=None):
+        self.calls.append({"content": content, "session_id": session_id, "chunk_type": chunk_type, "zone": zone})
+        return ["chunk-" + str(len(self.calls))]
+
+
+class FakeMI:
+    def __init__(self):
+        self.episodic = FakeEpisodic()
 
 
 def _is_uuid(s):
@@ -39,154 +65,158 @@ def _is_uuid(s):
         return False
 
 
-# ── Fakes ────────────────────────────────────────────────────────────────
-class FakeEventBus:
-    def __init__(self):
-        self.events = []
-
-    def emit(self, event, data=None, turn_id=None, conversation_id=None, **kw):
-        self.events.append(
-            {"event": event, "data": data, "turn_id": turn_id, "conversation_id": conversation_id}
-        )
-
-
-class FakeEpisodic:
-    def __init__(self):
-        self.calls = []
-
-    def fragment_and_store(self, content, session_id, chunk_type="context_fragment", zone=None):
-        self.calls.append(
-            {"content": content, "session_id": session_id, "chunk_type": chunk_type, "zone": zone}
-        )
-        return ["chunk-" + str(len(self.calls))]
-
-
-class FakeMI:
-    def __init__(self):
-        self.episodic = FakeEpisodic()
-
-
-class FakeRecorder:
-    def __init__(self, coord):
-        self._coord = coord  # dict x,y,xi,u or None
-
-    def get_latest_coordinate(self, session_id):
-        return self._coord
-
-
-SAMPLE_COORD = {"x": 0.12, "y": 0.34, "xi": 0.5, "u": 0.7}
-EXPECTED_COORD_STR = "0.1200,0.3400,0.5000,0.7000"
-
-
-def make_kernel():
-    k = AgentKernel.__new__(AgentKernel)
-    k._turn_touched_external = False
-    k._memory_interface = FakeMI()
-    return k
-
-
 def _renders(bus):
     return [e for e in bus.events if str(e["event"]).endswith("DOCUMENT_RENDER")]
 
 
-def main():
-    # ── Trusted turn ───────────────────────────────────────────────────────
+# ── Shared helpers ─────────────────────────────────────────────────────
+
+def _run_process(response_json, trusted=True, coord=SAMPLE_COORD):
+    """Process a structured response and return (bus, immortus_appends, kernel).
+
+    Mocks the event bus, Immortus chain append, and trajectory recorder so
+    the document path runs without external dependencies.
+    """
     bus = FakeEventBus()
     immortus = []
     with mock.patch("backend.agent.event_bus.get_event_bus", return_value=bus), \
-         mock.patch(
-             "backend.gateway.iris_ffi.ffi_immortus_chain_append",
-             side_effect=lambda **kw: (immortus.append(kw) or 0),
-         ), \
-         mock.patch(
-             "backend.agent.caducean_trajectory.get_trajectory_recorder",
-             return_value=FakeRecorder(SAMPLE_COORD),
-         ):
-        k = make_kernel()
-        response = json.dumps(
-            {
-                "show": {
-                    "format": "table",
-                    "content": "Name,Age\nA,1",
-                    "alternatives": ["markdown", "html"],
-                }
-            }
-        )
-        k._process_structured_response(response, turn_id="t1", conversation_id="c1")
-
-        # ── T1: DOCUMENT_RENDER includes document_id + trust ──────────────
-        renders = _renders(bus)
-        check("T1a DOCUMENT_RENDER emitted", len(renders) == 1)
-        data = renders[0]["data"] if renders else {}
-        check("T1b payload has document_id", bool(data.get("document_id")), str(data.get("document_id"))[:8])
-        check("T1b document_id is a uuid", _is_uuid(data.get("document_id")))
-        check("T1b payload has trust='trusted'", data.get("trust") == "trusted", str(data.get("trust")))
-        check("T1b payload has content", data.get("content") == "Name,Age\nA,1")
-
-        # ── T9: Mycelium stores canonical data keyed by document_id ───────
-        mc_calls = k._memory_interface.episodic.calls
-        check("T9a Mycelium fragment_and_store called", len(mc_calls) == 1)
-        if mc_calls:
-            mc = mc_calls[0]
-            check("T9a chunk_type=document_data", mc["chunk_type"] == "document_data", mc["chunk_type"])
-            check("T9a zone=trusted (trusted turn)", mc["zone"] == "trusted", str(mc["zone"]))
-            stored = json.loads(mc["content"])
-            check("T9a stored document_id matches render", stored.get("document_id") == data.get("document_id"))
-            check("T9a stored content matches", stored.get("content") == "Name,Age\nA,1")
-            check("T9a stored alternatives match", stored.get("alternatives") == ["markdown", "html"])
-            check("T9a stored trust matches", stored.get("trust") == "trusted")
-
-        # ── T9: Immortus stores canonical data keyed by document_id ───────
-        check("T9b Immortus chain_append called", len(immortus) == 1)
-        if immortus:
-            ic = immortus[0]
-            check("T9b file_path == document_id", ic.get("file_path") == data.get("document_id"), str(ic.get("file_path")))
-            ic_data = json.loads(ic.get("result", "{}"))
-            check("T9b result carries document_id", ic_data.get("document_id") == data.get("document_id"))
-            check("T9b thread_id == conversation_id", ic.get("thread_id") == "c1")
-            # ── W4 coordinate thread: coords_from = reasoning-state coord ─
-            check("T9d Immortus coords_from is the trajectory coord", ic.get("coords_from") == EXPECTED_COORD_STR, str(ic.get("coords_from")))
-            check("T9d coords_from non-empty (not orphaned)", bool(ic.get("coords_from")))
-
-    # ── Untrusted turn: zone should be 'reference' ─────────────────────────
-    bus2 = FakeEventBus()
-    immortus2 = []
-    with mock.patch("backend.agent.event_bus.get_event_bus", return_value=bus2), \
-         mock.patch(
-             "backend.gateway.iris_ffi.ffi_immortus_chain_append",
-             side_effect=lambda **kw: (immortus2.append(kw) or 0),
-         ), \
-         mock.patch(
-             "backend.agent.caducean_trajectory.get_trajectory_recorder",
-             return_value=FakeRecorder(SAMPLE_COORD),
-         ):
-        k2 = make_kernel()
-        k2._turn_touched_external = True
-        response2 = json.dumps(
-            {"show": {"format": "html", "content": "<p>web</p>", "alternatives": ["markdown"]}}
-        )
-        k2._process_structured_response(response2, turn_id="t2", conversation_id="c2")
-        renders2 = _renders(bus2)
-        check("T1c untrusted turn -> trust='untrusted'", renders2[0]["data"].get("trust") == "untrusted")
-        check(
-            "T9c untrusted -> Mycelium zone='reference'",
-            k2._memory_interface.episodic.calls[0]["zone"] == "reference",
-            k2._memory_interface.episodic.calls[0]["zone"],
-        )
-        check(
-            "T9d untrusted turn still threads coords_from",
-            immortus2 and immortus2[0].get("coords_from") == EXPECTED_COORD_STR,
-            str(immortus2[0].get("coords_from")) if immortus2 else "no-call",
-        )
-
-    failed = [r for r in results if not r[1]]
-    print("\n=== W4 DOCUMENT DATA STORE SUMMARY ===")
-    print(f"{len(results) - len(failed)}/{len(results)} passed")
-    if failed:
-        print("FAILED:", [r[0] for r in failed])
-        sys.exit(1)
-    print("ALL PASS")
+         mock.patch("backend.gateway.iris_ffi.ffi_immortus_chain_append",
+                    side_effect=lambda **kw: (immortus.append(kw) or 0)), \
+         mock.patch("backend.agent.caducean_trajectory.get_trajectory_recorder",
+                    return_value=FakeRecorder(coord)):
+        k = AgentKernel.__new__(AgentKernel)
+        k._turn_touched_external = not trusted
+        k._memory_interface = FakeMI()
+        k._process_structured_response(response_json, turn_id="t1", conversation_id="c1")
+    return bus, immortus, k
 
 
-if __name__ == "__main__":
-    main()
+# ── T1: DOCUMENT_RENDER contract ───────────────────────────────────────
+
+TRUSTED_RESPONSE = json.dumps({
+    "show": {"format": "table", "content": "Name,Age\nA,1", "alternatives": ["markdown", "html"]}
+})
+UNTRUSTED_RESPONSE = json.dumps({
+    "show": {"format": "html", "content": "<p>web</p>", "alternatives": ["markdown"]}
+})
+
+
+def test_t1_document_render_emitted():
+    """DOCUMENT_RENDER is emitted with document_id, trust, content."""
+    bus, _, _ = _run_process(TRUSTED_RESPONSE)
+    renders = _renders(bus)
+    assert len(renders) == 1, "DOCUMENT_RENDER must be emitted"
+    data = renders[0]["data"]
+    assert data.get("document_id"), "payload must have document_id"
+    assert _is_uuid(data["document_id"]), "document_id must be a UUID"
+    assert data.get("trust") == "trusted", "trusted turn -> trust='trusted'"
+    assert data.get("content") == "Name,Age\nA,1"
+
+
+def test_t1_untrusted_document_render():
+    """Untrusted turn produces trust='untrusted'."""
+    bus, _, _ = _run_process(UNTRUSTED_RESPONSE, trusted=False)
+    renders = _renders(bus)
+    assert len(renders) == 1
+    assert renders[0]["data"]["trust"] == "untrusted"
+
+
+# ── T9: Mycelium storage ───────────────────────────────────────────────
+
+def test_t9_mycelium_fragment_and_store():
+    """Mycelium stores canonical data (document_data, zone=trusted)."""
+    bus, _, k = _run_process(TRUSTED_RESPONSE)
+    renders = _renders(bus)
+    data = renders[0]["data"]
+    mc = k._memory_interface.episodic.calls
+    assert len(mc) == 1, "mycelium storage called"
+    assert mc[0]["chunk_type"] == "document_data"
+    assert mc[0]["zone"] == "trusted"
+    stored = json.loads(mc[0]["content"])
+    assert stored["document_id"] == data["document_id"]
+    assert stored["trust"] == "trusted"
+    assert stored["content"] == "Name,Age\nA,1"
+    assert stored["alternatives"] == ["markdown", "html"]
+
+
+def test_t9_untrusted_mycelium_zone():
+    """Untrusted turn -> zone='reference'."""
+    bus, _, k = _run_process(UNTRUSTED_RESPONSE, trusted=False)
+    assert len(k._memory_interface.episodic.calls) == 1
+    assert k._memory_interface.episodic.calls[0]["zone"] == "reference"
+
+
+# ── T9: Immortus chain append ──────────────────────────────────────────
+
+def test_t9_immortus_chain_append():
+    """Immortus chain append carries document_id, thread_id, coords_from."""
+    bus, immortus, _ = _run_process(TRUSTED_RESPONSE)
+    renders = _renders(bus)
+    data = renders[0]["data"]
+    assert len(immortus) == 1, "Immortus chain_append called"
+    ic = immortus[0]
+    # T1: file_path is the document_id.
+    assert ic.get("file_path") == data["document_id"], "file_path must be document_id"
+    ic_data = json.loads(ic.get("result", "{}"))
+    assert ic_data["document_id"] == data["document_id"], "result carries document_id"
+    assert ic.get("thread_id") == "c1", "thread_id == conversation_id"
+    # W4: coords_from is the canonical 2-decimal coordinate string.
+    assert ic.get("coords_from") == EXPECTED_COORD_STR, (
+        f"coords_from={ic.get('coords_from')!r} != {EXPECTED_COORD_STR!r}"
+    )
+    assert bool(ic.get("coords_from")), "coords_from must be non-empty"
+
+
+def test_t9_untrusted_immortus_coords_from():
+    """Untrusted turn still threads coords_from."""
+    _, immortus, _ = _run_process(UNTRUSTED_RESPONSE, trusted=False)
+    assert len(immortus) == 1
+    assert immortus[0]["coords_from"] == EXPECTED_COORD_STR, (
+        f"untrusted coords_from={immortus[0]['coords_from']!r}"
+    )
+
+
+# ── W4: Coordinate round-trip & format contract ────────────────────────
+
+class TestW4CoordinateContract:
+    """W4: canonical 4D coordinate round-trips and contract stability."""
+
+    PARAMETRIZED_COORDS = [
+        (0.12, 0.34, 0.5, 0.7),
+        (0.0, 0.0, 0.0, 0.0),
+        (-1.5, 2.3, -0.5, 1.2),
+        (99.99, -88.88, 77.77, -66.66),
+    ]
+
+    def test_w4_round_trip(self):
+        """parse_coords(format_coords(x,y,xi,u)) ≈ (x,y,xi,u) within 2dp."""
+        for x, y, xi, u in self.PARAMETRIZED_COORDS:
+            s = format_coords(x, y, xi, u)
+            rx, ry, rxi, ru = parse_coords(s)
+            assert round(rx - x, 2) == 0, f"x mismatch: {rx} != {x} (from repr {s!r})"
+            assert round(ry - y, 2) == 0
+            assert round(rxi - xi, 2) == 0
+            assert round(ru - u, 2) == 0
+
+    def test_w4_legacy_4_decimal_interop(self):
+        """Legacy 4-decimal strings (pre-REQ-5) still parse to the same tuple.
+
+        Before REQ-5 coordinates were serialised as 4 decimal places.  After
+        the change to 2 dp the format changed but parse_coords must accept
+        both so old stored data remains reachable.
+        """
+        legacy = "0.1200,0.3400,0.5000,0.7000"
+        x, y, xi, u = parse_coords(legacy)
+        assert round(x, 2) == 0.12
+        assert round(y, 2) == 0.34
+        assert round(xi, 2) == 0.50
+        assert round(u, 2) == 0.70
+
+    def test_w4_format_immutability(self):
+        """2-decimal format is a stable contract (CU-7)."""
+        import re
+        s = format_coords(0.12, 0.34, 0.5, 0.7)
+        assert re.match(
+            r"^-?\d+\.\d{2},-?\d+\.\d{2},-?\d+\.\d{2},-?\d+\.\d{2}$",
+            s,
+        ), f"format {s!r} does not match canonical pattern"
