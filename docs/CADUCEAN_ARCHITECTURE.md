@@ -502,5 +502,9 @@ wrong.
 4. `specs/CADUCEAN_SPEC_RECONCILIATION.md` — how the three specs interlock
 5. `learned-scoreboard-vs-live-state.md` — where the memory coupling goes next, and its risks
 
+**To verify the FLAG-OFF and UNEXERCISED components live:** follow
+[`CADUCEAN_LIVE_TEST_PLAN.md`](CADUCEAN_LIVE_TEST_PLAN.md) (T1–T7) and poll
+`GET /api/debug/caducean` while driving the app by hand.
+
 **Before changing anything here:** run both Caducean harnesses. They exist because a green unit
 suite has twice been compatible with a completely inert mechanism.

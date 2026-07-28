@@ -872,10 +872,15 @@ logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
 from backend.api.status_snapshot import router as status_snapshot_router
 from backend.api.chat import router as chat_router
 from backend.api.crawl_stream import router as crawl_stream_router
+# Read-only Caducean introspection (GET /api/debug/caducean). The phase scheduler
+# and multi-session coupling ship DISABLED, and their metrics are otherwise
+# in-process only — this is how a live run is verified by hand.
+from backend.api.caducean_debug import router as caducean_debug_router
 
 app.include_router(status_snapshot_router)
 app.include_router(chat_router)
 app.include_router(crawl_stream_router)
+app.include_router(caducean_debug_router)
 
 
 # ── Idle tracker middleware ────────────────────────────────────────────────

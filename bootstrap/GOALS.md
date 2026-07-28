@@ -2455,6 +2455,8 @@ limits rather than absorbing them.
     Full suite: 679 passed / 19 failed (all 19 pre-existing and unrelated)
 
   Graduate condition — LIVE MANUAL VERIFICATION REQUIRED:
+    Executable plan: docs/CADUCEAN_LIVE_TEST_PLAN.md (T1-T7)
+    Live introspection: GET /api/debug/caducean (read-only)
     The suites and harnesses are green, but [21.4] and [21.5] ship DISABLED and have
     ZERO production hours. A default app run verifies nothing about them. To graduate:
 

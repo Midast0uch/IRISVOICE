@@ -89,6 +89,10 @@ class SubLoopBatcher:
 
         # T6.8 (AC1): reject non-independent children
         if not getattr(child, "independent", False):
+            logger.info(
+                "[SubLoopBatcher] BATCH_REJECT id=%s reason=not_independent",
+                getattr(child, "step_id", "?"),
+            )
             return None  # not safe to batch with siblings → dispatch individually
 
         _join = self._join_point(child)
@@ -126,6 +130,13 @@ class SubLoopBatcher:
             if len(_group.children) >= BATCH_MAX_CHILDREN:
                 self._groups.pop(_join, None)
                 self._compose_batch(_group)
+                logger.info(
+                    "[SubLoopBatcher] BATCH_READY join=%s children=%d ids=%s "
+                    "reason=full",
+                    _join,
+                    len(_group.children),
+                    [getattr(c, "step_id", "?") for c in _group.children],
+                )
                 return _group
 
             return None  # awaiting more children
