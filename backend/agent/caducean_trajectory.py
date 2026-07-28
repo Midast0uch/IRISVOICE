@@ -13,6 +13,7 @@ Usage:
 
 import logging
 import sqlite3
+import threading
 import time
 from typing import Any, List, Optional, Dict, Tuple
 
@@ -104,7 +105,13 @@ class CaduceanTrajectoryRecorder:
     WAL mode (set by MemoryInterface init) keeps concurrent writes safe.
     """
 
+    # REQ-16: per-session EML cache. _eml_cache is kept as a class-level
+    # scalar fallback for backward compatibility with existing tests.
+    # _eml_cache_per_session provides per-session isolation.
     _eml_cache: float = 1.0
+    _eml_cache_per_session: Dict[str, Tuple[float, float, float]] = {}
+    _eml_cache_timestamps: Dict[str, float] = {}
+    MAX_EML_SESSIONS = 128
 
     def __init__(self, db_conn: sqlite3.Connection = None) -> None:
         # Spec: the recorder is backed by the SAME SQLite DB as MemoryInterface.
@@ -124,6 +131,7 @@ class CaduceanTrajectoryRecorder:
             os.makedirs(os.path.dirname(_db_path), exist_ok=True)
             db_conn = sqlite3.connect(_db_path)
         self._conn = db_conn
+        self._write_lock = threading.Lock()
         self._ensure_table()
 
     def _ensure_table(self) -> None:
@@ -172,27 +180,39 @@ class CaduceanTrajectoryRecorder:
         hardcoded to 0.0). The agent kernel calls this after every update.
         """
         try:
-            self._conn.execute(
-                "INSERT INTO caducean_trajectories "
-                "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after, recommendation, domain) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    time.time(),
-                    session_id,
-                    step_num,
-                    x,
-                    y,
-                    xi,
-                    u,
-                    action,
-                    outcome,
-                    eml_after,
-                    recommendation,
-                    domain,
-                ),
-            )
-            self._conn.commit()
+            with self._write_lock:
+                self._conn.execute(
+                    "INSERT INTO caducean_trajectories "
+                    "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after, recommendation, domain) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        time.time(),
+                        session_id,
+                        step_num,
+                        x,
+                        y,
+                        xi,
+                        u,
+                        action,
+                        outcome,
+                        eml_after,
+                        recommendation,
+                        domain,
+                    ),
+                )
+                self._conn.commit()
             CaduceanTrajectoryRecorder._eml_cache = float(eml_after)
+            CaduceanTrajectoryRecorder._eml_cache_per_session[session_id] = (
+                float(eml_after), float(x), float(y),
+            )
+            CaduceanTrajectoryRecorder._eml_cache_timestamps[session_id] = time.time()
+            while len(CaduceanTrajectoryRecorder._eml_cache_per_session) > CaduceanTrajectoryRecorder.MAX_EML_SESSIONS:
+                _oldest = min(
+                    CaduceanTrajectoryRecorder._eml_cache_timestamps,
+                    key=lambda k: CaduceanTrajectoryRecorder._eml_cache_timestamps[k],
+                )
+                CaduceanTrajectoryRecorder._eml_cache_per_session.pop(_oldest, None)
+                CaduceanTrajectoryRecorder._eml_cache_timestamps.pop(_oldest, None)
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record failed: %s", exc)
 
@@ -209,13 +229,14 @@ class CaduceanTrajectoryRecorder:
         """DER Phase 0 (D0.8): write a structural trace of a tool call that DCP is about
         to prune/drop. Preserves the fan shape without bloating the prompt. Cheap, WAL-safe."""
         try:
-            self._conn.execute(
-                "INSERT INTO der_fan_traces "
-                "(ts, session_id, step_id, tool, args_hash, outcome, u, xi) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (time.time(), session_id, step_id, tool, args_hash, outcome, u, xi),
-            )
-            self._conn.commit()
+            with self._write_lock:
+                self._conn.execute(
+                    "INSERT INTO der_fan_traces "
+                    "(ts, session_id, step_id, tool, args_hash, outcome, u, xi) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (time.time(), session_id, step_id, tool, args_hash, outcome, u, xi),
+                )
+                self._conn.commit()
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_fan_trace failed: %s", exc)
 
@@ -264,9 +285,36 @@ class CaduceanTrajectoryRecorder:
             return []
 
     @classmethod
-    def get_cached_eml(cls) -> float:
-        """Thread-safe read of last recorded EML (no FFI from async context)."""
-        return cls._eml_cache
+    def get_cached_eml(cls, session_id: Optional[str] = None):
+        """Return cached (eml, x, y) for the session, or process-wide eml.
+
+        Per-session lookup (*session_id* given):
+            Returns ``(eml, x, y)`` — the triple cached by ``record()`` for
+            this session.  On a cache MISS makes ONE live FFI call
+            (``ffi_caducean_get_state``) to obtain ``(x, y)``; eml is ``None``
+            (caller should treat as neutral).  AC3: miss → live FFI, never
+            another session's value.
+
+        No-arg lookup (*session_id* is ``None``, backward compat):
+            Returns ``cls._eml_cache`` — the process-wide latest eml written by
+            any session's ``record()``.  This is NOT per-session; preserved for
+            backward compatibility.
+        """
+        if session_id is None:
+            return cls._eml_cache  # backward compat, process-wide latest eml
+
+        cached = cls._eml_cache_per_session.get(session_id)
+        if cached is not None:
+            return cached  # (eml, x, y) triple
+
+        # Cache miss: ONE live FFI call (AC3).
+        try:
+            from backend.gateway.iris_ffi import ffi_caducean_get_state
+            state = ffi_caducean_get_state(session_id)
+            x, y = state.get("x", 0.0), state.get("y", 0.0)
+            return (None, float(x), float(y))
+        except Exception:
+            return (None, 0.0, 0.0)
 
     def get_latest_coordinate(
         self, session_id: str
@@ -310,17 +358,18 @@ class CaduceanTrajectoryRecorder:
         into a prompt.
         """
         try:
-            self._conn.execute(
-                """
-                INSERT INTO der_commits
-                    (ts, session_id, step_id, commit_hash, message, u, xi, verified_label)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (time.time(), session_id, step_id, commit_hash, message,
-                 u if u is not None else 0.0, xi if xi is not None else 0.0,
-                 verified_label),
-            )
-            self._conn.commit()
+            with self._write_lock:
+                self._conn.execute(
+                    """
+                    INSERT INTO der_commits
+                        (ts, session_id, step_id, commit_hash, message, u, xi, verified_label)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (time.time(), session_id, step_id, commit_hash, message,
+                     u if u is not None else 0.0, xi if xi is not None else 0.0,
+                     verified_label),
+                )
+                self._conn.commit()
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_commit failed: %s", exc)
 
@@ -358,18 +407,19 @@ class CaduceanTrajectoryRecorder:
                     verified_count = int(_vc[0]) if _vc else 0
                 except Exception:
                     verified_count = 0
-            self._conn.execute(
-                """
-                INSERT INTO caducean_session_exits
-                    (ts, session_id, domain, natural_exit, route_score, drift,
-                     tokens_total, verified_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (time.time(), session_id, domain,
-                 int(bool(natural_exit)), float(route_score), float(drift),
-                 float(tokens_total), int(verified_count)),
-            )
-            self._conn.commit()
+            with self._write_lock:
+                self._conn.execute(
+                    """
+                    INSERT INTO caducean_session_exits
+                        (ts, session_id, domain, natural_exit, route_score, drift,
+                         tokens_total, verified_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (time.time(), session_id, domain,
+                     int(bool(natural_exit)), float(route_score), float(drift),
+                     float(tokens_total), int(verified_count)),
+                )
+                self._conn.commit()
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_session_exit failed: %s", exc)
 

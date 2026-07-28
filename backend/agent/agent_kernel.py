@@ -1319,9 +1319,14 @@ class AgentKernel:
         # Gap 4: EML cognitive state visible to LLM
         try:
             from backend.gateway.iris_ffi import ffi_calculate_eml
+            from backend.agent.der_constants import EML_EXPLORE, EML_VERIFY
 
             _e, _x, _y = ffi_calculate_eml(self.session_id)
-            _phase = "EXPLORE" if _e >= 1.5 else ("VERIFY" if _e < 1.0 else "BALANCE")
+            _phase = (
+                "EXPLORE"
+                if _e >= EML_EXPLORE
+                else ("VERIFY" if _e < EML_VERIFY else "BALANCE")
+            )
             base += (
                 f"\n\n[COGNITIVE STATE: {_phase} | EML={_e:.2f} x={_x:.2f} y={_y:.2f}]"
             )
@@ -5537,15 +5542,60 @@ Respond with a JSON object:
                     _retrieval_limit = 2
                     _retrieval_score = 0.55
                     try:
-                        from backend.gateway.iris_ffi import ffi_calculate_eml
+                        from backend.agent.caducean_trajectory import (
+                            CaduceanTrajectoryRecorder,
+                        )
+                        # REQ-16: read per-session cached (eml, x, y) triple
+                        _triple = CaduceanTrajectoryRecorder.get_cached_eml(
+                            _session
+                        )
+                        if isinstance(_triple, tuple):
+                            _cached_eml = float(
+                                _triple[0] if _triple[0] is not None else 1.0
+                            )
+                            _cached_x = float(_triple[1]) if _triple[1] else 0.0
+                            _cached_y = float(_triple[2]) if _triple[2] else 0.0
+                        elif isinstance(_triple, (int, float)):
+                            _cached_eml = float(_triple)
+                            _cached_x = _cached_y = 0.0
+                        else:
+                            _cached_eml, _cached_x, _cached_y = 1.0, 0.0, 0.0
 
-                        _eml, _ex, _ey = ffi_calculate_eml(_session)
-                        if _eml >= 1.50 and _ex >= 0.60:
-                            _retrieval_limit = 5
-                            _retrieval_score = 0.40
-                        elif _eml < 1.00 and _ey >= 0.70:
-                            _retrieval_limit = 3
-                            _retrieval_score = 0.65
+                        # REQ-17: V-shaped explore pressure, AC1: x/y directional term.
+                        # Three anchors (AC3):
+                        #   consolidate (eml=0.90, x-dominant): limit=3,  score=0.65
+                        #   neutral     (eml=1.20):              limit=2,  score=0.55
+                        #   explore     (eml=1.60, y-dominant):  limit=5,  score=0.40
+                        _EC, _EN, _EE = 0.90, 1.20, 1.60
+                        _LC, _LN, _LE = 3, 2, 5
+                        _SC, _SN, _SE = 0.65, 0.55, 0.40
+                        _e = max(0.0, _cached_eml)
+                        _norm = (_cached_x**2 + _cached_y**2) ** 0.5
+                        _dir = _cached_y / _norm if _norm > 1e-9 else 0.0
+                        if _e <= _EN:
+                            _p = max(0.0, min(1.0, (_e - _EC) / (_EN - _EC)))
+                            _retrieval_limit = _LC + (_LN - _LC) * _p
+                            _retrieval_score = _SC + (_SN - _SC) * _p
+                            _bias = min(1.0, abs(_dir))
+                            if _dir < 0:  # consolidate-dominant
+                                _retrieval_limit += _bias * (_LC - _retrieval_limit)
+                                _retrieval_score += _bias * (_SC - _retrieval_score)
+                            elif _dir > 0:  # explore-dominant at low EML
+                                _retrieval_limit += _bias * (_LE - _retrieval_limit)
+                                _retrieval_score += _bias * (_SE - _retrieval_score)
+                        else:
+                            _p = max(0.0, min(1.0, (_e - _EN) / (_EE - _EN)))
+                            _retrieval_limit = _LN + (_LE - _LN) * _p
+                            _retrieval_score = _SN + (_SE - _SN) * _p
+                            _bias = min(1.0, abs(_dir))
+                            if _dir > 0:  # explore-dominant
+                                _retrieval_limit += _bias * (_LE - _retrieval_limit)
+                                _retrieval_score += _bias * (_SE - _retrieval_score)
+                            elif _dir < 0:  # consolidate-dominant at high EML
+                                _retrieval_limit += _bias * (_LC - _retrieval_limit)
+                                _retrieval_score += _bias * (_SC - _retrieval_score)
+                        _retrieval_limit = max(2, min(5, int(round(_retrieval_limit))))
+                        _retrieval_score = max(0.40, min(0.65, _retrieval_score))
                     except Exception as _eml_exc:
                         loud_error(_eml_exc, "caducean_eml_retrieval")
                     _sub_eps = self._memory_interface.episodic.retrieve_similar(
@@ -7522,6 +7572,24 @@ Respond with a JSON object:
             except Exception as _relax_exc:
                 logger.debug(
                     "[agent_kernel] maybe_relax failed: %s", _relax_exc
+                )
+
+            # ── TrajectoryController refit on DER cadence (REQ-13) ─────────
+            # Calls TrajectoryController.fit() which refits only at milestones
+            # (100, 500, 1000 records). Never blocks the step — wrapped in
+            # its own try/except so a refit failure cannot abort the record or
+            # chain append.
+            try:
+                from backend.agent.trajectory_controller import TrajectoryController
+
+                _tc_conn = getattr(
+                    getattr(self._memory_interface, "episodic", None), "db", None
+                )
+                if _tc_conn is not None:
+                    TrajectoryController(_tc_conn).fit()
+            except Exception as _refit_exc:
+                logger.debug(
+                    "[agent_kernel] maybe_refit failed: %s", _refit_exc
                 )
 
             # REQ-5/REQ-6: coords_from / coords_to in canonical format_coords.
