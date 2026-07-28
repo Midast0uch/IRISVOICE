@@ -1044,3 +1044,52 @@ Two things to carry in before writing code:
 1. Use `align_force`, never `align_coupling` (the trap above).
 2. Apply REQ-19 to every signal this spec touches — the N1 precedent shows a correct computation
    that changes nothing still passes a full review.
+
+---
+
+## Verification Baseline — 2026-07-28
+
+**Full suite** (`backend/tests/unit` + `contract` + `behavioral`, excluding `test_exa_provider.py`
+which fails collection on missing `pytest_httpx`):
+
+| Metric | Value |
+|---|---|
+| Passed | **679** |
+| Failed | **19** (all pre-existing — see below) |
+| Zero regressions | confirmed from Waves 4–5 |
+
+**19 pre-existing failures** (identical to the baseline before Wave 4):
+
+| Group | Count | Tests |
+|---|---|---|
+| crawl (behavioral) | 3 | `test_crawl_behavior` SSE event order, liveness, background result |
+| crawl-orchestrator (contract) | 2 | `test_crawl_orchestrator_contract` funnel order, error never raises |
+| plan-events-bridge (contract) | 4 | `test_plan_events_bridge` parametrize cases (validation_failed, recovery_start, topology_recovery, budget_exhausted) |
+| tool-safety (unit) | 5 | `test_tool_decision` dispatch_success + `tool_safety_test` (idempotency, budget, calls) |
+| narration (contract + behavioral) | 2 | `test_narration_contract` heartbeat, `test_narration_flow` heartbeat |
+| director-mode (behavioral) | 1 | `test_director_mode_behavior` explorer adds next step |
+| kernel-separation (behavioral) | 1 | `test_kernel_separation_behavior` utterance forwarded during expand |
+| tool-decision (unit) | 1 | `test_tool_decision` dispatch success |
+
+**4 locked contract-pin test files** — confirmed unmodified (none edited by any Wave 1–5 commit):
+
+| File | Status |
+|---|---|
+| `test_coupled_registry.py` | **Unmodified** — not in any Wave 1–5 commit. The test asserts `apply_coupling`'s return value and state change; Wave 4's write-pattern change (accumulate + write-once) preserved both contracts. 8 tests green. |
+| `test_conversation_kernel.py` | **Unmodified** — not in any Wave 1–5 commit. Green. |
+| `test_trajectory_controller.py` | **Unmodified** — not in any Wave 1–5 commit. Green. |
+| `test_caducean_trajectory.py` | **Not edited by any Wave 1–5 commit.** The working tree shows a pre-existing modification (from prior work, not this spec); it tests the trajectory recorder (not `apply_coupling`) and passes. |
+
+**Commit history** (Waves 1–5 + feedback):
+
+| Commit | Wave | REQs | Description |
+|---|---|---|---|
+| `fdb52d68` | 1 | REQ-1, REQ-2, REQ-3, REQ-21 | Homeostasis, re-anchor, live EML balance, high-water mark idempotency |
+| `898ac469` | 2 | REQ-4, REQ-5, REQ-6 | Coordinate lookup, format, chain identity |
+| `7ae85444` | 2 (amend) | — | Test conversion + proximity loop test |
+| `a508b6dd` | 3 | REQ-7, REQ-12, REQ-13, REQ-16, REQ-17 | Trig module, |u| bands, maybe_refit, per-session EML cache, V-shaped explore pressure, threading.Lock |
+| `0b4a591e` | 4 | REQ-8, REQ-9, REQ-10, REQ-11 | Continuous sine coupling, nucleus/barrier, wire registry, distinct windings |
+| `3f563692` | 4 (fix) | — | N≥3 accumulation, no double-application, irrational via `domain_windings`, registry reset |
+| `98487a87` | 5 | REQ-15, REQ-20 | Observability logging, test-isolation fixture + reset accessors |
+
+All **REQ-1…21** implemented, tested, and zero-regression-verified across the full suite.
