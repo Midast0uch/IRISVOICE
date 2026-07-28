@@ -5,7 +5,7 @@
 >
 > **Supersedes** the corresponding requirements in `local-model-provider-parity`
 > (REQ-1/2/3), `contextpill-model-switcher` (REQ-5/6/7/8), and
-> `der-loop-integrity-display` (REQ-14/15). Those documents remain for history; **this
+> `der-loop-integrity-display` (REQ-3, REQ-5, REQ-14, REQ-15). Those documents remain for history; **this
 > file is authoritative for Phase 1.**
 
 ## Decisions Locked
@@ -150,6 +150,54 @@ remains.
   model's window, not rate limits.
 - A local model loaded at a different `n_ctx` than its filename suggests → AC2; the loaded value
   wins. (This is the old `parity` REQ-5b, folded in here.)
+
+---
+
+### REQ-2b: Work units are debited by measured cost, not by step count
+
+**User Story:** As the termination resource I want each step to consume its real token cost, so
+that a 50k-char crawler result and a 200-char `read_file` are not billed equally.
+
+**Verified:** Folded from `der-loop-integrity-display` REQ-3 (audit G). Belongs here because
+`work_units` and the token budget must stay coupled to the **same** `resolve_context_window()`
+resource (REQ-1 AC4) — splitting them across phases is how they drifted 5x apart in the first place.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL debit `work_units` by `max(1, measured_tokens / AVG_STEP_COST)` per
+  executed step, where `measured_tokens` is the real cost of that step's result + prompt.
+- AC2: THE SYSTEM SHALL retain `AVG_STEP_COST` as a tunable constant (currently 1500) consumed by
+  the debit formula.
+- AC3: WHEN a split occurs THEN THE SYSTEM SHALL still prepay `width` units up front, preserving
+  the strictly-decreasing Lyapunov invariant.
+- AC4: THE SYSTEM SHALL keep `work_units` and the token budget derived from the same
+  `resolve_context_window()` value (REQ-1 AC4).
+
+**Edge Cases:**
+- Token count unavailable (no tokenizer) → debit 1 unit as a safe floor, debug log.
+- Split child with zero measured cost → debit floor of 1.
+- `AVG_STEP_COST` tuned to 0 or negative → clamp to a minimum (e.g. 200) to avoid div-by-zero.
+
+---
+
+### REQ-2c: Resolver fallback is reasoning, not a web tool
+
+**User Story:** As the resolver I want the safe fallback for a non-web goal to be reasoning, so
+that I do not inject a tool preference at the wrong layer.
+
+**Verified:** Folded from `der-loop-integrity-display` REQ-5 (audit E). Belongs here because it is
+the same defect shape as REQ-2 — a fallback outranking a better-informed answer.
+
+**Acceptance Criteria:**
+- AC1: WHEN the LLM proposal is unparseable or invalid AND the goal's `task_class != "research"`
+  THEN THE SYSTEM SHALL fall back to pheromone top-1 or `reasoning` — **never** `crawler_query`.
+- AC2: WHEN `task_class == "research"` AND capability allows THEN THE SYSTEM SHALL prefer
+  `crawler_query` as first fallback (current behaviour, preserved).
+- AC3: THE SYSTEM SHALL pass the evidence block into the prompt for `kind="reasoning"` steps
+  identically to `kind="tool"` steps.
+
+**Edge Cases:**
+- No pheromone prediction and not research → return `reasoning` (tool=None).
+- Evidence empty → prompt still builds with a blank evidence section.
 
 ---
 

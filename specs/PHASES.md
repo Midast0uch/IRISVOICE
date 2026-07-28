@@ -10,9 +10,10 @@ Specs are cut by **execution order**, not by topic. Each phase is self-contained
 |---|---|---|---|
 | **1** | [`phase-1-foundation/`](phase-1-foundation/) | **READY** — Wave 1 partially landed (`01e6625b`) | everything |
 | **2** | [`phase-2-instrument/`](phase-2-instrument/) | **READY** | 3, 4, 5 validation |
-| 3 | `phase-3-local-loader/` | not yet written | 4, 5 |
+| **3** | [`phase-3-local-loader/`](phase-3-local-loader/) | **READY** | 4, 5 |
 | 4 | `phase-4-encoder/` | not yet written | 5 |
 | 5 | `phase-5-switcher/` | not yet written | — |
+| 6 | `phase-6-der-integrity/` | not yet written | — |
 
 ## What each phase covers
 
@@ -54,8 +55,11 @@ directly** — their requirements are redistributed across the phases above, and
 | `local-model-provider-parity/` | Phase 1 (REQ-1/2/3) + Phase 3 (the loader) |
 | `contextpill-model-switcher/` | Phase 1 (REQ-5/6/7/8) + Phase 5 (the UI) |
 | `lfm25-encoder-integration/` | Phase 4 |
-| `der-loop-integrity-display/` REQ-14/15 | Phase 1 |
-| `der-loop-integrity-display/` REQ-7/8/9 | Phase 2 |
+| `der-loop-integrity-display/` REQ-3, REQ-5, REQ-14, REQ-15 | Phase 1 |
+| `der-loop-integrity-display/` REQ-6, REQ-7, REQ-8, REQ-9 | Phase 2 |
+| `der-loop-integrity-display/` REQ-11, REQ-12 | Phase 5 |
+| `der-loop-integrity-display/` REQ-1, REQ-2, REQ-4, REQ-13 | Phase 6 |
+| `cross-thread-crawl-fix/` T36-T38 | Phase 2 |
 | `MODEL_SPEC_RECONCILIATION.md` | mostly dissolved — see below |
 
 ## Why the re-cut
