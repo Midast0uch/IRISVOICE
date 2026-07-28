@@ -103,11 +103,12 @@ def test_continuous_coupling_wrap_aware():
 
 
 def test_nucleus_barrier_opposite_signed():
-    """One call must push the two sessions in OPPOSITE directions.
+    """The two sessions end up with OPPOSITE-SIGNED nudges.
 
     Lower-energy session becomes the nucleus (negative nudge on a); the other
-    becomes the barrier (positive nudge). Both nudges come from a single
-    apply_coupling() call — this is what makes the differentiation emerge.
+    becomes the barrier (positive nudge). Under the ownership rule each party
+    writes only itself, so BOTH apply_coupling calls must run (as production
+    does per session) for the bias to emerge — and neither is nudged twice.
     """
     tmp = _engine_tmp()
     try:
@@ -122,7 +123,9 @@ def test_nucleus_barrier_opposite_signed():
         reg.update_session_state("nb_b", xi=1.05, u=-0.3)  # higher -> barrier
         before_a = ffi_caducean_get_state("nb_a")["a"]
         before_b = ffi_caducean_get_state("nb_b")["a"]
+        # Production calls apply_coupling on EACH session as it updates.
         reg.apply_coupling("nb_a")
+        reg.apply_coupling("nb_b")
         after_a = ffi_caducean_get_state("nb_a")["a"]
         after_b = ffi_caducean_get_state("nb_b")["a"]
         da = after_a - before_a
@@ -130,6 +133,9 @@ def test_nucleus_barrier_opposite_signed():
         assert da != 0.0 and db != 0.0
         # Opposite signs: one nucleus (negative), one barrier (positive).
         assert (da < 0) != (db < 0)
+        # No double-application: each session is nudged by a single configured
+        # nudge (<= 0.05), not 2x. A 2x bug would push |da| or |db| toward 0.04+.
+        assert abs(da) < 0.05 and abs(db) < 0.05
     finally:
         reset_coupled_registry()
         try:
@@ -155,12 +161,79 @@ def test_nucleus_barrier_tie_breaks_by_session_id():
         before_a = ffi_caducean_get_state("tie_a")["a"]
         before_b = ffi_caducean_get_state("tie_b")["a"]
         reg.apply_coupling("tie_a")
+        reg.apply_coupling("tie_b")
         after_a = ffi_caducean_get_state("tie_a")["a"]
         after_b = ffi_caducean_get_state("tie_b")["a"]
         da = after_a - before_a
         db = after_b - before_b
         assert da != 0.0 and db != 0.0
         assert (da < 0) != (db < 0)
+    finally:
+        reset_coupled_registry()
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def test_three_session_accumulates():
+    """Self's nudge accumulates across ALL partners and is written ONCE — the
+    N>=3 lost-update is fixed (defect 1 from Wave 4 review).
+
+    With 3 rational partners, A's final `a` must reflect BOTH B and C, not just
+    the last partner written from a stale base.
+    """
+    tmp = _engine_tmp()
+    try:
+        ffi_caducean_init_session("three_a", 1, 1)
+        ffi_caducean_init_session("three_b", 2, 2)
+        ffi_caducean_init_session("three_c", 3, 3)
+        reset_coupled_registry()
+        reg = get_coupled_registry()
+        reg.register_session("three_a", 1, 1)
+        reg.register_session("three_b", 2, 2)
+        reg.register_session("three_c", 3, 3)
+        # All rational with each other (1:2, 1:3, 2:3). Aligned, distinct phases.
+        reg.update_session_state("three_a", xi=1.0, u=0.3)
+        reg.update_session_state("three_b", xi=1.05, u=0.3)
+        reg.update_session_state("three_c", xi=1.10, u=0.3)
+        before_a = ffi_caducean_get_state("three_a")["a"]
+        reg.apply_coupling("three_a")
+        after_a = ffi_caducean_get_state("three_a")["a"]
+        # A is the lowest-energy session, so it is nucleus vs BOTH partners and
+        # its nudge is the SUM of both contributions. A single partner's nudge
+        # is <= 0.05, so a change > 0.05 proves BOTH partners contributed (the
+        # buggy stale-base write would only reflect the last partner).
+        assert abs(after_a - before_a) > 0.05
+    finally:
+        reset_coupled_registry()
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def test_each_party_writes_only_itself():
+    """Ownership rule: a call writes ONLY self. Calling apply_coupling on A must
+    NOT mutate B (no cross-write, so no double-application / 2x nudge — defect 2
+    from Wave 4 review)."""
+    tmp = _engine_tmp()
+    try:
+        ffi_caducean_init_session("own_a", 1, 1)
+        ffi_caducean_init_session("own_b", 2, 2)
+        reset_coupled_registry()
+        reg = get_coupled_registry()
+        reg.register_session("own_a", 1, 1)
+        reg.register_session("own_b", 2, 2)
+        reg.update_session_state("own_a", xi=1.0, u=0.3)
+        reg.update_session_state("own_b", xi=1.05, u=-0.3)
+        before_a = ffi_caducean_get_state("own_a")["a"]
+        before_b = ffi_caducean_get_state("own_b")["a"]
+        reg.apply_coupling("own_a")  # only A's call
+        after_a = ffi_caducean_get_state("own_a")["a"]
+        after_b = ffi_caducean_get_state("own_b")["a"]
+        assert after_a != before_a  # A wrote itself
+        assert after_b == before_b  # A did NOT write B
     finally:
         reset_coupled_registry()
         try:
@@ -220,31 +293,27 @@ def test_max_partners_cap():
 
 
 def test_distinct_windings_and_irrational():
-    """Domain mapping yields distinct c_eff; an irrational pair is reachable."""
+    """Domain map yields distinct c_eff values AND an irrational pair reachable
+    using ONLY domain_windings() outputs (no hand-picked windings) — REQ-11 AC5
+    (defect 3 from Wave 4 review: the irrational branch was previously only
+    reachable by hand-registering (2,1)/(3,3))."""
     reset_coupled_registry()
     reg = get_coupled_registry()
     try:
-        # Domain mapping produces at least two distinct c_eff values.
-        reg.register_session("voice_sess", *domain_windings("voice"))  # (2,2)->2.0
-        reg.register_session("der_sess", *domain_windings("der"))  # (1,1)->1.0
-        assert reg.get_session("voice_sess").c_eff != reg.get_session("der_sess").c_eff
-        # Force an irrational pair (spec Q3): (2,1) vs (3,3).
-        reg.register_session("irr_x", 2, 1)  # c_eff ~1.5811
-        reg.register_session("irr_y", 3, 3)  # c_eff 3.0
-        assert (
-            _is_rational_ratio(
-                reg.get_session("irr_x").c_eff, reg.get_session("irr_y").c_eff
-            )
-            is False
-        )
-        # Sanity: a rational pair is still detected.
-        assert (
-            _is_rational_ratio(
-                reg.get_session("voice_sess").c_eff,
-                reg.get_session("der_sess").c_eff,
-            )
-            is True
-        )
+        # Domain map produces three distinct c_eff values.
+        reg.register_session("voice_sess", *domain_windings("voice"))  # (2,1) -> ~1.5811
+        reg.register_session("der_sess", *domain_windings("der"))  # (1,1) -> 1.0
+        reg.register_session("research_sess", *domain_windings("research"))  # (3,3) -> 3.0
+        ce_v = reg.get_session("voice_sess").c_eff
+        ce_d = reg.get_session("der_sess").c_eff
+        ce_r = reg.get_session("research_sess").c_eff
+        assert ce_v != ce_d and ce_v != ce_r and ce_d != ce_r
+        # voice(2,1) : research(3,3) is sqrt5 : sqrt18 — the C1 irrational pair,
+        # reachable from domain_windings() alone (not hand-registered).
+        assert _is_rational_ratio(ce_v, ce_r) is False
+        # Sanity: rational pairs are still detected (der:voice, der:research).
+        assert _is_rational_ratio(ce_d, ce_v) is True
+        assert _is_rational_ratio(ce_d, ce_r) is True
     finally:
         reset_coupled_registry()
 

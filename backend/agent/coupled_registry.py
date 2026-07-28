@@ -83,17 +83,25 @@ def coupling_enabled() -> bool:
 def domain_windings(domain: str) -> Tuple[int, int]:
     """Map a kernel domain to Caducean winding numbers (l, m).
 
-    REQ-11 AC2 — defined in ONE place with rationale:
-      * coding / der / default -> (1, 1): c_eff = 1.0 (baseline, per Gate 1).
-      * voice                  -> (2, 2): c_eff = 2.0 (docstring-prescribed
-        voice winding; rationally related to coding at 2:1, so it exercises the
-        attractive branch). At least two distinct c_eff values exist when both a
-        voice and a coding session are active (REQ-11 AC1).
+    REQ-11 AC2 — defined in ONE place with rationale. Three domains so an
+    irrational pair occurs NATURALLY in production (REQ-11 AC5), not just in a
+    hand-picked test:
+      * der / coding / default -> (1, 1): c_eff = 1.0 (baseline, per Gate 1).
+      * voice                -> (2, 1): c_eff = (1/√2)·√5 ≈ 1.5811. Rationally
+        related to der at ~8:5, so it still exercises the attractive branch.
+      * research             -> (3, 3): c_eff = (1/√2)·√18 = 3.0.
+    The pair voice(2,1) : research(3,3) is √5 : √18 — the C1 irrational
+    configuration — so when both a voice and a research session are active the
+    destructive-interference (irrational) branch is reached at runtime, not only
+    in a unit test. At least two distinct c_eff values exist when any two of
+    these domains are active (REQ-11 AC1).
     Unclassified domains fall back to (1, 1) to preserve today's behavior
     (REQ-11 AC4).
     """
     if domain == "voice":
-        return (2, 2)
+        return (2, 1)
+    if domain == "research":
+        return (3, 3)
     return (1, 1)
 
 
@@ -205,9 +213,20 @@ class CoupledTrajectoryRegistry:
 
         REQ-8: coupling strength is a continuous, wrap-aware function of phase
         difference (via align_force), with no threshold gate. REQ-9: for a
-        rational pair the two sessions receive OPPOSITE-SIGNED nudges from this
-        single call (nucleus negative, barrier positive), assigned by an
-        order-independent symmetry breaker.
+        rational pair the two sessions receive OPPOSITE-SIGNED nudges, assigned
+        by an order-independent symmetry breaker (lower energy -> nucleus).
+
+        OWNERSHIP RULE (fixes the N>=3 lost-update and the double-application
+        race): each apply_coupling(self) call writes ONLY self's accumulated
+        nudge. The partner is written by the partner's OWN apply_coupling call.
+        This means:
+          * self's nudge accumulates across ALL partners and is written ONCE
+            after the loop (no stale-base overwrite when N>=3);
+          * no session is nudged twice per round (A's call writes A; B's call
+            writes B — never both), so the effective coupling constant is the
+            configured value, not 2x.
+        The opposite-signed bias still emerges because A's role vs B and B's
+        role vs A are opposite (the assignment is order-independent).
 
         Returns the number of coupling events applied (0 if no partners).
         """
@@ -245,6 +264,13 @@ class CoupledTrajectoryRegistry:
         cur_b = state.get("b", 2.0)
         cur_s = state.get("s", 0.35)
 
+        # Accumulate self's nudge across ALL partners, then write ONCE. This
+        # avoids the N>=3 lost-update (each iteration previously wrote from a
+        # stale base) and the double-application race (each session is written
+        # exactly once per call — its partner is written by the partner's own
+        # call, per the ownership rule above).
+        new_a_self = cur_a
+        new_s_self = cur_s
         events = 0
         for other in other_recs:
             xi2 = other.last_xi
@@ -272,29 +298,12 @@ class CoupledTrajectoryRegistry:
                 else:
                     self_is_nucleus = session_id < other.session_id
                 self_sign = -1.0 if self_is_nucleus else 1.0
-                other_sign = 1.0 if self_is_nucleus else -1.0
-                # Nudge self (barrier +, nucleus -) on a, biasing u indirectly.
-                new_a_self = max(1.0, min(4.0, cur_a + self_sign * magnitude))
-                ffi_caducean_set_params(session_id, new_a_self, cur_b, cur_s)
-                # Nudge partner with the OPPOSITE sign from the SAME call
-                # (REQ-9 AC5) — this is what makes nucleus/barrier emerge.
-                try:
-                    ostate = ffi_caducean_get_state(other.session_id)
-                    oa = ostate.get("a", 2.0)
-                    ob = ostate.get("b", 2.0)
-                    os_ = ostate.get("s", 0.35)
-                    new_a_other = max(1.0, min(4.0, oa + other_sign * magnitude))
-                    ffi_caducean_set_params(other.session_id, new_a_other, ob, os_)
-                except Exception:
-                    pass
+                # Accumulate self's nudge (barrier +, nucleus -) on a.
+                new_a_self += self_sign * magnitude
                 events += 1
-                # REQ-15 AC3/AC4: coupling events logged at INFO with both
-                # session ids, both c_eff, the rational/irrational verdict, the
-                # wrap-aware phase difference, the assigned roles, and the applied
-                # delta (self; partner receives the opposite sign).
                 logger.info(
-                    "[CoupledRegistry] coupled %s (c_eff=%.3f, %s) <-> %s "
-                    "(c_eff=%.3f, %s): rational=%s phase_diff=%.4f nudge=%.4f",
+                    "[CoupledRegistry] %s (c_eff=%.3f, %s) coupled with %s "
+                    "(c_eff=%.3f, %s): rational=%s phase_diff=%.4f self_nudge=%.4f",
                     session_id,
                     c1,
                     "nucleus" if self_is_nucleus else "barrier",
@@ -307,8 +316,7 @@ class CoupledTrajectoryRegistry:
                 )
             else:
                 # Irrational: destructive interference — small damping on s.
-                new_s = max(0.1, min(0.8, cur_s - _IRRATIONAL_DAMPING))
-                ffi_caducean_set_params(session_id, cur_a, cur_b, new_s)
+                new_s_self = max(0.1, min(0.8, new_s_self - _IRRATIONAL_DAMPING))
                 events += 1
                 logger.info(
                     "[CoupledRegistry] %s (c_eff=%.3f) irrational with %s "
@@ -319,6 +327,13 @@ class CoupledTrajectoryRegistry:
                     c2,
                     _IRRATIONAL_DAMPING,
                 )
+        # Write self ONCE with the accumulated nudge (ownership rule: each
+        # party writes only itself; the partner is written by its own call, so
+        # no session is nudged twice per round).
+        new_a_self = max(1.0, min(4.0, new_a_self))
+        new_s_self = max(0.1, min(0.8, new_s_self))
+        if new_a_self != cur_a or new_s_self != cur_s:
+            ffi_caducean_set_params(session_id, new_a_self, cur_b, new_s_self)
         return events
 
 

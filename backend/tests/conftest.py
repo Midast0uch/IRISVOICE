@@ -71,14 +71,19 @@ def _caducean_scheduler_isolation(monkeypatch):
         except Exception:
             pass
         # REQ-20 AC1: reset the global stores this spec adds so the suite stays
-        # order-independent — homeostasis baselines (REQ-2) and the per-session
-        # EML cache (REQ-16). Both expose reset_*_for_testing() accessors.
+        # order-independent — homeostasis baselines (REQ-2), the per-session
+        # EML cache (REQ-16), and the coupled-registry singleton (REQ-10). All
+        # three expose reset_*_for_testing() accessors. The coupled registry is
+        # a process-wide singleton, so the same order-dependence that bit the
+        # scheduler applies here if it is not reset.
         try:
             from backend.agent.param_homeostasis import reset_param_homeostasis
             from backend.agent.caducean_trajectory import reset_eml_cache_for_testing
+            from backend.agent.coupled_registry import reset_coupled_registry
 
             reset_param_homeostasis()
             reset_eml_cache_for_testing()
+            reset_coupled_registry()
         except Exception:
             pass
         # The call class is a ContextVar, and pytest runs every test in ONE
