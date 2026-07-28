@@ -235,6 +235,11 @@ heuristic.
   the keyword result rather than guess.
 - AC5: THE SYSTEM SHALL log both the keyword result and the encoder result during rollout, so
   disagreements are measurable before the encoder becomes authoritative.
+- AC6: THE SYSTEM SHALL treat a `task_class` change as a **budget** change, not only a routing
+  change. `task_class` selects DER's per-class budget ceiling
+  (`der-loop-integrity-display` REQ-14 AC2), so a misclassification directly mis-sizes the token
+  budget for the whole task. Rollout measurement (AC5) SHALL therefore record the budget each
+  classification would have produced, not just the class label.
 
 **Edge Cases:**
 - Empty task text → existing fallback, encoder not consulted.

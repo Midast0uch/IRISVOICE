@@ -90,11 +90,52 @@ DER_TOKEN_BUDGETS: Dict[str, int] = {
 }
 
 
+# The smallest budget DER will ever run with, and itself capped by the real
+# window (see resolve_der_token_budget). This is the ONLY floor. The per-mode
+# values above are CEILINGS — how much of the window a task class is allowed to
+# ask for — never floors.
+#
+# History: DER_TOKEN_BUDGETS was previously applied as `max(window*0.9, floor)`.
+# Because every entry here is 15k-80k, the "floor" beat the derived value for
+# any model under ~44k, so an 8k-window model was authorised 40,000 tokens — a
+# ~5x overcommit that let the loop keep issuing steps while every call
+# truncated. The floor must never exceed the window it is protecting.
+DER_BUDGET_MIN_FLOOR = 4_000
+
+# Fraction of the real context window DER may spend on step execution. The
+# remainder is headroom for the system prompt, the final synthesis, and the
+# response itself.
+DER_WINDOW_UTILISATION = 0.9
+
+
 def get_token_budget(mode: Optional[str]) -> int:
     """Get token budget for a mode string.  Falls back to AGENTIC budget."""
     if mode and mode in DER_TOKEN_BUDGETS:
         return DER_TOKEN_BUDGETS[mode]
     return DER_TOKEN_BUDGETS["agentic"]
+
+
+def resolve_der_token_budget(context_window: int, task_class: Optional[str]) -> int:
+    """Allocate DER's step budget from the model's REAL context window.
+
+    The mode table is a per-class **ceiling** (a "quick" single-tool task should
+    not be handed 230k just because the model is large); the window is the hard
+    cap (no task class may exceed what the model can actually hold); and the
+    floor is applied last and is itself clamped by the window, so it can never
+    reintroduce an overcommit on a small model.
+
+    Keeping this in one function is what makes `_token_budget` and
+    `derive_work_units_0()` agree — both now derive from the same
+    `context_window`, instead of one reading the window and the other reading a
+    flat table.
+    """
+    _window_cap = max(int(context_window * DER_WINDOW_UTILISATION), 1)
+    _mode_ceiling = DER_TOKEN_BUDGETS.get(
+        task_class, DER_TOKEN_BUDGETS.get("full", 50_000)
+    )
+    _budget = min(_mode_ceiling, _window_cap)
+    # Floor last, and never above the window.
+    return max(_budget, min(DER_BUDGET_MIN_FLOOR, _window_cap))
 
 
 # ── Safety limits ──────────────────────────────────────────────────────────

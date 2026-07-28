@@ -433,6 +433,94 @@ regression.
 - All three guards passing trivially because the held-out set is homogeneous → AC8's logging
   makes this observable; not a correctness failure, but it must not be silent.
 
+## REQ-14 — DER's budget is allocated from the model's REAL context window (Wave 11)
+
+**User Story:** As the Director I want my step budget derived from the context window the model
+actually has, so that I do not plan long-horizon work against capacity that does not exist.
+
+**Verified:** REAL BUG, fixed 2026-07-28 outside the spec; this requirement exists so it cannot
+regress. Observed live: `provider=cerebras model=gemma-4-31b` resolved to the **8,192** default
+(no `cerebras` entry in `_KNOWN_CONTEXT_WINDOWS`, [`agent_kernel.py:884-932`](backend/agent/agent_kernel.py:884)),
+and DER then reported `budget=40000`:
+
+```
+_model_window = 8_192   →  8_192 * 0.9      =  7_372
+_floor        = DER_TOKEN_BUDGETS["implement"] = 40_000
+_token_budget = max(7_372, 40_000)             = 40_000   ← 4.9x the window
+```
+
+The code comment stated the flat table was *"kept only as a SAFETY FLOOR... never as a ceiling."*
+Because every entry is 15k–80k, the floor beat the derived value for **any model under ~44k**, so
+the derivation was dead code and DER kept issuing steps while every call truncated against the real
+window. `derive_work_units_0()` read the same 8,192 and produced 5 units — so the token budget and
+the termination resource disagreed by 5x with each other.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL derive the DER step budget from `resolve_context_window()`, and the budget
+  SHALL NEVER exceed that window.
+- AC2: THE SYSTEM SHALL treat `DER_TOKEN_BUDGETS[task_class]` as a per-class **ceiling** — the most
+  a task class may request — and SHALL NOT apply it as a floor.
+- AC3: THE SYSTEM SHALL apply the minimum floor **last** and SHALL clamp the floor itself by the
+  window, so a floor can never reintroduce an overcommit on a small model.
+- AC4: THE SYSTEM SHALL derive `_token_budget` and `derive_work_units_0()` from the **same**
+  `context_window` value, so the token budget and the termination resource cannot disagree.
+- AC5: THE SYSTEM SHALL log the resolved budget together with the window, task class, and work
+  units, so an overcommit is visible in one line rather than inferred from behavior.
+- AC6: WHERE a provider/model has no known context window THEN THE SYSTEM SHALL log that the
+  default was used, and the conservative default SHALL constrain the budget (never the reverse).
+
+**Edge Cases:**
+- Window smaller than the floor (e.g. a 2k model) → budget clamps to `window * 0.9`; the floor is
+  ignored, not applied.
+- Very large window (256k) with `task_class="quick"` → the mode ceiling (15k) binds, so a
+  single-tool task is not handed 230k. This is why the mode table must be **kept**, not deleted:
+  `DirectorQueue._decide_mode` ([`der_loop.py:220`](backend/agent/der_loop.py:220)) routes to QUICK
+  below `BUDGET_ABSOLUTE_MIN`, and `_should_escalate`
+  ([`:283-289`](backend/agent/der_loop.py:283)) compares remaining budget against `mode_budget`.
+  Both lose their basis if the table is removed.
+- Model swapped mid-session → budget is resolved per DER invocation, so the next task picks up the
+  new window without a restart.
+
+**Cross-spec:**
+- `local-model-provider-parity` **REQ-5b** fixes the same class of defect for **local** models
+  (loaded `n_ctx` beating the substring table). It does **not** cover API providers, which resolve
+  through the same table and hit the same default. That gap is REQ-15 below.
+- `lfm25-encoder-integration` **REQ-5** makes `task_class` encoder-derived. Because `task_class`
+  selects the budget **ceiling** (AC2), a misclassification now mis-sizes the budget directly. That
+  coupling is stated in neither spec and must be tested on both sides.
+- Pacman filters tokens into the context window. A wrong window means Pacman optimizes against a
+  fictional capacity — so this one lookup corrupts DER's budget, DER's work units, Pacman's
+  filtering target, and the ContextPill denominator simultaneously.
+
+## REQ-15 — API providers resolve a real context window (Wave 11)
+
+**User Story:** As a user on a hosted provider I want the app to know my model's real window, so
+that the ContextPill is honest and DER is not sized against a placeholder.
+
+**Verified:** REAL GAP. `_KNOWN_CONTEXT_WINDOWS` has entries for cohere / openai / groq / deepseek /
+mistral / openrouter / lmstudio / iris_local / local — and **none for `cerebras`**
+([`agent_kernel.py:884-932`](backend/agent/agent_kernel.py:884)). Lookup requires
+`reg_provider == provider` ([`:951-955`](backend/agent/agent_kernel.py:951)), so an unlisted
+provider always falls to the 8,192 default. Live symptom: the ContextPill reads `0/8.2k` for every
+turn regardless of the model in use.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL resolve a context window for every configured API provider, not only those
+  present in the static table.
+- AC2: WHERE a provider exposes model metadata THEN THE SYSTEM SHALL prefer that over the substring
+  table — the same precedence `local` already applies to a loaded `n_ctx` (REQ-5b).
+- AC3: THE SYSTEM SHALL keep the user override (`_context_window_overrides`) highest-precedence.
+- AC4: IF no window can be determined THEN THE SYSTEM SHALL use a conservative default, log it, and
+  surface it in the debug endpoint — an unknown window SHALL be visible, not silent.
+- AC5: THE SYSTEM SHALL NOT guess a window from a model-name substring when an authoritative value
+  is available.
+
+**Edge Cases:**
+- Provider-wide fallback entries (the `("openrouter", "", 32_000)` pattern) → permitted as a
+  documented default, but AC4 still requires it be logged as a default rather than a known value.
+- A provider reporting a window larger than the account's actual quota → out of scope; the budget
+  is sized from the model's window, not from rate limits.
+
 ## Non-Requirements (Out of Scope)
 - Rewriting the four-scale recursive operator or the Caducean `u`/`ξ` split physics.
 - Changing the single-resolver architecture or deleting the web-regex override (already done).

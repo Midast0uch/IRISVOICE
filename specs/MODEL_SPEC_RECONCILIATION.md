@@ -145,3 +145,35 @@ S2 Wave 0-3         │            S2 Wave 4 (DER) — fully parallel,
 The one hard ordering that is easy to get wrong: **S2 T2.4b (the purpose filter) must land with
 S2 T2.1 (registration)**, not in S3's wave. Between those two tasks, encoders are bindable as
 reasoning models.
+
+---
+
+## Addendum 2026-07-28 — budget derivation (M9)
+
+Found live while running the test plan; fixed in code, then specified so it cannot regress.
+
+**M9 — DER's budget ignored the model's real context window.** `_token_budget` was
+`max(window * 0.9, DER_TOKEN_BUDGETS[task_class])`. Every table entry is 15k-80k, so the "floor"
+beat the derived value for any model under ~44k. Observed: an 8,192-token window produced
+`budget=40000` — a 4.9x overcommit — while `derive_work_units_0()` read the same 8,192 and produced
+5 units. The token budget and the termination resource disagreed by 5x with each other.
+
+Now `resolve_der_token_budget()`: mode value is a **ceiling**, window is the hard cap, floor is
+applied last and clamped by the window. Specified as `der-loop-integrity-display` **REQ-14**
+(Wave 11, T11.1/T11.2 done).
+
+**Why it belongs in this reconciliation.** It is the same defect class as S1 REQ-5b — a guess
+outranking an authoritative value — but on the **API** path, which REQ-5b does not cover. And it
+reaches further than either spec stated: `resolve_context_window()` feeds DER's budget, DER's work
+units, **Pacman's filtering target**, and the ContextPill denominator. One wrong lookup, four
+symptoms.
+
+**New cross-spec coupling (M10).** `task_class` selects the budget ceiling (REQ-14 AC2), and
+`lfm25-encoder-integration` REQ-5 makes `task_class` encoder-derived. So an encoder
+misclassification now mis-sizes the token budget for a whole task — a coupling neither spec
+originally stated. Added as S2 REQ-5 AC6.
+
+**The mode table is retained deliberately.** `_decide_mode` (`der_loop.py:220`) routes to QUICK
+below `BUDGET_ABSOLUTE_MIN` and `_should_escalate` (`:283-289`) compares remaining budget against
+`mode_budget`. Deleting the table would remove the only bound on a "quick" task in a 256k model and
+strip escalation of its comparison basis.

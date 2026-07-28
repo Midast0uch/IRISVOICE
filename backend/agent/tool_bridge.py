@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Agent Tool Bridge
 
@@ -1043,10 +1043,16 @@ class AgentToolBridge:
         # Give the user active verbal feedback the instant the agent engages a web
         # search.  Fires before the crawl so it still speaks even if the search
         # fails.  TTS is best-effort and never blocks the search.
+        # Gated by may_narrate() so overlapping DER steps don't stack TTS.
         if tool_name in ("search", "crawler_query"):
             _q = (params or {}).get("query") or ""
             if _q:
-                self._handle_speak({"text": f"Searching the web for {_q}"}, session_id)
+                try:
+                    from backend.agent.narration import may_narrate
+                    if may_narrate():
+                        self._handle_speak({"text": f"Searching the web for {_q}"}, session_id)
+                except Exception:
+                    self._handle_speak({"text": f"Searching the web for {_q}"}, session_id)
 
         # ── Phase 4: Permission check ──────────────────────────────────────
         try:
@@ -1127,6 +1133,18 @@ class AgentToolBridge:
                     return await self._handle_ask_user_question(params, session_id)
                 if tool_name == "speak":
                     return self._handle_speak(params, session_id)
+
+            # Read-only document-data retrieval for recombination / re-render
+            # (REQ-7/REQ-8). Returns the active conversation's full document DATA
+            # (incl. har_path) so the agent can combine prior docs. Conv-scoped.
+            if tool_name == "get_rendered_documents":
+                return await self._execute_get_rendered_documents(params, session_id)
+            if tool_name == "list_conversations":
+                return await self._execute_list_conversations(params, session_id)
+
+            # Combine several rendered documents into one (REQ-9). Local op.
+            if tool_name == "combine_documents":
+                return await self._execute_combine_documents(params, session_id)
 
             if tool_name in vision_tools:
                     result = await self.execute_vision_tool(tool_name, params, session_id)
@@ -1702,6 +1720,7 @@ class AgentToolBridge:
             from backend.crawler.orchestrator import get_crawl_orchestrator, CrawlProgress
             from backend.agent.tools.speak_tool import get_speak_tool
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            from backend.agent.narration import may_narrate
         except Exception as exc:
             return {"success": False, "error": f"crawler modules unavailable: {exc}"}
 
@@ -1720,28 +1739,47 @@ class AgentToolBridge:
         except Exception:
             pass  # never block the crawl on an event emit failure
 
-        def _on_page_done(url: str, page_number: int, total: int) -> None:
-            try:
-                _speak_tool.speak(
-                    f"Researching — fetched page {page_number} of {total}.",
-                    priority="low",
-                )
-            except Exception as _spk_exc:  # pragma: no cover - best effort
-                logger.debug("[crawler_query] progress speak failed: %s", _spk_exc)
-            # Live step feed: update the current working plan step + the
-            # ContextPill action text with the site being read. The frontend
-            # (useTaskProgress) maps this onto the in-progress step so the
-            # plan card shows "Reading <host> (N/M)" as pages arrive.
-            try:
-                from urllib.parse import urlparse
+        _last_narration_time = 0.0
+        _NARRATION_COOLDOWN_S = 25.0  # W5 (T35): speak progress at most once per 25s
 
-                _host = urlparse(url or "").netloc or "source"
+        def _on_page_done(url: str, page_number: int, total: int, title: str = "", snippet: str = "") -> None:
+            nonlocal _last_narration_time
+            now = time.time()
+            # Throttle: only speak if enough time has passed since last narration.
+            should_speak = (now - _last_narration_time) >= _NARRATION_COOLDOWN_S
+            _label = title or urlparse(url or "").netloc or "source"
+            if should_speak:
+                _last_narration_time = now
+                # Use snippet content when available (more conversational and useful).
+                _speak_text = snippet[:200] if snippet else _label
+                try:
+                    if may_narrate() and _speak_tool is not None:
+                        _speak_tool.speak(
+                            _speak_text,
+                            priority="low",
+                        )
+                except Exception as _spk_exc:  # pragma: no cover - best effort
+                    logger.debug("[crawler_query] progress speak failed: %s", _spk_exc)
+            # Live step feed: the source currently being read, plus the
+            # ContextPill action text.
+            #
+            # `detail` / `detail_progress` are the STRUCTURED fields the card
+            # renders beside the tool name — the plan step's own text is left
+            # alone so the dropdown keeps showing what the agent set out to do.
+            # `description` stays a full sentence for back-compat (ContextPill
+            # and older consumers read it) and is the fallback when `detail` is
+            # absent; do not remove it.
+            try:
                 _bus.emit(
                     IRISStreamEvent.TASK_PROGRESS,
                     data={
-                        "description": f"Reading {_host} ({page_number}/{total})",
-                        "action": f"Reading {_host} ({page_number}/{total})",
+                        "description": f"Reading {_label} ({page_number}/{total})",
+                        "action": f"Reading {_label} ({page_number}/{total})",
                         "update_step": True,
+                        # Structured, so the frontend never parses a sentence.
+                        "detail": _label,
+                        "detail_url": url or "",
+                        "detail_progress": f"{page_number}/{total}",
                     },
                     session_id=session_id,
                 )
@@ -1752,7 +1790,10 @@ class AgentToolBridge:
             ev = progress.event
             pl = progress.payload
             if ev == "CRAWLER_PAGE_FETCHED":
-                _on_page_done(pl["url"], pl["page_number"], pl["total"])
+                _on_page_done(
+                    pl["url"], pl["page_number"], pl["total"],
+                    title=pl.get("title", ""),
+                )
             elif ev == "CRAWLER_ERROR":
                 logger.error("[crawler_query] %s", pl.get("message", "error"))
 
@@ -1772,7 +1813,8 @@ class AgentToolBridge:
                 _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
             except Exception:
                 pass
-            return {"success": False, "error": f"research failed: {exc}", "job_id": job_id}
+            return {"success": False, "error": f"research failed: {exc}",
+                    "error_type": _crawler_error_type(str(exc)), "job_id": job_id}
 
         # Return phase to "thinking" so the orb reflects the agent summarising.
         try:
@@ -1784,7 +1826,8 @@ class AgentToolBridge:
             logger.error("[crawler_query] crawl failed: %s", result.error)
             if _registry is not None:
                 await _registry.fail(job_id, result.error)
-            return {"success": False, "error": result.error, "job_id": job_id}
+            return {"success": False, "error": result.error,
+                    "error_type": _crawler_error_type(result.error), "job_id": job_id}
 
         crawl_result = result
         dashboard_data = result.dashboard_data or {}
@@ -1861,6 +1904,129 @@ class AgentToolBridge:
             "citation_index": getattr(crawl_result, "citation_index", None),
         }
 
+    async def _execute_get_rendered_documents(self, params: Dict, session_id: str) -> Dict:
+        """REQ-7/REQ-8: return the active conversation's rendered document DATA.
+
+        Full data (content, variants, sources, source_document_id, har_path) so the
+        agent can recombine / re-render prior documents (the "combine A + B" path).
+        Conv-scoped via ``list_for_conversation`` (REQ-12 thread isolation) — other
+        threads are never returned. Read-only; never raises into the caller.
+        """
+        params = params or {}
+        conversation_id = (
+            params.get("conversation_id")
+            or self._active_conversation_id.get(session_id)
+            or "default"
+        )
+        try:
+            from backend.agent.agent_kernel import get_agent_kernel
+            from backend.agent.document_store import DocumentDataStore
+
+            kernel = get_agent_kernel(conversation_id, session_id)
+            store = kernel._get_document_store() if kernel is not None else None
+            if store is None:
+                return {
+                    "success": True,
+                    "conversation_id": conversation_id,
+                    "documents": [],
+                }
+            documents = store.list_for_conversation(
+                conversation_id, metadata_only=False
+            )
+            self._logger.info(
+                "[ToolBridge] GET RENDERED DOCS conv=%s returned=%d",
+                conversation_id,
+                len(documents),
+            )
+            return {
+                "success": True,
+                "conversation_id": conversation_id,
+                "documents": documents,
+            }
+        except Exception as exc:
+            self._logger.warning(
+                "[ToolBridge] get_rendered_documents failed: %s", exc
+            )
+            return {"success": False, "error": str(exc), "documents": []}
+
+    async def _execute_list_conversations(self, params: Dict, session_id: str) -> Dict:
+        """Discovery for cross-thread reuse: list conversations that have documents.
+
+        Lets the agent find a PRIOR thread (one that previously rendered a document)
+        and then pull its data via get_rendered_documents(conversation_id=...) instead
+        of re-searching the web. Read-only; never raises into the caller.
+        """
+        try:
+            from backend.agent.agent_kernel import get_agent_kernel
+            from backend.agent.document_store import DocumentDataStore
+
+            conversation_id = self._active_conversation_id.get(session_id) or "default"
+            kernel = get_agent_kernel(conversation_id, session_id)
+            store = kernel._get_document_store() if kernel is not None else None
+            if store is None:
+                return {
+                    "success": True,
+                    "active_conversation_id": conversation_id,
+                    "conversations": [],
+                }
+            conversations = store.list_conversations()
+            self._logger.info(
+                "[ToolBridge] LIST CONVERSATIONS active=%s returned=%d",
+                conversation_id,
+                len(conversations),
+            )
+            return {
+                "success": True,
+                "active_conversation_id": conversation_id,
+                "conversations": conversations,
+            }
+        except Exception as exc:
+            self._logger.warning(
+                "[ToolBridge] list_conversations failed: %s", exc
+            )
+            return {"success": False, "error": str(exc), "conversations": []}
+
+    async def _execute_combine_documents(self, params: Dict, session_id: str) -> Dict:
+        """REQ-9: combine several rendered documents into one new render.
+
+        Reads the named documents from the active conversation's store, combines
+        their content + unions their sources, and stores the result. Local op
+        (no network). Conv-scoped. Never raises into the caller.
+        """
+        params = params or {}
+        document_ids = params.get("document_ids") or []
+        if not isinstance(document_ids, list) or not document_ids:
+            return {"success": False, "error": "document_ids (list) required"}
+        conversation_id = (
+            params.get("conversation_id")
+            or self._active_conversation_id.get(session_id)
+            or "default"
+        )
+        try:
+            from backend.agent.agent_kernel import get_agent_kernel
+            from backend.agent.recombination import combine_documents
+
+            kernel = get_agent_kernel(conversation_id, session_id)
+            store = kernel._get_document_store() if kernel is not None else None
+            if store is None:
+                return {"success": False, "error": "document store unavailable"}
+            combined = combine_documents(store, document_ids, conversation_id)
+            if combined is None:
+                return {
+                    "success": False,
+                    "error": "no resolvable documents to combine",
+                }
+            self._logger.info(
+                "[ToolBridge] COMBINE DOCS conv=%s ids=%s -> %s",
+                conversation_id,
+                document_ids,
+                combined["document_id"],
+            )
+            return {"success": True, **combined}
+        except Exception as exc:
+            self._logger.warning("[ToolBridge] combine_documents failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+
     async def _execute_web_search(self, params: Dict, session_id: str) -> Dict:
         """Agent tool: quick in-app web search (headless crawl of results).
 
@@ -1899,7 +2065,8 @@ class AgentToolBridge:
 
         if getattr(crawl_result, "error", None):
             logger.warning("[web_search] crawl error (query=%r): %s", query, crawl_result.error)
-            return {"success": False, "error": crawl_result.error}
+            return {"success": False, "error": crawl_result.error,
+                    "error_type": _crawler_error_type(crawl_result.error)}
 
         # Rebuild markdown content from the crawled page(s).
         _CONTENT_CAP = 8_000
@@ -1951,6 +2118,29 @@ class AgentToolBridge:
 _agent_tool_bridge: Optional[AgentToolBridge] = None
 
 
+
+def _crawler_error_type(error_str: str) -> str:
+    """Map a crawler failure message to a REQ-10 ``error_type`` (deterministic).
+
+    The crawler used to return a bare error string, forcing the black box to
+    guess the class via string heuristics. REQ-10 AC1 wants the structured
+    envelope straight from the tool, so we classify explicitly here instead of
+    relying on the box's fallback heuristic.
+    """
+    if not error_str:
+        return "permanent"
+    _e = str(error_str).lower()
+    if "rate limit" in _e or "429" in _e or "too many requests" in _e:
+        return "rate_limit"
+    if "timeout" in _e or "timed out" in _e or "connection" in _e or "reset" in _e:
+        return "transient"
+    if "no candidate urls" in _e or "no sources" in _e:
+        # Planner exhausted its retries (see CrawlPlanner._plan_with_retry);
+        # re-running the same query verbatim won't find URLs -> not retryable.
+        return "permanent"
+    if "not found" in _e or "404" in _e:
+        return "not_found"
+    return "permanent"
 def get_agent_tool_bridge() -> AgentToolBridge:
     """Get the singleton AgentToolBridge instance."""
     global _agent_tool_bridge

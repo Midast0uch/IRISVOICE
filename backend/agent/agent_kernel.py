@@ -73,6 +73,8 @@ try:
         TRAILING_GAP_MIN,
         AVG_STEP_COST,
         debit_work_units,
+        derive_work_units_0,
+        resolve_der_token_budget,
         ExecutionMode,
     )
 except Exception:
@@ -88,6 +90,18 @@ except Exception:
         "quick_edit": 8000,
     }
     TRAILING_GAP_MIN = 2
+    AVG_STEP_COST = 1500
+
+    def derive_work_units_0(context_window: int) -> int:
+        return max(1, int(context_window / AVG_STEP_COST))
+
+    def resolve_der_token_budget(context_window: int, task_class=None) -> int:
+        # Mirrors der_constants.resolve_der_token_budget: mode value is a
+        # CEILING, the window is the hard cap, the floor is applied last and is
+        # itself clamped by the window so it can never overcommit.
+        _cap = max(int(context_window * 0.9), 1)
+        _ceiling = DER_TOKEN_BUDGETS.get(task_class, DER_TOKEN_BUDGETS.get("full", 50000))
+        return max(min(_ceiling, _cap), min(4000, _cap))
 
 try:
     from backend.agent.trailing_director import TrailingDirector as _TrailingDirector
@@ -909,6 +923,13 @@ class AgentKernel:
         ("mistral", "mistral-medium", 32_000),
         ("mistral", "mistral-small", 32_000),
         ("mistral", "mixtral", 32_000),
+        # Cerebras — value confirmed by the user 2026-07-28.
+        # NOTE: no provider-wide ("cerebras", "", N) fallback on purpose. An
+        # unlisted model must fall through to the conservative 8k default rather
+        # than inherit 256k: the budget is sized at window*0.9, so a default that
+        # is too HIGH re-creates the overcommit this table's default exists to
+        # prevent. Under-sizing is safe; over-sizing is the bug.
+        ("cerebras", "gemma-4-31b", 256_000),
         # OpenRouter — generic passthrough; use a conservative default
         ("openrouter", "", 32_000),
         # LM Studio / IRIS Local — common local models
@@ -2992,10 +3013,15 @@ class AgentKernel:
           * returns the ``speak`` field (so conversation memory and the
             ``text_response`` only contain the short spoken summary).
 
-        If the response is NOT structured JSON, it is **wrapped** into a
-        structured envelope so that the frontend ALWAYS renders a prism
-        card rather than a plain markdown message.  The ``speak`` field
-        contains a short summary; the ``show`` field contains the full text.
+        If the response is NOT structured JSON, it is returned as plain text
+        and rendered by the frontend's short-message chat bubble path (with
+        TTS word highlighting).  Only structured responses with an actual
+        ``show`` payload emit a ``DOCUMENT_RENDER`` event and get the
+        RichDocument prism card treatment.
+
+        The distinction:
+        - Plain conversational response ("That's 4!") → chat bubble
+        - Actual document (structured JSON, code block, table, etc.) → prism card
         """
         if not response:
             return response or ""
@@ -3009,14 +3035,15 @@ class AgentKernel:
         speak, show = parse_structured_response(response)
 
         if show is None:
-            # ── Plain-text response — wrap it into a structured envelope ──
-            # The LLM did not produce structured JSON, so we create one
-            # ourselves so the frontend always renders a prism card (never
-            # a bare markdown message).
-            speak = response[:500] if len(response) > 500 else response
-            show = {"format": "markdown", "content": response}
+            # ── Plain-text response — return as-is ──────────────────────────
+            # The LLM did not produce structured JSON.  Return the full text
+            # so the frontend renders it in the normal chat bubble path
+            # (chat-view.tsx short-message branch) with TTS word highlighting.
+            # No DOCUMENT_RENDER is emitted — the frontend does NOT show the
+            # RichDocument prism card or the "MARKDOWN" format pill.
+            return response
 
-        # ── Emit DOCUMENT_RENDER so the frontend shows a prism card ─────
+        # ── Structured response — emit DOCUMENT_RENDER ────────────────────
         # Trust-routing W3: 'untrusted' when this turn touched external/web
         # sources, else 'trusted'. The frontend sanitizes html/mermaid when
         # trust != 'trusted'.
@@ -5344,11 +5371,15 @@ Respond with a JSON object:
         # as a ceiling. No upper cap: a 256k model gets ~230k of step budget, a
         # 32k local model gets ~29k — each uses its real capacity.
         _model_window = self.resolve_context_window()
-        _floor = DER_TOKEN_BUDGETS.get(
-            task_class, DER_TOKEN_BUDGETS.get("full", 50000)
-        )
-        _token_budget: int = max(int(_model_window * 0.9), _floor)
+        _token_budget: int = resolve_der_token_budget(_model_window, task_class)
         _tokens_used: int = 0
+        logger.info(
+            "[DER] budget=%d from window=%d class=%s (work_units=%d)",
+            _token_budget,
+            _model_window,
+            task_class,
+            derive_work_units_0(_model_window),
+        )
 
         # ── REQ-1: pre-flight — is the reasoning provider usable? ────────
         if not getattr(self, "_router", None):
@@ -8512,6 +8543,15 @@ If any tools failed, address those issues in your response.
                     if _r is None:
                         continue
                     _r.add_provider(_inst)
+                    # Bind roles so resolve("reasoning") / resolve("tool_execution")
+                    # succeed at inference time.  Without this, the provider is
+                    # registered but no role points to it, causing generate()
+                    # to fail with "No provider bound" → "(Isee.)" fallback.
+                    _r.bind_role("reasoning", _inst.id, model_override=reasoning_model)
+                    if tool_execution_model and tool_execution_model != reasoning_model:
+                        _r.bind_role("tool_execution", _inst.id, model_override=tool_execution_model)
+                    else:
+                        _r.bind_role("tool_execution", _inst.id)
 
             return True
 

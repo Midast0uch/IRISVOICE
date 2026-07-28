@@ -74,12 +74,27 @@ class SpeakTool:
         # the next unit of work on that thread in the never-gated priority lane.
         _cc_token = set_call_class(CallClass.SPEAK)
         try:
-            return self._speak_inner(text, conversation_id, turn_id)
+            return self._speak_inner(
+                text, priority, interrupt, conversation_id, turn_id
+            )
         finally:
             reset_call_class(_cc_token)
 
-    def _speak_inner(self, text, conversation_id=None, turn_id=None) -> dict:
-        """Body of :meth:`speak`, run inside the SPEAK call-class scope."""
+    def _speak_inner(
+        self,
+        text,
+        priority: str = "normal",
+        interrupt: bool = False,
+        conversation_id=None,
+        turn_id=None,
+    ) -> dict:
+        """Body of :meth:`speak`, run inside the SPEAK call-class scope.
+
+        `priority` and `interrupt` must be threaded through from :meth:`speak`:
+        they are read by the intent log and by both emitted events. Omitting
+        them raises NameError before the inner try/except, so the utterance is
+        never emitted and TTS silently does not fire.
+        """
         if not text or not isinstance(text, str):
             return {"status": "error", "reason": "text (str) is required"}
         text = text[:MAX_TEXT_CHARS]

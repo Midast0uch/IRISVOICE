@@ -246,3 +246,39 @@
   failures. Then mark T3 and T19 above as complete, since Wave 10 fulfills them, and record the
   pre-fix constant-`verified_fraction` failure via
   `record_test(..., outcome='fail', description='verified_fraction was a hardcoded constant; 2 of 3 anti-hack guards could never fire')`.
+
+## Wave 11 — Budget derivation + honest context windows (REQ-14, REQ-15)
+
+- [x] **T11.1** (REQ-14 AC1/AC2/AC3) `resolve_der_token_budget(context_window, task_class)` in
+  `der_constants.py`: mode value is a CEILING, window is the hard cap, floor applied last and
+  clamped by the window. **DONE 2026-07-28** — replaced `max(window*0.9, floor)` at
+  `agent_kernel.py:5352`.
+  RIPPLE: `DER_TOKEN_BUDGETS` and `get_token_budget` are UNCHANGED — `_decide_mode`
+  (`der_loop.py:220`) and `_should_escalate` (`:283-289`) still read them. Do **not** delete the
+  mode table; without it a 256k model hands a single-tool "quick" task 230k and escalation loses
+  its comparison basis.
+
+- [x] **T11.2** (REQ-14 AC4/AC5) Log budget + window + class + work units in one line, both derived
+  from the same `context_window`. **DONE 2026-07-28**.
+
+- [ ] **T11.3** (REQ-15) Resolve real context windows for API providers. Add the missing `cerebras`
+  entries and prefer provider metadata over the substring table.
+  RIPPLE: ⚠️ **Do not invent window values.** The whole defect class here is a guess outranking a
+  known value. Take the number from the provider's own metadata or from the user, not from a
+  model-name heuristic. `_context_window_overrides` stays highest precedence.
+
+- [ ] **T11.4** (REQ-14 AC6, REQ-15 AC4) Surface the resolved window + whether it was a default in
+  `/api/debug/caducean`.
+
+- [ ] **T11.5** Tests:
+  - `backend/tests/unit/test_der_budget_allocation.py` — parametrized over windows
+    {2k, 8k, 32k, 128k, 256k} x classes {quick, implement, full}: budget **never** exceeds the
+    window; the mode ceiling binds on large windows; the floor never exceeds the window.
+    Dropping a window or a class from the parametrize list is a test modification.
+  - `backend/tests/contract/test_budget_workunits_agree.py` — REQ-14 AC4: both derive from the
+    same window.
+  - `backend/tests/behavioral/test_no_budget_overcommit.py` — an unknown provider must **not**
+    produce a budget above its resolved window (the live cerebras case).
+
+- [ ] **T11.6** (cross-spec) Add the `task_class` → budget-ceiling coupling to
+  `lfm25-encoder-integration` REQ-5: an encoder misclassification mis-sizes the budget.

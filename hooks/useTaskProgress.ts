@@ -13,9 +13,22 @@ export type TaskStepStatus =
 
 export interface TaskStep {
   id: string
+  /**
+   * The PLAN text — what the agent set out to do. Stable for the life of the
+   * step. Live progress never overwrites this; it goes to `activeDetail` so the
+   * dropdown keeps showing the plan while the card header shows the activity.
+   */
   description: string
   status: TaskStepStatus
   toolName?: string
+  /**
+   * Live, rotating detail for the step currently executing — the source being
+   * read (e.g. "example.com"), shown beside `toolName`. Cleared when the step
+   * resolves, so a finished step never appears to still be working on a page.
+   */
+  activeDetail?: string
+  /** Progress within the active detail, e.g. "2/5". */
+  activeProgress?: string
   resultPreview?: string
 }
 
@@ -46,6 +59,10 @@ interface TaskUpdateDetail {
   plan_title?: string
   action?: string
   update_step?: boolean
+  /** Structured live detail (host/title being read) — preferred over parsing `description`. */
+  detail?: string
+  detail_url?: string
+  detail_progress?: string
   /** When true, append a new step (DER discovered a live step). */
   add_step?: boolean
   /** When true, mark the step (der-{step_number}) as done/error. */
@@ -187,7 +204,16 @@ export function useTaskProgress(): TaskProgress {
             const idx = d.step_number - 1
             const steps = prev.steps.slice()
             if (steps[idx]) {
-              steps[idx] = { ...steps[idx], status: "working" }
+              // Adopt the RESOLVED tool name. The planner emits task:start
+              // before tool resolution runs, so the step's initial toolName is
+              // the planner's guess; tool:call carries what DER actually
+              // resolved (e.g. "crawler_query"). Without this the card shows
+              // the pre-resolution value for the whole task.
+              steps[idx] = {
+                ...steps[idx],
+                status: "working",
+                toolName: d.tool_name || steps[idx].toolName,
+              }
               const done = steps.filter((s) => s.status === "done").length
               next.steps = steps
               next.currentStep = done
@@ -207,6 +233,9 @@ export function useTaskProgress(): TaskProgress {
               ...steps[idx],
               status: "done",
               resultPreview: d.result_summary,
+              // Live detail belongs to an in-flight step only.
+              activeDetail: undefined,
+              activeProgress: undefined,
             }
             const done = steps.filter((s) => s.status === "done").length
             setState({ ...prev, steps, currentStep: done, isWorking: true })
@@ -222,6 +251,8 @@ export function useTaskProgress(): TaskProgress {
               ...steps[idx],
               status: "fail",
               resultPreview: d.error,
+              activeDetail: undefined,
+              activeProgress: undefined,
             }
             setState({ ...prev, steps, isWorking: true })
           }
@@ -237,6 +268,8 @@ export function useTaskProgress(): TaskProgress {
               steps[idx] = {
                 ...steps[idx],
                 status: d.success === false ? "error" : "done",
+                activeDetail: undefined,
+                activeProgress: undefined,
               }
             }
             setState({ ...prev, steps })
@@ -268,15 +301,26 @@ export function useTaskProgress(): TaskProgress {
             break
           }
           // Live action update. Generic tool calls set currentAction only; the
-          // crawler passes update_step=true so the in-progress plan step text is
-          // rewritten with the site being read (e.g. "Reading example.com (2/5)").
+          // crawler passes update_step=true with the source being read.
+          //
+          // This writes `activeDetail`, NOT `description`. Overwriting the
+          // description replaced the agent's plan text ("Search for recent
+          // Python 3.13 features") with transient progress ("Reading
+          // example.com (2/5)") — the plan was destroyed as it executed and the
+          // dropdown could never show what the agent set out to do.
           const action = d.description || d.action
           if (!action) break
           const steps = prev.steps.slice()
           if (d.update_step) {
             const workingIdx = steps.findIndex((s) => s.status === "working")
             if (workingIdx >= 0) {
-              steps[workingIdx] = { ...steps[workingIdx], description: action }
+              steps[workingIdx] = {
+                ...steps[workingIdx],
+                // Prefer the structured field; fall back to the sentence for
+                // emitters that predate `detail`.
+                activeDetail: d.detail || action,
+                activeProgress: d.detail_progress,
+              }
             }
           }
           setState({ ...prev, steps, currentAction: action, isWorking: true })
@@ -284,8 +328,20 @@ export function useTaskProgress(): TaskProgress {
         }
         case "task:done":
         case "task:fail": {
-          // Keep steps + planTitle for display; clear the working flag + live action.
-          setState({ ...prev, isWorking: false, currentAction: undefined })
+          // Keep steps + planTitle for display; clear the working flag + live
+          // action. Also strip any live detail left on a step that never got a
+          // terminal event — otherwise a finished card keeps advertising a page
+          // it is no longer reading.
+          setState({
+            ...prev,
+            isWorking: false,
+            currentAction: undefined,
+            steps: prev.steps.map((s) =>
+              s.activeDetail
+                ? { ...s, activeDetail: undefined, activeProgress: undefined }
+                : s
+            ),
+          })
           break
         }
         case "task:learning": {
