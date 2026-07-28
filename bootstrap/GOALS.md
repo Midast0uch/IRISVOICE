@@ -19,13 +19,18 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
       Frontend visual rendering still blocked by dev-server compile hang (see cmd.exe
       memory leak incident note below). All 4 v2 endpoints return real C++ values,
       state mutation works, contract verified. 5/5 Playwright MCP tests pass.
-    NEW: API provider routing working — named providers (Cohere, DeepSeek, Anthropic, Chutes AI,
-    Cerebras, OpenCodeGo) with pre-configured endpoints, verified across multiple providers.
-    DER _is_api_provider bug fixed — providers now route correctly through infer().
-    Simplified MODEL SELECTION card — named providers replace old generic api/vps/iris_local.
-    Structured telemetry logging added — context assembly metrics, API request shapes,
-    and DER metrics (xi, pacman_store/recall, der_steps, etc.) logged to irisvoice.log.
-    NEW NORTH STAR: Domain 17 — Self-Coding Agent (agent inside IRIS).
+     NEW: API provider routing working — named providers (Cohere, DeepSeek, Anthropic, Chutes AI,
+     Cerebras, OpenCodeGo) with pre-configured endpoints, verified across multiple providers.
+     DER _is_api_provider bug fixed — providers now route correctly through infer().
+     Simplified MODEL SELECTION card — named providers replace old generic api/vps/iris_local.
+     Structured telemetry logging added — context assembly metrics, API request shapes,
+     and DER metrics (xi, pacman_store/recall, der_steps, etc.) logged to irisvoice.log.
+     DER SINGLE-AUTHORITY + PACMAN ALIGNMENT (DONE 2026-07-16): one resolver (explorer.propose)
+       at every scale; critical-failure recovery via _split_step; explorer continuation + graft +
+       TrailingDirector emit goal-only (resolver picks tool); failures stored in TRUSTED PACMAN
+       membrane (trusted://episodic/failures), not off-membrane der_failure. Model/provider routing
+       is config-independent — resolver path identical across providers/modes. 44 DER tests pass.
+     NEW NORTH STAR: Domain 17 — Self-Coding Agent (agent inside IRIS).
     Complete G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
     ⚠️ BLOCKER: Domain 20 (Agent Multi-Step Tool Execution) must ship first —
     the agent kernel lacks a dynamic tool-call loop, permission wiring, and
@@ -124,10 +129,53 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
                   edge (DocumentDataStore); suggest_reformat() offers the sticky next format;
                   vocalize_document() speaks via SpeakTool; diagram_document() returns the
                   mermaid view. Test test_reformat_pheromone.py 11/11.
-       Why it matters for D20: gives the agent a durable, trust-scoped, reformat-able memory
-         of everything it produces/retrieves — the substrate D17 self-coding builds on.
+        Why it matters for D20: gives the agent a durable, trust-scoped, reformat-able memory
+          of everything it produces/retrieves — the substrate D17 self-coding builds on.
 
-  DOMAINS COMPLETE (do not revisit unless regression):
+      SUB-INITIATIVE — DER Coupled Action Cycle (5-phase rewrite + single-authority/PACMAN alignment, DONE 2026-07-16):
+        Spec: docs/DER_COUPLED_ACTION_CYCLE_SPEC.md (v2.3) | Blueprint: docs/architecture/der-coupled-action-cycle-blueprint.md
+        Branch: feat/agent-multi-step-tool-execution
+        What shipped (test-first CDD, 44 DER tests pass):
+          - Phase 0 (signal integrity): stub-kill, honest veto/escalation, episodic unlearn,
+                   TrailingDirector revive, DCP fan-trace + recovery FAN SUMMARY.
+          - Phase 1 (planner goals-only): evidence.py assemble_evidence; explorer.propose is the
+                   SINGLE resolver; planner drops tool/params (D1.3); web-regex override deleted (D1.4).
+          - Phase 2 (unified split): _split_step/_growth_width/_der_verify_strictness/_der_live_cad_state;
+                   U_SPLIT=0.5, U_CONVERGED=0.85, MAX_DEPTH=3; recovery graft + growth-width unified
+                   into ONE operator (no separate graft code path remains).
+          - Phase 3 (verifier + commit): verify_rubric.py; G4 gate on register_verified_skill;
+                   G5 der_commits table + record_commit.
+          - Phase 4 (outer loop): outer_loop.py OuterTuner (AIDE²); caducean_session_exits table +
+                   record_session_exit; domain column on caducean_trajectories; archive_on_session_end hook.
+          - Integration smoke: myc lookup None-safe; CaduceanTrajectoryRecorder.__init__ db_conn default.
+        Single-authority + PACMAN alignment pass (2026-07-16, this session):
+          - Critical-failure recovery now routes through _split_step (unified operator) — the old
+                   separate _der_graft_recovery_plan tool-assignment path is gone from execution.
+          - Explorer continuation (_der_plan_next_step) and graft helper emit GOAL-ONLY items
+                   (tool=None); the single resolver (explorer.propose) picks the tool on execution (F6).
+          - TrailingDirector kept as a depth AUDITOR (double-checks what the main director decided);
+                   it emits goal-only gap items, not tools. Distinct from sub-loop (failure recovery)
+                   and outer-loop (session tuning).
+          - PACMAN zone alignment: non-critical failures stored in TRUSTED membrane
+                   (PACMAN.md trusted://episodic/failures, Tier 3), not off-membrane "der_failure".
+                   chunk_type stays "der_failure" as content discriminator; zone is the membrane.
+          - Model/provider routing is config-INDEPENDENT: InferenceRouter.resolve_context_window +
+                   role→provider→transport; the resolver path is identical regardless of provider/mode.
+                   (Prior session: DER _is_api_provider bug fixed — named providers route via infer().)
+        Regression test added: backend/tests/test_der_single_authority_regression.py (3 tests, pass).
+        Pin: pin_0c6ce240b9d0 (DER routing + PACMAN zone alignment decision).
+        Test corrections applied this session (stale fixtures, not code bugs):
+          - 2 Phase-3 tests fixed: non-critical failure zone assertion now expects "trusted"
+            (PACMAN alignment); budget test _Item fixture gained expected_output/result.
+          - 8 caducean_trajectory tests fixed: updated to the Phase-4 record() signature
+            (session_id, step_num, x, y, xi, u, action:int, outcome:str, eml_after).
+          - Parakeet test: no code defect — it loads a real model and takes ~176s; the earlier
+            "error" was a 120s bash timeout, not a failure (24 passed, 5 skipped when given time).
+        Remaining env-dependent failures (no embedding model / sqlcipher3 in this env, not code):
+          2 retrieval tests (test_der_a1_a2_a3_memory_bridge, test_context_engineering) need an
+          embedding model to match semantic chunks; pass where embeddings are available.
+
+   DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
     Domain 2  — Voice pipeline       ✓ all 5 items verified (session 155, 91 tests)
     Domain 5  — Mycelium stubs      ✓ all 4 items verified
@@ -2322,6 +2370,117 @@ improve capability but are not blockers.
     [20.1]-[20.3] all pass: agent does multi-step task (write file + read back),
     permission dialog appears for destructive actions, progress shows in chat.
     Domain 17 can then be attempted.
+
+---
+
+## DOMAIN 21 — CADUCEAN SCHEDULING + KERNEL UNIFICATION  🟡 BUILT, AWAITING LIVE VERIFICATION
+Date opened: 2026-07-27
+Blueprint: docs/CADUCEAN_ARCHITECTURE.md
+As-built audit: docs/CADUCEAN_TECHNICAL_OVERVIEW.md §13 (findings F1–F7)
+Specs: specs/caducean-phase-scheduler/, specs/caducean-kernel-unification/
+Reconciliation: specs/CADUCEAN_SPEC_RECONCILIATION.md
+
+**What this domain closed.** A line-by-line audit of the three Caducean runtime consumers
+found the engine sound but its consumers degraded: a one-way parameter ratchet, the
+metastability correction disabled in the voice kernel's main read, multi-session coupling
+that was dead code AND bugged such that no nucleus could ever form, a winding-number
+degeneracy that made the whole resonance apparatus unreachable, and physics→memory
+coordinate recall broken three ways. Separately, the inference path was amplifying rate
+limits rather than absorbing them.
+
+  [21.1] Inference rate-limit hardening
+    Status: ✅ COMPLETE — ON BY DEFAULT (not behind a flag; these are defect fixes)
+    Delivered:
+      a) 429 retries now actually sleep. The streaming path's `continue` skipped its own
+         backoff, so three 429s were hammered with zero delay.
+      b) Retry-After honored (delta-seconds and HTTP-date), clamped.
+      c) RateLimitedError raised instead of returning "(I see.)" — a rate-limited voice
+         turn was SPEAKING a fabricated acknowledgement.
+      d) Single retry authority: max HTTP attempts per step 9 → 3.
+      e) Bounded concurrent fan-out (DER_MAX_CONCURRENT_STEPS = 3).
+    Landmark: inference_rate_limit_hardening
+
+  [21.2] Parameter homeostasis (the ratchet fix)
+    Status: ✅ COMPLETE — ON BY DEFAULT
+    Delivered: (a,b,s) relax toward baseline every 10 updates OR 60 s wall-clock,
+      whichever first. The wall-clock floor matters: an update-count-only cadence is
+      throttled by anything that slows the step rate, so recovery would slow exactly when
+      perturbations are most likely. Also made tune_dffing_params idempotent — it was
+      re-billing every violation in its lookback window on every call.
+    Landmark: caducean_param_homeostasis
+
+  [21.3] Voice kernel physics reads
+    Status: ✅ COMPLETE — ON BY DEFAULT
+    Delivered: live EML balance (was hardcoded balance=1.0, the exact setting the overview
+      says reproduces metastability), and TTS chunk sizing banded by |u| instead of
+      force_magnitude — which is zero at BOTH extremes and so could not distinguish
+      "converged" from "totally unresolved".
+    Landmark: conversation_kernel_physics_reads
+
+  [21.4] Shared trig coupling + multi-session differentiation
+    Status: ✅ BUILT — SHIPS DISABLED (IRIS_COUPLING_ENABLED=1 to activate)
+    Delivered: one pure-math module (signed, per-oscillator splay_force / align_force)
+      shared by the scheduler and the cognitive registry. Continuous wrap-aware coupling
+      replaces the discrete 0.1-rad gate; order-independent symmetry breaker yields exactly
+      one nucleus and one barrier per pair. Winding numbers non-degenerate
+      (der 1.0 / voice 1.581 / research 3.0) so BOTH the rational and irrational branches
+      are reachable from the domain map — not just from hand-picked test values.
+    Landmark: caducean_multi_session_coupling
+
+  [21.5] Caducean Phase Scheduler
+    Status: ✅ BUILT — SHIPS DISABLED (IRIS_PHASE_SCHEDULER=1 to activate)
+    Delivered: anti-phase (negative-K Kuramoto) scheduling at the single inference
+      chokepoint, per-quota adaptive rate limits learned via AIMD, amplitude regulating
+      volume THROUGH the phase mechanism (ω_eff = ω·r), a never-gated voice priority lane,
+      and bounded Sub-Loop batching at the compression seam.
+      The scheduler NEVER reads Caducean ξ/u — enforced by contract tests CT-3/CT-4,
+      not by convention. See blueprint §4 for why that boundary is load-bearing.
+    Landmark: caducean_phase_scheduler
+
+  [21.6] Physics↔memory coordinate integrity
+    Status: ⚠️ REPAIRED BUT UNEXERCISED — this is the real open item
+    Delivered: canonical format_coords/parse_coords, one lookup key, one chain identity.
+      Three defects fixed (lookup keyed by conversation_id against rows keyed by
+      session_id; prose written into a coordinate field on the DER path; two writers using
+      different thread_ids).
+    ⚠️ BUT: coords_from is EMPTY in every database in the repo. A repo-wide scan found
+      zero populated rows. The plumbing is repaired; the primitive has never produced a
+      result. "Data gathered while thinking like this" — the one thing embeddings cannot
+      do — remains a claim, not a capability.
+    Landmark: (withheld until a proximity query returns non-empty)
+
+  Verification instruments:
+    scripts/validate_phase_scheduler.py     — ALL PASS
+    scripts/validate_caducean_kernels.py    — ALL PASS (8 assertions)
+    Full suite: 679 passed / 19 failed (all 19 pre-existing and unrelated)
+
+  Graduate condition — LIVE MANUAL VERIFICATION REQUIRED:
+    The suites and harnesses are green, but [21.4] and [21.5] ship DISABLED and have
+    ZERO production hours. A default app run verifies nothing about them. To graduate:
+
+    a) Run with IRIS_PHASE_SCHEDULER=1. Drive a multi-step DER task. Confirm in the log:
+         - GATE_DECISION lines appear with reason=admit / reason=gated
+         - a NON-ZERO wait is issued for a background class (REASON/TOOL/SUBLOOP)
+         - reason=priority with wait=0 for the user's own turn
+       Then confirm the felt experience: spoken replies are NOT slower.
+    b) Same run, check provider_metrics(): gap_stats stddev should be lower than a
+       flag-off run of the same task. That is the "stream, not a firework" property.
+    c) Run with IRIS_COUPLING_ENABLED=1 and TWO concurrent sessions (voice + coding).
+       Confirm the CoupledRegistry INFO line shows one nucleus and one barrier — not
+       two barriers, which was the original bug.
+    d) [21.6] is the gate that matters most: exercise the document path (save an md file
+       or a web-search result), then confirm a proximity query returns it NON-EMPTY with
+       a finite distance. Until that happens, [21.6] is not done and no landmark is
+       crystallized for it.
+    e) Regression: with BOTH flags off, behavior must be indistinguishable from before.
+
+  Known remaining gap (NOT closed by this domain):
+    The outer loop's compound anti-hack gate has only ONE live signal. verified_fraction
+    is a hardcoded constant (both ternary branches return 1.0) and tokens_per_verified
+    reads a column no production caller populates. So the outer loop currently accepts
+    ANY proposal that raises natural-exit rate — precisely the single-metric
+    reward-hacking the gate was written to prevent.
+    Repair specified: specs/der-loop-integrity-display/ REQ-13 / Wave 10. NOT STARTED.
 
 ---
 
