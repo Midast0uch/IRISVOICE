@@ -22,6 +22,7 @@ count. `record_tps` measures throughput and only warns, at a threshold of 8 tok/
 | Constraint | Source | Consequence |
 |---|---|---|
 | Target is ≥25 tok/s at max context | Decision Locked #2 | Tuning is a **search**, not a preset lookup |
+| **GPU only — no CPU offload** | Decision Locked (2026-07-28) | Degradation reduces ctx/batch; CPU is never a fallback (memory spikes) |
 | User swaps models constantly | Decision Locked #3 | Derivation must work for unseen models; caching must be per-model |
 | Two local models must coexist | Decision Locked #1 | Kills the single `"local"` id |
 | Embedding-350M + ColBERT are local too | `lfm25-encoder-integration` | Local instances must support non-chat roles |
@@ -49,7 +50,7 @@ graph TB
         META["parse_gguf_metadata<br/>params, quant, arch"]
         HW["get_hardware_info<br/>VRAM, CUDA"]
         DERIVE["ConfigDeriver<br/>maximize ctx s.t. tps >= TARGET"]
-        DEGRADE["Degrader<br/>ctx -> layers -> batch"]
+        DEGRADE["Degrader<br/>ctx -> batch (GPU only)"]
         SERVE["llama-server / in-process"]
     end
 
@@ -112,7 +113,7 @@ sequenceDiagram
     R->>S: start with derived config
     alt does not fit
         S-->>R: OOM / insufficient VRAM
-        R->>D: degrade: ctx -> layers -> batch (REQ-5 AC1)
+        R->>D: degrade: ctx -> batch, GPU only (REQ-5 AC1/AC2)
         D-->>R: n_ctx=16384
         R->>S: retry
     end
@@ -249,17 +250,50 @@ enter the estimate for the search to mean anything.
 **Rejected — more presets.** Adding `balanced_16k`, `balanced_64k` etc. reproduces the same
 problem at finer grain: presets are indexed by guess, not by the model in hand.
 
-### D-4: Degrade in a fixed order — context, then layers, then batch
+### D-4: Degrade **within GPU** — context, then batch. Never CPU.
 
-**Decision.** Context first, GPU layers second, batch last.
+**Decision.** Context first, batch second. `n_gpu_layers` stays `-1` always. If nothing fits at
+`MIN_CTX`, fail cleanly and unload.
 
-**Rationale.** Ordered by cost-to-benefit. Context reduction reclaims KV-cache VRAM with no effect
-on tok/s; moving layers to CPU is the steepest throughput cost; batch size mainly affects prefill,
-not generation. Reversing this trades away the thing the user is optimizing for.
+**Rationale.** The existing GPU-only policy
+([`:941-946`](../../backend/agent/local_model_manager.py)) is **correct and retained** — CPU offload
+causes memory spikes this machine cannot absorb, so it is not a degradation step and not a fallback
+(Decision Locked, REQ-5).
 
-**Rejected — the current GPU-only rejection policy.** Deliberately chosen once
-([`:941-946`](../../backend/agent/local_model_manager.py)) and correct for a fixed deployment; wrong
-for a user who swaps models constantly, where it turns a slow load into a dead end.
+What the loader is missing is not a CPU escape hatch but a **GPU-side lever**. It has no way to
+reduce context, so its only options are "load at the preset 32k" or "reject". Context reduction
+reclaims KV-cache VRAM at **zero throughput cost** — strictly better than either, and it removes
+the dead-end without touching the policy that prevents spikes.
+
+Batch is second because it mainly affects prefill, not generation, so it costs less than context on
+the metric being optimized — but it also frees less VRAM, which is why context leads.
+
+**Rejected — CPU offload as a degradation step.** It is the steepest throughput penalty *and* the
+memory-spike cause. Loading at 3 tok/s while thrashing RAM is worse than a clean failure that says
+the model is too large for this GPU.
+
+**Rejected — rejection with no context reduction (today's behavior).** Correct policy, missing
+lever. It turns "would fit at 16k" into a dead end.
+
+### D-7: Authoritative context window beats the substring table
+
+**Decision.** For a loaded local model, `resolve_context_window` returns the actual configured
+`n_ctx`. The substring table is consulted only when nothing is loaded.
+
+**Rationale.** This is a **reordering, not a new mechanism**. The authoritative path already exists
+at [`agent_kernel.py:960-975`](../../backend/agent/agent_kernel.py) and its own comment explains why
+it should win: *"substring guessing (step 2) is unreliable for custom GGUF names and would
+otherwise under/over-size the budget vs the real window."* It simply runs after the guess.
+
+Consequence today: a `Mistral-7B-*.gguf` loaded at 16k matches the table's `"mistral"` entry and
+reports 32,768 — so `derive_work_units_0` and `_token_budget` are computed against **double** the
+real context, silently.
+
+This also **designs out** the REQ-2 id-migration risk rather than guarding it. Once the local branch
+resolves from the loaded model rather than from `provider == "local"` string matching, renaming
+provider ids cannot change the resolved window — there is no id-keyed lookup left on the path that
+matters. A contract test (**CT-L7**) still pins the resolved value, but as a regression guard, not
+as the mitigation.
 
 ### D-5: Corrections apply at next load, never to a running model
 
@@ -293,7 +327,8 @@ third instance of it.
 | `backend/iris_gateway.py:7910` | **Yes (delete)** | CHANGE NEEDED | Peer-kernel fan-out loop removed, not extended (REQ-3 AC3). |
 | `backend/iris_gateway.py:8580` | **Yes** | CHANGE NEEDED | Binding guard becomes a status flag, not a veto (REQ-1 AC6). |
 | `backend/agent/agent_kernel.py:962, :8476, :8544` | **Yes** | CHANGE NEEDED | Literal `"local"` comparisons migrate to namespaced ids (D-2, REQ-2 AC4). |
-| `backend/agent/agent_kernel.py:926-931` | **Yes (careful)** | CHANGE NEEDED | Context-window table keyed `("local", <model>)`. Must keep resolving after renaming, or `resolve_context_window` silently returns a wrong window — which feeds `DER_WORK_UNITS_0` and the DER token budget. |
+| `agent_kernel.resolve_context_window` (`:933-975`) | **Yes** | CHANGE NEEDED | **Reorder**: loaded `n_ctx` (`:960-975`) moves ahead of the substring table (`:926-931`). Fixes a live bug — a 16k-loaded Mistral currently reports 32,768 — and removes the id-keyed lookup from the path, designing out the REQ-2 migration risk (D-7, REQ-5b). |
+| `agent_kernel.py:926-931` (the table itself) | **No** | NO CHANGE (verified) | Retained as the not-loaded fallback (REQ-5b AC2). Its entries stay valid for non-local providers and for a local provider with nothing loaded. |
 | `backend/agent/local_model_manager.py` — `PROFILES` | **No** | NO CHANGE (verified) | Retained as user-selectable overrides (REQ-4 AC4). `balanced_mtp` and `force_subprocess` untouched so MTP does not regress. |
 | `local_model_manager.estimate_vram_gb` | **Yes** | CHANGE NEEDED | Must include KV cache at the target context; currently weights-only (`params_b × bpw / 8 × 1.1`, [`:906`](../../backend/agent/local_model_manager.py)) — context-independent and so unusable for D-3's search. |
 | `local_model_manager.recommend_profile` | **Yes** | CHANGE NEEDED | Two-outcome preset selector replaced by `ConfigDeriver` (REQ-4). |
@@ -317,8 +352,9 @@ third instance of it.
 |---|---|
 | Model file missing at load | Provider stays registered, `loaded=false`, typed `ModelNotFoundError` naming the path (REQ-1 edge case). Never a generic failure. |
 | Metadata unparseable | Fall back to the `balanced` preset, log the reason, continue (REQ-4 edge case). |
-| Derived config does not fit | Degrade ctx → layers → batch (REQ-5 AC1); report each step (REQ-9 AC2). |
-| No viable config at all | Fail with the constraint that could not be satisfied (REQ-5 AC3). Below `MIN_CTX` reports unusable-on-this-hardware rather than loading uselessly. |
+| Derived config does not fit | Degrade **ctx → batch, GPU only** (REQ-5 AC1/AC2); report each step (REQ-9 AC2). `n_gpu_layers` stays `-1`. |
+| Nothing fits at `MIN_CTX` | Fail cleanly, **unload any partial allocation**, report the VRAM shortfall in GB (REQ-5 AC3). Never a CPU retry. |
+| GPU error during/after load (OOM, device lost) | **Graceful unload**: release VRAM, set `loaded=false`, report. No CPU fallback (REQ-5 AC4). |
 | Role bound to unloaded local, request arrives | Load on demand, or fail with a typed actionable error. **Never** silently fall back to another provider (REQ-1 AC4) — a silent swap would make the user think local is working when it is not. |
 | Corrupt config cache | Discard, derive fresh (REQ-7 AC5) — the `outer_loop._load_params` tolerance pattern. |
 | Hardware changed since caching | Invalidate on `hw_fingerprint` mismatch, re-derive (REQ-7 AC4). |
@@ -344,7 +380,7 @@ scripts/validate_local_model_path.py    STANDING CDD HARNESS
 - `test_vram_estimate_includes_kv.py` — estimate **increases with context**. Against today's
   weights-only formula this fails, which is the point: a context-independent estimate cannot
   inform a context search.
-- `test_degradation_order.py` — ctx exhausted before layers, layers before batch (D-4).
+- `test_degradation_order.py` — ctx reduced before batch; `n_gpu_layers` is **never** changed from `-1`; no configuration in the ladder places any layer on CPU (D-4, REQ-5 AC2).
 - `test_config_cache.py` — fingerprint changes on file mtime/size; `hw_fingerprint` mismatch
   invalidates; corrupt file falls back to derivation.
 - `test_tps_correction.py` — sustained below target records a **reduced-context** next-load config;
@@ -371,8 +407,12 @@ scripts/validate_local_model_path.py    STANDING CDD HARNESS
   simultaneously, each serving its own role. **Impossible today** — the headline REQ-2 assertion.
 - `test_binding_survives_restart.py` — bind local, restart, binding still resolves to a registered
   provider (REQ-1 AC5).
-- `test_degrades_not_rejects.py` — a model too large for VRAM loads at reduced context instead of
-  being rejected (REQ-5). Fails today by explicit policy.
+- `test_degrades_within_gpu.py` — a model too large at the derived context loads at a **reduced
+  context, still fully on GPU** (REQ-5 AC1/AC2). Asserts `n_gpu_layers == -1` throughout.
+- `test_gpu_error_unloads_cleanly.py` — an injected GPU OOM unloads, frees VRAM, sets
+  `loaded=false`, and does **not** retry on CPU (REQ-5 AC4).
+- `test_loaded_context_window_wins.py` — a model whose filename matches a table entry but is
+  loaded at a different `n_ctx` resolves to the **loaded** value (REQ-5b AC1). **Fails today.**
 - `test_closed_loop_tuning.py` — inject sustained sub-target throughput, assert the **next** load
   uses a reduced context and the **running** model was not reconfigured (REQ-6 AC2/AC4).
 - `test_unseen_model_autotunes.py` — a model with no cache entry loads with derived (not preset)
@@ -389,7 +429,8 @@ scripts/validate_local_model_path.py    STANDING CDD HARNESS
 | Single `"local"` id (`:7896`, `:8580`) | `test_two_local_models` | CT-L2 (no bare literal) |
 | Per-kernel fan-out (`:7910`) | `test_binding_survives_restart` | CT-L3 (one registry) |
 | Presets ignore the model (`PROFILES`) | `test_unseen_model_autotunes` | — |
-| Weights-only VRAM estimate (`:906`) | `test_degrades_not_rejects` | `test_vram_estimate_includes_kv` |
+| Weights-only VRAM estimate (`:906`) | `test_degrades_within_gpu` | `test_vram_estimate_includes_kv` |
+| Substring table outranks loaded `n_ctx` (`:933-975`) | `test_loaded_context_window_wins` | CT-L7 |
 | tok/s measured, never applied (`:1189`) | `test_closed_loop_tuning` | — |
 
 ### Standing CDD harness
@@ -404,7 +445,8 @@ scripts/validate_local_model_path.py    STANDING CDD HARNESS
 5. VRAM estimate is **monotonically increasing** in context.
 6. A simulated sub-target throughput run changes the next-load config and leaves the running
    config untouched.
-7. Degradation order is ctx → layers → batch.
+7. Degradation order is ctx → batch, and **no** ladder step moves a layer to CPU
+   (`n_gpu_layers == -1` in every candidate).
 8. `balanced_mtp` / `force_subprocess` still reachable — MTP is not regressed.
 
 Assertion 4 is the one that decides whether REQ-4 actually landed: identical contexts across three

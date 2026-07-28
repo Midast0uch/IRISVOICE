@@ -192,34 +192,91 @@ pushed at settings that do not fit.
 
 ---
 
-### REQ-5: Degrade rather than reject
+### REQ-5: Degrade **within GPU**, never fall back to CPU
 
-**User Story:** As a user I want a too-large model to load slower rather than not at all, so that
-switching models never dead-ends.
+**User Story:** As a user I want an oversized model to fit by using less context, not by spilling
+onto the CPU — CPU offload causes memory spikes this machine cannot absorb.
 
-**Verified:** REAL GAP — the policy is explicit in the code comment at
-[`local_model_manager.py:941-946`](backend/agent/local_model_manager.py:941): *"GPU-ONLY policy:
-never recommend the CPU 'eco' profile... let the pre-flight check reject the load if VRAM is truly
-insufficient — rather than silently falling back to CPU."* Rejection is intentional today; with
-frequent model-swapping it is the wrong default.
+**Verified:** The existing GPU-only policy is **correct and stays**
+([`local_model_manager.py:941-946`](backend/agent/local_model_manager.py:941): *"GPU-ONLY policy:
+never recommend the CPU 'eco' profile... rather than silently falling back to CPU"*). What is
+missing is the GPU-side lever: the loader has no way to reduce **context** to make a model fit, so
+its only options today are "load at 32k" or "reject". Context reduction reclaims KV-cache VRAM at
+**zero throughput cost** — it is strictly better than either.
+
+**Decision Locked (2026-07-28):** all local models run fully on GPU. CPU offload is not a
+degradation step and not a fallback. When GPU capacity is genuinely insufficient, the correct
+outcome is a clean failure and unload — not a slow CPU load.
 
 **Acceptance Criteria:**
-- AC1: WHEN a model does not fit at the derived parameters THEN THE SYSTEM SHALL reduce context
-  first, then GPU layers, then batch size — in that order — until it fits.
-- AC2: THE SYSTEM SHALL report the degradation to the user with the reason and the resulting
-  expected throughput, rather than degrading silently.
-- AC3: THE SYSTEM SHALL only fail a load when no viable configuration exists at all.
-- AC4: THE SYSTEM SHALL keep a floor on context (`MIN_CTX`, default 4096) below which it reports
-  the model as unusable on this hardware rather than loading it uselessly.
-- AC5: WHERE the resulting configuration falls below `TARGET_TPS` THEN THE SYSTEM SHALL load it
+- AC1: WHEN a model does not fit at the derived parameters THEN THE SYSTEM SHALL reduce **context**
+  first, then **batch size** — and SHALL NOT reduce `n_gpu_layers` or move any layer to CPU.
+- AC2: THE SYSTEM SHALL keep `n_gpu_layers = -1` (all layers on GPU) for every derived and
+  degraded configuration.
+- AC3: WHEN no configuration at or above `MIN_CTX` (default 4096) fits in VRAM THEN THE SYSTEM
+  SHALL fail the load cleanly, **unload any partial allocation**, and report that the model is too
+  large for this GPU — naming the shortfall in GB.
+- AC4: IF a GPU error occurs during or after load (OOM, device lost, CUDA failure) THEN THE SYSTEM
+  SHALL unload gracefully, release VRAM, mark the provider `loaded=false`, and report the error —
+  and SHALL NOT retry on CPU.
+- AC5: THE SYSTEM SHALL report every degradation step with its reason and the resulting expected
+  throughput, rather than degrading silently.
+- AC6: WHERE the resulting configuration falls below `TARGET_TPS` THEN THE SYSTEM SHALL load it
   anyway and surface the expected rate — the target is a goal, not a hard gate.
+- AC7: THE SYSTEM SHALL retain the `eco` (CPU) profile as an **explicit user override only**. It
+  SHALL never be selected automatically.
 
 **Edge Cases:**
-- CPU-only machine → degradation ends at a CPU configuration; the GPU-only policy no longer
-  blocks it.
-- Model larger than total system RAM → AC3 failure with a specific message.
-- VRAM freed by another process mid-degradation → the search uses one hardware snapshot; it does
-  not need to be re-entrant.
+- CPU-only machine (no CUDA) → report that no GPU is available and that local models require one;
+  do not silently load on CPU (AC7 override remains available for a user who wants it).
+- Model larger than total VRAM even at `MIN_CTX` → AC3 clean failure naming the shortfall.
+- GPU OOM *after* a successful load (another process took VRAM) → AC4 graceful unload, not a CPU
+  retry.
+- VRAM freed by another process mid-degradation → the search uses one hardware snapshot; it need
+  not be re-entrant.
+
+---
+
+### REQ-5b: A loaded local model reports its **actual** context window
+
+**User Story:** As the DER loop I want the real context window of the model that is loaded, so
+that my token budget is not computed from a guess.
+
+**Verified:** REAL BUG, live today and independent of this spec's other changes.
+`resolve_context_window` ([`agent_kernel.py:933-975`](backend/agent/agent_kernel.py:933)) resolves
+in this order:
+
+1. user override
+2. **substring table** — `("local", "mistral", 32_768)` etc. ([`:926-931`](backend/agent/agent_kernel.py:926))
+3. **actual loaded `n_ctx`** from the live model manager ([`:960-975`](backend/agent/agent_kernel.py:960))
+
+Step 3's own comment states it is the source of truth and that *"substring guessing (step 2) is
+unreliable for custom GGUF names and would otherwise under/over-size the budget vs the real
+window."* The authoritative path exists — it simply runs **after** the guess, so the guess wins.
+
+Consequence: a `Mistral-7B-*.gguf` loaded at 16k (because that is what fit) matches the table's
+`"mistral"` entry and reports **32,768**. That value feeds
+`_token_budget = max(int(_model_window * 0.9), _floor)` and
+`derive_work_units_0(context_window)` — so the DER loop plans against **double** the context it
+actually has, silently.
+
+**Acceptance Criteria:**
+- AC1: WHEN a local model is loaded THEN `resolve_context_window` SHALL return the model's
+  **actual configured `n_ctx`**, taking precedence over the substring table.
+- AC2: THE SYSTEM SHALL consult the substring table for a local provider **only** when no model is
+  loaded and no actual `n_ctx` is available.
+- AC3: THE SYSTEM SHALL keep the user override (priority 1) ahead of both.
+- AC4: THE SYSTEM SHALL NOT resolve a local model's context window by matching on a provider-id
+  string, so the REQ-2 id migration cannot change the resolved value.
+- AC5: THE SYSTEM SHALL log the resolved window and its source (`override` / `loaded_n_ctx` /
+  `table` / `default`) once per resolution change, so a wrong budget is diagnosable.
+
+**Edge Cases:**
+- Local model loaded but `_current_params` missing `n_ctx` → fall through to the table, then the
+  8k default, and log `source=table` so the fallback is visible.
+- Model unloaded mid-session → subsequent resolutions report the table/default value; the DER
+  budget for an in-flight turn is not retroactively changed.
+- Non-local provider → unchanged behavior; this requirement touches only the local branch.
 
 ---
 

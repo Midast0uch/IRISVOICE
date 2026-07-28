@@ -107,12 +107,19 @@
   `agent_kernel.py:689-690` (`node_id="local"`, `origin="local"`) are **memory** fields, not
   provider ids — leave them.
 
-- [ ] **T2.3** (REQ-2 AC4) Handle the context-window table at
-  [`agent_kernel.py:926-931`](backend/agent/agent_kernel.py:926), keyed `("local", <model>)`.
-  RIPPLE: ⚠️ **Highest-risk silent failure in this wave.** `resolve_context_window` feeds
-  `DER_WORK_UNITS_0 = context_window / AVG_STEP_COST`, which is the DER loop's termination
-  resource. If the lookup silently misses after renaming, the DER token budget changes and nothing
-  errors. **CT-L7** pins the resolved value per model across the migration.
+- [ ] **T2.3** (REQ-5b) **Reorder `resolve_context_window`** so a loaded local model's actual
+  `n_ctx` takes precedence over the substring table.
+  In [`agent_kernel.py:933-975`](backend/agent/agent_kernel.py:933) move the live-manager lookup
+  (currently step 3, `:960-975`) **ahead of** the substring table (step 2, `:926-931`). Keep the
+  user override first. Log the resolved value and its source (REQ-5b AC5).
+  RIPPLE: this is a **reordering of existing code, not new logic** — step 3's own comment already
+  says it is the source of truth and that substring guessing "would otherwise under/over-size the
+  budget vs the real window." It fixes a **live bug**: a `Mistral-7B-*.gguf` loaded at 16k matches
+  the table's `"mistral"` entry and reports 32,768, so `derive_work_units_0` and `_token_budget`
+  are computed against double the real context — silently.
+  It also **removes the id-keyed lookup from the path that matters**, so the T2.2 rename can no
+  longer change a resolved window. That is the mitigation; **CT-L7** stays as a regression guard,
+  not as the safety net.
 
 - [ ] **T2.4** (REQ-2 AC5, D-2) Migrate persisted bindings referencing bare `"local"`: resolve to
   the single configured local instance when exactly one exists; otherwise surface as **unresolved**
@@ -147,13 +154,18 @@
   speculative decoding does not regress. Q1: the initial throughput estimate only needs to rank
   candidates; REQ-6's loop corrects the constant after one real load.
 
-- [ ] **T3.3** (REQ-5) Implement the degradation ladder — context → GPU layers → batch — retrying
-  the load at each step, with `MIN_CTX` as the floor.
-  RIPPLE: this **reverses** a deliberate policy. The comment at
-  [`:941-946`](backend/agent/local_model_manager.py:941) chose rejection on purpose ("rather than
-  silently falling back to CPU"). It is correct for a fixed deployment and wrong for Decision
-  Locked #3. Degradation must be **reported**, not silent (REQ-5 AC2) — that addresses the concern
-  behind the original policy.
+- [ ] **T3.3** (REQ-5) Implement the **GPU-only** degradation ladder — context → batch — retrying
+  the load at each step, with `MIN_CTX` (4096) as the floor. `n_gpu_layers` stays `-1` throughout.
+  If nothing fits at `MIN_CTX`: fail cleanly, unload any partial allocation, and report the VRAM
+  shortfall in GB (REQ-5 AC3). Add graceful unload on GPU error/OOM (AC4).
+  RIPPLE: ⚠️ **The existing GPU-only policy at
+  [`:941-946`](backend/agent/local_model_manager.py:941) is CORRECT and stays.** CPU offload causes
+  memory spikes this machine cannot absorb — it is not a degradation step and not a fallback. What
+  is being added is the missing **GPU-side lever**: the loader has no way to reduce context, so its
+  only options today are "load at the preset 32k" or "reject". Context reduction reclaims KV-cache
+  VRAM at **zero throughput cost**.
+  Do **not** add `n_gpu_layers` to the ladder. Keep the `eco` CPU profile reachable only as an
+  explicit user override (AC7), never auto-selected.
 
 - [ ] **T3.4** (REQ-7) Implement `ConfigCache` at `.mcm/local_model_configs.json`: fingerprint on
   path+size+mtime, `hw_fingerprint` invalidation, corrupt-file tolerance.
@@ -178,8 +190,12 @@
     different** contexts.
   - `backend/tests/unit/test_degradation_order.py` — ctx before layers before batch.
   - `backend/tests/unit/test_config_cache.py` — fingerprint, hw invalidation, corrupt tolerance.
-  - `backend/tests/behavioral/test_degrades_not_rejects.py`,
-    `test_unseen_model_autotunes.py`.
+  - `backend/tests/behavioral/test_degrades_within_gpu.py` — reduced context, `n_gpu_layers == -1`
+    throughout.
+  - `backend/tests/behavioral/test_gpu_error_unloads_cleanly.py` — injected OOM unloads and frees
+    VRAM; no CPU retry (REQ-5 AC4).
+  - `backend/tests/behavioral/test_loaded_context_window_wins.py` — REQ-5b AC1. **Fails today.**
+  - `backend/tests/behavioral/test_unseen_model_autotunes.py`.
 
 ---
 
@@ -262,14 +278,18 @@
 
 **Riskiest tasks:**
 
-1. **T2.3 — the context-window table.** Silent failure: `resolve_context_window` misses, the DER
-   token budget changes, nothing errors. CT-L7 exists solely for this.
+1. **T2.3 — context-window resolution.** The *risk* is now designed out by reordering (loaded
+   `n_ctx` wins), but the task also fixes a **live bug**: a 16k-loaded Mistral currently reports
+   32,768 from the substring table, doubling the DER budget silently. Verify with a real GGUF whose
+   filename matches a table entry but whose loaded `n_ctx` differs.
 2. **T2.2 — partial id migration.** A binding referencing the old literal is dead *and looks
    configured*. Grep for the literal afterward.
 3. **T1.2 — the phase-gate call inside `InferenceRouter.generate()`.** Easy to drop while
    refactoring the registry; CT-L5 pins it.
-4. **T3.3 — reversing the GPU-only policy.** It was a deliberate choice; the reversal is only safe
-   because degradation is *reported* (REQ-5 AC2). Do not make it silent.
+4. **T3.3 — do NOT reverse the GPU-only policy.** The temptation is to add CPU offload as a
+   degradation step; that reintroduces the memory spikes the policy exists to prevent. The ladder
+   is ctx → batch, GPU only. `test_degradation_order` asserts `n_gpu_layers == -1` in every
+   candidate.
 5. **T4.2 — asserting the correction, not the warning.** The current code already warns; a test
    that checks for a warning would pass without the loop being closed.
 
