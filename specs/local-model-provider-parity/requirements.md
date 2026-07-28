@@ -18,6 +18,13 @@ Resolved with the user on 2026-07-28. Do **not** re-litigate.
 5. **This spec is gating.** `specs/lfm25-encoder-integration/` needs multi-instance local
    providers (Embedding-350M and ColBERT-350M are additional local models that must coexist with
    a local chat model), and `specs/contextpill-model-switcher/` needs a truthful provider list.
+6. **The GPU-only policy is scoped to chat models, not to "local".** It binds to
+   `purpose == "chat"` — the GGUF chat/reasoning models loaded through `local_model_manager` /
+   llama-server — plus the Parakeet ASR service, which is GPU by its own configuration.
+   **Embedding and reranking models run on CPU**: Embedding-350M and ColBERT-350M are ~350M
+   parameters, they are small enough to run comfortably on CPU on this machine, and keeping them
+   off the GPU leaves that VRAM for the chat model, which is what the ≥25 tok/s target actually
+   depends on. See REQ-5's Policy Domain table.
 
 ## Introduction
 
@@ -40,8 +47,10 @@ too large for VRAM is rejected rather than degraded.
 - A role bound to a local provider **survives restart** — no dead bindings.
 - Loading a model the user has never used before selects parameters that sustain **≥25 tok/s**
   at the **largest context that fits**, verified by measurement rather than by preset.
-- A model too large for available VRAM **degrades** (fewer GPU layers / smaller context) instead
-  of being rejected outright.
+- A chat model too large for available VRAM **degrades** (smaller context, then smaller batch —
+  never fewer GPU layers) instead of being rejected outright.
+- An embedding or rerank model loads on **CPU** alongside a GPU-resident chat model, without
+  competing for VRAM and without being subjected to the chat degradation ladder.
 - Measured throughput **changes subsequent load parameters** for that model — the loop closes.
 - `/api/inference/state` and the WS session see the **same** provider registry; the per-kernel
   fan-out loop is deleted, not extended.
@@ -107,6 +116,9 @@ id they cannot.
   simultaneously to different roles.
 - AC3: THE SYSTEM SHALL support local instances whose purpose is not chat (embedding, reranking),
   registered alongside chat models without competing for the same role bindings.
+- AC3b: THE SYSTEM SHALL treat `purpose` as the selector for device policy — `chat` is GPU-only,
+  `embedding` and `rerank` default to CPU (REQ-5 Policy Domain). It SHALL NOT infer device policy
+  from the model's folder or filename, because all three classes share the user's scan folder.
 - AC4: THE SYSTEM SHALL keep any code path that matches the literal string `"local"` working
   during migration, or migrate every such path in the same change — a partially-migrated id is a
   dead binding.
@@ -192,10 +204,10 @@ pushed at settings that do not fit.
 
 ---
 
-### REQ-5: Degrade **within GPU**, never fall back to CPU
+### REQ-5: Chat models degrade **within GPU**, never fall back to CPU
 
-**User Story:** As a user I want an oversized model to fit by using less context, not by spilling
-onto the CPU — CPU offload causes memory spikes this machine cannot absorb.
+**User Story:** As a user I want an oversized chat model to fit by using less context, not by
+spilling onto the CPU — CPU offload causes memory spikes this machine cannot absorb.
 
 **Verified:** The existing GPU-only policy is **correct and stays**
 ([`local_model_manager.py:941-946`](backend/agent/local_model_manager.py:941): *"GPU-ONLY policy:
@@ -204,36 +216,63 @@ missing is the GPU-side lever: the loader has no way to reduce **context** to ma
 its only options today are "load at 32k" or "reject". Context reduction reclaims KV-cache VRAM at
 **zero throughput cost** — it is strictly better than either.
 
-**Decision Locked (2026-07-28):** all local models run fully on GPU. CPU offload is not a
-degradation step and not a fallback. When GPU capacity is genuinely insufficient, the correct
-outcome is a clean failure and unload — not a slow CPU load.
+#### Policy Domain (Decision Locked 2026-07-28)
+
+The GPU-only policy is **not** a property of "being local". It binds to what the model is *for*:
+
+| Model class | Device policy | Why | Selector |
+|---|---|---|---|
+| Local chat / reasoning GGUF (llama-server) | **GPU only.** Degrade ctx → batch. Never CPU. | This is what the ≥25 tok/s target measures. CPU offload here is the memory spike the user cannot absorb. | `purpose == "chat"` |
+| Parakeet ASR service | **GPU.** | Real-time transcription latency. Already `device="cuda"` by default ([`parakeet_service.py:99`](backend/audio/parakeet_service.py:99)); this spec does not change it. | separate service, not registry-loaded |
+| Local embedding models (Embedding-350M, BGE-M3) | **CPU.** | ~350M params; runs fine on CPU on this machine. Keeping it off the GPU preserves VRAM for the chat model. | `purpose == "embedding"` |
+| Local reranking models (ColBERT-350M) | **CPU.** | Same. Late-interaction scoring is not latency-critical on the retrieval path. | `purpose == "rerank"` |
+
+**The selector must be `purpose`, not the folder.** Embedding-350M and ColBERT-350M ship as GGUF
+and will live in the *same* user-configured scan folder (Decision 4) as the chat models. A
+folder-based or filename-based rule would therefore drag them onto the GPU, which is exactly the
+outcome this decision exists to prevent. `purpose` is introduced by REQ-2 AC3 and is the only
+discriminator that survives the models sharing a directory.
 
 **Acceptance Criteria:**
-- AC1: WHEN a model does not fit at the derived parameters THEN THE SYSTEM SHALL reduce **context**
-  first, then **batch size** — and SHALL NOT reduce `n_gpu_layers` or move any layer to CPU.
+- AC1: WHILE loading a model whose `purpose` is `chat`, WHEN it does not fit at the derived
+  parameters THEN THE SYSTEM SHALL reduce **context** first, then **batch size** — and SHALL NOT
+  reduce `n_gpu_layers` or move any layer to CPU.
 - AC2: THE SYSTEM SHALL keep `n_gpu_layers = -1` (all layers on GPU) for every derived and
-  degraded configuration.
-- AC3: WHEN no configuration at or above `MIN_CTX` (default 4096) fits in VRAM THEN THE SYSTEM
-  SHALL fail the load cleanly, **unload any partial allocation**, and report that the model is too
-  large for this GPU — naming the shortfall in GB.
-- AC4: IF a GPU error occurs during or after load (OOM, device lost, CUDA failure) THEN THE SYSTEM
-  SHALL unload gracefully, release VRAM, mark the provider `loaded=false`, and report the error —
-  and SHALL NOT retry on CPU.
+  degraded configuration of a `chat` model.
+- AC3: WHEN no `chat` configuration at or above `MIN_CTX` (default 4096) fits in VRAM THEN THE
+  SYSTEM SHALL fail the load cleanly, **unload any partial allocation**, and report that the model
+  is too large for this GPU — naming the shortfall in GB.
+- AC4: IF a GPU error occurs during or after a `chat` load (OOM, device lost, CUDA failure) THEN
+  THE SYSTEM SHALL unload gracefully, release VRAM, mark the provider `loaded=false`, and report
+  the error — and SHALL NOT retry on CPU.
 - AC5: THE SYSTEM SHALL report every degradation step with its reason and the resulting expected
   throughput, rather than degrading silently.
 - AC6: WHERE the resulting configuration falls below `TARGET_TPS` THEN THE SYSTEM SHALL load it
   anyway and surface the expected rate — the target is a goal, not a hard gate.
-- AC7: THE SYSTEM SHALL retain the `eco` (CPU) profile as an **explicit user override only**. It
-  SHALL never be selected automatically.
+- AC7: THE SYSTEM SHALL retain the `eco` (CPU) profile as an **explicit user override only** for
+  `chat` models. It SHALL never be selected automatically.
+- AC8: THE SYSTEM SHALL default models whose `purpose` is `embedding` or `rerank` to **CPU**, and
+  SHALL NOT subject them to the `chat` degradation ladder, the VRAM fit check, or the
+  `TARGET_TPS` throughput target.
+- AC9: THE SYSTEM SHALL NOT count an `embedding` or `rerank` model's footprint against the VRAM
+  budget used to size a `chat` model, since it does not occupy VRAM.
+- AC10: WHERE a user explicitly requests GPU for an `embedding` or `rerank` model THEN THE SYSTEM
+  SHALL honour it as an override, and SHALL count that model against the VRAM budget while it is
+  loaded.
 
 **Edge Cases:**
-- CPU-only machine (no CUDA) → report that no GPU is available and that local models require one;
-  do not silently load on CPU (AC7 override remains available for a user who wants it).
+- CPU-only machine (no CUDA) → report that no GPU is available and that local **chat** models
+  require one; do not silently load a chat model on CPU (AC7 override remains available).
+  Embedding and rerank models load normally — they are unaffected by the absence of a GPU.
 - Model larger than total VRAM even at `MIN_CTX` → AC3 clean failure naming the shortfall.
-- GPU OOM *after* a successful load (another process took VRAM) → AC4 graceful unload, not a CPU
-  retry.
+- GPU OOM *after* a successful chat load (another process took VRAM) → AC4 graceful unload, not a
+  CPU retry.
 - VRAM freed by another process mid-degradation → the search uses one hardware snapshot; it need
   not be re-entrant.
+- A GGUF in the scan folder whose `purpose` cannot be determined → default to `chat` (the
+  conservative, GPU-gated path), and surface the ambiguity rather than guessing `embedding`.
+  Mis-classifying a chat model as an embedding model would put a 9B model on CPU and destroy
+  throughput silently; the reverse fails loudly at the VRAM check.
 
 ---
 

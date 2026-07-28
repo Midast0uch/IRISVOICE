@@ -54,11 +54,19 @@
   `/api/inference/state` reads the `"default"` kernel while the WS session uses another. One
   registry removes the class; a fourth copy of the workaround does not.
 
-- [ ] **T1.4** (REQ-1 AC1) Add `local_providers: List[LocalProviderConfig]` to `iris_config`, and
-  register them in `InferenceRouter._apply_config` at init — **before any load**. Migrate the
-  existing flat `local_model_path` / `local_model_id` fields into a single entry.
+- [ ] **T1.4** (REQ-1 AC1) Add `providers: dict[str, ProviderEntry]` to `iris_config` keyed by
+  provider id, seed it with local entries, and register them in `InferenceRouter._apply_config` at
+  init — **before any load**. Migrate the existing flat `local_model_*` fields into a local entry.
   RIPPLE: this is D-1, the inversion the whole spec rests on. Existing configs must migrate
   silently; a user who has a local model configured today must not have to reconfigure it.
+  ⚠️ **Cross-spec (C1).** This is the **single** provider collection —
+  `contextpill-model-switcher` REQ-5 extends this same dict with API entries; it does **not** add a
+  second collection. Do **not** name it `local_providers` and do **not** make it a list: the
+  switcher spec keys by id, and two parallel collections would reproduce at the config layer the
+  split-registry problem REQ-3 exists to delete.
+  Migrate **only** the `local_model_*` fields here. `api_base_url` / `api_key` belong to the
+  switcher spec's migration — a field migrated twice by two "once-only" migrations is exactly what
+  both specs' all-or-nothing rules exist to prevent. See design § "Config collection ownership".
 
 - [ ] **T1.5** (REQ-1 AC6) Convert the binding guard at
   [`iris_gateway.py:8580`](backend/iris_gateway.py:8580) from a **veto** into a **status flag**.
@@ -137,6 +145,20 @@
 
 ## Wave 3 — Auto-optimizing loader (REQ-4, REQ-5, REQ-7)
 
+- [ ] **T3.0** (REQ-5 AC8/AC9/AC10, REQ-2 AC3b) Add `resolve_device_policy(purpose, user_override)
+  -> DevicePolicy` to `local_model_manager` — the **single** place device, ladder,
+  `counts_against_vram` and `throughput_target` are decided. `chat` → GPU, ladder `("ctx","batch")`,
+  counts against VRAM, target `TARGET_TPS`. `embedding` / `rerank` → CPU, **empty** ladder, does not
+  count against VRAM, no target. Explicit user GPU override flips device *and* `counts_against_vram`
+  together.
+  RIPPLE: ⚠️ **Do this before T3.1–T3.5** — they all branch on its output. The GPU-only policy is
+  scoped to `purpose == "chat"`, **not** to "being local" (Decision Locked #6). Embedding-350M and
+  ColBERT-350M ship GGUF and live in the **same** user scan folder as the chat models, so any
+  folder- or filename-based rule drags them onto the GPU and eats the VRAM the chat model's context
+  budget depends on. `purpose` is the only discriminator that survives them sharing a directory.
+  Do **not** scatter `if purpose == "chat"` guards through the deriver, degrader, VRAM accountant
+  and tok/s recorder — three of those four fail *silently* when one is forgotten (D-4b).
+
 - [ ] **T3.1** (REQ-4 AC3) Fix `estimate_vram_gb`
   ([`local_model_manager.py:906`](backend/agent/local_model_manager.py:906)) to include **KV cache
   at the target context** alongside weights.
@@ -154,7 +176,8 @@
   speculative decoding does not regress. Q1: the initial throughput estimate only needs to rank
   candidates; REQ-6's loop corrects the constant after one real load.
 
-- [ ] **T3.3** (REQ-5) Implement the **GPU-only** degradation ladder — context → batch — retrying
+- [ ] **T3.3** (REQ-5) Implement the **GPU-only** degradation ladder **for `purpose == "chat"`** —
+  context → batch — retrying
   the load at each step, with `MIN_CTX` (4096) as the floor. `n_gpu_layers` stays `-1` throughout.
   If nothing fits at `MIN_CTX`: fail cleanly, unload any partial allocation, and report the VRAM
   shortfall in GB (REQ-5 AC3). Add graceful unload on GPU error/OOM (AC4).
@@ -166,6 +189,9 @@
   VRAM at **zero throughput cost**.
   Do **not** add `n_gpu_layers` to the ladder. Keep the `eco` CPU profile reachable only as an
   explicit user override (AC7), never auto-selected.
+  A model whose `DevicePolicy.ladder` is empty (`embedding` / `rerank`, from T3.0) must **not**
+  enter this function at all — not enter it and exit early, but never reach it. An early return
+  inside the ladder still runs the VRAM fit check that AC9 says must not happen.
 
 - [ ] **T3.4** (REQ-7) Implement `ConfigCache` at `.mcm/local_model_configs.json`: fingerprint on
   path+size+mtime, `hw_fingerprint` invalidation, corrupt-file tolerance.
@@ -173,10 +199,19 @@
   `provider_ceilings.json`). A stale config against a swapped model file is exactly the
   inconsistency this spec exists to remove — AC2's fingerprint is what prevents it.
 
-- [ ] **T3.5** (REQ-4, REQ-5) Wire `load_model` to consume `DerivedConfig` and drive the
-  degradation retry loop.
+- [ ] **T3.5** (REQ-4, REQ-5) Wire `load_model` to branch on `resolve_device_policy` (T3.0)
+  **before** any hardware-fit reasoning, then consume `DerivedConfig` and drive the degradation
+  retry loop on the GPU branch.
   RIPPLE: `_parse_load_progress` is untouched (NO CHANGE, verified) — progress phases are
-  orthogonal to configuration choice.
+  orthogonal to configuration choice. The CPU branch skips `estimate_vram_gb`, `ConfigDeriver` and
+  the degrader entirely; it must still reach `loaded=true` and register in the shared registry so
+  Spec 2's embedding provider is bindable.
+
+- [ ] **T3.5b** (REQ-5 AC9) Exclude CPU-resident instances from the VRAM budget used to size a
+  `chat` model.
+  RIPPLE: this is the **silent** half of the scoping change. Counting a CPU embedding model against
+  VRAM produces no error — it just hands the chat model a smaller context forever.
+  `test_cpu_model_does_not_shrink_chat_context` is the only thing that catches it.
 
 - [ ] **T3.6** (REQ-8) Symlink traversal + dedupe + `SCAN_MAX_DEPTH` in `scan_models`.
   RIPPLE: the user's models live in a **symlinked HF cache**, so without AC1 the primary source is
@@ -188,12 +223,20 @@
   - `backend/tests/unit/test_vram_estimate_includes_kv.py` — estimate increases with context.
   - `backend/tests/unit/test_config_deriver.py` — small/mid/large from T0.2 yield **three
     different** contexts.
-  - `backend/tests/unit/test_degradation_order.py` — ctx before layers before batch.
+  - `backend/tests/unit/test_degradation_order.py` — ctx before batch; `n_gpu_layers == -1` in
+    **every** candidate.
+  - `backend/tests/unit/test_device_policy.py` — parametrized over all three purposes (REQ-5
+    AC8/AC10). Dropping a purpose from the parametrize list is a test modification.
   - `backend/tests/unit/test_config_cache.py` — fingerprint, hw invalidation, corrupt tolerance.
   - `backend/tests/behavioral/test_degrades_within_gpu.py` — reduced context, `n_gpu_layers == -1`
     throughout.
   - `backend/tests/behavioral/test_gpu_error_unloads_cleanly.py` — injected OOM unloads and frees
     VRAM; no CPU retry (REQ-5 AC4).
+  - `backend/tests/behavioral/test_embedding_loads_on_cpu.py` — loads with **no CUDA present** and
+    zero VRAM consumed (REQ-5 AC8). The no-CUDA host is the assertion — it cannot pass by accident.
+  - `backend/tests/behavioral/test_cpu_model_does_not_shrink_chat_context.py` — REQ-5 AC9.
+  - `backend/tests/behavioral/test_cpu_model_not_measured_against_target.py` — a 4 tok/s embedding
+    model records **no** correction and emits no under-target warning (REQ-5 AC8).
   - `backend/tests/behavioral/test_loaded_context_window_wins.py` — REQ-5b AC1. **Fails today.**
   - `backend/tests/behavioral/test_unseen_model_autotunes.py`.
 
@@ -266,6 +309,8 @@
   invented metadata.
 - **Wave 1 lands as one change.** Declarative providers with a per-kernel registry still diverge.
 - **T1.7 tests before T1.1–T1.6.** `test_bind_before_load` failing is the acceptance evidence.
+- **T3.0 before T3.1–T3.5.** Every one of them branches on `DevicePolicy`. Building the deriver
+  first and retrofitting the branch is how the scoping ends up as scattered `if` guards.
 - **T3.1 before T3.2.** A context-independent VRAM estimate makes the search meaningless.
 - **Wave 2 before `lfm25-encoder-integration` starts** — that spec needs `purpose` and multi-instance ids.
 - **Wave 1 before `contextpill-model-switcher`** — that spec needs `loaded`.
@@ -290,7 +335,13 @@
    degradation step; that reintroduces the memory spikes the policy exists to prevent. The ladder
    is ctx → batch, GPU only. `test_degradation_order` asserts `n_gpu_layers == -1` in every
    candidate.
-5. **T4.2 — asserting the correction, not the warning.** The current code already warns; a test
+5. **T3.0 / T3.5b — do NOT widen the GPU policy back to "all local models".** The policy is scoped
+   to `purpose == "chat"` (Decision Locked #6). Widening it is the *natural* mistake because every
+   one of these models is local and they all sit in the same scan folder — and it fails silently in
+   both directions: an embedding model on the GPU steals the chat model's context, and a CPU
+   instance counted against VRAM shrinks it with no error at all. Harness assertions 9 and 10 and
+   `test_cpu_model_does_not_shrink_chat_context` are the guards.
+6. **T4.2 — asserting the correction, not the warning.** The current code already warns; a test
    that checks for a warning would pass without the loop being closed.
 
 ### Baseline record

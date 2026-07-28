@@ -22,7 +22,8 @@ count. `record_tps` measures throughput and only warns, at a threshold of 8 tok/
 | Constraint | Source | Consequence |
 |---|---|---|
 | Target is ≥25 tok/s at max context | Decision Locked #2 | Tuning is a **search**, not a preset lookup |
-| **GPU only — no CPU offload** | Decision Locked (2026-07-28) | Degradation reduces ctx/batch; CPU is never a fallback (memory spikes) |
+| **GPU only — no CPU offload — for `chat` models** | Decision Locked #6 (2026-07-28) | Degradation reduces ctx/batch; CPU is never a fallback (memory spikes) |
+| **`embedding` / `rerank` run on CPU** | Decision Locked #6 (2026-07-28) | Device policy keys on `purpose`, not on folder — all three classes share the scan folder |
 | User swaps models constantly | Decision Locked #3 | Derivation must work for unseen models; caching must be per-model |
 | Two local models must coexist | Decision Locked #1 | Kills the single `"local"` id |
 | Embedding-350M + ColBERT are local too | `lfm25-encoder-integration` | Local instances must support non-chat roles |
@@ -49,8 +50,10 @@ graph TB
     subgraph LOAD["Load pipeline (REQ-4/5)"]
         META["parse_gguf_metadata<br/>params, quant, arch"]
         HW["get_hardware_info<br/>VRAM, CUDA"]
+        POLICY["resolve_device_policy(purpose)<br/>chat -> GPU | embedding/rerank -> CPU"]
         DERIVE["ConfigDeriver<br/>maximize ctx s.t. tps >= TARGET"]
-        DEGRADE["Degrader<br/>ctx -> batch (GPU only)"]
+        DEGRADE["Degrader<br/>ctx -> batch (GPU only, chat only)"]
+        CPULOAD["CPU load<br/>no ladder, no VRAM check"]
         SERVE["llama-server / in-process"]
     end
 
@@ -63,10 +66,13 @@ graph TB
     SCAN --> CFG
     LOC -->|"bind before load (AC3)"| BIND
     BIND -->|"on demand"| META
-    META --> DERIVE
+    META --> POLICY
+    POLICY -->|"purpose=chat"| DERIVE
+    POLICY -->|"purpose=embedding/rerank"| CPULOAD
     HW --> DERIVE
     CACHE -->|"known-good start"| DERIVE
     DERIVE --> DEGRADE --> SERVE
+    CPULOAD --> SERVE
     SERVE --> TPS
     TPS -->|"correction for NEXT load"| CACHE
 
@@ -74,7 +80,7 @@ graph TB
     style LEARN fill:#2b3d2b,stroke:#8ad48a,color:#fff
 ```
 
-Two properties this shape enforces:
+Three properties this shape enforces:
 
 1. **Configuration flows into the registry; loading flows out of it.** The arrow from `LOC` to
    the load pipeline goes through `BIND` — a provider is registered, *then* bound, *then* loaded.
@@ -82,6 +88,9 @@ Two properties this shape enforces:
 2. **The learning arrow returns to `CACHE`, never to `SERVE`.** Measurements change the *next*
    load (REQ-6 AC4); they never reconfigure a running model, so a session in flight is never
    disrupted by tuning.
+3. **`POLICY` is upstream of `HW`.** Hardware-fit reasoning only exists on the `chat` branch. A CPU
+   model never reaches `DERIVE`, so it cannot consume VRAM budget, cannot enter the degradation
+   ladder, and cannot be measured against `TARGET_TPS` (D-4b, REQ-5 AC8/AC9).
 
 ---
 
@@ -134,6 +143,9 @@ sequenceDiagram
 
 ### `LocalProviderConfig` — declarative, persisted (REQ-1, REQ-2)
 
+Persisted as an **entry in the single `providers` collection keyed by id** — not as a separate
+list. See "Config collection ownership" below.
+
 ```python
 @dataclass
 class LocalProviderConfig:
@@ -147,6 +159,33 @@ class LocalProviderConfig:
 
 `purpose` is what lets Embedding-350M and ColBERT register as local providers without competing
 for `reasoning` / `tool_execution` bindings.
+
+### Config collection ownership (cross-spec — resolves conflict C1)
+
+`contextpill-model-switcher` REQ-5 persists **API** providers in a collection keyed by id, and
+migrates the flat `api_base_url` / `api_key` pair into it. This spec persists **local** providers
+and migrates the flat `local_model_*` fields.
+
+**These are one collection, not two.** Both specs write
+`InferenceConfig.providers: dict[str, ProviderEntry]`, keyed by the same id space
+(`local:<model-stem>` here, `openai` / `cerebras` there). Two parallel collections would reproduce
+at the config layer exactly the split-registry problem REQ-3 exists to delete, and would give the
+frontend two places to look for "a provider".
+
+Ownership is split by **entry kind**, so neither spec migrates the other's source fields:
+
+| | Owns the entry shape | Owns the flat-field migration | Owns |
+|---|---|---|---|
+| `local-model-provider-parity` (this spec) | local entries: `model_path`, `profile`, `custom_params`, `purpose` | `local_model_path`, `local_model_id`, `local_model_profile`, `local_model_ctx`, `local_model_gpu_layers`, `models_directory` | T1.4 |
+| `contextpill-model-switcher` | API entries: `endpoint`, `cred_ref` | `api_base_url`, `api_key` | its T2.1–T2.4 |
+
+This spec lands first, so **it introduces the `providers` dict**; the switcher spec extends the
+same dict rather than adding a second one. Local entries need no `cred_ref` — local providers are
+unmetered and keyless ([`provider.py:16-22`](../../backend/agent/inference/provider.py)).
+
+⚠️ **Do not migrate `api_base_url` / `api_key` here**, and do not leave `local_model_*` for the
+switcher spec to migrate. A field migrated twice by two "once-only" migrations is the failure mode
+both specs' all-or-nothing rules exist to prevent.
 
 ### Runtime status — additive to the existing snapshot payload
 
@@ -250,10 +289,13 @@ enter the estimate for the search to mean anything.
 **Rejected — more presets.** Adding `balanced_16k`, `balanced_64k` etc. reproduces the same
 problem at finer grain: presets are indexed by guess, not by the model in hand.
 
-### D-4: Degrade **within GPU** — context, then batch. Never CPU.
+### D-4: Degrade **within GPU** — context, then batch. Never CPU. (`chat` only)
 
-**Decision.** Context first, batch second. `n_gpu_layers` stays `-1` always. If nothing fits at
-`MIN_CTX`, fail cleanly and unload.
+**Decision.** For `purpose == "chat"`: context first, batch second. `n_gpu_layers` stays `-1`
+always. If nothing fits at `MIN_CTX`, fail cleanly and unload.
+
+**Scope — the policy keys on `purpose`, not on "local".** `embedding` and `rerank` models load on
+CPU and never enter this ladder at all (REQ-5 AC8, D-4b below).
 
 **Rationale.** The existing GPU-only policy
 ([`:941-946`](../../backend/agent/local_model_manager.py)) is **correct and retained** — CPU offload
@@ -274,6 +316,54 @@ the model is too large for this GPU.
 
 **Rejected — rejection with no context reduction (today's behavior).** Correct policy, missing
 lever. It turns "would fit at 16k" into a dead end.
+
+### D-4b: Device policy is a function of `purpose`, resolved once at load
+
+**Decision.** A single `resolve_device_policy(purpose, user_override) -> DevicePolicy` decides
+device and ladder for every local model. It is the *only* place device is chosen; `ConfigDeriver`
+and the degrader both consume its output rather than deciding for themselves.
+
+```python
+@dataclass(frozen=True)
+class DevicePolicy:
+    device: str            # "gpu" | "cpu"
+    ladder: tuple[str,...] # ("ctx","batch") for gpu-chat; () for cpu
+    counts_against_vram: bool
+    throughput_target: Optional[float]   # TARGET_TPS for chat; None otherwise
+```
+
+| `purpose` | device | ladder | counts_against_vram | throughput_target |
+|---|---|---|---|---|
+| `chat` | `gpu` | `("ctx","batch")` | `True` | `TARGET_TPS` (25) |
+| `embedding` | `cpu` | `()` | `False` | `None` |
+| `rerank` | `cpu` | `()` | `False` | `None` |
+| any + explicit user GPU override | `gpu` | `()` | `True` | `None` |
+
+**Rationale.** The alternative — scattering `if purpose == "chat"` guards through the deriver, the
+degrader, the VRAM accountant and the tok/s recorder — is four places to forget one. Worse, three
+of those four *silently* do the wrong thing when they forget: a CPU embedding model counted against
+VRAM shrinks the chat model's context for no reason, and a CPU model measured against `TARGET_TPS`
+records a permanent "too slow" correction against a model that was never supposed to hit 25 tok/s.
+Only the fourth (the ladder) fails loudly. Concentrating the decision in one resolver makes the
+omission impossible rather than merely discouraged — the same reasoning as pinning
+`n_gpu_layers == -1` in every ladder candidate.
+
+**Why not the folder or the filename.** Decision 4 puts every local model in one user-configured
+scan folder, and Embedding-350M and ColBERT-350M ship GGUF just like the chat models. A path- or
+name-based rule cannot separate them, and would put both 350M retrieval models on the GPU —
+consuming VRAM that the chat model's context budget depends on. `purpose` is the only signal that
+does not collapse when the models share a directory.
+
+**Rejected — infer device from model size.** "Under 1B → CPU" happens to classify today's three
+models correctly and would break the first time the user loads a 0.5B chat model or a large
+embedding model. Size correlates with purpose here by accident, not by rule.
+
+**Parakeet is out of scope and unchanged.** It is a separate FastAPI service with its own
+`--device` flag, defaulting to `cuda` ([`parakeet_service.py:99,586`](../../backend/audio/parakeet_service.py)),
+and it is not registered through the provider registry. It remains GPU-resident; this spec neither
+loads it nor changes it. It appears in the Policy Domain table so the VRAM accounting is honest —
+its ~1.2 GB fp16 footprint is part of the "already consumed" baseline that
+`get_hardware_snapshot()` observes as *free* VRAM when the ASR service is running.
 
 ### D-7: Authoritative context window beats the substring table
 
@@ -325,6 +415,9 @@ third instance of it.
 | `backend/agent/inference/router.py` | **Yes** | CHANGE NEEDED | `_apply_config` registers local providers from config (REQ-1 AC1); reads the shared registry (REQ-3). Public surface unchanged (REQ-3 AC4). |
 | `backend/iris_gateway.py:7896` | **Yes** | CHANGE NEEDED | Load handler stops **creating** the instance; flips status on an existing one (D-1). |
 | `backend/iris_gateway.py:7910` | **Yes (delete)** | CHANGE NEEDED | Peer-kernel fan-out loop removed, not extended (REQ-3 AC3). |
+| `iris_gateway.py:8605-8618` — `set_role_binding` peer propagate | **Yes (delete)** | CHANGE NEEDED | ⚠️ **Second fan-out site**, commented *"parity with set_model_selection"*. REQ-3 AC3 says delete **all three**, not just `:7910`. Missing this leaves the shared registry racing a propagation loop. **`contextpill-model-switcher`'s switcher writes through this exact handler** — its `sendRoleBinding` → `set_role_binding` — so a half-deleted fan-out surfaces there first. |
+| `iris_gateway.py:6012` — `_handle_set_model_selection` | **Yes** | CHANGE NEEDED | ⚠️ **Third fan-out site** (the one `:7913-7914` names as precedent). Same deletion. |
+| `iris_gateway.py:1339-1407` — startup restore path | **Yes** | CHANGE NEEDED | Calls `kernel.set_model_selection` then `kernel.set_role_binding` at session restore, with an explicit ordering comment. Registry hydration (T1.6) must not double-apply against this path, and the ordering it relies on must survive. |
 | `backend/iris_gateway.py:8580` | **Yes** | CHANGE NEEDED | Binding guard becomes a status flag, not a veto (REQ-1 AC6). |
 | `backend/agent/agent_kernel.py:962, :8476, :8544` | **Yes** | CHANGE NEEDED | Literal `"local"` comparisons migrate to namespaced ids (D-2, REQ-2 AC4). |
 | `agent_kernel.resolve_context_window` (`:933-975`) | **Yes** | CHANGE NEEDED | **Reorder**: loaded `n_ctx` (`:960-975`) moves ahead of the substring table (`:926-931`). Fixes a live bug — a 16k-loaded Mistral currently reports 32,768 — and removes the id-keyed lookup from the path, designing out the REQ-2 migration risk (D-7, REQ-5b). |
@@ -334,13 +427,18 @@ third instance of it.
 | `local_model_manager.recommend_profile` | **Yes** | CHANGE NEEDED | Two-outcome preset selector replaced by `ConfigDeriver` (REQ-4). |
 | `local_model_manager.record_tps` | **Yes** | CHANGE NEEDED | Threshold 8 → `TARGET_TPS`; writes corrections to `ConfigCache` instead of only warning (REQ-6). |
 | `local_model_manager.scan_models` | **Yes (minor)** | CHANGE NEEDED | Symlink traversal + dedupe + depth bound (REQ-8 AC1/AC4). Split-shard grouping preserved. |
-| `local_model_manager.load_model` | **Yes** | CHANGE NEEDED | Consumes `DerivedConfig`; drives the degradation retry loop (REQ-5). |
+| `local_model_manager.load_model` | **Yes** | CHANGE NEEDED | Consumes `DerivedConfig`; drives the degradation retry loop (REQ-5). Branches on `resolve_device_policy(purpose)` **before** any hardware-fit reasoning (D-4b). |
+| `local_model_manager` — new `resolve_device_policy` | **Yes (new)** | CHANGE NEEDED | Single source of device/ladder/VRAM-accounting/throughput-target truth, keyed on `purpose` (D-4b, REQ-5 AC8–AC10). |
+| `backend/audio/parakeet_service.py` | **No** | NO CHANGE (verified) | Separate FastAPI service with its own `--device` flag defaulting to `cuda` ([`:99`](../../backend/audio/parakeet_service.py), [`:586`](../../backend/audio/parakeet_service.py)). Not registered through the provider registry, so nothing in this spec reaches it. Its existing CUDA-unavailable→CPU fallback ([`:232-237`](../../backend/audio/parakeet_service.py)) is its own policy and stays. |
+| `local_model_manager` VRAM accounting | **Yes** | CHANGE NEEDED | Must exclude CPU-resident instances from the budget (REQ-5 AC9). Counting a CPU embedding model against VRAM silently shrinks the chat model's context — a wrong answer with no error. |
 | `_parse_load_progress` | **No** | NO CHANGE (verified) | Progress parsing is orthogonal to configuration choice; phases (`init → loading → context → ready`) still apply. |
 | `InProcessTransport` | **No** | **CONTRACT LOCK** | `generate()` signature and the `(text, thinking, tool_calls)` 3-tuple are unchanged (**CT-L4**). |
 | `InferenceRouter.generate()` | **No** | **CONTRACT LOCK** | The phase-scheduler gate lives here (`caducean-phase-scheduler` REQ-13). Registry changes must not alter its signature or the gate call (**CT-L5**). |
 | `quota_key()` / `rate_meter` | **No** | NO CHANGE (verified) | Local kinds are unmetered by `ProviderKind` ([`provider.py:16-22`](../../backend/agent/inference/provider.py)); more local instances are still unmetered. |
-| `components/ModelInferenceSection.tsx` | **No (this spec)** | **CONTRACT LOCK** | Consumes `providers[]` + `role_bindings[]`. New fields are additive so it keeps working unmodified (**CT-L6**). Rendering `loaded` is `contextpill-model-switcher`. |
-| `iris_config.py` | **Yes** | CHANGE NEEDED | Gains `local_providers: List[LocalProviderConfig]`. Existing flat `local_model_path` fields migrate to a single entry. |
+| `components/ModelInferenceSection.tsx` | **No (this spec)** | **CONTRACT LOCK** | Consumes `providers[]` + `role_bindings[]`. New fields are additive so it keeps working unmodified (**CT-L6**). Rendering `loaded` is `contextpill-model-switcher`. ⚠️ **But see cross-spec note below** — `providerOptions` maps **every** provider unfiltered ([`:80`](../../components/ModelInferenceSection.tsx)), so it stops being NO-CHANGE the moment `lfm25-encoder-integration` registers non-chat providers. |
+| `iris_config.py` | **Yes** | CHANGE NEEDED | Gains `providers: dict[str, ProviderEntry]` (**the single collection** — `contextpill-model-switcher` REQ-5 extends this same dict, it does not add a second). Flat `local_model_*` fields migrate to a local entry **here only**; `api_base_url`/`api_key` are migrated by the switcher spec, not this one. See "Config collection ownership". |
+| `iris_config.py` — `api_base_url` / `api_key` ([`:192-193`](../../backend/iris_config.py)) | **No** | NO CHANGE (this spec) | Owned by `contextpill-model-switcher` REQ-5/REQ-7. Migrating them here would double-migrate them there. |
+| `iris_config.py:187` — `provider` (routing mode) | **No** | NO CHANGE (verified) | Not read or written by this spec. Frozen by `contextpill-model-switcher` REQ-8. |
 | `.mcm/local_model_configs.json` | **Yes (new)** | CHANGE NEEDED | Per-model cache, following `der_params.json` / `provider_ceilings.json` (REQ-7, Q3). |
 | `docs/CADUCEAN_ARCHITECTURE.md` §9 | **Yes** | CHANGE NEEDED | Component status table gains the local provider path. |
 
@@ -352,9 +450,12 @@ third instance of it.
 |---|---|
 | Model file missing at load | Provider stays registered, `loaded=false`, typed `ModelNotFoundError` naming the path (REQ-1 edge case). Never a generic failure. |
 | Metadata unparseable | Fall back to the `balanced` preset, log the reason, continue (REQ-4 edge case). |
-| Derived config does not fit | Degrade **ctx → batch, GPU only** (REQ-5 AC1/AC2); report each step (REQ-9 AC2). `n_gpu_layers` stays `-1`. |
-| Nothing fits at `MIN_CTX` | Fail cleanly, **unload any partial allocation**, report the VRAM shortfall in GB (REQ-5 AC3). Never a CPU retry. |
-| GPU error during/after load (OOM, device lost) | **Graceful unload**: release VRAM, set `loaded=false`, report. No CPU fallback (REQ-5 AC4). |
+| Derived config does not fit (`chat`) | Degrade **ctx → batch, GPU only** (REQ-5 AC1/AC2); report each step (REQ-9 AC2). `n_gpu_layers` stays `-1`. |
+| Nothing fits at `MIN_CTX` (`chat`) | Fail cleanly, **unload any partial allocation**, report the VRAM shortfall in GB (REQ-5 AC3). Never a CPU retry. |
+| GPU error during/after a `chat` load (OOM, device lost) | **Graceful unload**: release VRAM, set `loaded=false`, report. No CPU fallback (REQ-5 AC4). |
+| No CUDA present, `purpose == "chat"` | Report that local chat models require a GPU; do not load on CPU (REQ-5 edge case). The `eco` override remains available. |
+| No CUDA present, `purpose in {embedding, rerank}` | Load normally on CPU — unaffected (REQ-5 AC8). A missing GPU must not disable retrieval. |
+| `purpose` undeterminable for a scanned GGUF | Default to `chat` and surface the ambiguity (REQ-5 edge case). Defaulting the other way would put a 9B model on CPU silently; this way it fails loudly at the VRAM check. |
 | Role bound to unloaded local, request arrives | Load on demand, or fail with a typed actionable error. **Never** silently fall back to another provider (REQ-1 AC4) — a silent swap would make the user think local is working when it is not. |
 | Corrupt config cache | Discard, derive fresh (REQ-7 AC5) — the `outer_loop._load_params` tolerance pattern. |
 | Hardware changed since caching | Invalidate on `hw_fingerprint` mismatch, re-derive (REQ-7 AC4). |
@@ -380,7 +481,12 @@ scripts/validate_local_model_path.py    STANDING CDD HARNESS
 - `test_vram_estimate_includes_kv.py` — estimate **increases with context**. Against today's
   weights-only formula this fails, which is the point: a context-independent estimate cannot
   inform a context search.
-- `test_degradation_order.py` — ctx reduced before batch; `n_gpu_layers` is **never** changed from `-1`; no configuration in the ladder places any layer on CPU (D-4, REQ-5 AC2).
+- `test_degradation_order.py` — for `purpose="chat"`: ctx reduced before batch; `n_gpu_layers` is **never** changed from `-1`; no configuration in the ladder places any layer on CPU (D-4, REQ-5 AC2).
+- `test_device_policy.py` — `resolve_device_policy` returns GPU + `("ctx","batch")` ladder +
+  `counts_against_vram=True` + `TARGET_TPS` for `chat`; CPU + **empty ladder** +
+  `counts_against_vram=False` + `throughput_target=None` for `embedding` and `rerank`; an explicit
+  user GPU override flips device **and** `counts_against_vram` together (D-4b, REQ-5 AC8/AC10).
+  Parametrized over all three purposes — dropping a case is a test modification.
 - `test_config_cache.py` — fingerprint changes on file mtime/size; `hw_fingerprint` mismatch
   invalidates; corrupt file falls back to derivation.
 - `test_tps_correction.py` — sustained below target records a **reduced-context** next-load config;
@@ -411,6 +517,16 @@ scripts/validate_local_model_path.py    STANDING CDD HARNESS
   context, still fully on GPU** (REQ-5 AC1/AC2). Asserts `n_gpu_layers == -1` throughout.
 - `test_gpu_error_unloads_cleanly.py` — an injected GPU OOM unloads, frees VRAM, sets
   `loaded=false`, and does **not** retry on CPU (REQ-5 AC4).
+- `test_embedding_loads_on_cpu.py` — an `embedding` instance loads with **zero** VRAM consumed, on
+  a synthetic host reporting **no CUDA at all**, and reaches `loaded=true` (REQ-5 AC8). The
+  no-CUDA condition is the assertion: it cannot pass by accident on a GPU box.
+- `test_cpu_model_does_not_shrink_chat_context.py` — derive a chat context, then load an
+  `embedding` and a `rerank` instance, then derive again for the same chat model on the same
+  hardware snapshot: **the context is identical** (REQ-5 AC9). This is the silent-wrong-answer
+  case — without it, CPU models quietly cost the chat model its context.
+- `test_cpu_model_not_measured_against_target.py` — an `embedding` instance reporting 4 tok/s
+  records **no** correction and emits no under-target warning (REQ-5 AC8). Left unguarded, the
+  closed loop would permanently punish a model that was never meant to hit 25 tok/s.
 - `test_loaded_context_window_wins.py` — a model whose filename matches a table entry but is
   loaded at a different `n_ctx` resolves to the **loaded** value (REQ-5b AC1). **Fails today.**
 - `test_closed_loop_tuning.py` — inject sustained sub-target throughput, assert the **next** load
@@ -445,9 +561,17 @@ scripts/validate_local_model_path.py    STANDING CDD HARNESS
 5. VRAM estimate is **monotonically increasing** in context.
 6. A simulated sub-target throughput run changes the next-load config and leaves the running
    config untouched.
-7. Degradation order is ctx → batch, and **no** ladder step moves a layer to CPU
-   (`n_gpu_layers == -1` in every candidate).
+7. For a `chat` model, degradation order is ctx → batch, and **no** ladder step moves a layer to
+   CPU (`n_gpu_layers == -1` in every candidate).
 8. `balanced_mtp` / `force_subprocess` still reachable — MTP is not regressed.
+9. **Device policy separates by `purpose`.** For the same synthetic hardware: a `chat` model
+   resolves to GPU with a non-empty ladder; `embedding` and `rerank` resolve to CPU with an
+   **empty** ladder and `counts_against_vram=False`. A single device value across all three
+   purposes is a failure — that is the folder-based rule reappearing.
+10. **CPU instances are invisible to the VRAM budget.** Derive a chat context, load synthetic
+    `embedding` + `rerank` instances, re-derive: the chat context is unchanged (REQ-5 AC9).
 
 Assertion 4 is the one that decides whether REQ-4 actually landed: identical contexts across three
-model sizes means presets are still in charge under a new name.
+model sizes means presets are still in charge under a new name. Assertions 9 and 10 are the pair
+that decides whether the *scoping* landed — 9 catches the policy collapsing back to one device,
+10 catches the accounting leak that would make CPU models cost VRAM anyway.
