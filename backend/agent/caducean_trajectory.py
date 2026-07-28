@@ -14,7 +14,7 @@ Usage:
 import logging
 import sqlite3
 import time
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Optional, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +408,53 @@ class CaduceanTrajectoryRecorder:
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] get_session_exits failed: %s", exc)
             return []
+
+
+# ── REQ-5: canonical 4D coordinate serialization ──────────────────────────
+
+
+def format_coords(x: float, y: float, xi: float, u: float) -> str:
+    """Canonical 4D coordinate string with 2 fixed decimal places.
+
+    Format: ``"x.xx,y.yy,xi.xx,u.xx"``
+
+    Used by the Immortus chain and document storage for trajectory-proximity
+    queries.  Round-trips through ``parse_coords`` with no precision loss
+    beyond the 2 decimal places.
+    """
+    return f"{x:.2f},{y:.2f},{xi:.2f},{u:.2f}"
+
+
+def parse_coords(s: str) -> Tuple[float, float, float, float]:
+    """Reverse ``format_coords``.
+
+    Accepts only the exact format produced by ``format_coords``: 4 comma-separated
+    numeric values with no extra whitespace.
+
+    Returns:
+        ``(x, y, xi, u)``
+
+    Raises:
+        TypeError: If ``s`` is ``None``.
+        ValueError: If the string has the wrong field count, contains
+        non-numeric values, or includes unexpected whitespace.
+    """
+    if s is None:
+        raise TypeError("coordinate string must be str, not None")
+    parts = s.split(",")
+    if len(parts) != 4:
+        raise ValueError(
+            f"Expected 4 comma-separated values, got {len(parts)}: {s!r}"
+        )
+    for p in parts:
+        if p != p.strip():
+            raise ValueError(
+                f"Unexpected whitespace in coordinate part {p!r}: {s!r}"
+            )
+    try:
+        return (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+    except ValueError:
+        raise ValueError(f"Non-numeric value in coordinate string: {s!r}")
 
 
 def get_trajectory_recorder(memory_interface: Any) -> CaduceanTrajectoryRecorder:
