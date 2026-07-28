@@ -9,7 +9,7 @@ Specs are cut by **execution order**, not by topic. Each phase is self-contained
 | Phase | Spec | Status | Unblocks |
 |---|---|---|---|
 | **1** | [`phase-1-foundation/`](phase-1-foundation/) | **READY** — Wave 1 partially landed (`01e6625b`) | everything |
-| 2 | `phase-2-instrument/` | not yet written | — |
+| **2** | [`phase-2-instrument/`](phase-2-instrument/) | **READY** | 3, 4, 5 validation |
 | 3 | `phase-3-local-loader/` | not yet written | 4, 5 |
 | 4 | `phase-4-encoder/` | not yet written | 5 |
 | 5 | `phase-5-switcher/` | not yet written | — |
