@@ -115,6 +115,43 @@ def get_token_budget(mode: Optional[str]) -> int:
     return DER_TOKEN_BUDGETS["agentic"]
 
 
+# Per-class share of the model's usable window. This is the CEILING, expressed
+# as a fraction so a large model is actually used: on a 256k window "full" gets
+# ~207k instead of the flat 60k the absolute table allowed.
+#
+# DER_TOKEN_BUDGETS above stays in ABSOLUTE tokens and is NOT replaced — it is
+# still read by DirectorQueue._decide_mode (der_loop.py:220) and _should_escalate
+# (:283-289), which compare a remaining token count against a mode budget. Two
+# structures because they answer two different questions: "how much of this
+# window may this class use" (here) vs "does this mode have room left" (there).
+DER_MODE_WINDOW_FRACTION: Dict[str, float] = {
+    "quick":       0.10,   # single tool call — bounded on purpose
+    "agentic":     0.40,
+    "full":        0.90,
+    "voice_first": 0.10,
+    "spec":        0.90,
+    "research":    0.90,
+    "implement":   0.40,
+    "debug":       0.40,
+    "test":        0.40,
+    "review":      0.25,
+    "quick_edit":  0.10,
+    "default":     0.40,
+}
+DER_DEFAULT_WINDOW_FRACTION = 0.40
+
+
+def _mode_fraction(task_class: Optional[str]) -> float:
+    if not task_class:
+        return DER_DEFAULT_WINDOW_FRACTION
+    return DER_MODE_WINDOW_FRACTION.get(
+        task_class,
+        DER_MODE_WINDOW_FRACTION.get(
+            str(task_class).lower(), DER_DEFAULT_WINDOW_FRACTION
+        ),
+    )
+
+
 def resolve_der_token_budget(context_window: int, task_class: Optional[str]) -> int:
     """Allocate DER's step budget from the model's REAL context window.
 
@@ -130,9 +167,9 @@ def resolve_der_token_budget(context_window: int, task_class: Optional[str]) -> 
     flat table.
     """
     _window_cap = max(int(context_window * DER_WINDOW_UTILISATION), 1)
-    _mode_ceiling = DER_TOKEN_BUDGETS.get(
-        task_class, DER_TOKEN_BUDGETS.get("full", 50_000)
-    )
+    # Ceiling is a SHARE of the usable window, so capacity scales with the model
+    # instead of being pinned to a constant tuned for an 8k-32k era.
+    _mode_ceiling = int(_window_cap * _mode_fraction(task_class))
     _budget = min(_mode_ceiling, _window_cap)
     # Floor last, and never above the window.
     return max(_budget, min(DER_BUDGET_MIN_FLOOR, _window_cap))

@@ -23,7 +23,10 @@ Resolved with the user 2026-07-28. Do **not** re-litigate.
    is not touched by this phase. This phase changes *where credentials live*, not how requests route.
 5. **The DER mode table is a CEILING, never a floor.** The window is the hard cap. The floor is
    applied last and is itself clamped by the window.
-6. **A too-high context-window default is worse than a too-low one.** Budget is `window × 0.9`, so
+6. **Per-class ceilings are FRACTIONS of the window, not absolute tokens.** A constant tuned for
+   an 8k-32k era caps a 256k model at 17% utilisation, which is the opposite of what long-horizon
+   work needs. The absolute `DER_TOKEN_BUDGETS` table is retained for escalation comparisons.
+7. **A too-high context-window default is worse than a too-low one.** Budget is `window × 0.9`, so
    an over-stated window re-creates the overcommit. Under-sizing is safe. Never guess a window
    upward.
 
@@ -84,8 +87,14 @@ derive_work_units_0(8_192) = 5 units ≈ 7_372 tokens  ← disagrees with the bu
 **Acceptance Criteria:**
 - AC1: THE SYSTEM SHALL derive the DER step budget from `resolve_context_window()`, and the budget
   SHALL NEVER exceed that window.
-- AC2: THE SYSTEM SHALL treat `DER_TOKEN_BUDGETS[task_class]` as a per-class **ceiling** and SHALL
-  NOT apply it as a floor.
+- AC2: THE SYSTEM SHALL express the per-class ceiling as a **fraction of the usable window**
+  (`DER_MODE_WINDOW_FRACTION`), never as an absolute token count, so capacity scales with the model.
+  It SHALL NOT be applied as a floor.
+- AC2b: THE SYSTEM SHALL retain `DER_TOKEN_BUDGETS` in **absolute** tokens alongside the fractions.
+  Two structures answer two different questions: *"how much of this window may this class use"*
+  (fractions, here) versus *"does this mode have room left"*
+  ([`der_loop.py:283-289`](backend/agent/der_loop.py:283), absolute). Replacing the absolute table
+  breaks escalation.
 - AC3: THE SYSTEM SHALL apply the minimum floor **last** and SHALL clamp the floor by the window,
   so a floor can never reintroduce an overcommit.
 - AC4: THE SYSTEM SHALL derive `_token_budget` and `derive_work_units_0()` from the **same**
@@ -100,8 +109,11 @@ derive_work_units_0(8_192) = 5 units ≈ 7_372 tokens  ← disagrees with the bu
 
 **Edge Cases:**
 - Window smaller than the floor (2k model) → budget clamps to `window × 0.9`; the floor is ignored.
-- 256k window with `task_class="quick"` → the 15k mode ceiling binds; a single-tool task is not
-  handed 230k. This is why AC6 keeps the table.
+- 256k window with `task_class="quick"` → the 10% fraction binds at ~23.6k; a single-tool task is
+  not handed the whole window, but it still scales with the model.
+- 8k window with `task_class="quick"` → 10% of 7,372 is 737, below `DER_BUDGET_MIN_FLOOR`, so the
+  floor raises it to 4,000. Correct: the floor exists for exactly this case, and AC3's clamp keeps
+  it under the window.
 - Model swapped mid-session → budget resolves per DER invocation; no restart needed.
 
 ---
@@ -390,15 +402,13 @@ alias fallback.
 - **Narration and live task-card display** → **Phase 2**.
 - **Changing routing mode** → REQ-9 freezes it.
 - **Changing the DER band thresholds** or the mode-table *values*.
-- **Making the mode ceilings fractions of the window.** Raised as a real follow-up (a 256k model
-  currently gets 40k for `implement`); deferred so REQ-1's fix stays measurable in isolation.
 
 ## Open Questions
 
-- **OQ-1:** Should `DER_TOKEN_BUDGETS` become window **fractions** (quick 10% / implement 40% /
-  full 90%) rather than absolute tokens? Deferred deliberately — it would change budget behaviour
-  on large models at the same time as REQ-1's fix, making neither attributable. Revisit after
-  REQ-1's tests land.
+- ~~**OQ-1:** fractions vs absolute ceilings~~ — **RESOLVED 2026-07-28: fractions.** Now
+  Decision Locked #7 and REQ-1 AC2. Effect on a 256k window: `implement` 40,000 -> 94,371,
+  `full` 60,000 -> 212,336. Small windows are unaffected (still clamped by the window, then the
+  floor).
 - **OQ-2:** Which providers expose model metadata for REQ-2 AC2, and via what call? Needs a survey;
   until then the override plus confirmed table entries carry it.
 - **OQ-3:** The `config_version` value for REQ-8 AC3.
