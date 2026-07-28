@@ -568,6 +568,9 @@ class IRISGateway:
             elif msg_type == "reformat_document":
                 await self._handle_reformat_document(session_id, client_id, message)
 
+            elif msg_type == "get_documents":
+                await self._handle_get_documents(session_id, client_id, message)
+
             elif msg_type == "download_gguf_model":
                 await self._handle_download_gguf_model(session_id, client_id, message)
 
@@ -6039,6 +6042,77 @@ class IRISGateway:
             )
 
             if success:
+                # Persist to disk via IRISConfig (single source of truth)
+                try:
+                    from .iris_config import with_modify_config, RoutingMode
+
+                    def _update_model_config(cfg):
+                        # Always write provider + model names
+                        cfg.inference.provider = model_provider or ""
+                        cfg.inference.reasoning_model = reasoning_model or ""
+                        cfg.inference.tool_execution_model = (
+                            tool_execution_model or ""
+                        )
+                        # Resolve api_base_url: frontend-sent > hardcoded preset > existing
+                        _known_endpoints = {
+                            "opencodego": "https://opencode.ai/zen/go/v1",
+                            "cerebras": "https://api.cerebras.ai/v1",
+                            "chutes": "https://llm.chutes.ai/v1",
+                            "cohere": "https://api.cohere.ai/compatibility/v1",
+                            "deepseek": "https://api.deepseek.com",
+                            "anthropic": "https://api.anthropic.com/v1",
+                            "ollama": "http://localhost:11434/v1",
+                        }
+                        if api_base_url:
+                            cfg.inference.api_base_url = api_base_url
+                            self._logger.info(
+                                "[Session: %s] Using frontend-sent api_base_url '%s'",
+                                session_id, api_base_url,
+                            )
+                        elif model_provider in _known_endpoints:
+                            cfg.inference.api_base_url = _known_endpoints[
+                                model_provider
+                            ]
+                            self._logger.info(
+                                "[Session: %s] Using preset endpoint for '%s': %s",
+                                session_id, model_provider,
+                                _known_endpoints[model_provider],
+                            )
+                        else:
+                            self._logger.info(
+                                "[Session: %s] No api_base_url for provider '%s', "
+                                "keeping existing config value'",
+                                session_id, model_provider,
+                            )
+                        # Only write api_key when the frontend sends one
+                        if api_key:
+                            cfg.inference.api_key = api_key
+                            self._logger.info(
+                                "[Session: %s] API key updated for provider '%s'",
+                                session_id, model_provider,
+                            )
+                        # For cloud providers (not local), switch routing mode
+                        if model_provider not in ("local", "iris_local", "ollama"):
+                            cfg.routing.mode = RoutingMode.SINGLE_API
+                            cfg.inference.swarm_enabled = False
+                            self._logger.info(
+                                "[Session: %s] Routing mode set to SINGLE_API for '%s'",
+                                session_id, model_provider,
+                            )
+
+                    cfg = with_modify_config(_update_model_config)
+                    self._logger.info(
+                        "[Session: %s] Model config persisted via IRISConfig "
+                        "(provider=%s, model=%s)",
+                        session_id, model_provider, reasoning_model,
+                    )
+                except Exception as _e2:
+                    self._logger.error(
+                        "[Session: %s] Failed to persist model config via IRISConfig: %s",
+                        session_id, _e2,
+                        exc_info=True,
+                    )
+
                 # Persist to session state so downstream handlers
                 # (e.g. get_available_models) read the correct provider
                 # instead of falling back to "lmstudio".
@@ -6914,6 +6988,20 @@ class IRISGateway:
 
             # Remove active voice client tracking
             self._active_voice_client.pop(session_id, None)
+
+            # REQ-10 AC3: drop the session from the coupling registry so it does
+            # not accumulate as a phantom partner that dilutes coupling. Guarded
+            # by the same flag that gates registration (REQ-10 AC4).
+            try:
+                from backend.agent.coupled_registry import (
+                    coupling_enabled,
+                    get_coupled_registry,
+                )
+
+                if coupling_enabled():
+                    get_coupled_registry().unregister_session(session_id)
+            except Exception:
+                pass
 
             # Reset per-session LFM ChatState
             try:
@@ -8227,6 +8315,60 @@ class IRISGateway:
                     )
             except Exception:
                 pass
+
+    async def _handle_get_documents(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """WS handler (T3, REQ-4/REQ-12): return conv-scoped rendered-document
+        metadata for frontend re-hydration on resume/switch.
+
+        Response uses the EXISTING wrapped convention
+        ``{type:"documents", payload:{documents:[...]}}`` (matches
+        ``reformat_document_ack``), NOT a flat shape. Scoped by
+        ``conversation_id`` so other threads are never returned (REQ-12 thread
+        isolation). Unknown/empty conversation -> empty list, never raises.
+        """
+        payload = (message or {}).get("payload", {})
+        conversation_id = payload.get("conversation_id") or session_id
+        documents: list = []
+        try:
+            if conversation_id:
+                from backend.agent.agent_kernel import get_agent_kernel
+                from backend.agent.document_store import DocumentDataStore
+
+                kernel = get_agent_kernel(conversation_id, session_id)
+                store = kernel._get_document_store() if kernel is not None else None
+                if store is not None:
+                    rows = store.list_for_conversation(
+                        conversation_id, metadata_only=True
+                    )
+                    documents = [
+                        {
+                            "document_id": r.get("document_id"),
+                            "format": r.get("format"),
+                            "conversation_id": r.get("conversation_id"),
+                            "sources": r.get("sources") or [],
+                            "har_path": r.get("har_path"),
+                            "created_at": r.get("created_at"),
+                        }
+                        for r in rows
+                    ]
+            self._logger.info(
+                "[iris_gateway] GET DOCS conv=%s returned=%d",
+                conversation_id,
+                len(documents),
+            )
+        except Exception as exc:
+            self._logger.warning("[iris_gateway] get_documents failed: %s", exc)
+            documents = []
+        try:
+            if self._ws_manager:
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {"type": "documents", "payload": {"documents": documents}},
+                )
+        except Exception:
+            pass
 
     # ── SLICE 5: router-based role binding + swarm routing ──────────────
 

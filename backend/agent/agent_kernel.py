@@ -5239,8 +5239,12 @@ Respond with a JSON object:
                 # RC11 FIX: reset Caducean session state before recovery
                 from backend.gateway.iris_ffi import ffi_caducean_init_session
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                from backend.agent.coupled_registry import domain_windings
 
-                ffi_caducean_init_session(_session)
+                # REQ-11 AC3: re-init with the domain windings so the engine's
+                # c_eff matches what the registry holds after recovery.
+                _l, _m = domain_windings("voice" if from_voice else "der")
+                ffi_caducean_init_session(_session, _l, _m)
                 get_event_bus().emit(
                     IRISStreamEvent.MODE_CHANGED,
                     data={
@@ -7506,6 +7510,31 @@ Respond with a JSON object:
             _state_snapshot = ffi_caducean_get_state(_session)
             _xi = _state_snapshot.get("xi", 0.0)
             _u = _state_snapshot.get("u", 0.0)
+
+            # ── REQ-10 / REQ-11: multi-session coupling (feature-flagged, off
+            # the critical path). Register the session once with its domain
+            # windings, push live (ξ, u) into the registry, and apply coupling.
+            # The engine is (re)initialized with the domain windings on first
+            # registration so engine c_eff and registry c_eff agree (REQ-11 AC3).
+            # Any failure logs at debug and never blocks the step (REQ-10 AC5). ──
+            try:
+                from backend.agent.coupled_registry import (
+                    coupling_enabled,
+                    get_coupled_registry,
+                    domain_windings,
+                )
+                from backend.gateway.iris_ffi import ffi_caducean_init_session
+
+                if coupling_enabled():
+                    _domain = "voice" if from_voice else "der"
+                    _l, _m = domain_windings(_domain)
+                    _reg = get_coupled_registry()
+                    if _reg.ensure_registered(_session, _l, _m):
+                        ffi_caducean_init_session(_session, _l, _m)
+                    _reg.update_session_state(_session, _xi, _u)
+                    _reg.apply_coupling(_session)
+            except Exception as _coupling_exc:
+                logger.debug("[DER] coupling wiring skipped: %s", _coupling_exc)
 
             get_trajectory_recorder(self._memory_interface).record(
                 session_id=_session,

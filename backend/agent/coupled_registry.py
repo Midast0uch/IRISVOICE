@@ -7,25 +7,29 @@ register their sessions here. The registry detects:
   - Irrational c_eff ratios (destructive interference)
   - Phase alignment events (xi1 ≈ xi2)
 
-On every caducean_update() (called by the agent kernel), the registry
-scans other active sessions and applies coupling:
+On every caducean_update() (called by the agent kernel, behind the
+IRIS_COUPLING_ENABLED flag), the registry scans other active sessions and
+applies coupling:
 
-  RATIONAL (strong coupling):
-    - At phase alignment (|xi1 - xi2| < 0.1 rad):
-      - Session 1 gets +0.10 to u (becomes "barrier" — expansion-biased)
-      - Session 2 gets -0.10 to u (becomes "nucleus" — compression-biased)
-    - This drives nucleus/barrier role differentiation (observed in
-      Gross-Pitaevskii condensate experiments, see ACCESSIBLE_REPORT_UPDATED.md)
+  RATIONAL (strong coupling, REQ-8 continuous):
+    - Coupling strength is a continuous, wrap-aware function of phase
+      difference via the signed align_force kernel (trig_coupling.py) — there
+      is NO threshold gate on whether coupling occurs.
+    - For a coupled pair, ONE call assigns nucleus/barrier roles by an
+      order-independent symmetry breaker (lower "energy" -> nucleus) and
+      applies OPPOSITE-SIGNED nudges to the two sessions (barrier +, nucleus -)
+      on their (a) parameter, which biases u indirectly. This is what makes the
+      Gross-Pitaevskii nucleus/barrier differentiation actually emerge
+      (overview §10).
 
   IRRATIONAL (destructive interference):
-    - Both u values get -0.05 per step (simulates resonance friction)
+    - Small damping on s (resonance friction).
 
 Constraints:
-  - Transfer amount 0.10 is small enough to not destabilize either session
-  - Destructive amount 0.05 is small enough to not kill momentum
-  - All updates clamped to u ∈ [-1, 1] (Lyapunov bound)
-  - Coupling is APPLIED to the in-memory state via ffi_caducean_set_params
-    (the C++ engine clamps again defensively)
+  - Nudge magnitude is bounded by _MAX_COUPLING_NUDGE and clamped to a ∈ [1, 4]
+  - All updates clamped by the engine (ffi_caducean_set_params)
+  - Coupling is OFF the critical path: any failure logs at debug and never
+    propagates into step execution (REQ-10 AC5)
 
 Singleton accessed by get_coupled_registry().
 
@@ -40,19 +44,68 @@ Usage:
 
 import logging
 import math
+import os
 import threading
 from typing import Dict, List, Optional, Tuple
+
+from backend.agent.trig_coupling import align_force
 
 logger = logging.getLogger(__name__)
 
 # Coupling parameters (from plan §Component 4, "CoupledRegistry")
 _RATIONAL_TOLERANCE = 0.01
 _PQ_RANGE = range(1, 10)  # p, q in [1, 9] for rational test
-_PHASE_ALIGNMENT_RAD = 0.1  # ~6° tolerance for alignment
-_RATIONAL_TRANSFER = 0.10  # angular momentum transfer on alignment
-_IRRATIONAL_DAMPING = 0.05  # destructive interference damping
+# REQ-8: continuous coupling strength. The phase term is now computed from the
+# signed, wrap-aware align_force kernel (trig_coupling.py) — no threshold gate.
+_COUPLING_K = 1.0  # align_force normalization
+# Maps |align_force| -> an (a)-param nudge magnitude. align_force is called with
+# the FULL phase list [xi_self, xi_other] (N=2), so its value is ~sin(Δ)/2; the
+# scale is chosen so an aligned pair (Δ≈0.05) yields a ~0.02 nudge, matching the
+# prior safe magnitude.
+_COUPLING_SCALE = 0.8  # maps |align_force| -> an (a)-param nudge magnitude
+_MAX_COUPLING_NUDGE = 0.05  # safety bound on |nudge| (a, b ∈ [1, 4])
+_IRRATIONAL_DAMPING = 0.005  # destructive-interference damping on s
+_MAX_COUPLED_SESSIONS = 8  # REQ-10 AC6: cap active partners
 _COUPLED_CEIL = 1.0
 _COUPLED_FLOOR = -1.0
+
+
+def coupling_enabled() -> bool:
+    """Return whether multi-session coupling is enabled (env-gated, default off).
+
+    REQ-10 AC4 — multi-session coupling ships DISABLED. Activating it is a
+    deliberate act via IRIS_COUPLING_ENABLED=1. Read lazily so tests can flip it
+    with monkeypatch.setenv (REQ-20 AC3).
+    """
+    return os.environ.get("IRIS_COUPLING_ENABLED", "0") == "1"
+
+
+def domain_windings(domain: str) -> Tuple[int, int]:
+    """Map a kernel domain to Caducean winding numbers (l, m).
+
+    REQ-11 AC2 — defined in ONE place with rationale:
+      * coding / der / default -> (1, 1): c_eff = 1.0 (baseline, per Gate 1).
+      * voice                  -> (2, 2): c_eff = 2.0 (docstring-prescribed
+        voice winding; rationally related to coding at 2:1, so it exercises the
+        attractive branch). At least two distinct c_eff values exist when both a
+        voice and a coding session are active (REQ-11 AC1).
+    Unclassified domains fall back to (1, 1) to preserve today's behavior
+    (REQ-11 AC4).
+    """
+    if domain == "voice":
+        return (2, 2)
+    return (1, 1)
+
+
+def _role_energy(xi: float, u: float) -> float:
+    """Order-independent symmetry breaker for nucleus/barrier assignment (REQ-9 AC2).
+
+    Lower energy -> nucleus (compression-biased, negative nudge). We use a simple
+    norm of the phase/velocity state. Both sessions compute the same value for
+    the same state, so independent invocations agree on the assignment without
+    coordination.
+    """
+    return float(xi) * float(xi) + float(u) * float(u)
 
 
 def _is_rational_ratio(c1: float, c2: float) -> bool:
@@ -116,6 +169,20 @@ class CoupledTrajectoryRegistry:
         with self._lock:
             self._sessions.pop(session_id, None)
 
+    def ensure_registered(self, session_id: str, l: int = 1, m: int = 1) -> bool:
+        """Register a session if absent; return True only when newly registered.
+
+        Used by the DER wiring so the engine is initialized with the domain
+        windings exactly once per session (REQ-10 AC1 / REQ-11 AC3). After
+        unregister_session the next call re-registers and re-inits. Idempotent
+        for an already-present session (returns False, no state change).
+        """
+        with self._lock:
+            if session_id in self._sessions:
+                return False
+            self._sessions[session_id] = _SessionRecord(session_id, l, m)
+            return True
+
     def list_sessions(self) -> List[str]:
         """Return a copy of the list of active session IDs."""
         with self._lock:
@@ -134,9 +201,13 @@ class CoupledTrajectoryRegistry:
                 rec.last_u = u
 
     def apply_coupling(self, session_id: str) -> int:
-        """
-        Scan other active sessions, apply coupling, push updated params
-        back to the engine via ffi_caducean_set_params.
+        """Scan other active sessions and apply continuous Caducean coupling.
+
+        REQ-8: coupling strength is a continuous, wrap-aware function of phase
+        difference (via align_force), with no threshold gate. REQ-9: for a
+        rational pair the two sessions receive OPPOSITE-SIGNED nudges from this
+        single call (nucleus negative, barrier positive), assigned by an
+        order-independent symmetry breaker.
 
         Returns the number of coupling events applied (0 if no partners).
         """
@@ -144,7 +215,9 @@ class CoupledTrajectoryRegistry:
             if session_id not in self._sessions:
                 return 0
             self_rec = self._sessions[session_id]
-            other_recs = [r for sid, r in self._sessions.items() if sid != session_id]
+            other_recs = [r for r in self._sessions.values() if r.session_id != session_id]
+            if len(other_recs) > _MAX_COUPLED_SESSIONS:
+                other_recs = other_recs[:_MAX_COUPLED_SESSIONS]
         if not other_recs:
             return 0
 
@@ -179,35 +252,60 @@ class CoupledTrajectoryRegistry:
             c1 = self_rec.c_eff
             c2 = other.c_eff
             if _is_rational_ratio(c1, c2):
-                # Phase alignment check
-                if abs(xi1 - xi2) < _PHASE_ALIGNMENT_RAD:
-                    # Rational + aligned: exchange angular momentum.
-                    # We nudge a slightly to bias u toward barrier (positive)
-                    # and slightly less a to bias u toward nucleus (negative).
-                    # This is a smaller, safer nudge than direct u injection.
-                    nudge_barrier = 0.02  # very small to avoid overshoot
-                    nudge_nucleus = -0.02
-                    # Apply to self (nudge toward barrier)
-                    new_a_self = max(1.0, min(4.0, cur_a + nudge_barrier))
-                    # Apply to other (nudge toward nucleus) — handled in
-                    # the other session's own apply_coupling call.
-                    ffi_caducean_set_params(session_id, new_a_self, cur_b, cur_s)
-                    events += 1
-                    logger.debug(
-                        "[CoupledRegistry] %s (c_eff=%.3f) aligned with %s (c_eff=%.3f); nudge barrier",
-                        session_id,
-                        c1,
-                        other.session_id,
-                        c2,
-                    )
+                # Continuous, wrap-aware alignment coupling (REQ-8).
+                # align_force is signed & periodic, so a pair straddling 2π is
+                # treated as close (no threshold gate — REQ-8 AC1/AC2). It is
+                # called with the FULL phase list [xi_self, xi_other] (N=2) —
+                # the self term contributes sin(0)=0, and N>=2 satisfies the
+                # kernel's mean-field guard.
+                force = align_force(xi1, [xi1, xi2], k=_COUPLING_K)
+                magnitude = min(_MAX_COUPLING_NUDGE, abs(force) * _COUPLING_SCALE)
+                # Order-independent role assignment (REQ-9 AC2): lower energy
+                # -> nucleus. Tie -> stable total order by session id, so both
+                # parties' independent invocations agree without coordination.
+                e_self = _role_energy(xi1, u1)
+                e_other = _role_energy(xi2, u2)
+                if e_self < e_other:
+                    self_is_nucleus = True
+                elif e_self > e_other:
+                    self_is_nucleus = False
+                else:
+                    self_is_nucleus = session_id < other.session_id
+                self_sign = -1.0 if self_is_nucleus else 1.0
+                other_sign = 1.0 if self_is_nucleus else -1.0
+                # Nudge self (barrier +, nucleus -) on a, biasing u indirectly.
+                new_a_self = max(1.0, min(4.0, cur_a + self_sign * magnitude))
+                ffi_caducean_set_params(session_id, new_a_self, cur_b, cur_s)
+                # Nudge partner with the OPPOSITE sign from the SAME call
+                # (REQ-9 AC5) — this is what makes nucleus/barrier emerge.
+                try:
+                    ostate = ffi_caducean_get_state(other.session_id)
+                    oa = ostate.get("a", 2.0)
+                    ob = ostate.get("b", 2.0)
+                    os_ = ostate.get("s", 0.35)
+                    new_a_other = max(1.0, min(4.0, oa + other_sign * magnitude))
+                    ffi_caducean_set_params(other.session_id, new_a_other, ob, os_)
+                except Exception:
+                    pass
+                events += 1
+                logger.debug(
+                    "[CoupledRegistry] %s (c_eff=%.3f, %s) coupled with %s "
+                    "(c_eff=%.3f); nudge=%.4f",
+                    session_id,
+                    c1,
+                    "nucleus" if self_is_nucleus else "barrier",
+                    other.session_id,
+                    c2,
+                    self_sign * magnitude,
+                )
             else:
-                # Irrational: destructive interference — small damping.
-                # Nudge s down slightly to slow the walk.
-                new_s = max(0.1, min(0.8, cur_s - _IRRATIONAL_DAMPING * 0.1))
+                # Irrational: destructive interference — small damping on s.
+                new_s = max(0.1, min(0.8, cur_s - _IRRATIONAL_DAMPING))
                 ffi_caducean_set_params(session_id, cur_a, cur_b, new_s)
                 events += 1
                 logger.debug(
-                    "[CoupledRegistry] %s (c_eff=%.3f) irrational with %s (c_eff=%.3f); damping",
+                    "[CoupledRegistry] %s (c_eff=%.3f) irrational with %s "
+                    "(c_eff=%.3f); damping",
                     session_id,
                     c1,
                     other.session_id,
