@@ -529,3 +529,177 @@ the earlier draft of this list was **wrong**.
    through an explicit dependency edge. An implementer looking only at `depends_on` would conclude
    children are isolated and that the blunt discard-everything fallback is over-engineering. It is
    not. See T4.4's ripple note.
+
+---
+
+## Wave 6 — Repair (REQ-21) — read the Implementation Audit in `requirements.md` first
+
+> **Sequencing:** Wave 6 supersedes Wave 5 (Close-out). Do Wave 6 first, then re-run Wave 5's
+> T5.1–T5.3 (full-suite verification, MCM anchoring, concept-doc supersession) once the repair
+> is green.
+
+> **Context.** Wave 1 is correct and carries the actual 429 fix — **do not regress it** (see
+> "What is correct — do not regress it"). Wave 3 is structurally inert: five blockers (F1–F5)
+> compound so no phase separation can occur under any input, and the existing tests pass
+> anyway because `test_phase_math.py` asserts scalar positivity rather than separation.
+>
+> **Order matters here.** T6.1 → T6.2 → T6.3 must land as one coherent change: fixing the
+> coupling kernel (T6.1) has no observable effect until the registry can hold more than one
+> oscillator per quota (T6.2), and neither is testable end-to-end until the gate actually
+> resets on admit (T6.3).
+>
+> **Write T6.9's tests first.** Every blocker below survived because the test that would have
+> caught it was either absent or asserted the wrong property.
+
+### The blocking three (land together)
+
+- [ ] **T6.1** (REQ-21 AC1/AC2, fixes **F1**) Replace the scalar coupling with a
+  per-oscillator form. In `backend/agent/trig_coupling.py`, expose
+  `splay_force(theta_i, others, k) -> float` returning `(k/N) * sum_j sin(theta_i - theta_j)`
+  — note the argument order — and keep the existing aggregate only if some caller needs a
+  diagnostic magnitude. **Remove `abs()` from anything that advances phase.**
+  RIPPLE: `_per_oscillator_forces` currently computes `sin(theta_j - theta_i)`, which is the
+  **attractive/sync** convention (its own docstring says so). Reversing the subtraction is the
+  fix; `abs()` was masking it. Verify with the two-oscillator separation test **before** wiring
+  anything else. `align_coupling` for the kernel-unification spec is the *negation* of the
+  repulsive form — keep both derived from one signed primitive so they cannot drift apart.
+  `trig_coupling.py` must stay import-pure (CU-1) or the scheduler's CT-4 isolation dissolves.
+
+- [ ] **T6.2** (REQ-21 AC3/AC8, fixes **F2**, **F11**) Re-key the registry by
+  `oscillator_id`, with `quota_id` as a grouping attribute:
+  `Dict[oscillator_id, PhaseOscillator]`. Restore the REQ-11 AC1 signature
+  `register(oscillator_id, natural_period_s, quota_id, call_class, join_point=None,
+  independent=False)`. Make `_coupling_group(quota_id)` return every oscillator whose
+  `quota_id` matches, and make `_widest_gap` consider **only that group**.
+  RIPPLE: this is the deepest change. Today `Dict[quota_id, ...]` means one oscillator per
+  quota, so `_coupling_group` always returns 1 and `splay_coupling(N<2)` returns `0.0` — T6.1
+  alone changes nothing without this. Callers: `advance()`, `_compute_gate()`, `window()`,
+  `get()`, `unregister()`, and `router.py:412`'s `acquire(...)` all currently pass a quota id
+  where an oscillator id is now needed — the gate must derive or accept both. Decide the
+  oscillator-id scheme explicitly (suggestion: `f"{session_id}:{call_class.value}"` so each
+  session's DER activity and its sub-loop children are distinct registrants sharing one quota).
+  Write the chosen scheme into the module docstring.
+
+- [ ] **T6.3** (REQ-21 AC4, fixes **F3**) Move the phase reset to the **admit** path in
+  `_compute_gate`. Today `return 0.0` at [phase_manager.py:348](backend/agent/phase_manager.py:348)
+  precedes the reset at :351, so the reset runs only when waiting — the inverse of REQ-13 AC5.
+  Reset atomically with admission, under the registry lock (T6.5).
+  RIPPLE: consequence today is that after the first admitted call the oscillator stays past its
+  firing point and **every later call is admitted immediately, forever**. Also re-derive the
+  wait *after* deciding the firing convention: the implementation fires at `theta ~ pi` and
+  resets by `+pi`, while REQ-13/REQ-12 describe firing on wrap past `2*pi` with reset toward 0.
+  Either is workable — pick one, state it in the docstring, and make `_estimate_wait` consistent
+  with it. Mixing the two is how F3 hid.
+
+### Priority lane (the safety inversion)
+
+- [ ] **T6.4** (REQ-21 AC5/AC6, fixes **F4**, **F5**, **F6**, **F7**) Correct the priority lane:
+  - `PRIORITY_CLASSES = frozenset({CallClass.USER_TURN, CallClass.SPEAK})` — the **single**
+    source of truth; `is_high_priority` reads it rather than a second hardcoded tuple.
+  - **Remove `GRAFT`** from the priority set.
+  - Replace the `item.critical -> GRAFT` mapping at
+    [agent_kernel.py:6865](backend/agent/agent_kernel.py:6865). `QueueItem.critical` defaults
+    to **`True`** ([der_loop.py:82](backend/agent/der_loop.py:82)), so that branch currently
+    ungates essentially every DER step.
+  - Set `CallClass.USER_TURN` at the real turn entry and `CallClass.SPEAK` around
+    `speak_tool`'s output path — both are currently never set anywhere in production.
+  RIPPLE: **F6 is the sharpest item in this wave.** Graft is recovery-plan generation fired
+  *after* a step failure, and REQ-3 AC4 routes a rate-limited step to graft — so exempting
+  GRAFT means the class most likely to hit an already-refusing provider is the one that never
+  waits: a 429 -> graft -> 429 amplification path, which is the opposite of this spec's purpose.
+  Re-read Decision Locked #3 before choosing any class's lane.
+
+### Correctness and thread-safety
+
+- [ ] **T6.5** (REQ-21 AC7, fixes **F8**) Mutate oscillator state under the registry lock.
+  `advance()` currently reads under the lock then writes `theta` / `amplitude` /
+  `last_advance_at` outside it, and `_coupling_group` snapshots under lock then reads `.theta`
+  outside.
+  RIPPLE: both the DER executor thread ([api/chat.py:199](backend/api/chat.py:199) runs the loop
+  off the event loop) and async paths reach `advance()`, so lost updates are live, not
+  theoretical. Prefer a single `advance_all(quota_id)` that takes the lock once and updates the
+  whole group from one consistent `theta` snapshot — that also makes the Kuramoto step correct
+  (all forces computed from the same instant) rather than incrementally skewed.
+
+- [ ] **T6.6** (REQ-21 AC9, fixes **F9**) Thread the real call class into `record_request`'s
+  `priority` argument. It is hardcoded `priority=0` at
+  [transport.py:225](backend/agent/inference/transport.py:225) with the comment "Wave 3 wires
+  real priority via CallContext" — never wired.
+  RIPPLE: without this, REQ-6 AC3 fails silently — the meter cannot distinguish priority
+  traffic, so background amplitudes never ease off in response to user activity, and the whole
+  amplitude mechanism (REQ-9) has no signal to respond to.
+
+- [ ] **T6.7** (fixes **F14**, **F15**) Housekeeping: fix the `_check_flag` log line (currently
+  prints the same bool twice: "scheduler True"); drop or justify the dead `_c is None` branch in
+  `_load_fraction`; make `router.py:412`'s missing-`_quota_id` admit **explicit** with a comment
+  rather than incidental via `getattr(..., None)`.
+
+### Wave 4 gating (declared but unused)
+
+- [ ] **T6.8** (fixes **F10**) Implement the batching gates that are currently constants only:
+  - `offer()` must reject children that are not `independent` (REQ-18 AC1) and must group only
+    children whose oscillator phases fall within `BATCH_WINDOW_RAD` (AC2) — both appear solely
+    in docstrings today; `offer()` groups purely by `join_point` and flushes at 3.
+  - `flush_expired()` exists but **nothing calls it**, so `BATCH_MAX_HOLD_S` (AC3) is
+    unenforced — call it from the DER cycle.
+  - Wire `SubLoopBatcher` into the DER loop; there are currently **zero** references in
+    `agent_kernel.py`, so Wave 4 is dead code.
+  RIPPLE: re-read T4.4's ripple note before touching attribution — children have no
+  `depends_on` and inherit the parent's `step_number`, so a misattributed result propagates via
+  `resolve_dependent_params`' implicit-sequential rule
+  ([der_loop.py:519-525](backend/agent/der_loop.py:519)) into the step after the parent.
+
+### Tests — write these before the fixes above
+
+- [ ] **T6.9** (REQ-21, fixes **F13**) The nine missing tests, plus one corrected test:
+  - **Fix `test_phase_math.py`**: replace the scalar positivity assertion with the specified
+    **separation** assertion — two oscillators at `delta-theta = 0.1`, advanced repeatedly, must
+    converge toward `pi` apart. Assert coupling is ~0 at `pi` (N=2) and at `2pi/3` spacing
+    (N=3). Add a **regression guard** that the per-oscillator force for the *leading*
+    oscillator has the **opposite sign** to the *trailing* one — the single assertion that
+    makes F1 impossible to reintroduce.
+  - `test_shared_quota_is_coupled.py` — two oscillators on one `quota_id` land in ONE group and
+    spread; two on the same endpoint with different credentials land in separate groups and do
+    not spread. Fails against F2 today.
+  - `test_priority_lane_never_waits.py` — saturate past the hard cap; `USER_TURN` and `SPEAK`
+    admit with zero wait and no sleep call. Then assert `GRAFT`, `TOOL`, `REASON`, `SUBLOOP`,
+    `BACKGROUND` **are** gated. Fails against F4/F6 today.
+  - `test_gate_resets_on_admit.py` (**new, not in the original set**) — an admitted call must
+    move the oscillator off its firing point, so a second immediate call is *not* auto-admitted.
+    Fails against F3 today.
+  - `test_amplitude_relaxation.py`, `test_contextvar_across_executor.py`,
+    `test_flag_off_is_identical.py`, `test_backoff_actually_sleeps.py`,
+    `test_scheduler_isolation.py` (**CT-3 + CT-4 — the isolation locks are currently
+    unverified**), `test_concurrent_exec_contract.py` (CT-2),
+    `test_phase_physics_invariance.py`.
+  RIPPLE: `test_scheduler_isolation.py` is the highest-value missing test — without it, "the
+  scheduler never touches `coupled_registry` or `iris_ffi`" (D-2, CT-3/CT-4) is an unenforced
+  claim, and it is the one boundary the kernel-unification spec depends on staying intact.
+
+- [ ] **T6.10** (REQ-21 AC10, fixes **F12**) Implement REQ-20 observability and make the
+  harness assert it: the structured gate-decision line, a `metrics()` snapshot per quota, and
+  the **inter-request-gap distribution**. Then add the `>=50% stddev reduction` assertion to
+  `scripts/validate_phase_scheduler.py` (flag-off vs flag-on).
+  RIPPLE: this is the *independent* guard on T6.1–T6.3. Right now the harness contains no such
+  assertion, which is why an inert coupling passed everything. Until T6.10 exists, a green suite
+  is not evidence the scheduler works — it is only evidence that it does not crash.
+
+- [ ] **T6.11** Re-run the full DER suite plus all four `scripts/validate_*.py` harnesses,
+  flag **off** and then **on**. Zero new failures in either configuration versus the T0.1
+  baseline. Confirm the Wave 1 items in "What is correct — do not regress it" still hold, then
+  `record_test` the pre-fix failures (T6.9's separation and gate-reset assertions) as evidence
+  the blockers were real.
+
+### Wave 6 parallelization notes
+
+- **T6.1 + T6.2 + T6.3 are one atomic change** — do not land them separately; each is
+  unobservable without the others.
+- **T6.4 is independent** of the blocking three (different files: `call_context.py`,
+  `agent_kernel.py:6865`, `speak_tool.py`) and can proceed in parallel.
+- **T6.8 depends on T6.2** — batching reads oscillator phase windows, which needs the re-keyed
+  registry.
+- **T6.9 should precede everything** (the test is the requirement). The two assertions that
+  currently fail — separation and gate-reset-on-admit — are the acceptance evidence for this
+  wave.
+- **T6.10 is independent** and can be written at any point; it is what makes future regressions
+  in T6.1–T6.3 visible.

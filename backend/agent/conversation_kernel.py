@@ -44,13 +44,16 @@ from backend.gateway.iris_ffi import (
     ffi_caducean_get_direction_signal,
 )
 from backend.agent.param_homeostasis import get_param_homeostasis
+from backend.agent.der_constants import U_SPLIT, U_CONVERGED
 
 logger = logging.getLogger(__name__)
 
 # TTS chunk size bounds (in tokens)
 TTS_CHUNK_MIN = 20
 TTS_CHUNK_MAX = 200
-TTS_CHUNK_SCALE = 300  # chunk = clamp(force_magnitude * SCALE, MIN, MAX)
+# chunk_size_from_u constants (REQ-12: banded by |u|, not force_magnitude)
+CHUNK_MIN = 80     # oscillating/split state — smaller chunks, more frequent TTS
+CHUNK_MAX = 200    # converged state — larger chunks
 
 # Serializes all TTS playback (agent-initiated utterances AND the main
 # response stream) so concurrent speech can never overlap or cut another
@@ -140,20 +143,37 @@ class ConversationKernel:
             logger.debug("[ConversationKernel] _get_current_balance failed: %s", exc)
             return 1.0
 
-    def get_tts_chunk_size(self) -> int:
-        """v2: returns the TTS chunk size scaled by force_magnitude.
+    @staticmethod
+    def _chunk_size_from_u(abs_u: float) -> int:
+        """REQ-12: monotonic non-decreasing chunk size from |u|.
 
-        Used by _speak_response in iris_gateway to replace the
-        hardcoded FIRST_CHUNK_THRESHOLD = 1 and NORMAL_CHUNK_THRESHOLD = 8
-        constants. Same physics signal that gates every other
-        phase-driven decision in v2.
+        Three bands:
+          abs_u < U_SPLIT       → CHUNK_MIN (oscillating/split, small chunks)
+          U_SPLIT .. U_CONVERGED → linear interpolate
+          abs_u >= U_CONVERGED  → CHUNK_MAX (converged, large chunks)
+        """
+        if abs_u < U_SPLIT:
+            return CHUNK_MIN
+        if abs_u >= U_CONVERGED:
+            return CHUNK_MAX
+        # Linear interpolate between CHUNK_MIN and CHUNK_MAX
+        _t = (abs_u - U_SPLIT) / (U_CONVERGED - U_SPLIT)
+        return int(CHUNK_MIN + _t * (CHUNK_MAX - CHUNK_MIN))
+
+    def get_tts_chunk_size(self) -> int:
+        """v2: returns the TTS chunk size from |u| (REQ-12).
+
+        Replaces force_magnitude scaling with |u|-based banded chunk size.
+        The DirectionSignal carries u_current (current attentional velocity);
+        |u| ∈ [0, 1] drives the band. Signature unchanged.
         """
         try:
             session_id = self._session_id_getter()
             if session_id is None:
                 return TTS_CHUNK_MAX // 2  # 100 — reasonable default
             sig = ffi_caducean_get_direction_signal(session_id, balance=self._get_current_balance())
-            raw = int(sig.force_magnitude * TTS_CHUNK_SCALE)
+            abs_u = abs(sig.u_current)
+            raw = self._chunk_size_from_u(abs_u)
             return max(TTS_CHUNK_MIN, min(TTS_CHUNK_MAX, raw))
         except Exception as exc:  # noqa: BLE001
             logger.debug("[ConversationKernel] get_tts_chunk_size failed: %s", exc)

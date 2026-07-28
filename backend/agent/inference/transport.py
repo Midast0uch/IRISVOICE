@@ -24,7 +24,118 @@ import time as _perf_t
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Protocol
 
+from backend.agent.call_context import call_class, priority_index
+from backend.agent.inference.errors import RateLimitedError
+from backend.agent.rate_meter import get_rate_meter
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Retry-After parsing (REQ-2)
+# ---------------------------------------------------------------------------
+
+# Maximum delay we will ever wait for a Retry-After header, so a hostile or
+# misconfigured provider cannot stall a voice turn indefinitely.
+RETRY_AFTER_MAX_S = float(
+    __import__("os").environ.get("IRIS_RETRY_AFTER_MAX_S", "30.0")
+)
+
+
+def parse_retry_after(header_value: Optional[str]) -> Optional[float]:
+    """Parse an HTTP ``Retry-After`` header into a delay in seconds.
+
+    Accepts both forms:
+      * delta-seconds (e.g. ``"2"`` or ``"2.5"``) — integer or float seconds.
+      * HTTP-date (e.g. ``"Wed, 21 Oct 2026 07:28:00 GMT"``) — converted to a
+        delta against the local clock.
+
+    Returns ``None`` when the header is absent, unparseable, or negative, so
+    the caller falls back to local exponential backoff (REQ-2 AC4). A parsed
+    value is clamped to ``[0, RETRY_AFTER_MAX_S]`` (REQ-2 AC3).
+
+    This is a pure function with no I/O, so it is unit-testable without HTTP.
+    """
+    if not header_value:
+        return None
+    _value = header_value.strip()
+    if not _value:
+        return None
+
+    # ── delta-seconds form ──────────────────────────────────────────────
+    try:
+        _delta = float(_value)
+        if _delta < 0:
+            return None
+        return min(_delta, RETRY_AFTER_MAX_S)
+    except ValueError:
+        pass
+
+    # ── HTTP-date form ──────────────────────────────────────────────────
+    # email.utils.parsedate_to_datetime handles the RFC 1123 / RFC 850 /
+    # asctime variants and returns a timezone-aware datetime when a zone is
+    # present. We treat an unparseable date as "no header" (REQ-2 AC4).
+    try:
+        from email.utils import parsedate_to_datetime
+
+        _dt = parsedate_to_datetime(_value)
+    except (TypeError, ValueError):
+        return None
+    if _dt is None:
+        return None
+
+    _now = _perf_t.time()
+    try:
+        _epoch = _dt.timestamp()
+    except (ValueError, OverflowError):
+        return None
+    _delta = _epoch - _now
+    if _delta < 0:
+        # Clock skew making the date appear to be in the past → clamp to 0
+        # (REQ-2 edge case: negative delta clamped to 0).
+        return 0.0
+    return min(_delta, RETRY_AFTER_MAX_S)
+
+
+def _sleep_on_429(
+    attempt: int,
+    response_headers: Any,
+    provider_id: str = "unknown",
+) -> None:
+    """Sleep before retrying a 429, per REQ-1 / REQ-2.
+
+    Uses the server's ``Retry-After`` header when present (preferred, REQ-2
+    AC1), else exponential backoff with jitter (``base=1.0, cap=8.0``, matching
+    ``resilience.py:47-52``). Does NOT sleep on the final attempt
+    (``attempt == 2``), per REQ-1 AC4 — no pointless terminal wait. Logs at
+    WARNING with provider id, attempt number, and the actual sleep duration
+    (REQ-1 AC5).
+
+    ``attempt`` is the 0-indexed loop counter from ``for attempt in range(3)``,
+    so ``attempt >= 2`` means this was the last attempt.
+    """
+    import random
+
+    if attempt >= 2:
+        return  # final attempt — do not sleep before failing (REQ-1 AC4)
+    _retry_after = parse_retry_after(
+        getattr(response_headers, "get", lambda _: None)("Retry-After")
+        if response_headers is not None
+        else None
+    )
+    if _retry_after is not None:
+        _delay = _retry_after
+        _source = "retry-after"
+    else:
+        _delay = min(8.0, 1.0 * (2 ** attempt))
+        _delay *= 1 + random.random() * 0.3  # jitter, per resilience.py:47-52
+        _source = "exponential-backoff"
+    logger.warning(
+        "[transport] 429 rate-limit (attempt %d/3) -- sleeping %.2fs before "
+        "retry (provider=%s, source=%s)",
+        attempt + 1, _delay, provider_id, _source,
+    )
+    _perf_t.sleep(_delay)
+
 
 # ---------------------------------------------------------------------------
 # Thinking/reasoning extraction  (preserved from AgentKernel._parse_thinking)
@@ -99,6 +210,26 @@ class Transport(Protocol):
         """Run inference and return ``(text, thinking, tool_calls)``."""
         ...
 
+    def _record_success(self, text: str) -> None:
+        """Record a completed (non-429) request against the meter.
+
+        Called by subclasses after a successful ``generate``. Keyed by
+        ``self._quota_id``; unmetered quotas are ignored by the meter. Metering
+        must NEVER break a call, so all errors are swallowed (T2.2 / T2.5).
+        """
+        if self._quota_id is None:
+            return
+        try:
+            get_rate_meter().record_request(
+                self._quota_id,
+                max(1, len(text) // 4),  # estimated tokens: 4 chars ≈ 1 token
+                priority=priority_index(call_class()),  # F9: thread real call class from context
+                estimated=True,
+                label=getattr(self, "_provider_id", "unknown"),
+            )
+        except Exception as _e:  # pragma: no cover — metering is best-effort
+            logger.debug("[transport] meter record failed: %s", _e)
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -148,9 +279,31 @@ class ApiHttpxTransport:
     Does **not** use LiteLLM — httpx avoids the thread-pool hang issue.
     """
 
-    def __init__(self, api_base_url: str, api_key: str) -> None:
+    def __init__(
+        self, api_base_url: str, api_key: str, quota_id: Optional[str] = None
+    ) -> None:
         self._api_base_url = api_base_url.rstrip("/")
         self._api_key = api_key
+        self._quota_id = quota_id
+
+    def _record_success(self, text: str) -> None:
+        """Record a completed (non-429) request against the meter.
+
+        Keyed by ``self._quota_id``; unmetered quotas are ignored by the meter.
+        Metering must NEVER break a call, so all errors are swallowed.
+        """
+        if self._quota_id is None:
+            return
+        try:
+            get_rate_meter().record_request(
+                self._quota_id,
+                max(1, len(text) // 4),  # estimated tokens: 4 chars ≈ 1 token
+                priority=priority_index(call_class()),  # F9: thread real call class from context
+                estimated=True,
+                label=getattr(self, "_provider_id", "unknown"),
+            )
+        except Exception as _e:  # pragma: no cover — metering is best-effort
+            logger.debug("[transport] meter record failed: %s", _e)
 
     def generate(
         self,
@@ -211,7 +364,7 @@ class ApiHttpxTransport:
             pass
 
         if chunk_callback:
-            return self._stream(
+            _text, _think, _tools = self._stream(
                 url,
                 headers,
                 body,
@@ -220,7 +373,12 @@ class ApiHttpxTransport:
                 chunk_callback,
                 reasoning_callback,
             )
-        return self._nonstream(url, headers, body, model, messages)
+        else:
+            _text, _think, _tools = self._nonstream(
+                url, headers, body, model, messages
+            )
+        self._record_success(_text)
+        return _text, _think, _tools
 
     # -- streaming path -------------------------------------------------
 
@@ -242,6 +400,7 @@ class ApiHttpxTransport:
         _reasoning_buf: List[str] = []
         _tool_calls_acc: Dict[int, Dict[str, Any]] = {}
         _tool_calls: List[Dict[str, Any]] = []
+        _rate_limited = False
 
         for attempt in range(3):
             _stream_ok = False
@@ -257,6 +416,10 @@ class ApiHttpxTransport:
                     ) as _resp:
                         # ── 429 rate-limit → retry with backoff ─────
                         if _resp.status_code == 429:
+                            _rate_limited = True
+                            _retry_after = parse_retry_after(
+                                _resp.headers.get("Retry-After")
+                            )
                             try:
                                 _resp.read()
                             except Exception:
@@ -265,6 +428,14 @@ class ApiHttpxTransport:
                                 "[ApiHttpx] 429 rate-limit (attempt %d/3) "
                                 "-- retrying",
                                 attempt + 1,
+                            )
+                            _sleep_on_429(
+                                attempt,
+                                _resp.headers,
+                                getattr(self, "_provider_id", "unknown"),
+                            )
+                            get_rate_meter().observe_429(
+                                self._quota_id, _retry_after
                             )
                             continue
 
@@ -336,6 +507,14 @@ class ApiHttpxTransport:
             reasoning_callback("")  # end marker
         chunk_callback("")  # force-flush
 
+        # All retries exhausted due to rate-limiting → report honestly
+        # (REQ-3 AC2). Do NOT fall through to the "(I see.)" filler, which is
+        # reserved for a genuine empty-content 200 (REQ-3 AC3).
+        if not _stream_ok and _rate_limited:
+            raise RateLimitedError(
+                getattr(self, "_provider_id", "unknown"), attempt + 1
+            )
+
         # Reasoning fallback: some models return answer in reasoning_content
         # with empty content.
         if not full_reply.strip() and reasoning_text.strip() and not _tool_calls:
@@ -359,6 +538,7 @@ class ApiHttpxTransport:
 
         _t0 = _perf_t.perf_counter()
         result = None
+        _rate_limited = False
         for attempt in range(3):
             try:
                 with _httpx.Client(
@@ -366,13 +546,23 @@ class ApiHttpxTransport:
                 ) as _client:
                     _resp = _client.post(url, headers=headers, json=body)
                     if _resp.status_code == 429:
+                        _rate_limited = True
+                        _retry_after = parse_retry_after(
+                            _resp.headers.get("Retry-After")
+                        )
                         logger.warning(
                             "[ApiHttpx] 429 rate-limit (attempt %d/3) "
                             "-- retrying",
                             attempt + 1,
                         )
-                        if attempt < 2:
-                            _perf_t.sleep(1.0 * (2**attempt))
+                        _sleep_on_429(
+                            attempt,
+                            _resp.headers,
+                            getattr(self, "_provider_id", "unknown"),
+                        )
+                        get_rate_meter().observe_429(
+                            self._quota_id, _retry_after
+                        )
                         continue
                     if _resp.status_code != 200:
                         raise RuntimeError(
@@ -392,6 +582,10 @@ class ApiHttpxTransport:
                 if attempt == 2:
                     raise
         if result is None:
+            if _rate_limited:
+                raise RateLimitedError(
+                    getattr(self, "_provider_id", "unknown"), 3
+                )
             raise RuntimeError("API request failed after retries")
 
         _msg = result.get("choices", [{}])[0].get("message", {})
@@ -421,8 +615,24 @@ class OpenAICompatTransport:
     - 3-attempt retry with exponential backoff.
     """
 
-    def __init__(self, endpoint: str) -> None:
+    def __init__(self, endpoint: str, quota_id: Optional[str] = None) -> None:
         self._endpoint = endpoint.rstrip("/")
+        self._quota_id = quota_id
+
+    def _record_success(self, text: str) -> None:
+        """Record a completed (non-429) request against the meter."""
+        if self._quota_id is None:
+            return
+        try:
+            get_rate_meter().record_request(
+                self._quota_id,
+                max(1, len(text) // 4),  # estimated tokens: 4 chars ≈ 1 token
+                priority=priority_index(call_class()),  # F9: thread real call class from context
+                estimated=True,
+                label=getattr(self, "_provider_id", "unknown"),
+            )
+        except Exception as _e:  # pragma: no cover — metering is best-effort
+            logger.debug("[transport] meter record failed: %s", _e)
 
     def generate(
         self,
@@ -459,14 +669,17 @@ class OpenAICompatTransport:
         }
 
         if chunk_callback:
-            return self._stream(
+            _text, _think, _tools = self._stream(
                 _url,
                 _url_v1,
                 _body,
                 chunk_callback,
                 reasoning_callback,
             )
-        return self._nonstream(_url, _url_v1, _body)
+        else:
+            _text, _think, _tools = self._nonstream(_url, _url_v1, _body)
+        self._record_success(_text)
+        return _text, _think, _tools
 
     # -- streaming path -------------------------------------------------
 
@@ -486,6 +699,7 @@ class OpenAICompatTransport:
         _reasoning_buf: List[str] = []
         _tool_calls_acc: Dict[int, Dict[str, Any]] = {}
         _tool_calls: List[Dict[str, Any]] = []
+        _rate_limited = False
 
         for attempt in range(3):
             _stream_ok = False
@@ -515,6 +729,10 @@ class OpenAICompatTransport:
 
                     with _resp as _stream:
                         if _stream.status_code == 429:
+                            _rate_limited = True
+                            _retry_after = parse_retry_after(
+                                _stream.headers.get("Retry-After")
+                            )
                             try:
                                 _stream.read()
                             except Exception:
@@ -523,6 +741,14 @@ class OpenAICompatTransport:
                                 "[OpenAICompat] 429 rate-limit "
                                 "(attempt %d/3) -- retrying",
                                 attempt + 1,
+                            )
+                            _sleep_on_429(
+                                attempt,
+                                _stream.headers,
+                                getattr(self, "_provider_id", "unknown"),
+                            )
+                            get_rate_meter().observe_429(
+                                self._quota_id, _retry_after
                             )
                             continue
                         if _stream.status_code != 200:
@@ -583,6 +809,14 @@ class OpenAICompatTransport:
             reasoning_callback("")
         chunk_callback("")
 
+        # All retries exhausted due to rate-limiting → report honestly
+        # (REQ-3 AC2). Do NOT fall through to the "(I see.)" filler, which is
+        # reserved for a genuine empty-content 200 (REQ-3 AC3).
+        if not _stream_ok and _rate_limited:
+            raise RateLimitedError(
+                getattr(self, "_provider_id", "unknown"), attempt + 1
+            )
+
         if not full_reply.strip() and reasoning_text.strip() and not _tool_calls:
             return reasoning_text, reasoning_text, []
 
@@ -601,6 +835,7 @@ class OpenAICompatTransport:
         from backend.utils.ssl_context import get_ssl_context
 
         result = None
+        _rate_limited = False
         for attempt in range(3):
             try:
                 with _httpx.Client(
@@ -616,13 +851,23 @@ class OpenAICompatTransport:
                                 json=body,
                             )
                             if _resp.status_code == 429:
+                                _rate_limited = True
+                                _retry_after = parse_retry_after(
+                                    _resp.headers.get("Retry-After")
+                                )
                                 logger.warning(
                                     "[OpenAICompat] 429 rate-limit "
                                     "(attempt %d/3) -- retrying",
                                     attempt + 1,
                                 )
-                                if attempt < 2:
-                                    _perf_t.sleep(1.0 * (2**attempt))
+                                _sleep_on_429(
+                                    attempt,
+                                    _resp.headers,
+                                    getattr(self, "_provider_id", "unknown"),
+                                )
+                                get_rate_meter().observe_429(
+                                    self._quota_id, _retry_after
+                                )
                                 break
                             if _resp.status_code < 500:
                                 break
@@ -655,6 +900,10 @@ class OpenAICompatTransport:
                 if attempt == 2:
                     raise
         if result is None:
+            if _rate_limited:
+                raise RateLimitedError(
+                    getattr(self, "_provider_id", "unknown"), 3
+                )
             raise RuntimeError("LM Studio request failed after retries")
 
         _msg = result.get("choices", [{}])[0].get("message", {})
@@ -684,8 +933,11 @@ class InProcessTransport:
     the caller (typically the kernel) is responsible for loading/unloading.
     """
 
-    def __init__(self, model_manager: Optional[Any] = None) -> None:
+    def __init__(
+        self, model_manager: Optional[Any] = None, quota_id: Optional[str] = None
+    ) -> None:
         self._model_manager = model_manager
+        self._quota_id = quota_id
 
     def set_model_manager(self, mgr: Any) -> None:
         """Replace the model manager reference (e.g. after loading a model)."""
@@ -750,8 +1002,11 @@ class OllamaTransport:
     No tool support.
     """
 
-    def __init__(self, endpoint: str = "http://localhost:11434") -> None:
+    def __init__(
+        self, endpoint: str = "http://localhost:11434", quota_id: Optional[str] = None
+    ) -> None:
         self._endpoint = endpoint.rstrip("/")
+        self._quota_id = quota_id
 
     def generate(
         self,

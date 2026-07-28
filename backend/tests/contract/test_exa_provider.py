@@ -209,7 +209,8 @@ class TestExaErrorMapping:
 class TestExaMissingKey:
     """REQ-2 AC5: missing API key raises ValueError."""
 
-    def test_no_key_raises_value_error(self):
+    def test_no_key_raises_value_error(self, monkeypatch):
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
         with pytest.raises(ValueError, match="EXA_API_KEY"):
             ExaSearchProvider(api_key="")  # empty
         with pytest.raises(ValueError, match="EXA_API_KEY"):

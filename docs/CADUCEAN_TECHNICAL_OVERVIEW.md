@@ -40,6 +40,12 @@ Estimated reading time: 10–15 minutes.
 > - [`specs/CADUCEAN_SPEC_RECONCILIATION.md`](../specs/CADUCEAN_SPEC_RECONCILIATION.md) — how the
 >   three specs fit together
 >
+> **Architecture blueprint:** for how the pieces fit together as a system — the four-scale
+> operator, the scheduling/cognition boundary and why it is contract-locked, the three
+> memory couplings, and a per-component PROVEN / FLAG-OFF / UNEXERCISED status table — see
+> [`CADUCEAN_ARCHITECTURE.md`](CADUCEAN_ARCHITECTURE.md). That document carries this file's
+> evidence discipline forward: every behavioral claim cites file:line or a harness assertion.
+>
 > **Rule going forward:** treat §1–§10 as the validated theory and experimental record. Treat
 > §11 and §13 as the only statements about what the code currently does — and verify those against
 > the code before relying on them.

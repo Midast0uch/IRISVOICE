@@ -55,7 +55,7 @@ def test_registry_populated_on_import():
     # Spot-check the canonical names from get_available_tools()
     for expected in (
         "search", "crawler_query", "read_file", "write_file", "git_status",
-        "git_commit", "run_command", "recall_memory", "run_research",
+        "git_commit", "run_command", "recall_memory", "improve_self",
         "ask_user_question", "speak", "open_url", "take_screenshot",
         "vision_analyze_screen", "github_list_repos",
     ):

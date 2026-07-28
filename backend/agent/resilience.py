@@ -33,6 +33,19 @@ TRANSIENT_ERRORS = (asyncio.TimeoutError, ConnectionError, OSError, TimeoutError
 # Permanent error types — fail fast to graft
 PERMANENT_ERRORS = (ValueError, PermissionError, FileNotFoundError, KeyError)
 
+# Do-not-retry errors — the DER layer must surface these immediately instead of
+# re-wrapping them in retry_with_backoff(_sync). RateLimitedError is the prime
+# member: retrying a rate-limited step at the DER layer just hammers the
+# provider harder (REQ-4 AC1). The transport already performed its own bounded
+# 429 retries; a RateLimitedError means those are exhausted, so the step should
+# fail fast and be reported honestly.
+try:  # imported lazily to avoid an import cycle with the inference layer
+    from backend.agent.inference.errors import RateLimitedError
+
+    NO_RETRY_ERRORS = (RateLimitedError,)
+except Exception:  # pragma: no cover — defensive; errors module is local
+    NO_RETRY_ERRORS = ()
+
 
 async def retry_with_backoff(
     fn: Callable[[], "T"],
@@ -56,6 +69,8 @@ async def retry_with_backoff(
     for attempt in range(max_retries + 1):
         try:
             return await fn()
+        except NO_RETRY_ERRORS:
+            raise  # do-not-retry — surface immediately (REQ-4 AC1)
         except PERMANENT_ERRORS:
             raise  # fail fast — no retry
         except TRANSIENT_ERRORS as e:
@@ -96,6 +111,8 @@ def retry_with_backoff_sync(
     for attempt in range(max_retries + 1):
         try:
             return fn()
+        except NO_RETRY_ERRORS:
+            raise  # do-not-retry — surface immediately (REQ-4 AC1)
         except PERMANENT_ERRORS:
             raise  # fail fast — no retry
         except TRANSIENT_ERRORS as e:

@@ -1313,6 +1313,7 @@ class TestNewConversationContextReset:
             gateway._ws_manager = MagicMock()
             gateway._agent_kernels = {}
             gateway._main_loop = MagicMock()
+            gateway._active_conversation_id = {}
 
             # Simulate what _handle_chat does for new_conversation
             session_id = "test-session"

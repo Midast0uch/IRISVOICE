@@ -38,6 +38,9 @@ from .transport import (
     OpenAICompatTransport,
     Transport,
 )
+from ..rate_meter import get_rate_meter, metered, quota_key
+from ..call_context import call_class
+from ..phase_manager import acquire
 
 logger = logging.getLogger(__name__)
 
@@ -308,33 +311,50 @@ class InferenceRouter:
     # -- Transport construction (cached per kind+endpoint) --------------
 
     def _build_transport(self, inst: ProviderInstance) -> Any:
-        """Construct (or retrieve from cache) the transport for *inst*."""
+        """Construct (or retrieve from cache) the transport for *inst*.
+
+        Wires the quota identity (D-9) into the transport and registers the
+        meter window with its metered flag (T2.5). The transport cache key is
+        unchanged — quota_id is derived from inst, not part of the key.
+        """
         kind = inst.kind
         key = _transport_cache_key(kind, inst)
 
         if kind == ProviderKind.INPROCESS:
             # In-process transports are not cached; build fresh each call
             # because the model manager may change between calls.
-            return InProcessTransport(model_manager=self._inprocess_mgr)
+            return InProcessTransport(
+                model_manager=self._inprocess_mgr, quota_id=quota_key(inst)
+            )
 
         cached = self._transports.get(key)
         if cached is not None:
             return cached
 
+        _quota_id = quota_key(inst)
+        # Register the window with its metered flag (D-9: only API is metered)
+        get_rate_meter().ensure_window(_quota_id, metered(inst))
+
         if kind == ProviderKind.API:
             api_key = get_secret(inst.id) or ""
             transport: Any = ApiHttpxTransport(
-                api_base_url=inst.api_base_url, api_key=api_key
+                api_base_url=inst.api_base_url,
+                api_key=api_key,
+                quota_id=_quota_id,
             )
         elif kind == ProviderKind.LOCAL_OPENAI:
-            transport = OpenAICompatTransport(endpoint=inst.api_base_url)
+            transport = OpenAICompatTransport(
+                endpoint=inst.api_base_url, quota_id=_quota_id
+            )
         elif kind == ProviderKind.OLLAMA:
             transport = OllamaTransport(
-                endpoint=inst.api_base_url or "http://localhost:11434"
+                endpoint=inst.api_base_url or "http://localhost:11434",
+                quota_id=_quota_id,
             )
         else:
             raise RuntimeError(f"Unknown provider kind: {kind}")
 
+        transport._provider_id = inst.id  # for logging (T2.5)
         self._transports[key] = transport
         return transport
 
@@ -387,6 +407,14 @@ class InferenceRouter:
         # normalization keeps tool-calling provider-agnostic — no per-provider
         # hardcoding.  Idempotent: already-normalized tools pass through.
         normalized_tools = self._normalize_tools(tools)
+
+        # Phase gate: block until this oscillator is past its firing point
+        # (T3.6 / REQ-13).  Fail-open: returns 0.0 if disabled or errored.
+        # F9+F15: pass oscillator_id and quota_id explicitly.
+        acquire(
+            oscillator_id=f"{inst.id}:{call_class().value}",
+            quota_id=getattr(transport, "_quota_id", None),
+        )
 
         return transport.generate(
             effective_model,

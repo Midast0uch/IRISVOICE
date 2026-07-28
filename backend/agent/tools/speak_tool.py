@@ -21,6 +21,7 @@ import uuid
 from collections import deque
 from typing import Any, Dict, Optional
 
+from backend.agent.call_context import CallClass, set_call_class, reset_call_class
 from backend.agent.event_bus import EventBus, IRISStreamEvent, get_event_bus
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,19 @@ class SpeakTool:
 
         Returns a status dict. Never raises — speech is best-effort.
         """
+        # T6.4: mark the call class as SPEAK around speak output so the phase
+        # gate admits it immediately (high-priority lane).
+        # REQ-22 AC8 / N4: capture the restore token and reset in `finally`
+        # below — worker threads are reused, so an un-restored SPEAK would leave
+        # the next unit of work on that thread in the never-gated priority lane.
+        _cc_token = set_call_class(CallClass.SPEAK)
+        try:
+            return self._speak_inner(text, conversation_id, turn_id)
+        finally:
+            reset_call_class(_cc_token)
+
+    def _speak_inner(self, text, conversation_id=None, turn_id=None) -> dict:
+        """Body of :meth:`speak`, run inside the SPEAK call-class scope."""
         if not text or not isinstance(text, str):
             return {"status": "error", "reason": "text (str) is required"}
         text = text[:MAX_TEXT_CHARS]

@@ -102,6 +102,7 @@ def get_token_budget(mode: Optional[str]) -> int:
 DER_EMERGENCY_STOP    = 200   # cycle count emergency brake (last resort only)
 DER_MAX_VETO_PER_ITEM = 2     # max times Reviewer can veto one item before skip
 DER_MAX_GRAFTS        = 3     # max LLM recovery-plan grafts after critical failures
+DER_MAX_CONCURRENT_STEPS = 3  # max in-flight LLM calls per DER fan-out (semaphore)
 DER_MAX_CYCLES        = 40    # hard cycle cap (secondary to token budget)
 DER_WRITE_LOCK_TIMEOUT = 5.0  # seconds — Mycelium write lock timeout
 TRAILING_GAP_MIN       = 2     # TrailingDirector gap-analysis cadence (steps)
@@ -140,6 +141,13 @@ AVG_STEP_COST = 1500
 # deterministic verify only). Between U_SPLIT and this => mid-band (atomic +
 # LLM rubric per D2.3).
 U_CONVERGED = 0.85
+
+# EML explore-pressure bands (REQ-17 / REQ-17 AC5)
+# Shared source of truth for continuous explore-pressure function and
+# cognitive-state phase label in agent_kernel.py. These match the old
+# discrete thresholds: EXPLORE at >= 1.5, VERIFY at < 1.0, BALANCE in between.
+EML_EXPLORE = 1.5
+EML_VERIFY = 1.0
 
 
 def derive_work_units_0(context_window: int) -> int:

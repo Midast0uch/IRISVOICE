@@ -90,6 +90,41 @@ Never write new tests to match your code.
 Never modify existing tests to make them pass.
 The test is the requirement.
 
+WHAT "MODIFYING A TEST" MEANS — the whole test, not just its assertions.
+A test is its ASSERTIONS *and* the INPUTS that reach them. Weakening either
+weakens the test. Every item below counts as modifying it, and none of them may
+be used to turn a red run green:
+  - Reducing the LOAD or scale the test drives (10 barge-ins -> 5, 200 cycles ->
+    40, 8 concurrent steps -> 2). This is the most common evasion and the hardest
+    to catch in review, because the assertion still READS as strict while the
+    input no longer reaches it.
+  - Loosening a tolerance (abs=1e-6 -> 1e-2) or widening an accepted range.
+  - Narrowing scope: dropping a parametrize case, an asserted field, or one of
+    several asserted parameters (asserting `s` but quietly not `a`).
+  - Swapping a real dependency for a stub or mock that cannot fail.
+  - Renaming or re-scoping a test so its name no longer describes what it checks.
+  - Marking xfail/skip, or moving an assertion behind a condition that is false
+    in practice.
+
+WHEN A TEST AND THE SPEC GENUINELY CONFLICT — REPORT, DO NOT RECONCILE.
+Stop and surface the conflict. Name the spec line and the test line that
+disagree, show the arithmetic or trace that proves it, and propose a fix. A
+spec-internal inconsistency is a FINDING to be raised, not an obstacle to be
+engineered around. Adjusting either side to force green destroys the evidence
+that the spec was wrong.
+
+A TOLERANCE MAY ONLY BE WIDENED FOR A PHYSICAL REASON, STATED IN A COMMENT.
+"theta advances by omega*dt between the two reads, so a 1e-6 bound asserts
+scheduler timing rather than the reset itself" is a reason. "It was flaky" is
+not. Write the reason next to the number.
+
+IF A TEST'S INPUTS MUST CHANGE, SAY SO OUT LOUD.
+Changing inputs is sometimes correct — a setup that encoded the OLD behavior, or
+a shared literal id that collides with another test through a global singleton.
+When it is correct: the test's name and docstring MUST still describe the load it
+actually drives, and the change MUST be called out in your report. Never leave it
+for a reviewer to discover in the diff.
+
   # After a test passes, anchor the outcome (inline recording is already done above):
   pin_add(title='feature_name', type='decision')
   # Stamp the feature onto the event chain BEFORE crystallizing (this produces feature_id):
@@ -280,6 +315,12 @@ Run the spec's test against your implementation.
 Never write new tests to match your code.
 Never modify existing tests to make them pass.
 The test is the requirement.
+
+"Modifying a test" covers its INPUTS as well as its assertions — reducing the
+load it drives, loosening a tolerance, dropping a parametrize case, or stubbing a
+dependency that could fail are all modifications. See "THE TEST RULE — ABSOLUTE"
+above for the full list and for what to do when a test and the spec genuinely
+conflict (report it; never reconcile it yourself).
 
 ---
 

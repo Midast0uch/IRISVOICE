@@ -7,8 +7,8 @@ Read it before executing any of the three.
 | Spec | Owns | Status |
 |---|---|---|
 | [`der-loop-integrity-display/`](der-loop-integrity-display/) | DER loop integrity, honest display, ledger learning | Partially executed — Waves 1–9 mixed, **Wave 10 (REQ-13) new** |
-| [`caducean-phase-scheduler/`](caducean-phase-scheduler/) | Rate-limit hardening + the trig phase-manager scheduling layer | Not started |
-| [`caducean-kernel-unification/`](caducean-kernel-unification/) | Parameter homeostasis, shared trig math, physics↔memory coordinate integrity, EML retrieval path | Not started — **17 REQs** (REQ-16/17 added 2026-07-27 from [`docs/learned-scoreboard-vs-live-state.md`](../docs/learned-scoreboard-vs-live-state.md) §4C) |
+| [`caducean-phase-scheduler/`](caducean-phase-scheduler/) | Rate-limit hardening + the trig phase-manager scheduling layer | **Implemented + Wave 6 repair + REQ-22 close-out applied** (105 scheduler tests green; 1 known order-dependent failure) |
+| [`caducean-kernel-unification/`](caducean-kernel-unification/) | Parameter homeostasis, shared trig math, physics↔memory coordinate integrity, EML retrieval path | **Ready to implement** — **20 REQs** (REQ-18 satisfied by the delivered kernel; REQ-19/20 added from the Wave 6 review) (REQ-16/17 added 2026-07-27 from [`docs/learned-scoreboard-vs-live-state.md`](../docs/learned-scoreboard-vs-live-state.md) §4C) |
 
 The governing boundary across all three: **the scheduler layer never reads Caducean reasoning
 state (`ξ`, `u`), and the cognitive layer never depends on scheduling.** Everything below either
@@ -21,8 +21,8 @@ protects that boundary or resolves an ambiguity that could erode it.
 ```
 1. der-loop-integrity-display    Wave 10  (REQ-13, ledger learning)   ← independent, backend-only
 2. caducean-kernel-unification   Waves 0–1 (baseline + homeostasis)   ← strictly corrective
-3. caducean-kernel-unification   T3.1 + T3.2 (trig_coupling + tests)  ← tiny, unblocks #4
-4. caducean-phase-scheduler      Waves 0–1 (rate-limit hardening)     ← fixes today's 429s
+3. caducean-kernel-unification   T3.1 + T3.2 (trig_coupling + tests)  ← DONE (C10 resolved)
+4. caducean-phase-scheduler      Waves 0–1 (rate-limit hardening)     ← DONE
 5. caducean-kernel-unification   Wave 2   (memory coordinate integrity)
 6. caducean-phase-scheduler      Waves 2–4 (meter, phase manager, batching)
 7. caducean-kernel-unification   Waves 3–4 (band mapping, registry repair)
@@ -189,6 +189,62 @@ That is more local retrieval work per step, and it lands on the DER step path �
 the scheduler's `PHASE_MAX_WAIT_S` latency budget is spent. Neither spec's budget is threatened at
 these magnitudes (SQLite reads against a local DB), but if the retrieval clamp is ever raised
 further, check it against the scheduler's latency accounting rather than assuming headroom.
+
+### C10 — The shared `trig_coupling` module was built defectively, defeating BOTH consumers ✅ RESOLVED 2026-07-27
+
+> **Resolved.** The phase-scheduler Wave 6 repair landed the signed per-oscillator kernel
+> (`splay_force` / `align_force`). Verified: leading `+0.029950`, trailing `-0.029950` —
+> genuinely opposite signs. CU-1 still holds (imports are `math`/`typing` only), so CT-4
+> isolation is intact. **One trap remains:** `splay_coupling` / `align_coupling` survive as
+> aliases to the NON-NEGATIVE magnitude aggregates. kernel-unification REQ-7/REQ-8 name
+> `align_coupling` — calling it would reintroduce F4. Both specs now require `align_force`
+> on every update path; the magnitude forms are diagnostic-only.
+
+
+**Added 2026-07-27** after auditing the delivered phase-scheduler implementation.
+`backend/agent/trig_coupling.py` exists (landed by phase-scheduler Wave 3, per this document's
+recommended step 3). **CU-1 holds** — imports are `math` and `typing` only, so the scheduler's
+CT-4 isolation is intact. But both kernels return a **single non-negative scalar** folded through
+`abs()`:
+
+```python
+splay_coupling(thetas, k) = (k/N) * sum_i | sum_j sin(theta_j - theta_i) |   # >= 0
+align_coupling(thetas, k) = -splay_coupling(thetas, k)                      # <= 0
+```
+
+**This defeats each consumer's purpose in the same way, for the same reason:**
+
+| Consumer | What it needs | What the scalar does |
+|---|---|---|
+| phase-scheduler REQ-12 (repulsion) | Push oscillator *i* away from its neighbours | Applies the **same** value to every oscillator → absolute phase advances, **relative phase never changes** → zero spreading (verified: 200 ticks left Δθ at 0.100000) |
+| kernel-unification REQ-8/REQ-9 (differentiation) | One session → nucleus, the other → barrier (**opposite** signs) | Applies the same non-positive value to both → **both become barriers** → this is overview finding **F4** reproduced inside the shared module |
+
+Compounding: the inner term is `sin(θⱼ − θᵢ)` — the **attractive** convention — inside a function
+documented as *repulsive*, with `abs()` masking the contradiction. And `align = -splay` is not the
+sign-flip of a signed force; it is the negation of a magnitude.
+
+**Resolution.** One change satisfies both specs, and it must be made once:
+
+- phase-scheduler **T6.1** (Wave 6 repair, REQ-21 AC1/AC2)
+- kernel-unification **REQ-18** (amendment appended 2026-07-27)
+
+Export a **signed per-oscillator** primitive (`pair_force(θᵢ, θⱼ) = sin(θᵢ − θⱼ)`, or
+`forces(thetas, k) -> List[float]`), derive both kernels from it by sign alone, and never `abs()`
+a value used to advance a phase or nudge a parameter. A magnitude aggregate may remain for
+diagnostics under a name that says so.
+
+**Whichever spec executes first lands it; the other consumes it.** Do **not** implement
+kernel-unification REQ-8/REQ-9 against the current scalar kernels — the result would pass a
+positivity test and produce no differentiation, indistinguishable from the F4 bug the spec exists
+to fix.
+
+**Lesson worth keeping.** This is the first defect to hit both specs through their *shared*
+dependency, which is the risk C3 created when it centralized the math. Centralizing was still
+right — one fix now repairs both consumers instead of two divergent hand-rolled versions — but it
+means **`trig_coupling.py` needs the strictest test discipline of any module in these three
+specs**. CU-1 guarded its *imports*; nothing guarded its *semantics*. Both amendments now require
+a direction assertion (leading vs trailing oscillator get opposite signs), not a sign-of-aggregate
+assertion.
 
 ---
 

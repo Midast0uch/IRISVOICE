@@ -60,12 +60,17 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
   - **Adaptive safety net** detects genuine topological drift via phase acceleration; fires `TOPO_VIOLATION` (return code 3) on lone-kink Q > 0.8 with nonzero phase_accel
   - **O(1) EML** from SessionState accumulators — eliminates SQL from the hot path
   - **Mycelium modulation** — `decay_multiplier` and `resonance_multiplier` scale by attentional velocity (explore→preserve, compress→prune)
-  - **Multi-session coupling** via `CoupledTrajectoryRegistry` — rational c_eff ratios drive nucleus/barrier role differentiation; irrational ratios introduce destructive phase interference
-  - **Parameter tuning** via `TrajectoryController.tune_dffing_params()` — adjusts (a, b, s) based on violation count with explicit Lyapunov bounds
-  - **ConversationKernel** wraps the existing voice pipeline (no parallel VAD/TTS) — phase-driven turn-taking, TTS chunk sizing, halt-on-violation
+  - **Parameter homeostasis** — `(a, b, s)` relax toward baseline every 10 updates *or* 60 s, whichever comes first. Without this every writer pushed the same direction (barge-in `s −0.05`, violations `a +0.10`), so walk speed decayed to its floor over a long session. The state `u` always had a restoring force; the parameters did not until now.
+  - **ConversationKernel** wraps the existing voice pipeline (no parallel VAD/TTS) — phase-driven turn-taking, halt-on-violation, and TTS chunk sizing banded by `|u|` (`U_SPLIT` / `U_CONVERGED`) against live EML balance
+  - **Multi-session coupling** via `CoupledTrajectoryRegistry` — continuous `align_force` on the `ξ` difference with an order-independent symmetry breaker, so each coupled pair yields exactly one nucleus and one barrier. Winding numbers are non-degenerate (`der 1.0 / voice 1.581 / research 3.0`), making both the rational and irrational branches reachable. **Ships disabled** — `IRIS_COUPLING_ENABLED=1` to activate.
   - **Kill switch:** `IRIS_CADUCEAN_V2_DISABLED=1` env var disables v2 entirely (one-line rollback)
-  - **78 v2 tests pass via pytest** (was 0 — pytest was broken pre-v2; we fixed it)
-  - See [Caducean v2 architecture](./docs/cad_v2_architecture.md) and [implementation plan](./docs/plans/Cadv2plan.md)
+  - See the [architecture blueprint](./docs/CADUCEAN_ARCHITECTURE.md) for how these fit together, and [`CADUCEAN_TECHNICAL_OVERVIEW.md`](./docs/CADUCEAN_TECHNICAL_OVERVIEW.md) §13 for the as-built audit
+- **Caducean Phase Scheduler + inference rate-limit hardening**: a scheduling layer owned by the Caducean engine that keeps any number of work sources from converging on the same instant — without any loop knowing another exists.
+  - **Rate-limit hardening (always on):** `429` retries now actually sleep, honor `Retry-After`, and raise a typed `RateLimitedError` instead of returning a fabricated reply. Max HTTP attempts per step dropped from 9 to 3, and concurrent step fan-out is bounded by a semaphore.
+  - **Anti-phase coupling:** registrants repel each other in phase (negative-K Kuramoto) so work spreads into a stream instead of arriving as a burst. Volume is regulated through the *same* mechanism — amplitude modulates effective angular velocity — rather than a separate counter.
+  - **Per-quota adaptive limits:** metering and ceilings are keyed by `(api_base_url, credential-fingerprint)`, learned via AIMD from observed `429`/`Retry-After`. Local providers (LM Studio / Ollama) are never gated.
+  - **Never-gated voice lane:** the user's turn and `speak_tool` bypass the gate entirely. Recovery grafts are *not* exempt — that would create a 429 → graft → 429 loop.
+  - **Ships disabled** — `IRIS_PHASE_SCHEDULER=1` to activate. **The scheduler never reads Caducean `ξ`/`u`**; that boundary is enforced by contract tests, not convention (see the blueprint §4).
 - **Recall-as-Cognition**: Two-phase memory retrieval protocol — model emits structured `<recall/>` ops before answering, resolves them against the coordinate graph, then answers with real memory context. 84% prompt token reduction vs full-history injection. Provider-uniform via prompt caching. See [architecture doc](./docs/architecture/RECALL_AS_COGNITION.md)
 - **Mycelium v1.7**: 6-layer coordinate-graph memory — episodic events, semantic compression, landmarks, Pacman lifecycle, PiNs, and cross-project landmark bridges
 - **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — markdown notes, files, folders, images, URLs, decisions, fragments, mid-write checkpoints. Agent-callable (`pin_add`, `pin_search`, `pin_link`, `pin_checkpoint`) and surfaced via `<recall pin .../>`. Auto-checkpoints fire after large file writes so the agent can recover in-progress work on a future turn. Tunable search weights. Available in both modes. See [pin system doc](./docs/architecture/PIN_SYSTEM.md)
@@ -121,6 +126,7 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - [System Requirements](#-system-requirements)
 - [Installation](#-installation)
 - [Architecture](#-architecture)
+- [Caducean Architecture Blueprint](./docs/CADUCEAN_ARCHITECTURE.md)
 - [C++ Hybrid Core Memory Engine](#-c-hybrid-core-memory-engine)
 - [Configuration](#-configuration)
 - [Development](#-development)
@@ -690,15 +696,47 @@ Three pre-existing bugs were discovered and fixed (see commit `ad1a50d5`):
 
 ### Documentation
 
-- **Architecture:** [docs/cad_v2_architecture.md](./docs/cad_v2_architecture.md) — full system architecture with math
-- **Implementation plan:** [docs/plans/Cadv2plan.md](./docs/plans/Cadv2plan.md) — 11 components, 7 phases, scope & impact analysis
-- **Plan review:** [docs/plans/cad_v2_plan_review.md](./docs/plans/cad_v2_plan_review.md) — 15 corrections found via cold review
-- **Integration test report:** [docs/plans/cad_v2_integration_test_report.md](./docs/plans/cad_v2_integration_test_report.md) — 78/78 tests pass via pytest
-- **Frontend wiring notes:** [app/PHASE_6_INTEGRATION_NOTES.md](./app/PHASE_6_INTEGRATION_NOTES.md)
+**Start here:**
+
+- **Architecture blueprint:** [docs/CADUCEAN_ARCHITECTURE.md](./docs/CADUCEAN_ARCHITECTURE.md) — the foundational document. The one idea, the four-scale recursive operator, the scheduling/cognition boundary and why it is contract-locked, the three physics↔memory couplings, and a per-component **PROVEN / FLAG-OFF / UNEXERCISED** status table. Every behavioral claim cites `file:line` or a harness assertion.
+- **Technical overview:** [docs/CADUCEAN_TECHNICAL_OVERVIEW.md](./docs/CADUCEAN_TECHNICAL_OVERVIEW.md) — field theory → validated runtime. §1–§10 are the theory and experimental record; **§13 is the as-built audit** (findings F1–F7 with evidence).
+- **Spec reconciliation:** [specs/CADUCEAN_SPEC_RECONCILIATION.md](./specs/CADUCEAN_SPEC_RECONCILIATION.md) — how the three Caducean specs interlock, conflicts found and resolved, and the recommended execution order.
+
+**Design notes:**
+
+- **Memory coupling:** [docs/learned-scoreboard-vs-live-state.md](./docs/learned-scoreboard-vs-live-state.md) — why scheduling may read the learned scoreboard but not live reasoning state, and the risks of closing that loop.
+- **Phase-manager concept:** [docs/caducean-phase-manager-trig-scheduling.md](./docs/caducean-phase-manager-trig-scheduling.md) — the original design essay. Read for rationale; the blueprint above is authoritative on as-built behavior.
+
+**Historical (v2 era, superseded for as-built purposes):**
+
+- [docs/cad_v2_architecture.md](./docs/cad_v2_architecture.md) — v2 architecture with math
+- [docs/plans/Cadv2plan.md](./docs/plans/Cadv2plan.md) — 11 components, 7 phases
+- [docs/plans/cad_v2_plan_review.md](./docs/plans/cad_v2_plan_review.md) — 15 corrections found via cold review
+- [app/PHASE_6_INTEGRATION_NOTES.md](./app/PHASE_6_INTEGRATION_NOTES.md) — frontend wiring notes
 
 ### Test Coverage
 
-175+ tests across 13+ suites, all passing (post-v2):
+The suite is layered — bugs in this system live in the **seams** between components, so unit
+tests alone are not sufficient:
+
+```
+backend/tests/unit/         244 tests   pure logic, no I/O
+backend/tests/contract/     258 tests   boundary pins (CT-1..CT-10, CU-1..CU-8)
+backend/tests/behavioral/   196 tests   full-loop drives, emergent properties
+```
+
+**Standing CDD harnesses** replay recorded trajectories through the full stack and assert
+contracts *and* behavior on every run. Run these before changing anything in the Caducean layer —
+a green unit suite has twice been compatible with a completely inert mechanism:
+
+```bash
+python scripts/validate_phase_scheduler.py     # gate, spacing, order-independence
+python scripts/validate_caducean_kernels.py    # 8 assertions: mean-reversion, windings, contracts
+python scripts/validate_der_integrity.py       # DER loop integrity
+python scripts/validate_der_tool_resolution.py # tool resolution
+```
+
+Legacy per-suite invocation (Caducean v2 era):
 
 ```bash
 # All Caducean v2 + Domain 18 + Domain 19 + pre-existing test suites
