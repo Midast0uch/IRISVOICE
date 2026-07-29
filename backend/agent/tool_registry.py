@@ -607,6 +607,66 @@ def register_builtin_tools() -> None:
             },
             category="system", executor="internal", permission_tier="read_only", parallel_safe=True,
         ),
+        ToolSpec(
+            name="get_rendered_documents",
+            description=(
+                "Return the active conversation's rendered document DATA (content, "
+                "variants, sources, source_document_id, har_path) so you can recombine "
+                "or re-render prior documents. Use this when the user asks to 'combine', "
+                "'merge', or 'reuse' earlier documents, or when you need a document's "
+                "provenance/HAR to decide if a source is stale. Returns FULL data (not "
+                "the light UI metadata). Cross-thread capable: if ``conversation_id`` is "
+                "provided it returns THAT thread's documents (use ``list_conversations`` "
+                "to discover prior threads); otherwise the active conversation's."
+            ),
+            parameters={
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Optional: conversation to read (defaults to the active conversation). Pass a different thread's id to reuse its existing rendered data.",
+                },
+            },
+            category="memory", executor="internal", requires_internet=False,
+            permission_tier="read_only", parallel_safe=True,
+        ),
+        ToolSpec(
+            name="list_conversations",
+            description=(
+                "List every conversation thread that has at least one rendered "
+                "document, newest-first (returns conversation_id, doc_count, "
+                "latest_created_at). Use this to DISCOVER prior threads — e.g. when "
+                "the user says 'continue the previous task' or 'use the document from "
+                "before' — then call get_rendered_documents(conversation_id=...) on the "
+                "relevant thread to pull its EXISTING data instead of re-searching the "
+                "web. Cross-thread discovery; read-only."
+            ),
+            parameters={},
+            category="memory", executor="internal", requires_internet=False,
+            permission_tier="read_only", parallel_safe=True,
+        ),
+        ToolSpec(
+            name="combine_documents",
+            description=(
+                "Combine several rendered documents into ONE new render (the "
+                "'combine A + B' path). Content is concatenated and the SOURCE "
+                "list is the union of all inputs, so provenance is preserved on "
+                "the combined doc. Use this when the user asks to 'merge', "
+                "'combine', or 'summarize together' earlier documents. Local "
+                "operation — does not re-crawl; consult HAR before any re-crawl."
+            ),
+            parameters={
+                "document_ids": {
+                    "type": "array",
+                    "description": "Document IDs to combine (order preserved)",
+                    "items": {"type": "string"},
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Optional: conversation to write into (defaults to active)",
+                },
+            },
+            category="memory", executor="internal", requires_internet=False,
+            permission_tier="read_only", parallel_safe=False,
+        ),
     ]
 
     # ── Internet-gated web tools (aliased to fix the legacy name mismatch) ───

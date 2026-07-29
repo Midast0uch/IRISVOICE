@@ -548,9 +548,13 @@ class ToolDecisionBox:
                     else:
                         self._tool_fails[decision.tool] = self._tool_fails.get(decision.tool, 0) + 1
 
+                # REQ-10 AC1: prefer an explicit error_type from the tool's
+                # structured envelope; fall back to heuristic classification only
+                # when the tool didn't supply one.
+                _explicit_et = result.get("error_type") if isinstance(result, dict) else None
                 dr = DispatchResult(success=success, result=result.get("result"),
                                     error=error, duration_ms=0,
-                                    error_type=_classify_error(error, result))
+                                    error_type=_explicit_et or _classify_error(error, result))
 
                 # ── Idempotency store (REQ-11) ──────────────────────────
                 if _ik and _is_write_tool(decision.tool):

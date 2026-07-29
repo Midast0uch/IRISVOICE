@@ -98,6 +98,16 @@ def setup_backend_logging(
 
         _root.setLevel(getattr(logging, log_level.upper()))
 
+    # Bridge ALL backend logging into the in-memory LogManager so the Monitor's
+    # live log view (system/voice/mcp/agent) is populated — including the
+    # tool-resolution tree. Attached to the root logger so it captures every
+    # module regardless of named-logger / singleton init order. Idempotent.
+    try:
+        from backend.monitor.logs import get_log_manager
+        get_log_manager().attach_to_root()
+    except Exception as _lm_exc:  # logging must never break startup
+        print(f"[warn] could not attach LogManager bridge: {_lm_exc}", file=sys.stderr)
+
     logger.info(
         "Logging configured",
         log_level=log_level,

@@ -44,6 +44,43 @@ Rules:
 """
 
 
+# Web-intent triggers used by the capability-gated web fallback. Kept in sync
+# with AgentKernel._is_web_search_request so propose() can resolve web tools
+# without coupling to the kernel instance. The fallback must fire on the GOAL
+# text (which carries the user's phrasing) — NOT on task_class, because the
+# DER passes the mode name ("full"/"agentic"/"quick") as task_class, never the
+# original "research" class. See pin_9e97e21340e7 (root-cause analysis).
+_WEB_INTENT_TRIGGERS = (
+    "web search",
+    "search the web",
+    "search on the internet",
+    "search online",
+    "look up online",
+    "look up on the",
+    "find on the web",
+    "find on the internet",
+    "browse the web",
+    "do a web search",
+    "research ",
+    "do research",
+    "do some research",
+    "find information about",
+    "look up information",
+)
+
+
+def _is_web_intent(goal: str) -> bool:
+    """Standalone web-intent heuristic (mirrors AgentKernel._is_web_search_request).
+
+    Drives the propose() web fallback so web-research goals resolve to a real
+    tool even though task_class arrives as the DER mode name, not "research".
+    """
+    if not goal:
+        return False
+    _lower = goal.lower().strip()
+    return any(t in _lower for t in _WEB_INTENT_TRIGGERS)
+
+
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     try:
         m = re.search(r"\{[\s\S]+\}", text)
@@ -139,8 +176,11 @@ def propose(
     else:
         logger.info("[explorer] unparseable proposal — applying fallback")
 
-    # ── Fallback 1: capability-gated web intent (research class) ──
-    if task_class == "research" and myc is not None:
+    # ── Fallback 1: capability-gated web intent ──
+    # Trigger on the GOAL text (carries the user's phrasing) OR the original
+    # "research" task_class. The DER passes its mode name as task_class, so we
+    # must not rely on task_class == "research" alone (see pin_9e97e21340e7).
+    if (myc is not None) and (_is_web_intent(goal) or task_class == "research"):
         try:
             from backend.agent.tool_registry import resolve_tool, capability_allowed
 

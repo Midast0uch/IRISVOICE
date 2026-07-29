@@ -38,6 +38,7 @@ class SpeakTool:
         self._bus = event_bus or get_event_bus()
         self._IRISStreamEvent = IRISStreamEvent
         self._pending: deque = deque()
+        self._last_speak_time: float = 0.0  # T4.5: cooldown tracker
 
     def _prune_pending(self) -> None:
         _now = time.time()
@@ -99,6 +100,12 @@ class SpeakTool:
             return {"status": "error", "reason": "text (str) is required"}
         text = text[:MAX_TEXT_CHARS]
 
+        # T4.5: Low-priority cooldown — skip if last speech was within 5s.
+        # High-priority speech always bypasses the cooldown.
+        _now_speak = time.time()
+        if priority == "low" and _now_speak - self._last_speak_time < 5.0:
+            return {"status": "cooldown"}
+
         # Resolve thread/turn for correlation when not explicitly passed.
         # NOTE: look up the EXISTING kernel instance only — never call
         # get_agent_kernel() with an empty/id string, as that would CREATE
@@ -129,6 +136,9 @@ class SpeakTool:
         if len(self._pending) >= MAX_PENDING:
             logger.warning("[SpeakTool] rate limited (max %d pending)", MAX_PENDING)
             return {"status": "rate_limited"}
+
+        # T4.5: commit the speak — update cooldown timestamp.
+        self._last_speak_time = _now_speak
 
         uid = f"spk_{uuid.uuid4().hex[:8]}"
         self._pending.append(time.time())
@@ -168,9 +178,9 @@ class SpeakTool:
                     "turn_id": turn_id,
                 },
             )
-        except Exception as exc:
-            logger.warning("[SpeakTool] emit failed: %s", exc)
-            return {"status": "error", "reason": str(exc)}
+        except Exception:
+            logger.exception("[SpeakTool] emit failed")  # T4.5: ERROR + full traceback
+            return {"status": "error", "reason": "emit_failed"}
         return {"status": "ok", "utterance_id": uid, "spoken": text}
 
 

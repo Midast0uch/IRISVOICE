@@ -780,14 +780,14 @@ export function useIRISWebSocket(
       }
 
        case "chat_chunk": {
-         // Streaming chunk — dispatch for progressive rendering
-         if (typeof window !== 'undefined' && typeof payload.chunk === 'string') {
-           window.dispatchEvent(new CustomEvent('iris:chat_chunk', {
-             detail: { chunk: payload.chunk }
-           }))
-         }
-         break
-       }
+          // Streaming chunk — dispatch for progressive rendering
+          if (typeof window !== 'undefined' && typeof payload.chunk === 'string') {
+            window.dispatchEvent(new CustomEvent('iris:chat_chunk', {
+              detail: { chunk: payload.chunk, turn_id: payload.turn_id }
+            }))
+          }
+          break
+        }
 
        case "chat_reasoning": {
          // Reasoning/thinking tokens from chain-of-thought models
@@ -1405,6 +1405,17 @@ export function useIRISWebSocket(
         break
       }
 
+      // ── Document re-hydration (document-rehydration spec, REQ-1/2) ───────
+      // Response to a `get_documents` request. Forwarded to iris:documents so
+      // chat-view can merge prior rendered documents back into the panel on
+      // resume/switch (single convergence point: hydrateDocuments -> reducer).
+      case "documents": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:documents', { detail: payload }))
+        }
+        break
+      }
+
       // ── Execution-hardening plan events (Phase 4.1) ─────────────────────
       // VALIDATION_FAILED / RECOVERY_START / TOPOLOGY_RECOVERY / BUDGET_EXHAUSTED
       // from the agent kernel, bridged via WSEventBridge. Forwarded to
@@ -1502,7 +1513,11 @@ export function useIRISWebSocket(
 
       case 'sync_state_ack': {
         // Backend acknowledgment that a session bind/attach succeeded.
-        // No UI action needed — silently acknowledge.
+        // Forwarded to iris:sync_state_ack (carries conversation_id) so chat-view
+        // can re-hydrate that conversation's rendered documents (REQ-1).
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:sync_state_ack', { detail: payload }))
+        }
         break
       }
 

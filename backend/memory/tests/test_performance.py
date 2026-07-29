@@ -107,7 +107,7 @@ class TestEmbeddingPerformance:
         
         # Embedding should complete in reasonable time (< 1s for single text)
         assert elapsed < 1.0, f"Embedding took {elapsed:.2f}s"
-        assert len(result) == 384
+        assert len(result) == EmbeddingService.EMBEDDING_DIM
 
 
 class TestRetrievalPerformance:

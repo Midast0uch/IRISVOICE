@@ -2,13 +2,14 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink } from 'lucide-react';
+import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RotateCcw, RefreshCw } from 'lucide-react';
 import { Icon } from '@iconify/react';
 import { IconArrowBigRightLines } from '@tabler/icons-react';
 import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
 import { useBrandColor } from "@/contexts/BrandColorContext";
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
+import { mergeRenderedDocuments } from "@/lib/documentMerge";
 import { formatPlanEventMessage } from "@/components/chat/planEventMessage";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
@@ -120,6 +121,7 @@ interface Conversation {
   title: string;
   preview: string;
   messages: Message[];
+  documents: DocRender[];
   timestamp: Date;
   isPinned: boolean;
   lastMessagePreview: string;
@@ -141,6 +143,10 @@ interface DocRender {
   error?: string | null
   // Trust-routing W3: "trusted" vs anything else (web/crawler-sourced).
   trust?: string
+  // Document-rehydration provenance (REQ-5/REQ-6): source URLs + HAR path so a
+  // re-hydrated research doc re-renders WITH its citations, never as bare [n].
+  sources?: { url: string; title: string }[]
+  harPath?: string | null
 }
 
 interface ChatWingProps {
@@ -179,69 +185,95 @@ export function ChatWing({
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
-  // Thread-based conversation state — persisted to localStorage so history
-  // survives page reloads and Tauri window closes.
-  // Max 50 conversations kept; messages within each conversation capped at 200.
-  const STORAGE_KEY = "iris_conversations_v1"
-  const ACTIVE_ID_KEY = "iris_active_conversation_id_v1"
   const MAX_CONVERSATIONS = 50
   const MAX_MESSAGES_PER_CONV = 200
 
-  const [conversations, setConversations] = useState<Conversation[]>(() => {
-    if (typeof window === "undefined") return []
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return []
-      const parsed: Conversation[] = JSON.parse(raw)
-      // Deserialise timestamp strings back to Date objects
-      return parsed.map(c => ({
-        ...c,
-        timestamp: new Date(c.timestamp),
-        messages: c.messages.map(m => ({ ...m, timestamp: new Date(m.timestamp) })),
-      }))
-    } catch {
-      return []
-    }
-  })
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null
-    return localStorage.getItem(ACTIVE_ID_KEY) || null
-  })
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
 
-  // Rich documents rendered inline (plan Issue D.3). Each document:render WS
-  // event appends (or updates, by turn_id) a DocRender; the expand action
-  // opens it full-panel via DocumentPanel.
-  const [renderedDocuments, setRenderedDocuments] = useState<DocRender[]>([])
-  const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
-
-  // Persist conversations with a 1 s debounce — avoids hammering localStorage on every
-  // fast state change (typing, streaming, etc.).  isSpeaking is excluded from the debounce
-  // because the TTS interval no longer mutates conversations anyway.
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    const id = setTimeout(() => {
+  // ── Shared conversation API helper (error handling + performance logging) ──
+  // Wraps every conversation store API call so we never block the UI on a
+  // backend failure, and we can measure call timing for diagnostics (REQ-10).
+  const callConversationApi = useCallback(
+    async <T,>(
+      label: string,
+      call: () => Promise<T>,
+      fallback: T,
+    ): Promise<T> => {
+      const t0 = performance.now()
       try {
-        const toStore = conversations.slice(-MAX_CONVERSATIONS).map(c => ({
-          ...c,
-          messages: c.messages.slice(-MAX_MESSAGES_PER_CONV),
-        }))
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore))
-      } catch {
-        // localStorage full or unavailable — silently skip
+        const result = await call()
+        const elapsed = (performance.now() - t0).toFixed(1)
+        console.debug(`[ConvAPI] ${label} OK (${elapsed}ms)`)
+        return result
+      } catch (err) {
+        const elapsed = (performance.now() - t0).toFixed(1)
+        console.warn(`[ConvAPI] ${label} FAILED (${elapsed}ms):`, err)
+        return fallback
       }
-    }, 1000);
-    return () => clearTimeout(id);
-  }, [conversations])
+    },
+    [],
+  )
 
-  // Persist active conversation ID
+  // Load conversations from backend SQLite store on mount (replaces localStorage).
+  // Fetches full conversation data including messages. On failure or empty response,
+  // defaults to an empty list (no stored conversations).
   useEffect(() => {
-    if (typeof window === "undefined") return
-    if (activeConversationId) {
-      localStorage.setItem(ACTIVE_ID_KEY, activeConversationId)
-    } else {
-      localStorage.removeItem(ACTIVE_ID_KEY)
-    }
-  }, [activeConversationId])
+    let cancelled = false
+    callConversationApi(
+      "GET /api/conversations",
+      async () => {
+        const res = await fetch("/api/conversations")
+        if (!res.ok) throw new Error(`GET /api/conversations returned ${res.status}`)
+        return res.json()
+      },
+      { conversations: [] },
+    ).then((data) => {
+        if (cancelled) return
+        const convs: Conversation[] = (data.conversations || []).map((c: any) => ({
+          id: c.id,
+          title: c.title || `Conversation ${c.id?.slice(-4) || ""}`,
+          preview: c.messages?.[c.messages.length - 1]?.text?.substring(0, 60) || "",
+          messages: (c.messages || []).map((m: any) => ({
+            id: m.id,
+            text: m.text || "",
+            sender: m.role === "user" ? "user" : "assistant",
+            timestamp: new Date(m.timestamp || Date.now()),
+            thinking: m.thinking,
+            turn_id: m.turn_id,
+          })),
+          documents: [] as DocRender[],
+          timestamp: new Date(c.updated_at || c.created_at || Date.now()),
+          isPinned: !!c.pinned,
+          lastMessagePreview: c.messages?.[c.messages.length - 1]?.text?.substring(0, 60) || "",
+        }))
+        setConversations(convs)
+        // Set active conversation to most recent non-pinned conversation
+        if (!cancelled) {
+          const sorted = [...convs].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+          const lastNonPinned = sorted.find((c) => !c.isPinned) || sorted[0] || null
+          setActiveConversationId(lastNonPinned?.id || null)
+        }
+      })
+    return () => { cancelled = true }
+  }, [callConversationApi])
+
+  // Rich documents are stored per-conversation (Conversation.documents).
+  // Each document:render WS event appends or updates a DocRender within the
+  // active conversation; the expand action opens it full-panel via DocumentPanel.
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
+  // Ref + effect for closure-safe document turn ID lookup in the REST handler
+  // (avoids closure staleness when a document:render WS event arrives between
+  // fetch send and response).
+  const activeDocTurnIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    activeDocTurnIdsRef.current = new Set(
+      (conversations.find(c => c.id === activeConversationId)?.documents || [])
+        .map(d => d.turnId)
+        .filter((t): t is string => !!t)
+    )
+  }, [activeConversationId, conversations])
+
   const [inputText, setInputText] = useState("")
   const [webMode, setWebMode] = useState(() => {
     try {
@@ -445,8 +477,16 @@ export function ChatWing({
       const { text, sender = 'assistant', thinking } = detail
       if (!text) return
 
-      // Deduplicate by turn_id — skip if we've already recorded this turn.
       const turnId = detail.turn_id
+
+      // If this turn is a rendered document (prism card), skip plain-text —
+      // the RichDocument card already shows the structured content.
+      if (turnId && activeDocTurnIdsRef.current.has(turnId)) {
+        if (turnId) seenTurnIds.current.add(turnId)
+        return
+      }
+
+      // Deduplicate by turn_id — skip if we've already finalized this turn.
       if (turnId && seenTurnIds.current.has(turnId)) {
         if (process.env.NODE_ENV !== 'production') {
           console.log(`[ChatView] Deduplicating replayed text_response turn=${turnId}`)
@@ -458,23 +498,40 @@ export function ChatWing({
       }
 
       const isUserVoice = sender === "user"
-      const newMessage: Message = {
-        id: turnId ?? (Date.now() + 1).toString(),
-        text,
-        sender,
-        timestamp: new Date(),
-        words: isUserVoice ? undefined : text.split(' '),
-        feedback: isUserVoice ? undefined : null,
-        thinking: thinking || undefined,
-      }
+      const messageId = turnId ?? (Date.now() + 1).toString()
       const currentActiveId = activeConversationIdRef.current
       if (currentActiveId) {
         setConversations(prev => prev.map(conv =>
           conv.id === currentActiveId
             ? {
                 ...conv,
-                messages: [...conv.messages, newMessage],
-                lastMessagePreview: newMessage.text.substring(0, 60),
+                messages: (() => {
+                  const existingIdx = turnId
+                    ? conv.messages.findIndex(m => m.id === turnId)
+                    : -1
+                  if (existingIdx >= 0) {
+                    // Update the streaming message created by chat_chunk
+                    const updated = [...conv.messages]
+                    updated[existingIdx] = {
+                      ...updated[existingIdx],
+                      text,
+                      thinking: thinking || updated[existingIdx].thinking,
+                      words: text.split(' '),
+                    }
+                    return updated
+                  }
+                  const newMessage: Message = {
+                    id: messageId,
+                    text,
+                    sender,
+                    timestamp: new Date(),
+                    words: isUserVoice ? undefined : text.split(' '),
+                    feedback: isUserVoice ? undefined : null,
+                    thinking: thinking || undefined,
+                  }
+                  return [...conv.messages, newMessage]
+                })(),
+                lastMessagePreview: text.substring(0, 60),
                 timestamp: new Date()
               }
             : conv
@@ -487,23 +544,74 @@ export function ChatWing({
           const newConv: Conversation = {
             id: newId,
             title: `Conversation ${prev.length + 1}`,
-            preview: newMessage.text.substring(0, 60),
-            messages: [newMessage],
+            preview: text.substring(0, 60),
+            messages: [{
+              id: messageId,
+              text,
+              sender,
+              timestamp: new Date(),
+              words: isUserVoice ? undefined : text.split(' '),
+              feedback: isUserVoice ? undefined : null,
+              thinking: thinking || undefined,
+            }],
+            documents: [],
             timestamp: new Date(),
             isPinned: false,
-            lastMessagePreview: newMessage.text.substring(0, 60)
+            lastMessagePreview: text.substring(0, 60)
           }
           return [...prev, newConv]
         })
       }
       if (!isUserVoice) {
-        setCurrentTtsMessageId(newMessage.id)
+        setCurrentTtsMessageId(messageId)
         // Don't set isSpeaking here — wait for iris:tts_started so word
         // highlighting stays in sync with actual audio playback.
       }
     }
     window.addEventListener('iris:text_response', handleTextResponse)
     return () => window.removeEventListener('iris:text_response', handleTextResponse)
+  }, [])
+
+  // Handle streaming chat chunks (iris:chat_chunk) from the WebSocket path.
+  // The backend streams these during generation so the UI shows live progress
+  // instead of hanging on a 120s REST timeout. Keyed by turn_id so concurrent
+  // turns (different conversations) don't collide, and so the final
+  // text_response can update the same message (no duplicate).
+  useEffect(() => {
+    function handleChatChunk(e: Event) {
+      const detail = (e as CustomEvent).detail as { chunk?: string; turn_id?: string }
+      const chunk = detail.chunk
+      if (!chunk) return
+      const turnId = detail.turn_id
+      if (!turnId) return
+      const convId = activeConversationIdRef.current
+      if (!convId) return
+      setConversations(prev => prev.map(conv => {
+        if (conv.id !== convId) return conv
+        const messages = [...conv.messages]
+        const idx = messages.findIndex(m => m.id === turnId)
+        if (idx >= 0) {
+          const updated = messages[idx].text + chunk
+          messages[idx] = {
+            ...messages[idx],
+            text: updated,
+            words: updated.split(' '),
+          }
+        } else {
+          messages.push({
+            id: turnId,
+            text: chunk,
+            sender: 'assistant',
+            timestamp: new Date(),
+            words: chunk.split(' '),
+            feedback: null,
+          })
+        }
+        return { ...conv, messages }
+      }))
+    }
+    window.addEventListener('iris:chat_chunk', handleChatChunk)
+    return () => window.removeEventListener('iris:chat_chunk', handleChatChunk)
   }, [])
 
   // Handle document:render — agent pushed a rich document (plan Issue D.3).
@@ -535,30 +643,41 @@ export function ChatWing({
         error: null,
         trust: detail.trust,
       }
-      setRenderedDocuments((prev) => {
-        // Phase 4 (chat-card-redesign): update an existing card in place when the
-        // backend revises a document by id (or re-formats by turn), instead of
-        // appending a duplicate card.
-        const idx = prev.findIndex(
-          (d) =>
-            (detail.document_id && d.documentId === detail.document_id) ||
-            (detail.turn_id && d.turnId === detail.turn_id),
-        )
-        if (idx >= 0) {
-          const next = [...prev]
-          next[idx] = doc
-          return next
-        }
-        return [...prev, doc]
-      })
+      // Per-conversation document store — updates the active conversation's
+      // documents array instead of a flat global array.
+      setConversations((prev) =>
+        prev.map((conv) => {
+          if (conv.id !== activeConversationIdRef.current) return conv
+          // Phase 4 (chat-card-redesign): update an existing card in place when the
+          // backend revises a document by id (or re-formats by turn), instead of
+          // appending a duplicate card.
+          const idx = conv.documents.findIndex(
+            (d) =>
+              (detail.document_id && d.documentId === detail.document_id) ||
+              (detail.turn_id && d.turnId === detail.turn_id),
+          )
+          if (idx >= 0) {
+            const updated = [...conv.documents]
+            updated[idx] = doc
+            return { ...conv, documents: updated }
+          }
+          return { ...conv, documents: [...conv.documents, doc] }
+        }),
+      )
     }
     function handleReformatError(e: Event) {
       const detail = (e as CustomEvent).detail as { error?: string; turn_id?: string } | undefined
       if (!detail?.turn_id) return
-      setRenderedDocuments((prev) =>
-        prev.map((d) =>
-          d.turnId === detail.turn_id ? { ...d, error: detail.error || "reformat failed" } : d
-        )
+      setConversations((prev) =>
+        prev.map((conv) => {
+          if (conv.id !== activeConversationIdRef.current) return conv
+          return {
+            ...conv,
+            documents: conv.documents.map((d) =>
+              d.turnId === detail.turn_id ? { ...d, error: detail.error || "reformat failed" } : d
+            ),
+          }
+        }),
       )
     }
     window.addEventListener('iris:document_render', handleDocumentRender)
@@ -568,6 +687,64 @@ export function ChatWing({
       window.removeEventListener('iris:reformat_document_error', handleReformatError)
     }
   }, [])
+
+  // ── Document re-hydration (document-rehydration spec, REQ-1/2/3) ────────
+  // Single convergence point: hydrateDocuments sends get_documents; the
+  // iris:documents response merges into the active conversation's documents
+  // keyed on document_id (idempotent — no dupes on repeated hydrate). Used by
+  // the sync_state_ack handler (resume) and the conversation switch handler.
+  const hydrateDocuments = useCallback(
+    (convId: string | null) => {
+      if (!convId || !sendMessage) return
+      sendMessage('get_documents', { conversation_id: convId })
+    },
+    [sendMessage],
+  )
+
+  useEffect(() => {
+    function handleDocuments(e: Event) {
+      const detail = (e as CustomEvent).detail as {
+        documents?: Array<{
+          document_id?: string
+          format?: string
+          conversation_id?: string
+          sources?: { url: string; title: string }[]
+          har_path?: string | null
+          created_at?: number
+        }>
+      } | undefined
+      const docs = detail?.documents
+      if (!docs || docs.length === 0) return
+      setConversations((prev) =>
+        prev.map((conv) => {
+          if (conv.id !== activeConversationIdRef.current) return conv
+          return {
+            ...conv,
+            documents: mergeRenderedDocuments(conv.documents as any, docs) as DocRender[],
+          }
+        }),
+      )
+    }
+    function handleSyncStateAck(e: Event) {
+      const detail = (e as CustomEvent).detail as { conversation_id?: string } | undefined
+      const convId = detail?.conversation_id || activeConversationIdRef.current
+      hydrateDocuments(convId || null)
+    }
+    window.addEventListener('iris:documents', handleDocuments)
+    window.addEventListener('iris:sync_state_ack', handleSyncStateAck)
+    return () => {
+      window.removeEventListener('iris:documents', handleDocuments)
+      window.removeEventListener('iris:sync_state_ack', handleSyncStateAck)
+    }
+  }, [hydrateDocuments])
+
+  // Re-hydrate documents whenever the active conversation changes (switch OR
+  // resume). Single convergence point — the iris:documents merge is idempotent,
+  // so repeated calls never duplicate cards (REQ-3). The sync_state_ack handler
+  // above covers the explicit resume ack as well.
+  useEffect(() => {
+    if (activeConversationId) hydrateDocuments(activeConversationId)
+  }, [activeConversationId, hydrateDocuments])
 
   // Handle tts_started: backend signals first TTS audio chunk has been pushed
   // to the player. This is where we actually start word highlighting, keeping
@@ -643,6 +820,7 @@ export function ChatWing({
             title: `Conversation ${prev.length + 1}`,
             preview: voiceMessage.text.substring(0, 60),
             messages: [voiceMessage],
+            documents: [],
             timestamp: new Date(),
             isPinned: false,
             lastMessagePreview: voiceMessage.text.substring(0, 60),
@@ -952,54 +1130,103 @@ export function ChatWing({
 
   const handleSendMessage = async () => {
     if (!inputText.trim()) return
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      text: inputText.trim(),
-      sender: "user",
-      timestamp: new Date(),
-    }
+    const text = inputText.trim()
 
     setInputText("")
     setJustSent(true)
     setCurrentSuggestions([])
     setTimeout(() => setJustSent(false), 300);
 
-    // Add to active conversation or create new one
-    setConversations(prev => {
-      if (activeConversationId) {
-        // Add to existing conversation
-        return prev.map(conv => 
+    // ── Resolve thread_id: create backend conversation if new ──────
+    // This replaces the old pattern where a local Date.now() ID was used
+    // and the REST response handler tried to match it retroactively.
+    // The server ID is the canonical ID from the start.
+    let threadId: string | undefined
+    let isNewConversation = false
+
+    if (activeConversationId) {
+      // Existing conversation — use the server-assigned ID directly
+      threadId = activeConversationId
+    } else {
+      // NEW conversation — create on backend first
+      isNewConversation = true
+      try {
+        const createRes = await fetch("/api/conversations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: `Conversation ${conversations.length + 1}` }),
+        })
+        if (!createRes.ok) {
+          throw new Error(`POST /api/conversations returned ${createRes.status}`)
+        }
+        const created = await createRes.json()
+        threadId = created.id
+
+        // Persist the initial user message to the backend
+        await fetch(`/api/conversations/${threadId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: "user", text }),
+        })
+      } catch (err) {
+        console.warn("[ConversationStore] Failed to create conversation:", err)
+        // Fallback: local-only ID so the user can still chat
+        threadId = `local-${Date.now()}`
+      }
+    }
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      text,
+      sender: "user",
+      timestamp: new Date(),
+    }
+
+    // Add to React state
+    if (isNewConversation) {
+      const newConv: Conversation = {
+        id: threadId!,
+        title: `Conversation ${conversations.length + 1}`,
+        preview: text.substring(0, 60),
+        messages: [userMessage],
+        documents: [],
+        timestamp: new Date(),
+        isPinned: false,
+        lastMessagePreview: text.substring(0, 60),
+      }
+      setConversations(prev => [...prev, newConv])
+      setActiveConversationId(threadId!)
+    } else if (activeConversationId) {
+      setConversations(prev =>
+        prev.map(conv =>
           conv.id === activeConversationId
             ? {
                 ...conv,
                 messages: [...conv.messages, userMessage],
-                lastMessagePreview: userMessage.text.substring(0, 60),
-                timestamp: new Date()
+                lastMessagePreview: text.substring(0, 60),
+                timestamp: new Date(),
               }
             : conv
-        );
-      } else {
-        // Create new conversation
-        const newConv: Conversation = {
-          id: Date.now().toString(),
-          title: `Conversation ${prev.length + 1}`,
-          preview: userMessage.text.substring(0, 60),
-          messages: [userMessage],
-          timestamp: new Date(),
-          isPinned: false,
-          lastMessagePreview: userMessage.text.substring(0, 60)
-        };
-        setActiveConversationId(newConv.id);
-        return [...prev, newConv];
-      }
-    });
+        )
+      )
+    }
+
+    // Persist follow-up user message to backend (existing conversation).
+    // New conversations already persisted the first message during create
+    // (see POST /api/conversations + POST .../messages in the create branch above).
+    if (!isNewConversation && threadId && !threadId.startsWith("local-")) {
+      fetch(`/api/conversations/${threadId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sender: "user", text }),
+      }).catch(() => { /* optimistic — already shown in UI */ })
+    }
 
     // Developer mode: prefix routing for direct shell commands
-    if (isDeveloper && (userMessage.text.startsWith('>') || userMessage.text.startsWith('/run '))) {
-      const command = userMessage.text.startsWith('>')
-        ? userMessage.text.slice(1).trim()
-        : userMessage.text.slice(5).trim()
+    if (isDeveloper && (text.startsWith('>') || text.startsWith('/run '))) {
+      const command = text.startsWith('>')
+        ? text.slice(1).trim()
+        : text.slice(5).trim()
       if (command) {
         sendMessage?.('terminal_input', { line: command })
         setInputText('')
@@ -1007,78 +1234,56 @@ export function ChatWing({
       }
     }
 
-    // === Primary path: REST /api/chat (reliable, no WS dependency) ===
+    // === Primary path: WebSocket (streaming, no timeout) ===
+    // The backend streams chat_chunk events as it generates, so the UI shows
+    // live progress instead of hanging on a fixed REST timeout. REST is kept
+    // as a fallback for when the WebSocket is unavailable (sendMessage unset).
     setLocalTyping(true)
-    const restThreadId = activeConversationId || undefined
-    fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: userMessage.text, thread_id: restThreadId }),
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = await res.text()
-          throw new Error(`POST /api/chat returned ${res.status}: ${body}`)
-        }
-        return res.json()
+    if (sendMessage) {
+      sendMessage("text_message", { text: userMessage.text, conversation_id: activeConversationId })
+    } else {
+      // Fallback: REST /api/chat (reliable when WS unavailable)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 300_000)  // 5 min
+      fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: userMessage.text, thread_id: threadId }),
+        signal: controller.signal,
       })
-      .then((data) => {
-        setLocalTyping(false)
-        // Store the server-assigned thread_id so subsequent messages
-        // continue the same conversation on the same kernel session.
-        //
-        // BUG FIX: Previously the response handler tried to match the
-        // conversation by `conv.id === data.thread_id || conv.id === restThreadId`.
-        // In the empty-state path, the conversation was created with a LOCAL id
-        // (`Date.now().toString()`) and `restThreadId` was `undefined`, so the
-        // match always failed and the assistant response was silently dropped.
-        //
-        // Fix: do the rename + append in ONE setConversations pass, and fall
-        // back to "the most recent conversation whose last message matches the
-        // text we just sent" so the empty-state flow works correctly.
-        const userText = userMessage.text
-        const newId = data.thread_id
-        const newAssistantMsg = {
-          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          sender: "assistant" as const,
-          text: data.content || "",
-          thinking: data.thinking || "",
-          timestamp: new Date(),
-        }
-        setConversations((prev) => {
-          // 1) Find by current active or rest thread id
-          let target = prev.find(c => c.id === restThreadId)
-          // 2) If new server id was already used (re-attached session), use it
-          if (!target && newId) target = prev.find(c => c.id === newId)
-          // 3) Last resort: find a conversation whose LAST message is the
-          //    exact user text we just sent (covers the empty-state case
-          //    where the conversation was just created with a local id).
-          if (!target) {
-            target = [...prev].reverse().find(
-              c => c.messages.length > 0
-                && c.messages[c.messages.length - 1].sender === "user"
-                && c.messages[c.messages.length - 1].text === userText
-            )
+        .then(async (res) => {
+          clearTimeout(timeoutId)
+          if (!res.ok) {
+            const body = await res.text()
+            throw new Error(`POST /api/chat returned ${res.status}: ${body}`)
           }
-          if (!target) return prev  // nothing to update; should not happen
-          const finalId = newId || target.id
-          return prev.map((conv) => {
-            if (conv.id !== target!.id) return conv
-            return {
-              ...conv,
-              id: finalId,  // rename to server thread_id if we have one
-              messages: [...conv.messages, newAssistantMsg],
-            }
-          })
+          return res.json()
         })
-        if (newId) setActiveConversationId(newId)
-      })
-      .catch((err) => {
-        console.error("[REST primary] /api/chat failed, falling back to WS:", err)
-        setLocalTyping(false)
-        // Fallback: try WebSocket
-        sendMessage?.("text_message", { text: userMessage.text, conversation_id: activeConversationId })
-      })
+        .then((data) => {
+          setLocalTyping(false)
+          const turnId = data.turn_id
+          // If a rendered document (prism card) with this turn_id already
+          // exists, skip adding a duplicate plain-text message — the
+          // RichDocument card already shows the structured content.
+          if (turnId && activeDocTurnIdsRef.current.has(turnId)) {
+            return
+          }
+          // Unify through iris:text_response — exactly the same path the
+          // WS chat_message / text_response events use.
+          window.dispatchEvent(new CustomEvent('iris:text_response', {
+            detail: {
+              text: data.content || "",
+              sender: 'assistant',
+              thinking: data.thinking || "",
+              turn_id: turnId,
+            }
+          }))
+        })
+        .catch((err) => {
+          console.error("[REST fallback] /api/chat failed:", err)
+          setLocalTyping(false)
+        })
+    }
   }
 
   // Conversation management functions
@@ -1098,10 +1303,19 @@ export function ChatWing({
 
   const handleDeleteConversation = (e: React.MouseEvent, conversationId: string) => {
     e.stopPropagation();
+    // Remove from React state immediately (optimistic)
     setConversations(prev => prev.filter(c => c.id !== conversationId));
     if (activeConversationId === conversationId) {
       const remaining = conversations.filter(c => c.id !== conversationId);
       setActiveConversationId(remaining.length > 0 ? remaining[0].id : null);
+    }
+    // Delete from backend (fire-and-forget). Skip local-only IDs.
+    if (conversationId && !conversationId.startsWith("local-")) {
+      fetch(`/api/conversations/${conversationId}`, {
+        method: "DELETE",
+      }).catch(() => {
+        /* optimistic — already removed from UI */
+      })
     }
   };
 
@@ -1120,6 +1334,121 @@ export function ChatWing({
     });
   };
 
+  // Revert conversation to a specific message — deletes all messages after it.
+  // Confirmation-safe: second click calls the API.
+  const [revertConfirmIndex, setRevertConfirmIndex] = useState<number | null>(null)
+
+  const handleRevertMessage = (messageIndex: number, convId: string, msgId: string) => {
+    // First click: show confirmation. Second click: execute.
+    if (revertConfirmIndex !== messageIndex) {
+      setRevertConfirmIndex(messageIndex)
+      setTimeout(() => setRevertConfirmIndex(null), 4000) // auto-clear after 4s
+      return
+    }
+    setRevertConfirmIndex(null)
+
+    // Truncate backend
+    if (convId && !convId.startsWith("local-")) {
+      fetch(`/api/conversations/${convId}/truncate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keep_until_message_id: msgId }),
+      }).catch(() => { /* optimistic — already removed from UI */ })
+    }
+
+    // Update React state: keep messages up to and including the target message
+    setConversations(prev =>
+      prev.map(conv => {
+        if (conv.id !== convId) return conv
+        const keptMessages = conv.messages.slice(0, messageIndex + 1)
+        return {
+          ...conv,
+          messages: keptMessages,
+          documents: [], // clear documents associated with reverted turns
+          preview: keptMessages[keptMessages.length - 1]?.text?.substring(0, 60) || "",
+          lastMessagePreview: keptMessages[keptMessages.length - 1]?.text?.substring(0, 60) || "",
+          timestamp: new Date(),
+        }
+      })
+    )
+  }
+
+  // Retry on error: re-send the last user message.
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null)
+
+  const handleRetryPrompt = (errorMessageIndex: number, convId: string) => {
+    // Debounce rapid retries
+    if (retryingMessageId) return
+
+    setConversations(prev =>
+      prev.map(conv => {
+        if (conv.id !== convId) return conv
+        const msgs = conv.messages
+        // Find the last user message before the error
+        let lastUserMsg: (typeof msgs)[0] | null = null
+        for (let i = errorMessageIndex - 1; i >= 0; i--) {
+          if (msgs[i].sender === "user") {
+            lastUserMsg = msgs[i]
+            break
+          }
+        }
+        if (!lastUserMsg) return conv // no user message found
+
+        // Remove the error message and show loading state
+        const errorMsg = msgs[errorMessageIndex]
+        const newMsgs = msgs.filter((_, i) => i !== errorMessageIndex)
+        setRetryingMessageId(lastUserMsg.id)
+
+        // Re-send to /api/chat
+        fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: lastUserMsg.text, thread_id: convId }),
+        })
+          .then((res) => {
+            if (!res.ok) throw new Error(`Chat returned ${res.status}`)
+            return res.json()
+          })
+          .then((data) => {
+            setRetryingMessageId(null)
+            // Unify through iris:text_response — same as the primary handler.
+            window.dispatchEvent(new CustomEvent('iris:text_response', {
+              detail: {
+                text: data.content || "",
+                sender: 'assistant',
+                thinking: data.thinking || "",
+                turn_id: data.turn_id,
+              }
+            }))
+          })
+          .catch(() => {
+            setRetryingMessageId(null)
+            // Restore the error message
+            setConversations((innerPrev) =>
+              innerPrev.map((ic) => {
+                if (ic.id !== convId) return ic
+                return { ...ic, messages: [...ic.messages, errorMsg] }
+              })
+            )
+          })
+
+        return {
+          ...conv,
+          messages: [
+            ...newMsgs,
+            {
+              id: Date.now().toString(),
+              text: "Retrying...",
+              sender: "assistant",
+              timestamp: new Date(),
+              thinking: "",
+            },
+          ],
+        }
+      })
+    )
+  }
+
   const handleNewConversation = () => {
     // Create new conversation thread
     const newConv: Conversation = {
@@ -1127,6 +1456,7 @@ export function ChatWing({
       title: `Conversation ${conversations.length + 1}`,
       preview: 'New conversation',
       messages: [],
+      documents: [],
       timestamp: new Date(),
       isPinned: false,
       lastMessagePreview: 'New conversation'
@@ -2482,6 +2812,25 @@ ${message.text}`;
                               >
                                 <Volume2 size={12} />
                               </button>
+
+                              {/* Revert button — truncate conversation to this message */}
+                              <button
+                                onClick={() =>
+                                  handleRevertMessage(index, activeConversationId!, message.id)
+                                }
+                                className={`p-1.5 rounded transition-colors hover:bg-white/5 ${
+                                  revertConfirmIndex === index
+                                    ? "text-amber-400 bg-amber-400/10"
+                                    : "text-white/40 hover:text-white/70"
+                                }`}
+                                title={
+                                  revertConfirmIndex === index
+                                    ? "Click again to confirm revert"
+                                    : "Revert conversation to this point"
+                                }
+                              >
+                                <RotateCcw size={12} />
+                              </button>
                               
                               <div className="flex items-center gap-1 ml-auto">
                                 <button
@@ -2547,6 +2896,14 @@ ${message.text}`;
                               </span>
                             </div>
                             <p className="text-[12px] text-red-200/90 leading-relaxed">{message.text}</p>
+                            <button
+                              onClick={() => handleRetryPrompt(index, activeConversationId!)}
+                              className="mt-1.5 flex items-center gap-1 text-[10px] font-medium text-red-300/70 hover:text-red-200 transition-colors"
+                              title="Retry — re-send the last user message"
+                            >
+                              <RefreshCw size={10} />
+                              Retry
+                            </button>
                           </motion.div>
                         )}
                       </div>
@@ -2555,7 +2912,7 @@ ${message.text}`;
                 })}
 
                   {/* Rich documents (plan Issue D.3) — inline render with format pills + expand */}
-                  {renderedDocuments.map((doc) => (
+                  {(activeConversation?.documents || []).map((doc) => (
                     <div key={doc.id} className="my-3 relative">
                       {doc.updated && (
                         <span
@@ -2585,6 +2942,8 @@ ${message.text}`;
                           })
                         }
                         onExpand={() => setExpandedDocId(doc.id)}
+                        sources={doc.sources}
+                        harPath={doc.harPath}
                       />
                       {doc.error && (
                         <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
@@ -2610,7 +2969,7 @@ ${message.text}`;
                             <span className="text-[9px] font-semibold" style={{ color: glowColor }}>
                               IRIS
                             </span>
-                            <span className="text-[8px] text-white/40">thinking...</span>
+                            {/* REQ-1 AC3: no-step tasks present a minimal same-card state — nothing extra. */}
                           </div>
                         </motion.div>
                       </div>
@@ -2811,7 +3170,7 @@ ${message.text}`;
             {/* Expanded Document Panel (plan Issue D.3) — full-panel viewer for a rendered doc */}
             <AnimatePresence>
               {expandedDocId && (() => {
-                const doc = renderedDocuments.find((d) => d.id === expandedDocId)
+                const doc = activeConversation?.documents.find((d) => d.id === expandedDocId)
                 if (!doc) return null
                 return (
                   <motion.div
@@ -2880,7 +3239,7 @@ ${message.text}`;
                             const newId = Date.now().toString()
                             activeConversationIdRef.current = newId
                             setActiveConversationId(newId)
-                            return [...prev, { id: newId, title: `Conversation ${prev.length + 1}`, preview: s.message.substring(0, 60), messages: [userMsg], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
+                            return [...prev, { id: newId, title: `Conversation ${prev.length + 1}`, preview: s.message.substring(0, 60), messages: [userMsg], documents: [], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
                           })()
                     )
                     sendMessage?.('text_message', { text: s.message })

@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from typing import Awaitable, Callable, Optional
 
@@ -79,6 +80,19 @@ class NarrationLog:
             "text": text or "",
             "tts_played": bool(tts_played),
         }
+        # ── REQ-9: structured log for narration observability ──
+        logger.info(
+            "Narration spoken",
+            extra={
+                "context": "narration",
+                "text": text or "",
+                "decision": decision,
+                "signal": signal,
+                "conversation_id": self.conversation_id,
+                "step_id": step_id,
+            },
+        )
+
         # Off the critical path: schedule the file write, don't await it.
         try:
             loop = asyncio.get_event_loop()
@@ -86,13 +100,15 @@ class NarrationLog:
         except Exception as exc:  # pragma: no cover - best effort
             logger.debug("[narration] log schedule failed: %s", exc)
 
-# How often to speak a "still working" heartbeat while a long tool runs (seconds).
-_HEARTBEAT_INTERVAL_S = 12
+# W5 (T35): speak heartbeat at most once per 25s while a long tool runs.
+_HEARTBEAT_INTERVAL_S = 25
 
-# Generic verb per tool name, so the heartbeat message is not web-specific.
+# W5 (T37): removed "Still researching" — page-specific snippets are spoken
+# directly by _on_page_done in tool_bridge.py. The heartbeat is a safety net
+# only for very long crawls with no page data to narrate.
 _TOOL_VERB = {
-    "crawler_query": "researching the web",
-    "web_search": "searching the web",
+    "crawler_query": "reading",
+    "web_search": "searching",
 }
 
 
@@ -102,6 +118,7 @@ async def run_with_narration(
     tool_name: str,
     status_fn: Optional[Callable[[], str]] = None,
     interval_s: float = _HEARTBEAT_INTERVAL_S,
+    should_narrate: bool = True,  # T4.4: task-level gate — agent decides per task
 ) -> object:
     """Run ``coro_factory()`` as a task and speak a periodic heartbeat until done.
 
@@ -112,6 +129,9 @@ async def run_with_narration(
         status_fn: optional callable returning a short progress detail string
             (e.g. page count). When provided, the heartbeat includes it.
         interval_s: heartbeat period.
+        should_narrate: task-level gate. When False, the heartbeat is suppressed
+            entirely regardless of the global may_narrate gate. The agent decides
+            per task whether narration is needed (REQ-7 AC1/AC2, T4.4).
 
     Returns:
         The tool coroutine's result.
@@ -134,11 +154,19 @@ async def run_with_narration(
                         detail = status_fn() or ""
                     except Exception:  # pragma: no cover - best effort
                         detail = ""
-                msg = f"Still {verb}" + (f" — {detail}" if detail else "") + "."
-                try:
-                    speak(msg, "low")
-                except Exception as exc:  # pragma: no cover - best effort
-                    logger.debug("[narration] heartbeat speak failed: %s", exc)
+                # W5 (T37/T38): conversational snippet heartbeat, never "Still researching".
+                msg = detail if detail else f"{verb}…"
+                if should_narrate and may_narrate():
+                    # REQ-9: structured log for narration heartbeat.
+                    logger.info("Narration heartbeat", extra={
+                        "context": "narration", "text": msg,
+                        "tool_name": tool_name, "conversation_id": conv_id,
+                        "turn_id": turn_id,
+                    })
+                    try:
+                        speak(msg, "low")
+                    except Exception as exc:  # pragma: no cover - best effort
+                        logger.debug("[narration] heartbeat speak failed: %s", exc)
         except asyncio.CancelledError:
             pass
 
@@ -152,3 +180,25 @@ async def run_with_narration(
             await heartbeat_task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+# ── Shared narration gate (cooldown across ALL narration sources) ─────────
+# Every source (heartbeat, page-done, "Searching the web for...") checks this
+# gate before speaking.  This prevents multiple TTS utterances from stacking
+# when two different narration mechanisms fire in quick succession.
+_NARRATION_GATE_INTERVAL = 18.0  # max one narration utterance per 18s
+_narration_gate_lock = threading.Lock()
+_narration_gate_last = 0.0
+
+
+def may_narrate() -> bool:
+    """Return True if no other narration source has spoken in the last
+    _NARRATION_GATE_INTERVAL seconds.  Thread-safe (used from both sync
+    tool_bridge.py and async narration.py contexts)."""
+    global _narration_gate_last
+    now = time.time()
+    with _narration_gate_lock:
+        if now - _narration_gate_last >= _NARRATION_GATE_INTERVAL:
+            _narration_gate_last = now
+            return True
+        return False

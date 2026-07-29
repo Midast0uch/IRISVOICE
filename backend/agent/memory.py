@@ -13,6 +13,7 @@ import logging
 import json
 import time
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict, field
@@ -85,11 +86,17 @@ class ConversationMemory:
     def __init__(
         self,
         session_id: str,
+        conversation_id: Optional[str] = None,
         max_messages: int = 20,
         max_context_tokens: int = 8192,
         session_storage_path: Optional[str] = None
     ):
         self.session_id = session_id
+        # Per-conversation isolation: each thread owns its own memory store so a
+        # NEW conversation never inherits another thread's message history. This is
+        # the missing half of the session-conversation-switching isolation fix
+        # (the WS routing was fixed; the memory store was still session-scoped).
+        self.conversation_id = conversation_id or session_id
         self.max_messages = max_messages
         self.max_context_tokens = max_context_tokens
         self.messages: List[Message] = []
@@ -98,7 +105,19 @@ class ConversationMemory:
         self.session_start = time.time()
 
         if session_storage_path is None:
-            session_storage_path = os.path.join("backend", "sessions", session_id)
+            # The logical session/conversation ids (e.g. "immortus:thread-...") may
+            # contain characters that are illegal in filesystem paths on Windows
+            # (':', '/', etc.). Sanitize only the on-disk path components — the
+            # logical id is preserved everywhere else (DB, WebSocket, logging).
+            _safe_session = _fs_safe(session_id)
+            if conversation_id and conversation_id != session_id:
+                # Isolated per-conversation store: backend/sessions/<session>/conversations/<conv>/
+                session_storage_path = os.path.join(
+                    "backend", "sessions", _safe_session, "conversations", _fs_safe(conversation_id)
+                )
+            else:
+                # Legacy / singleton session-level store (backward compatible)
+                session_storage_path = os.path.join("backend", "sessions", _safe_session)
         self.session_storage_path = Path(session_storage_path)
         self.session_storage_path.mkdir(parents=True, exist_ok=True)
 
@@ -243,8 +262,8 @@ class ConversationMemory:
     def clear(self) -> None:
         self.messages.clear()
         self.session_start = time.time()
-        # Note: we do NOT clear task_records on conversation clear —
-        # the task history is session-scoped, not conversation-scoped
+        # Task history is conversation-scoped (each thread owns its own store),
+        # so clearing a conversation clears its task history too.
         self._persist_to_session_storage()
 
     def _persist_to_session_storage(self) -> None:
@@ -252,6 +271,7 @@ class ConversationMemory:
             conversation_file = self.session_storage_path / "conversation.json"
             data = {
                 "session_id": self.session_id,
+                "conversation_id": self.conversation_id,
                 "session_start": self.session_start,
                 "last_updated": time.time(),
                 "max_messages": self.max_messages,
@@ -273,7 +293,8 @@ class ConversationMemory:
                 self.task_records = [TaskRecord.from_dict(t) for t in data.get("task_records", [])]
                 self.session_start = data.get("session_start", time.time())
                 logger.info(
-                    f"[ConversationMemory] Loaded session {self.session_id}: "
+                    f"[ConversationMemory] Loaded conversation {self.conversation_id} "
+                    f"(session {self.session_id}): "
                     f"{len(self.messages)} messages, {len(self.task_records)} task records"
                 )
         except Exception as e:
@@ -361,6 +382,18 @@ class ConversationMemory:
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Characters illegal in Windows filesystem paths. Replaced with '_' so ids like
+# "immortus:thread-xxxx-yyyy" become safe directory names ("immortus_thread-...").
+_FS_ILLEGAL = re.compile(r'[<>:"/\\|?*]')
+
+
+def _fs_safe(name: str) -> str:
+    """Make an id safe for use as a single filesystem path component."""
+    if not name:
+        return name
+    return _FS_ILLEGAL.sub("_", name)
+
+
 def _summarize_tool_results(tool_results: List[Dict[str, Any]]) -> str:
     """Compact summary of tool results for inline context injection."""
     if not tool_results:
@@ -380,15 +413,17 @@ def _summarize_tool_results(tool_results: List[Dict[str, Any]]) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _legacy_instance: Optional[ConversationMemory] = None
+_conversation_instances: Dict[str, ConversationMemory] = {}
 
 
 def get_conversation_memory(
     session_id: str = "default",
+    conversation_id: Optional[str] = None,
     max_messages: int = 20,
     max_context_tokens: int = 8192
 ) -> ConversationMemory:
-    global _legacy_instance
-    if session_id == "default":
+    global _legacy_instance, _conversation_instances
+    if session_id == "default" and conversation_id is None:
         if _legacy_instance is None:
             _legacy_instance = ConversationMemory(
                 session_id=session_id,
@@ -397,8 +432,12 @@ def get_conversation_memory(
             )
         return _legacy_instance
 
-    return ConversationMemory(
-        session_id=session_id,
-        max_messages=max_messages,
-        max_context_tokens=max_context_tokens
-    )
+    key = f"{session_id}:{conversation_id or session_id}"
+    if key not in _conversation_instances:
+        _conversation_instances[key] = ConversationMemory(
+            session_id=session_id,
+            conversation_id=conversation_id,
+            max_messages=max_messages,
+            max_context_tokens=max_context_tokens
+        )
+    return _conversation_instances[key]

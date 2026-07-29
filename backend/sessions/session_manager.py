@@ -93,6 +93,11 @@ class SessionManager:
     def __init__(self):
         self.sessions: Dict[str, IRISession] = {}
         self.client_to_session: Dict[str, str] = {}
+        # Recency pointer: the most recently active session. Used by the wake-word
+        # handler to bind "Hey Iris" to the user's current conversation thread even
+        # at startup (before any manual trigger). Updated on create / associate /
+        # activity. See specs/der-streaming-wakeword-session (REQ-1, REQ-2).
+        self.last_active_session_id: Optional[str] = None
         self._cleanup_task: Optional[asyncio.Task] = None
         self._shutdown: bool = False
         self.default_config = SessionConfig(
@@ -100,6 +105,25 @@ class SessionManager:
             created_at=datetime.now(),
             last_accessed=datetime.now(),
         )
+
+    def _mark_active(self, session_id: str) -> None:
+        """Update the recency pointer to the most recently active session."""
+        if session_id in self.sessions:
+            self.last_active_session_id = session_id
+
+    def get_last_active_session_id(self) -> Optional[str]:
+        """Return the most recently active session id, or None if none yet.
+
+        Falls back to the most recently inserted session if the pointer is stale
+        (e.g. the recorded session was cleaned up).
+        """
+        if self.last_active_session_id and self.last_active_session_id in self.sessions:
+            return self.last_active_session_id
+        # Pointer stale or unset: fall back to most recently created session.
+        if self.sessions:
+            self.last_active_session_id = next(reversed(self.sessions.keys()))
+            return self.last_active_session_id
+        return None
 
     async def start(self) -> None:
         """Start the session manager and periodic cleanup task."""
@@ -157,6 +181,7 @@ class SessionManager:
         )
         session = IRISession(session_id=session_id, config=cfg)
         self.sessions[session_id] = session
+        self._mark_active(session_id)
 
         # Initialize state persistence
         from pathlib import Path
@@ -192,6 +217,7 @@ class SessionManager:
         self.client_to_session[client_id] = session_id
         session.connected_clients.add(client_id)
         session.touch()
+        self._mark_active(session_id)
 
     async def update_app_state_for_all_sessions(self, app_state: Any) -> None:
         """Push app_state update to all active sessions."""

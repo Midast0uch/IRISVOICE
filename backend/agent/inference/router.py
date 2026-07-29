@@ -29,8 +29,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .keyring import get_secret
 from .provider import ProviderInstance, ProviderKind
-from .registry import ProviderRegistry
-from .roles import RoleBindingTable
+from .registry import ProviderRegistry, get_provider_registry
+from .roles import RoleBindingTable, get_role_binding_table
 from .transport import (
     ApiHttpxTransport,
     InProcessTransport,
@@ -82,8 +82,12 @@ class InferenceRouter:
     """
 
     def __init__(self, config: Any) -> None:
-        self._registry = ProviderRegistry()
-        self._roles = RoleBindingTable(self._registry)
+        # Process-wide singletons (REQ-5): provider instances and role bindings
+        # live in ONE registry shared by every kernel and the API endpoint, so
+        # they cannot disagree about which models exist or which role serves
+        # which provider.
+        self._registry = get_provider_registry()
+        self._roles = get_role_binding_table()
         self._transports: Dict[Tuple[str, ...], Any] = {}
         # Separate reference for in-process model manager (set externally)
         self._inprocess_mgr: Any = None
@@ -110,12 +114,30 @@ class InferenceRouter:
         if infer_cfg is None:
             return
 
-        # ── Target schema ──────────────────────────────────────────────
+        # ── Unified provider collection (Phase 1 Wave 2 target schema) ──
+        # ONE collection holds API + local entries keyed by id. ``endpoint`` and
+        # ``cred_ref`` live in the same ProviderEntry, so a writer cannot set
+        # one without the other (REQ-5 AC3). The credential itself is fetched
+        # from the keyring by ``cred_ref`` (= id) at transport build time.
+        providers = getattr(infer_cfg, "providers", None)
+        if providers:
+            for pid, entry in providers.items():
+                inst = ProviderInstance(
+                    id=pid,
+                    label=getattr(entry, "label", pid),
+                    kind=self._kind_from_str(getattr(entry, "kind", "API")),
+                    model=getattr(entry, "model", None) or None,
+                    api_base_url=getattr(entry, "endpoint", "") or "",
+                    purpose=getattr(entry, "purpose", "chat"),
+                )
+                self._registry.add(inst)
+
+        # ── Legacy target schema (provider_registry list) ──────────────
         provider_list = getattr(infer_cfg, "provider_registry", None)
         if provider_list:
             for p in provider_list:
                 if isinstance(p, dict):
-                    kind = ProviderKind(p.get("kind", "api"))
+                    kind = self._kind_from_str(p.get("kind", "api"))
                     inst = ProviderInstance(
                         id=p["id"],
                         label=p.get("label", p["id"]),
@@ -127,19 +149,28 @@ class InferenceRouter:
                     inst = p
                 self._registry.add(inst)
 
-        # Role bindings from config
+        # Role bindings from config. Migrate the literal "local" instance id to
+        # its namespaced form (REQ-4 AC1) so a partially-migrated id is never a
+        # dead binding.
         binding_list = getattr(infer_cfg, "role_bindings", None)
         if binding_list:
             for b in binding_list:
                 if isinstance(b, dict):
+                    role = b["role"]
+                    inst_id = b["instance_id"]
+                    if inst_id == "local":
+                        inst_id = self._namespaced_local_id(infer_cfg)
                     self._roles.bind(
-                        b["role"],
-                        b["instance_id"],
+                        role,
+                        inst_id,
                         model_override=b.get("model_override"),
                     )
                 else:
+                    inst_id = b.instance_id
+                    if inst_id == "local":
+                        inst_id = self._namespaced_local_id(infer_cfg)
                     self._roles.bind(
-                        b.role, b.instance_id, b.model_override
+                        b.role, inst_id, b.model_override
                     )
 
         # ── Legacy flat schema (backward compat) ───────────────────────
@@ -150,6 +181,15 @@ class InferenceRouter:
             legacy_provider = getattr(infer_cfg, "provider", None)
             if legacy_provider:
                 kind = self._legacy_kind(legacy_provider)
+                # Namespace the bare "local" provider id (REQ-4 AC1) so it
+                # cannot collide with or shadow a namespaced local entry.
+                if legacy_provider == "local":
+                    _stem = (
+                        getattr(infer_cfg, "reasoning_model", "")
+                        or getattr(infer_cfg, "local_model_id", "")
+                        or "local"
+                    )
+                    legacy_provider = f"local:{self._local_stem(_stem)}"
                 inst = ProviderInstance(
                     id=legacy_provider,
                     label=legacy_provider,
@@ -196,6 +236,44 @@ class InferenceRouter:
         # cerebras, openai, cohere, deepseek, anthropic, chutes, opencodego,
         # vps, api, … all route over HTTP to a provider → API kind.
         return ProviderKind.API
+
+    @staticmethod
+    def _local_stem(model_id: str) -> str:
+        """Derive a stable local-provider id stem from a model/file name.
+
+        ``"qwen3-9b-q4_k_m.gguf"`` -> ``"qwen3-9b"``. The stem is what makes a
+        local provider id namespaced and unique (``local:<stem>``), so two local
+        models never collide and the bare literal ``"local"`` is never used as an
+        id (REQ-4 AC1).
+        """
+        stem = (model_id or "").strip()
+        for ext in (".gguf", ".gguf.txt", ".bin", ".safetensors"):
+            if stem.lower().endswith(ext):
+                stem = stem[: -len(ext)]
+                break
+        stem = stem.strip().lower()
+        return stem or "local"
+
+    @staticmethod
+    def _namespaced_local_id(infer_cfg: Any) -> str:
+        """Return the namespaced local id for the configured local model."""
+        local_id = getattr(infer_cfg, "local_model_id", "") or getattr(
+            infer_cfg, "reasoning_model", ""
+        )
+        return f"local:{InferenceRouter._local_stem(local_id)}"
+
+    @staticmethod
+    def _kind_from_str(s: str) -> "ProviderKind":
+        """Resolve a provider-kind string to ``ProviderKind``.
+
+        Accepts either the enum member NAME (``"API"``) or its value
+        (``"api"``), so ``ProviderEntry.kind`` and the legacy ``provider_registry``
+        list (which use different conventions) both work.
+        """
+        try:
+            return ProviderKind[s]
+        except KeyError:
+            return ProviderKind(s)
 
     # -- Public API ------------------------------------------------------
 
@@ -245,6 +323,62 @@ class InferenceRouter:
     def remove_provider(self, id: str) -> None:
         """Remove a registered provider by id. No-op if unknown."""
         self._registry.remove(id)
+
+    def write_provider(
+        self,
+        entry: "ProviderEntry",
+        credential: Optional[str] = None,
+    ) -> None:
+        """Atomically write a provider's endpoint + credential as ONE record.
+
+        REQ-5 AC3: ``endpoint`` and ``cred_ref`` live in the same
+        ``ProviderEntry``, so a writer cannot set one without the other. For a
+        NEW provider, endpoint and credential MUST be supplied together — a
+        mismatch (endpoint without credential, or credential without endpoint)
+        is rejected. For an EXISTING provider, endpoint-only or key-only edits
+        are permitted (you are updating one field of an already-complete record).
+
+        Ordering (D-5): the keyring write happens FIRST, then the config write.
+        If the config write crashes, the previous entry is intact (the keyring
+        is additive and the registry still holds the prior instance), so a
+        half-written provider can never reach a peer.
+        """
+        from .keyring import set_secret
+        from ...iris_config import ProviderEntry as _ProviderEntry
+
+        is_new = self._registry.get(entry.id) is None
+        has_endpoint = bool(entry.endpoint)
+        has_cred = credential is not None
+        if is_new and has_endpoint != has_cred:
+            raise ValueError(
+                f"new provider '{entry.id}' requires endpoint AND credential "
+                f"together (endpoint={has_endpoint}, credential={has_cred})"
+            )
+        # Keyring FIRST (D-5).
+        if has_cred:
+            set_secret(entry.id, credential)
+        # Persist into the unified collection (best-effort; never raises on a
+        # missing config file — the live registry is the source of truth).
+        try:
+            from ...iris_config import load_config, save_config
+
+            _cfg = load_config()
+            _cfg.inference.providers[entry.id] = entry
+            _cfg.inference.config_version = max(_cfg.inference.config_version, 2)
+            save_config(_cfg)
+        except Exception as _e:  # pragma: no cover - persistence is best-effort
+            self._logger.debug(f"[write_provider] config persist skipped: {_e}")
+        # Add to the live (process-wide) registry.
+        self._registry.add(
+            ProviderInstance(
+                id=entry.id,
+                label=entry.label,
+                kind=self._kind_from_str(entry.kind),
+                model=entry.model or None,
+                api_base_url=entry.endpoint,
+                purpose=entry.purpose,
+            )
+        )
 
     def bind_role(
         self,

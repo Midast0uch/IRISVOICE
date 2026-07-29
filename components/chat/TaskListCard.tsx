@@ -18,6 +18,7 @@ export interface TaskListCardProps {
 }
 
 const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
+  unknown: { color: "rgba(255,255,255,0.4)", label: "Unknown" },
   pending: { color: "rgba(255,255,255,0.4)", label: "Pending" },
   working: { color: "#fbbf24", label: "Working" },
   done: { color: "#34d399", label: "Done" },

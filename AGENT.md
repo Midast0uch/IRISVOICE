@@ -162,27 +162,27 @@ Work claiming is atomic â€” two agents cannot take the same item.
 
 
 
-## _CTX GOVERNANCE — FAILURE AWARENESS
+## _CTX GOVERNANCE  FAILURE AWARENESS
 
 Every tool response includes `_ctx` with engine and failure signals:
 
 | Field | Meaning | When to act |
 |-------|---------|-------------|
-| `gov` | Governor: OK / LOOP / RAPID / PIVOT / EXIT | PIVOT/EXIT -> compress immediately |
+| `gov` | Governor: OK / LOOP / RAPID / prune threshold / EXIT | prune threshold/EXIT -> compress immediately |
 | `bal` | Balance 0.5-2.5+ | >2.0 -> consider compress |
 | `fail` | Consecutive failures | >=2 -> check your approach |
 | `ferr` | Last error type | e.g. "ImportError" |
 | `lock` | Pattern lock | Same error >=4x -> force compress |
 | `stuck` | Work assessment | What the engine thinks you are stuck on |
 
-**When gov="PIVOT"**: Pattern lock detected - you have tried the same approach 4+ times and it keeps failing. Further edits are blocked. Call `mcm_compress()` to reset, then `mcm_recall()` and `navigate()` to find the real root cause.
+**When gov="prune threshold"**: Pattern lock detected - you have tried the same approach 4+ times and it keeps failing. Further edits are blocked. Call `mcm_compress()` to reset, then `mcm_recall()` and `navigate()` to find the real root cause.
 
 **When gov="EXIT"**: Session naturally complete or critical drift detected. Compress and stop.
 
 ### Breaking out of failure spirals
 
 When the same error type repeats:
-1. `gov="PIVOT"` fires at 4+ same-error occurrences - edits are blocked
+1. `gov="prune threshold"` fires at 4+ same-error occurrences - edits are blocked
 2. Call `mcm_compress()` - saves state, clears the lock
 3. Call `mcm_recall("ErrorName")` - shows clustered failure patterns
 4. Call `navigate(file)` - check `region_failures` for same error in neighbor files
@@ -190,7 +190,7 @@ When the same error type repeats:
 
 ## PRUNE TOOL
 
-`prune(messages=[...])` - diagnostic only (MCP tools cannot shrink context).
+`mcm_compress()` - diagnostic only (MCP tools cannot shrink context).
 Returns tokens_before/after, real_percent, pruned_count, breakdown.
 Use to check context pressure before deciding to compact.
 Full originals saved to DB by `prune_id` - call `mcm_recall(prune_id)` to restore.

@@ -662,7 +662,7 @@ class MemoryInterface:
             graph_mature=graph_mature,
         )
 
-    def get_task_context_package(self, task: str, session_id: str, space_subset=None):
+    def get_task_context_package(self, task: str, session_id: str, space_subset=None, task_class=None):
         """
         Assemble a ContextPackage for the DER Director.
         Returns (ContextPackage, True) when Mycelium is mature.

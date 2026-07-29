@@ -48,6 +48,8 @@
     "dist/standalone",
     "iris-launcher",
     "llama.cpp",
+    "llama.cpp-prismml-src",
+    "llama.cpp-turboquant",
     "llama-cpp-turboquant",
     "test-*.ts",
     "test-*.tsx",

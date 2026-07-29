@@ -8,6 +8,7 @@ with an optional ``model_override``.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
@@ -49,6 +50,67 @@ class RoleBindingTable:
     def __init__(self, registry: ProviderRegistry) -> None:
         self._bindings: dict[str, RoleBinding] = {}
         self._registry = registry
+        self._lock = threading.Lock()
+
+    def bind(
+        self,
+        role: str,
+        instance_id: str,
+        model_override: Optional[str] = None,
+    ) -> None:
+        """Bind *role* to the provider instance identified by *instance_id*."""
+        canon = self._canon(role)
+        with self._lock:
+            self._bindings[canon] = RoleBinding(
+                role=canon,
+                instance_id=instance_id,
+                model_override=model_override,
+            )
+
+    def resolve(self, role: str) -> "ProviderInstance":
+        """Resolve *role* to its bound ``ProviderInstance``.
+
+        Resolution is case-insensitive and canonicalizes role aliases
+        (``"EXECUTION"`` matches ``"tool_execution"``, ``"REASONING"`` matches
+        ``"reasoning"``). Raises ``RuntimeError`` if *role* has no binding or
+        if the bound instance id no longer exists in the registry.
+        """
+        canon = self._canon(role)
+        with self._lock:
+            binding = self._bindings.get(canon)
+            if binding is None:
+                # Legacy case-insensitive fallback for any un-canonicalized roles.
+                for _k, _v in self._bindings.items():
+                    if _k.lower() == role.lower():
+                        binding = _v
+                        break
+            if binding is None:
+                raise RuntimeError(
+                    f"No provider instance bound to role '{role}'"
+                )
+            inst = self._registry.get(binding.instance_id)
+        if inst is None:
+            raise RuntimeError(
+                f"Provider instance '{binding.instance_id}' (bound to role "
+                f"'{role}') not found in registry"
+            )
+        return inst
+
+    def list(self) -> list[RoleBinding]:
+        """Return a snapshot of all current role bindings."""
+        with self._lock:
+            return list(self._bindings.values())
+
+    def unbind(self, role: str) -> None:
+        """Remove the binding for *role* (case-insensitive). No-op if unbound."""
+        with self._lock:
+            if role in self._bindings:
+                del self._bindings[role]
+                return
+            for _k in list(self._bindings.keys()):
+                if _k.lower() == role.lower():
+                    del self._bindings[_k]
+                    return
 
     @staticmethod
     def _canon(role: str) -> str:
@@ -66,58 +128,23 @@ class RoleBindingTable:
             return "tool_execution"
         return r
 
-    def bind(
-        self,
-        role: str,
-        instance_id: str,
-        model_override: Optional[str] = None,
-    ) -> None:
-        """Bind *role* to the provider instance identified by *instance_id*."""
-        canon = self._canon(role)
-        self._bindings[canon] = RoleBinding(
-            role=canon,
-            instance_id=instance_id,
-            model_override=model_override,
-        )
 
-    def resolve(self, role: str) -> ProviderInstance:
-        """Resolve *role* to its bound ``ProviderInstance``.
+# Process-wide singleton. REQ-5: role bindings live in ONE place, not per
+# kernel. Shares the process-wide registry so the API endpoint and the live
+# session cannot disagree about which provider serves which role.
+_ROLES: Optional["RoleBindingTable"] = None
+_ROLES_LOCK = threading.Lock()
 
-        Resolution is case-insensitive and canonicalizes role aliases
-        (``"EXECUTION"`` matches ``"tool_execution"``, ``"REASONING"`` matches
-        ``"reasoning"``). Raises ``RuntimeError`` if *role* has no binding or
-        if the bound instance id no longer exists in the registry.
-        """
-        canon = self._canon(role)
-        binding = self._bindings.get(canon)
-        if binding is None:
-            # Legacy case-insensitive fallback for any un-canonicalized roles.
-            for _k, _v in self._bindings.items():
-                if _k.lower() == role.lower():
-                    binding = _v
-                    break
-        if binding is None:
-            raise RuntimeError(
-                f"No provider instance bound to role '{role}'"
-            )
-        inst = self._registry.get(binding.instance_id)
-        if inst is None:
-            raise RuntimeError(
-                f"Provider instance '{binding.instance_id}' (bound to role "
-                f"'{role}') not found in registry"
-            )
-        return inst
 
-    def list(self) -> list[RoleBinding]:
-        """Return a snapshot of all current role bindings."""
-        return list(self._bindings.values())
+def get_role_binding_table() -> "RoleBindingTable":
+    """Return the process-wide role-binding table (creating it once)."""
+    from .registry import get_provider_registry
 
-    def unbind(self, role: str) -> None:
-        """Remove the binding for *role* (case-insensitive). No-op if unbound."""
-        if role in self._bindings:
-            del self._bindings[role]
-            return
-        for _k in list(self._bindings.keys()):
-            if _k.lower() == role.lower():
-                del self._bindings[_k]
-                return
+    global _ROLES
+    if _ROLES is None:
+        with _ROLES_LOCK:
+            if _ROLES is None:
+                _ROLES = RoleBindingTable(get_provider_registry())
+    return _ROLES
+
+

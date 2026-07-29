@@ -25,6 +25,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Literal, Optional
@@ -62,10 +63,20 @@ class CredibilityMap:
     top_score: float = 0.0
 
 
+# Phase sequence numbers (REQ-4 AC4) — stable, monotonic, used by the frontend
+# to disambiguate re-emission of the same phase.
+PHASE_SEARCHING = 1
+PHASE_FETCHING = 2
+PHASE_EXTRACTING = 3
+PHASE_RERANKING = 4
+PHASE_CITING = 5
+PHASE_DONE = 6
+
+
 @dataclass
 class CrawlProgress:
     """One unified progress event emitted via on_progress (REQ-10..13)."""
-    event: str            # CRAWLER_STARTED | CRAWLER_PAGE_FETCHED | OPEN_TAB | CRAWLER_ERROR
+    event: str            # CRAWLER_STARTED | CRAWLER_PAGE_FETCHED | CRAWLER_PHASE | OPEN_TAB | CRAWLER_ERROR
     payload: dict
 
 
@@ -81,8 +92,9 @@ class FetchBackend:
         urls: list[str],
         instructions: str,
         max_pages: int,
-        on_page_done: Optional[Callable[[str, int, int], None]],
+        on_page_done: Optional[Callable[[str, int, int, str, str], None]],
         timeout_s: float,
+        job_id: Optional[str] = None,
     ) -> CrawlResult:  # pragma: no cover - abstract
         raise NotImplementedError
 
@@ -90,13 +102,14 @@ class FetchBackend:
 class InProcessFetchBackend(FetchBackend):
     """In-process CrawlerEngine (used by WS mode=ws)."""
 
-    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s):
+    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, job_id=None):
         from .crawler_engine import CrawlerEngine
         try:
             async with CrawlerEngine() as engine:
                 return await engine.crawl(
                     query=query, urls=urls, instructions=instructions,
                     max_pages=max_pages, on_page_done=on_page_done,
+                    job_id=job_id,
                 )
         except Exception as exc:  # CrawlerUnavailable etc.
             logger.error("[InProcessFetchBackend] fetch failed: %s", exc)
@@ -110,11 +123,12 @@ class InProcessFetchBackend(FetchBackend):
 class SubprocessFetchBackend(FetchBackend):
     """Isolated subprocess (used by agent mode=agent). Crash-isolated (REQ-17)."""
 
-    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s):
+    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, job_id=None):
         from .crawl_runner import run_crawl_subprocess
         return await run_crawl_subprocess(
             query=query, urls=urls, instructions=instructions,
             on_page_done=on_page_done, max_pages=max_pages, timeout_s=timeout_s,
+            job_id=job_id,
         )
 
 
@@ -143,9 +157,12 @@ class CrawlOrchestrator:
         max_pages: int = _DEFAULT_MAX_PAGES,
         min_pages: int = _DEFAULT_MIN_PAGES,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
+        job_id: Optional[str] = None,
     ) -> CrawlResult:
         """Run the full funnel. Never raises for crawl failures (REQ-17 AC1)."""
         t_start = time.monotonic()
+        if not job_id:
+            job_id = uuid.uuid4().hex
         _emit = self._make_emitter(on_progress, session_id)
 
         # 1) PLAN (REQ-2)
@@ -155,6 +172,8 @@ class CrawlOrchestrator:
             return self._empty(query, t_start, "no candidate urls")
 
         _emit("CRAWLER_STARTED", {"query": query, "url_count": len(plan.urls), "session_id": session_id})
+        # REQ-4 AC1/AC3: emit phase transition — moving into search.
+        _emit("CRAWLER_PHASE", {"phase": "searching", "phase_sequence": PHASE_SEARCHING})
 
         # 2) FETCH (REQ-3) via swappable backend (REQ-17 AC4)
         backend = self._backend_override or _BACKENDS[mode]()
@@ -163,7 +182,39 @@ class CrawlOrchestrator:
             max_pages=max_pages,
             on_page_done=self._page_emitter(_emit),
             timeout_s=timeout_s,
+            job_id=job_id,
         )
+        # Wave 0 (REQ-14/REQ-18): down-weight dead/stale domains from HAR evidence.
+        self._apply_har_penalties(fetched, query)
+        # Wave 0 (REQ-18/REQ-19): register successful URLs so future crawls for
+        # this topic seed from learned knowledge (memory-first).
+        await self._learn_from_crawl(fetched, query)
+
+        # W3 (T15-T20): Exa retry — if the first batch returned no usable pages,
+        # rewrite the query to be broader and retry once.
+        ok_pages = [p for p in fetched.pages if not p.error]
+        if (fetched.error or not ok_pages) and not getattr(fetched, "_retried", False):
+            broader_query = _broaden_query(query)
+            logger.info(
+                "[CrawlOrchestrator] Exa retry query=%s → %s pages=%d",
+                query[:60], broader_query[:60], len(ok_pages),
+            )
+            _emit("CRAWLER_PROGRESS", {"stage": "narrowing", "message": "Narrowing search…"})
+            _emit("CRAWLER_PHASE", {"phase": "searching", "phase_sequence": PHASE_SEARCHING})
+            # Re-plan with broader query
+            plan = await self._plan(broader_query)
+            if plan.urls:
+                fetched = await backend.fetch(
+                    query=broader_query, urls=plan.urls, instructions=plan.instructions,
+                    max_pages=max_pages,
+                    on_page_done=self._page_emitter(_emit),
+                    timeout_s=timeout_s,
+                    job_id=f"{job_id}_retry",
+                )
+                setattr(fetched, "_retried", True)
+                self._apply_har_penalties(fetched, broader_query)
+                await self._learn_from_crawl(fetched, broader_query)
+
         if fetched.error:
             _emit("CRAWLER_ERROR", {"message": fetched.error})
             return self._finalize(fetched, query, t_start, error=fetched.error)
@@ -172,6 +223,9 @@ class CrawlOrchestrator:
         if not ok_pages:
             _emit("CRAWLER_ERROR", {"message": "all pages failed to fetch"})
             return self._finalize(fetched, query, t_start, error="all pages failed to fetch")
+
+        # REQ-4 AC1/AC3: emit phase transition — moving into extraction.
+        _emit("CRAWLER_PHASE", {"phase": "extracting", "phase_sequence": PHASE_EXTRACTING})
 
         # 3) PASSAGE-SPLIT (REQ-4)
         passages = self._split_passages(ok_pages)
@@ -183,6 +237,9 @@ class CrawlOrchestrator:
         # 5) PASSAGE-RERANK (REQ-7) — module implemented in T3
         from .rerank import rerank_passages
         passages = rerank_passages(passages, query, cred_map)
+
+        # REQ-4 AC1/AC3: emit phase transition — moving into citation.
+        _emit("CRAWLER_PHASE", {"phase": "citing", "phase_sequence": PHASE_CITING})
 
         # 6) EXTRACT + CITE (REQ-8) — module implemented in T4
         from .cite import extract_and_cite
@@ -260,10 +317,12 @@ class CrawlOrchestrator:
         return _emit
 
     def _page_emitter(self, emit):
-        def _cb(url, page_number, total):
+        def _cb(url, page_number, total, title="", snippet=""):
             emit("CRAWLER_PAGE_FETCHED", {
                 "url": url, "page_number": page_number, "total": total,
                 "host": _host(url),
+                "title": title,
+                "snippet": snippet,
             })
         return _cb
 
@@ -277,7 +336,86 @@ class CrawlOrchestrator:
         return CrawlResult(
             query=query, pages=fetched.pages, duration_ms=_elapsed(t_start),
             crawled_at=datetime.now(timezone.utc).isoformat(), error=error,
+            har_entries=getattr(fetched, "har_entries", []) or [],
+            har_path=getattr(fetched, "har_path", None),
         )
+
+    def _apply_har_penalties(self, fetched: CrawlResult, query: str) -> None:
+        """Feed HAR outcomes into SourceRegistry via penalize_url (REQ-14).
+
+        One-way signal: dead/stale HTTP outcomes down-weight the domain for this
+        topic. Never raises into the funnel (REQ-16). Reuses the existing
+        ``SourceRegistry.penalize_url`` — no new report method is invented.
+        """
+        entries = getattr(fetched, "har_entries", None) or []
+        if not entries:
+            return
+        try:
+            from .source_registry import get_source_registry
+            reg = get_source_registry()
+        except Exception:  # noqa: BLE001
+            return
+        for e in entries:
+            status = e.get("status")
+            err = (e.get("error") or "").lower()
+            is_dead = status in (403, 404) or "timeout" in err or "timed out" in err
+            if not is_dead:
+                continue
+            try:
+                reg.penalize_url(e.get("url", ""), topics=[query])
+                logger.info(
+                    "SRC PENALIZE url=%s status=%s query=%s", e.get("url"), status, query
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[CrawlOrchestrator] penalize_url failed: %s", exc)
+
+    async def _learn_from_crawl(self, fetched: CrawlResult, query: str) -> None:
+        """Register successfully-crawled URLs into SourceRegistry for this topic
+        (REQ-18/REQ-19). Reuses the existing ``learn()`` — no new method. The
+        more the agent researches, the smarter (and cheaper) later crawls become
+        because ``resolve()`` then seeds from updated knowledge. Never raises.
+        """
+        ok_pages = [p for p in getattr(fetched, "pages", []) if not p.error]
+        if not ok_pages:
+            return
+        try:
+            from .source_registry import get_source_registry
+            reg = get_source_registry()
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            search_result = type(
+                "SR", (), {"results": [type("I", (), {"url": p.url})() for p in ok_pages]}
+            )()
+            await reg.learn(query, search_result)
+            logger.info("SRC LEARN query=%s urls=%d", query, len(ok_pages))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[CrawlOrchestrator] learn_from_crawl failed: %s", exc)
+
+    @staticmethod
+    def _healthy_har_reuse(har_entries: list, crawled_at: str, ttl_days: int) -> bool:
+        """True when a prior HAR is reusable: every entry succeeded (2xx) and the
+        crawl is within ``ttl_days`` (REQ-19 memory-first signal)."""
+        if not har_entries:
+            return False
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(crawled_at)).days
+        except Exception:
+            age = 0
+        if age > ttl_days:
+            return False
+        return all((e.get("status") or 0) // 100 == 2 for e in har_entries)
+
+    def _delta_urls(self, plan_urls: list, prior_har_entries: list,
+                    prior_crawled_at: str, ttl_days: int) -> list:
+        """Memory-first fetch planning (REQ-19): if the prior HAR for the same
+        topic is healthy, reuse it and fetch ONLY the URLs not already covered
+        (deltas). Otherwise re-fetch everything. Returns the URLs to fetch.
+        """
+        if not self._healthy_har_reuse(prior_har_entries, prior_crawled_at, ttl_days):
+            return list(plan_urls)
+        prior = {e.get("url") for e in prior_har_entries}
+        return [u for u in plan_urls if u not in prior]
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +438,21 @@ def _host(url: str) -> str:
         return urlparse(url).netloc
     except Exception:
         return ""
+
+
+def _broaden_query(query: str) -> str:
+    """Widen a query for Exa retry by prepending a broadener prefix (T17)."""
+    # Remove existing quoted modifiers and add a broader scope.
+    clean = query.strip().strip('"').strip("'")
+    broadeners = [
+        "overview of",
+        "summary of",
+        "what is",
+    ]
+    # If query is already short/generic, just return it unchanged.
+    if len(clean) < 15 or any(clean.lower().startswith(b) for b in broadeners):
+        return query
+    return f"overview of {clean.lower()}"
 
 
 def _chunk_text(text: str, max_chars: int = 2400) -> list[str]:

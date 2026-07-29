@@ -1,15 +1,23 @@
 """
 Embedding Service for IRIS Memory Foundation.
 
-Primary: sentence-transformers all-MiniLM-L6-v2 (384-dim, ~80MB, CPU-capable)
+Primary: sentence-transformers BAAI/bge-m3 (1024-dim, ~2.3GB, multilingual,
+MIT-licensed, 100+ languages, dense+sparse+multi-vector in one model)
 Fallback: hash-projection embedding — always available, no dependencies.
 
-The fallback uses a bag-of-words hash trick to produce a 384-dim sparse vector.
-It is consistent (same text → same vector) and similarity-aware (shared tokens →
-closer vectors). Accuracy is lower than the neural model but fully functional —
-the episodic store writes and retrieves correctly with either backend.
+BGE-M3 is the default self-hosted embedding model for IRIS: it covers 100+
+languages (the desktop assistant serves multilingual desktop content), and its
+hybrid dense+sparse output means one model replaces a dense encoder + BM25 +
+reranker. Only the dense 1024-dim vector is persisted by IRIS today; the sparse
+and multi-vector outputs are available if retrieval is later upgraded.
 
-Install sentence-transformers to upgrade to neural embeddings:
+The fallback uses a bag-of-words hash trick to produce a dim-dimensional sparse
+vector. It is consistent (same text → same vector) and similarity-aware (shared
+tokens → closer vectors). Accuracy is lower than the neural model but fully
+functional — the episodic store writes and retrieves correctly with either
+backend.
+
+Install sentence-transformers to enable neural embeddings:
   pip install sentence-transformers
 
 All memory components share this single instance.
@@ -68,7 +76,7 @@ class EmbeddingService:
     """
     Singleton sentence-transformer embedding service.
     
-    Model: all-MiniLM-L6-v2 (384-dim, ~80MB, CPU-capable)
+    Model: BAAI/bge-m3 (1024-dim, multilingual, MIT-licensed)
     
     All memory components share this single instance.
     Never instantiate SentenceTransformer directly anywhere else.
@@ -80,8 +88,8 @@ class EmbeddingService:
     _model_lock = Lock()
     
     # Model configuration
-    MODEL_NAME = "all-MiniLM-L6-v2"
-    EMBEDDING_DIM = 384
+    MODEL_NAME = "BAAI/bge-m3"
+    EMBEDDING_DIM = 1024
     
     def __new__(cls) -> "EmbeddingService":
         """Ensure singleton pattern."""
@@ -146,7 +154,7 @@ class EmbeddingService:
             text: The text to encode (assumed non-empty)
 
         Returns:
-            List of 384 float values representing the embedding
+            List of embedding_dim float values representing the embedding
         """
         self._load()
 
@@ -163,7 +171,7 @@ class EmbeddingService:
 
     def encode(self, text: str) -> List[float]:
         """
-        Encode a single text into a 384-dimensional embedding vector.
+        Encode a single text into an embedding_dim-dimensional embedding vector.
 
         Uses an LRU cache (max 256 entries) keyed on SHA1 hash of input text.
         Uses the neural model when available, otherwise falls back to
@@ -174,7 +182,7 @@ class EmbeddingService:
             text: The text to encode
 
         Returns:
-            List of 384 float values representing the embedding
+            List of embedding_dim float values representing the embedding
         """
         # Handle empty text before any model interaction
         if not text or not text.strip():

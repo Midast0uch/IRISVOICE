@@ -565,7 +565,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             label="NETWORK",
             icon="Wifi",
             fields=[
-                InputField(id="websocket_url", type=FieldType.TEXT, label="WebSocket URL", placeholder="ws://localhost:8000/ws", value="ws://localhost:8000/ws"),
+                InputField(id="websocket_url", type=FieldType.TEXT, label="WebSocket URL", placeholder="ws://localhost:8090/ws", value="ws://localhost:8090/ws"),
                 InputField(id="connection_timeout", type=FieldType.SLIDER, label="Timeout", min=5, max=60, value=30, unit="s"),
             ]
         ),

@@ -30,9 +30,9 @@ from typing import Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
-from crawler.event_log import get_event_log
-from crawler.job_registry import get_job_registry
-from crawler.ux_map import map_event
+from backend.crawler.event_log import get_event_log
+from backend.crawler.job_registry import get_job_registry
+from backend.crawler.ux_map import map_event
 
 logger = logging.getLogger(__name__)
 

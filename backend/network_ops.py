@@ -99,6 +99,54 @@ def get_tailscale_status() -> dict:
     }
 
 
+def start_tailscale_service() -> dict:
+    """Start the Tailscale Windows service if it is not already running.
+
+    Returns a dict with:
+        started: bool          # True if we actually started it this call
+        service_running: bool  # True if the service is running afterwards
+        error: str | None      # human-readable error, or None on success
+    """
+    binary = _find_tailscale()
+    if not binary:
+        return {
+            "started": False,
+            "service_running": False,
+            "error": "Tailscale is not installed.",
+        }
+
+    # Already running — nothing to do.
+    if _tailscale_service_running():
+        return {"started": False, "service_running": True, "error": None}
+
+    try:
+        result = subprocess.run(
+            ["sc", "start", "Tailscale"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        running = _tailscale_service_running()
+        if running or "RUNNING" in (result.stdout or "").upper():
+            return {"started": True, "service_running": True, "error": None}
+        return {
+            "started": False,
+            "service_running": running,
+            "error": (
+                (result.stderr or result.stdout or "Failed to start Tailscale service.")
+                .strip()
+            ),
+        }
+    except Exception as e:
+        logger.warning(f"[network_ops] failed to start Tailscale service: {e}")
+        return {
+            "started": False,
+            "service_running": _tailscale_service_running(),
+            "error": str(e),
+        }
+
+
 def get_local_ip() -> str:
     """Return the local IP address."""
     try:
@@ -110,6 +158,25 @@ def get_local_ip() -> str:
         return local_ip
     except Exception:
         return "127.0.0.1"
+
+
+def get_backend_port() -> int:
+    """Return the configured backend port.
+
+    Env var IRIS_BACKEND_PORT overrides the value from iris_config, so the
+    port is never hardcoded and always stays in sync with the running server.
+    """
+    env_port = os.environ.get("IRIS_BACKEND_PORT")
+    if env_port:
+        try:
+            return int(env_port)
+        except ValueError:
+            pass
+    try:
+        from backend.iris_config import load_config
+        return int(load_config().ports.backend_port)
+    except Exception:
+        return 8090
 
 
 def get_iris_urls(ip: str | None = None) -> dict:
@@ -129,12 +196,13 @@ def get_iris_urls(ip: str | None = None) -> dict:
     except Exception:
         pass
 
+    bp = get_backend_port()
     urls = {
         "local": f"http://{local_ip}:8080",
-        "backend": f"http://{local_ip}:8000",
+        "backend": f"http://{local_ip}:{bp}",
         "launcher": f"http://{local_ip}:8080",
         "chat": f"http://{local_ip}:3000",
-        "api": f"http://{local_ip}:8000",
+        "api": f"http://{local_ip}:{bp}",
     }
     if tailscale_ip:
         urls["tailscale"] = f"http://{tailscale_ip}:8080"

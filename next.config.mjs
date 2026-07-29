@@ -51,7 +51,7 @@ const nextConfig = {
       // Exclude backend Python files, session data, model weights, and
       // everything outside the app source tree. The [/\\] character class
       // matches both / (Unix) and \ (Windows).
-      ignored: /[/\\](node_modules|\.git|\.next|dist|backend|models|llama\.cpp|llama-cpp-turboquant|.iris-logs|.iris-pids|.iris-worktree|.mcm|.venv|venv|tests|e2e|benchmarks|research|specs|verification|hooks|pyinstaller_hooks|app|public|components|lib|contexts|integrations|stores|styles)[/\\]/,
+      ignored: /[/\\](node_modules|\.git|\.next|dist|backend|models|llama\.cpp|llama-cpp-turboquant|.iris-logs|.iris-pids|.iris-worktree|.mcm|.venv|venv|tests|e2e|benchmarks|research|specs|verification|hooks|pyinstaller_hooks)[/\\]/,
     };
 
     // Prevent webpack from trying to process model weight files as JS assets.

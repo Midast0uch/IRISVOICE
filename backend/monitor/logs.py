@@ -20,6 +20,67 @@ class LogEntry:
     details: Dict[str, Any] = None
 
 
+# ── Source mapping ───────────────────────────────────────────────────────────
+# Maps a Python module name (record.module, e.g. "backend.agent.tool_decision")
+# to one of the Monitor's four organized buckets. This MUST stay aligned with
+# LogManager.get_logs_by_source() and MonitorLogsPanel's source rendering.
+_SOURCE_PREFIX_MAP = [
+    ("backend.agent", "agent"),
+    ("backend.tools", "agent"),
+    ("agent.", "agent"),
+    ("backend.audio", "voice"),
+    ("backend.voice", "voice"),
+    ("audio.", "voice"),
+    ("voice.", "voice"),
+    ("backend.mcp", "mcp"),
+    ("backend.integrations", "mcp"),
+    ("mcp.", "mcp"),
+]
+
+
+def _module_to_source(module: str) -> str:
+    """Derive a Monitor bucket (system/voice/mcp/agent) from a module name."""
+    if not module:
+        return "system"
+    for prefix, bucket in _SOURCE_PREFIX_MAP:
+        if module.startswith(prefix) or ("." + prefix) in module:
+            return bucket
+    # Fall back to the module's top-level package, truncated to a sane label.
+    top = module.split(".")[0]
+    if top in ("system", "voice", "mcp", "agent"):
+        return top
+    return "system"
+
+
+class LogManagerHandler(logging.Handler):
+    """A logging.Handler that forwards every backend log record into the
+    in-memory LogManager, organized by the Monitor's source buckets.
+
+    Attaching this to the ROOT logger (see LogManager.attach_to_root) captures
+    ALL backend modules — including the tool-resolution tree (agent_kernel,
+    tool_decision, iris_gateway) — regardless of which named logger emitted
+    the record or how the StructuredLogger singleton was first initialized.
+    This is what makes the Monitor's live log view actually populate.
+    """
+
+    def __init__(self, manager: "LogManager", level: int = logging.NOTSET):
+        super().__init__(level=level)
+        self._mgr = manager
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = record.levelname or "INFO"
+            # record.name is the dotted logger name (e.g.
+            # "backend.agent.tool_decision"); record.module is only the bare
+            # filename. Prefer the dotted name so source bucketing is accurate.
+            name = getattr(record, "name", "") or ""
+            source = _module_to_source(name)
+            msg = record.getMessage()
+            self._mgr.log(level, source, msg)
+        except Exception:  # never let logging crash the caller
+            pass
+
+
 class LogManager:
     """
     Manages application logs:
@@ -49,19 +110,45 @@ class LogManager:
         self._setup_file_logging()
         
         LogManager._initialized = True
-    
+
+    def attach_to_root(self, level: int = logging.DEBUG) -> bool:
+        """Attach a LogManagerHandler to the root logger so every backend log
+        record (all modules, including the tool tree) flows into this manager.
+
+        Idempotent: only adds the handler once. Returns True if a handler was
+        added, False if one was already present.
+
+        This is the bridge that feeds the Monitor's live log view. It does NOT
+        depend on irisvoice.log existing, so it works even when the structured
+        logger singleton was first initialized without a file handler.
+        """
+        for h in logging.getLogger().handlers:
+            if isinstance(h, LogManagerHandler):
+                return False
+        handler = LogManagerHandler(self, level=level)
+        logging.getLogger().addHandler(handler)
+        # Ensure root actually emits at the handler's level.
+        if logging.getLogger().level == logging.NOTSET or logging.getLogger().level > level:
+            logging.getLogger().setLevel(min(logging.getLogger().level, level) if logging.getLogger().level != logging.NOTSET else level)
+        return True
+
     def _setup_file_logging(self):
         """Set up file-based logging"""
         log_file = self._log_dir / "iris.log"
-        
+
         handler = logging.FileHandler(log_file, mode='a')
         handler.setFormatter(logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         ))
-        
+
         self._logger = logging.getLogger("IRIS")
         self._logger.addHandler(handler)
         self._logger.setLevel(logging.DEBUG)
+
+        # Raw handle for direct (non-logging) writes from log(). Kept open for
+        # the lifetime of the process. Line-buffered so the Monitor sees logs
+        # promptly without us calling flush on every record (we do flush anyway).
+        self._log_file = open(log_file, "a", encoding="utf-8", buffering=1)
     
     def log(self, level: str, source: str, message: str, details: Dict[str, Any] = None):
         """Add a log entry"""
@@ -74,10 +161,23 @@ class LogManager:
         )
         
         self._logs.append(entry)
-        
-        # Also log to file
-        log_method = getattr(self._logger, level.lower(), self._logger.info)
-        log_method(f"[{source}] {message}")
+
+        # Write directly to the log file — DO NOT route through the logging
+        # system. LogManager is fed BY a logging handler (LogManagerHandler on
+        # the root logger); if log() called self._logger.* it would propagate
+        # back to that handler and recurse infinitely. Write the line ourselves.
+        try:
+            line = json.dumps({
+                "timestamp": entry.timestamp,
+                "level": entry.level,
+                "source": entry.source,
+                "message": entry.message,
+            })
+            if self._log_file:
+                self._log_file.write(line + "\n")
+                self._log_file.flush()
+        except Exception:
+            pass
     
     def debug(self, source: str, message: str, details: Dict[str, Any] = None):
         self.log("DEBUG", source, message, details)

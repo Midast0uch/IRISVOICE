@@ -10,8 +10,23 @@ Gate 1 Step 1.5
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional
+
+
+@dataclass(frozen=True)
+class ResolvedWindow:
+    """The resolved context window plus the source that produced it.
+
+    ``source`` is one of ``override`` | ``authoritative`` | ``table`` |
+    ``default``. Making the source explicit is what lets REQ-2 AC4 ("an unknown
+    window SHALL be visible, not silent") and REQ-10 AC1 be checked — a boolean
+    "was it a default" is the smallest thing that makes an unknown window visible.
+    """
+
+    tokens: int
+    source: str  # "override" | "authoritative" | "table" | "default"
 
 
 # ── Execution mode (Phase 3) ────────────────────────────────────────────────

@@ -77,7 +77,7 @@ def coupling_enabled() -> bool:
     deliberate act via IRIS_COUPLING_ENABLED=1. Read lazily so tests can flip it
     with monkeypatch.setenv (REQ-20 AC3).
     """
-    return os.environ.get("IRIS_COUPLING_ENABLED", "0") == "1"
+    return os.environ.get("IRIS_COUPLING_ENABLED", "0").strip().lower() == "1"
 
 
 def domain_windings(domain: str) -> Tuple[int, int]:

@@ -200,6 +200,55 @@ def _memory() -> dict[str, Any]:
     return out
 
 
+def _context_window() -> dict[str, Any]:
+    """Resolved context window + its source, and provider load state.
+
+    REQ-2 AC4 / REQ-10 AC1+AC5: an unknown window must be VISIBLE (tagged
+    ``default``), not silent, and the resolved window + source must be reachable
+    from a running app for manual verification. Read-only.
+    """
+    out: dict[str, Any] = {}
+    try:
+        from backend.agent import get_active_kernel
+
+        kernel = get_active_kernel("session_iris")
+    except Exception as exc:
+        return {"error": f"active kernel unavailable: {exc}"[:200]}
+
+    try:
+        resolved = kernel.resolve_context_window_with_source()
+        out["window_tokens"] = resolved.tokens
+        out["window_source"] = resolved.source
+        out["model_provider"] = getattr(kernel, "_model_provider", None)
+        out["selected_model"] = getattr(kernel, "_selected_reasoning_model", None)
+    except Exception as exc:
+        out["window_error"] = str(exc)[:200]
+
+    # Provider load state — populated by the Wave 2 process-wide registry
+    # (REQ-3 AC2). Reported here once available; gracefully absent before that.
+    try:
+        from backend.agent.inference.registry import get_provider_registry
+
+        reg = get_provider_registry()
+        providers = []
+        for pid, inst in reg.all_providers().items():
+            providers.append({
+                "id": pid,
+                "kind": getattr(inst, "kind", None),
+                "model": getattr(inst, "model", None),
+                "purpose": getattr(inst, "purpose", "chat"),
+                "loaded": getattr(inst, "loaded", None),
+                "loading": getattr(inst, "loading", None),
+            })
+        out["providers"] = providers
+    except Exception:
+        # Registry not yet refactored (Phase 1 Wave 2) — report the gap rather
+        # than fabricating load state.
+        out["providers"] = "pending (Phase 1 Wave 2 registry)"
+
+    return out
+
+
 def _outer_loop() -> dict[str, Any]:
     """Outer-loop (AIDE^2) compound gate — shows WHICH guards are actually live.
 
@@ -264,5 +313,6 @@ async def caducean_debug() -> dict[str, Any]:
         "coupling": _coupling(),
         "batching": _batching(),
         "memory": _memory(),
+        "context_window": _context_window(),
         "outer_loop": _outer_loop(),
     }

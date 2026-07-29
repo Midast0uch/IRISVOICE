@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react"
 
 export type TaskStepStatus =
+  /** Step has no event record at all — semantically absent but visually pending. */
+  | "unknown"
   | "pending"
   | "working"
   | "done"
@@ -43,6 +45,14 @@ export interface TaskProgress {
   /** Live action text from `task:progress` (e.g. "Reading example.com (2/5)"). */
   currentAction?: string
   /**
+   * REQ-4: structured phase label from the crawl pipeline (searching / fetching /
+   * extracting / citing). Consumed by ContextPill to show the user what stage
+   * the agent is in. Cleared when the task ends.
+   */
+  phase?: string
+  /** Monotonic sequence number for the phase, stable per label. */
+  phaseSequence?: number
+  /**
    * REQ-8: honest learning signal from `task:learning` (avoided / retried /
    * crystallized). Drives the Pacman OrbCanvas particles on the TaskListCard
    * border. `null` when no live signal this task.
@@ -78,6 +88,10 @@ interface TaskUpdateDetail {
   error?: string
   outcome?: string
   steps_completed?: number
+  /** REQ-4: structured phase label from the crawl pipeline. */
+  phase?: string
+  /** Stable phase sequence number (1..N) for disambiguating re-emission. */
+  phase_sequence?: number
   /** REQ-8: honest learning signal from `task:learning`. */
   signal?: "avoided" | "retried" | "crystallized" | null
 }
@@ -140,7 +154,10 @@ export function useTaskProgress(): TaskProgress {
         case "task:start": {
           const incoming = (d.steps || [])
             .slice(0, MAX_STEPS)
-            .map((s) => ({ ...s, status: "pending" as TaskStepStatus }))
+            // REQ-1 AC5: honor the backend-provided status; default to "unknown" for
+            // steps without a record. "unknown" renders identically to "pending" but
+            // is semantically distinct — it means no tool:call event was ever received.
+            .map((s) => ({ ...s, status: (s.status as TaskStepStatus) ?? "unknown" as TaskStepStatus }))
           // If a task is already active with the same id, RECONCILE instead of
           // wiping. The backend emits task:start twice for one task — an early
           // LLM-plan skeleton at plan time, then the DER queue at execution
@@ -323,19 +340,28 @@ export function useTaskProgress(): TaskProgress {
               }
             }
           }
-          setState({ ...prev, steps, currentAction: action, isWorking: true })
+          // REQ-4 AC2: capture structured phase label from the crawl pipeline.
+          const next: Partial<TaskProgress> = { steps, currentAction: action, isWorking: true }
+          if (d.phase) {
+            next.phase = d.phase
+            next.phaseSequence = d.phase_sequence ?? (prev.phaseSequence ?? 0)
+          }
+          setState({ ...prev, ...next })
           break
         }
         case "task:done":
         case "task:fail": {
           // Keep steps + planTitle for display; clear the working flag + live
-          // action. Also strip any live detail left on a step that never got a
-          // terminal event — otherwise a finished card keeps advertising a page
-          // it is no longer reading.
+          // action + phase + learning signal. Also strip any live detail left
+          // on a step that never got a terminal event — otherwise a finished
+          // card keeps advertising a page it is no longer reading.
           setState({
             ...prev,
             isWorking: false,
             currentAction: undefined,
+            phase: undefined,
+            phaseSequence: undefined,
+            learningSignal: undefined,
             steps: prev.steps.map((s) =>
               s.activeDetail
                 ? { ...s, activeDetail: undefined, activeProgress: undefined }

@@ -2642,7 +2642,7 @@ class IRISGateway:
                                 client_id,
                                 {
                                     "type": "chat_chunk",
-                                    "payload": {"chunk": chunk},
+                                    "payload": {"chunk": chunk, "turn_id": _turn_id},
                                 },
                             ),
                             loop,
@@ -7893,36 +7893,31 @@ class IRISGateway:
                     _router = getattr(_kernel, "_router", None)
                     if _router is not None:
                         _inproc = getattr(mgr, "_llm", None) is not None
+                        _stem = _Path(model_path).stem
                         _local_inst = ProviderInstance(
-                            id="local",
+                            id=f"local:{_stem}",
                             label=f"Local: {_Path(model_path).name}",
                             kind=(
                                 ProviderKind.INPROCESS
                                 if _inproc
                                 else ProviderKind.LOCAL_OPENAI
                             ),
-                            model=_Path(model_path).stem,
+                            model=_stem,
                             api_base_url="" if _inproc else mgr.ENDPOINT,
+                            loaded=True,
                         )
-                        # Register on this kernel's router AND every peer kernel's
-                        # router so the local provider is visible across all
-                        # conversation threads. The /api/inference/state endpoint
-                        # reads the "default" kernel, which may differ from the WS
-                        # session kernel — without peer propagation the local model
-                        # never appears in the Brain/Tool dropdowns. (Same fix
-                        # pattern already applied to set_model_selection and
-                        # set_role_binding.)
-                        for _kr in [self] + [pk for pk in _agent_kernel_instances.values() if pk is not self]:
-                            _r = getattr(_kr, "_router", None)
-                            if _r is None:
-                                continue
-                            _r.add_provider(_local_inst)
-                            if _inproc:
-                                _r.set_inprocess_manager(mgr)
+                        # Register on the process-wide registry ONCE. Every
+                        # kernel shares this registry (REQ-5), so no peer
+                        # fan-out loop is needed — the local provider is
+                        # visible across all conversation threads
+                        # automatically, including the /api/inference/state
+                        # endpoint which reads the shared registry.
+                        _router.add_provider(_local_inst)
+                        if _inproc:
+                            _router.set_inprocess_manager(mgr)
                         self._logger.info(
-                            f"[SLICE3] Registered local provider 'local' "
-                            f"(kind={_local_inst.kind.value}, session {session_id}) "
-                            f"across {len(_agent_kernel_instances)} kernel(s)"
+                            f"[SLICE3] Registered local provider 'local:{_stem}' "
+                            f"(kind={_local_inst.kind.value}, session {session_id})"
                         )
                         await self._ws_manager.broadcast_to_session(
                             session_id,
@@ -8577,48 +8572,31 @@ class IRISGateway:
                 )
                 return
 
-            # Local-override guard: binding to "local" requires a loaded model.
-            if instance_id == "local" and _router.registry.get("local") is None:
-                self._logger.warning(
-                    f"[set_role_binding] rejected: local model not loaded "
-                    f"(role={role}, session={session_id})"
+            # Normalize the legacy bare "local" id to its namespaced form
+            # (REQ-4 AC1) so a partially-migrated id is never a dead binding.
+            if instance_id == "local":
+                _local_inst = next(
+                    (i for i in _router.registry.list() if i.id.startswith("local:")),
+                    None,
                 )
-                await self._ws_manager.send_to_client(
-                    client_id,
-                    {
-                        "type": "role_binding_error",
-                        "payload": {
-                            "error": (
-                                "Local model is not loaded. Load a local model "
-                                "before binding a role to it."
-                            ),
-                            "role": role,
-                            "instance_id": instance_id,
-                        },
-                    },
-                )
-                return
+                if _local_inst is not None:
+                    instance_id = _local_inst.id
 
-            # Bind on this kernel
+            # Local-override status flag (NOT a veto, REQ-5 AC4): binding to a
+            # local provider whose model is not yet loaded is ALLOWED — the
+            # binding is valid and becomes live once the model loads. We only
+            # surface a status flag so the UI can warn, instead of rejecting a
+            # perfectly valid (future) binding. The role_binding_error channel
+            # stays reserved for genuinely invalid bindings (missing role/
+            # instance, router unavailable, unknown instance id).
+            _binding_status = "ok"
+            _inst = _router.registry.get(instance_id)
+            if _inst is not None and _inst.id.startswith("local:") and not _inst.loaded:
+                _binding_status = "local_not_loaded"
+
+            # Bind on this kernel. The registry is process-wide (REQ-5), so peer
+            # kernels observe the same binding automatically — no fan-out loop.
             _router.bind_role(role, instance_id, model_override)
-
-            # Propagate to peer kernels (parity with set_model_selection)
-            try:
-                from backend.agent.agent_kernel import _agent_kernel_instances
-
-                for _sid, _k in _agent_kernel_instances.items():
-                    if _k is kernel:
-                        continue
-                    _r2 = getattr(_k, "_router", None)
-                    if _r2 is not None:
-                        try:
-                            _r2.bind_role(role, instance_id, model_override)
-                        except Exception as _pe:
-                            self._logger.debug(
-                                f"[set_role_binding] peer propagate skipped: {_pe}"
-                            )
-            except Exception:
-                pass
 
             await self._persist_and_broadcast_role_bindings(session_id, kernel)
 
@@ -8631,6 +8609,7 @@ class IRISGateway:
                         "role": role,
                         "instance_id": instance_id,
                         "model_override": model_override,
+                        "status": _binding_status,
                         "snapshot": _router.snapshot(),
                     },
                 },

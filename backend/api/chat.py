@@ -307,7 +307,77 @@ async def chat(request: ChatRequest) -> ChatResponse:
     # instead of spawning a disconnected "default" kernel.
     kernel = get_agent_kernel(conversation_id=thread_id, session_id=thread_id)
 
-    # ── 4. Process the message (in thread pool — synchronous method) ───
+    # ── 4. Wire task events to frontend WS (so TaskListCard + tool calls
+    #       appear live, not just at the end). ───────────────────────────
+    _event_queue = []
+    _event_bus_cleanup = None
+    try:
+        from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+        from backend.ws_manager import get_websocket_manager
+
+        _event_bus = get_event_bus()
+        _ws_mgr_captured = get_websocket_manager()
+
+        # Capture the MAIN event loop (the one driving uvicorn). All async
+        # WS broadcasts must go through THIS loop, NOT a thread-pool loop.
+        try:
+            _main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _main_loop = None
+
+        def _fw_event_sync(payload):
+            """Synchronous handler called from kernel thread-pool via EventBus.
+            Queues the event; _flush_events() processes them on the main loop."""
+            _event_queue.append(payload)
+
+        # Subscribe to all task-lifecycle events that drive the UI.
+        for _evt in (
+            IRISStreamEvent.TASK_START,
+            IRISStreamEvent.TOOL_CALL,
+            IRISStreamEvent.TOOL_RESULT,
+            IRISStreamEvent.TASK_PROGRESS,
+            IRISStreamEvent.DOCUMENT_RENDER,
+            IRISStreamEvent.TASK_DONE,
+            IRISStreamEvent.TASK_FAIL,
+        ):
+            _event_bus.subscribe(_evt, _fw_event_sync)
+
+        # Cleanup function to run AFTER processing to flush + unsubscribe.
+        async def _flush_events():
+            # Process queued events on the main async loop.
+            if not _ws_mgr_captured:
+                return
+            while _event_queue:
+                p = _event_queue.pop(0)
+                try:
+                    await _ws_mgr_captured.broadcast_to_session(
+                        "session_iris",
+                        {
+                            "type": p.event.value,
+                            "payload": p.data,
+                            "session_id": thread_id,
+                        },
+                    )
+                except Exception:
+                    pass
+            # Unsubscribe handlers
+            for _evt in (
+                IRISStreamEvent.TASK_START,
+                IRISStreamEvent.TOOL_CALL,
+                IRISStreamEvent.TOOL_RESULT,
+                IRISStreamEvent.TASK_PROGRESS,
+                IRISStreamEvent.DOCUMENT_RENDER,
+                IRISStreamEvent.TASK_DONE,
+                IRISStreamEvent.TASK_FAIL,
+            ):
+                _event_bus.unsubscribe(_evt, _fw_event_sync)
+
+        _event_bus_cleanup = _flush_events
+
+    except Exception:
+        _event_bus_cleanup = None  # No cleanup needed
+
+    # ── 5. Process the message (in thread pool — synchronous method) ───
     try:
         content, thinking, elapsed_ms = await _run_agent_kernel(
             kernel,
@@ -358,7 +428,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             },
         )
 
-    # ── 5. Save assistant response ─────────────────────────────────────
+    # ── 6. Save assistant response ──────────────────────────────────────
     add_message(
         thread_id,
         "assistant",
@@ -368,14 +438,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
         source="rest_api",
     )
 
-    # ── 6. Record in Immortus chain (non-blocking) ─────────────────────
+    # ── 7. Record in Immortus chain (non-blocking) ──────────────────────
     _record_to_immortus(thread_id, request.text, content, turn_id)
 
-    # ── 7. Fire TTS in background (non-blocking) ───────────────────────
+    # ── 8. Fire TTS in background (non-blocking) ────────────────────────
     if content:
         _ = asyncio.create_task(_fire_tts_background(content, thread_id))
 
-    # ── 8. Notify frontend task is done via WS (if connected) ────────────
+    # ── 9. Notify frontend task is done via WS (if connected) ────────────
     # The REST path completes synchronously, so the frontend's task progress
     # hook never receives the task:done WS event that WS path sends.  Emit it
     # here to clear the "working" flag and enable the textarea for follow-ups.
@@ -385,11 +455,18 @@ async def chat(request: ChatRequest) -> ChatResponse:
         _ws_mgr = get_websocket_manager()
         if _ws_mgr:
             await _ws_mgr.broadcast_to_session(
-                "iris",
+                "session_iris",
                 {"type": "task:done", "payload": {"outcome": "success", "thread_id": thread_id}},
             )
     except Exception:
         _lg.getLogger("irisvoice").info("[ChatREST] Could not emit task:done via WS")
+
+    # ── 10. Flush queued task events to frontend ─────────────────────────
+    if _event_bus_cleanup:
+        try:
+            await _event_bus_cleanup()
+        except Exception:
+            pass
 
     return ChatResponse(
         content=content,

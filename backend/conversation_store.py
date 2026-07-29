@@ -297,3 +297,52 @@ def toggle_pin_conversation(conversation_id: str) -> bool:
             (1 if conv["pinned"] else 0, conv["updated_at"], conversation_id),
         )
         return True
+
+
+def truncate_conversation(
+    conversation_id: str, keep_until_message_id: str
+) -> dict[str, Any]:
+    """Delete all messages after `keep_until_message_id` in a conversation.
+
+    Returns ``{"truncated": True, "kept_messages": N}`` on success,
+    or raises a ``ValueError`` if the conversation or message is not found.
+    """
+    with _lock:
+        conv = _conversations.get(conversation_id)
+        if not conv:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+        messages = conv["messages"]
+        # Find the index of the message to keep until
+        keep_idx = next(
+            (i for i, m in enumerate(messages) if m["id"] == keep_until_message_id),
+            None,
+        )
+        if keep_idx is None:
+            raise ValueError(
+                f"Message {keep_until_message_id} not found in "
+                f"conversation {conversation_id}"
+            )
+
+        # Nothing to truncate if this is the last message
+        if keep_idx >= len(messages) - 1:
+            return {"truncated": True, "kept_messages": len(messages)}
+
+        # Remove from in-memory cache
+        del messages[keep_idx + 1 :]
+        conv["updated_at"] = _now()
+
+        # Remove from SQLite
+        conn = _get_conn()
+        keep_msg_id_int = keep_idx + 1  # msg-N where N is 1-indexed
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ? "
+            "AND CAST(REPLACE(id, 'msg-', '') AS INTEGER) > ?",
+            (conversation_id, keep_msg_id_int),
+        )
+        conn.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (conv["updated_at"], conversation_id),
+        )
+
+        return {"truncated": True, "kept_messages": len(messages)}

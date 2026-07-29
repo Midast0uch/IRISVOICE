@@ -21,7 +21,7 @@ import threading
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("irisvoice")
 
@@ -180,6 +180,73 @@ class SwarmRoleConfig:
 
 
 @dataclass
+@dataclass
+class ProviderEntry:
+    """A persisted provider configuration record (flat-config replacement).
+
+    ``endpoint`` and ``cred_ref`` are fields of the SAME record, so a writer
+    cannot set one without the other (REQ-5 AC3). ``cred_ref`` is the keyring
+    key under which the credential is stored (== ``id`` for API providers);
+    the credential itself is NEVER persisted in config. ``purpose`` lets
+    non-chat providers (embedding / rerank) be declared and later filtered out
+    of the chat-model UI (Phase 4) without a separate code path.
+    """
+
+    id: str
+    label: str
+    kind: str  # "API" | "LOCAL_OPENAI" | "OLLAMA" | "LM_STUDIO"
+    model: str = ""
+    purpose: str = "chat"  # chat | embedding | rerank
+    endpoint: str = ""
+    cred_ref: str = ""  # keyring key; empty => no credential
+    model_path: str = ""
+    profile: str = "balanced"
+
+
+def _local_stem(model_id: str) -> str:
+    """Derive a stable local-provider id stem from a model/file name.
+
+    ``"qwen3-9b-q4_k_m.gguf"`` -> ``"qwen3-9b"``. Used to namespace local
+    provider ids as ``local:<stem>`` (REQ-4 AC1) so two local models never
+    collide and the bare literal ``"local"`` is never used as an id.
+    """
+    stem = (model_id or "").strip()
+    for ext in (".gguf", ".gguf.txt", ".bin", ".safetensors"):
+        if stem.lower().endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+    stem = stem.strip().lower()
+    return stem or "local"
+
+
+def _build_providers(raw: Any) -> "Dict[str, ProviderEntry]":
+    """Normalize a persisted ``providers`` value into ``id -> ProviderEntry``.
+
+    Accepts either a dict (id -> entry dict) or a list of entry dicts. Unknown
+    keys are ignored so the shape can grow additively.
+    """
+    out: Dict[str, ProviderEntry] = {}
+    if not raw:
+        return out
+    items = raw.values() if isinstance(raw, dict) else raw
+    for item in items:
+        if not isinstance(item, dict) or "id" not in item:
+            continue
+        out[item["id"]] = ProviderEntry(
+            id=item["id"],
+            label=item.get("label", item["id"]),
+            kind=item.get("kind", "API"),
+            model=item.get("model", ""),
+            purpose=item.get("purpose", "chat"),
+            endpoint=item.get("endpoint", ""),
+            cred_ref=item.get("cred_ref", ""),
+            model_path=item.get("model_path", ""),
+            profile=item.get("profile", "balanced"),
+        )
+    return out
+
+
+@dataclass
 class InferenceConfig:
     """Model provider and generation parameters."""
 
@@ -229,12 +296,94 @@ class InferenceConfig:
     # {role, instance_id, model_override} dicts consumed by InferenceRouter.
     role_bindings: list = field(default_factory=list)
 
+    # Phase 1 Wave 2: ONE provider collection (API + local) keyed by id.
+    # Replaces the scattered flat fields (api_base_url/api_key/local_model_*).
+    # ``endpoint`` and ``cred_ref`` live in the same record (REQ-5 AC3).
+    providers: Dict[str, "ProviderEntry"] = field(default_factory=dict)
+    # Schema version. 1 = legacy flat fields; 2 = collection present. The
+    # migrator (T3) runs only when this is < 2, so it cannot re-run forever.
+    config_version: int = 1
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    def migrate_flat_to_collection(self) -> None:
+        """Migrate legacy flat provider fields into the unified ``providers``
+        collection (T3).
+
+        Gated on ``config_version`` so it runs exactly once — NOT on "flat
+        fields present", which would re-run forever. If the collection is
+        already populated it is treated as authoritative and the flat fields are
+        ignored (never merged). Migrates BOTH the API provider (api_base_url /
+        api_key) AND the local model (local_model_*) in one pass, moves the
+        migrated key into the keyring (without re-entry), and rewrites
+        ``role_bindings`` so the literal ``"local"`` becomes its namespaced id.
+        """
+        if self.config_version >= 2:
+            return
+        # Collection already present and non-empty -> it wins, flat ignored.
+        if self.providers:
+            self.config_version = 2
+            return
+
+        new_providers: Dict[str, "ProviderEntry"] = {}
+        provider = getattr(self, "provider", "api")
+        api_base = getattr(self, "api_base_url", "")
+        api_key = getattr(self, "api_key", "")
+        if provider and provider != "local":
+            kind = {
+                "lm_studio": "LM_STUDIO",
+                "ollama": "OLLAMA",
+                "iris_local": "LOCAL_OPENAI",
+            }.get(provider, "API")
+            entry = ProviderEntry(
+                id=provider,
+                label=provider.upper(),
+                kind=kind,
+                model=getattr(self, "reasoning_model", "") or "",
+                endpoint=api_base or "",
+                # cred_ref is the keyring key (== id); the credential itself is
+                # moved into the keyring, never persisted in config.
+                cred_ref=provider if api_key else "",
+            )
+            new_providers[provider] = entry
+            if api_key:
+                try:
+                    from .agent.inference.keyring import set_secret
+
+                    set_secret(provider, api_key)
+                except Exception:
+                    pass
+
+        local_id = getattr(self, "local_model_id", "")
+        if local_id:
+            ns_id = f"local:{_local_stem(local_id)}"
+            new_providers[ns_id] = ProviderEntry(
+                id=ns_id,
+                label="Local Model",
+                kind="LOCAL_OPENAI",
+                model=local_id,
+                endpoint="http://127.0.0.1:8081",
+            )
+
+        self.providers = new_providers
+
+        # Migrate role bindings (literal "local" -> namespaced id).
+        migrated: list = []
+        for b in self.role_bindings or []:
+            if isinstance(b, dict):
+                inst_id = b.get("instance_id")
+                if inst_id == "local" and local_id:
+                    inst_id = f"local:{_local_stem(local_id)}"
+                migrated.append({**b, "instance_id": inst_id})
+            else:
+                migrated.append(b)
+        self.role_bindings = migrated
+        self.config_version = 2
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "InferenceConfig":
-        return cls(
+        cfg = cls(
             provider=d.get("provider", d.get("active_provider", "api")),
             reasoning_model=d.get("reasoning_model", ""),
             tool_execution_model=d.get("tool_execution_model", ""),
@@ -262,7 +411,14 @@ class InferenceConfig:
             gpu_layers=int(d.get("gpu_layers", 0)),
             worker_context=d.get("worker_context", "auto"),
             role_bindings=d.get("role_bindings", []),
+            providers=_build_providers(d.get("providers", {})),
+            config_version=int(d.get("config_version", 1)),
         )
+        # Migrate legacy flat fields into the unified collection exactly once
+        # (gated on config_version). Idempotent: a re-loaded config with
+        # config_version >= 2 is left untouched.
+        cfg.migrate_flat_to_collection()
+        return cfg
 
 
 @dataclass

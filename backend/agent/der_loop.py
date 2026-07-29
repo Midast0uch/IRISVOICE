@@ -90,6 +90,7 @@ class QueueItem:
     result: Optional[str] = None  # populated after step execution; consumed by TrailingDirector
     expected_output: Optional[str] = None  # DER Phase 0: explicit success criterion; consumed by TrailingDirector.analyze_gaps
     is_subloop: bool = False  # DER Phase 2: child of a growth-width split; collapses to parent as one COMPRESS
+    independent: bool = False  # Wave 4 / REQ-18 AC1: safe to batch with siblings
 
 
 # ── DirectorQueue ──────────────────────────────────────────────────────────

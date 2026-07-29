@@ -5,7 +5,6 @@ import { motion } from "framer-motion"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { IrisOrb } from "@/components/iris/IrisOrb"
-import { ChatActivationGlitch } from "@/components/iris/radial/ChatActivationGlitch"
 import { WheelView } from "@/components/wheel-view/WheelView"
 import { WheelViewErrorBoundary } from "@/components/wheel-view/WheelViewErrorBoundary"
 import { useUILayoutState, UILayoutState, SpotlightState } from "@/hooks/useUILayoutState"
@@ -410,13 +409,6 @@ export default function Home() {
                 glowColor={glowColor}
                 uiState={uiLayoutState}
               />
-              <div className="mt-12">
-                <ChatActivationGlitch
-                  onClick={handleChatClick}
-                  navigationLevel={state.level}
-                  uiState={uiLayoutState}
-                />
-              </div>
             </div>
           </motion.div>
         </div>

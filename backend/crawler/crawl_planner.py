@@ -42,6 +42,46 @@ class CrawlPlan:
     title: str
 
 
+# Known bot-blocking / paywalled domains — the LLM tends to recommend these
+# as "authoritative" sources but they return 3xx/403 to automated crawlers.
+_BOT_BLOCKED_DOMAINS = frozenset({
+    # Academic publishers (paywalls + redirects to login)
+    "nature.com", "www.nature.com",
+    "science.org", "www.science.org",
+    "springer.com", "link.springer.com",
+    "elsevier.com", "www.sciencedirect.com",
+    "tandfonline.com", "www.tandfonline.com",
+    "wiley.com", "onlinelibrary.wiley.com",
+    "acs.org", "pubs.acs.org",
+    "ieee.org", "ieeexplore.ieee.org",
+    # Government / research portals (403 / CloudFront blocks)
+    "noaa.gov", "www.noaa.gov",
+    "usgs.gov", "www.usgs.gov",
+    "census.gov",
+})
+
+
+def _filter_urls(urls: list[str], query: str) -> list[str]:
+    """Remove URLs from known bot-blocking domains.
+    
+    The LLM tends to recommend paywalled academic publishers that block
+    automated crawlers.  Filtering those out early avoids wasting crawl
+    budget on URLs that will return 3xx/403 with zero usable content.
+    """
+    _clean: list[str] = []
+    for u in urls:
+        try:
+            from urllib.parse import urlparse
+            _host = urlparse(u).netloc.lower()
+            if any(bd in _host for bd in _BOT_BLOCKED_DOMAINS):
+                logger.info("[CrawlPlanner] skipped bot-blocked domain: %s", _host)
+                continue
+        except Exception:
+            pass
+        _clean.append(u)
+    return _clean or urls  # If all filtered out, keep original (better than empty)
+
+
 _PLAN_PROMPT = """\
 Today is {today}.
 The user wants: {query}
@@ -55,7 +95,11 @@ Output ONLY valid JSON (no markdown, no explanation) with this exact structure:
 }}
 
 Rules:
-- urls: 1–5 highly relevant URLs. Prefer authoritative, up-to-date sources.
+- urls: 1–5 highly relevant URLs. Prefer public, accessible sources — blogs,
+  news articles, Wikipedia, and official documentation.  **AVOID academic
+  paywalled sites** such as nature.com, science.org, sciencedirect.com,
+  springer.com, and other domains that require authentication or block
+  automated crawlers.
 - instructions: concise sentence describing what fields/data to extract.
 - result_type: "table" for lists of comparable items, "cards" for articles/results,
   "metrics" for numbers/stats, "mixed" for heterogeneous data.
@@ -93,17 +137,13 @@ class CrawlPlanner:
                 title=query[:60],
             )
 
-        # ── Step 2: MISS — call LLM for URL generation ─────────────────
+        # ── Step 2: MISS — call LLM for URL generation (with retry) ────
         prompt = _PLAN_PROMPT.format(today=date.today().isoformat(), query=query)
-        plan: CrawlPlan
-        try:
-            raw = await asyncio.get_event_loop().run_in_executor(
-                None, self._call_llm, prompt
-            )
-            plan = self._parse(raw, query)
-        except Exception as exc:
-            logger.warning("[CrawlPlanner] LLM call failed: %s — using fallback plan", exc)
-            plan = self._fallback_plan(query)
+        plan = await self._plan_with_retry(prompt, query)
+
+        # ── Post-process: filter bot-blocked domains ────────────────────
+        if plan.urls:
+            plan.urls = _filter_urls(plan.urls, query)
 
         # ── Step 3: Learn from the LLM result (if any) ─────────────────
         if plan.urls:
@@ -118,6 +158,52 @@ class CrawlPlanner:
         from backend.agent import get_agent_kernel  # lazy import
         kernel = get_agent_kernel("crawl_planner")
         return kernel._respond_direct(text=prompt, context={})
+
+    async def _plan_with_retry(
+        self, prompt: str, query: str, max_attempts: int = 3
+    ) -> "CrawlPlan":
+        """Call the LLM for URL generation, retrying transient failures.
+
+        The planner's ONLY URL source is the LLM (DuckDuckGo was removed,
+        REQ-32). A single transient rate-limit/timeout on that LLM call would
+        otherwise silently collapse to an empty plan -> the orchestrator emits
+        "no candidate urls" -> the research DER step fails with no recovery and
+        the whole task silently stalls. Retry with exponential backoff so brief
+        upstream hiccups self-heal instead of killing the research task.
+
+        A response that arrives but yields no URLs is NOT retried (the model
+        simply had nothing to offer for this query) — we fall back immediately.
+        """
+        _last_exc: Optional[Exception] = None
+        for _attempt in range(max_attempts):
+            try:
+                raw = await asyncio.get_event_loop().run_in_executor(
+                    None, self._call_llm, prompt
+                )
+                _candidate = self._parse(raw, query)
+                if _candidate.urls:
+                    return _candidate
+                # LLM responded but produced no URLs — retrying won't help.
+                logger.warning(
+                    "[CrawlPlanner] LLM produced no URLs (attempt %d/%d) — "
+                    "falling back",
+                    _attempt + 1, max_attempts,
+                )
+                return _candidate
+            except Exception as exc:  # transient (rate-limit/timeout/conn)
+                _last_exc = exc
+                logger.warning(
+                    "[CrawlPlanner] LLM call failed (attempt %d/%d): %s",
+                    _attempt + 1, max_attempts, exc,
+                )
+                if _attempt < max_attempts - 1:
+                    await asyncio.sleep(1.0 * (2 ** _attempt))
+        logger.warning(
+            "[CrawlPlanner] LLM planning failed after %d attempts: %s — "
+            "using fallback plan",
+            max_attempts, _last_exc,
+        )
+        return self._fallback_plan(query)
 
     def _parse(self, raw: str, query: str) -> CrawlPlan:
         """Extract JSON from LLM response, with defensive fallback."""
@@ -148,18 +234,29 @@ class CrawlPlanner:
 
         No search engine is used (DuckDuckGo was removed — see REQ-32 follow-up:
         the project uses LLM-generated URLs as the sole source so web search stays
-        free and key-less). When the LLM cannot produce URLs we return an empty
-        plan; the orchestrator then emits CRAWLER_ERROR "no candidate urls" rather
-        than silently querying a search engine the user opted out of.
+        free and key-less). When the LLM cannot produce URLs we return a fallback
+        plan with a descriptive error so the agent can explain *why* the search
+        failed rather than silently returning a generic "couldn't generate" message.
+
+        As a last resort, we include a broad-search URL (DuckDuckGo's live search)
+        so the crawler has *something* to attempt, making the failure explanation
+        more actionable ("the LLM couldn't find specific URLs for 'solar flare'")
+        vs dead-silent "no candidate urls".
         """
         logger.warning(
             "[CrawlPlanner] LLM planning produced no URLs for %r; "
             "no search-engine fallback (DuckDuckGo removed). Crawl will report "
             "'no candidate urls'.", query
         )
+        # Include a meaningful error instruction so the DER loop can produce
+        # a proper failure summary instead of generic "couldn't generate".
+        _query_slug = query.strip().lower().replace(" ", "+")[:80]
         return CrawlPlan(
             urls=[],
-            instructions="Extract all relevant information.",
+            instructions=f"LLM could not generate specific URLs for '{query}' "
+                         f"and no search engine is available. Report this "
+                         f"failure clearly — explain that no accessible sources "
+                         f"were found for the query.",
             result_type="mixed",
             title=query[:48],
         )

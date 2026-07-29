@@ -1739,8 +1739,21 @@ class AgentToolBridge:
         except Exception:
             pass  # never block the crawl on an event emit failure
 
+        # ── REQ-9: structured log for card transition observability ──
+        logger.info(
+            "Card transition",
+            extra={
+                "context": "card",
+                "state": "processing_tool",
+                "session_id": session_id,
+            },
+        )
+
         _last_narration_time = 0.0
         _NARRATION_COOLDOWN_S = 25.0  # W5 (T35): speak progress at most once per 25s
+        # REQ-4: mutable list so the closure can set the phase; attached to the
+        # next real progress event instead of emitting a separate TASK_PROGRESS.
+        _phase_cache = [{}]  # type: ignore[var-annotated]
 
         def _on_page_done(url: str, page_number: int, total: int, title: str = "", snippet: str = "") -> None:
             nonlocal _last_narration_time
@@ -1769,18 +1782,26 @@ class AgentToolBridge:
             # `description` stays a full sentence for back-compat (ContextPill
             # and older consumers read it) and is the fallback when `detail` is
             # absent; do not remove it.
+            # REQ-4 AC2: attach the cached phase label to this progress event.
+            task_progress_data = {
+                "description": f"Reading {_label} ({page_number}/{total})",
+                "action": f"Reading {_label} ({page_number}/{total})",
+                "update_step": True,
+                # Structured, so the frontend never parses a sentence.
+                "detail": _label,
+                "detail_url": url or "",
+                "detail_progress": f"{page_number}/{total}",
+            }
+            try:
+                if _phase_cache[0]:
+                    task_progress_data.update(_phase_cache[0])
+                    _phase_cache[0] = {}
+            except Exception:
+                pass  # phase cache failure must not block progress emission
             try:
                 _bus.emit(
                     IRISStreamEvent.TASK_PROGRESS,
-                    data={
-                        "description": f"Reading {_label} ({page_number}/{total})",
-                        "action": f"Reading {_label} ({page_number}/{total})",
-                        "update_step": True,
-                        # Structured, so the frontend never parses a sentence.
-                        "detail": _label,
-                        "detail_url": url or "",
-                        "detail_progress": f"{page_number}/{total}",
-                    },
+                    data=task_progress_data,
                     session_id=session_id,
                 )
             except Exception:
@@ -1794,6 +1815,16 @@ class AgentToolBridge:
                     pl["url"], pl["page_number"], pl["total"],
                     title=pl.get("title", ""),
                 )
+            elif ev == "CRAWLER_PHASE":
+                # REQ-4 AC2/D-2: cache the phase so the NEXT real progress event
+                # carries it — phase labels ride on existing progress, not separate.
+                if isinstance(pl, dict):
+                    _phase_cache[0] = {
+                        "phase": pl.get("phase", "unknown"),
+                        "phase_sequence": pl.get("phase_sequence", 0),
+                    }
+                else:
+                    _phase_cache[0] = {}
             elif ev == "CRAWLER_ERROR":
                 logger.error("[crawler_query] %s", pl.get("message", "error"))
 
@@ -1813,6 +1844,8 @@ class AgentToolBridge:
                 _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
             except Exception:
                 pass
+            # ── REQ-9: structured log for card transition ──
+            logger.info("Card transition", extra={"context": "card", "state": "processing_conversation", "session_id": session_id})
             return {"success": False, "error": f"research failed: {exc}",
                     "error_type": _crawler_error_type(str(exc)), "job_id": job_id}
 
@@ -1821,6 +1854,8 @@ class AgentToolBridge:
             _bus.emit(IRISStreamEvent.LISTENING_STATE, data={"state": "processing_conversation"}, session_id=session_id)
         except Exception:
             pass  # never block on an event emit failure
+        # ── REQ-9: structured log for card transition ──
+        logger.info("Card transition", extra={"context": "card", "state": "processing_conversation", "session_id": session_id})
 
         if result.error:
             logger.error("[crawler_query] crawl failed: %s", result.error)

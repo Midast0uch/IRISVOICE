@@ -129,6 +129,9 @@ class EpisodicStore:
         # Optional Mycelium reference — injected by MemoryInterface after init (Req 13.6)
         self._mycelium: Any = None
 
+        # Token budgeting for context retrieval (chars -> tokens estimate).
+        self._CHARS_PER_TOKEN: int = 4  # ~4 chars per token (English, conservative)
+
         # Initialize schema on first access
         self._init_schema()
         logger.info("[EpisodicStore] Initialized")
@@ -399,7 +402,8 @@ class EpisodicStore:
         self,
         task: str,
         limit: int = 3,
-        min_score: float = 0.6
+        min_score: float = 0.6,
+        session_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Find top-N semantically similar successful episodes.
@@ -410,6 +414,9 @@ class EpisodicStore:
             task: The task query
             limit: Maximum number of results
             min_score: Minimum outcome score to include
+            session_id: If provided, restrict results to this session/thread
+                (REQ-32: per-thread memory isolation — prevents cross-thread
+                recall of one conversation's episodes into another).
         
         Returns:
             List of similar episode dictionaries, sorted by similarity
@@ -418,11 +425,19 @@ class EpisodicStore:
         query_embedding = self._embed.encode(task)
         
         # Get all successful episodes with embeddings
-        rows = self.db.execute("""
-            SELECT id, task_summary, tool_sequence, outcome_score, embedding
-            FROM episodes
-            WHERE outcome_score >= ? AND outcome_type = 'success'
-        """, (min_score,)).fetchall()
+        if session_id is not None:
+            rows = self.db.execute("""
+                SELECT id, task_summary, tool_sequence, outcome_score, embedding
+                FROM episodes
+                WHERE outcome_score >= ? AND outcome_type = 'success'
+                  AND session_id = ?
+            """, (min_score, session_id)).fetchall()
+        else:
+            rows = self.db.execute("""
+                SELECT id, task_summary, tool_sequence, outcome_score, embedding
+                FROM episodes
+                WHERE outcome_score >= ? AND outcome_type = 'success'
+            """, (min_score,)).fetchall()
         
         # Calculate similarity for each episode
         scored_episodes = []
@@ -467,7 +482,8 @@ class EpisodicStore:
     def retrieve_failures(
         self,
         task: str,
-        limit: int = 2
+        limit: int = 2,
+        session_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Find top-N semantically similar failure episodes for warnings.
@@ -477,6 +493,8 @@ class EpisodicStore:
         Args:
             task: The task query
             limit: Maximum number of results
+            session_id: If provided, restrict results to this session/thread
+                (REQ-32: per-thread memory isolation).
         
         Returns:
             List of failure episode dictionaries, sorted by similarity
@@ -485,11 +503,18 @@ class EpisodicStore:
         query_embedding = self._embed.encode(task)
         
         # Get all failures with embeddings
-        rows = self.db.execute("""
-            SELECT id, task_summary, failure_reason, embedding
-            FROM episodes
-            WHERE outcome_type = 'failure'
-        """).fetchall()
+        if session_id is not None:
+            rows = self.db.execute("""
+                SELECT id, task_summary, failure_reason, embedding
+                FROM episodes
+                WHERE outcome_type = 'failure' AND session_id = ?
+            """, (session_id,)).fetchall()
+        else:
+            rows = self.db.execute("""
+                SELECT id, task_summary, failure_reason, embedding
+                FROM episodes
+                WHERE outcome_type = 'failure'
+            """).fetchall()
         
         # Calculate similarity for each failure
         scored_failures = []
@@ -515,18 +540,21 @@ class EpisodicStore:
         logger.debug(f"[EpisodicStore] Found {len(results)} similar failures for task: {task[:50]}...")
         return results
     
-    def assemble_episodic_context(self, task: str) -> str:
+    def assemble_episodic_context(self, task: str, session_id: Optional[str] = None) -> str:
         """
         Format episodic context for injection into prompts.
         
         Args:
             task: The current task
+            session_id: If provided, restrict recalled episodes to this
+                session/thread (REQ-32: per-thread memory isolation — a new
+                conversation thread must not surface another thread's episodes).
         
         Returns:
             Formatted episodic context string
         """
-        successes = self.retrieve_similar(task, limit=3, min_score=0.6)
-        failures = self.retrieve_failures(task, limit=2)
+        successes = self.retrieve_similar(task, limit=3, min_score=0.6, session_id=session_id)
+        failures = self.retrieve_failures(task, limit=2, session_id=session_id)
 
         # Mycelium: use resonance-aware format_context which omits suppressed successes
         # and always includes failure warnings (Req 11.11)

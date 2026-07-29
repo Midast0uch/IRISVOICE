@@ -1,13 +1,9 @@
+// Combined root config: runs both backend (tests/) and frontend (__tests__/) suites.
+// References sub-configs for each environment.
+/** @type {import('jest').Config} */
 export default {
-  testEnvironment: 'node',
-  transform: {},
-  moduleNameMapper: {
-    '^(\\.{1,2}/.*)\\.js$': '$1',
-    '^@/(.*)$': '<rootDir>/$1',
-  },
-  testMatch: [
-    '**/tests/**/*.test.js',
+  projects: [
+    '<rootDir>/jest.config.backend.cjs',
+    '<rootDir>/jest.config.frontend.cjs',
   ],
-  testTimeout: 180000, // 3 minutes for model loading tests
-  verbose: true,
 };

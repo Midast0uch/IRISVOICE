@@ -34,7 +34,7 @@ class _StubBackend(FetchBackend):
     """Returns two fake pages; records which mode asked for it."""
     mode_used = None
 
-    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s):
+    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, **kwargs):
         self.__class__.mode_used = "stub"
         pages = [
             PageData(url="https://example.gov/doc", title="Doc", markdown="The quantum model shows X. It was verified by Y.", html="", metadata={}),
@@ -47,7 +47,7 @@ class _StubBackend(FetchBackend):
 
 
 class _FailingBackend(FetchBackend):
-    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s):
+    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, **kwargs):
         return CrawlResult(query=query, pages=[], duration_ms=1, crawled_at="x", error="subprocess crashed")
 
 

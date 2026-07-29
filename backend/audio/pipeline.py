@@ -1,4 +1,4 @@
-"""
+﻿"""
 AudioPipeline - Manages audio input/output streams using sounddevice
 """
 
@@ -16,7 +16,7 @@ import numpy as np
 # to initialize when there are many audio devices, USB audio, or Bluetooth audio.
 # The import cost is only paid when the audio pipeline first starts (user action).
 def _sd():
-    """Lazy accessor for sounddevice — loads PortAudio on first audio use."""
+    """Lazy accessor for sounddevice â€” loads PortAudio on first audio use."""
     import sounddevice as _sounddevice
 
     return _sounddevice
@@ -78,7 +78,7 @@ class AudioPipeline:
         self._frame_listeners: List[Callable[[np.ndarray], None]] = []
         self._is_buffering = False
 
-        # Native low-latency player — DISABLED.
+        # Native low-latency player â€” DISABLED.
         # Causes 30-40s blocking on play_audio, audio normalization distortion,
         # and half-duplex gate lock issues. Using sd.play() instead.
         self._native_player = None
@@ -108,7 +108,7 @@ class AudioPipeline:
             return np.concatenate(self._audio_buffer)
 
     def add_frame_listener(self, callback: Callable[[np.ndarray], None]):
-        """Add a listener for raw audio frames. Idempotent — safe to call repeatedly."""
+        """Add a listener for raw audio frames. Idempotent â€” safe to call repeatedly."""
         if callback not in self._frame_listeners:
             self._frame_listeners.append(callback)
 
@@ -146,22 +146,22 @@ class AudioPipeline:
 
         # --- Output stream (TTS / beep playback) ---
         # Output: use _sd().play() per-chunk instead of a persistent OutputStream.
-        # _sd().play() handles device format (mono→stereo), sample rate conversion,
-        # and internal buffering automatically — no persistent stream needed.
+        # _sd().play() handles device format (monoâ†’stereo), sample rate conversion,
+        # and internal buffering automatically â€” no persistent stream needed.
         # Mark output_ok=True unconditionally; actual device errors surface at play time.
         output_ok = True
-        self._output_stream = None  # not used — kept for compatibility checks
+        self._output_stream = None  # not used â€” kept for compatibility checks
 
         if input_ok or output_ok:
             self._is_running = True
             logger.info(
-                f"[AudioPipeline] Started — input={'ok' if input_ok else 'FAILED'}, "
+                f"[AudioPipeline] Started â€” input={'ok' if input_ok else 'FAILED'}, "
                 f"output={'ok' if output_ok else 'FAILED'}"
             )
             return True
 
         logger.error(
-            "[AudioPipeline] Both input and output streams failed — pipeline not running"
+            "[AudioPipeline] Both input and output streams failed â€” pipeline not running"
         )
         return False
 
@@ -246,7 +246,7 @@ class AudioPipeline:
         between them (avoiding the gap/choppiness of per-chunk play_audio),
         then waits for all audio to finish before closing.
 
-        Applies a fixed 2.5× gain to compensate for Pocket-TTS's quiet output
+        Applies a fixed 2.5Ã— gain to compensate for Pocket-TTS's quiet output
         (~0.03 RMS, ~0.37 peak).  Per-chunk peak normalization is NOT used
         because it would amplify near-silent lead-in chunks into loud static.
 
@@ -262,10 +262,10 @@ class AudioPipeline:
                     raise RuntimeError("Native player failed to open")
                 for i, audio_data in enumerate(audio_chunks):
                     audio_float = audio_data.astype(np.float32)
-                    # Apply 2.5× gain (Pocket-TTS output is ~0.37 peak).
+                    # Apply 2.5Ã— gain (Pocket-TTS output is ~0.37 peak).
                     # Clip to [-0.99, 0.99] to prevent wrap-around.
-                    # 5× gain was tried but amplified codec artifacts (Mimi neural
-                    # codec) making the audio sound "choppy and static". 2.5×
+                    # 5Ã— gain was tried but amplified codec artifacts (Mimi neural
+                    # codec) making the audio sound "choppy and static". 2.5Ã—
                     # keeps artifacts below the speaker noise floor.
                     audio_float = np.clip(audio_float * 2.5, -0.99, 0.99)
                     self._native_player.push_chunk(audio_float)
@@ -279,12 +279,12 @@ class AudioPipeline:
                     f"[AudioPipeline] Native stream failed ({_native_err}), falling back"
                 )
 
-        # Fallback: concatenate all chunks, apply same 2.5× gain + clip
+        # Fallback: concatenate all chunks, apply same 2.5Ã— gain + clip
         # as the native path for consistent volume across both paths.
         all_audio = np.concatenate(list(audio_chunks))
         audio_float = np.clip(all_audio.astype(np.float32) * 2.5, -0.99, 0.99)
         duration_ms = int(len(audio_float) / sr * 1000)
-        # Signal before blocking play — sd.play starts the audio stream
+        # Signal before blocking play â€” sd.play starts the audio stream
         # synchronously; the driver handles buffering.
         if playback_started_event is not None:
             playback_started_event.set()
@@ -293,7 +293,7 @@ class AudioPipeline:
             _sd().play(audio_float, samplerate=sr, device=out_dev, blocking=True)
             logger.info(
                 f"[AudioPipeline] play_stream OK: {len(audio_float)} frames @ {sr}Hz "
-                f"({duration_ms}ms) → device={out_dev}"
+                f"({duration_ms}ms) â†’ device={out_dev}"
             )
         except Exception as _play_err:
             logger.error(
@@ -327,13 +327,13 @@ class AudioPipeline:
         sr = sample_rate if sample_rate is not None else self.sample_rate
         duration_ms = int(len(audio_data) / sr * 1000)
         logger.info(
-            f"[AudioPipeline] play_audio: {len(audio_data)} frames @ {sr}Hz ({duration_ms}ms) → device={self.output_device}"
+            f"[AudioPipeline] play_audio: {len(audio_data)} frames @ {sr}Hz ({duration_ms}ms) â†’ device={self.output_device}"
         )
 
         try:
             audio_float = audio_data.astype(np.float32)
 
-            # Normalise amplitude — Pocket-TTS cloned voice can be quiet (~0.37 peak).
+            # Normalise amplitude â€” Pocket-TTS cloned voice can be quiet (~0.37 peak).
             # Target 0.85 peak: loud and clear, safely below hard clip at 1.0.
             peak = np.max(np.abs(audio_float))
             if peak > 1e-6:
@@ -433,7 +433,7 @@ class AudioPipeline:
             is_input = info["max_input_channels"] > 0
             is_output = info["max_output_channels"] > 0
 
-            # Skip Windows virtual / mapper devices — they just duplicate the
+            # Skip Windows virtual / mapper devices â€” they just duplicate the
             # user's default device under a generic name.
             if any(name.startswith(prefix) for prefix in _SKIP_PREFIXES):
                 continue

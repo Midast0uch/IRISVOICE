@@ -130,7 +130,7 @@ class TestStoreEpisode:
         store = EpisodicStore(temp_db_path, biometric_key)
         
         with patch.object(store, '_get_embedding') as mock_embed:
-            mock_embed.return_value = [0.1] * 384
+            mock_embed.return_value = [0.1] * 1024
             store.conn = Mock()
             store.conn.execute = Mock()
             store.conn.commit = Mock()

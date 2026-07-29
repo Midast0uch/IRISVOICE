@@ -135,6 +135,7 @@ async def run_crawl_subprocess(
     max_pages: int = 5,
     delay_ms: int = 1000,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
+    job_id: Optional[str] = None,
 ) -> CrawlResult:
     """Run the crawl in a child process.
 
@@ -147,6 +148,7 @@ async def run_crawl_subprocess(
         "instructions": instructions,
         "max_pages": max_pages,
         "delay_ms": delay_ms,
+        "job_id": job_id,
     }
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, encoding="utf-8"
@@ -202,6 +204,8 @@ async def run_crawl_subprocess(
                                     msg.get("url", ""),
                                     int(msg.get("page_number", 0)),
                                     int(msg.get("total", 0)),
+                                    msg.get("title", ""),
+                                    msg.get("snippet", ""),
                                 )
                             except Exception:  # noqa: BLE001
                                 pass
@@ -212,6 +216,8 @@ async def run_crawl_subprocess(
                             pages=pages,
                             duration_ms=int(msg.get("duration_ms", 0)),
                             crawled_at=msg.get("crawled_at", _now_iso()),
+                            har_entries=msg.get("har_entries") or [],
+                            har_path=msg.get("har_path"),
                         )
                     elif _type == "error":
                         error_msg = msg.get("error", "unknown worker error")

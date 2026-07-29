@@ -49,8 +49,8 @@ class TrailingDirector:
         "Maximum 3 gap-filling steps per completed step -- focus on highest impact.\n\n"
         "JSON only:\n"
         '{{"has_gaps": true|false, "confidence": 0.0-1.0, "gap_items": ['
-        '{{"description": "specific gap-filling action", "tool": "tool_name or null", '
-        '"params": {{}}, "depth_layer": 1}}'
+        '{{"description": "specific gap-filling action (what depth to add)", '
+        '"depth_layer": 1}}'
         "]}}"
     )
 
@@ -132,12 +132,16 @@ class TrailingDirector:
 
             items = []
             for i, g in enumerate(data.get("gap_items", [])[:3]):
+                # GOAL-ONLY: TrailingDirector is a depth AUDITOR (it double-checks
+                # what the main director decided), not a tool authority. It emits
+                # the gap description; the single resolver (explorer.propose) picks
+                # the tool when the gap item executes (F6 / System Invariant).
                 items.append(QueueItem(
                     step_id=f"gap-{step.step_id}-{i}",
                     step_number=step.step_number,
                     description=g.get("description", ""),
-                    tool=g.get("tool"),
-                    params=g.get("params", {}),
+                    tool=None,
+                    params={},
                     critical=False,          # gap items are NEVER critical
                     objective_anchor=objective,
                     depth_layer=g.get("depth_layer", 1),

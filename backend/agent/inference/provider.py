@@ -27,11 +27,18 @@ class ProviderInstance:
     """A named provider instance that can be bound to one or more roles.
 
     Attributes:
-        id: Unique identifier for this instance (e.g. ``"cerebras"``).
+        id: Unique identifier for this instance (e.g. ``"cerebras"`` or
+            ``"local:qwen3-9b"`` — never the bare literal ``"local"``).
         label: Human-readable label for UI display.
         kind: Which transport family to use.
         model: Default model name string (may be overridden per role).
         api_base_url: Base URL for API / LOCAL_OPENAI / OLLAMA transports.
+        purpose: What the provider is for (``chat`` | ``embedding`` | ``rerank``).
+            Defaults to ``chat``; non-chat providers are filtered out of the
+            chat-model UI (Phase 4).
+        loaded: Whether the model backing this (local) provider is currently
+            loaded into memory. Additive to the payload (REQ-3 AC2).
+        loading: Whether a load is in progress. Additive to the payload.
     """
 
     id: str
@@ -40,9 +47,18 @@ class ProviderInstance:
     model: Optional[str] = None
     api_base_url: str = ""
     api_key: str = ""
+    purpose: str = "chat"
+    loaded: bool = False
+    loading: bool = False
 
     def to_dict(self) -> dict:
-        """Serialize to a JSON-friendly dict (enum → its string value)."""
+        """Serialize to a JSON-friendly dict (enum → its string value).
+
+        Additive: ``id`` / ``label`` / ``kind`` / ``model`` / ``api_base_url`` /
+        ``has_key`` are retained (CT-F6) and ``loaded`` / ``loading`` /
+        ``purpose`` are added. No credential or credential fragment is ever
+        included.
+        """
         # Resolve whether a credential exists: prefer an explicitly attached
         # key, else fall back to the secret store (legacy config keys are
         # persisted there keyed by provider id at router init).
@@ -63,6 +79,10 @@ class ProviderInstance:
             # this provider instance, so it can show "Key set" instead of a
             # blank input and allow Apply without re-entering the key.
             "has_key": _has_key,
+            # Additive load-state + purpose fields (REQ-3 AC2, REQ-4 AC3).
+            "loaded": self.loaded,
+            "loading": self.loading,
+            "purpose": self.purpose,
         }
 
 

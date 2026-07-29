@@ -75,6 +75,7 @@ try:
         debit_work_units,
         derive_work_units_0,
         resolve_der_token_budget,
+        ResolvedWindow,
         ExecutionMode,
     )
 except Exception:
@@ -952,34 +953,31 @@ class AgentKernel:
         ("local", "gemma2", 8_192),
     ]
 
-    def resolve_context_window(self) -> int:
-        """Return the effective context window (tokens) for the current model.
+    def resolve_context_window_with_source(self) -> "ResolvedWindow":
+        """Resolve the effective context window, tagging the source that won.
 
-        Priority:
-          1. User override via _context_window_overrides
-          2. Known registry lookup by (provider, model_name)
-          3. Safe default (8k)
+        Precedence (REQ-2, design D-2):
+          1. override      — user-set ``_context_window_overrides`` (highest)
+          2. authoritative — the ACTUAL loaded local ``n_ctx`` (source of truth)
+          3. table         — ``(provider, substring)`` registry lookup
+          4. default       — conservative 8k, logged and tagged as a default
+
+        The authoritative branch MUST run before the substring table: a loaded
+        model's real ``n_ctx`` outranks a name-based guess. The old code ran the
+        table first, so a 16k-loaded Mistral reported 32_768. Tagging the source
+        is what makes an unknown window VISIBLE (REQ-2 AC4) rather than silent.
         """
         provider = self._model_provider or ""
         model = self._selected_reasoning_model or ""
 
-        # 1. User override (set via confirm_card / model_selection)
+        # 1. User override (highest precedence)
         if model in self._context_window_overrides:
-            return self._context_window_overrides[model]
+            return ResolvedWindow(self._context_window_overrides[model], "override")
 
-        # 2. Registry lookup — case-insensitive substring match
-        model_lower = model.lower().strip()
-        for reg_provider, reg_substring, tokens in self._KNOWN_CONTEXT_WINDOWS:
-            if reg_provider == provider and (
-                not reg_substring or reg_substring in model_lower
-            ):
-                return tokens
-
-        # 3. For a LOCAL provider, trust the ACTUAL loaded context window from
-        #    the live model manager — it is the source of truth (the model was
-        #    launched with a specific n_ctx, e.g. 32768 for a ternary bonsai).
-        #    Substring guessing (step 2) is unreliable for custom GGUF names and
-        #    would otherwise under/over-size the budget vs the real window.
+        # 2. Authoritative: the live local model manager's ACTUAL loaded n_ctx.
+        #    This is the source of truth for a locally-run model — it was
+        #    launched with a specific n_ctx, and a substring guess would
+        #    under/over-size the budget vs the real window.
         if provider == "local":
             try:
                 from .local_model_manager import get_local_model_manager
@@ -990,27 +988,46 @@ class AgentKernel:
                 ):
                     _n_ctx = int(mgr._current_params.get("n_ctx", 0))
                     if _n_ctx and _n_ctx > 0:
-                        return _n_ctx
+                        return ResolvedWindow(_n_ctx, "authoritative")
             except Exception:
                 pass
 
-        # 4. Fallback: try to detect from local_model_manager profiles
+        # 3. Table — (provider, substring) registry lookup, case-insensitive.
+        model_lower = model.lower().strip()
+        for reg_provider, reg_substring, tokens in self._KNOWN_CONTEXT_WINDOWS:
+            if reg_provider == provider and (
+                not reg_substring or reg_substring in model_lower
+            ):
+                return ResolvedWindow(tokens, "table")
+
+        # 4. Local model manager profiles — config-derived guess. Treated as the
+        #    table tier: better than the 8k default, but not the live loaded value.
         try:
             from .local_model_manager import LocalModelManager
 
             mgr = LocalModelManager()
             for profile in mgr.profiles:
                 if profile.id in model_lower or model_lower in profile.id:
-                    return profile.n_ctx
+                    return ResolvedWindow(profile.n_ctx, "table")
         except Exception:
             pass
 
-        # 5. Safe default — 8k for unknown models
+        # 5. Safe default — 8k for unknown models. Tagged so it is VISIBLE, not silent.
         logger.info(
             f"[AgentKernel] No context window known for provider={provider} "
-            f"model={model} — using default 8192"
+            f"model={model} — using default 8192 (source=default)"
         )
-        return 8_192
+        return ResolvedWindow(8_192, "default")
+
+    def resolve_context_window(self) -> int:
+        """Return the effective context window (tokens) for the current model.
+
+        Thin wrapper over :meth:`resolve_context_window_with_source` that returns
+        only the token count, preserving the ``int`` contract used by the 20+
+        call sites (budget, work units, ContextPill denominator, Pacman filter).
+        The source tag is available via ``resolve_context_window_with_source()``.
+        """
+        return self.resolve_context_window_with_source().tokens
 
     def get_effective_token_budget(self, fraction: float = 0.75) -> int:
         """Return the usable token budget as a fraction of the context window.
@@ -5706,6 +5723,20 @@ Respond with a JSON object:
                         continue
                     else:
                         queue.mark_vetoed(item.step_id)
+                        # ── REQ-8 AC3: emit learning signal for avoided step ──
+                        try:
+                            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                            get_event_bus().emit(
+                                IRISStreamEvent.TASK_LEARNING,
+                                data={
+                                    "signal": "avoided",
+                                    "step_number": item.step_number,
+                                    "step_id": item.step_id,
+                                    "session_id": _session,
+                                },
+                            )
+                        except Exception:
+                            pass
                         continue
 
                 if verdict == ReviewVerdict.REFINE and feedback:
@@ -8529,19 +8560,23 @@ If any tools failed, address those issues in your response.
                             self._api_key = _cfg_key
                     except Exception:
                         pass
+                # Namespace the bare "local" provider id (REQ-4 AC1) so it never
+                # collides with or shadows a namespaced local entry.
+                _inst_id = (
+                    f"local:{reasoning_model.split('.')[0].lower()}"
+                    if model_provider == "local"
+                    else model_provider
+                )
                 _inst = ProviderInstance(
-                    id=model_provider, label=model_provider, kind=_kind,
+                    id=_inst_id, label=model_provider, kind=_kind,
                     model=reasoning_model,
                     api_base_url=api_base_url or getattr(self, '_api_base_url', '') or "",
                     api_key=_effective_key)
-                # Register on this kernel's router AND every peer kernel's
-                # router so the provider registry is consistent across all
-                # conversation threads (the /api/inference/state endpoint reads
-                # the "default" kernel, which may differ from the WS session).
-                for _kr in [self] + [pk for pk in _agent_kernel_instances.values() if pk is not self]:
-                    _r = getattr(_kr, "_router", None)
-                    if _r is None:
-                        continue
+                # Register on this kernel's router only. The registry is
+                # process-wide (REQ-5), so every peer kernel observes the same
+                # provider and role bindings automatically — no fan-out loop.
+                _r = getattr(self, "_router", None)
+                if _r is not None:
                     _r.add_provider(_inst)
                     # Bind roles so resolve("reasoning") / resolve("tool_execution")
                     # succeed at inference time.  Without this, the provider is
@@ -8581,14 +8616,23 @@ If any tools failed, address those issues in your response.
         the local instance without a model loaded.
         """
         try:
-            if instance_id == "local" and not getattr(self, "_local_model_loaded", False):
-                logger.warning("[AgentKernel] Refusing to bind role '%s' to local with no model loaded", role)
+            # Normalize the legacy bare "local" id to its namespaced form
+            # (REQ-4 AC1) so a partially-migrated id is never a dead binding.
+            if instance_id == "local":
+                _local_inst = next(
+                    (i for i in self._router.registry.list() if i.id.startswith("local:")),
+                    None,
+                )
+                if _local_inst is not None:
+                    instance_id = _local_inst.id
+            # Local-override is NOT a veto (REQ-5 AC4): binding to a local
+            # provider whose model is not yet loaded is allowed — it becomes
+            # live once the model loads. The gateway surfaces a status flag
+            # instead of rejecting. We simply bind on the process-wide registry.
+            _r = getattr(self, "_router", None)
+            if _r is None:
                 return False
-            for _kr in [self] + [pk for pk in _agent_kernel_instances.values() if pk is not self]:
-                _r = getattr(_kr, "_router", None)
-                if _r is None:
-                    continue
-                _r.bind_role(role, instance_id, model_override=model_override)
+            _r.bind_role(role, instance_id, model_override=model_override)
             # Keep legacy field assignments in sync for any code that reads them.
             if role == "reasoning":
                 self._selected_reasoning_model = instance_id

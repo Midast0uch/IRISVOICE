@@ -124,14 +124,38 @@ class TestConversationKernelSpeechGate:
         kernel._current_caducean_phase = "EXPAND"
         kernel._tts_manager = MagicMock()
 
-        kernel._on_utterance_start(
-            EventPayload(
-                event=IRISStreamEvent.UTTERANCE_START,
-                data={"text": "Here's what I found..."},
-            )
-        )
+        # Dispatch is now threaded (off the EventBus thread); run the utterance
+        # thread synchronously so the assertion is deterministic (T4.2: dispatch
+        # is threaded, not sync).
+        import threading as _threading
 
-        kernel._tts_manager.speak.assert_called_once_with("Here's what I found...")
+        _real = _threading.Thread
+
+        class _SyncThread:
+            def __init__(self, target=None, args=(), kwargs=None, **_kw):
+                self._target = target
+                self._args = args or ()
+
+            def start(self):
+                if self._target:
+                    self._target(*self._args)
+
+            def join(self, *a, **k):
+                pass
+
+        _threading.Thread = _SyncThread
+        try:
+            kernel._on_utterance_start(
+                EventPayload(
+                    event=IRISStreamEvent.UTTERANCE_START,
+                    data={"text": "Here's what I found..."},
+                )
+            )
+        finally:
+            _threading.Thread = _real
+
+        # T4.2: dispatch is now threaded — _speak_utterance calls synthesize_stream
+        kernel._tts_manager.synthesize_stream.assert_called_once_with("Here's what I found...")
 
 
 # ── TaskKernel tool event handling ─────────────────────────────────────────

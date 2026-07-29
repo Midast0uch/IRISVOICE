@@ -73,6 +73,17 @@ class DocumentDataStore:
             except Exception:
                 # Column already exists on a fresh DB — safe to ignore.
                 pass
+            # Wave 0/1 (document-rehydration, REQ-5/REQ-13): provenance linkage.
+            # Idempotent — each ADD COLUMN is a no-op once the column exists.
+            for col in ("source_document_id", "sources", "har_path"):
+                try:
+                    self._conn.execute(
+                        f"ALTER TABLE document_data ADD COLUMN {col} TEXT"
+                    )
+                    self._conn.commit()
+                except Exception:
+                    # Column already exists — safe to ignore.
+                    pass
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] ensure_table failed: %s", exc)
 
@@ -86,18 +97,24 @@ class DocumentDataStore:
         alternatives: list,
         trust: str,
         revision: int = 0,
+        source_document_id: Optional[str] = None,
+        sources: Optional[list] = None,
+        har_path: Optional[str] = None,
     ) -> None:
         """Upsert a document's canonical data + variants (idempotent by id)."""
         try:
             self._conn.execute(
                 "INSERT INTO document_data "
-                "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
+                " source_document_id, sources, har_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(document_id) DO UPDATE SET "
                 "conversation_id=excluded.conversation_id, fmt=excluded.fmt, "
                 "content=excluded.content, variants=excluded.variants, "
                 "alternatives=excluded.alternatives, trust=excluded.trust, "
-                "revision=document_data.revision",
+                "revision=document_data.revision, "
+                "source_document_id=excluded.source_document_id, "
+                "sources=excluded.sources, har_path=excluded.har_path",
                 (
                     document_id,
                     conversation_id,
@@ -107,6 +124,9 @@ class DocumentDataStore:
                     json.dumps(alternatives or [], ensure_ascii=False),
                     trust,
                     revision,
+                    source_document_id,
+                    json.dumps(sources or [], ensure_ascii=False) if sources is not None else None,
+                    har_path,
                 ),
             )
             self._conn.commit()
@@ -137,7 +157,7 @@ class DocumentDataStore:
         try:
             row = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
-                "alternatives, trust, revision "
+                "alternatives, trust, revision, source_document_id, sources, har_path "
                 "FROM document_data WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
@@ -152,10 +172,92 @@ class DocumentDataStore:
                 "alternatives": json.loads(row[5] or "[]"),
                 "trust": row[6],
                 "revision": row[7] or 0,
+                "source_document_id": row[8],
+                "sources": json.loads(row[9] or "[]"),
+                "har_path": row[10],
             }
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] get failed: %s", exc)
             return None
+
+    def list_for_conversation(self, conversation_id: str, metadata_only: bool = False) -> list:
+        """Return all document rows for a conversation (REQ-4/REQ-7).
+
+        ``metadata_only=True`` (UI path, REQ-4/T3) returns light columns only
+        (document_id, fmt, conversation_id, sources, har_path, created_at) —
+        NOT the large content/variants blobs. Full data only when
+        ``metadata_only=False`` (agent tool path, REQ-7/T5). Always scoped by
+        ``conversation_id`` (REQ-12). Never raises.
+        """
+        try:
+            if metadata_only:
+                rows = self._conn.execute(
+                    "SELECT document_id, fmt, conversation_id, sources, har_path, created_at "
+                    "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
+                    (conversation_id,),
+                ).fetchall()
+                return [
+                    {
+                        "document_id": r[0],
+                        "format": r[1],
+                        "conversation_id": r[2],
+                        "sources": json.loads(r[3] or "[]"),
+                        "har_path": r[4],
+                        "created_at": r[5],
+                    }
+                    for r in rows
+                ]
+            rows = self._conn.execute(
+                "SELECT document_id, conversation_id, fmt, content, variants, "
+                "alternatives, trust, revision, source_document_id, sources, har_path "
+                "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
+                (conversation_id,),
+            ).fetchall()
+            return [
+                {
+                    "document_id": r[0],
+                    "conversation_id": r[1],
+                    "format": r[2],
+                    "content": r[3],
+                    "variants": json.loads(r[4] or "{}"),
+                    "alternatives": json.loads(r[5] or "[]"),
+                    "trust": r[6],
+                    "revision": r[7] or 0,
+                    "source_document_id": r[8],
+                    "sources": json.loads(r[9] or "[]"),
+                    "har_path": r[10],
+                }
+                for r in rows
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[DocumentDataStore] list_for_conversation failed: %s", exc)
+            return []
+
+    def list_conversations(self) -> list:
+        """Return every conversation that has at least one rendered document.
+
+        Discovery primitive for cross-thread reuse: the agent calls this to find
+        prior threads (e.g. one that previously rendered a document) and then
+        pulls their data via ``get_rendered_documents(conversation_id=...)``
+        instead of re-searching the web. Newest-first:
+        ``[{conversation_id, doc_count, latest_created_at}]``. Never raises.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT conversation_id, COUNT(*) AS doc_count, MAX(created_at) AS latest "
+                "FROM document_data GROUP BY conversation_id ORDER BY latest DESC"
+            ).fetchall()
+            return [
+                {
+                    "conversation_id": r[0],
+                    "doc_count": r[1],
+                    "latest_created_at": r[2],
+                }
+                for r in rows
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[DocumentDataStore] list_conversations failed: %s", exc)
+            return []
 
     def get_variant(self, document_id: str, target_format: str) -> Optional[str]:
         """Return the stored content for ``target_format`` if present (G1 path)."""

@@ -21,6 +21,12 @@ jest.mock("framer-motion", () => {
   }
 })
 
+jest.mock("@/components/Xur", () => ({
+  Xur: (props: { size?: number; color?: string; speed?: number }) => (
+    <div data-testid="xur" data-color={props.color} data-size={props.size} />
+  ),
+}))
+
 jest.mock("@/contexts/BrandColorContext", () => ({
   useBrandColor: () => ({
     getThemeConfig: () => ({
@@ -69,5 +75,46 @@ describe("TaskListCard", () => {
     render(<TaskListCard steps={many} defaultCollapsed />)
     fireEvent.click(screen.getByLabelText(/expand plan/i))
     expect(screen.getByText("Step 0")).toBeInTheDocument()
+  })
+
+  describe("T1.5 — honest display (REQ-1 AC4, REQ-3 AC3)", () => {
+    const t15Steps = [
+      { id: "s1", description: "Read config file", status: "done", toolName: "read_file", result_summary: "Config loaded" },
+      { id: "s2", description: "Search recent research", status: "working", toolName: "crawler_query", activeDetail: "example.com", activeProgress: "1/5" },
+      { id: "s3", description: "Write summary", status: "fail", toolName: "write_file" },
+      { id: "s4", description: "Review changes", status: "pending", toolName: "review" },
+    ]
+
+    it("working step renders Xur (animated orb) instead of a plain dot", () => {
+      const { container } = render(<TaskListCard steps={t15Steps} />)
+      // Should have exactly 1 Xur — not 4, not 0.
+      const xurs = container.querySelectorAll('[data-testid="xur"]')
+      expect(xurs.length).toBe(1)
+      // Confirm it's the working step (color matches amber).
+      expect(xurs[0].getAttribute("data-color")).toBe("#fbbf24")
+    })
+
+    it("failed step renders with red (#f87171) styling", () => {
+      const { container } = render(<TaskListCard steps={t15Steps} />)
+      // The container must contain the failed-step color (dot border renders f87171).
+      expect(container.innerHTML.toLowerCase()).toContain("f87171")
+    })
+
+    it("detail renders beside the tool name", () => {
+      render(<TaskListCard steps={t15Steps} />)
+      // The working step (s2) has activeDetail "example.com" — it should appear near tool name.
+      expect(screen.getByText("example.com")).toBeInTheDocument()
+      // activeProgress also visible
+      expect(screen.getByText("1/5")).toBeInTheDocument()
+    })
+
+    it("no bare 'Step N' text — real descriptions used instead", () => {
+      render(<TaskListCard steps={t15Steps} />)
+      // Each step MUST show its canonical description, not a generic "Step N".
+      expect(screen.getByText("Read config file")).toBeInTheDocument()
+      expect(screen.getByText("Search recent research")).toBeInTheDocument()
+      expect(screen.getByText("Write summary")).toBeInTheDocument()
+      expect(screen.getByText("Review changes")).toBeInTheDocument()
+    })
   })
 })

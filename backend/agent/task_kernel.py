@@ -208,11 +208,20 @@ class TaskKernel:
                 conversation_id=payload.conversation_id,
             )
 
+        # REQ-3 AC5: forward planned steps so the frontend renders the real
+        # plan, not a re-constructed empty one. Steps come from the planner
+        # (agent_kernel.py:5484-5492) and must survive _on_task_start.
+        steps = data.get("steps", [])
+        total_steps = len(steps) or data.get("total_steps", 0)
+        plan_title = data.get("plan_title")
         self._emit_frontend(
             "task:start",
             {
                 "task_id": task_id,
                 "description": data.get("description", "Agent task"),
+                "plan_title": plan_title,
+                "steps": steps,
+                "total_steps": total_steps,
                 "task": self._tasks[task_id].to_dict() if task_id in self._tasks else {},
             },
             payload,

@@ -79,7 +79,7 @@ class TestEmbeddingServiceLazyLoading:
         
         # Model should now be loaded
         assert service._model is not None, "Model should be loaded after encode()"
-        assert len(embedding) == 384, "Should return 384-dim vector"
+        assert len(embedding) == EmbeddingService.EMBEDDING_DIM, "Should return embedding_dim vector"
 
 
 class TestEmbeddingServiceEncoding:
@@ -93,12 +93,14 @@ class TestEmbeddingServiceEncoding:
         """Reset singleton after each test."""
         EmbeddingService.reset_instance()
     
-    def test_encode_returns_384_dimensions(self):
-        """Test that encode returns 384-dimensional vector."""
+    def test_encode_returns_expected_dimensions(self):
+        """Test that encode returns embedding_dim-dimensional vector."""
         service = EmbeddingService()
         embedding = service.encode("Hello world")
         
-        assert len(embedding) == 384, f"Expected 384 dimensions, got {len(embedding)}"
+        assert len(embedding) == EmbeddingService.EMBEDDING_DIM, (
+            f"Expected {EmbeddingService.EMBEDDING_DIM} dimensions, got {len(embedding)}"
+        )
     
     def test_encode_returns_list_of_floats(self):
         """Test that encode returns list of floats."""
@@ -141,7 +143,7 @@ class TestEmbeddingServiceEncoding:
         
         embedding = service.encode("")
         
-        assert len(embedding) == 384
+        assert len(embedding) == EmbeddingService.EMBEDDING_DIM
         assert all(x == 0.0 for x in embedding), "Empty string should return zero vector"
     
     def test_encode_whitespace_only(self):
@@ -150,7 +152,7 @@ class TestEmbeddingServiceEncoding:
         
         embedding = service.encode("   \n\t  ")
         
-        assert len(embedding) == 384
+        assert len(embedding) == EmbeddingService.EMBEDDING_DIM
         assert all(x == 0.0 for x in embedding), "Whitespace-only should return zero vector"
 
 
@@ -173,7 +175,7 @@ class TestEmbeddingServiceBatchEncoding:
         embeddings = service.encode_batch(texts)
         
         assert len(embeddings) == 3
-        assert all(len(emb) == 384 for emb in embeddings)
+        assert all(len(emb) == EmbeddingService.EMBEDDING_DIM for emb in embeddings)
     
     def test_encode_batch_empty_list(self):
         """Test batch encoding empty list returns empty list."""
@@ -221,12 +223,12 @@ class TestEmbeddingServiceDimensions:
     """Test embedding dimensions constant."""
     
     def test_embedding_dim_constant(self):
-        """Test that EMBEDDING_DIM is 384."""
-        assert EmbeddingService.EMBEDDING_DIM == 384
+        """Test that EMBEDDING_DIM matches the configured model."""
+        assert EmbeddingService.EMBEDDING_DIM == 1024
     
     def test_model_name_constant(self):
-        """Test that MODEL_NAME is all-MiniLM-L6-v2."""
-        assert EmbeddingService.MODEL_NAME == "all-MiniLM-L6-v2"
+        """Test that MODEL_NAME is BAAI/bge-m3."""
+        assert EmbeddingService.MODEL_NAME == "BAAI/bge-m3"
 
 
 if __name__ == "__main__":

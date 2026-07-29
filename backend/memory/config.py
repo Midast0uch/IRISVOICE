@@ -71,8 +71,8 @@ class PrivacyConfig:
 class VectorSearchConfig:
     """Configuration for vector search."""
 
-    model_name: str = "all-MiniLM-L6-v2"
-    embedding_dim: int = 384
+    model_name: str = "BAAI/bge-m3"
+    embedding_dim: int = 1024
     similarity_threshold: float = 0.6
     max_results: int = 5
     fallback_to_keyword: bool = True

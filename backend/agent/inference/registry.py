@@ -43,3 +43,26 @@ class ProviderRegistry:
         """Remove the instance identified by *id* (no-op if missing)."""
         with self._lock:
             self._instances.pop(id, None)
+
+    def all_providers(self) -> dict[str, "ProviderInstance"]:
+        """Return a copy of the id → instance map (for introspection)."""
+        with self._lock:
+            return dict(self._instances)
+
+
+# Process-wide singleton. REQ-5: provider state lives in ONE place, not per
+# kernel. Every InferenceRouter and every WebSocket session reads this same
+# registry, so the API endpoint and the live session cannot disagree about
+# which models exist.
+_REGISTRY: Optional["ProviderRegistry"] = None
+_REGISTRY_LOCK = threading.Lock()
+
+
+def get_provider_registry() -> "ProviderRegistry":
+    """Return the process-wide provider registry (creating it once)."""
+    global _REGISTRY
+    if _REGISTRY is None:
+        with _REGISTRY_LOCK:
+            if _REGISTRY is None:
+                _REGISTRY = ProviderRegistry()
+    return _REGISTRY
