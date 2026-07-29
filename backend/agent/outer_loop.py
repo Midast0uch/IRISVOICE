@@ -18,9 +18,30 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class GuardResult:
+    """One compound-gate guard's outcome (Phase 6 REQ-6 AC5 / D-3).
+
+    ``live`` and ``passed`` are DISTINCT on purpose. A guard whose input could
+    not be computed for this batch reports ``live=False`` — it is DEAD, not
+    passing. Conflating "no signal" with "no objection" is exactly what let a
+    three-metric gate accept on one metric for months: ``verified_fraction``
+    read a literal and ``tokens_per_verified`` read an unpopulated column, both
+    silently reported as passing.
+    """
+
+    name: str
+    baseline: float
+    proposed: float
+    live: bool
+    passed: bool
+
 
 # Default physics parameters (overridable by the learned store).
 DEFAULT_PARAMS: Dict[str, float] = {
@@ -35,8 +56,18 @@ DEFAULT_PARAMS: Dict[str, float] = {
 HELD_OUT_WHITELIST = ("natural_exit",)
 
 # Step sizes for one-at-a-time proposals.
+#
+# REQ-4 (D-2): U_SPLIT gains a "never split" candidate. _growth_width /
+# _der_verify_strictness (agent_kernel.py) both split only when
+# `abs(u) < U_SPLIT`, and abs(u) can never be negative — so U_SPLIT <= 0.0 is
+# the value that is PROVABLY past the point where a split can occur (OQ-2):
+# `abs(u) < 0.0` is false for every real u, never just usually false. This is
+# the reward-hack the compound gate is named for ("never split" raises
+# natural_exit_rate by skipping the hard part) and it must be PRESENT here so
+# the gate actually rejects it (REQ-4 AC1/AC2) instead of the hack being
+# merely absent from the candidate list, which is untested, not prevented.
 _PROPOSALS: Dict[str, List[float]] = {
-    "U_SPLIT": [0.4, 0.5, 0.6, 0.7],
+    "U_SPLIT": [0.0, 0.4, 0.5, 0.6, 0.7],
     "U_CONVERGED": [0.75, 0.85, 0.95],
     "MAX_WIDTH": [2.0, 3.0, 4.0],
     "VERIFY_STRICT": [0.0, 1.0],
@@ -106,60 +137,172 @@ class OuterTuner:
 
     # ── score (D4.3 / REQ-2): compound held-out metric ──────────────────────
     def _score(self, held_out: List[Dict[str, Any]]) -> Dict[str, float]:
-        """Held-out metrics for the compound gate (REQ-2).
+        """Held-out metrics for the compound gate (REQ-2). Thin wrapper over
+        `_score_with_liveness` kept for backward compatibility with call sites
+        (and tests) that only want the metric values, not liveness."""
+        metrics, _live = self._score_with_liveness(held_out)
+        return metrics
 
-        Returns three signals, all computed from the honest ledgers:
-          - natural_exit_rate : fraction of held-out sessions that ended naturally
-          - verified_fraction : mean fraction of steps that reached VERIFIED
-          - tokens_per_verified : mean LLM tokens spent per VERIFIED step
+    def _score_with_liveness(
+        self, held_out: List[Dict[str, Any]]
+    ) -> Tuple[Dict[str, float], Dict[str, bool]]:
+        """Held-out metrics for the compound gate, PLUS which were computable.
+
+        Returns (metrics, live):
+          - natural_exit_rate   : fraction of held-out sessions that ended naturally.
+          - verified_fraction   : mean, per held-out session, of
+                                   VERIFIED-steps / executed-steps — the ACTUAL
+                                   ratio read from der_commits (REQ-2 AC5), not a
+                                   constant. A session with 0 executed_steps
+                                   contributes NOTHING to the mean — neutral
+                                   exclusion, not a 1.0 or 0.0 vote (REQ-2 AC6,
+                                   D-1): counting a fresh session as 1.0 is
+                                   exactly the dead-branch behaviour, and it
+                                   hides degradation by dragging the mean up.
+          - tokens_per_verified : mean, per held-out session with >=1 VERIFIED
+                                   step, of tokens_total / verified_count.
 
         Only fields in HELD_OUT_WHITELIST (natural_exit) count toward the PRIMARY
-        objective; drift/route_score are excluded (MCM governance quirks). The other
-        two are GUARD signals — a proposal must not degrade them (REQ-2 AC3).
+        objective; drift/route_score are excluded (MCM governance quirks). The
+        other two are GUARD signals — a proposal must not degrade them (AC3).
+
+        `live[name]` is False when NO held-out session could supply that
+        metric's input (every session had 0 executed_steps, or the ledger
+        column could not be read) — REQ-2 edge case: "ledger missing a column
+        -> the guard reading it must report as unavailable, not silently
+        pass." A metric reported as 0.0 because it is genuinely UNAVAILABLE
+        must never be mistaken for a metric that is 0.0 because it was
+        actually measured.
         """
         if not held_out:
-            return {
-                "natural_exit_rate": 0.0,
-                "verified_fraction": 0.0,
-                "tokens_per_verified": 0.0,
-            }
+            return (
+                {
+                    "natural_exit_rate": 0.0,
+                    "verified_fraction": 0.0,
+                    "tokens_per_verified": 0.0,
+                },
+                {
+                    "natural_exit_rate": True,
+                    "verified_fraction": False,
+                    "tokens_per_verified": False,
+                },
+            )
         ne_hits = 0
         vf_sum = 0.0
+        vf_n = 0
         tpv_sum = 0.0
+        tpv_n = 0
+        _col_error = False
         for row in held_out:
             if row.get("natural_exit"):
                 ne_hits += 1
-            vc = int(row.get("verified_count", 0) or 0)
-            tt = float(row.get("tokens_total", 0.0) or 0.0)
-            # verified_fraction: 1.0 when a session has no recorded steps yet
-            # (don't penalize a fresh/empty session) — treat as neutral 1.0.
-            vf_sum += 1.0 if vc == 0 else 1.0
-            tpv_sum += (tt / vc) if vc > 0 else 0.0
+            try:
+                vc = int(row.get("verified_count", 0) or 0)
+                executed = int(row.get("executed_steps", 0) or 0)
+                tt = float(row.get("tokens_total", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                # Ledger row has a malformed/missing column — this session
+                # cannot contribute to either guard; not the same as "0".
+                _col_error = True
+                continue
+            # REQ-2 AC5/AC6: the REAL ratio per session, excluded when the
+            # denominator is 0 (D-1) instead of being coerced to 1.0.
+            if executed > 0:
+                vf_sum += vc / executed
+                vf_n += 1
+            # tokens_per_verified is likewise undefined (not 0.0) for a session
+            # with no VERIFIED steps — excluded from the mean rather than
+            # silently pulling the average toward 0 and hiding a real cost.
+            if vc > 0:
+                tpv_sum += tt / vc
+                tpv_n += 1
         n = len(held_out)
-        return {
+        metrics = {
             "natural_exit_rate": ne_hits / n,
-            "verified_fraction": vf_sum / n,
-            "tokens_per_verified": tpv_sum / n,
+            "verified_fraction": (vf_sum / vf_n) if vf_n > 0 else 0.0,
+            "tokens_per_verified": (tpv_sum / tpv_n) if tpv_n > 0 else 0.0,
         }
+        live = {
+            "natural_exit_rate": True,
+            "verified_fraction": (vf_n > 0) and not _col_error,
+            "tokens_per_verified": (tpv_n > 0) and not _col_error,
+        }
+        return metrics, live
+
+    @staticmethod
+    def _evaluate_guards(
+        proposed: Dict[str, float],
+        baseline: Dict[str, float],
+        live: Optional[Dict[str, bool]] = None,
+    ) -> List[GuardResult]:
+        """REQ-2 AC7 / REQ-6: evaluate the three guards INDEPENDENTLY.
+
+        Each returned `GuardResult` can be inspected on its own — this is what
+        makes "each guard can independently reject" (REQ-2 AC7) and "a guard
+        with unavailable input is dead, not passing" (REQ-6 AC5, D-3, CT-D5)
+        checkable by test, instead of only end-to-end. A compound gate tested
+        only end-to-end is exactly how two dead guards survived.
+        """
+        tol = 1e-6
+        live = live or {
+            "natural_exit_rate": True,
+            "verified_fraction": True,
+            "tokens_per_verified": True,
+        }
+
+        ne_live = live.get("natural_exit_rate", True)
+        ne_passed = ne_live and (
+            proposed["natural_exit_rate"] > baseline["natural_exit_rate"]
+        )
+        vf_live = live.get("verified_fraction", True)
+        vf_passed = vf_live and (
+            proposed["verified_fraction"] >= baseline["verified_fraction"] - tol
+        )
+        tpv_live = live.get("tokens_per_verified", True)
+        tpv_passed = tpv_live and (
+            proposed["tokens_per_verified"] <= baseline["tokens_per_verified"] + tol
+        )
+        return [
+            GuardResult(
+                "natural_exit_rate",
+                baseline["natural_exit_rate"],
+                proposed["natural_exit_rate"],
+                ne_live,
+                ne_passed,
+            ),
+            GuardResult(
+                "verified_fraction",
+                baseline["verified_fraction"],
+                proposed["verified_fraction"],
+                vf_live,
+                vf_passed,
+            ),
+            GuardResult(
+                "tokens_per_verified",
+                baseline["tokens_per_verified"],
+                proposed["tokens_per_verified"],
+                tpv_live,
+                tpv_passed,
+            ),
+        ]
 
     @staticmethod
     def _compound_accepts(
-        proposed: Dict[str, float], baseline: Dict[str, float]
+        proposed: Dict[str, float],
+        baseline: Dict[str, float],
+        live: Optional[Dict[str, bool]] = None,
     ) -> bool:
-        """REQ-2 AC3: accept ONLY if natural_exit_rate improves AND neither guard
-        signal degrades beyond a small tolerance.
+        """REQ-2 AC3: accept ONLY if ALL THREE guards independently pass.
 
-        A proposal that raises natural-exit rate by cheating (fewer VERIFIED steps,
-        or more tokens per verified step) is REJECTED. This is the anti-hack gate.
+        A proposal that raises natural-exit rate by cheating (fewer VERIFIED
+        steps, or more tokens per verified step) is REJECTED. This is the
+        anti-hack gate. `live` defaults to "all live" for callers (and
+        existing tests) that pre-compute a scenario without going through
+        `_score_with_liveness`.
         """
-        tol = 1e-6
-        if proposed["natural_exit_rate"] <= baseline["natural_exit_rate"]:
-            return False
-        if proposed["verified_fraction"] < baseline["verified_fraction"] - tol:
-            return False
-        if proposed["tokens_per_verified"] > baseline["tokens_per_verified"] + tol:
-            return False
-        return True
+        return all(
+            g.passed for g in OuterTuner._evaluate_guards(proposed, baseline, live)
+        )
 
     # ── propose one change (D4.2 _propose_one) ──────────────────────────────
     def _propose_one(self) -> Optional[Tuple[str, float]]:
@@ -175,9 +318,35 @@ class OuterTuner:
                     return (key, float(cand))
         return None
 
+    # ── per-domain grouping (REQ-3) ──────────────────────────────────────────
+    @staticmethod
+    def _domain_groups(
+        held_out: List[Dict[str, Any]]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Group held-out rows by their `domain` field (REQ-3)."""
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for row in held_out:
+            d = row.get("domain") or "general"
+            groups.setdefault(d, []).append(row)
+        return groups
+
+    @staticmethod
+    def _deciding_guard(guards: List[GuardResult]) -> Optional[str]:
+        """The first guard that did not pass — reported for observability
+        (REQ-6 AC3). None when all guards passed."""
+        for g in guards:
+            if not g.passed:
+                return g.name
+        return None
+
     # ── main entry (D4.2 run_once) ───────────────────────────────────────────
     def run_once(self, domain: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Run one outer-loop iteration.
+
+        Order (D-4): the POOLED compound gate runs first; per-domain gating
+        (REQ-3) only runs — and can only ADD rejections — when pooled accepts.
+        A proposal failing pooled never reaches domain iteration, so per-domain
+        gating can never accept something the pooled gate rejected.
 
         Returns the applied change dict, or None if no improvement / no proposal.
         """
@@ -188,7 +357,7 @@ class OuterTuner:
             return None
 
         held_out = self._heldout_batch(exits)
-        baseline = self._score(held_out)
+        baseline, live = self._score_with_liveness(held_out)
 
         proposal = self._propose_one()
         if proposal is None:
@@ -203,26 +372,71 @@ class OuterTuner:
         # threshold. Concretely: if more held-out sessions are natural exits when
         # we expect fewer splits (higher U_SPLIT), the proposal helps.
         proposed = self._score_proposal(key, value, held_out, baseline)
-        if self._compound_accepts(proposed, baseline):
+        pooled_guards = self._evaluate_guards(proposed, baseline, live)
+        pooled_accepts = all(g.passed for g in pooled_guards)
+
+        # ── REQ-3: per-domain gating — pooled first, domains can only tighten ──
+        domain_report: Dict[str, Any] = {}
+        domain_accepts = True
+        if pooled_accepts:
+            groups = self._domain_groups(held_out)
+            eligible = {d: rows for d, rows in groups.items() if len(rows) >= 2}
+            if eligible:
+                for d, rows in eligible.items():
+                    d_baseline, d_live = self._score_with_liveness(rows)
+                    d_proposed = self._score_proposal(key, value, rows, d_baseline)
+                    d_guards = self._evaluate_guards(d_proposed, d_baseline, d_live)
+                    d_pass = all(g.passed for g in d_guards)
+                    domain_report[d] = {
+                        "gated": True,
+                        "passed": d_pass,
+                        "sessions": len(rows),
+                        "deciding_guard": self._deciding_guard(d_guards),
+                    }
+                    if not d_pass:
+                        domain_accepts = False
+                # AC2: reject if the gate fails in ANY gated domain.
+            else:
+                # AC3: fewer than 2 sessions in every domain -> pooled fallback,
+                # preserving current (pre-REQ-3) behaviour.
+                domain_report["_fallback"] = "pooled (no domain has >=2 held-out sessions)"
+
+        accepted = pooled_accepts and domain_accepts
+        deciding = self._deciding_guard(pooled_guards) if not pooled_accepts else (
+            None if domain_accepts else "per_domain"
+        )
+
+        # REQ-6 AC3: log every accepted/rejected proposal with all three metric
+        # values and the deciding guard.
+        logger.info(
+            "[outer_loop] %s %s=%s | baseline=%s proposed=%s deciding_guard=%s "
+            "domains=%s",
+            "applied" if accepted else "rejected",
+            key, value, baseline, proposed, deciding, domain_report,
+        )
+
+        if accepted:
             self._apply(key, value)
-            result = {
+            return {
                 "applied": True,
                 "key": key,
                 "value": value,
                 "baseline": baseline,
                 "proposed": proposed,
+                "live": live,
+                "deciding_guard": deciding,
+                "domains": domain_report,
             }
-            logger.info(
-                "[outer_loop] applied %s=%s (compound gate passed)",
-                key, value,
-            )
-            return result
-        logger.info(
-            "[outer_loop] rejected %s=%s (compound gate failed: %s)",
-            key, value, proposed,
-        )
-        return {"applied": False, "key": key, "value": value,
-                "baseline": baseline, "proposed": proposed}
+        return {
+            "applied": False,
+            "key": key,
+            "value": value,
+            "baseline": baseline,
+            "proposed": proposed,
+            "live": live,
+            "deciding_guard": deciding,
+            "domains": domain_report,
+        }
 
     def _score_proposal(
         self,

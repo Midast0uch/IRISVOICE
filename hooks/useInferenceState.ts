@@ -6,9 +6,16 @@ import { useIRISWebSocket } from './useIRISWebSocket';
 interface Provider {
   id: string;
   label: string;
-  kind: 'API' | 'LOCAL_OPENAI' | 'INPROCESS' | 'OLLAMA';
+  kind: 'API' | 'LOCAL_OPENAI' | 'INPROCESS' | 'OLLAMA' | 'api' | 'local_openai' | 'inprocess' | 'ollama';
   model: string;
   api_base_url?: string;
+  // Phase 5 (D-4): boolean ONLY — never a key or fragment reaches the frontend.
+  has_key?: boolean;
+  // Phase 1 REQ-3 AC2 — truthful for local models as of Phase 3.
+  loaded?: boolean;
+  loading?: boolean;
+  // Phase 1 REQ-4 AC3 — the ModelSwitcher (Phase 5 REQ-2 AC4) filters to "chat".
+  purpose?: string;
 }
 
 interface ProviderPreset {
