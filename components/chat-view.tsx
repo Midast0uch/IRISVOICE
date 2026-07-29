@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RotateCcw, RefreshCw } from 'lucide-react';
+import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RefreshCw, Pencil } from 'lucide-react';
 import { Icon } from '@iconify/react';
 import { IconArrowBigRightLines } from '@tabler/icons-react';
 import { Xur } from "@/components/Xur";
@@ -1129,7 +1129,12 @@ export function ChatWing({
   }, [voiceState, isSpeaking]);
 
   const handleSendMessage = async () => {
-    if (!inputText.trim()) return
+    // REQ-1 AC3 (Phase 5): these were the Send button's `disabled` conditions
+    // (`!inputText.trim() || isTyping || voiceState === 'listening'`). They
+    // move here, into the send path itself, BEFORE the button is removed —
+    // otherwise `Enter` (which already calls this function directly) would
+    // send mid-response or while IRIS is listening, with no error.
+    if (!inputText.trim() || isTyping || voiceState === 'listening') return
     const text = inputText.trim()
 
     setInputText("")
@@ -1375,6 +1380,76 @@ export function ChatWing({
 
   // Retry on error: re-send the last user message.
   const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null)
+  // Inline prompt editing — retry/edit belong to the USER's turn, not the reply.
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editingText, setEditingText] = useState("")
+
+  /**
+   * Re-send a user prompt, optionally revised.
+   *
+   * Everything after the prompt is dropped before re-sending: a revised
+   * question with the answer to the OLD question still sitting under it reads
+   * as though the agent answered the new one. One prompt, one answer.
+   *
+   * Unlike handleRetryPrompt below, the fetch is issued OUTSIDE the state
+   * updater — an updater must stay pure, or React's dev double-invoke fires
+   * the request twice.
+   */
+  const handleResendUserMessage = (
+    messageIndex: number,
+    convId: string,
+    revisedText?: string,
+  ) => {
+    if (retryingMessageId) return
+    const conv = conversations.find((c) => c.id === convId)
+    const target = conv?.messages[messageIndex]
+    if (!target || target.sender !== "user") return
+    const text = (revisedText ?? target.text).trim()
+    if (!text) return
+
+    setEditingMessageId(null)
+    setRetryingMessageId(target.id)
+    setConversations((prev) =>
+      prev.map((c) => {
+        if (c.id !== convId) return c
+        const kept = c.messages.slice(0, messageIndex + 1)
+        // `words` is the TTS highlight map for the OLD text — stale once edited.
+        kept[messageIndex] = { ...target, text, words: undefined }
+        return { ...c, messages: kept, lastMessagePreview: text.substring(0, 60) }
+      }),
+    )
+
+    fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, thread_id: convId }),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Chat returned ${res.status}`)
+        return res.json()
+      })
+      .then((data) => {
+        setRetryingMessageId(null)
+        window.dispatchEvent(
+          new CustomEvent("iris:text_response", {
+            detail: {
+              text: data.content || "",
+              sender: "assistant",
+              thinking: data.thinking || "",
+              turn_id: data.turn_id,
+            },
+          }),
+        )
+      })
+      .catch(() => {
+        setRetryingMessageId(null)
+        window.dispatchEvent(
+          new CustomEvent("iris:text_response", {
+            detail: { text: "Couldn't reach IRIS. Try again.", sender: "error" },
+          }),
+        )
+      })
+  }
 
   const handleRetryPrompt = (errorMessageIndex: number, convId: string) => {
     // Debounce rapid retries
@@ -2579,6 +2654,74 @@ ${message.text}`;
                               // Short message - display fully
                               <p className="text-[13px] leading-relaxed text-white/90">{renderWithLinks(message.text)}</p>
                             )}
+
+                            {/* Prompt actions. Retry and Edit act on the PROMPT,
+                                so they live on the user's turn — re-running the
+                                agent's reply was never the thing being retried. */}
+                            {editingMessageId === message.id ? (
+                              <div className="mt-2 pt-2 border-t border-white/5">
+                                <textarea
+                                  value={editingText}
+                                  onChange={(e) => setEditingText(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault()
+                                      handleResendUserMessage(index, activeConversationId!, editingText)
+                                    }
+                                    if (e.key === "Escape") setEditingMessageId(null)
+                                  }}
+                                  autoFocus
+                                  rows={Math.min(6, Math.max(2, editingText.split("\n").length))}
+                                  className="w-full resize-y rounded px-2 py-1.5 text-[13px] leading-relaxed bg-white/5 text-white/90 outline-none"
+                                  style={{ border: `1px solid ${glowColor}40` }}
+                                  aria-label="Edit your prompt"
+                                />
+                                <div className="flex items-center gap-2 mt-1.5">
+                                  <button
+                                    onClick={() => handleResendUserMessage(index, activeConversationId!, editingText)}
+                                    disabled={!editingText.trim() || !!retryingMessageId}
+                                    className="px-2 py-1 rounded text-[10px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                    style={{ backgroundColor: `${glowColor}20`, color: glowColor }}
+                                  >
+                                    Send revised
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingMessageId(null)}
+                                    className="px-2 py-1 rounded text-[10px] text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <span className="text-[9px] text-white/25 ml-auto">
+                                    Enter to send · Esc to cancel
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 mt-1.5">
+                                <button
+                                  onClick={() => handleResendUserMessage(index, activeConversationId!)}
+                                  disabled={!!retryingMessageId}
+                                  className="p-1 rounded transition-colors text-white/25 hover:text-white/70 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Retry — send this prompt again"
+                                >
+                                  <RefreshCw
+                                    size={11}
+                                    className={retryingMessageId === message.id ? "animate-spin" : ""}
+                                  />
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setEditingText(message.text)
+                                    setEditingMessageId(message.id)
+                                  }}
+                                  disabled={!!retryingMessageId}
+                                  className="p-1 rounded transition-colors text-white/25 hover:text-white/70 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Edit — revise this prompt and send it again"
+                                >
+                                  <Pencil size={11} />
+                                </button>
+                              </div>
+                            )}
                           </motion.div>
                         ) : message.sender === 'assistant' ? (
                           // AI message - no bubble container with feedback bar
@@ -2796,15 +2939,21 @@ ${message.text}`;
                             
                             {/* Feedback action bar */}
                             <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/5">
+                              {/* Icon-only, like every other action here. The
+                                  "Copy"/"Copied!" label was the one text button
+                                  in the row; confirmation is the colour flash. */}
                               <button
                                 onClick={() => handleCopyMessage(message.text, message.id)}
-                                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors hover:bg-white/5 text-white/40 hover:text-white/70"
-                                title="Copy to clipboard"
+                                className={`p-1.5 rounded transition-colors hover:bg-white/5 ${
+                                  copiedMessageId === message.id
+                                    ? "text-green-400"
+                                    : "text-white/40 hover:text-white/70"
+                                }`}
+                                title={copiedMessageId === message.id ? "Copied" : "Copy to clipboard"}
                               >
                                 <Copy size={12} />
-                                {copiedMessageId === message.id ? 'Copied!' : 'Copy'}
                               </button>
-                              
+
                               <button
                                 onClick={() => handlePlayTTSClick(message.text)}
                                 className="p-1.5 rounded transition-colors hover:bg-white/5 text-white/40 hover:text-white/70"
@@ -2813,25 +2962,6 @@ ${message.text}`;
                                 <Volume2 size={12} />
                               </button>
 
-                              {/* Revert button — truncate conversation to this message */}
-                              <button
-                                onClick={() =>
-                                  handleRevertMessage(index, activeConversationId!, message.id)
-                                }
-                                className={`p-1.5 rounded transition-colors hover:bg-white/5 ${
-                                  revertConfirmIndex === index
-                                    ? "text-amber-400 bg-amber-400/10"
-                                    : "text-white/40 hover:text-white/70"
-                                }`}
-                                title={
-                                  revertConfirmIndex === index
-                                    ? "Click again to confirm revert"
-                                    : "Revert conversation to this point"
-                                }
-                              >
-                                <RotateCcw size={12} />
-                              </button>
-                              
                               <div className="flex items-center gap-1 ml-auto">
                                 <button
                                   onClick={() => handleFeedback(message.id, 'positive')}
@@ -3356,7 +3486,13 @@ ${message.text}`;
                   }}
                 >
 
-                  {/* Send pill — glows when text is entered */}
+                  {/* Send pill. Phase 5 REQ-1 removes this in favour of the model
+                      switcher, but only once the switcher actually renders — it was
+                      removed while ModelSwitcher was imported and never mounted,
+                      leaving the row with no send affordance at all. Restored until
+                      Phase 5 lands as one piece. The `disabled` conditions below are
+                      now ALSO enforced inside handleSendMessage, so Enter is guarded
+                      whether or not this button exists — that half of REQ-1 stays. */}
                   <motion.button
                     onClick={handleSendMessage}
                     disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
