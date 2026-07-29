@@ -110,3 +110,42 @@ PROVIDER_PRESETS: list[dict] = [
     {"id": "lmstudio", "label": "LM Studio", "kind": "local_openai", "needs_key": False,
      "api_base_url": "http://localhost:1234"},
 ]
+
+
+def register_builtin_encoder_providers() -> None:
+    """Register the LFM2.5 encoder providers as non-chat, CPU-only providers
+    (REQ-6 AC1/AC2/AC4). They are NOT bound to reasoning/tool_execution, so they
+    can never serve as the user's brain or tool runner.
+
+    Embedding-350M is always registered (purpose="embedding"). ColBERT-350M
+    (purpose="rerank") is deferred behind a quality gate (REQ-7 AC6) and only
+    registered when explicitly enabled via IRIS_ENABLE_COLBERT, so it stays out
+    of the default provider list until its retrieval quality is measured.
+    """
+    import os
+    from .registry import get_provider_registry
+
+    reg = get_provider_registry()
+
+    if reg.get("embedding:lfm25-emb-350m") is None:
+        reg.add(
+            ProviderInstance(
+                id="embedding:lfm25-emb-350m",
+                label="LFM2.5 Embedding 350M",
+                kind=ProviderKind.INPROCESS,
+                model="LFM2.5-Embedding-350M",
+                purpose="embedding",
+            )
+        )
+
+    if os.environ.get("IRIS_ENABLE_COLBERT", "").lower() in ("1", "true", "yes"):
+        if reg.get("rerank:lfm25-colbert-350m") is None:
+            reg.add(
+                ProviderInstance(
+                    id="rerank:lfm25-colbert-350m",
+                    label="LFM2.5 ColBERT 350M (rerank)",
+                    kind=ProviderKind.INPROCESS,
+                    model="LFM2.5-ColBERT-350M",
+                    purpose="rerank",
+                )
+            )

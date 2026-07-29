@@ -26,7 +26,14 @@ def execute(ctx: dict, params: dict) -> dict:
         if not episodic:
             return ctx
 
-        ep_ctx = episodic.assemble_episodic_context(task)
+        # REQ-32: scope recall to the active thread unless cross-thread recall
+        # is explicitly requested. ctx["session_id"] is the per-thread id
+        # (conversation_id) set by MCMOrchestrator at construction.
+        session_id = ctx.get("session_id")
+        cross_thread = params.get("cross_thread", False)
+        ep_ctx = episodic.assemble_episodic_context(
+            task, session_id=None if cross_thread else session_id
+        )
         if not ep_ctx or not ep_ctx.strip():
             return ctx
 

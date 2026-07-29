@@ -76,6 +76,13 @@ class VectorSearchConfig:
     similarity_threshold: float = 0.6
     max_results: int = 5
     fallback_to_keyword: bool = True
+    # Phase 4 (REQ-1 AC4): selectable embedding backend. "bge-m3" (default,
+    # migration-safe) or "lfm25-emb-350m" (LFM2.5-Embedding-350M GGUF, CPU).
+    # The swap is reversible from config, not from a revert.
+    backend: str = "bge-m3"
+    # Explicit path to the Embedding-350M GGUF. When None, discovered from the
+    # user's local model folder (REQ-7 AC1). Never silently downloaded.
+    model_path: Optional[str] = None
 
 
 @dataclass

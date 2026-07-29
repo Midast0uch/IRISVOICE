@@ -225,9 +225,11 @@
 
 | Metric | BGE-M3 / substring (before) | Embedding-350M / encoder (after) |
 |---|---|---|
-| recall@1 / @5 / @10 | | |
-| query latency | | |
-| resident memory | | |
-| paraphrase recognized (fewer false FAILED) | | |
-| unsatisfied-but-overlapping rejected (fewer false VERIFIED) | | |
-| stub rejected | 100% (required) | 100% (required) |
+| recall@1 / @5 / @10 | **BLOCKED** — `sentence_transformers` not installed in this environment; record when run on a machine with BGE-M3. (Hash fallback numbers see eval_results.json — not comparable.) | *(placeholder — requires real models; record after T2.5)* |
+| query latency | **BLOCKED** — same as above. | *(placeholder)* |
+| resident memory | **BLOCKED** — same as above. | *(placeholder)* |
+| paraphrase recognized (fewer false FAILED) | **0 / 3** (substring baseline). All 3 paraphrases scored 0.0 — substring cannot recognise paraphrase. | *(placeholder — record after T4.6)* |
+| unsatisfied-but-overlapping rejected (fewer false VERIFIED) | **0 / 4** (substring baseline). All 4 well-phrased-stub/vocab-overlap probes scored >0.0 — substring passes cases where overlapping vocabulary appears as a verbatim substring. | *(placeholder — record after T4.6)* |
+| stub rejected | **2 / 2 (100%)** — substring stub guard correctly rejects bare stubs. | 100% (required) |
+| **T5.3 — default backend decision** | — | *(pending — requires T2.5 and T4.6 measurements)* |
+| **T5.4 — ColBERT decision** | — | *(pending — requires recall measurements from real model)* |

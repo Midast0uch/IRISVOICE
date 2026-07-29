@@ -33,10 +33,12 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from multiprocessing import cpu_count
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncGenerator, Dict, Iterator, List, Optional
+from dataclasses import dataclass
 
 import httpx
 
@@ -200,7 +202,232 @@ PROFILES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# Split GGUF filename pattern: model-00001-of-00003.gguf
+# ── Phase 3: Device policy constants ──────────────────────────────────────
+# TARGET_TPS — minimum acceptable tokens/sec for chat models. If measured
+# throughput falls below this, the ConfigDeriver shrinks n_ctx (and then
+# n_batch) to stay within VRAM. Env-overridable for tuning.
+TARGET_TPS = float(os.environ.get("IRIS_TARGET_TPS", "25"))
+# MIN_CTX — floor for context window shrinking. Never go below 4096.
+MIN_CTX = 4096
+# MAX_CTX — ceiling for context window expansion (default 32k, the
+# largest common GGUF training context).
+MAX_CTX = 32768
+# SCAN_MAX_DEPTH — max directory depth for model scanning. Bounds the
+# symlink-following walk so a circular symlink cannot loop forever (REQ-6).
+SCAN_MAX_DEPTH = 8
+# TPS_DEADBAND — fraction of TARGET_TPS within which no correction is written.
+# A measurement between TARGET_TPS * (1 - TPS_DEADBAND) and TARGET_TPS * (1 + TPS_DEADBAND)
+# is "close enough"; we neither shrink nor grow the cached context. This prevents
+# thrashing the cache on noise around the target (REQ-4 AC5).
+TPS_DEADBAND = 0.15
+
+# ── DevicePolicy: the single source of truth for device/ladder/VRAM/target ──
+# resolve_device_policy() is the ONLY function that decides:
+#   - which device (gpu/cpu) a model loads on
+#   - the degradation ladder (which knobs to turn when VRAM is tight)
+#   - whether the model counts against the GPU VRAM budget
+#   - the throughput target (None for non-chat purposes)
+# All callers MUST go through this function — no if-guards elsewhere.
+
+@dataclass(frozen=True)
+class DevicePolicy:
+    """Immutable decision about how a model should be loaded and run.
+
+    Attributes:
+        device: "gpu" or "cpu"
+        ladder: Ordered tuple of degradation steps. For GPU chat models:
+                ("ctx", "batch") — shrink context first, then batch.
+                For CPU models: () — no degradation ladder.
+        counts_against_vram: Whether this model's VRAM usage counts
+                             toward the GPU budget. CPU models: False.
+        throughput_target: Minimum acceptable tok/s. None for CPU
+                          (embedding/rerank) — no throughput requirement.
+    """
+    device: str
+    ladder: tuple[str, ...]
+    counts_against_vram: bool
+    throughput_target: Optional[float]
+
+
+@dataclass
+class CachedConfig:
+    """A persisted, known-good config for a specific model + hardware combo.
+
+    REQ-5: corrections from record_tps land here, not on the running model.
+    """
+    fingerprint: str          # path + size + mtime  (REQ-5 AC2)
+    hw_fingerprint: str       # gpu name + total VRAM (REQ-5 AC4)
+    config: Dict[str, Any]    # {n_ctx, n_gpu_layers, n_batch, ...}
+    measured_tps: Optional[float] = None
+    updated_at: float = 0.0
+
+
+class ConfigCache:
+    """Per-model config cache backed by .mcm/local_model_configs.json.
+
+    Keyed by model path. Each entry stores a CachedConfig. On a hardware
+    change (hw_fingerprint mismatch) the entry is invalidated and re-derived.
+    A corrupt file is discarded and derivation falls back to fresh (REQ-5 AC5).
+    """
+
+    def __init__(self, cache_path: Optional[Path] = None) -> None:
+        self.cache_path = cache_path or (IRISVOICE_ROOT / ".mcm" / "local_model_configs.json")
+        self._lock = threading.Lock()
+        self._data: Dict[str, Any] = {}
+        self._loaded = False
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            if self.cache_path.exists():
+                with open(self.cache_path, "r", encoding="utf-8") as fh:
+                    self._data = json.load(fh)
+                if not isinstance(self._data, dict):
+                    raise ValueError("cache root not a dict")
+        except Exception as exc:  # corrupt / unreadable → discard, derive fresh
+            logger.warning(
+                f"[ConfigCache] cache unreadable ({exc}); starting fresh"
+            )
+            self._data = {}
+
+    @staticmethod
+    def _hw_fingerprint(hw: Dict[str, Any]) -> str:
+        gpu = hw.get("gpu_name") or "no-gpu"
+        vram = hw.get("vram_total_gb") or 0.0
+        return f"{gpu}:{vram:.1f}GB"
+
+    @staticmethod
+    def _model_fingerprint(model_path: str, model_meta: Dict[str, Any]) -> str:
+        try:
+            p = Path(model_path)
+            st = p.stat()
+            return f"{model_path}:{st.st_size}:{int(st.st_mtime)}"
+        except Exception:
+            # Fall back to metadata-only fingerprint if file unstat-able
+            return f"{model_path}:{model_meta.get('params_b')}:{model_meta.get('quant')}"
+
+    def get(self, model_path: str, model_meta: Dict[str, Any],
+            hw: Dict[str, Any]) -> Optional[CachedConfig]:
+        """Return a valid cached config, or None if missing/invalid/stale."""
+        self._ensure_loaded()
+        key = self._model_fingerprint(model_path, model_meta)
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        if entry.get("hw_fingerprint") != self._hw_fingerprint(hw):
+            # Hardware changed since caching → invalidate (REQ-5 AC4)
+            logger.info(
+                f"[ConfigCache] hw fingerprint mismatch for {model_path}; re-deriving"
+            )
+            return None
+        return CachedConfig(
+            fingerprint=entry.get("fingerprint", key),
+            hw_fingerprint=entry.get("hw_fingerprint", ""),
+            config=entry.get("config", {}),
+            measured_tps=entry.get("measured_tps"),
+            updated_at=entry.get("updated_at", 0.0),
+        )
+
+    def put(self, model_path: str, model_meta: Dict[str, Any], hw: Dict[str, Any],
+            config: Dict[str, Any], measured_tps: Optional[float] = None) -> None:
+        """Persist a config for the model + current hardware."""
+        self._ensure_loaded()
+        key = self._model_fingerprint(model_path, model_meta)
+        self._data[key] = {
+            "fingerprint": key,
+            "hw_fingerprint": self._hw_fingerprint(hw),
+            "config": config,
+            "measured_tps": measured_tps,
+            "updated_at": time.time(),
+        }
+        self._save()
+
+    def _save(self) -> None:
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.cache_path.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self._data, fh, indent=2)
+            tmp.replace(self.cache_path)
+        except Exception as exc:
+            logger.warning(f"[ConfigCache] failed to persist cache: {exc}")
+
+
+def resolve_device_policy(
+    purpose: str,
+    user_override: Optional[str] = None,
+) -> DevicePolicy:
+    """Resolve the device policy for a given model purpose.
+
+    This is the SINGLE source of truth for device/ladder/VRAM/target.
+    D-1: One function, not four if-guards scattered across the codebase.
+
+    Purpose → device mapping (D-2):
+        chat       → GPU, ladder ("ctx","batch"), counts VRAM, target=TARGET_TPS
+        embedding  → CPU, ladder (), no VRAM, no target
+        rerank     → CPU, ladder (), no VRAM, no target
+        tool       → GPU, ladder ("ctx","batch"), counts VRAM, target=TARGET_TPS
+
+    user_override: If "gpu" or "cpu", flips BOTH device and
+                   counts_against_vram together (D-2).
+                   If None, uses the purpose-based default.
+
+    Args:
+        purpose: One of "chat", "embedding", "rerank", "tool".
+        user_override: Explicit device override ("gpu" or "cpu"), or None.
+
+    Returns:
+        DevicePolicy with device, ladder, counts_against_vram, throughput_target.
+
+    Raises:
+        ValueError: If purpose is not recognized.
+    """
+    # Validate purpose
+    valid_purposes = {"chat", "embedding", "rerank", "tool"}
+    if purpose not in valid_purposes:
+        raise ValueError(
+            f"Unknown purpose '{purpose}'. "
+            f"Valid purposes: {sorted(valid_purposes)}"
+        )
+
+    # Determine base device from purpose
+    # chat and tool → GPU; embedding and rerank → CPU
+    if purpose in ("chat", "tool"):
+        base_device = "gpu"
+        ladder = ("ctx", "batch")
+        counts_vram = True
+        target = TARGET_TPS
+    else:  # embedding, rerank
+        base_device = "cpu"
+        ladder = ()
+        counts_vram = False
+        target = None
+
+    # Apply user override: flips device AND counts_against_vram together
+    if user_override is not None:
+        override = user_override.lower()
+        if override not in ("gpu", "cpu"):
+            raise ValueError(
+                f"Invalid user_override '{user_override}'. "
+                f"Must be 'gpu' or 'cpu'."
+            )
+        device = override
+        # When user overrides to GPU, model counts against VRAM.
+        # When user overrides to CPU, model does NOT count against VRAM.
+        counts_vram = (override == "gpu")
+    else:
+        device = base_device
+
+    return DevicePolicy(
+        device=device,
+        ladder=ladder,
+        counts_against_vram=counts_vram,
+        throughput_target=target,
+    )
+
+
 _SPLIT_SUFFIX_PART = "-of-"
 
 # ── GGML type string → llama_cpp integer constant ─────────────────────────
@@ -302,6 +529,8 @@ class LocalModelManager:
         self._current_model_path: Optional[str] = None
         self._current_profile: str = "balanced"
         self._current_params: Dict[str, Any] = {}
+        self._current_model_meta: Dict[str, Any] = {}
+        self._current_purpose: str = "chat"
         self._lock = threading.Lock()
         # [10.6] Async lock — prevents concurrent load_model() calls racing
         self._load_lock: Optional[asyncio.Lock] = None
@@ -316,6 +545,9 @@ class LocalModelManager:
         # [10.10] TPS rolling window — last 3 measurements for gradient warning
         self._tps_window: list = []
         self._tps_slow_warned: bool = False
+        # [Phase 3 / REQ-5] Per-model config cache — corrections from record_tps
+        # land here, never on the running model (REQ-4 AC4).
+        self._config_cache = ConfigCache()
         # MTP speculative-decoding metrics
         self._mtp_acceptance_window: list = []  # rolling acceptance rates
         self._mtp_draft_tokens_total: int = 0
@@ -665,16 +897,70 @@ class LocalModelManager:
     # Model scanning
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _iter_gguf_paths(self) -> List[Path]:
+        """Depth-bounded walk that follows symlinks, deduped by resolved path.
+
+        REQ-6: discovers models reachable ONLY through a symlink, exactly once.
+        Circular symlinks are skipped (resolved paths are tracked). Depth is
+        bounded by SCAN_MAX_DEPTH so a symlink loop cannot hang the scan.
+        """
+        root = self.effective_models_dir
+        results: List[Path] = []
+        seen: set = set()  # resolved paths already handled (files + dirs)
+        from collections import deque
+
+        queue: "deque[tuple[Path, int]]" = deque([(root, 0)])
+        try:
+            seen.add(root.resolve())
+        except OSError:
+            pass
+        while queue:
+            d, depth = queue.popleft()
+            try:
+                entries = list(os.scandir(d))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        target = Path(entry.path).resolve()
+                        if target in seen:
+                            continue
+                        seen.add(target)
+                        if entry.is_dir():
+                            # Symlinked directory — follow it (depth-bounded).
+                            if depth + 1 <= SCAN_MAX_DEPTH:
+                                queue.append((Path(entry.path), depth + 1))
+                        elif entry.name.endswith(".gguf"):
+                            results.append(Path(entry.path))
+                        # Symlinked non-gguf file → skip.
+                        continue
+                    # Regular (non-symlink) entry.
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth + 1 <= SCAN_MAX_DEPTH:
+                            queue.append((Path(entry.path), depth + 1))
+                    elif entry.name.endswith(".gguf"):
+                        rp = Path(entry.path).resolve()
+                        if rp not in seen:
+                            seen.add(rp)
+                            results.append(Path(entry.path))
+                except OSError:
+                    continue
+        return sorted(results)
+
     def scan_models(self) -> List[Dict[str, Any]]:
         """
         Walk MODELS_DIR for *.gguf files.
         Groups split-shard files (model-00001-of-NNNNN.gguf) under one entry.
         Returns list of model dicts with metadata.
+
+        REQ-6: traversal follows symlinks (depth-bounded, circular-safe) so a
+        model reachable only through a symlink is discovered exactly once.
         """
         settings = self.load_model_settings()
         seen_bases: Dict[str, Dict[str, Any]] = {}  # base_name -> entry
 
-        for gguf_path in sorted(self.effective_models_dir.rglob("*.gguf")):
+        for gguf_path in self._iter_gguf_paths():
             filename = gguf_path.name
             stem = gguf_path.stem  # without .gguf
 
@@ -785,9 +1071,10 @@ class LocalModelManager:
         _tensor_count = struct.unpack("<Q", header[8:16])[0]
         kv_count = struct.unpack("<Q", header[16:24])[0]
 
-        # Now read a reasonably-sized chunk that should contain all metadata
-        # Most GGUF files have < 32 KB of metadata.  We cap at 256 KB to be safe.
-        META_READ_SIZE = 262_144
+        # Now read a reasonably-sized chunk that should contain all metadata.
+        # Most GGUF files have < 32 KB of metadata, but MoE models (e.g.
+        # LFM2.5-8B-A1B with 32 experts) can have ~900 KB. We cap at 2 MB.
+        META_READ_SIZE = 2_097_152
         with open(path, "rb") as f:
             f.read(24)  # skip header we already parsed
             buf = f.read(META_READ_SIZE)
@@ -808,33 +1095,71 @@ class LocalModelManager:
             length = struct.unpack("<Q", _read(8))[0]
             return _read(length).decode("utf-8", errors="replace")
 
+        # GGUF value type readers. This file uses a non-standard type enum
+        # (type 4 = UINT32, type 8 = STRING) that differs from the GGUF spec
+        # (type 4 = STRING, type 8 = ARRAY). We support BOTH encodings by
+        # treating type 4 and type 8 as STRING, and type 0 as UINT32.
+        # The non-standard mapping is what LM Studio / HF cache GGUF files use.
+        _GGUF_TYPE_READERS = {
+            0: lambda: struct.unpack("<I", _read(4))[0],   # UINT32
+            1: lambda: struct.unpack("<i", _read(4))[0],   # INT32
+            2: lambda: struct.unpack("<f", _read(4))[0],   # FLOAT32
+            3: lambda: struct.unpack("<?", _read(1))[0],   # BOOL
+            5: lambda: struct.unpack("<Q", _read(8))[0],   # UINT64
+            6: lambda: struct.unpack("<q", _read(8))[0],   # INT64
+            7: lambda: struct.unpack("<d", _read(8))[0],   # FLOAT64
+            9: lambda: struct.unpack("<H", _read(2))[0],   # UINT16 (standard) — may be ARRAY (non-standard)
+            11: lambda: read_str(),                        # STRING_DEPRECATED
+        }
+
+        def _try_string() -> Any:
+            """Try to read a STRING value (8-byte length + data).
+            Returns None if the length looks unreasonable."""
+            nonlocal pos
+            peek = buf[pos:pos+8]
+            if len(peek) < 8:
+                return None
+            slen = struct.unpack("<Q", peek)[0]
+            if slen > 0 and slen < 65536 and pos + 8 + slen <= buf_len:
+                pos += 8
+                return _read(slen).decode("utf-8", errors="replace")
+            return None
+
         def read_value(vtype: int) -> Any:
+            nonlocal pos
+            # Type 4: could be STRING (standard) or UINT32 (non-standard)
             if vtype == 4:
-                return struct.unpack("<I", _read(4))[0]  # uint32
-            elif vtype == 5:
-                return struct.unpack("<i", _read(4))[0]  # int32
-            elif vtype == 6:
-                return struct.unpack("<f", _read(4))[0]  # float32
-            elif vtype == 7:
-                return struct.unpack("<Q", _read(8))[0]  # uint64
-            elif vtype == 8:
-                return read_str()  # string
-            elif vtype == 10:
-                return struct.unpack("<q", _read(8))[0]  # int64
-            elif vtype == 11:
-                return struct.unpack("<d", _read(8))[0]  # float64
-            elif vtype == 1:
-                return struct.unpack("<?", _read(1))[0]  # bool
-            elif vtype == 2:
-                return struct.unpack("<B", _read(1))[0]  # uint8
-            elif vtype == 3:
-                return struct.unpack("<H", _read(2))[0]  # uint16
-            elif vtype == 9:
+                result = _try_string()
+                if result is not None:
+                    return result
+                return struct.unpack("<I", _read(4))[0]  # UINT32 fallback
+            # Type 8: could be STRING (non-standard) or ARRAY (standard)
+            if vtype == 8:
+                result = _try_string()
+                if result is not None:
+                    return result
+                # ARRAY: elem_type (4 bytes) + count (8 bytes) + elements
                 elem_type = struct.unpack("<I", _read(4))[0]
                 count = struct.unpack("<Q", _read(8))[0]
                 return [read_value(elem_type) for _ in range(min(count, 16))]
-            else:
+            # Type 9: could be ARRAY (non-standard) or UINT16 (standard)
+            if vtype == 9:
+                # Try ARRAY first: elem_type (4 bytes) + count (8 bytes)
+                peek = buf[pos:pos+12]
+                if len(peek) >= 12:
+                    elem_type = struct.unpack("<I", peek[:4])[0]
+                    count = struct.unpack("<Q", peek[4:12])[0]
+                    if elem_type in _GGUF_TYPE_READERS and count < 1024:
+                        pos += 12
+                        return [read_value(elem_type) for _ in range(count)]
+                # Fallback: UINT16 (standard)
+                return struct.unpack("<H", _read(2))[0]
+            if vtype == 10:  # COMPLEX — not needed for metadata
+                return None
+            reader = _GGUF_TYPE_READERS.get(vtype)
+            if reader is None:
                 raise ValueError(f"Unknown GGUF value type: {vtype}")
+            return reader()
 
         for _ in range(min(kv_count, 256)):
             try:
@@ -857,11 +1182,25 @@ class LocalModelManager:
                 # e.g. "1.2B", "450M", "8B" — fallback when parameter_count is absent
                 try:
                     val_stripped = val.strip().upper()
-                    if val_stripped.endswith("B"):
+                    if "X" in val_stripped:
+                        # MoE format: "32x959M" → 32 experts × 959M = 30.7B total params
+                        parts = val_stripped.split("X")
+                        if len(parts) == 2:
+                            n_experts = int(parts[0])
+                            per_expert = parts[1]
+                            if per_expert.endswith("M"):
+                                per_b = float(per_expert[:-1]) / 1000
+                            elif per_expert.endswith("B"):
+                                per_b = float(per_expert[:-1])
+                            else:
+                                per_b = float(per_expert)
+                            meta["params_b"] = round(n_experts * per_b, 1)
+                            meta["is_moe"] = True
+                    elif val_stripped.endswith("B"):
                         meta["params_b"] = float(val_stripped[:-1])
                     elif val_stripped.endswith("M"):
                         meta["params_b"] = round(float(val_stripped[:-1]) / 1000, 1)
-                except ValueError:
+                except (ValueError, IndexError):
                     pass
             elif key.endswith(".context_length") and isinstance(val, int):
                 meta["context_length"] = val
@@ -903,17 +1242,58 @@ class LocalModelManager:
     # VRAM estimation
     # ─────────────────────────────────────────────────────────────────────────
 
-    def estimate_vram_gb(self, model_meta: Dict[str, Any]) -> float:
+    def estimate_vram_gb(
+        self, model_meta: Dict[str, Any], n_ctx: Optional[int] = None
+    ) -> float:
         """
-        Estimate VRAM requirement: params_B × bits_per_weight / 8 × 1.1 overhead.
-        Falls back to 0.0 if params or quant unknown.
+        Estimate VRAM requirement: weights + KV cache.
+
+        D-3: VRAM estimate must include KV cache (context-dependent,
+        not weights-only). The KV cache grows linearly with n_ctx and
+        is computed from the model's architecture metadata.
+
+        Formula:
+            weights = params_B × bits_per_weight / 8 × 1.1 overhead
+            kv_cache = 2 × n_layers × n_ctx × hidden_size × 2 bytes (fp16)
+            total = weights + kv_cache
+
+        Args:
+            model_meta: Parsed GGUF metadata dict.
+            n_ctx: Target context length. If None, uses model_meta's
+                   native context_length or MIN_CTX as fallback.
+
+        Returns:
+            Estimated VRAM in GB (weights + KV cache).
         """
         params_b = model_meta.get("params_b", 0)
         quant = model_meta.get("quantization", "Q4_K_M")
         bpw = QUANT_BPW.get(quant.upper(), 4.85)
+
         if not params_b:
             return 0.0
-        return params_b * bpw / 8.0 * 1.1
+
+        # ── Weights (context-independent) ──
+        weights_gb = params_b * bpw / 8.0 * 1.1
+
+        # ── KV cache (context-dependent, D-3) ──
+        # Use provided n_ctx, or fall back to metadata, or MIN_CTX
+        if n_ctx is None:
+            n_ctx = model_meta.get("context_length") or model_meta.get("n_ctx") or MIN_CTX
+
+        block_count = model_meta.get("block_count", 0)
+        embed_dim = model_meta.get("embed_dim", 0)
+
+        if block_count and embed_dim and n_ctx:
+            # Standard transformer KV cache:
+            #   2 (K+V) × n_layers × n_ctx × hidden_size × 2 bytes (fp16)
+            kv_cache_gb = 2 * block_count * n_ctx * embed_dim * 2 / (1024 ** 3)
+        else:
+            # Fallback: estimate KV cache from params and n_ctx.
+            # Approximate: KV cache ≈ params × n_ctx × 2 bytes / 1e9
+            # (assumes ~1 byte of KV cache per parameter per token)
+            kv_cache_gb = params_b * n_ctx * 2 / (1024 ** 3)
+
+        return weights_gb + kv_cache_gb
 
     # ─────────────────────────────────────────────────────────────────────────
     # Profile resolution
@@ -947,6 +1327,85 @@ class LocalModelManager:
         # Always prefer balanced (32k ctx / 1536 batch) — it's the 24GB RAM sweet spot.
         # performance is only for explicit user override.
         return "balanced"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ConfigDeriver: compute optimal n_ctx, n_gpu_layers, n_batch
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def derive_config(
+        self,
+        model_meta: Dict[str, Any],
+        target_tps: float = TARGET_TPS,
+        base_tps: float = 50.0,
+        vram_budget_gb: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Derive the optimal inference config for a model.
+
+        T2.2: ConfigDeriver — the single function that, given model_meta +
+        hardware + target_tps, returns the largest n_ctx such that:
+          a) estimated VRAM (weights + KV cache) fits in gpu_free_vram
+          b) expected tps >= target_tps
+
+        Binary-searches n_ctx from [MIN_CTX, MAX_CTX] and returns the config.
+
+        D-2: n_gpu_layers is ALWAYS -1 for chat (full GPU offload, never CPU).
+        D-3: VRAM estimate includes KV cache (context-dependent).
+
+        Args:
+            model_meta: Parsed GGUF metadata dict.
+            target_tps: Minimum acceptable tokens/sec (default: TARGET_TPS).
+            base_tps: Estimated base throughput at MIN_CTX (default: 50).
+                      Used for the throughput model: tps = base_tps * sqrt(MIN_CTX/n_ctx).
+            vram_budget_gb: GPU VRAM budget in GB. If None, uses hardware info.
+
+        Returns:
+            Dict with keys: n_ctx, n_gpu_layers, n_batch, vram_est_gb, expected_tps
+        """
+        hw = self.get_hardware_info()
+        if vram_budget_gb is None:
+            vram_budget_gb = hw.get("vram_free_gb", 0.0)
+
+        native_ctx = model_meta.get("context_length") or model_meta.get("n_ctx") or MAX_CTX
+        max_ctx = min(native_ctx, MAX_CTX)
+
+        # Throughput model: tps decreases as n_ctx increases.
+        # tps = base_tps * sqrt(MIN_CTX / n_ctx)
+        # This captures the fact that larger context → more attention computation → lower tps.
+        def expected_tps(n_ctx: int) -> float:
+            if n_ctx <= 0:
+                return 0.0
+            return base_tps * (MIN_CTX / n_ctx) ** 0.5
+
+        # Binary search for the largest n_ctx that satisfies both constraints.
+        lo, hi = MIN_CTX, max_ctx
+        best_n_ctx = MIN_CTX
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            vram_est = self.estimate_vram_gb(model_meta, n_ctx=mid)
+            tps_est = expected_tps(mid)
+
+            if vram_est <= vram_budget_gb and tps_est >= target_tps:
+                best_n_ctx = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        # Compute n_batch: scale with n_ctx, capped at 2048.
+        # Larger context → larger batch for efficiency, but capped to avoid OOM.
+        n_batch = min(max(best_n_ctx, 512), 2048)
+
+        # D-2: n_gpu_layers ALWAYS -1 for chat (full GPU offload, never CPU offload).
+        n_gpu_layers = -1
+
+        return {
+            "n_ctx": best_n_ctx,
+            "n_gpu_layers": n_gpu_layers,
+            "n_batch": n_batch,
+            "vram_est_gb": self.estimate_vram_gb(model_meta, n_ctx=best_n_ctx),
+            "expected_tps": expected_tps(best_n_ctx),
+        }
 
     # ─────────────────────────────────────────────────────────────────────────
     # Subprocess lifecycle
@@ -1050,16 +1509,30 @@ class LocalModelManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _preflight_resource_check(
-        self, model_path: str, params: Dict[str, Any], model_meta: Dict[str, Any] = None
+        self, model_path: str, params: Dict[str, Any], model_meta: Dict[str, Any] = None,
+        purpose: str = "chat",
     ) -> Optional[str]:
         """
         Estimate VRAM/RAM requirements before spawning the subprocess.
         Properly accounts for partial GPU offloading (n_gpu_layers > 0).
+
+        T3.3: Branches on resolve_device_policy(purpose). CPU purposes
+        (embedding, rerank) skip the GPU check entirely.
+
         Returns an error string if resources are insufficient, None if OK.
         Fails open (returns None) if hardware info is unavailable —
         we never block a load due to a failed check.
         """
         try:
+            # T3.3: Branch on device policy FIRST. CPU purposes skip GPU check
+            # entirely — they don't count against VRAM, so no need to stat the file.
+            policy = resolve_device_policy(purpose)
+            if policy.device == "cpu":
+                logger.debug(
+                    f"[LocalModelManager] CPU purpose '{purpose}' — skipping GPU pre-flight"
+                )
+                return None
+
             path = Path(model_path)
             if not path.exists():
                 return f"Model file not found: {model_path}"
@@ -1069,6 +1542,16 @@ class LocalModelManager:
             hw = self.get_hardware_info()
             n_gpu = params.get("n_gpu_layers", -1)
             n_ctx = params.get("n_ctx", 8192)
+
+            # Get total layer count from metadata or estimate from params
+            total_layers = 0
+            if model_meta:
+                total_layers = model_meta.get("block_count", 0)
+            if not total_layers and model_meta:
+                params_b = model_meta.get("params_b", 0)
+                if params_b:
+                    # Heuristic: Qwen ~2.2 layers per B, Llama ~4 layers per B
+                    total_layers = max(24, int(params_b * 2.5))
 
             # Estimate KV cache RAM. For dense transformers this is roughly
             # 2 bytes * n_ctx * n_layers / 2 (K+V) ~ (ctx/1000) * 0.1 GB.
@@ -1080,16 +1563,6 @@ class LocalModelManager:
                 # Likely hybrid attention (e.g. Qwen3.6-27B: 64 blocks,
                 # 16 full-attention). Scale cache down 4x.
                 kv_cache_gb *= 0.25
-
-            # Get total layer count from metadata or estimate from params
-            total_layers = 0
-            if model_meta:
-                total_layers = model_meta.get("block_count", 0)
-            if not total_layers and model_meta:
-                params_b = model_meta.get("params_b", 0)
-                if params_b:
-                    # Heuristic: Qwen ~2.2 layers per B, Llama ~4 layers per B
-                    total_layers = max(24, int(params_b * 2.5))
 
             # Scale weight VRAM by fraction of layers offloaded to GPU
             if n_gpu != 0 and hw.get("cuda_available"):
@@ -1186,52 +1659,115 @@ class LocalModelManager:
     # [10.10] TPS recording + gradient warning
     # ─────────────────────────────────────────────────────────────────────────
 
-    def record_tps(self, tps: float, gpu_active: bool = True) -> None:
+    def record_tps(
+        self, tps: float, gpu_active: bool = True, purpose: Optional[str] = None
+    ) -> None:
         """
-        Record a TPS measurement. If the last 3 are all below the threshold,
-        emit a gradient warning to the coordinate graph (fire-and-forget).
-        Threshold: 8 tok/s GPU, 2 tok/s CPU.
+        Record a TPS measurement and feed corrections to ConfigCache.
+
+        T4.1: threshold is TARGET_TPS (not the old hardcoded 8 tok/s).
+        T4.4: embedding/rerank purposes are NOT measured against TARGET_TPS —
+              they return early, recording no correction and emitting no warning.
+        T4.2: sustained sub-target throughput writes a reduced-context config to
+              ConfigCache for the NEXT load.
+        T4.3: nothing here reconfigures the running model — corrections only
+              affect the next load (REQ-4 AC4).
+
+        Args:
+            tps: measured tokens/sec for the last generation.
+            gpu_active: whether the model is running on GPU (kept for signature
+                        compat; the real device decision comes from `purpose`).
+            purpose: the model's purpose ("chat", "embedding", "rerank", "tool").
+                     Defaults to the currently-loaded model's purpose.
         """
-        threshold = 8.0 if gpu_active else 2.0
+        # Resolve purpose: explicit arg wins, else the loaded model's purpose.
+        if purpose is None:
+            purpose = getattr(self, "_current_purpose", "chat") or "chat"
+        # T4.4: CPU purposes (embedding, rerank) have no throughput target and
+        # must never be measured against TARGET_TPS (REQ-4 AC6).
+        try:
+            policy = resolve_device_policy(purpose)
+        except ValueError:
+            policy = resolve_device_policy("chat")
+        if policy.throughput_target is None:
+            return
+
+        threshold = policy.throughput_target  # TARGET_TPS for chat/tool
         self._tps_window.append(tps)
         if len(self._tps_window) > 3:
             self._tps_window.pop(0)
 
-        if (
-            len(self._tps_window) >= 3
-            and all(t < threshold for t in self._tps_window)
-            and not self._tps_slow_warned
-        ):
-            self._tps_slow_warned = True
-            avg = sum(self._tps_window) / len(self._tps_window)
-            logger.warning(
-                f"[LocalModelManager] TPS degraded: {avg:.1f} tok/s avg "
-                f"(threshold {threshold:.0f}) for last 3 responses"
-            )
-            # Best-effort write to coordinate graph
-            try:
-                import subprocess as _sp
-                import sys as _sys
+        if len(self._tps_window) < 3:
+            return
 
-                _sp.Popen(
-                    [
-                        _sys.executable,
-                        "bootstrap/record_event.py",
-                        "--type",
-                        "note",
-                        "--desc",
-                        f"TPS degraded: {avg:.1f} tok/s avg for 3 consecutive responses "
-                        f"(threshold {threshold:.0f} tok/s {'GPU' if gpu_active else 'CPU'})",
-                    ],
-                    stdout=_sp.DEVNULL,
-                    stderr=_sp.DEVNULL,
-                    cwd=str(IRISVOICE_ROOT),
-                )
-            except Exception:
-                pass
-        elif tps >= threshold:
-            # Reset: fast response clears the warning window
+        avg = sum(self._tps_window) / len(self._tps_window)
+
+        # Within deadband → close enough, record nothing (REQ-4 AC5).
+        if threshold * (1 - TPS_DEADBAND) <= avg <= threshold * (1 + TPS_DEADBAND):
             self._tps_slow_warned = False
+            return
+
+        # T4.2: write a correction to ConfigCache for the NEXT load.
+        self._write_tps_correction(avg, threshold, policy)
+
+    def _write_tps_correction(
+        self, avg_tps: float, target: float, policy: "DevicePolicy"
+    ) -> None:
+        """Persist a corrected config to ConfigCache based on measured throughput.
+
+        Calibrates the throughput model's base_tps from the actual measurement,
+        then re-derives at the ORIGINAL target. This naturally yields:
+          - measured < target  → smaller n_ctx (shrink, recover throughput)
+          - measured > target  → larger n_ctx (grow, use the headroom)
+        Never touches the running model (T4.3).
+        """
+        if not self._current_model_path or not self._current_model_meta:
+            return
+        if policy.device == "cpu":
+            return  # CPU models are never corrected
+
+        current_n_ctx = self._current_params.get("n_ctx", MIN_CTX)
+        if current_n_ctx <= 0:
+            return
+
+        # Calibrate base_tps from the measurement:
+        #   expected_tps(n) = base_tps * sqrt(MIN_CTX / n)
+        #   => base_tps = avg_tps / sqrt(MIN_CTX / current_n_ctx)
+        try:
+            calibrated_base = avg_tps / ((MIN_CTX / current_n_ctx) ** 0.5)
+        except ZeroDivisionError:
+            calibrated_base = 50.0
+
+        direction = "shrink" if avg_tps < target else "grow"
+
+        try:
+            hw = self.get_hardware_info()
+            derived = self.derive_config(
+                self._current_model_meta,
+                target_tps=target,
+                base_tps=calibrated_base,
+                vram_budget_gb=hw.get("vram_free_gb", 0.0),
+            )
+            corrected = dict(self._current_params)
+            corrected["n_ctx"] = derived["n_ctx"]
+            corrected["n_batch"] = derived["n_batch"]
+            corrected["n_gpu_layers"] = -1
+            self._config_cache.put(
+                self._current_model_path,
+                self._current_model_meta,
+                hw,
+                corrected,
+                measured_tps=avg_tps,
+            )
+            logger.info(
+                f"[LocalModelManager] TPS correction ({direction}): "
+                f"measured {avg_tps:.1f} tok/s (target {target:.0f}) → "
+                f"next-load n_ctx={corrected['n_ctx']}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[LocalModelManager] failed to write TPS correction: {exc}"
+            )
 
     # ──────────────────────────────────────────────────────────────────
     async def load_model(
@@ -1239,6 +1775,7 @@ class LocalModelManager:
         model_path: str,
         profile: str = "balanced",
         custom_params: Dict[str, Any] = None,
+        purpose: str = "chat",
         progress_cb=None,  # async callable(event: dict) — optional progress hook
         crash_cb=None,  # async callable() — called if subprocess dies after load
     ) -> bool:
@@ -1246,6 +1783,12 @@ class LocalModelManager:
         Stop existing subprocess (if any), spawn new llama-cpp-python server.
         Streams incremental load progress via progress_cb if provided.
         Returns True when /health responds 200.
+
+        T3.3: Branches on resolve_device_policy(purpose). CPU purposes
+        (embedding, rerank) skip GPU pre-flight and load on CPU.
+
+        T3.1: GPU-only degradation ladder — if VRAM is tight, shrink n_ctx
+        first (step 1), then n_batch (step 2). Never CPU offload.
 
         [10.6] Held under _load_lock — concurrent calls return False immediately.
         [10.5] Pre-flight resource check before spawning subprocess.
@@ -1286,11 +1829,94 @@ class LocalModelManager:
             # Parse metadata early so preflight check can use layer count for
             # accurate partial-offload VRAM estimation.
             model_meta = self.parse_gguf_metadata(Path(model_path))
+            # Track meta for ConfigCache corrections (REQ-5). Only used by
+            # record_tps after a successful load; harmless if load fails.
+            self._current_model_meta = model_meta
+            self._current_purpose = purpose
+
+            # REQ-5: consult ConfigCache for a known-good starting config. A
+            # previous run's TPS correction (record_tps) lands here and is used
+            # as the starting point for THIS load — never the running one.
+            config_source = "profile"
+            try:
+                cached = self._config_cache.get(
+                    model_path, model_meta, self.get_hardware_info()
+                )
+                if cached is not None:
+                    params["n_ctx"] = cached.config.get("n_ctx", params["n_ctx"])
+                    params["n_batch"] = cached.config.get("n_batch", params["n_batch"])
+                    config_source = "cache"
+                    logger.info(
+                        f"[LocalModelManager] using cached config "
+                        f"(n_ctx={params['n_ctx']}, measured_tps="
+                        f"{cached.measured_tps}) as known-good start"
+                    )
+                elif not custom_params and profile == "balanced":
+                    # REQ-1: no known-good cache and no user override → DERIVE the
+                    # optimal config from model + hardware. This is the primary
+                    # path; PROFILES remain available only as explicit overrides.
+                    try:
+                        hw = self.get_hardware_info()
+                        derived = self.derive_config(
+                            model_meta,
+                            vram_budget_gb=hw.get("vram_free_gb", 0.0),
+                        )
+                        params["n_ctx"] = derived["n_ctx"]
+                        params["n_batch"] = derived["n_batch"]
+                        params["n_gpu_layers"] = derived["n_gpu_layers"]
+                        config_source = "derived"
+                        logger.info(
+                            f"[LocalModelManager] derived config (source=derived): "
+                            f"n_ctx={params['n_ctx']}, n_batch={params['n_batch']}, "
+                            f"est_vram={derived['vram_est_gb']:.1f}GB, "
+                            f"exp_tps={derived['expected_tps']:.1f}"
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            f"[LocalModelManager] derivation failed, using profile: {exc}"
+                        )
+            except Exception as exc:
+                logger.debug(f"[LocalModelManager] cache consult skipped: {exc}")
+
+            # T6.1: log the resolved load config with its source for observability.
+            logger.info(
+                f"[LocalModelManager] load config source={config_source} "
+                f"purpose={purpose} n_ctx={params.get('n_ctx')} "
+                f"n_gpu_layers={params.get('n_gpu_layers')} "
+                f"n_batch={params.get('n_batch')}"
+            )
 
             # [10.5] Pre-flight resource check — fail fast before spawning
             preflight_error = self._preflight_resource_check(
-                model_path, params, model_meta
+                model_path, params, model_meta, purpose=purpose
             )
+
+            # T3.1: Degradation ladder — if pre-flight fails, try shrinking n_ctx
+            # then n_batch. Never CPU offload.
+            if preflight_error:
+                policy = resolve_device_policy(purpose)
+                if policy.device == "gpu" and policy.ladder:
+                    degraded_params = self._degrade_config(
+                        params, model_meta, purpose=purpose
+                    )
+                    if degraded_params is not None:
+                        # Retry pre-flight with degraded config
+                        retry_error = self._preflight_resource_check(
+                            model_path, degraded_params, model_meta, purpose=purpose
+                        )
+                        if retry_error is None:
+                            logger.info(
+                                f"[LocalModelManager] Degradation succeeded: "
+                                f"n_ctx={degraded_params.get('n_ctx')} "
+                                f"n_batch={degraded_params.get('n_batch')}"
+                            )
+                            params = degraded_params
+                            preflight_error = None
+                        else:
+                            logger.warning(
+                                f"[LocalModelManager] Degradation failed: {retry_error}"
+                            )
+                            preflight_error = retry_error
             if preflight_error:
                 logger.error(
                     f"[LocalModelManager] Pre-flight failed: {preflight_error}"
@@ -1340,7 +1966,7 @@ class LocalModelManager:
                 _name = Path(model_path).name.lower()
                 if any(tag in _name for tag in ("q1_0", "q2_0", "bonsai")):
                     _is_bonsai = True
-                elif meta.get("general.file_type", 0) in (1, 2, 3):
+                elif model_meta.get("general.file_type", 0) in (1, 2, 3):
                     # GGUF file types 1-3 correspond to Q1_0 / Q2_0 etc.
                     _is_bonsai = True
             if _is_bonsai:
@@ -1527,6 +2153,65 @@ class LocalModelManager:
                 await self.unload_model()
             return ready
 
+    def _degrade_config(
+        self,
+        params: Dict[str, Any],
+        model_meta: Dict[str, Any],
+        purpose: str = "chat",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        T3.1: Degradation ladder for GPU-only models.
+
+        When VRAM is tight, shrink n_ctx first (step 1 of ladder),
+        then n_batch (step 2). Never CPU offload — n_gpu_layers stays -1.
+
+        Uses derive_config() to binary-search the largest n_ctx that fits
+        in the GPU VRAM budget. If even MIN_CTX doesn't fit, returns a
+        last-resort config with MIN_CTX and n_batch=256.
+
+        Args:
+            params: Original inference params (n_ctx, n_gpu_layers, n_batch).
+            model_meta: Parsed GGUF metadata.
+            purpose: Model purpose ("chat", "tool", "embedding", "rerank").
+
+        Returns:
+            Degraded params dict, or None if degradation is not applicable
+            (e.g. CPU purpose or no VRAM budget).
+        """
+        policy = resolve_device_policy(purpose)
+        if policy.device != "gpu" or not policy.ladder:
+            return None
+
+        hw = self.get_hardware_info()
+        vram_budget = hw.get("vram_free_gb", 0.0) * 0.92  # 8% safety margin
+
+        if vram_budget <= 0:
+            return None
+
+        # Use derive_config to find the largest n_ctx that fits in VRAM
+        config = self.derive_config(
+            model_meta,
+            target_tps=policy.throughput_target or TARGET_TPS,
+            base_tps=50.0,
+            vram_budget_gb=vram_budget,
+        )
+
+        # Build degraded params — D-2: n_gpu_layers ALWAYS -1
+        degraded = dict(params)
+        degraded["n_ctx"] = config["n_ctx"]
+        degraded["n_gpu_layers"] = -1
+        degraded["n_batch"] = config["n_batch"]
+
+        # T6.1: log the degradation step with its reason (VRAM tight → ctx→batch).
+        logger.info(
+            f"[LocalModelManager] degradation (reason=VRAM tight, GPU-only ladder): "
+            f"n_ctx {params.get('n_ctx')} -> {degraded['n_ctx']}, "
+            f"n_batch {params.get('n_batch')} -> {degraded['n_batch']}, "
+            f"n_gpu_layers stays -1"
+        )
+
+        return degraded
+
     def _resolve_profile_for_environment(self, profile: str) -> str:
         """If the requested profile demands a fork we don't have, fall back
         to a safe default and log a warning. No-op for profiles that don't
@@ -1630,6 +2315,11 @@ class LocalModelManager:
             "loaded": loaded,
             "model_path": self._current_model_path if loaded else None,
             "profile": self._current_profile if loaded else None,
+            # REQ-3 AC1 / CT-L7: expose the REAL configured context of the
+            # loaded model — the authoritative source for context-window
+            # resolution (overrides any table entry).
+            "n_ctx": self._current_params.get("n_ctx") if loaded else None,
+            "purpose": self._current_purpose if loaded else None,
             # Endpoint is only meaningful when we're running the subprocess
             # HTTP server; in-process has no URL.
             "endpoint": None if inprocess else (self.ENDPOINT if loaded else None),

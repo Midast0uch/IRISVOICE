@@ -19,8 +19,19 @@ import asyncio
 import logging
 import os
 import subprocess
+import time  # used by _on_page_done; absent until now, see below
 from typing import Any, Dict, List, Optional
 from datetime import datetime
+
+# NOTE: `time` was never imported here, yet `_on_page_done` opens with
+# `now = time.time()`. Every real page fetch therefore raised NameError, which
+# the outer `except Exception` in _execute_crawler_query reported as
+# "research failed: name 'time' is not defined". Since _on_page_done is the ONLY
+# progress emitter in the crawl pipeline, live task-card updates and crawl
+# narration never fired in production — the surrounding code reads as complete.
+# Fourth instance in this codebase of a name error above/inside a broad handler
+# silently disabling a whole feature (see speak_tool priority/interrupt,
+# narration conv_id, agent_kernel _children).
 
 logger = logging.getLogger(__name__)
 
@@ -1298,6 +1309,7 @@ class AgentToolBridge:
                     lambda: self._execute_crawler_query(params, session_id),
                     speak=self._speak_tool.speak,
                     tool_name=tool_name,
+                    conversation_id=session_id,
                 )
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
                 return result
@@ -1751,9 +1763,67 @@ class AgentToolBridge:
 
         _last_narration_time = 0.0
         _NARRATION_COOLDOWN_S = 25.0  # W5 (T35): speak progress at most once per 25s
-        # REQ-4: mutable list so the closure can set the phase; attached to the
-        # next real progress event instead of emitting a separate TASK_PROGRESS.
-        _phase_cache = [{}]  # type: ignore[var-annotated]
+
+        # REQ-4 AC4: bound phase-transition emission frequency. The
+        # orchestrator only fires ~3-5 phase transitions per crawl
+        # (searching -> extracting -> citing, plus one retry re-emit of
+        # "searching" — see orchestrator.py:176/203/228/242), so anything
+        # arriving faster than 2/sec is not real user-visible movement; it
+        # would be a runaway loop, not progress, so throttle rather than
+        # flood TASK_PROGRESS.
+        _PHASE_EMIT_MIN_INTERVAL_S = 0.5
+        _last_phase_emit_time = [0.0]  # mutable box for the closure below
+        _PHASE_LABELS = {
+            "searching": "Searching for sources",
+            "fetching": "Fetching pages",
+            "extracting": "Extracting content",
+            "reranking": "Ranking sources",
+            "citing": "Citing sources",
+            "done": "Finishing up",
+        }
+
+        def _emit_phase_progress(phase: str, phase_sequence: int) -> None:
+            """REQ-4 AC1: a phase transition produces its own card update —
+            it does NOT wait for a page-fetch event to ride along on, so a
+            crawl that returns zero pages still shows movement (Edge Case:
+            "Crawl returns zero pages -> phases still emitted").
+
+            AC2: fires immediately, without requiring the step to complete.
+            AC3: emission failures are caught here and logged loudly — they
+            must never fail or stall the crawl, but a silently swallowed
+            exception that leaves the UI frozen is the exact defect this
+            phase exists to kill, so this is not a bare `except: pass`.
+            AC4: throttled by _PHASE_EMIT_MIN_INTERVAL_S above.
+            AC5/REQ-2 AC1: only structured fields (`detail`/`detail_progress`/
+            `phase`) move; the step's own `description` (plan text) is never
+            touched — `update_step` only ever writes `activeDetail` /
+            `activeProgress` on the frontend, never `description`.
+            """
+            now = time.time()
+            if now - _last_phase_emit_time[0] < _PHASE_EMIT_MIN_INTERVAL_S:
+                return
+            _last_phase_emit_time[0] = now
+            _label = _PHASE_LABELS.get(phase, phase.replace("_", " ").capitalize())
+            task_progress_data = {
+                "description": _label,
+                "action": _label,
+                "update_step": True,
+                "detail": _label,
+                "detail_progress": "",
+                "phase": phase,
+                "phase_sequence": phase_sequence,
+            }
+            try:
+                _bus.emit(
+                    IRISStreamEvent.TASK_PROGRESS,
+                    data=task_progress_data,
+                    session_id=session_id,
+                )
+            except Exception as _phase_exc:
+                logger.warning(
+                    "[crawler_query] phase progress emit failed (phase=%s): %s",
+                    phase, _phase_exc,
+                )
 
         def _on_page_done(url: str, page_number: int, total: int, title: str = "", snippet: str = "") -> None:
             nonlocal _last_narration_time
@@ -1782,7 +1852,6 @@ class AgentToolBridge:
             # `description` stays a full sentence for back-compat (ContextPill
             # and older consumers read it) and is the fallback when `detail` is
             # absent; do not remove it.
-            # REQ-4 AC2: attach the cached phase label to this progress event.
             task_progress_data = {
                 "description": f"Reading {_label} ({page_number}/{total})",
                 "action": f"Reading {_label} ({page_number}/{total})",
@@ -1792,12 +1861,6 @@ class AgentToolBridge:
                 "detail_url": url or "",
                 "detail_progress": f"{page_number}/{total}",
             }
-            try:
-                if _phase_cache[0]:
-                    task_progress_data.update(_phase_cache[0])
-                    _phase_cache[0] = {}
-            except Exception:
-                pass  # phase cache failure must not block progress emission
             try:
                 _bus.emit(
                     IRISStreamEvent.TASK_PROGRESS,
@@ -1816,15 +1879,22 @@ class AgentToolBridge:
                     title=pl.get("title", ""),
                 )
             elif ev == "CRAWLER_PHASE":
-                # REQ-4 AC2/D-2: cache the phase so the NEXT real progress event
-                # carries it — phase labels ride on existing progress, not separate.
+                # REQ-4 AC1: emit its own progress event on the transition —
+                # do NOT wait for a page-fetch event to ride along on (that
+                # was the bug: zero pages fetched meant zero phase updates,
+                # which the spec's edge case forbids outright).
                 if isinstance(pl, dict):
-                    _phase_cache[0] = {
-                        "phase": pl.get("phase", "unknown"),
-                        "phase_sequence": pl.get("phase_sequence", 0),
-                    }
-                else:
-                    _phase_cache[0] = {}
+                    try:
+                        _emit_phase_progress(
+                            pl.get("phase", "unknown"), pl.get("phase_sequence", 0),
+                        )
+                    except Exception as _phase_progress_exc:
+                        # AC3: never let a phase-emit failure propagate into
+                        # the crawl's on_progress callback and stall the tool.
+                        logger.warning(
+                            "[crawler_query] phase progress dispatch failed: %s",
+                            _phase_progress_exc,
+                        )
             elif ev == "CRAWLER_ERROR":
                 logger.error("[crawler_query] %s", pl.get("message", "error"))
 

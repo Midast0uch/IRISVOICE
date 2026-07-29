@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -538,12 +539,21 @@ DELTA_CHANGE_THRESHOLD: float = 0.05
 
 class TaskClassifier:
     """
-    O(1) task class heuristic — no inference, no model calls.
+    O(1) task class heuristic with optional encoder path (Phase 4 LFM2.5).
 
     Returns (task_class, space_subset) where space_subset is the list of
     coordinate spaces to navigate for this class.
 
-    Classification rules (first match wins):
+    Classification (REQ-5):
+      - Keyword rules (fast path): first match wins.
+      - Encoder path: embeds the task text and classifies via nearest
+        centroid derived from keyword-tagged training vectors. If encoder
+        is unavailable OR confidence below CONFIGURED_FLOOR → returns
+        keyword result.
+      - Logs BOTH results + confidence + the budget each would produce
+        during rollout (REQ-5 AC5 / AC6).
+
+    Keyword rules (first match wins):
       1. Short (<20 words) with no planning keywords → "quick_edit"
       2. Code keywords (implement/fix/debug/refactor/test) → "code_task"
       3. Research keywords (find/analyze/compare/explain/summarize) → "research_task"
@@ -563,34 +573,238 @@ class TaskClassifier:
         "define", "propose", "strategy",
     })
 
+    # Class centroids (filled at first use).  Lazy so import never blocks on
+    # model loads (REQ-5 AC2).
+    _CLASS_CENTROIDS: Dict[str, Optional[List[float]]] = {}
+    _ENCODER = None  # Lazy-loaded EmbeddingService / callable
+
+    # Confidence floor: below this threshold the encoder result is discarded
+    # in favour of the keyword fast path (REQ-5 AC4).  Ship logging-only
+    # initially; the floor value will be tuned against OQ-2 rollout data.
+    CONFIDENCE_FLOOR: float = 0.40
+
+    # ── Encoder lazy-loader ────────────────────────────────────────────────
+
+    @classmethod
+    def _get_encoder(cls):
+        """Lazy-load the embedding encoder.  Returns None if unavailable."""
+        if cls._ENCODER is None:
+            try:
+                from backend.memory.embedding import get_embedding_service
+                svc = get_embedding_service()
+                # Probe: if the backend is "hash" the encoder offers no semantic
+                # signal, so treat it as unavailable.
+                if getattr(svc, "_backend", None) == "hash":
+                    logger.debug("[TaskClassifier] backend=hash; no semantic encoder")
+                    return None
+                cls._ENCODER = svc
+            except Exception as exc:
+                logger.debug("[TaskClassifier] encoder load failed: %s", exc)
+                cls._ENCODER = None  # Sentinel: don't retry forever
+        return cls._ENCODER
+
+    @classmethod
+    def _get_centroids(cls) -> Dict[str, Optional[List[float]]]:
+        """Compute or retrieve class centroids.
+
+        Each centroid is the mean embedding of seed texts representative
+        of that class.  If the encoder is unavailable, centroids are
+        *None* and the encoder path is skipped.
+        """
+        if cls._CLASS_CENTROIDS:
+            return cls._CLASS_CENTROIDS
+        encoder = cls._get_encoder()
+        if encoder is None:
+            cls._CLASS_CENTROIDS = {k: None for k in TASK_CLASS_SPACE_MAP}
+            return cls._CLASS_CENTROIDS
+
+        # Seed texts — representative task descriptions per class.
+        seeds: Dict[str, List[str]] = {
+            "quick_edit": [
+                "rename this variable",
+                "fix the typo in that function",
+                "change the color of the button",
+                "update the import path",
+                "add a comment to the code",
+            ],
+            "code_task": [
+                "implement a new function that handles pagination",
+                "fix the bug in the login flow when the token expires",
+                "refactor the database query to use an index",
+                "write unit tests for the billing module",
+                "debug the memory leak in the event loop",
+            ],
+            "research_task": [
+                "find the latest papers on transformer attention mechanisms",
+                "analyze the performance benchmark results",
+                "compare the trade-offs between microservices and monoliths",
+                "explain how the gRPC protocol handles streaming",
+                "summarize the key findings from the user survey",
+            ],
+            "planning_task": [
+                "design the architecture for the new search feature",
+                "outline the migration plan from v1 to v2",
+                "spec the API contract for the payments service",
+                "plan the sprint goals for the next two weeks",
+                "define the data model for the recommendation engine",
+            ],
+            "full": [
+                "build a complete e-commerce platform with checkout and inventory",
+                "develop a cross-platform mobile app with offline support",
+                "create a real-time collaborative document editor",
+                "implement a full CI/CD pipeline with testing and deployment",
+                "develop and deploy a machine learning inference server",
+            ],
+        }
+
+        centroids: Dict[str, Optional[List[float]]] = {}
+        for cls_name, texts in seeds.items():
+            try:
+                vectors = [encoder.encode(t) for t in texts]
+                if vectors and all(v is not None for v in vectors):
+                    dim = len(vectors[0])
+                    mean = [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)]
+                    # L2 normalise
+                    norm = math.sqrt(sum(x * x for x in mean))
+                    if norm > 0:
+                        mean = [x / norm for x in mean]
+                    centroids[cls_name] = mean
+                else:
+                    centroids[cls_name] = None
+            except Exception as exc:
+                logger.debug("[TaskClassifier] centroid compute failed for %s: %s", cls_name, exc)
+                centroids[cls_name] = None
+
+        cls._CLASS_CENTROIDS = centroids
+        return centroids
+
+    # ── Public classify ----------------------------------------------------
+
     def classify(self, task_text: str) -> Tuple[str, List[str]]:
-        """Return (task_class, space_subset) for *task_text*."""
+        """Return (task_class, space_subset) for *task_text*.
+
+        Keyword rules are the fast path and always computed first.  The
+        encoder path is attempted when keywords produce a non-definitive
+        result (currently "full" or "quick_edit") and the encoder is
+        available with sufficient confidence.
+
+        Both results + confidence + budget are logged during rollout
+        (REQ-5 AC5 / AC6).
+        """
+        keyword_class = self._classify_keywords(task_text)
+
+        # Attempt encoder path (lazy — may be None).
+        encoder_class, confidence = self._classify_encoder(task_text)
+
+        # Log both results for rollout analysis (REQ-5 AC5/AC6).
+        kw_budget = _budget_proxy(keyword_class)
+        enc_budget = _budget_proxy(encoder_class) if encoder_class else "N/A"
+        logger.info(
+            "[TaskClassifier] keyword=%-12s budget=%-6s | "
+            "encoder=%-12s conf=%.3f budget=%-6s | "
+            "text=%.60s",
+            keyword_class, kw_budget,
+            encoder_class or "N/A", confidence, enc_budget,
+            task_text,
+        )
+
+        # Decision: if encoder result is available, confident enough, and
+        # differs from the keyword result → prefer encoder (REQ-5 AC4).
+        if encoder_class is not None and confidence >= self.CONFIDENCE_FLOOR:
+            chosen = encoder_class
+        else:
+            chosen = keyword_class
+
+        return chosen, list(TASK_CLASS_SPACE_MAP[chosen])
+
+    # -- internal -----------------------------------------------------------
+
+    def _classify_keywords(self, task_text: str) -> str:
+        """Fast-path keyword classification (unchanged from Phase 1)."""
         words = task_text.lower().split()
         word_set = set(words)
 
-        # Rule 1 — code keywords (checked before quick_edit to handle short code tasks)
         if word_set & self._CODE_KEYWORDS:
-            task_class = "code_task"
-            return task_class, list(TASK_CLASS_SPACE_MAP[task_class])
-
-        # Rule 2 — research keywords
+            return "code_task"
         if word_set & self._RESEARCH_KEYWORDS:
-            task_class = "research_task"
-            return task_class, list(TASK_CLASS_SPACE_MAP[task_class])
-
-        # Rule 3 — planning keywords
+            return "research_task"
         if word_set & self._PLANNING_KEYWORDS:
-            task_class = "planning_task"
-            return task_class, list(TASK_CLASS_SPACE_MAP[task_class])
-
-        # Rule 4 — short with no strong keywords → quick_edit
+            return "planning_task"
         if len(words) < 20:
-            task_class = "quick_edit"
-            return task_class, list(TASK_CLASS_SPACE_MAP[task_class])
+            return "quick_edit"
+        return "full"
 
-        # Rule 5 — default
-        task_class = "full"
-        return task_class, list(TASK_CLASS_SPACE_MAP[task_class])
+    def _classify_encoder(
+        self, task_text: str
+    ) -> Tuple[Optional[str], float]:
+        """Encoder-based classification.
+
+        Returns ``(task_class, confidence)`` where *task_class* is
+        *None* if the encoder is unavailable.  Confidence is the cosine
+        similarity to the nearest centroid (0 = no match, 1 = perfect).
+        """
+        encoder = self._get_encoder()
+        if encoder is None:
+            return None, 0.0
+
+        centroids = self._get_centroids()
+        # Filter to classes that have a valid centroid.
+        available = {k: v for k, v in centroids.items() if v is not None}
+        if not available:
+            return None, 0.0
+
+        try:
+            query_vec = encoder.encode(task_text)
+        except Exception as exc:
+            logger.debug("[TaskClassifier] encoder.encode failed: %s", exc)
+            return None, 0.0
+
+        if query_vec is None:
+            return None, 0.0
+
+        q_norm = math.sqrt(sum(x * x for x in query_vec))
+        if q_norm == 0:
+            return None, 0.0
+        query_normed = [x / q_norm for x in query_vec]
+
+        best_class: Optional[str] = None
+        best_sim = -1.0
+        for cls_name, centroid in available.items():
+            sim = sum(a * b for a, b in zip(query_normed, centroid))
+            if sim > best_sim:
+                best_sim = sim
+                best_class = cls_name
+
+        # Map similarity [-1, 1] → confidence [0, 1].
+        confidence = max(0.0, min(1.0, (best_sim + 1.0) / 2.0))
+        return best_class, confidence
+
+
+# ── Budget proxy helper (REQ-5 AC6) ─────────────────────────────────────────
+
+def _budget_proxy(task_class: str) -> str:
+    """Return a readable budget estimate for the given task class.
+
+    During rollout (OQ-2) this returns the absolute token ceiling from
+    ``DER_TOKEN_BUDGETS`` when importable, else falls back to the class
+    name as a proxy (logged for later correlation).
+    """
+    try:
+        from backend.agent.der_constants import DER_TOKEN_BUDGETS
+        budget = DER_TOKEN_BUDGETS.get(task_class)
+        if budget is not None:
+            return f"{budget:,}"
+        # Try the canonical mode name fallback.
+        fallback_map = {
+            "quick_edit": "quick",
+        }
+        alt = fallback_map.get(task_class, task_class)
+        budget = DER_TOKEN_BUDGETS.get(alt)
+        if budget is not None:
+            return f"{budget:,}"
+    except Exception:
+        pass
+    return f"({task_class})"
 
 
 class PredictiveLoader:

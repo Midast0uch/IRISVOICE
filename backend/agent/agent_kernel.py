@@ -931,8 +931,23 @@ class AgentKernel:
         # is too HIGH re-creates the overcommit this table's default exists to
         # prevent. Under-sizing is safe; over-sizing is the bug.
         ("cerebras", "gemma-4-31b", 256_000),
-        # OpenRouter — generic passthrough; use a conservative default
-        ("openrouter", "", 32_000),
+        # OpenRouter: REMOVED 2026-07-29. ("openrouter", "", 32_000) was a
+        # bare-substring provider-wide fallback — it matched EVERY model from
+        # OpenRouter, which fronts models from 4k to 2M windows. A blanket
+        # 32_000 meant an 8k-window model got a budget sized for 32k, so DER
+        # kept issuing steps while every call silently truncated (REQ-2 AC6,
+        # the exact case row 1 of the silent-failure table in specs/PHASES.md
+        # describes). This was briefly grandfathered into an allow-list in
+        # test_no_raised_provider_default; that was wrong and has been
+        # reverted — the guard now admits no exceptions. An unlisted
+        # openrouter model now falls through to the conservative 8_192
+        # default (case 4 below), tagged source="default" per REQ-2 AC4:
+        # under-provisioning is safe, over-provisioning truncates silently.
+        # Escape hatch: a real window can still be supplied per-model via
+        # _context_window_overrides (highest precedence, REQ-2 AC3).
+        # Open question: the correct long-term fix is resolving OpenRouter's
+        # window from its API metadata (authoritative, REQ-2 AC2) rather than
+        # any table guess — see specs/phase-1-foundation/requirements.md OQ.
         # LM Studio / IRIS Local — common local models
         ("lmstudio", "lfm-2-8b", 32_768),
         ("lmstudio", "llama-3", 8_192),
@@ -7203,20 +7218,25 @@ Respond with a JSON object:
         return {_sid: (_res, _succ) for _sid, _res, _succ in _completed}
 
     # ── DER Phase 0: verification (stub-kill + coarsened outcome) ──────────────
+    # SemanticVerifier instance — lazy-init so import at module level is safe.
+    _VERIFIER: Optional["SemanticVerifier"] = None
     _STUB_RE = re.compile(r"\[step\s+\d+\s+completed\]", re.IGNORECASE)
+
+    def _get_verifier(self):
+        if self._VERIFIER is None:
+            from backend.agent.verifier import SemanticVerifier as _SV
+            AgentKernel._VERIFIER = _SV()
+        return self._VERIFIER
 
     def _verified_fraction(self, expected: Optional[str], result: str) -> float:
         """DER Phase 0 (D0.6): fraction of checkable assertions from expected_output
-        that the result satisfies. Deterministic, no LLM. Assertions split on ';'."""
-        if not result:
-            return 0.0
-        if not expected:
-            return 0.0 if self._STUB_RE.search(result) else 1.0
-        _assertions = [a.strip() for a in expected.split(";") if a.strip()]
-        if not _assertions:
-            return 0.0 if self._STUB_RE.search(result) else 1.0
-        _satisfied = sum(1 for a in _assertions if a.lower() in result.lower())
-        return _satisfied / len(_assertions)
+        that the result satisfies. Deterministic, no LLM. Assertions split on ';'.
+
+        Delegates to SemanticVerifier (Phase 4 LFM2.5 integration) for semantic
+        entailment scoring with stub guard + substring fallback.
+        """
+        frac, _scorer = self._get_verifier().verified_fraction(expected, result)
+        return frac
 
     def _verify_step_result(
         self, goal: str, expected: Optional[str], result: str
@@ -7459,6 +7479,47 @@ Respond with a JSON object:
         _verified = self._verify_step_result(item.description, item.expected_output, step_result)
         if _verified == "FAILED":
             step_success = False
+
+        # ── Phase 2 (D2.1): unified recovery — verification FAILED uses the
+        # SAME _split_step operator as the physics trigger. No separate graft
+        # code path remains. Split prepays work units up front (Lyapunov Phi
+        # strictly decreases). Children are Sub-Loops (is_subloop=True) that
+        # collapse back to this step as ONE COMPRESS. ──
+        # BUGFIX (REQ-8 AC3): this block used to run at the very end of the
+        # function (right before `return _tokens_used`), but `_children` is
+        # READ much earlier — by the REQ-8 task:learning emit below and by the
+        # REQ-7 physics-narration hook — while it is only ASSIGNED here. Since
+        # a name assigned anywhere in a Python function is local for the whole
+        # function, every earlier read raised `UnboundLocalError: cannot
+        # access local variable '_children' where it is not associated with a
+        # value`, silently caught by each call site's own try/except so the
+        # task:learning event (and the physics narration) never fired. Moved
+        # up so `_children` is a real, already-computed value at every read
+        # site. `_children` defaults to `[]` (no split) so the success path —
+        # which never enters the split branch — still has a bound, honestly
+        # falsy value instead of leaving the name unbound.
+        _children = []
+        if not step_success and not item.is_subloop:
+            try:
+                _cad_split = self._der_live_cad_state(_session)
+                _wu = getattr(self, "_der_work_units", 0)
+                _children = self._split_step(item, "verify_failed", _cad_split, _wu)
+                if _children:
+                    # T6.8: route subloop children through the batcher.
+                    for _c in _children:
+                        _batch = get_batcher().offer(_c)
+                        if _batch is not None:
+                            for _batch_item in _batch:
+                                queue.add_item(_batch_item)
+                    # REQ-3: debit measured tokens, not a flat child count.
+                    _measured = max(200, len(step_result) // 4)
+                    self._der_work_units = debit_work_units(_wu, _measured)
+                    logger.info(
+                        "[DER] verify_failed -> split into %d sub-loops (work_units=%d)",
+                        len(_children), self._der_work_units,
+                    )
+            except Exception as _split_exc:
+                logger.warning("[DER] split-on-failure failed: %s", _split_exc)
 
         # ── Phase 3 (D3.3 G5): honest commit ledger ──
         # REQ-1: a commit is recorded for EVERY executed action with its true label
@@ -7931,32 +7992,13 @@ Respond with a JSON object:
         except Exception as _gap_exc:
             loud_error(_gap_exc, "trailing_director_gaps")
 
-        # ── Phase 2 (D2.1): unified recovery — verification FAILED uses the
-        # SAME _split_step operator as the physics trigger. No separate graft
-        # code path remains. Split prepays work units up front (Lyapunov Phi
-        # strictly decreases). Children are Sub-Loops (is_subloop=True) that
-        # collapse back to this step as ONE COMPRESS. ──
-        if not step_success and not item.is_subloop:
-            try:
-                _cad = self._der_live_cad_state(_session)
-                _wu = getattr(self, "_der_work_units", 0)
-                _children = self._split_step(item, "verify_failed", _cad, _wu)
-                if _children:
-                    # T6.8: route subloop children through the batcher.
-                    for _c in _children:
-                        _batch = get_batcher().offer(_c)
-                        if _batch is not None:
-                            for _batch_item in _batch:
-                                queue.add_item(_batch_item)
-                    # REQ-3: debit measured tokens, not a flat child count.
-                    _measured = max(200, len(step_result) // 4)
-                    self._der_work_units = debit_work_units(_wu, _measured)
-                    logger.info(
-                        "[DER] verify_failed -> split into %d sub-loops (work_units=%d)",
-                        len(_children), self._der_work_units,
-                    )
-            except Exception as _split_exc:
-                logger.warning("[DER] split-on-failure failed: %s", _split_exc)
+        # NOTE: the verify_failed -> split-into-sub-loops step (Phase 2 D2.1)
+        # used to live here. It computed `_children`, which the REQ-8
+        # task:learning emit and the REQ-7 physics-narration hook above both
+        # read — but those reads ran *before* this block, every time, so
+        # `_children` was always unbound at read time (UnboundLocalError,
+        # silently swallowed). Moved up to right after `_verified` is known,
+        # before its first reader. See the bugfix note there.
 
         return _tokens_used
 

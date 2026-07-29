@@ -137,12 +137,23 @@ remains.
   default was used, and expose that fact — an unknown window SHALL be visible, not silent.
 - AC5: THE SYSTEM SHALL NOT infer a window from a model-name substring when an authoritative value
   is available.
-- AC6: THE SYSTEM SHALL NOT introduce a provider-wide default that is **higher** than the
-  conservative default (Decision Locked #6).
+- AC6: THE SYSTEM SHALL NOT introduce **any** provider-wide default that is **higher** than the
+  conservative default (Decision Locked #6). No entry — pre-existing or new — is grandfathered.
+  The one pre-existing entry (`("openrouter", "", 32_000)`) has been **REMOVED** from
+  `_KNOWN_CONTEXT_WINDOWS` (agent_kernel.py) for exactly this reason: it matched EVERY OpenRouter
+  model, and OpenRouter fronts models from 4k to 2M windows, so the blanket 32_000 over-provisioned
+  every model below that and silently truncated their calls. The guard test
+  (`test_no_raised_provider_default`) admits no allow-list; adding any provider-wide entry above
+  the conservative default anywhere in the table is an AC6 violation, not a test fix.
 
 **Edge Cases:**
-- Provider-wide fallback entries (the `("openrouter", "", 32_000)` pattern) → permitted, but AC4
-  still requires logging it as a default.
+- Provider-wide fallback entries (the `("openrouter", "", 32_000)` pattern) → **forbidden, full
+  stop**. This note previously read as though the pre-existing OpenRouter entry were grandfathered,
+  which contradicted AC6 outright (32_000 > 8_192): that was a spec-authoring mistake, not a
+  resolved exception, and has been corrected here. The entry was removed rather than kept; an
+  unlisted OpenRouter model now falls through to the conservative 8_192 default (AC4), tagged
+  `source=default` so the gap stays visible. New bare-substring entries above the conservative
+  default are forbidden for every provider, with no exceptions.
 - Provider reports a window larger than the account's quota → out of scope; sizing is from the
   model's window, not rate limits.
 - A local model loaded at a different `n_ctx` than its filename suggests → AC2; the loaded value
@@ -456,4 +467,12 @@ alias fallback.
   floor).
 - **OQ-2:** Which providers expose model metadata for REQ-2 AC2, and via what call? Needs a survey;
   until then the override plus confirmed table entries carry it.
+- **OQ-4 (2026-07-29):** The `("openrouter", "", 32_000)` bare-substring entry was removed from
+  `_KNOWN_CONTEXT_WINDOWS` (see AC6 above) rather than fixed properly, so an unlisted OpenRouter
+  model now under-provisions to the conservative 8_192 default instead of guessing. The correct
+  long-term fix is resolving OpenRouter's window from its **API metadata** (authoritative, REQ-2
+  AC2) rather than any table guess — OpenRouter's `/models` endpoint reports `context_length` per
+  model. Until that lookup is implemented, the per-model override
+  (`_context_window_overrides`, highest precedence per AC3) is the user-facing escape hatch for
+  anyone who needs their real window sized correctly before the 8k default applies.
 - **OQ-3:** The `config_version` value for REQ-8 AC3.

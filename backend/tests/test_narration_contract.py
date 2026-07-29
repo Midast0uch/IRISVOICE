@@ -19,6 +19,22 @@ from backend.agent.narration import run_with_narration
 from backend.agent.tool_registry import ToolSpec
 
 
+@pytest.fixture(autouse=True)
+def _reset_narration_gate():
+    """Isolate the PROCESS-WIDE narration gate between tests.
+
+    ``may_narrate()`` allows at most one utterance per
+    ``_NARRATION_GATE_INTERVAL`` (18s), tracked in a module-level global, so the
+    first narration test in a session consumes it and later ones see silence.
+    Resets state only — the load each test drives is unchanged.
+    """
+    import backend.agent.narration as _narration
+
+    _narration._narration_gate_last = 0.0
+    yield
+    _narration._narration_gate_last = 0.0
+
+
 class TestLongRunningCapability:
     def test_crawler_query_is_long_running(self):
         """crawler_query must carry the long_running capability so execute_tool
@@ -60,7 +76,20 @@ class TestNarrationHeartbeat:
         # All heartbeats are low priority (never interrupt the final answer).
         assert all(p == "low" for _, p in spoken)
         # Generic message, not a web-specific hardcoded string.
-        assert all("Still" in t for t, _ in spoken)
+        #
+        # REQ-7 AC7 / T4.1: this previously asserted `"Still" in t`, i.e. the
+        # literal "Still researching the web." that narration.py T37 removed —
+        # a string which was itself web-specific, contradicting this very
+        # comment. The contract is now stated positively AND negatively: the
+        # heartbeat speaks the generic per-tool verb, and the superseded
+        # wording must never come back. Load and scale are unchanged.
+        assert all(t.strip() for t, _ in spoken), "heartbeat spoke an empty string"
+        assert all("reading" in t for t, _ in spoken), (
+            f"crawler_query heartbeat should speak the generic verb; got {spoken}"
+        )
+        assert not any("Still" in t or "researching" in t for t, _ in spoken), (
+            f"superseded 'Still researching' wording is back: {spoken}"
+        )
 
     def test_returns_tool_result(self):
         spoken = []

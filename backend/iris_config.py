@@ -180,7 +180,6 @@ class SwarmRoleConfig:
 
 
 @dataclass
-@dataclass
 class ProviderEntry:
     """A persisted provider configuration record (flat-config replacement).
 
@@ -352,8 +351,25 @@ class InferenceConfig:
                     from .agent.inference.keyring import set_secret
 
                     set_secret(provider, api_key)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Keyring write failed: do NOT clear the flat field below —
+                    # losing the user's only copy of the key is worse than the
+                    # (existing) plaintext-in-config risk. Log so the failure
+                    # is visible instead of silently keeping the credential on
+                    # disk indefinitely.
+                    logger.warning(
+                        f"[Config] Failed to move api_key for provider "
+                        f"'{provider}' into the keyring during migration: {exc}. "
+                        f"Leaving the flat api_key field in place (unmigrated) "
+                        f"rather than losing the credential."
+                    )
+                else:
+                    # Keyring write succeeded — the credential now lives ONLY
+                    # in the keyring. Clear the flat dataclass field so
+                    # to_dict()/asdict() (and therefore save_config()) never
+                    # serializes the raw key into iris_config.json again
+                    # (REQ-6 AC4 / REQ-7's core promise).
+                    self.api_key = ""
 
         local_id = getattr(self, "local_model_id", "")
         if local_id:

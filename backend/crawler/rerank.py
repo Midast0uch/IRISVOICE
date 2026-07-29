@@ -65,15 +65,18 @@ def _bm25(query_tokens: list[str], docs: list[list[str]], k1: float = 1.5, b: fl
 # Embedding similarity (optional, lazy)
 # ---------------------------------------------------------------------------
 def _embed(texts: list[str]) -> Optional[list[list[float]]]:
+    """Encode texts via EmbeddingService (Phase 4 LFM2.5 integration).
+
+    Routes through ``EmbeddingService.encode`` instead of loading a
+    standalone SentenceTransformer, so the same backend selection and
+    chunking logic applies (T1.6).
+    """
     try:
-        from sentence_transformers import SentenceTransformer  # type: ignore
-    except Exception:
-        return None
-    try:
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        return model.encode(texts, normalize_embeddings=True).tolist()
+        from backend.memory.embedding import get_embedding_service
+        svc = get_embedding_service()
+        return [svc.encode(t) for t in texts]
     except Exception as exc:
-        logger.warning("[rerank] embedding unavailable: %s", exc)
+        logger.warning("[rerank] embedding service unavailable: %s", exc)
         return None
 
 

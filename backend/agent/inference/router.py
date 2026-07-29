@@ -87,6 +87,13 @@ class InferenceRouter:
         # they cannot disagree about which models exist or which role serves
         # which provider.
         self._registry = get_provider_registry()
+        # Phase 4: register non-chat encoder providers (embedding/rerank) so they
+        # are visible to the UI but never bindable to reasoning/tool_execution.
+        try:
+            from .provider import register_builtin_encoder_providers
+            register_builtin_encoder_providers()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[router] encoder provider registration failed: %s", exc)
         self._roles = get_role_binding_table()
         self._transports: Dict[Tuple[str, ...], Any] = {}
         # Separate reference for in-process model manager (set externally)
@@ -174,10 +181,25 @@ class InferenceRouter:
                     )
 
         # ── Legacy flat schema (backward compat) ───────────────────────
-        # Only synthesise if the target schema contributed nothing, so an
-        # existing config (provider / reasoning_model / api_key / …) keeps
-        # working without manual migration.
-        if not self._registry.list():
+        # Only synthesise if the target schema contributed no CHAT provider,
+        # so an existing config (provider / reasoning_model / api_key / …)
+        # keeps working without manual migration.
+        #
+        # NOTE: this used to test `not self._registry.list()` (registry
+        # empty). That broke the day Phase 4's register_builtin_encoder_
+        # providers() started running in __init__ BEFORE this method — the
+        # registry then always holds at least "embedding:lfm25-emb-350m", so
+        # the guard was always False and a pure-legacy config (no `providers`
+        # collection) never got its reasoning/tool_execution roles bound at
+        # all (`roles: []`, `default_role: None`). The guard must test what it
+        # actually means: "is there a CHAT-purpose provider already
+        # registered?" — the encoder is purpose="embedding" and is never a
+        # candidate for reasoning/tool_execution, so its presence must not
+        # suppress legacy synthesis.
+        if not any(
+            (getattr(i, "purpose", "chat") or "chat") == "chat"
+            for i in self._registry.list()
+        ):
             legacy_provider = getattr(infer_cfg, "provider", None)
             if legacy_provider:
                 kind = self._legacy_kind(legacy_provider)
@@ -225,9 +247,17 @@ class InferenceRouter:
 
     @staticmethod
     def _legacy_kind(provider: str) -> "ProviderKind":
-        """Map a legacy ``inference.provider`` string to a ``ProviderKind``."""
+        """Map a legacy ``inference.provider`` string to a ``ProviderKind``.
+
+        Tolerant of BOTH LM Studio spellings in the wild: the
+        ``InferenceConfig.provider`` vocabulary (iris_config.py) uses
+        ``"lm_studio"`` (underscore) while older call sites / UI presets use
+        ``"lmstudio"`` (no underscore). Matching only one literal silently
+        misroutes every config written with the other spelling to the API
+        catch-all instead of LOCAL_OPENAI.
+        """
         p = (provider or "").lower()
-        if p in ("lmstudio", "openai_compatible", "local_openai"):
+        if p in ("lmstudio", "lm_studio", "openai_compatible", "local_openai"):
             return ProviderKind.LOCAL_OPENAI
         if p in ("local", "iris_local", "inprocess"):
             return ProviderKind.INPROCESS
@@ -367,7 +397,10 @@ class InferenceRouter:
             _cfg.inference.config_version = max(_cfg.inference.config_version, 2)
             save_config(_cfg)
         except Exception as _e:  # pragma: no cover - persistence is best-effort
-            self._logger.debug(f"[write_provider] config persist skipped: {_e}")
+            # Module-level `logger` — there is no `self._logger` on this class.
+            # Using one here made the handler that exists to swallow a persist
+            # failure raise AttributeError out of it instead.
+            logger.debug(f"[write_provider] config persist skipped: {_e}")
         # Add to the live (process-wide) registry.
         self._registry.add(
             ProviderInstance(

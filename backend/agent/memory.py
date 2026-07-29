@@ -326,12 +326,22 @@ class ConversationMemory:
 
                 _domain = getattr(self, "domain", None) or "general"
                 _natural = bool(getattr(self, "natural_exit", False))
+                # REQ-2 AC4: tokens_total is the session's REAL accumulated LLM
+                # token count (prompt + completion, OQ-3) — not the default 0.0.
+                # Without this the only production caller of record_session_exit
+                # left tokens_per_verified permanently 0.0, so that guard could
+                # never fire (outer_loop.py _score).
+                try:
+                    _tokens_total = float(self.get_token_count().get("total_tokens", 0.0))
+                except Exception:
+                    _tokens_total = 0.0
                 CaduceanTrajectoryRecorder().record_session_exit(
                     session_id=self.session_id,
                     domain=_domain,
                     natural_exit=_natural,
                     route_score=float(getattr(self, "route_score", 0.0) or 0.0),
                     drift=float(getattr(self, "drift", 0.0) or 0.0),
+                    tokens_total=_tokens_total,
                 )
             except Exception as _se_exc:
                 logger.debug("[ConversationMemory] record_session_exit failed: %s", _se_exc)

@@ -269,6 +269,7 @@ conflict from the previous spec cut, designed out by putting both in one phase.
 | ContextPill denominator | **No code** | NO CHANGE — **behaviour shifts** | After REQ-2, a 16k-loaded Mistral shows **16k not 32k**, and an unlisted provider stops showing 8.2k. Expected; do not "fix" it back. |
 | `quota_key()` / `rate_meter` | **No** | NO CHANGE (verified) | Local kinds unmetered by `ProviderKind` (`provider.py:16-22`); more local instances stay unmetered. |
 | `backend/audio/parakeet_service.py`, TTS | **No** | NO CHANGE (verified) | Not on any path this phase touches. |
+| CT-F2 / CT-F8 exact-registry-contents assumption | **Superseded (Phase 4)** | NO-CHANGE CONTRADICTED — documented | Phase 4 added `register_builtin_encoder_providers()` (`backend/agent/inference/provider.py:115-151`), called from `InferenceRouter.__init__` (`backend/agent/inference/router.py:93-94`). Every router construction — including the one CT-F2/CT-F8 build — now also registers `"embedding:lfm25-emb-350m"`. Phase 1's implicit "the registry contains exactly these ids" assumption is false as of Phase 4; the later phase wins. CT-F2/CT-F8 are narrowed to `purpose == "chat"` (2026-07-29) and a new test (`test_encoder_provider_registered_embedding_not_chat_bound`) pins the encoder's presence/purpose/role-exclusion so coverage is not lost. |
 
 ---
 

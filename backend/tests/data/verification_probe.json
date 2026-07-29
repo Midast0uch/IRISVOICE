@@ -1,0 +1,57 @@
+[
+  {
+    "expected": "returns the user's email address",
+    "result": "the address was retrieved from the database",
+    "label": "paraphrase"
+  },
+  {
+    "expected": "compute the total price including taxes",
+    "result": "the final cost with tax added was calculated",
+    "label": "paraphrase"
+  },
+  {
+    "expected": "create a new invoice record for the customer",
+    "result": "a fresh billing entry was generated in the client account",
+    "label": "paraphrase"
+  },
+  {
+    "expected": "file created; tests pass",
+    "result": "nothing happened",
+    "label": "genuine_failure"
+  },
+  {
+    "expected": "send the email notification to all subscribers",
+    "result": "the database connection timed out and the operation was aborted",
+    "label": "genuine_failure"
+  },
+  {
+    "expected": "returns the user's email address",
+    "result": "[step 1 completed]",
+    "label": "bare_stub"
+  },
+  {
+    "expected": "update the user profile with new settings",
+    "result": "[Step 42 Completed]",
+    "label": "bare_stub"
+  },
+  {
+    "expected": "user email retrieved",
+    "result": "I have user email retrieved from the database successfully",
+    "label": "well_phrased_stub"
+  },
+  {
+    "expected": "user account created",
+    "result": "The user account created notification has been sent to the admin for approval",
+    "label": "well_phrased_stub"
+  },
+  {
+    "expected": "email notification sent",
+    "result": "the email notification sent to the user bounced back with an invalid address error",
+    "label": "vocab_overlap_no_satisfaction"
+  },
+  {
+    "expected": "saved to cache",
+    "result": "the data was saved to cache but was immediately evicted",
+    "label": "vocab_overlap_no_satisfaction"
+  }
+]

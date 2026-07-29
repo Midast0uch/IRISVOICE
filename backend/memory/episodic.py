@@ -15,7 +15,15 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
 from backend.memory.db import open_encrypted_memory, Connection
-from backend.memory.embedding import EmbeddingService
+from backend.memory.embedding import (
+    EmbeddingService,
+    compare_embeddings,
+    CrossSpaceComparisonError,
+    BACKEND_BGE,
+    BACKEND_LFM,
+    BACKEND_HASH,
+)
+from backend.memory.reindex import get_reindex_manager
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +142,11 @@ class EpisodicStore:
 
         # Initialize schema on first access
         self._init_schema()
+
+        # Initialise the global ReindexManager for dual-read support
+        from backend.memory.reindex import init_reindex_manager
+        init_reindex_manager(self.db_path, self.biometric_key)
+
         logger.info("[EpisodicStore] Initialized")
     
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
@@ -159,12 +172,20 @@ class EpisodicStore:
         
         return dot_product / (norm1 * norm2)
     
-    def _find_duplicate(self, embedding: List[float]) -> Optional[Tuple[str, float]]:
+    def _find_duplicate(
+        self,
+        embedding: List[float],
+        embedding_backend: str,
+    ) -> Optional[Tuple[str, float]]:
         """
         Find if a similar episode already exists.
 
+        Uses compare_embeddings for cross-space safe comparison.
+        Cross-space candidates are silently skipped (no crash, no match).
+
         Args:
             embedding: The embedding to check
+            embedding_backend: The backend that produced the embedding
 
         Returns:
             Tuple of (episode_id, similarity) if duplicate found, None otherwise
@@ -172,7 +193,7 @@ class EpisodicStore:
         try:
             # Get all episode embeddings (with limit for performance)
             rows = self.db.execute("""
-                SELECT id, embedding, outcome_score
+                SELECT id, embedding, outcome_score, embedding_backend
                 FROM episodes
                 ORDER BY timestamp DESC
                 LIMIT 100
@@ -186,7 +207,14 @@ class EpisodicStore:
                     stored_embedding = _unpack_embedding(row[1])
                     if not stored_embedding:
                         continue
-                    similarity = self._cosine_similarity(embedding, stored_embedding)
+                    stored_backend = row[3] or BACKEND_BGE
+                    try:
+                        similarity = compare_embeddings(
+                            embedding, embedding_backend,
+                            stored_embedding, stored_backend,
+                        )
+                    except CrossSpaceComparisonError:
+                        continue  # different space → not a duplicate
 
                     if similarity > best_similarity:
                         best_similarity = similarity
@@ -214,24 +242,25 @@ class EpisodicStore:
         """Initialize database schema for episodes and context chunks."""
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS episodes (
-                id             TEXT PRIMARY KEY,
-                session_id     TEXT NOT NULL,
-                task_summary   TEXT NOT NULL,
-                full_content   TEXT,
-                tool_sequence  TEXT,
-                outcome_score  REAL DEFAULT 0.0,
-                outcome_type   TEXT NOT NULL,
-                failure_reason TEXT,
-                user_corrected INTEGER DEFAULT 0,
-                user_confirmed INTEGER DEFAULT 0,
-                duration_ms    INTEGER DEFAULT 0,
-                tokens_used    INTEGER DEFAULT 0,
-                model_id       TEXT DEFAULT '',
-                source_channel TEXT DEFAULT 'websocket',
-                node_id        TEXT DEFAULT 'local',
-                origin         TEXT DEFAULT 'local',
-                embedding      BLOB,
-                timestamp      TEXT DEFAULT CURRENT_TIMESTAMP
+                id                 TEXT PRIMARY KEY,
+                session_id         TEXT NOT NULL,
+                task_summary       TEXT NOT NULL,
+                full_content       TEXT,
+                tool_sequence      TEXT,
+                outcome_score      REAL DEFAULT 0.0,
+                outcome_type       TEXT NOT NULL,
+                failure_reason     TEXT,
+                user_corrected     INTEGER DEFAULT 0,
+                user_confirmed     INTEGER DEFAULT 0,
+                duration_ms        INTEGER DEFAULT 0,
+                tokens_used        INTEGER DEFAULT 0,
+                model_id           TEXT DEFAULT '',
+                source_channel     TEXT DEFAULT 'websocket',
+                node_id            TEXT DEFAULT 'local',
+                origin             TEXT DEFAULT 'local',
+                embedding          BLOB,
+                embedding_backend  TEXT NOT NULL DEFAULT 'bge-m3',
+                timestamp          TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE INDEX IF NOT EXISTS idx_ep_session   ON episodes(session_id);
@@ -255,14 +284,15 @@ class EpisodicStore:
             -- retrieval_count tracks usage frequency for the crystallization pathway:
             -- frequently-retrieved chunks contribute to landmark formation.
             CREATE TABLE IF NOT EXISTS context_chunks (
-                id               TEXT PRIMARY KEY,
-                session_id       TEXT NOT NULL,
-                chunk_type       TEXT NOT NULL DEFAULT 'context_fragment',
-                zone             TEXT NOT NULL DEFAULT 'trusted',
-                content          TEXT NOT NULL,
-                embedding        BLOB,
-                retrieval_count  INTEGER NOT NULL DEFAULT 0,
-                timestamp        TEXT DEFAULT CURRENT_TIMESTAMP
+                id                 TEXT PRIMARY KEY,
+                session_id         TEXT NOT NULL,
+                chunk_type         TEXT NOT NULL DEFAULT 'context_fragment',
+                zone               TEXT NOT NULL DEFAULT 'trusted',
+                content            TEXT NOT NULL,
+                embedding          BLOB,
+                embedding_backend  TEXT NOT NULL DEFAULT 'bge-m3',
+                retrieval_count    INTEGER NOT NULL DEFAULT 0,
+                timestamp          TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE INDEX IF NOT EXISTS idx_chunk_session  ON context_chunks(session_id);
@@ -273,6 +303,7 @@ class EpisodicStore:
         """)
         self.db.commit()
         self._migrate_chunk_schema()
+        self._migrate_embedding_backend()
         logger.debug("[EpisodicStore] Schema initialized")
 
     def _migrate_chunk_schema(self) -> None:
@@ -302,6 +333,50 @@ class EpisodicStore:
                 except Exception as e:
                     logger.warning(f"[EpisodicStore] Migration warning ({col}): {e}")
     
+    def _migrate_embedding_backend(self) -> None:
+        """Add embedding_backend column to tables that store embeddings.
+
+        Safe to run multiple times — probes PRAGMA table_info before each
+        ALTER TABLE so re-running on an already-migrated DB is a no-op.
+        """
+        existing_ep = {
+            row[1]
+            for row in self.db.execute(
+                "PRAGMA table_info(episodes)"
+            ).fetchall()
+        }
+        if "embedding_backend" not in existing_ep:
+            try:
+                self.db.execute(
+                    "ALTER TABLE episodes ADD COLUMN embedding_backend"
+                    " TEXT NOT NULL DEFAULT 'bge-m3'"
+                )
+                self.db.commit()
+                logger.info("[EpisodicStore] Migrated episodes: added embedding_backend")
+            except Exception as e:
+                logger.warning(
+                    "[EpisodicStore] Migration warning (episodes.embedding_backend): %s", e
+                )
+
+        existing_cc = {
+            row[1]
+            for row in self.db.execute(
+                "PRAGMA table_info(context_chunks)"
+            ).fetchall()
+        }
+        if "embedding_backend" not in existing_cc:
+            try:
+                self.db.execute(
+                    "ALTER TABLE context_chunks ADD COLUMN embedding_backend"
+                    " TEXT NOT NULL DEFAULT 'bge-m3'"
+                )
+                self.db.commit()
+                logger.info("[EpisodicStore] Migrated context_chunks: added embedding_backend")
+            except Exception as e:
+                logger.warning(
+                    "[EpisodicStore] Migration warning (context_chunks.embedding_backend): %s", e
+                )
+
     def store(self, episode: Episode, score: float) -> str:
         """
         Persist an episode with its embedding.
@@ -317,12 +392,14 @@ class EpisodicStore:
         Returns:
             The ID of the stored episode (new or existing)
         """
-        # Generate embedding for task summary
-        embedding = self._embed.encode(episode.task_summary)
+        # Generate embedding for task summary with provenance
+        meta = self._embed.encode_with_meta(episode.task_summary)
+        embedding = meta.vector
+        embedding_backend = meta.backend
         embedding_blob = _pack_embedding(embedding)
 
         # Check for duplicates
-        duplicate = self._find_duplicate(embedding)
+        duplicate = self._find_duplicate(embedding, embedding_backend)
         if duplicate:
             episode_id, similarity = duplicate
             # Update existing episode with new information.
@@ -338,6 +415,7 @@ class EpisodicStore:
                     outcome_type = ?,
                     user_corrected = MAX(user_corrected, ?),
                     user_confirmed = MAX(user_confirmed, ?),
+                    embedding_backend = ?,
                     timestamp = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
@@ -347,6 +425,7 @@ class EpisodicStore:
                 episode.outcome_type,
                 int(episode.user_corrected),
                 int(episode.user_confirmed),
+                embedding_backend,
                 episode_id
             ))
             self.db.commit()
@@ -361,8 +440,8 @@ class EpisodicStore:
             (id, session_id, task_summary, full_content, tool_sequence,
              outcome_score, outcome_type, failure_reason, user_corrected,
              user_confirmed, duration_ms, tokens_used, model_id,
-             source_channel, node_id, origin, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             source_channel, node_id, origin, embedding, embedding_backend)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             episode_id,
             episode.session_id,
@@ -380,7 +459,8 @@ class EpisodicStore:
             episode.source_channel,
             episode.node_id,
             episode.origin,
-            embedding_blob
+            embedding_blob,
+            embedding_backend
         ))
         self.db.commit()
 
@@ -421,24 +501,36 @@ class EpisodicStore:
         Returns:
             List of similar episode dictionaries, sorted by similarity
         """
-        # Get embedding for query
-        query_embedding = self._embed.encode(task)
-        
+        # Check if dual-read is needed (migration active)
+        rm = get_reindex_manager()
+        if rm is not None and rm.progress().get("state", "idle") != "idle":
+            return rm.search_episodes(
+                query=task, limit=limit, min_score=min_score,
+                session_id=session_id,
+            )
+
+        # Get embedding for query with provenance
+        meta = self._embed.encode_with_meta(task)
+        query_embedding = meta.vector
+        query_backend = meta.backend
+
         # Get all successful episodes with embeddings
         if session_id is not None:
             rows = self.db.execute("""
-                SELECT id, task_summary, tool_sequence, outcome_score, embedding
+                SELECT id, task_summary, tool_sequence, outcome_score,
+                       embedding, embedding_backend
                 FROM episodes
                 WHERE outcome_score >= ? AND outcome_type = 'success'
                   AND session_id = ?
             """, (min_score, session_id)).fetchall()
         else:
             rows = self.db.execute("""
-                SELECT id, task_summary, tool_sequence, outcome_score, embedding
+                SELECT id, task_summary, tool_sequence, outcome_score,
+                       embedding, embedding_backend
                 FROM episodes
                 WHERE outcome_score >= ? AND outcome_type = 'success'
             """, (min_score,)).fetchall()
-        
+
         # Calculate similarity for each episode
         scored_episodes = []
         for row in rows:
@@ -446,7 +538,14 @@ class EpisodicStore:
                 stored_embedding = _unpack_embedding(row[4])
                 if not stored_embedding:
                     continue
-                similarity = self._cosine_similarity(query_embedding, stored_embedding)
+                stored_backend = row[5] or BACKEND_BGE
+                try:
+                    similarity = compare_embeddings(
+                        query_embedding, query_backend,
+                        stored_embedding, stored_backend,
+                    )
+                except CrossSpaceComparisonError:
+                    continue  # different space, skip silently
                 scored_episodes.append((similarity, {
                     "id": row[0],
                     "task_summary": row[1],
@@ -499,23 +598,32 @@ class EpisodicStore:
         Returns:
             List of failure episode dictionaries, sorted by similarity
         """
-        # Get embedding for query
-        query_embedding = self._embed.encode(task)
-        
+        # Check if dual-read is needed (migration active)
+        rm = get_reindex_manager()
+        if rm is not None and rm.progress().get("state", "idle") != "idle":
+            return rm.search_failures(
+                query=task, limit=limit, session_id=session_id,
+            )
+
+        # Get embedding for query with provenance
+        meta = self._embed.encode_with_meta(task)
+        query_embedding = meta.vector
+        query_backend = meta.backend
+
         # Get all failures with embeddings
         if session_id is not None:
             rows = self.db.execute("""
-                SELECT id, task_summary, failure_reason, embedding
+                SELECT id, task_summary, failure_reason, embedding, embedding_backend
                 FROM episodes
                 WHERE outcome_type = 'failure' AND session_id = ?
             """, (session_id,)).fetchall()
         else:
             rows = self.db.execute("""
-                SELECT id, task_summary, failure_reason, embedding
+                SELECT id, task_summary, failure_reason, embedding, embedding_backend
                 FROM episodes
                 WHERE outcome_type = 'failure'
             """).fetchall()
-        
+
         # Calculate similarity for each failure
         scored_failures = []
         for row in rows:
@@ -523,7 +631,14 @@ class EpisodicStore:
                 stored_embedding = _unpack_embedding(row[3])
                 if not stored_embedding:
                     continue
-                similarity = self._cosine_similarity(query_embedding, stored_embedding)
+                stored_backend = row[4] or BACKEND_BGE
+                try:
+                    similarity = compare_embeddings(
+                        query_embedding, query_backend,
+                        stored_embedding, stored_backend,
+                    )
+                except CrossSpaceComparisonError:
+                    continue
                 scored_failures.append((similarity, {
                     "task_summary": row[1],
                     "failure_reason": row[2],
@@ -656,12 +771,14 @@ class EpisodicStore:
             if len(chunk) < self._CHUNK_MIN_CHARS:
                 continue
 
-            embedding = self._embed.encode(chunk)
+            meta = self._embed.encode_with_meta(chunk)
+            embedding = meta.vector
+            chunk_backend = meta.backend
 
             # Dedup: compare against recent chunks in this session
             try:
                 rows = self.db.execute(
-                    """SELECT id, embedding FROM context_chunks
+                    """SELECT id, embedding, embedding_backend FROM context_chunks
                        WHERE session_id = ? AND chunk_type = ?
                        ORDER BY timestamp DESC LIMIT 50""",
                     (session_id, chunk_type),
@@ -670,10 +787,19 @@ class EpisodicStore:
                 for row in rows:
                     try:
                         stored_emb = _unpack_embedding(row[1])
-                        if stored_emb and self._cosine_similarity(embedding, stored_emb) >= self._FRAG_DEDUP_THRESHOLD:
-                            is_dup = True
-                            stored_ids.append(row[0])
-                            break
+                        stored_backend = row[2] or BACKEND_BGE
+                        if stored_emb:
+                            try:
+                                sim = compare_embeddings(
+                                    embedding, chunk_backend,
+                                    stored_emb, stored_backend,
+                                )
+                                if sim >= self._FRAG_DEDUP_THRESHOLD:
+                                    is_dup = True
+                                    stored_ids.append(row[0])
+                                    break
+                            except CrossSpaceComparisonError:
+                                continue
                     except Exception:
                         continue
                 if is_dup:
@@ -683,7 +809,8 @@ class EpisodicStore:
 
             chunk_id = str(uuid.uuid4())
             embedding_blob = _pack_embedding(embedding)
-            batch_rows.append((chunk_id, session_id, chunk_type, _zone, chunk, embedding_blob))
+            batch_rows.append((chunk_id, session_id, chunk_type, _zone, chunk,
+                               embedding_blob, chunk_backend))
             stored_ids.append(chunk_id)
 
         # Batch insert all non-duplicate chunks
@@ -692,8 +819,8 @@ class EpisodicStore:
                 with self.db:
                     self.db.executemany(
                         """INSERT INTO context_chunks
-                           (id, session_id, chunk_type, zone, content, embedding)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
+                           (id, session_id, chunk_type, zone, content, embedding, embedding_backend)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
                         batch_rows
                     )
             except Exception as e:
@@ -703,8 +830,8 @@ class EpisodicStore:
                     try:
                         self.db.execute(
                             """INSERT INTO context_chunks
-                               (id, session_id, chunk_type, zone, content, embedding)
-                               VALUES (?, ?, ?, ?, ?, ?)""",
+                               (id, session_id, chunk_type, zone, content, embedding, embedding_backend)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
                             row
                         )
                         self.db.commit()
@@ -754,7 +881,19 @@ class EpisodicStore:
         if not query:
             return []
 
-        query_embedding = self._embed.encode(query)
+        # Check if dual-read is needed (migration active)
+        rm = get_reindex_manager()
+        if rm is not None and rm.progress().get("state", "idle") != "idle":
+            return rm.search_chunks(
+                query=query, session_id=session_id, limit=limit,
+                min_similarity=min_similarity, chunk_types=chunk_types,
+                zones=zones, max_context_tokens=max_context_tokens,
+            )
+
+        # Get query embedding with provenance
+        meta = self._embed.encode_with_meta(query)
+        query_embedding = meta.vector
+        query_backend = meta.backend
 
         where_clauses: List[str] = []
         params_list: List[Any] = []
@@ -774,7 +913,8 @@ class EpisodicStore:
 
         try:
             rows = self.db.execute(
-                f"SELECT id, content, embedding, timestamp FROM context_chunks "
+                f"SELECT id, content, embedding, timestamp, embedding_backend "
+                f"FROM context_chunks "
                 f"{where_sql} ORDER BY timestamp DESC LIMIT 200",
                 params_list,
             ).fetchall()
@@ -792,7 +932,14 @@ class EpisodicStore:
                 stored_emb = _unpack_embedding(row[2])
                 if not stored_emb:
                     continue
-                sim = self._cosine_similarity(query_embedding, stored_emb)
+                stored_backend = row[4] or BACKEND_BGE
+                try:
+                    sim = compare_embeddings(
+                        query_embedding, query_backend,
+                        stored_emb, stored_backend,
+                    )
+                except CrossSpaceComparisonError:
+                    continue
                 if sim < min_similarity:
                     continue
 

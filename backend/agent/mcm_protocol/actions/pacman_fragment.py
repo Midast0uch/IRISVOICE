@@ -95,6 +95,44 @@ def _store_credibility_metadata(episodic, session_id: str, tool_name: str,
         logger.debug("[pacman_fragment] credibility metadata skipped: %s", exc)
 
 
+def fragment_document_provenance(episodic, document_id: str, conversation_id: str,
+                                 sources: list, har_path: str | None = None) -> None:
+    """Write a document-linked, queryable reference-zone entry carrying a
+    document's full provenance (sources + HAR evidence path). Complements the
+    ``document_data`` columns so future recall can retrieve provenance by
+    ``document_id`` (REQ-17), not just as an opaque blob.
+
+    Reuses the existing ``reference`` zone + episodic store. Never raises
+    (T0d degradation: a Pacman write failure must not affect the doc store).
+    """
+    try:
+        if not episodic or not hasattr(episodic, "fragment_and_store"):
+            return
+        if not document_id:
+            return
+        payload = {
+            "document_id": document_id,
+            "conversation_id": conversation_id,
+            "sources": sources or [],
+            "har_path": har_path,
+        }
+        blob = (
+            f"<DOC_PROVENANCE document_id=\"{document_id}\" "
+            f"conversation_id=\"{conversation_id}\">\n"
+            f"{_serialize_credibility(payload)}\n"
+            f"</DOC_PROVENANCE>"
+        )
+        episodic.fragment_and_store(
+            content=blob,
+            session_id=conversation_id,
+            chunk_type="der_output",
+            zone=_EXTERNAL_ZONE,  # reference / untrusted
+            tool_name="crawler_query",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[pacman_fragment] document provenance skipped: %s", exc)
+
+
 def _is_fragment_candidate(text: str) -> bool:
     """Return True if text looks like a DER step output worth storing."""
     if len(text) < _MIN_FRAGMENT_CHARS:

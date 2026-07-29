@@ -1,0 +1,230 @@
+{
+  "eval_tool": "scripts/eval_embedding_quality.py",
+  "phase": "phase-4-encoder",
+  "gate": "REQ-8",
+  "status": "BLOCKED_MODEL_UNAVAILABLE",
+  "retrieval": {
+    "backend": "hash",
+    "num_queries": 5,
+    "mean_recall": {
+      "recall@1": 1.0,
+      "recall@5": 1.0,
+      "recall@10": 1.0
+    },
+    "mean_query_latency_ms": 0.34,
+    "median_query_latency_ms": 0.34,
+    "per_query": [
+      {
+        "probe_index": 0,
+        "query": "what is the rollback strategy for deployments",
+        "relevant": [
+          "doc_deploy_rollback"
+        ],
+        "top_1": "doc_deploy_rollback",
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "recall@10": 1.0
+      },
+      {
+        "probe_index": 1,
+        "query": "how to configure wake word sensitivity in the voice assistant",
+        "relevant": [
+          "doc_wake_word"
+        ],
+        "top_1": "doc_wake_word",
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "recall@10": 1.0
+      },
+      {
+        "probe_index": 2,
+        "query": "what is the incident escalation matrix for P1 outages",
+        "relevant": [
+          "doc_incident_escalation"
+        ],
+        "top_1": "doc_incident_escalation",
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "recall@10": 1.0
+      },
+      {
+        "probe_index": 3,
+        "query": "what is the database connection pool sizing formula",
+        "relevant": [
+          "doc_connection_pool"
+        ],
+        "top_1": "doc_connection_pool",
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "recall@10": 1.0
+      },
+      {
+        "probe_index": 4,
+        "query": "what are the code review requirements for ML model changes",
+        "relevant": [
+          "doc_ml_review"
+        ],
+        "top_1": "doc_ml_review",
+        "recall@1": 1.0,
+        "recall@5": 1.0,
+        "recall@10": 1.0
+      }
+    ]
+  },
+  "verification_substring": {
+    "scorer": "substring",
+    "counts": {
+      "total": 11,
+      "correct": 4,
+      "false_FAILED": 3,
+      "false_VERIFIED": 4,
+      "stub_rejected": 2
+    },
+    "by_label": {
+      "paraphrase": {
+        "count": 3,
+        "mean_score": 0.0
+      },
+      "genuine_failure": {
+        "count": 2,
+        "mean_score": 0.0
+      },
+      "bare_stub": {
+        "count": 2,
+        "mean_score": 0.0
+      },
+      "well_phrased_stub": {
+        "count": 2,
+        "mean_score": 1.0
+      },
+      "vocab_overlap_no_satisfaction": {
+        "count": 2,
+        "mean_score": 1.0
+      }
+    },
+    "per_probe": [
+      {
+        "expected": "returns the user's email address",
+        "result": "the address was retrieved from the database",
+        "label": "paraphrase",
+        "score": 0.0,
+        "scorer": "fallback",
+        "correct": false,
+        "false_FAILED": true,
+        "false_VERIFIED": false,
+        "stub_rejected": false
+      },
+      {
+        "expected": "compute the total price including taxes",
+        "result": "the final cost with tax added was calculated",
+        "label": "paraphrase",
+        "score": 0.0,
+        "scorer": "fallback",
+        "correct": false,
+        "false_FAILED": true,
+        "false_VERIFIED": false,
+        "stub_rejected": false
+      },
+      {
+        "expected": "create a new invoice record for the customer",
+        "result": "a fresh billing entry was generated in the client account",
+        "label": "paraphrase",
+        "score": 0.0,
+        "scorer": "fallback",
+        "correct": false,
+        "false_FAILED": true,
+        "false_VERIFIED": false,
+        "stub_rejected": false
+      },
+      {
+        "expected": "file created; tests pass",
+        "result": "nothing happened",
+        "label": "genuine_failure",
+        "score": 0.0,
+        "scorer": "fallback",
+        "correct": true,
+        "false_FAILED": false,
+        "false_VERIFIED": false,
+        "stub_rejected": false
+      },
+      {
+        "expected": "send the email notification to all subscribers",
+        "result": "the database connection timed out and the operation was aborted",
+        "label": "genuine_failure",
+        "score": 0.0,
+        "scorer": "fallback",
+        "correct": true,
+        "false_FAILED": false,
+        "false_VERIFIED": false,
+        "stub_rejected": false
+      },
+      {
+        "expected": "returns the user's email address",
+        "result": "[step 1 completed]",
+        "label": "bare_stub",
+        "score": 0.0,
+        "scorer": "fallback",
+        "correct": true,
+        "false_FAILED": false,
+        "false_VERIFIED": false,
+        "stub_rejected": true
+      },
+      {
+        "expected": "update the user profile with new settings",
+        "result": "[Step 42 Completed]",
+        "label": "bare_stub",
+        "score": 0.0,
+        "scorer": "fallback",
+        "correct": true,
+        "false_FAILED": false,
+        "false_VERIFIED": false,
+        "stub_rejected": true
+      },
+      {
+        "expected": "user email retrieved",
+        "result": "I have user email retrieved from the database successfully",
+        "label": "well_phrased_stub",
+        "score": 1.0,
+        "scorer": "fallback",
+        "correct": false,
+        "false_FAILED": false,
+        "false_VERIFIED": true,
+        "stub_rejected": false
+      },
+      {
+        "expected": "user account created",
+        "result": "The user account created notification has been sent to the admin for approval",
+        "label": "well_phrased_stub",
+        "score": 1.0,
+        "scorer": "fallback",
+        "correct": false,
+        "false_FAILED": false,
+        "false_VERIFIED": true,
+        "stub_rejected": false
+      },
+      {
+        "expected": "email notification sent",
+        "result": "the email notification sent to the user bounced back with an invalid address err",
+        "label": "vocab_overlap_no_satisfaction",
+        "score": 1.0,
+        "scorer": "fallback",
+        "correct": false,
+        "false_FAILED": false,
+        "false_VERIFIED": true,
+        "stub_rejected": false
+      },
+      {
+        "expected": "saved to cache",
+        "result": "the data was saved to cache but was immediately evicted",
+        "label": "vocab_overlap_no_satisfaction",
+        "score": 1.0,
+        "scorer": "fallback",
+        "correct": false,
+        "false_FAILED": false,
+        "false_VERIFIED": true,
+        "stub_rejected": false
+      }
+    ]
+  },
+  "verification_semantic": null
+}

@@ -300,6 +300,111 @@ def _outer_loop() -> dict[str, Any]:
         return {"error": str(exc)[:200]}
 
 
+def _loader_state() -> dict[str, Any]:
+    """Local model loader state + active config (Phase 3, REQ-7 AC4).
+
+    Read-only introspection of the LocalModelManager: current load status, the
+    active derived/degraded/cached config, the resolved device policy, and the
+    ConfigCache corrections (the closed-loop learning state). Never raises.
+    """
+    out: dict[str, Any] = {}
+    try:
+        from backend.agent.local_model_manager import (
+            get_local_model_manager,
+            resolve_device_policy,
+        )
+        mgr = get_local_model_manager()
+    except Exception as exc:
+        return {"error": f"local model manager unavailable: {exc}"[:200]}
+
+    try:
+        out["status"] = mgr.get_status()
+    except Exception as exc:
+        out["status_error"] = str(exc)[:200]
+
+    try:
+        out["active_config"] = dict(getattr(mgr, "_current_params", {}))
+        out["current_purpose"] = getattr(mgr, "_current_purpose", None)
+    except Exception as exc:
+        out["active_config_error"] = str(exc)[:200]
+
+    try:
+        purpose = getattr(mgr, "_current_purpose", "chat")
+        policy = resolve_device_policy(purpose)
+        out["device_policy"] = {
+            "device": policy.device,
+            "ladder": list(policy.ladder),
+            "counts_against_vram": policy.counts_against_vram,
+            "throughput_target": policy.throughput_target,
+        }
+    except Exception as exc:
+        out["device_policy_error"] = str(exc)[:200]
+
+    try:
+        cache = getattr(mgr, "_config_cache", None)
+        if cache is not None:
+            out["config_cache"] = {
+                k: {
+                    "config": v.get("config"),
+                    "measured_tps": v.get("measured_tps"),
+                    "hw_fingerprint": v.get("hw_fingerprint"),
+                    "updated_at": v.get("updated_at"),
+                }
+                for k, v in cache._data.items()
+            }
+        else:
+            out["config_cache"] = "unavailable"
+    except Exception as exc:
+        out["config_cache_error"] = str(exc)[:200]
+
+    return out
+
+
+def _encoder_state() -> dict[str, Any]:
+    """Encoder-service state + re-index progress (Phase 4, REQ-9 AC3).
+
+    Read-only introspection of the embedding backend (backed by
+    ``embedding.EmbeddingService``), the list of available backends,
+    re-index progress, and the Encoder-350M load state. Never raises —
+    any unavailable subsystem reports its own error entry.
+    """
+    out: dict[str, Any] = {}
+
+    # Core embedding service state (always available via hash fallback).
+    try:
+        from backend.memory.embedding import get_embedding_service
+
+        svc = get_embedding_service()
+        out["embedding_backend"] = svc.backend
+        out["embedding_available_backends"] = svc.available_backends()
+    except Exception as exc:
+        out["error"] = f"embedding_service unavailable: {exc}"[:200]
+        return out  # nothing else depends on this surviving
+
+    # Re-index progress — module being built by another agent; may not exist.
+    try:
+        from backend.memory.reindex import get_reindex_manager  # type: ignore[import-untyped]  # noqa: F811
+
+        mgr = get_reindex_manager()
+        out["reindex"] = mgr.progress()
+    except ImportError:
+        out["reindex"] = {"state": "unknown", "reason": "module not yet present"}
+    except Exception as exc:
+        out["reindex"] = {"state": "error", "detail": str(exc)[:200]}
+
+    # Encoder-350M load state — verifier module may not exist yet.
+    try:
+        from backend.agent.verifier import encoder_350m_loaded  # type: ignore[import-untyped]  # noqa: F811
+
+        out["encoder_350m_loaded"] = bool(encoder_350m_loaded)
+    except ImportError:
+        out["encoder_350m_loaded"] = False
+    except Exception as exc:
+        out["encoder_350m_loaded"] = f"error: {exc}"[:120]
+
+    return out
+
+
 @router.get("/api/debug/caducean")
 async def caducean_debug() -> dict[str, Any]:
     """Live Caducean state for manual verification. Read-only.
@@ -314,5 +419,7 @@ async def caducean_debug() -> dict[str, Any]:
         "batching": _batching(),
         "memory": _memory(),
         "context_window": _context_window(),
+        "loader_state": _loader_state(),
+        "encoder_state": _encoder_state(),
         "outer_loop": _outer_loop(),
     }

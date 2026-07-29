@@ -28,6 +28,27 @@ from backend.agent.der_constants import detect_physics_narration
 from backend.agent.narration import NarrationLog, run_with_narration
 
 
+@pytest.fixture(autouse=True)
+def _reset_narration_gate():
+    """Isolate the PROCESS-WIDE narration gate between tests.
+
+    ``may_narrate()`` allows at most one utterance per
+    ``_NARRATION_GATE_INTERVAL`` (18s) and keeps its last-spoken timestamp in a
+    module-level global. Without this reset, whichever narration test runs first
+    in the session consumes the gate and every later one observes zero
+    utterances — so these tests PASS ALONE and FAIL TOGETHER, which reads as a
+    narration bug rather than a shared-state leak.
+
+    This resets state only. The load each test drives — tool duration, heartbeat
+    interval, number of expected utterances — is unchanged.
+    """
+    import backend.agent.narration as _narration
+
+    _narration._narration_gate_last = 0.0
+    yield
+    _narration._narration_gate_last = 0.0
+
+
 def _read_entries(log: NarrationLog):
     """Read back the JSONL the log wrote, in order (sync, for asserts)."""
     path = log._path
@@ -172,6 +193,16 @@ class TestNarrationFlow:
 
         asyncio.run(_flow())
         # Heartbeat spoke at least once during the long tool run.
-        assert any("researching" in s for s in spoken), (
-            "long-running tool must emit a narration heartbeat"
+        #
+        # REQ-7 AC7 / T4.1: this previously asserted `"researching" in s`, the
+        # literal wording narration.py T37 removed. The assertion this test
+        # actually exists to make is that a heartbeat FIRED at all — which is
+        # now checked directly, plus the generic per-tool verb, plus a guard
+        # that the superseded wording stays gone. Load and scale unchanged.
+        assert len(spoken) >= 1, "long-running tool must emit a narration heartbeat"
+        assert any("reading" in s for s in spoken), (
+            f"crawler_query heartbeat should speak the generic verb; got {spoken}"
+        )
+        assert not any("researching" in s for s in spoken), (
+            f"superseded 'Still researching' wording is back: {spoken}"
         )

@@ -119,6 +119,8 @@ async def run_with_narration(
     status_fn: Optional[Callable[[], str]] = None,
     interval_s: float = _HEARTBEAT_INTERVAL_S,
     should_narrate: bool = True,  # T4.4: task-level gate — agent decides per task
+    conversation_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
 ) -> object:
     """Run ``coro_factory()`` as a task and speak a periodic heartbeat until done.
 
@@ -132,6 +134,11 @@ async def run_with_narration(
         should_narrate: task-level gate. When False, the heartbeat is suppressed
             entirely regardless of the global may_narrate gate. The agent decides
             per task whether narration is needed (REQ-7 AC1/AC2, T4.4).
+        conversation_id: scope for the REQ-9 observability log line. Missing
+            scope is logged explicitly as "unknown" (REQ-9 edge case), never
+            silently dropped.
+        turn_id: turn scope for the REQ-9 observability log line. Same
+            "unknown" fallback as conversation_id.
 
     Returns:
         The tool coroutine's result.
@@ -141,6 +148,8 @@ async def run_with_narration(
     agent's final answer.
     """
     verb = _TOOL_VERB.get(tool_name, "working on that")
+    conv_id = conversation_id or "unknown"
+    turn_id_ = turn_id or "unknown"
 
     async def _heartbeat() -> None:
         try:
@@ -157,12 +166,19 @@ async def run_with_narration(
                 # W5 (T37/T38): conversational snippet heartbeat, never "Still researching".
                 msg = detail if detail else f"{verb}…"
                 if should_narrate and may_narrate():
-                    # REQ-9: structured log for narration heartbeat.
-                    logger.info("Narration heartbeat", extra={
-                        "context": "narration", "text": msg,
-                        "tool_name": tool_name, "conversation_id": conv_id,
-                        "turn_id": turn_id,
-                    })
+                    # REQ-9: structured log for narration heartbeat. Guarded so a
+                    # logging fault can never silently cancel the heartbeat loop
+                    # (that is exactly how this heartbeat previously went mute:
+                    # an unguarded NameError here propagated out of _heartbeat()
+                    # and was swallowed by the outer finally-clause await).
+                    try:
+                        logger.info("Narration heartbeat", extra={
+                            "context": "narration", "text": msg,
+                            "tool_name": tool_name, "conversation_id": conv_id,
+                            "turn_id": turn_id_,
+                        })
+                    except Exception as exc:  # pragma: no cover - best effort
+                        logger.debug("[narration] heartbeat log failed: %s", exc)
                     try:
                         speak(msg, "low")
                     except Exception as exc:  # pragma: no cover - best effort
