@@ -111,7 +111,26 @@ def test_tool_action_label_is_generic():
 
 
 def test_crawler_query_emits_progress_and_listening_state():
-    """Valid crawl via _execute_crawler_query produces progress + listening state."""
+    """Valid crawl via _execute_crawler_query produces progress + listening state.
+
+    T4.3 / Phase 2 REQ-4 AC1 (disclosed, user-approved assertion change): the
+    orchestrator now ALSO emits a TASK_PROGRESS event on every phase transition
+    (searching/extracting/citing/...), not only on page fetches, so a card that
+    used to sit frozen during planning/reranking now moves. That means the raw
+    TASK_PROGRESS stream for this 2-page fixture is a MIX of page events and
+    phase events, and the phase event(s) can arrive interleaved with — even
+    before — the page events, and their COUNT is not deterministic (throttled
+    to >=0.5s apart, see tool_bridge._PHASE_EMIT_MIN_INTERVAL_S, so how many
+    land depends on wall-clock timing between orchestrator steps).
+    This test therefore partitions the stream by the presence of the `phase`
+    key (phase events carry `phase`/`phase_sequence`; page events never do —
+    the old `_phase_cache` merge that used to stamp `phase` onto page events
+    was removed when dedicated phase emission landed) and checks each kind on
+    its own filtered list:
+      - exactly 2 page events, in fetch order (unchanged coverage — still
+        guarantees one event per page, no duplicates)
+      - at least 1 phase event fired (new coverage for REQ-4 AC1)
+    """
     from backend.agent.event_bus import get_event_bus
     from backend.agent.tool_bridge import AgentToolBridge
 
@@ -148,9 +167,21 @@ def test_crawler_query_emits_progress_and_listening_state():
     assert ls[-1][1]["state"] == "processing_conversation"
 
     progresses = [e for e in events if e[0] == IRISStreamEvent.TASK_PROGRESS]
-    assert len(progresses) == 2
-    assert progresses[0][1]["detail"] == "example.com"
-    assert progresses[1][1]["detail"] == "example.org"
+    # Phase events carry `phase`; page events never do (confirmed empirically —
+    # the removed `_phase_cache` merge is what used to put `phase` on page
+    # events, and it is gone). Partition on that, not on `detail`, since
+    # `detail` is present on BOTH kinds and cannot discriminate them.
+    phase_events = [e for e in progresses if "phase" in e[1]]
+    page_events = [e for e in progresses if "phase" not in e[1]]
+
+    assert len(page_events) == 2
+    assert page_events[0][1]["detail"] == "example.com"
+    assert page_events[1][1]["detail"] == "example.org"
+
+    # REQ-4 AC1: at least one phase-transition event fired (new coverage —
+    # a crawl now moves the card during planning/reranking/citing, not only
+    # on page fetches).
+    assert phase_events, "expected at least one phase-transition TASK_PROGRESS event"
 
 
 def test_execute_tool_emits_generic_progress_for_any_tool():

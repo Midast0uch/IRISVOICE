@@ -128,6 +128,21 @@
   blocks `search` in-fixture. Both are **double/fixture repairs** — correcting a stub's signature to
   match production is not weakening a test.
 
+  **Follow-up conflict, resolved (disclosed, user-approved):** once REQ-4 AC1 phase-transition
+  emission landed, `test_crawler_query_emits_progress_and_listening_state` broke a second, different
+  way — it asserted `len(progresses) == 2` and indexed `progresses[0]`/`progresses[1]` by position,
+  assuming a page-events-only stream. Phase emission put a `CRAWLER_PHASE` event ahead of the page
+  events, so the count grew to 3+ and `progresses[0]` was no longer `example.com`. This is a genuine
+  spec/test conflict (REQ-4 AC1 requires phase emission; the test's exact-2/position-indexed shape
+  can only pass without it) — reported to the user rather than silently reconciled. Approved
+  resolution: partition `TASK_PROGRESS` events by presence of the `phase` key (confirmed empirically
+  that page events never carry it — the old `_phase_cache` merge that used to stamp `phase` onto page
+  events was removed when dedicated phase emission landed). Keep `== 2` exactly on the page-event
+  subset with the same ordered `detail` assertions (unchanged coverage: one event per page, no
+  dupes), and add a new `>= 1` assertion that a phase event fired (new coverage for REQ-4 AC1). Net
+  coverage increased, not shrank. See `backend/tests/test_crawler_task_progress.py` docstring and
+  `specs/PHASES.md` "Known pre-existing failures" for the full rationale.
+
 - [ ] **T4.4** (REQ-7 AC1/AC2) Make narration agent-decided per task rather than interval-only.
   RIPPLE: OQ-2 — inline preserves ordering with the DER step; off-path is safer for latency. Decide
   from measured per-call latency, not in advance.

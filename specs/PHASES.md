@@ -116,6 +116,7 @@ Not caused by this work. Do not "fix" them by editing assertions:
 | `test_narration_contract`, `test_narration_flow` — assert superseded wording | Phase 2 T4.1 |
 | `test_kernel_separation_behavior` — asserts sync `tts.speak`; dispatch is now threaded | Phase 2 T4.2 |
 | `test_crawler_task_progress` ×2 — stale stub signature, `InternetGate` in-fixture | Phase 2 T4.3 |
+| `test_crawler_query_emits_progress_and_listening_state` — REQ-4 AC1 phase-transition emission made the crawl emit a `CRAWLER_PHASE` event ahead of the page events, so the old position-indexed assertions (`progresses[0]`/`progresses[1]`) broke and the count grew from 2 to 3+ | Phase 2 T4.3 — **disclosed, user-approved assertion change**, not a silent fix. Partitioned `TASK_PROGRESS` into page vs. phase events by presence of the `phase` key (page events never carry it); kept `== 2` exactly on the page-event subset (unchanged coverage: one event per page, no dupes) and added a new `>= 1` assertion that a phase event fired (new coverage for REQ-4 AC1). See `backend/tests/test_crawler_task_progress.py` docstring for the full rationale. |
 | `npx jest` runs **0 tests** (7/7 suites fail to parse) | Phase 2 T1.1 |
 | `pytest_httpx` missing → `test_exa_provider.py` collection error | not scheduled; ignore that file |
 

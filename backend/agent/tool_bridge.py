@@ -22,6 +22,7 @@ import subprocess
 import time  # used by _on_page_done; absent until now, see below
 from typing import Any, Dict, List, Optional
 from datetime import datetime
+from urllib.parse import urlparse  # _on_page_done:1833, also never imported
 
 # NOTE: `time` was never imported here, yet `_on_page_done` opens with
 # `now = time.time()`. Every real page fetch therefore raised NameError, which
@@ -32,6 +33,17 @@ from datetime import datetime
 # Fourth instance in this codebase of a name error above/inside a broad handler
 # silently disabling a whole feature (see speak_tool priority/interrupt,
 # narration conv_id, agent_kernel _children).
+#
+# `urlparse` was the FIFTH, in the same function, and it survived the `time` fix
+# because it hides behind a short-circuit:
+#     _label = title or urlparse(url or "").netloc or "source"
+# When `title` is truthy the right-hand side never evaluates. Harness fixtures
+# pass a title; the real crawler passes "" — so the NameError fired only in
+# production, and only for the per-page event. orchestrator._safe() swallows it
+# with a bare `except Exception: pass` and no logging, so the pipeline reported
+# phases but never pages. Two lessons: a broad handler with no log line is how
+# these live for months, and a passing harness assertion only covers the inputs
+# the fixture actually drives.
 
 logger = logging.getLogger(__name__)
 
