@@ -30,7 +30,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
   sendInferenceMode,
   inferenceValues,
 }: {
-  providers: { id: string; label: string; kind: string; model: string; has_key?: boolean }[];
+  providers: { id: string; label: string; kind: string; model: string; purpose?: string; has_key?: boolean }[];
   role_bindings: { role: string; instance_id: string; model_override?: string }[];
   loading: boolean;
   sendRoleBinding: (role: string, instanceId: string, modelOverride?: string) => void;
@@ -77,7 +77,13 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
 
   // Merge provider + its current model into each option label so the Brain/Tool
   // selectors show "Provider · model" rather than just the provider name.
-  const providerOptions = providers.map((p) => ({
+  // REQ-6 AC3: exclude non-chat providers (embedding, rerank, etc.) from
+  // the Brain and Tool selectors so they cannot be bound to reasoning or
+  // tool_execution. Backward-compat: undefined/empty purpose treats as chat.
+  const chatProviderOptions = providers.filter(
+    (p) => !p.purpose || p.purpose === "chat"
+  );
+  const providerOptions = chatProviderOptions.map((p) => ({
     label: p.model ? `${p.label} · ${p.model}` : p.label,
     value: p.id,
   }));

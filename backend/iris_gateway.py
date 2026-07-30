@@ -8594,9 +8594,29 @@ class IRISGateway:
             if _inst is not None and _inst.id.startswith("local:") and not _inst.loaded:
                 _binding_status = "local_not_loaded"
 
+            # Phase 5 REQ-7 AC1: capture the PREVIOUS binding for this role
+            # before it is overwritten, so a switch is diagnosable from a
+            # single log line ("it switched to the wrong model"). Never a
+            # credential — instance ids only (AC2).
+            _prev_binding = next(
+                (b for b in _router._roles.list() if b.role == role), None
+            )
+            _prev_instance_id = _prev_binding.instance_id if _prev_binding else None
+
             # Bind on this kernel. The registry is process-wide (REQ-5), so peer
             # kernels observe the same binding automatically — no fan-out loop.
             _router.bind_role(role, instance_id, model_override)
+
+            # REQ-7 AC1/AC3: log off the critical path — a logging failure
+            # must never fail the bind. High-frequency switching still logs
+            # per switch (AC edge case); volume is not a reason to log nothing.
+            try:
+                self._logger.info(
+                    "[set_role_binding] role=%s prev_instance=%s new_instance=%s outcome=%s",
+                    role, _prev_instance_id, instance_id, _binding_status,
+                )
+            except Exception:
+                pass
 
             await self._persist_and_broadcast_role_bindings(session_id, kernel)
 
@@ -8615,7 +8635,12 @@ class IRISGateway:
                 },
             )
         except Exception as e:
-            self._logger.error(f"[set_role_binding] failed: {e}", exc_info=True)
+            # REQ-7 AC1: outcome=error still names the role and instance ids
+            # (never a credential, AC2), so a failed switch is diagnosable too.
+            self._logger.error(
+                "[set_role_binding] role=%s new_instance=%s outcome=error error=%s",
+                role, instance_id, e, exc_info=True,
+            )
             await self._ws_manager.send_to_client(
                 client_id,
                 {

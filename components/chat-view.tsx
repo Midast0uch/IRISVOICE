@@ -4,7 +4,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspens
 import { motion, AnimatePresence } from "framer-motion"
 import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RefreshCw, Pencil } from 'lucide-react';
 import { Icon } from '@iconify/react';
-import { IconArrowBigRightLines } from '@tabler/icons-react';
 import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
 import { useBrandColor } from "@/contexts/BrandColorContext";
@@ -24,6 +23,7 @@ import { PermissionCard } from "@/components/chat/PermissionCard";
 import { QuestionCard } from "@/components/chat/QuestionCard";
 import TaskListCard from "@/components/chat/TaskListCard";
 import ContextPill from "@/components/chat/ContextPill";
+import ModelSwitcher from "@/components/ModelSwitcher";
 import { RichDocument } from "@/components/chat/RichDocument";
 import { DocumentPanel } from "@/components/chat/DocumentPanel";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
@@ -3081,8 +3081,12 @@ ${message.text}`;
                     </div>
                   ))}
 
-                  {/* Typing Indicator */}
-                  {isTyping && (
+                  {/* Typing Indicator — suppressed while a TaskListCard is
+                      visible (taskProgress.steps.length > 0): the card
+                      renders its own working-step Xur, so showing this one
+                      too doubles the indicator. Still correct for no-step
+                      turns (a direct reply with no task plan). */}
+                  {isTyping && taskProgress.steps.length === 0 && (
                     <div>
                       <div 
                         className="h-px w-full my-3"
@@ -3486,33 +3490,11 @@ ${message.text}`;
                   }}
                 >
 
-                  {/* Send pill. Phase 5 REQ-1 removes this in favour of the model
-                      switcher, but only once the switcher actually renders — it was
-                      removed while ModelSwitcher was imported and never mounted,
-                      leaving the row with no send affordance at all. Restored until
-                      Phase 5 lands as one piece. The `disabled` conditions below are
-                      now ALSO enforced inside handleSendMessage, so Enter is guarded
-                      whether or not this button exists — that half of REQ-1 stays. */}
-                  <motion.button
-                    onClick={handleSendMessage}
-                    disabled={!inputText.trim() || isTyping || voiceState === 'listening'}
-                    className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                    style={{
-                      color: inputText.trim() ? glowColor : 'rgba(255,255,255,0.7)',
-                      background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                      border: `1px solid ${fontColor}80`,
-                      borderRadius: '9999px',
-                      boxShadow: inputText.trim() ? `0 0 12px ${glowColor}30, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                    }}
-                    whileHover={{ scale: 1.08 }}
-                    whileTap={{ scale: 0.92 }}
-                    title="Send message"
-                  >
-                    <IconArrowBigRightLines size={16} />
-                  </motion.button>
-
-                  {/* Divider */}
-                  <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
+                  {/* Send pill removed (Phase 5 REQ-1 AC1) — Enter already sends
+                      (:1535, :3459 onKeyDown handlers) and the button's disabled
+                      conditions now live inside handleSendMessage (:1137,
+                      REQ-1 AC3 / D-1), so removing it drops no guard. The
+                      model switcher takes the freed slot below. */}
 
                   {/* Upload pill — glows on hover */}
                   <input
@@ -3545,9 +3527,12 @@ ${message.text}`;
                   {/* Divider */}
                   <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
 
-                  {/* Conversation chips pill */}
+                  {/* Conversation chips pill — its own fixed 32x32 icon
+                      button. Phase 5 REQ-3 edge case: this container used to
+                      also hold ContextPill, clipping the pill's own
+                      max-w-[200px] glass panel to 32px. Split apart below. */}
                   <div
-                    className="flex items-center justify-center w-[32px] h-[32px]"
+                    className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0"
                     style={{
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
                       border: `1px solid ${fontColor}80`,
@@ -3561,13 +3546,24 @@ ${message.text}`;
                       onChipClick={handleChipClick}
                       containerRef={messagesContainerRef}
                     />
-                    <ContextPill
-                      usedTokens={contextUsage.used}
-                      maxTokens={contextUsage.max}
-                      phase={voiceState}
-                      currentAction={taskProgress.currentAction}
-                    />
                   </div>
+
+                  {/* Model switcher — Phase 5 REQ-2. Sibling of ContextPill
+                      (D-2), never a new ContextPill prop (CT-S1). Reads
+                      useInferenceState and writes through its existing
+                      sendRoleBinding — no new backend surface (D-3). */}
+                  <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
+
+                  {/* ContextPill — declares its own dark-glass panel
+                      (max-w-[200px]); it is no longer squeezed into a fixed
+                      w-[32px] h-[32px] container (REQ-3 edge case). Freed by
+                      REQ-1's Send-pill removal below. */}
+                  <ContextPill
+                    usedTokens={contextUsage.used}
+                    maxTokens={contextUsage.max}
+                    phase={voiceState}
+                    currentAction={taskProgress.currentAction}
+                  />
                 </div>
               </div>
             </div>

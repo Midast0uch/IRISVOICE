@@ -426,6 +426,8 @@ deleted** for having been under-scheduled rather than for being bad.
 | `TrajectoryController` tuning | 299 | **PROVEN** | idempotent charging |
 | Coordinate-addressed recall | — | **UNEXERCISED** | zero `coords_from` rows repo-wide |
 | Outer loop (AIDE²) | 273 | **PARTIAL** | compound gate specified; see below |
+| **Local Model Loader (Phase 3)** | `local_model_manager.py` | **PROVEN** | `test_device_policy`, `test_config_deriver`, `test_degradation`, `test_tps_correction`, `test_config_cache`, `test_closed_loop_tuning`, `test_symlinked_model_discovered`, `test_loaded_context_exposed`, `test_phase3_regression`; `scripts/validate_local_model_path.py` (9 assertions) |
+| **Model Switcher + ContextPill liveness (Phase 5)** | `components/ModelSwitcher.tsx`, `_emit_context_usage` (both DER + direct paths) | **PROVEN** | `__tests__/InputRow.test.tsx`, `__tests__/ModelSwitcher.test.tsx`, `__tests__/components/ContextPill.test.tsx`; CT-S1..CT-S5 (`backend/tests/contract/test_ct_s1..s5_*`, `test_context_usage_parity`); behavioral: `test_switch_from_chat_row`, `test_switch_failure_keeps_previous`, `test_brain_and_tool_independent`, `test_context_usage_on_direct_reply`, `test_context_usage_thread_switch`, `test_switcher_survives_restart`; `scripts/validate_switcher.py` (7 CDD assertions) |
 
 **Outer loop caveat.** Its three-signal anti-hack gate was specified but only one signal was live:
 `verified_fraction` was a hardcoded constant (both ternary branches returned `1.0`) and
@@ -445,6 +447,8 @@ scripts/validate_phase_scheduler.py     scheduler: gate, spacing, order-independ
 scripts/validate_caducean_kernels.py    kernels: 8 assertions incl. mean-reversion + windings
 scripts/validate_der_integrity.py       DER integrity
 scripts/validate_der_tool_resolution.py tool resolution
+scripts/validate_local_model_path.py    Phase 3 Local Model Loader: 9 CDD assertions (CT-L1..CT-L7, derivation, VRAM monotonic, degradation, closed-loop, device scoping, CPU-invisible VRAM, MTP retention, symlink discovery)
+scripts/validate_switcher.py            Phase 5 Model Switcher + ContextPill: 7 CDD assertions (CT-S1..CT-S5, no credential leak, purpose/has_key/loaded filtering, context:usage DER/direct parity, ContextPillProps frozen, every removed Send-button guard still blocks Enter)
 ```
 
 Both Caducean harnesses currently report **ALL PASS**. Full suite: 679 passed, 19 failed — all 19

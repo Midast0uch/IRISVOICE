@@ -210,40 +210,66 @@ export default function TaskListCard({
                     }
                     className="flex items-start gap-2.5 w-full text-left py-0.5 hover:brightness-125"
                   >
-                    {step.status === "working" ? (
-                      // The active step animates. Xur reuses the same curve /
-                      // particle language as the orb, so "the agent is on this
-                      // one" reads at a glance without a second colour system.
-                      <span
-                        className="shrink-0"
-                        style={{
-                          marginTop: 3,
-                          marginLeft: 0,
-                          zIndex: 1,
-                          position: "relative",
-                          color: meta.color,
-                        }}
-                      >
-                        <Xur size={12} color={meta.color} speed={1.4} />
-                      </span>
-                    ) : (
-                      <span
-                        className="shrink-0"
-                        style={{
-                          width: 6,
-                          minWidth: 6,
-                          height: 6,
-                          borderRadius: "50%",
-                          marginTop: 6,
-                          marginLeft: 3,
-                          background: "#05060c",
-                          border: `1.5px solid ${meta.color}`,
-                          boxShadow: `0 0 8px ${meta.color}`,
-                          zIndex: 1,
-                          position: "relative",
-                        }}
-                      />
-                    )}
+                    {/* One identical 12x12 wrapper for BOTH states so the
+                        node centre always lands at x=6 — matching the
+                        hairline at left:5.5 and the 12px header core. Without
+                        this, a 12px working node and a 9px-occupied dot made
+                        the step text shift horizontally when a step became
+                        active. */}
+                    <span
+                      className="shrink-0 flex items-center justify-center"
+                      style={{
+                        width: 12,
+                        height: 12,
+                        minWidth: 12,
+                        marginTop: 3,
+                        marginLeft: 0,
+                        zIndex: 1,
+                        position: "relative",
+                      }}
+                    >
+                      {step.status === "working" ? (
+                        <>
+                          {/* Opaque backdrop disc masks the vertical hairline
+                              exactly as the inactive dots mask it with
+                              background:"#05060c" — without it the hairline
+                              draws straight through the Xur. A soft ring
+                              (glow + border) gives the node presence at 12px,
+                              where the Xur's 9-lobe epitrochoid curve is
+                              otherwise a faint sub-pixel smudge. */}
+                          <span
+                            aria-hidden
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              borderRadius: "50%",
+                              background: "#05060c",
+                              border: `1px solid ${meta.color}40`,
+                              boxShadow: `0 0 8px ${meta.color}`,
+                            }}
+                          />
+                          {/* The active step animates. Xur reuses the same
+                              curve / particle language as the orb, so "the
+                              agent is on this one" reads at a glance without
+                              a second colour system. Rendered above the
+                              backdrop disc. */}
+                          <span className="relative" style={{ color: meta.color }}>
+                            <Xur size={12} color={meta.color} speed={1.4} />
+                          </span>
+                        </>
+                      ) : (
+                        <span
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: "50%",
+                            background: "#05060c",
+                            border: `1.5px solid ${meta.color}`,
+                            boxShadow: `0 0 8px ${meta.color}`,
+                          }}
+                        />
+                      )}
+                    </span>
                     <span
                       className="text-[11px] leading-snug flex-1 break-words"
                       style={{
