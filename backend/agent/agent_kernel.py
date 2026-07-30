@@ -68,6 +68,7 @@ try:
         DER_MAX_VETO_PER_ITEM,
         DER_MAX_GRAFTS,
         DER_MAX_CONCURRENT_STEPS,
+        DER_MAX_UNVERIFIED_REPROPOSE,
         DER_EMERGENCY_STOP,
         DER_TOKEN_BUDGETS,
         TRAILING_GAP_MIN,
@@ -83,6 +84,7 @@ except Exception:
     DER_MAX_CYCLES = 40
     DER_MAX_VETO_PER_ITEM = 2
     DER_MAX_GRAFTS = 3
+    DER_MAX_UNVERIFIED_REPROPOSE = 1
     DER_EMERGENCY_STOP = 200
     DER_TOKEN_BUDGETS: Dict[str, int] = {
         "implement": 40000,
@@ -7267,6 +7269,107 @@ Respond with a JSON object:
             return "UNVERIFIED"
         return "FAILED"
 
+    # ── REQ-1 AC2/AC3/AC4: per-step edge scoring ────────────────────────────
+    def _der_score_step_outcome(
+        self,
+        item: "QueueItem",
+        verified_label: str,
+        session_id: str,
+        step_result: str,
+    ) -> None:
+        """Apply this step's edge-score consequence and, for FAILED, feed the
+        AVOID header.
+
+        This is deliberately a thin wiring call, not a new scorer: the deltas
+        below are the SAME generic table already defined in
+        ``EdgeScorer._OUTCOME_DELTAS`` (scorer.py) — hit=+0.05, partial=+0.02,
+        miss=-0.08. That mechanism predates this phase and was never
+        structurally wrong; it was simply never invoked per DER step. The
+        edges scored are the outbound edges of this session's currently
+        active Mycelium nodes (``SessionRegistry.get_active`` — the same
+        source ``evidence.py._predicted_next`` already reads for the same
+        session), so no second notion of "the edge for this step" is
+        invented here.
+
+        REQ-1 AC2: VERIFIED  -> hit-scoring only (no crystallization change —
+                   out of scope; no per-step crystallization exists today).
+        REQ-1 AC3: UNVERIFIED -> partial credit, capped at
+                   DER_MAX_UNVERIFIED_REPROPOSE + 1 scored attempts per
+                   step_id (the original commit plus one re-propose) so an
+                   UNVERIFIED step cannot be re-proposed indefinitely to farm
+                   credit. Never crystallizes (no code path does today).
+        REQ-1 AC4: FAILED    -> miss-scoring, and writes an episode with
+                   outcome_type="miss" via the EXISTING ``_store_task_episode``
+                   path — the same episodic-store write used for whole-task
+                   outcomes — so evidence.py's AVOID section (which already
+                   queries ``outcome_type = 'miss'``) surfaces it on the next
+                   acting-prompt assembly. No second AVOID path is added.
+
+        Never raises to the caller (see the try/except at the call site).
+        """
+        if verified_label not in ("VERIFIED", "UNVERIFIED", "FAILED"):
+            return
+
+        outcome = {
+            "VERIFIED": "hit",
+            "UNVERIFIED": "partial",
+            "FAILED": "miss",
+        }[verified_label]
+
+        if verified_label == "UNVERIFIED":
+            # AC3: enforce the re-propose cap BEFORE scoring — this is the
+            # load-bearing guard, not advisory. Lazily initialised so this
+            # works regardless of how the kernel was constructed (tests build
+            # AgentKernel via __new__ without running __init__).
+            if not hasattr(self, "_der_unverified_credit_counts"):
+                self._der_unverified_credit_counts: Dict[str, int] = {}
+            _count = self._der_unverified_credit_counts.get(item.step_id, 0)
+            if _count > DER_MAX_UNVERIFIED_REPROPOSE:
+                logger.debug(
+                    "[DER] UNVERIFIED re-propose cap reached for step %s "
+                    "(> %d) — no further partial credit",
+                    item.step_id, DER_MAX_UNVERIFIED_REPROPOSE,
+                )
+                return
+            self._der_unverified_credit_counts[item.step_id] = _count + 1
+
+        myc = getattr(self._memory_interface, "_mycelium", None) if self._memory_interface else None
+        if myc is not None:
+            try:
+                node_ids = list(myc._registry.get_active(session_id))
+            except Exception:
+                node_ids = []
+            edge_ids: List[str] = []
+            if node_ids:
+                try:
+                    for _nid in node_ids:
+                        edge_ids.extend(
+                            e.edge_id for e in myc._store.get_outbound_edges(_nid)
+                        )
+                except Exception as _edge_exc:
+                    logger.debug("[DER] edge lookup for scoring failed: %s", _edge_exc)
+                    edge_ids = []
+            if edge_ids:
+                from backend.memory.mycelium.scorer import EdgeScorer
+
+                EdgeScorer(myc._store).record_outcome(edge_ids, outcome)
+
+        if verified_label == "FAILED":
+            try:
+                self._store_task_episode(
+                    task_summary=item.description or "step",
+                    full_content=str(step_result)[:500],
+                    outcome_type="miss",
+                    tool_sequence=[
+                        {"tool": item.tool or "reasoning", "step": item.step_number}
+                    ],
+                    session_id=session_id,
+                )
+            except Exception as _ep_exc:
+                logger.debug(
+                    "[DER] FAILED-step AVOID episode write failed: %s", _ep_exc
+                )
+
     # ── Phase 4: shared per-step finalize (extracted from _execute_plan_der)
     def _der_finalize_step(
         self,
@@ -7535,9 +7638,8 @@ Respond with a JSON object:
         # REQ-1: a commit is recorded for EVERY executed action with its true label
         # (VERIFIED / UNVERIFIED / FAILED) — not only VERIFIED. This is the learning
         # signal the outer loop and the AVOID/edge-miss path consume; gating it on
-        # VERIFIED starves failure learning. Crystallization + hit-scoring remain
-        # gated on VERIFIED elsewhere (_capture_verified_skill). Store write — never
-        # injected into a prompt.
+        # VERIFIED starves failure learning. Store write — never injected into a
+        # prompt.
         try:
             from backend.agent.caducean_trajectory import (
                 CaduceanTrajectoryRecorder,
@@ -7555,6 +7657,15 @@ Respond with a JSON object:
             )
         except Exception as _commit_exc:
             logger.debug("[DER] record_commit failed: %s", _commit_exc)
+
+        # ── REQ-1 AC2/AC3/AC4: per-step edge-score consequence of verified_label.
+        # VERIFIED hit-scores (+0.05), UNVERIFIED partial-credits (+0.02, capped —
+        # AC3) and never crystallizes, FAILED miss-scores (-0.08) and feeds the
+        # AVOID header (AC4). Never raises — off the critical path.
+        try:
+            self._der_score_step_outcome(item, _verified, _session, step_result)
+        except Exception as _score_exc:
+            logger.debug("[DER] per-step edge scoring failed: %s", _score_exc)
 
         queue.mark_complete(item.step_id)
 

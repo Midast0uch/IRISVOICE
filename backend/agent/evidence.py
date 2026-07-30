@@ -90,7 +90,7 @@ def _proven_path(myc: Any, goal: str, limit: int = 3) -> List[str]:
             """
             SELECT tool_sequence FROM episodes
             WHERE outcome_type IN ('hit','partial') AND tool_sequence IS NOT NULL
-            ORDER BY score DESC LIMIT ?
+            ORDER BY outcome_score DESC LIMIT ?
             """,
             (limit * 3,),
         )
@@ -118,16 +118,25 @@ def _proven_path(myc: Any, goal: str, limit: int = 3) -> List[str]:
 
 
 def _avoid_list(myc: Any, limit: int = 3) -> List[str]:
-    """High-signal failure tool/condition pairs (AVOID section)."""
+    """High-signal failure tool/condition pairs (AVOID section).
+
+    REQ-1 AC4 fix: this previously selected ``result`` and ordered by
+    ``score`` — neither column exists on the real ``episodes`` table
+    (episodic.py's schema has ``full_content`` and ``outcome_score``), so
+    the query raised ``sqlite3.OperationalError`` on every call, silently
+    caught below, and this section always rendered "n/a" in production.
+    Fixed to the real column names so a FAILED step's per-step episode
+    write (AgentKernel._der_score_step_outcome) actually surfaces here.
+    """
     try:
         conn = getattr(myc._store, "_conn", None)
         if conn is None:
             return []
         cur = conn.execute(
             """
-            SELECT tool_sequence, result FROM episodes
+            SELECT tool_sequence, full_content FROM episodes
             WHERE outcome_type = 'miss' AND tool_sequence IS NOT NULL
-            ORDER BY score DESC LIMIT ?
+            ORDER BY outcome_score DESC LIMIT ?
             """,
             (limit * 2,),
         )

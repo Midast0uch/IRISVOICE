@@ -200,6 +200,16 @@ DER_MAX_CYCLES        = 40    # hard cycle cap (secondary to token budget)
 DER_WRITE_LOCK_TIMEOUT = 5.0  # seconds — Mycelium write lock timeout
 TRAILING_GAP_MIN       = 2     # TrailingDirector gap-analysis cadence (steps)
 
+# REQ-1 AC3: an UNVERIFIED step may accrue edge-score partial credit for at
+# most one re-propose — i.e. 2 scored attempts total (the original commit plus
+# one re-propose) per step_id — before the cap blocks any further credit.
+# Without this cap an UNVERIFIED step could be re-proposed indefinitely to
+# farm +0.02 edge score forever, which is exactly the reward-hack class this
+# phase exists to close (see design.md "the mechanism designed to prevent
+# that was the thing that hid it"). Enforced in
+# AgentKernel._der_score_step_outcome, keyed by item.step_id.
+DER_MAX_UNVERIFIED_REPROPOSE = 1
+
 
 # ── Mode selection thresholds ──────────────────────────────────────────────
 
