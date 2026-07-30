@@ -95,7 +95,16 @@ are:
 | `context_window` | `_context_window()` (`caducean_debug.py:203`) | `window_tokens`, `window_source`, `providers[].{id,kind,model,purpose,loaded,loading}` |
 | `loader_state` | `_loader_state()` (`caducean_debug.py:311`) | `status`, `active_config`, `current_purpose`, `device_policy`, `config_cache` |
 | `encoder_state` | `_encoder_state()` (`caducean_debug.py:371`) | `embedding_backend`, `embedding_available_backends`, `reindex`, `encoder_350m_loaded` |
-| `outer_loop` | `_outer_loop()` (`caducean_debug.py:252`) | `live_guards`, `dead_guards`, `held_out_score`, `live_by_metric`, `params` |
+| `outer_loop` | `_outer_loop()` (`caducean_debug.py:252`) | `live_guards`, `dead_guards`, `held_out_score`, `live_by_metric`, `params`, `domains_present`, `domain_gating.{mode,reason,proposal,pooled_accepts,domains}` |
+
+`outer_loop.domains_present` and `outer_loop.domain_gating` (added to close P6.2, below) are computed
+by `_domain_gating_report()` (`caducean_debug.py`, next to `_outer_loop`) — a read-only mirror of
+`OuterTuner.run_once()`'s own per-domain iteration (same `_domain_groups` / `_score_proposal` /
+`_evaluate_guards` / `_deciding_guard` calls, same pooled-first ordering) that stops short of
+`_apply()`, the one method that persists a learned parameter. It can never write
+`.mcm/der_params.json` — verified by `backend/tests/contract/test_outer_loop_debug_side_effect_free.py`,
+which asserts the live file's mtime and bytes are unchanged across repeated calls, including a
+seeded scenario that would have been ACCEPTED had it gone through `run_once()`.
 
 Every field name above is quoted directly from `caducean_debug.py` — if a field is missing from your
 response, the endpoint has drifted from this plan; report the mismatch rather than guessing a
@@ -566,6 +575,46 @@ with the correction it produced, or that it fell in the deadband.
 **FAIL** — the file never changes despite a clearly sustained sub-target run, or the running model's
 context changes mid-session (that would violate REQ-4 AC4).
 
+### P3.4 — Known limitation: model size does NOT yet differentiate derived context
+
+**This is a documented current limitation, not a test to pass.** Read it before you conclude that a
+small model getting an unexpectedly small context is a bug — it is the expected behaviour of the code
+as it stands, and reporting it as a mystery costs a triage cycle.
+
+**What you will see.** Load the 230M model and the 1.2B model in turn and compare
+`loader_state.active_config.n_ctx` for each. They may come out **the same**, or much closer than the
+~5× difference in model size would suggest.
+
+**Why.** `derive_config` searches for the largest `n_ctx` satisfying two constraints — a VRAM fit and
+`expected_tps(n_ctx) = base_tps * sqrt(MIN_CTX / n_ctx) >= TARGET_TPS`. But `base_tps` defaults to a
+flat `50.0` for **every** model, regardless of its size or quantisation. So the throughput constraint
+is identical for a 230M and an 8B model, and only VRAM differentiates them. The 230M model's real
+throughput is several times 50 tok/s, so the search stops short and leaves context unclaimed that
+the card had room for.
+
+**Why the harness does not catch it.** `scripts/validate_local_model_path.py` Assertion 2 ("three
+model sizes → three different contexts") passes — but only because the *tests* pass model-appropriate
+`base_tps` values (120 / 60 / 25) by hand. Production's first load uses the flat default. The green
+proves the arithmetic is right, not that the behaviour happens. This is the same trap named in
+`docs/CADUCEAN_ARCHITECTURE.md` §10: a passing assertion only covers the inputs its fixture drives.
+
+**What to record.** For each local model you load, note `params_b`, the derived `n_ctx`, and the
+measured tok/s from `loader_state`. That triple is exactly the data the fix needs to be validated
+against — a real measurement per model beats any estimate, so capturing it while you are testing
+anyway is worth more than re-deriving it later.
+
+**Not a FAIL.** Do not file this as a regression. The fix (deriving `base_tps` from a once-per-machine
+measured memory-bandwidth calibration, cached against the existing `hw_fingerprint`, so each model
+derives its own throughput from its own parsed size and quantisation) is specified in the MCM pin
+*"Local loader auto-calibration — three gaps blocking 'max context at max tok/s'"* and is **not yet
+implemented**. Two related parser gaps are in the same pin: one unparseable metadata key currently
+discards every key after it (which is why MoE models report `context_length` as N/A and fall back to
+a default context), and the GGUF value-type enum is hard-patched for one vendor quirk rather than
+detected.
+
+**FAIL only if** the derived `n_ctx` exceeds what VRAM can hold — that would be a real overcommit and
+a different defect entirely from this under-claiming one.
+
 ---
 
 # Phase 4 — Encoder (THE INSTALL)
@@ -578,6 +627,16 @@ action, not something the agent should do on its own. This section is written as
 
 ### P4.1 — Install `sentence-transformers` and fetch the two model artifacts
 
+**The encoder model id is now CONFIRMED — the previous suspected-mismatch warning is stale.** The
+correct, real repo id is
+[`LiquidAI/LFM2.5-Encoder-350M`](https://huggingface.co/LiquidAI/LFM2.5-Encoder-350M)
+(`backend/agent/verifier.py:81,83`). The old hardcoded value, `LFM-Korea/LFM2.5-Embedding-350M`, was
+wrong on **two** axes, not one: it named the EMBEDDING model where the ENCODER was needed (a
+masked-LM backbone used for scoring, not the bi-encoder used for retrieval vectors — Decision-Locked
+#2), **and** `LFM-Korea` is a language-specific fork standing in for what should be a general
+multilingual encoder — every other LFM2.5 artifact in this project's cache lives under `LiquidAI/`.
+Do not re-flag this as unconfirmed; it is fixed and cited below.
+
 **Where the code looks (read, do not guess):**
 
 - `backend/memory/embedding.py:370-394` (`_resolve_gguf_path` / `_discover_gguf`) — for
@@ -586,17 +645,29 @@ action, not something the agent should do on its own. This section is written as
   hardcoded `C:/Users/midas/.lmstudio/models`. It globs (case-insensitive) for a filename containing
   **both** `"embedding"` and `"350m"` and ending in `.gguf` — the code's own logged expectation is
   `'*embedding*350m*.gguf'` (`embedding.py:391`).
-- `backend/agent/verifier.py:41-87` (`_load_default_encoder`) — for **Encoder-350M**: requires
-  `transformers` **and** `torch` importable, then looks for
-  `LFM-Korea/LFM2.5-Embedding-350M`* under the standard HF cache
-  (`$HF_HOME/hub/models--LFM-Korea--LFM2.5-Embedding-350M`, default `~/.cache/huggingface`) with at
-  least one non-empty `snapshots/` directory. It calls `AutoTokenizer.from_pretrained(...,
-  local_files_only=True)` — **it will not download**.
+- `backend/agent/verifier.py:41-131` (`_load_default_encoder`) — for **Encoder-350M**: requires
+  `transformers` **and** `torch` importable, then resolves the model id via a fixed **resolution
+  order** (`verifier.py:74-83`):
+  1. `IRIS_ENCODER_MODEL` env var, if set (highest precedence — a one-line override with no config
+     edit needed).
+  2. Memory config `embedding.encoder_model` (`backend/memory/config.py`), if non-empty.
+  3. The confirmed default, `LiquidAI/LFM2.5-Encoder-350M`.
 
-  *(the literal model id string in the current code is
-  `"LFM-Korea/LFM2.5-Embedding-350M"` at `verifier.py:66` — despite the variable/log naming saying
-  Encoder-350M throughout; if you find the artifact under a different published repo id, use that
-  id and note the mismatch in your report rather than silently reconciling it.)*
+  The resolved id is then looked for in **either** of two places (`verifier.py:87-100`):
+  - **A local directory** of safetensors, if the resolved id/path IS a directory
+    (`os.path.isdir(MODEL_NAME)`) — accepted **directly**, no HF cache layout required. This is the
+    easiest path for a manual install: point `IRIS_ENCODER_MODEL` (or `embedding.encoder_model`) at
+    wherever you actually extracted the weights and skip reproducing HF's cache structure entirely.
+  - Otherwise, the standard HF hub cache layout
+    (`$HF_HOME/hub/models--<org>--<repo>`, default `~/.cache/huggingface`) with at least one
+    non-empty `snapshots/` directory. It calls `AutoTokenizer.from_pretrained(...,
+    local_files_only=True)` — **it will not download**.
+
+  **The log now tells you everything in one line if this goes wrong** (`verifier.py:106-112`): it
+  prints the RESOLVED model id, the EXACT directory it probed, and names both override mechanisms
+  (`IRIS_ENCODER_MODEL` / `embedding.encoder_model`) directly in the message. If the encoder isn't
+  loading, **read that log line before guessing** — it already tells you which id was tried and
+  exactly where it looked; a wrong id is a one-line diagnosis now, not a search.
 
 **Commands** (adjust the model source to wherever you obtain the actual weights — this plan does not
 invent a download URL the code itself does not reference):
@@ -609,10 +680,13 @@ Then place:
 - The Embedding-350M **GGUF** file so its filename matches `*embedding*350m*.gguf`, into
   `C:\Users\midas\.lmstudio\models` (the user's symlinked HF cache — already a scan root per
   `embedding.py:403`) — or set `config.embedding.model_path` explicitly to its full path.
-- The Encoder-350M **safetensors** model into the standard HF hub cache layout under
-  `~/.cache/huggingface/hub/models--LFM-Korea--LFM2.5-Embedding-350M/snapshots/<rev>/` (or set
-  `HF_HOME` to point at wherever the symlinked cache actually resolves it), so `local_files_only=True`
-  can find it without a network call.
+- The Encoder-350M **safetensors** model, either:
+  - into a local directory and set `IRIS_ENCODER_MODEL` (or `embedding.encoder_model`) to that
+    directory's path directly (no cache layout needed — the simplest option), or
+  - into the standard HF hub cache layout under
+    `~/.cache/huggingface/hub/models--LiquidAI--LFM2.5-Encoder-350M/snapshots/<rev>/` (or set
+    `HF_HOME` to point at wherever the symlinked cache actually resolves it), so
+    `local_files_only=True` can find it without a network call.
 
 ### P4.2 — Confirm the install took
 
@@ -719,6 +793,52 @@ the chat-row switcher dropdown and the Settings panel's model selectors.
 **PASS** — neither surface lists the embedding/rerank provider as a Brain or Tool option.
 **FAIL** — it appears in either place.
 
+### P5.2b — Backend role-binding guard refuses a non-chat provider (defense in depth)
+
+**Prove:** Phase 4 REQ-6 — P5.2's rule is now enforced at the BACKEND boundary
+(`RoleBindingTable.bind`, `backend/agent/inference/roles.py:63-106`), not only by the two frontend
+candidate-list filters P5.2 covers. Before this fix, a `role_bindings` entry loaded straight from
+`iris_config.json`, or any direct `bind_role()` call, bypassed both frontend filters entirely and
+would bind the embedding model as the reasoning brain — failing later at generate time, far from the
+misconfiguration.
+
+**Method:** with the embedding provider already registered (its id is `embedding:lfm25-emb-350m` in
+this codebase's naming — confirm the exact id from `context_window.providers[]` in the debug
+endpoint if it differs), hand-edit `iris_config.json`'s `role_bindings` to bind it to `reasoning`
+(or `tool_execution`):
+
+```json
+{ "role_bindings": [ { "role": "reasoning", "instance_id": "embedding:lfm25-emb-350m" } ] }
+```
+
+Restart the backend.
+
+**Watch for:**
+- An **ERROR**-level log line naming the refusal: `"[RoleBindingTable] refusing to bind role=... to
+  provider ...: purpose=..., and ... accepts only purpose='chat' providers"`
+  (`roles.py:94-99`). It logs at ERROR, not raises — raising here would turn one bad config line into
+  a failure to construct the whole router (`_apply_config` binds in a loop with no per-line handler).
+- The app **still starts**, and `reasoning` (or `tool_execution`) falls back to whatever it was bound
+  to before, or the default, rather than silently taking the embedding model as the brain.
+
+**Then confirm the guard's narrowness does not break Phase 1 bind-before-load:** hand-edit a
+`role_bindings` entry to an id that is **not yet** in the provider registry (e.g. a local model
+that hasn't loaded yet) and confirm it binds successfully with **no** ERROR line — Phase 1 REQ-3
+AC6 / CT-F7 requires binding a local provider BEFORE its model loads, so the guard only fires when
+the instance is ALREADY registered and its purpose is ALREADY known to be non-chat; an unregistered
+id must always be allowed through.
+
+**PASS** — the bad binding produces exactly one ERROR line naming the refusal, the app starts
+normally with the role on its previous/default binding, AND a bind-before-load (unregistered id)
+case still succeeds silently with no ERROR line.
+**FAIL** — the app fails to start on the bad config line, the embedding model ends up actually
+serving `reasoning`/`tool_execution` (check for a 401/format error from the wrong model at generate
+time), or the bind-before-load case is refused.
+
+**Also check** (unit-level): `backend/tests/contract/test_role_binding_purpose_guard.py` pins all
+four combinations (2 roles × 2 non-chat purposes) plus the bind-before-load and
+refusal-leaves-previous-binding-intact edge cases against the real `RoleBindingTable`.
+
 ### P5.3 — ContextPill is live on EVERY response, not just DER turns
 
 **Prove:** REQ-6 AC1 — `context:usage` fires at the completion of every non-DER (direct) reply too,
@@ -775,21 +895,109 @@ and a vetoed step (if you can trigger one — e.g. a step blocked by a safety gu
 
 ### P6.2 — Per-domain gating
 
-**Prove:** REQ-3 AC1/AC2 — the compound gate applies per-domain when ≥2 held-out sessions exist per
-domain, falling back to the pooled gate otherwise (AC3).
+**Prove:** REQ-3 AC1/AC2/AC4 — the compound gate applies per-domain when ≥2 held-out sessions exist
+per domain, falling back to the pooled gate otherwise (AC3), and the outcome is observable
+(REQ-6 AC4).
 
-**Note:** this is the hardest item in this plan to observe live — it requires driving enough sessions
-in at least two distinct domains (e.g. `research` and `general`) for the per-domain path to engage
-at all, and the debug endpoint does not currently expose a per-domain breakdown (only the pooled
-`held_out_score`). Treat a full live confirmation of this one as **best-effort**; if you cannot
-accumulate enough same-domain sessions in a single sitting, record that as INCONCLUSIVE with the
-session counts you did achieve, rather than forcing a conclusion.
+**This item is no longer INCONCLUSIVE-by-default.** The endpoint previously exposed only the pooled
+`held_out_score`, so a tester had no way to confirm per-domain gating happened at all — that gap is
+now closed by `outer_loop.domains_present` and `outer_loop.domain_gating`
+(`backend/api/caducean_debug.py`, `_domain_gating_report`). It is still true that forcing the
+`per_domain` mode specifically requires ≥2 held-out sessions in ≥2 distinct domains — you cannot
+force the physics — but you can now always read WHY a given poll landed in `no_data` /
+`no_proposal` / `pooled_rejected` / `pooled_fallback` / `per_domain`, which is itself a real,
+checkable result.
 
-**PASS** — if you can get ≥2 sessions in two domains, and independently confirm via
-`scripts/validate_outer_loop.py` (which does assert this at the unit level) that per-domain gating
-is exercised.
-**INCONCLUSIVE** — insufficient same-domain session volume in one sitting. This is an honest,
-acceptable outcome — do not force it.
+**Method:** drive sessions in at least two distinct domains (e.g. `research` and `general` /
+`coding`) to completion, then read `GET /api/debug/caducean` → `outer_loop`.
+
+**Watch for these fields** (all names quoted directly from the endpoint):
+
+- `outer_loop.domains_present` — `{domain: session_count}` for every domain in the current held-out
+  batch. Confirms which domains you actually got sessions into before looking at gating mode.
+- `outer_loop.domain_gating.mode` — one of:
+  - `"no_data"` — no session-exit rows have accumulated yet, so there is nothing to score. **This is
+    what you will see on a fresh install before you have driven any conversations to completion** —
+    it is the expected starting state, not drift. Drive 4–5 conversations to completion first, then
+    re-poll. (Verified live while writing this: a clean checkout returns exactly this.)
+  - `"no_proposal"` — `OuterTuner` has no further parameter candidate to try; nothing to gate yet.
+  - `"pooled_rejected"` — the pooled compound gate rejected the candidate outright; per-domain
+    evaluation never runs (D-4: domains can only TIGHTEN a pooled accept, never rescue a pooled
+    reject). `domain_gating.domains` is empty in this mode — that is correct, not a gap.
+  - `"pooled_fallback"` — pooled accepted, but no domain has ≥2 held-out sessions (AC3). This is the
+    fallback path, and `domain_gating.reason` names it explicitly.
+  - `"per_domain"` — pooled accepted AND ≥1 domain had ≥2 held-out sessions: real per-domain gating
+    ran. `domain_gating.domains[<domain>]` holds, per domain: `sessions` (count), `guards` (all
+    three metrics' `baseline`/`proposed`/`live`/`passed`), `passed` (that domain's overall verdict),
+    and `deciding_guard` (which guard vetoed it, or `null` if it passed).
+- `outer_loop.domain_gating.reason` — a human-readable sentence naming exactly why the mode is what
+  it is. Read this instead of guessing.
+
+**PASS** — `domain_gating.mode == "per_domain"` with ≥2 entries in `domain_gating.domains`, each
+carrying real (non-identical-by-construction) guard values, and at least one domain shows
+`passed: false` with a non-null `deciding_guard` while pooled (`domain_gating.pooled_accepts`) was
+`true` — that combination is the actual proof of a per-domain veto that the pooled gate alone would
+have missed (REQ-3 AC2).
+**Acceptable (not a failure)** — `domain_gating.mode` is `"pooled_fallback"` or `"pooled_rejected"`
+or `"no_proposal"` with a `reason` that matches your actual session mix (e.g. you only drove one
+domain, or the current proposal is the "never split" hack and pooled correctly rejects it). Record
+which mode you observed and why, per `domain_gating.reason` — this is still a PASS on the
+observability requirement even when the physics did not happen to reach `per_domain` this run.
+**FAIL** — `domain_gating.mode == "per_domain"` but a domain with <2 sessions appears in
+`domain_gating.domains` (AC1 violation), or `domain_gating.mode == "pooled_rejected"` yet
+`domain_gating.domains` is non-empty (D-4 ordering violated — a domain should never be evaluated
+after a pooled rejection).
+**INCONCLUSIVE** — you could not get ≥2 sessions into ≥2 distinct domains in one sitting AND the
+proposal never reached pooled-accept. Record the domains/counts you did achieve and the
+`domain_gating.reason` you saw — an honest INCONCLUSIVE with the real reason beats forcing a
+conclusion.
+
+**Also check** (unit-level, always available): `scripts/validate_outer_loop.py` and
+`backend/tests/behavioral/test_per_domain_veto.py` / `test_pooled_fallback.py` pin this same
+behaviour (`run_once()`'s own `result["domains"]` shape) against a seeded ledger — the debug
+endpoint's `domain_gating.domains[<d>]` intentionally mirrors that shape (`gated`/`passed`/
+`sessions`/`deciding_guard`, plus the per-guard detail the harness doesn't need but a live tester
+does) field-for-field, so a live reading and the harness's seeded reading can be compared directly.
+
+### P6.3 — Per-step outcome scoring reaches the edge scorer and the AVOID header
+
+**Prove:** REQ-1 AC3/AC4, now wired — a step committed `UNVERIFIED` applies `+0.02` partial credit
+and is capped at **one** re-propose per `step_id`; a `FAILED` step applies `-0.08` and writes an
+episode that surfaces in the ledger's `AVOID` header.
+
+**Method:** drive a task with at least one step that resolves `UNVERIFIED` (a plausible but
+unconfirmed result) and one that resolves `FAILED` (a bad tool argument or unreachable URL), in the
+same or different runs.
+
+**Watch for:**
+- The per-step consequence call (`AgentKernel._der_score_step_outcome`,
+  `backend/agent/agent_kernel.py:7276`) firing once per commit: `UNVERIFIED` → `EdgeScorer` partial
+  delta (`+0.02`); a second `UNVERIFIED` commit for the **same** `step_id` must NOT score again once
+  the re-propose cap (`DER_MAX_UNVERIFIED_REPROPOSE = 1`, i.e. the original commit plus exactly one
+  re-propose) is reached — check for the `"[DER] UNVERIFIED re-propose cap reached for step %s"` log
+  line on the second attempt.
+- `FAILED` → `-0.08` miss delta, plus an episode write (`"[DER] FAILED-step AVOID episode write
+  failed"` log line if that step fails; absence of that line means the write succeeded).
+- The ledger's `AVOID` line (`assemble_evidence`, `backend/agent/evidence.py`) after the FAILED step:
+  it should show a real `tool: condition` entry, not `n/a`.
+
+**Historical note — read this before concluding PASS/FAIL:** the `AVOID` section previously always
+rendered `"n/a"` in production because `evidence.py`'s `_avoid_list` selected columns (`result`,
+`score`) that do not exist on the real `episodes` table (`episodic.py`'s schema has `full_content`
+and `outcome_score`) — the query raised `sqlite3.OperationalError` on every call, silently caught, so
+`AVOID` looked structurally present but was always empty. **Seeing real content in `AVOID` after a
+FAILED step is itself the confirmation this is fixed** — a tester who only checks "is the header
+present" would have passed the broken version too.
+
+**PASS** — the `-0.08`/`+0.02` deltas land in the edge scorer for the respective outcomes, the
+re-propose cap is enforced on the second `UNVERIFIED` commit for the same step, and `AVOID` shows
+real `tool: condition` content after a FAILED step.
+**FAIL** — a FAILED step's delta never lands, an `UNVERIFIED` step scores past the cap, or `AVOID`
+still reads `n/a` despite a FAILED step having just committed.
+
+**Also check** (unit-level): `backend/tests/behavioral/test_der_step_edge_scoring.py` pins all of
+this against a real in-memory `CoordinateStore` + `assemble_evidence` call — same mechanism, not a
+reimplementation.
 
 ---
 
@@ -806,6 +1014,20 @@ spend time "fixing" them as part of executing this plan:
 
 If you run `npx jest` as part of any phase's checks and these three show up red, that is expected
 and out of scope for this plan.
+
+**Current verified baseline (re-run and confirmed while updating this plan):** `npx jest` is
+**22/25 suites passing, 132/137 tests passing** — exactly the three files above account for every
+failing suite (5 failing tests total, all inside those 3 files). If a future run shows a *different*
+suite red, or more than 5 failing tests, that is a new regression outside this known set — report it,
+do not fold it into "expected."
+
+**Backend `pytest` — deliberately NOT quoted as a number here.** A full-suite run was measured at
+2006 passed / 148 failed, but that run showed order-dependency (different failures depending on run
+order/selection) and has not been triaged file-by-file. Quoting that figure as an authoritative
+baseline would imply a false precision this plan cannot back up. Run targeted `pytest` invocations
+per phase section above (each cites its own test file) rather than trusting a full-suite count; if
+you need a full-suite number for your own tracking, re-run it yourself and treat it as a snapshot,
+not a regression gate.
 
 ---
 

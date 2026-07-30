@@ -249,6 +249,125 @@ def _context_window() -> dict[str, Any]:
     return out
 
 
+def _empty_domain_gating(reason: str) -> dict[str, Any]:
+    """Shared "nothing to evaluate yet" shape for `domain_gating` (P6.2)."""
+    return {
+        "mode": "no_data",
+        "reason": reason,
+        "proposal": None,
+        "pooled_accepts": None,
+        "domains": {},
+    }
+
+
+def _domain_gating_report(
+    tuner: Any,
+    held_out: list,
+    baseline: dict[str, float],
+    live: dict[str, bool],
+) -> tuple[dict[str, int], dict[str, Any]]:
+    """REQ-3 (P6.2) observability: per-domain breakdown WITHOUT ever proposing
+    a persisted change.
+
+    Mirrors `OuterTuner.run_once()`'s per-domain iteration exactly — same
+    `_domain_groups` / `_evaluate_guards` / `_deciding_guard` calls, same
+    "pooled first, domains can only tighten" (D-4) ordering — but stops short
+    of `_propose_one` -> `_apply`. `_apply` is the ONLY method on `OuterTuner`
+    that persists (writes `params_path`); every method called here
+    (`_propose_one`, `_score_proposal`, `_domain_groups`, `_score_with_liveness`,
+    `_evaluate_guards`, `_deciding_guard`) is a pure read over already-fetched
+    ledger rows. This function must stay that way — the endpoint is
+    documented as strictly side-effect free (module docstring) and testers are
+    told they can poll it as often as they like.
+
+    Returns (domains_present, domain_gating):
+      - domains_present: every domain seen in the held-out set with its
+        session count — lets a tester see WHICH domains were even eligible
+        for gating, independent of whether gating ran.
+      - domain_gating: mode ("no_proposal" | "pooled_rejected" |
+        "pooled_fallback" | "per_domain") + a human `reason` a tester can
+        read directly, the (unpersisted) proposal considered, whether pooled
+        accepted it, and — only when per-domain evaluation actually ran —
+        each domain's three guard values, each guard's `live` flag, and
+        whether that domain accepted or vetoed.
+    """
+    groups = tuner._domain_groups(held_out)
+    domains_present = {d: len(rows) for d, rows in groups.items()}
+
+    proposal = tuner._propose_one()  # read-only: picks from _PROPOSALS, no mutation
+    if proposal is None:
+        return domains_present, {
+            "mode": "no_proposal",
+            "reason": "OuterTuner has no further parameter proposals from "
+                      "the current params — nothing to gate per-domain.",
+            "proposal": None,
+            "pooled_accepts": None,
+            "domains": {},
+        }
+
+    p_key, p_value = proposal
+    proposed = tuner._score_proposal(p_key, p_value, held_out, baseline)
+    pooled_guards = tuner._evaluate_guards(proposed, baseline, live)
+    pooled_accepts = all(g.passed for g in pooled_guards)
+    domain_gating: dict[str, Any] = {
+        "mode": None,
+        "reason": None,
+        "proposal": {"key": p_key, "value": p_value},
+        "pooled_accepts": pooled_accepts,
+        "domains": {},
+    }
+
+    if not pooled_accepts:
+        # D-4: per-domain gating only runs when pooled accepts — a domain
+        # veto can only ADD a rejection, never rescue a pooled failure. This
+        # is the "pooled fallback" a tester must not mistake for real
+        # per-domain evaluation never having run.
+        domain_gating["mode"] = "pooled_rejected"
+        domain_gating["reason"] = (
+            "pooled compound gate rejected this proposal; per-domain "
+            "evaluation does not run (D-4 ordering: domains can only "
+            "tighten a pooled accept, never rescue a pooled reject)."
+        )
+        return domains_present, domain_gating
+
+    eligible = {d: rows for d, rows in groups.items() if len(rows) >= 2}
+    if not eligible:
+        domain_gating["mode"] = "pooled_fallback"
+        domain_gating["reason"] = (
+            "pooled accepted, but no domain has >=2 held-out sessions "
+            f"(REQ-3 AC3) — domains_present={domains_present}"
+        )
+        return domains_present, domain_gating
+
+    domain_gating["mode"] = "per_domain"
+    domain_gating["reason"] = (
+        f"pooled accepted and {len(eligible)} domain(s) had >=2 held-out "
+        "sessions — gate evaluated independently per domain."
+    )
+    d_domains: dict[str, Any] = {}
+    for d, rows in eligible.items():
+        d_baseline, d_live = tuner._score_with_liveness(rows)
+        d_proposed = tuner._score_proposal(p_key, p_value, rows, d_baseline)
+        d_guards = tuner._evaluate_guards(d_proposed, d_baseline, d_live)
+        d_domains[d] = {
+            "gated": True,
+            "passed": all(g.passed for g in d_guards),
+            "sessions": len(rows),
+            "guards": {
+                g.name: {
+                    "baseline": g.baseline,
+                    "proposed": g.proposed,
+                    "live": g.live,
+                    "passed": g.passed,
+                }
+                for g in d_guards
+            },
+            "deciding_guard": tuner._deciding_guard(d_guards),
+        }
+    domain_gating["domains"] = d_domains
+    return domains_present, domain_gating
+
+
 def _outer_loop() -> dict[str, Any]:
     """Outer-loop (AIDE^2) compound gate — shows WHICH guards are actually live.
 
@@ -261,6 +380,12 @@ def _outer_loop() -> dict[str, Any]:
     while contributing no real signal. A guard is now DEAD (``live=False``)
     exactly when its input could not be computed for this batch, never
     inferred after the fact from what value it happened to produce.
+
+    REQ-3 (P6.2): also reports `domains_present` and `domain_gating` — the
+    per-domain breakdown a tester needs to tell a real per-domain veto apart
+    from a pooled fallback. See `_domain_gating_report` for how this stays
+    read-only: it never calls `OuterTuner._apply`, so polling this endpoint
+    cannot write a learned parameter to `params_path`.
     """
     try:
         from backend.agent.outer_loop import OuterTuner
@@ -285,12 +410,19 @@ def _outer_loop() -> dict[str, Any]:
                 "dead_guards": ["natural_exit_rate", "verified_fraction", "tokens_per_verified"],
                 "note": "Drive at least one session to completion so a "
                         "session-exit row is written, then re-read.",
+                "domains_present": {},
+                "domain_gating": _empty_domain_gating(
+                    "no held-out sessions yet"
+                ),
             }
 
         score, live = tuner._score_with_liveness(held_out)
         # REQ-6 AC5: a guard is dead when its INPUT is unavailable (live=False),
         # never inferred from the value it computed to.
         dead_guards = [name for name, is_live in live.items() if not is_live]
+        domains_present, domain_gating = _domain_gating_report(
+            tuner, held_out, score, live
+        )
         return {
             "session_exit_rows": len(exits),
             "held_out_count": len(held_out),
@@ -303,6 +435,11 @@ def _outer_loop() -> dict[str, Any]:
             "live_guards": sum(1 for is_live in live.values() if is_live),
             "dead_guards": dead_guards,
             "note": None,
+            # REQ-3 / P6.2: which domains were present + how many sessions
+            # each contributed, and whether gating actually ran per-domain
+            # or fell back to pooled (and why).
+            "domains_present": domains_present,
+            "domain_gating": domain_gating,
         }
     except Exception as exc:
         return {"error": str(exc)[:200]}

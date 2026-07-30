@@ -96,10 +96,9 @@ class VectorSearchConfig:
     # Overridable by IRIS_ENCODER_MODEL so a wrong default costs an env var, not
     # a code change.
     #
-    # UNVERIFIED: the default follows the LiquidAI/ naming every other LFM2.5
-    # model in the user's HF cache uses, but the published repo id for the
-    # Encoder variant has NOT been confirmed against HuggingFace. Confirm before
-    # relying on it; a mismatch is now visible in the log rather than silent.
+    # CONFIRMED 2026-07-30 against huggingface.co/LiquidAI/LFM2.5-Encoder-350M.
+    # Note the org: the previous hardcoded value used "LFM-Korea", a
+    # language-specific fork, for what is a general-purpose multilingual encoder.
     encoder_model: str = "LiquidAI/LFM2.5-Encoder-350M"
 
 
