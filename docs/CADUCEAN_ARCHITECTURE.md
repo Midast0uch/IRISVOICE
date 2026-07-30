@@ -1,6 +1,6 @@
 # Caducean Architecture — Foundational Blueprint
 
-**IRIS Voice · as-built 2026-07-28**
+**IRIS Voice · as-built 2026-07-29**
 
 ---
 
@@ -245,6 +245,13 @@ the Reviewer, TrailingDirector, spec_engine, ask_user_tool, and the memory
 distillation/skills/working paths. One gate governs all of them; **no loop file is modified** to
 be scheduled. Adding a fifth loop costs nothing.
 
+This section is about what happens **at** the gate — the scheduling/de-correlation boundary.
+What happens **before** it — how a `role` string resolves to a concrete provider, transport, and
+model, including the Phase 1 Foundation work (budget derivation, the keyed provider collection,
+atomic credential writes) — is
+[`architecture/model-routing.md`](architecture/model-routing.md), which cross-references this
+section rather than restating it.
+
 ### Quota identity, not provider identity
 
 Metering, ceilings, and coupling groups are keyed by
@@ -425,34 +432,90 @@ deleted** for having been under-scheduled rather than for being bad.
 | `ConversationKernel` physics reads | 618 | **PROVEN** | live balance + `\|u\|` bands |
 | `TrajectoryController` tuning | 299 | **PROVEN** | idempotent charging |
 | Coordinate-addressed recall | — | **UNEXERCISED** | zero `coords_from` rows repo-wide |
-| Outer loop (AIDE²) | 273 | **PARTIAL** | compound gate specified; see below |
+| Outer loop (AIDE²) | 487 | **PARTIAL** | compound gate **repaired** (commit `16de4b3e`) — 3/3 guards live; `scripts/validate_outer_loop.py` (9 assertions); one wiring gap remains — see below |
+| **Phase 1 Foundation** | `iris_config.py`, provider registry, budget derivation | **PROVEN** | `scripts/validate_phase1_foundation.py` (11 assertions: budget derived from the real context window, window-precedence order, one keyed provider collection instead of per-kind tables, atomic endpoint+credential writes, flat-config migration idempotent) |
+| **Phase 2 Instrument** | `narration.py`, `agent/tools/speak_tool.py`, `tool_bridge.py` | **PROVEN** | `scripts/validate_display_coherence.py` (8 assertions: CT-I1..CT-I7 boundary pins plus honest live display — narration threading, `UTTERANCE_START` emission, spoken-subset-of-visible, a card update without a page-fetch event) |
 | **Local Model Loader (Phase 3)** | `local_model_manager.py` | **PROVEN** | `test_device_policy`, `test_config_deriver`, `test_degradation`, `test_tps_correction`, `test_config_cache`, `test_closed_loop_tuning`, `test_symlinked_model_discovered`, `test_loaded_context_exposed`, `test_phase3_regression`; `scripts/validate_local_model_path.py` (9 assertions) |
+| **Phase 4 Encoder** | `backend/memory/embedding.py` | **UNEXERCISED** (measurement gates blocked) | `scripts/validate_encoder_path.py` (24 assertions, all pass) — but `sentence_transformers` and the LFM2.5-Embedding-350M / Encoder-350M GGUF weights are absent in every environment this has run in (`embedding.py:336`, `:389`), so the harness itself falls back to the dependency-free `hash` backend on every run; the configured default stays `bge-m3` (`config.py:82,74`), but no run has ever exercised a real neural embedding, which is closer to never-produced-real-output than to proven |
 | **Model Switcher + ContextPill liveness (Phase 5)** | `components/ModelSwitcher.tsx`, `_emit_context_usage` (both DER + direct paths) | **PROVEN** | `__tests__/InputRow.test.tsx`, `__tests__/ModelSwitcher.test.tsx`, `__tests__/components/ContextPill.test.tsx`; CT-S1..CT-S5 (`backend/tests/contract/test_ct_s1..s5_*`, `test_context_usage_parity`); behavioral: `test_switch_from_chat_row`, `test_switch_failure_keeps_previous`, `test_brain_and_tool_independent`, `test_context_usage_on_direct_reply`, `test_context_usage_thread_switch`, `test_switcher_survives_restart`; `scripts/validate_switcher.py` (7 CDD assertions) |
 
-**Outer loop caveat.** Its three-signal anti-hack gate was specified but only one signal was live:
-`verified_fraction` was a hardcoded constant (both ternary branches returned `1.0`) and
-`tokens_per_verified` read a column no production caller populated. Repair is specified as
-`der-loop-integrity-display` REQ-13 / Wave 10 and is **not yet implemented**. Until it is, the
-outer loop accepts any proposal that raises natural-exit rate — the single-metric reward-hacking
-the gate was written to prevent.
+The Local Model Loader row's device policy, config derivation, and closed-loop tuning are covered
+in depth, with the same `file:line` discipline, in
+[`architecture/local-model-loader.md`](architecture/local-model-loader.md) — that document owns
+the detail; this table owns the status.
+
+**Outer loop caveat — repaired, one gap remains.** The three-signal anti-hack gate was compound in
+shape but gated on ONE live signal: `verified_fraction` was a hardcoded constant (both ternary
+branches returned `1.0`) and `tokens_per_verified` read a column no production caller populated,
+both silently reporting `live=True`. Commit `16de4b3e` (Phase 6, `specs/phase-6-der-integrity/`
+— `der-loop-integrity-display` no longer exists as a spec, it was folded into this phase re-cut
+and deleted) fixed this at the root: `GuardResult` in `backend/agent/outer_loop.py` keeps `live`
+and `passed` distinct, so a guard whose input cannot be computed reports `live=False` (dead, not
+passing) instead of silently passing. `_score_with_liveness()` (`outer_loop.py:146-230`) reports
+which metrics were actually computable; `OuterTuner._evaluate_guards` (`outer_loop.py:232-287`)
+checks all three independently, with a dedicated rejection test per guard (REQ-2 AC7) — the
+compound gate was previously tested only end-to-end, which is exactly how two dead branches
+survived. The "never split" reward-hack (`U_SPLIT=0.0`) is now IN `_PROPOSALS`
+(`outer_loop.py:70`) and is REJECTED BY THE GATE rather than merely absent from the candidate
+list. `backend/api/caducean_debug.py::_outer_loop()` now reports live/dead guards straight from
+`GuardResult.live` instead of a value heuristic that would misread a genuinely-computed `1.0` as
+dead. `scripts/validate_outer_loop.py` carries 9 assertions, each proven able to FAIL against a
+deliberately-bugged stand-in.
+
+**One gap remains, and the phase is not being called 100% because of it.** REQ-1 AC3/AC4's
+finer scoring consequences — wiring `der_commits.verified_label` per-step into the partial/miss
+scoring — trace through a pre-existing generic mechanism that was never confirmed connected end
+to end. That wiring was neither found nor built during Phase 6, and no test in this repository
+claims otherwise. This is a narrower gap than the one it replaces: the compound gate itself is
+now fully live (3/3 guards), and what remains is a scoring-precision wiring question, not a
+guard that silently passes everything.
 
 ### Verification instruments
 
+Test counts below are a direct collection count, not a stale copy: measured with
+`python -m pytest backend/tests/unit --collect-only -q` /
+`backend/tests/contract --collect-only -q` / `backend/tests/behavioral --collect-only -q` on
+2026-07-29, after the six-phase programme added roughly 40 new test files. The contract count
+excludes `test_exa_provider.py`, which fails to even collect in this environment
+(`ModuleNotFoundError: No module named 'pytest_httpx'`) — a missing test dependency, unrelated to
+this architecture.
+
 ```
-backend/tests/unit/         244 tests   pure logic
-backend/tests/contract/     258 tests   boundary pins (CT-1..CT-10, CU-1..CU-8)
-backend/tests/behavioral/   196 tests   full-loop, emergent properties
+backend/tests/unit/         438 tests   pure logic
+backend/tests/contract/     371 tests   boundary pins (CT-1..CT-10, CU-1..CU-8) [+1 file uncollectable, see above]
+backend/tests/behavioral/   264 tests   full-loop, emergent properties
 
 scripts/validate_phase_scheduler.py     scheduler: gate, spacing, order-independence
 scripts/validate_caducean_kernels.py    kernels: 8 assertions incl. mean-reversion + windings
 scripts/validate_der_integrity.py       DER integrity
 scripts/validate_der_tool_resolution.py tool resolution
+scripts/validate_phase1_foundation.py   Phase 1 Foundation: 11 CDD assertions (budget from real window, window precedence, one keyed provider collection, atomic endpoint+credential writes, flat-config migration, no bare-'local' registry id)
+scripts/validate_display_coherence.py   Phase 2 Instrument: 8 CDD assertions (CT-I1..CT-I7, one TaskListCard render site, byte-identical step description, resolved tool names, spoken-subset-of-visible, card update without a page-fetch event)
 scripts/validate_local_model_path.py    Phase 3 Local Model Loader: 9 CDD assertions (CT-L1..CT-L7, derivation, VRAM monotonic, degradation, closed-loop, device scoping, CPU-invisible VRAM, MTP retention, symlink discovery)
+scripts/validate_encoder_path.py        Phase 4 Encoder: 24 CDD assertions (CT-E1..CT-E7, tail-retrievable chunking, max-pool not mean, encoders CPU/VRAM-free, reindex resume) — passes against the `hash` fallback backend only, see Phase 4 Encoder row above
 scripts/validate_switcher.py            Phase 5 Model Switcher + ContextPill: 7 CDD assertions (CT-S1..CT-S5, no credential leak, purpose/has_key/loaded filtering, context:usage DER/direct parity, ContextPillProps frozen, every removed Send-button guard still blocks Enter)
+scripts/validate_outer_loop.py          Phase 6 DER Integrity: 9 CDD assertions (verified_fraction distinctness, tokens_per_verified nonzero, each-guard-rejects-independently, never-split rejected by the gate, zero-step session neutrality, dead-guard-cannot-accept, live_guards reflects real liveness, vetoed action writes no row)
 ```
 
-Both Caducean harnesses currently report **ALL PASS**. Full suite: 679 passed, 19 failed — all 19
-pre-existing and unrelated to this architecture.
+All ten harnesses above were re-run on 2026-07-29 and currently report **ALL PASS** (each ends
+`HARNESS PASSED` / `ALL PASS`). Frontend: `npx jest` → **22/25 suites, 132/137 tests** passed; the
+3 failing suites are all under `tests/bugfix/` (`tauri-dev-compilation-preservation.test.js`,
+`tauri-dev-compilation-bug-exploration.test.js`, `iris-widget-tilt-transform-bug-exploration.test.js`)
+and are pre-existing exploration fixtures unrelated to this architecture — one fails on
+`import.meta.url` outside an ESM context, not on anything this document describes.
+
+The backend's full `pytest backend/tests` run is **not** reproduced here. A run on 2026-07-29
+(`python -m pytest backend/tests -q --ignore=backend/tests/contract/test_exa_provider.py`)
+produced 2006 passed / 148 failed / 17 skipped / 22 errors in 628s — a real, produced number, but
+one this document declines to publish as "the" full-suite claim, because the prior `679 passed, 19
+failed` line clearly described a narrower, uncharacterized scope and republishing an equally
+uncharacterized new number would repeat the same mistake. A spot check of a handful of the 148
+(`test_voice_pipeline.py`, `test_vision_integration.py`, `test_telegram_wired.py`) passes when run
+in isolation, consistent with the order-dependent-suite class of defect §10 already documents;
+others (`tool_safety_test.py`, `test_tool_decision.py`) reproduce standalone and trace to an
+unrelated `asyncio` awaitable/mock issue in `tool_decision.py`'s dispatch path, not to anything in
+this architecture. Neither claim has been fully triaged — this is reported honestly as a gap, not
+resolved here.
 
 ---
 
@@ -496,6 +559,55 @@ unstated measurement point). Each was found because an implementer stopped and r
 adjusting one side to force green. Adjusting either side destroys the evidence that the spec was
 wrong.
 
+**7. A name error raised above or inside a broad `except` disables an entire feature while the
+code reads as complete.** Five instances from the six-phase programme, two in the same function:
+- `backend/agent/tools/speak_tool.py:78-97` — `priority`/`interrupt` never threaded into
+  `_speak_inner`; NameError before the inner try/except, so `UTTERANCE_START` never emitted and TTS
+  could not fire from the agent's speech path at all.
+- `backend/agent/narration.py:151-152` — the heartbeat logged `conv_id`/`turn_id`, neither ever
+  defined anywhere; every tick raised NameError before `speak()`, swallowed by the caller's
+  `finally ... except (CancelledError, Exception): pass`. Narration was 100% mute, presenting as
+  intermittent.
+- `backend/agent/agent_kernel.py:7498-7511` — `_children` read ~450 lines before its only
+  assignment; Python scopes a name assigned anywhere to the whole function, so every earlier read
+  raised `UnboundLocalError`, caught by a broad handler. `task:learning` never fired on
+  FAILED/retried steps.
+- `backend/agent/tool_bridge.py:22` — `import time` missing while `_on_page_done` (`:1840`) opens
+  with `time.time()`. That function is the ONLY progress emitter in the crawl pipeline, so live
+  task-card updates and crawl narration never fired in production.
+- `backend/agent/tool_bridge.py:25` — `urlparse` missing, and it survived the `time` fix because it
+  hides behind a short-circuit at `:1845`: `_label = title or urlparse(url or "").netloc or
+  "source"`. Harness fixtures pass a title so the right side never evaluates; the real crawler
+  passes `""`. It fired ONLY in production.
+→ When a feature never fires and nothing errors, grep for names read before assignment BEFORE
+anything else. And a broad `except` with no log line is how these live for months.
+
+**8. "Observes nothing" or "passes alone, fails together" means a module-level singleton bound its
+dependency once.** Three instances:
+- `backend/agent/narration.py:210-220` (`may_narrate()`) — a process-wide gate, max one utterance
+  per `_NARRATION_GATE_INTERVAL` (18s), timestamp in a module global. The first narration test in a
+  session consumed it and every later one saw silence.
+- `backend/agent/tools/speak_tool.py:37-38` (`SpeakTool.__init__`) / `:192-196`
+  (`get_speak_tool()`) — the singleton binds `self._bus = event_bus or get_event_bus()` ONCE at
+  construction. A harness that reset the event bus per section but not the speak-tool singleton
+  left it emitting into a discarded bus.
+- `backend/tests/contract/test_der_narration_contract.py`'s teardown used to run
+  `del st.get_speak_tool`, deleting the name from the MODULE rather than restoring a monkeypatch
+  (fixed at `:57-67`), so any test file collected later in the same process got
+  `ImportError: cannot import name 'get_speak_tool'` — a full-suite-only failure a per-file run
+  never surfaced.
+→ Check singleton binding before touching an assertion. A PARTIAL reset is worse than none,
+because it looks isolated.
+
+Also worth recording, because it undercuts confidence in the harnesses themselves: **a passing
+harness assertion only covers the inputs its fixture actually drives.** The `urlparse` NameError
+above hid behind a truthiness short-circuit, so the CT-I4 harness assertion went green while the
+production path stayed broken — the fixture always supplied a `title`, so `urlparse` never ran.
+And an assertion can pin a DEFAULT rather than a propagation: `_on_progress`
+(`tool_bridge.py:1885,1901`) reads `pl.get("phase_sequence", 0)`, so an `is not None` check passes
+on the substituted `0` and proves nothing — `test_progress_event_shape.py:158` instead asserts the
+real value (`== 1`) survived the trip. Assert that VALUES propagate, not merely that a key exists.
+
 ---
 
 ## 11. Reading order for a new contributor
@@ -505,10 +617,19 @@ wrong.
 3. `CADUCEAN_TECHNICAL_OVERVIEW.md` §13 — the as-built audit (F1–F7)
 4. `specs/CADUCEAN_SPEC_RECONCILIATION.md` — how the three specs interlock
 5. `learned-scoreboard-vs-live-state.md` — where the memory coupling goes next, and its risks
+6. `architecture/model-routing.md` — what happens *before* the §6 chokepoint: how a `role` string
+   resolves to a concrete provider, transport, and model
+7. `architecture/local-model-loader.md` — the Phase 3 Local Model Loader in depth: device policy,
+   config derivation, and the closed self-tuning loop
 
 **To verify the FLAG-OFF and UNEXERCISED components live:** follow
-[`CADUCEAN_LIVE_TEST_PLAN.md`](CADUCEAN_LIVE_TEST_PLAN.md) (T1–T7) and poll
-`GET /api/debug/caducean` while driving the app by hand.
+[`CADUCEAN_LIVE_TEST_PLAN.md`](CADUCEAN_LIVE_TEST_PLAN.md) (T1–T7, plus a dedicated Phase 1–Phase 6
+section per phase from the six-phase programme) and poll `GET /api/debug/caducean` while driving
+the app by hand. T6 (the outer loop) was inverted by the Phase 6 repair: it is no longer a
+negative test confirming dead guards, it now expects `live_guards: 3` and `dead_guards: []` — a
+positive test that the compound gate actually works.
 
-**Before changing anything here:** run both Caducean harnesses. They exist because a green unit
-suite has twice been compatible with a completely inert mechanism.
+**Before changing anything here:** run all ten Caducean-family harnesses (the two original plus
+one per phase of the six-phase programme). They exist because a green unit suite has repeatedly
+been compatible with a completely inert mechanism — the outer loop's dead guards being the most
+recent instance.
