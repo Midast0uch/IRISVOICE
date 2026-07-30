@@ -243,6 +243,54 @@ EML_EXPLORE = 1.5
 EML_VERIFY = 1.0
 
 
+# ── REQ-5: depth check on VERIFIED-but-shallow steps ───────────────────────
+#
+# D-5 / OQ-1: the expected-depth threshold must be calibrated from POST-Phase-4
+# labels, not pre. Phase 4's SemanticVerifier raises the VERIFIED rate (a step
+# that used to land UNVERIFIED on substring matching now often lands VERIFIED
+# on semantic entailment), so MORE steps reach this check than under the old
+# verifier. No real post-Phase-4 label distribution exists yet to fit a data-
+# driven threshold, so this starts conservative on purpose: it flags only
+# steps that are OBVIOUSLY thin (depth_layer at the top level AND a result far
+# below what a genuinely multi-part answer would cost in tokens), erring
+# toward under-flagging rather than training the operator to ignore the
+# check by over-flagging (design.md D-5's stated failure mode).
+#
+# AC3: task classes that are SUPPOSED to be shallow are excluded here, in
+# code, rather than silently never triggering the check for an unrelated
+# reason. "question"/"greeting"/"simple_command" are single-turn by design —
+# QUICK mode explicitly targets a single tool call (der_constants.py
+# DER_MODE_WINDOW_FRACTION "quick": 0.10) — so depth-auditing them would flag
+# every one of them, exactly the "flags too much" failure this constant list
+# exists to prevent.
+DEPTH_EXCLUDED_TASK_CLASSES = ("question", "greeting", "simple_command")
+
+# Below this token investment, a top-level (depth_layer <= 1) VERIFIED step is
+# considered "thin" — a bare one-line answer to what should have been a
+# multi-part task. Deliberately loose (see rationale above); tighten only
+# once real post-Phase-4 label data justifies a stricter cut (OQ-1).
+EXPECTED_DEPTH_MIN_TOKENS = 400
+
+
+def is_shallow_verified(
+    depth_layer: int,
+    result_tokens: int,
+    task_class: Optional[str],
+) -> bool:
+    """REQ-5 AC1: True when a VERIFIED step's measured depth — sub-step count
+    (``depth_layer``) and token investment (``result_tokens``) — is below the
+    expected depth for its task class, so the caller should still run
+    ``TrailingDirector.analyze_gaps`` even though the step passed verification
+    (REQ-5 AC2: same gap-item queue path as a failure-triggered gap).
+
+    Returns False (never flags) for task classes documented as
+    intentionally shallow (REQ-5 AC3) — see ``DEPTH_EXCLUDED_TASK_CLASSES``.
+    """
+    if task_class and str(task_class).lower() in DEPTH_EXCLUDED_TASK_CLASSES:
+        return False
+    return depth_layer <= 1 and result_tokens < EXPECTED_DEPTH_MIN_TOKENS
+
+
 def derive_work_units_0(context_window: int) -> int:
     """DER_WORK_UNITS_0 (D-1): the unified termination resource.
 

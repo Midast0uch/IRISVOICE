@@ -11,7 +11,9 @@ Spec: specs/der-loop-integrity-display/requirements.md REQ-2.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
 
 from backend.agent.caducean_trajectory import CaduceanTrajectoryRecorder
 from backend.agent.outer_loop import OuterTuner
@@ -19,6 +21,16 @@ from backend.agent.outer_loop import OuterTuner
 
 def _recorder() -> CaduceanTrajectoryRecorder:
     return CaduceanTrajectoryRecorder(db_conn=sqlite3.connect(":memory:"))
+
+
+def _isolated_params_path() -> str:
+    """A fresh, per-call temp path so a proposal `run_once()` ACCEPTS
+    (`OuterTuner._apply`) writes to a throwaway file, never to the real
+    project-local `.mcm/der_params.json` — this test's own
+    `test_healthy_proposal_accepted` calls `run_once()` and, unisolated,
+    was persisting a learned U_SPLIT to the developer's real params file
+    on every green run."""
+    return os.path.join(tempfile.mkdtemp(), "der_params.json")
 
 
 def _seed_sessions(rec, specs):
@@ -37,7 +49,7 @@ class TestCompoundGateRejectsHack:
         rec = _recorder()
         # 6 healthy sessions: all natural exits, all verified, low token cost.
         _seed_sessions(rec, [(True, 5, 5000)] * 6)
-        tuner = OuterTuner(recorder=rec, held_out_count=3)
+        tuner = OuterTuner(recorder=rec, held_out_count=3, params_path=_isolated_params_path())
         change = tuner.run_once(domain="general")
         assert change is not None
         # Either applied (improved) or gracefully rejected — never raises, and if

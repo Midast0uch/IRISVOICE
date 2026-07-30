@@ -252,11 +252,15 @@ def _context_window() -> dict[str, Any]:
 def _outer_loop() -> dict[str, Any]:
     """Outer-loop (AIDE^2) compound gate — shows WHICH guards are actually live.
 
-    The gate is specified with three signals but only one is functional:
-    `verified_fraction` is a hardcoded constant and `tokens_per_verified` reads a
-    column no production caller populates. Rather than assert that, this reports
-    the computed values so a constant 1.0 and a constant 0.0 are visible directly.
-    Repair is specs/der-loop-integrity-display/ REQ-13 / Wave 10.
+    REQ-6: reports the LIVE count from ``GuardResult.live`` (Phase 6
+    ``OuterTuner._score_with_liveness`` / ``_evaluate_guards``), not a
+    diagnosis that infers deadness from a suspicious-looking constant. Before
+    Phase 6 landed, ``verified_fraction`` traced to a literal (`1.0` on both
+    ternary branches) and ``tokens_per_verified`` traced to an unpopulated
+    argument (`tokens_total` defaulted to `0.0`) — both reported `live=True`
+    while contributing no real signal. A guard is now DEAD (``live=False``)
+    exactly when its input could not be computed for this batch, never
+    inferred after the fact from what value it happened to produce.
     """
     try:
         from backend.agent.outer_loop import OuterTuner
@@ -267,34 +271,38 @@ def _outer_loop() -> dict[str, Any]:
         tuner = OuterTuner()
         exits = tuner.recorder.get_session_exits(limit=200)
         held_out = tuner._heldout_batch(exits)
-        score = tuner._score(held_out) if held_out else {}
-        diagnosis = []
-        if score:
-            if score.get("verified_fraction") == 1.0:
-                diagnosis.append(
-                    "verified_fraction == 1.0 — hardcoded constant, guard cannot fire"
-                )
-            if score.get("tokens_per_verified") == 0.0:
-                diagnosis.append(
-                    "tokens_per_verified == 0.0 — tokens_total never populated, "
-                    "guard cannot fire"
-                )
+        if not held_out:
+            return {
+                "session_exit_rows": len(exits),
+                "held_out_count": 0,
+                "held_out_score": {},
+                "params": dict(tuner.params),
+                # AC1: no proposals yet -> report metrics computed on the
+                # current baseline, not as an absent/unknown section (REQ-6
+                # edge case: "No proposals yet -> report the metrics as
+                # computed on the current baseline, not as absent").
+                "live_guards": 0,
+                "dead_guards": ["natural_exit_rate", "verified_fraction", "tokens_per_verified"],
+                "note": "Drive at least one session to completion so a "
+                        "session-exit row is written, then re-read.",
+            }
+
+        score, live = tuner._score_with_liveness(held_out)
+        # REQ-6 AC5: a guard is dead when its INPUT is unavailable (live=False),
+        # never inferred from the value it computed to.
+        dead_guards = [name for name, is_live in live.items() if not is_live]
         return {
             "session_exit_rows": len(exits),
             "held_out_count": len(held_out),
+            # AC2: each metric's computed VALUE, not just pass/fail.
             "held_out_score": score,
+            "live_by_metric": live,
             "params": dict(tuner.params),
-            # With no session-exit rows the metrics cannot be computed, so the
-            # guards cannot be diagnosed either. Report that honestly rather than
-            # defaulting to "3 live", which would read as all-clear.
-            "live_guards": (3 - len(diagnosis)) if score else "unknown (no session-exit rows yet)",
-            "dead_guards": diagnosis,
-            "note": (
-                "Drive at least one session to completion so a session-exit row is "
-                "written, then re-read. Expect verified_fraction == 1.0 and "
-                "tokens_per_verified == 0.0 — two of three guards dead until "
-                "der-loop-integrity-display REQ-13 / Wave 10 lands."
-            ) if not score else None,
+            # CT-D6 / AC1: live_guards must be 3 with no dead guards once all
+            # three inputs are computable from real ledger data.
+            "live_guards": sum(1 for is_live in live.values() if is_live),
+            "dead_guards": dead_guards,
+            "note": None,
         }
     except Exception as exc:
         return {"error": str(exc)[:200]}

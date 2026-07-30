@@ -54,13 +54,17 @@ def kernel():
     import backend.agent.tools.speak_tool as st
 
     k._speak_spy = spy
+    # Cross-test-pollution bugfix: `del st.get_speak_tool` in the old teardown
+    # removed the NAME from the module entirely (module attributes are
+    # process-wide singletons), so every test file that runs AFTER this one
+    # in the same pytest process saw `ImportError: cannot import name
+    # 'get_speak_tool'` — a full-suite-only failure that a per-file run never
+    # surfaces. Save and restore the ORIGINAL function instead of deleting it.
+    _orig_get_speak_tool = st.get_speak_tool
     st.get_speak_tool = lambda: spy
     yield k
     # restore
-    try:
-        del st.get_speak_tool
-    except Exception:
-        pass
+    st.get_speak_tool = _orig_get_speak_tool
 
 
 def _finalize(kernel, item, step_result, u, children=(), is_subloop=False):

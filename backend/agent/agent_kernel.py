@@ -77,6 +77,7 @@ try:
         resolve_der_token_budget,
         ResolvedWindow,
         ExecutionMode,
+        is_shallow_verified,
     )
 except Exception:
     DER_MAX_CYCLES = 40
@@ -103,6 +104,15 @@ except Exception:
         _cap = max(int(context_window * 0.9), 1)
         _ceiling = DER_TOKEN_BUDGETS.get(task_class, DER_TOKEN_BUDGETS.get("full", 50000))
         return max(min(_ceiling, _cap), min(4000, _cap))
+
+    def is_shallow_verified(depth_layer: int, result_tokens: int, task_class) -> bool:
+        # Mirrors der_constants.is_shallow_verified (REQ-5) for the import-guard
+        # fallback path. Excluded classes never flag (AC3).
+        if task_class and str(task_class).lower() in (
+            "question", "greeting", "simple_command",
+        ):
+            return False
+        return depth_layer <= 1 and result_tokens < 400
 
 try:
     from backend.agent.trailing_director import TrailingDirector as _TrailingDirector
@@ -7980,8 +7990,21 @@ Respond with a JSON object:
         try:
             _force_gap = _phase == 3
             _suppress_new = _phase == 2
+            # REQ-5 AC1: a VERIFIED step that is measurably SHALLOW (top-level
+            # depth_layer + thin token investment for its task class) must not
+            # pass silently just because it landed outside the TRAILING_GAP_MIN
+            # cadence — "verified but inadequate" is exactly the gap this check
+            # exists to catch. Excluded task classes (AC3) never trigger this;
+            # see der_constants.DEPTH_EXCLUDED_TASK_CLASSES.
+            _shallow_verified = _verified == "VERIFIED" and is_shallow_verified(
+                getattr(item, "depth_layer", 1),
+                len(step_result or "") // 4,
+                getattr(self, "_der_task_class", "full"),
+            )
             if self._trailing_director is not None and (
-                _force_gap or len(completed_items) % TRAILING_GAP_MIN == 0
+                _force_gap
+                or _shallow_verified
+                or len(completed_items) % TRAILING_GAP_MIN == 0
             ):
                 gap_items = self._trailing_director.analyze_gaps(
                     item, plan, context_package, is_mature
