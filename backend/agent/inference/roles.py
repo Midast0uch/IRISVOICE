@@ -8,9 +8,17 @@ with an optional ``model_override``.
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
+
+# Roles that may only be served by a purpose="chat" provider (Phase 4 REQ-6).
+# An embedding/rerank model has no chat head; binding one here would fail at
+# generate time in a confusing place, far from the misconfiguration.
+_CHAT_ONLY_ROLES = frozenset({"reasoning", "tool_execution"})
 
 if TYPE_CHECKING:
     from .provider import ProviderInstance
@@ -58,8 +66,38 @@ class RoleBindingTable:
         instance_id: str,
         model_override: Optional[str] = None,
     ) -> None:
-        """Bind *role* to the provider instance identified by *instance_id*."""
+        """Bind *role* to the provider instance identified by *instance_id*.
+
+        A non-chat provider is REFUSED for the chat-only roles (Phase 4 REQ-6):
+        an embedding or rerank model must never serve as the brain or the tool
+        runner. That rule was previously enforced only by two frontend
+        candidate-list filters (``ModelSwitcher.tsx``, ``ModelInferenceSection``),
+        which is not an enforcement boundary — a ``role_bindings`` entry loaded
+        from config, or any direct ``bind_role()`` call, bypassed it entirely.
+
+        The check is deliberately narrow: it applies only when the instance is
+        ALREADY in the registry and declares a non-chat purpose. An unregistered
+        id must still bind, because Phase 1 REQ-3 AC6 requires binding a local
+        provider BEFORE its model is loaded (CT-F7), and ``_apply_config`` may
+        apply role bindings before the provider collection is populated.
+
+        Refuses rather than raises: ``_apply_config`` binds in a loop with no
+        handler, so raising here would turn one bad config line into a failure to
+        construct the router at all. The role is left unbound (falling back to the
+        default role) and the refusal is logged at ERROR.
+        """
         canon = self._canon(role)
+        if canon in _CHAT_ONLY_ROLES:
+            _inst = self._registry.get(instance_id)
+            _purpose = (getattr(_inst, "purpose", "chat") or "chat") if _inst else "chat"
+            if _inst is not None and _purpose != "chat":
+                logger.error(
+                    "[RoleBindingTable] refusing to bind role=%s to provider %r: "
+                    "purpose=%r, and %s accepts only purpose='chat' providers "
+                    "(Phase 4 REQ-6). The role is left unbound.",
+                    canon, instance_id, _purpose, canon,
+                )
+                return
         with self._lock:
             self._bindings[canon] = RoleBinding(
                 role=canon,

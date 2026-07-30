@@ -83,6 +83,24 @@ class VectorSearchConfig:
     # Explicit path to the Embedding-350M GGUF. When None, discovered from the
     # user's local model folder (REQ-7 AC1). Never silently downloaded.
     model_path: Optional[str] = None
+    # Phase 4 REQ-4 / Decision-Locked #2 and #3: the ENCODER used for semantic
+    # step verification and task classification. This is a DIFFERENT model from
+    # the embedding backend above — Encoder-350M is a masked-LM backbone run via
+    # transformers+torch for scoring; Embedding-350M is a bi-encoder run via GGUF
+    # for retrieval vectors. Conflating them was a live defect: verifier.py
+    # hardcoded "LFM-Korea/LFM2.5-Embedding-350M", so the cache probe looked for a
+    # directory that never exists, logged "weights absent — expected", and the
+    # substring fallback became permanent no matter what the user installed.
+    #
+    # Accepts either a HuggingFace repo id or a local directory of safetensors.
+    # Overridable by IRIS_ENCODER_MODEL so a wrong default costs an env var, not
+    # a code change.
+    #
+    # UNVERIFIED: the default follows the LiquidAI/ naming every other LFM2.5
+    # model in the user's HF cache uses, but the published repo id for the
+    # Encoder variant has NOT been confirmed against HuggingFace. Confirm before
+    # relying on it; a mismatch is now visible in the log rather than silent.
+    encoder_model: str = "LiquidAI/LFM2.5-Encoder-350M"
 
 
 @dataclass

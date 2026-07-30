@@ -63,28 +63,72 @@ def _load_default_encoder() -> Optional[Callable[[str, str], float]]:
         logger.debug("[SemanticVerifier] torch not installed; no default encoder")
         return None
 
-    MODEL_NAME = "LFM-Korea/LFM2.5-Embedding-350M"
+    # REQ-4 / Decision-Locked #2: this is the ENCODER path — a masked-LM backbone
+    # used for scoring — NOT the embedding bi-encoder used for retrieval vectors.
+    # This previously hardcoded "LFM-Korea/LFM2.5-Embedding-350M": the wrong model
+    # AND an org that matches nothing in the user's cache (every other LFM2.5
+    # model there is under LiquidAI/). The cache probe below therefore looked for
+    # a directory that could never exist, logged "weights absent — expected", and
+    # the substring fallback became permanent no matter what was installed.
+    # Resolution order: env override -> memory config -> default.
+    MODEL_NAME = os.environ.get("IRIS_ENCODER_MODEL", "").strip()
+    if not MODEL_NAME:
+        try:
+            from backend.memory.config import get_config
 
-    # Check HF cache for the model before attempting any load.
-    # Never trigger a download (REQ-4 AC4).
-    _hf_home = os.environ.get(
-        "HF_HOME",
-        os.path.join(os.path.expanduser("~"), ".cache", "huggingface"),
-    )
-    _model_cache_dir = os.path.join(_hf_home, "hub", "models--" + MODEL_NAME.replace("/", "--"))
+            MODEL_NAME = getattr(
+                getattr(get_config(), "embedding", None), "encoder_model", ""
+            ) or "LiquidAI/LFM2.5-Encoder-350M"
+        except Exception:  # pragma: no cover - config optional at import
+            MODEL_NAME = "LiquidAI/LFM2.5-Encoder-350M"
+
+    # A local directory of safetensors is accepted directly, so the user can point
+    # at downloaded weights without matching HF's cache layout.
+    if os.path.isdir(MODEL_NAME):
+        _model_cache_dir = MODEL_NAME
+        _snapshot_required = False
+    else:
+        # Check the HF cache before attempting any load. Never trigger a download
+        # (REQ-4 AC4).
+        _hf_home = os.environ.get(
+            "HF_HOME",
+            os.path.join(os.path.expanduser("~"), ".cache", "huggingface"),
+        )
+        _model_cache_dir = os.path.join(
+            _hf_home, "hub", "models--" + MODEL_NAME.replace("/", "--")
+        )
+        _snapshot_required = True
     if not os.path.isdir(_model_cache_dir):
+        # Log the RESOLVED id and the exact directory probed. The previous message
+        # said "expected", which made a misconfigured id indistinguishable from a
+        # deliberate absence — the reason this went unnoticed. Name the override
+        # so a wrong id is a one-line fix.
         logger.info(
-            "[SemanticVerifier] %s not found in HF cache (%s); "
-            "no default encoder (weights absent — expected)",
+            "[SemanticVerifier] encoder %r not found at %s — falling back to the "
+            "substring scorer. If the weights ARE installed, the model id is "
+            "wrong: set IRIS_ENCODER_MODEL (or memory config embedding."
+            "encoder_model) to the real repo id or a local weights directory.",
             MODEL_NAME, _model_cache_dir,
         )
         return None
+    if not _snapshot_required:
+        logger.info(
+            "[SemanticVerifier] loading encoder from local directory %s",
+            _model_cache_dir,
+        )
 
-    # Check that at least one snapshot has the model files.
-    snapshots_dir = os.path.join(_model_cache_dir, "snapshots")
-    if not os.path.isdir(snapshots_dir) or not os.listdir(snapshots_dir):
-        logger.info("[SemanticVerifier] no cached snapshot for %s; no default encoder", MODEL_NAME)
-        return None
+    # Check that at least one snapshot has the model files. Only meaningful for
+    # the HF cache layout — a local weights directory has no snapshots/ level, and
+    # requiring one there would reject a perfectly valid install.
+    if _snapshot_required:
+        snapshots_dir = os.path.join(_model_cache_dir, "snapshots")
+        if not os.path.isdir(snapshots_dir) or not os.listdir(snapshots_dir):
+            logger.info(
+                "[SemanticVerifier] %s is present at %s but has no populated "
+                "snapshots/ — an interrupted or partial download; no encoder",
+                MODEL_NAME, _model_cache_dir,
+            )
+            return None
 
     try:
         import torch
