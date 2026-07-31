@@ -558,6 +558,23 @@ export function DarkGlassDashboard({
     try { localStorage.removeItem('iris-card-values'); } catch {}
   }, []);
 
+  // Keep model_inference.model_provider in sync with the active role binding
+  // so the Dashboard APPLY never sends a stale model_provider that overrides
+  // a provider set via the Brain/Tool dropdowns or chat ModelSwitcher.
+  const brainBindingProvider = role_bindings?.find((r: any) => r.role === "reasoning")?.instance_id;
+  useEffect(() => {
+    if (brainBindingProvider) {
+      setLocalFieldValues((prev: any) => {
+        const current = prev?.model_inference?.model_provider;
+        if (current === brainBindingProvider) return prev;
+        return {
+          ...prev,
+          model_inference: { ...(prev?.model_inference || {}), model_provider: brainBindingProvider },
+        };
+      });
+    }
+  }, [brainBindingProvider]);
+
   const seededRef = useRef(false);
   useEffect(() => {
     if (!seededRef.current && contextFieldValues && Object.keys(contextFieldValues).length > 0) {
@@ -576,6 +593,27 @@ export function DarkGlassDashboard({
       seededRef.current = true;
     }
   }, [contextFieldValues]);
+
+  // Keep localFieldValues['model_inference'].model_provider in sync with the
+  // active role binding so the Dashboard APPLY uses the provider the user
+  // actually selected (cerebras/cohere/...) instead of a stale localFieldValues
+  // default (cohere). Without this, APPLY fires confirm_card with the wrong
+  // model_provider, the backend applies set_model_selection, and the router
+  // overrides the user's Brain/Tool role binding.
+  const brainBinding = role_bindings.find((r) => r.role === "reasoning");
+  useEffect(() => {
+    const active = brainBinding?.instance_id || "";
+    if (active) {
+      setLocalFieldValues((prev) => {
+        const current = prev?.model_inference?.model_provider;
+        if (current === active) return prev;
+        return {
+          ...prev,
+          model_inference: { ...(prev?.model_inference || {}), model_provider: active },
+        };
+      });
+    }
+  }, [brainBinding?.instance_id]);
 
   // Wire CustomEvent listeners for tab system and crawler status.
   // iris:open_tab / iris:close_tab are dispatched by useIRISWebSocket when

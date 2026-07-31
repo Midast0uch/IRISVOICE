@@ -262,49 +262,96 @@ class CrawlerEngine:
 
             t0 = time.monotonic()
             try:
-                result = await self._crawler.arun(url=url, config=request_config)
-                status = getattr(result, "status_code", None)
-
-                # --- 403 retry (T13) ---
-                if status == 403:
-                    old_ua = self._current_ua
-                    self._current_ua = _rotate_user_agent()
-                    logger.warning(
-                        "[CrawlerEngine] 403 forbidden url=%s old_ua=%s... new_ua=%s...",
-                        url, old_ua[:60], self._current_ua[:60],
-                    )
-                    await asyncio.sleep(2.0)
-                    request_config = CrawlerRunConfig(
-                        markdown_generator=md_generator,
-                        page_timeout=_TIMEOUT_MS,
-                        user_agent=self._current_ua,
-                        headers=_STEALTH_EXTRA_HEADERS,
-                    )
+                result = None
+                status = None
+                resp_headers = {}
+                md = ""
+                try:
                     result = await self._crawler.arun(url=url, config=request_config)
                     status = getattr(result, "status_code", None)
-                    logger.info(
-                        "[CrawlerEngine] 403 retry complete url=%s status=%s",
-                        url, status,
-                    )
 
-                resp_headers = _coerce_headers(getattr(result, "response_headers", {}) or {})
-                md = ""
-                if hasattr(result, "markdown_v2") and result.markdown_v2:
-                    # crawl4ai ≥0.4 uses markdown_v2 for filtered content
-                    md = result.markdown_v2.fit_markdown or result.markdown_v2.raw_markdown or ""
-                elif hasattr(result, "markdown") and result.markdown:
-                    md = result.markdown if isinstance(result.markdown, str) else ""
-                body = md or (result.html if not md else "") or ""
-                cl = resp_headers.get("content-length")
+                    # --- 403 retry (T13) ---
+                    if status == 403:
+                        old_ua = self._current_ua
+                        self._current_ua = _rotate_user_agent()
+                        logger.warning(
+                            "[CrawlerEngine] 403 forbidden url=%s old_ua=%s... new_ua=%s...",
+                            url, old_ua[:60], self._current_ua[:60],
+                        )
+                        await asyncio.sleep(2.0)
+                        request_config = CrawlerRunConfig(
+                            markdown_generator=md_generator,
+                            page_timeout=_TIMEOUT_MS,
+                            user_agent=self._current_ua,
+                            headers=_STEALTH_EXTRA_HEADERS,
+                        )
+                        result = await self._crawler.arun(url=url, config=request_config)
+                        status = getattr(result, "status_code", None)
+                        logger.info(
+                            "[CrawlerEngine] 403 retry complete url=%s status=%s",
+                            url, status,
+                        )
+
+                    resp_headers = _coerce_headers(getattr(result, "response_headers", {}) or {})
+                    if hasattr(result, "markdown_v2") and result.markdown_v2:
+                        # crawl4ai ≥0.4 uses markdown_v2 for filtered content
+                        md = result.markdown_v2.fit_markdown or result.markdown_v2.raw_markdown or ""
+                    elif hasattr(result, "markdown") and result.markdown:
+                        md = result.markdown if isinstance(result.markdown, str) else ""
+                except Exception as exc:
+                    # crawl4ai's DefaultMarkdownGenerator throws
+                    # "Separator is not found, and chunk exceed the limit" on
+                    # pages with no clean separators. Fall through to the
+                    # plain-HTTP path below instead of failing the page.
+                    logger.warning(
+                        "[CrawlerEngine] crawl4ai generation failed for %s (%s) — plain-HTTP fallback",
+                        url, exc,
+                    )
+                    status = None
+
+                body = md or ""
+                if not body:
+                    # Plain-HTTP fallback: fetch raw HTML and strip tags.
+                    # Handles JS-light pages crawl4ai's generator chokes on.
+                    try:
+                        import httpx as _httpx
+                        import re as _re
+                        async with _httpx.AsyncClient(
+                            follow_redirects=True, timeout=30.0
+                        ) as _hc:
+                            _resp = await _hc.get(
+                                url, headers={"User-Agent": self._current_ua}
+                            )
+                        status = _resp.status_code
+                        _html = _resp.text
+                        _stripped = _re.sub(
+                            r"<script[\s\S]*?</script>|<style[\s\S]*?</style>",
+                            " ", _html, flags=_re.IGNORECASE,
+                        )
+                        _stripped = _re.sub(r"<[^>]+>", " ", _stripped)
+                        body = _re.sub(r"\s+", " ", _stripped).strip()
+                        if body:
+                            md = body
+                            logger.info(
+                                "[CrawlerEngine] plain-HTTP fallback ok url=%s chars=%d",
+                                url, len(body),
+                            )
+                    except Exception as exc2:
+                        logger.warning(
+                            "[CrawlerEngine] plain-HTTP fallback failed for %s: %s",
+                            url, exc2,
+                        )
+                        body = ""
+
                 har_entries.append({
                     "url": url, "method": "GET",
                     "status": status,
                     "response_headers": resp_headers,
                     "duration_ms": int((time.monotonic() - t0) * 1000),
-                    "content_length": int(cl) if cl is not None else len(body),
+                    "content_length": len(body),
                     "body_sha256": hashlib.sha256(body.encode("utf-8", "replace")).hexdigest(),
                 })
-                metadata = result.metadata or {}
+                metadata = (result.metadata if result is not None else {}) or {}
                 title = metadata.get("title", "") or ""
                 pages.append(PageData(
                     url=url,

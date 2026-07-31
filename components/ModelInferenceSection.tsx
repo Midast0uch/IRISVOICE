@@ -75,6 +75,17 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
     return p ? p.label : instanceId;
   };
 
+  // Keep the Provider Setup dropdown in sync with the active role binding so confirming
+  // the card never clobbers a selection made via the Brain/Tool dropdowns or the chat-view
+  // ModelSwitcher. All surfaces must reflect the same provider (cerebras/cohere/...) —
+  // otherwise the backend applies a stale model_provider and overrides the user's selection.
+  useEffect(() => {
+    const active = brainBinding?.instance_id || toolBinding?.instance_id || "";
+    if (active && active !== selectedProvider) {
+      setSelectedProvider(active);
+    }
+  }, [brainBinding?.instance_id, toolBinding?.instance_id]);
+
   // Merge provider + its current model into each option label so the Brain/Tool
   // selectors show "Provider · model" rather than just the provider name.
   // REQ-6 AC3: exclude non-chat providers (embedding, rerank, etc.) from
@@ -180,6 +191,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
               glowColor={glowColor}
               className="text-[10px] py-1 px-2 h-7 w-full"
               placeholder="Select provider…"
+              forceOpenUp
             />
           </div>
         </div>
@@ -255,6 +267,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
               glowColor={glowColor}
               className="text-[10px] py-1 px-2 h-7 w-full"
               placeholder="Select…"
+              forceOpenUp
             />
           </div>
         </div>
@@ -266,14 +279,15 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
               Tool Execution Model
             </span>
             <div className="w-[180px] flex-shrink-0">
-              <CustomDropdown
-                value={toolBinding?.instance_id || ""}
-                options={providerOptions}
-                onChange={handleToolChange}
-                glowColor={glowColor}
-                className="text-[10px] py-1 px-2 h-7 w-full"
-                placeholder="Select…"
-              />
+            <CustomDropdown
+              value={toolBinding?.instance_id || ""}
+              options={providerOptions}
+              onChange={handleToolChange}
+              glowColor={glowColor}
+              className="text-[10px] py-1 px-2 h-7 w-full"
+              placeholder="Select…"
+              forceOpenUp
+            />
             </div>
           </div>
         )}
@@ -300,25 +314,25 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
         <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
           <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">Thinking Style</span>
           <div className="w-[140px] flex-shrink-0">
-            <CustomDropdown value={thinkingStyle} options={["concise", "balanced", "thorough"]} onChange={(v) => { setThinkingStyle(v); pushInferenceMode({ thinkingStyle: v, maxResponse, reasoningEffort, toolMode }); }} glowColor={glowColor} className="text-[10px] py-1 px-2 h-7 w-full" />
+            <CustomDropdown value={thinkingStyle} options={["concise", "balanced", "thorough"]} onChange={(v) => { setThinkingStyle(v); pushInferenceMode({ thinkingStyle: v, maxResponse, reasoningEffort, toolMode }); }} glowColor={glowColor} className="text-[10px] py-1 px-2 h-7 w-full" forceOpenUp />
           </div>
         </div>
         <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
           <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">Max Response</span>
           <div className="w-[140px] flex-shrink-0">
-            <CustomDropdown value={maxResponse} options={["short", "medium", "long"]} onChange={(v) => { setMaxResponse(v); pushInferenceMode({ thinkingStyle, maxResponse: v, reasoningEffort, toolMode }); }} glowColor={glowColor} className="text-[10px] py-1 px-2 h-7 w-full" />
+            <CustomDropdown value={maxResponse} options={["short", "medium", "long"]} onChange={(v) => { setMaxResponse(v); pushInferenceMode({ thinkingStyle, maxResponse: v, reasoningEffort, toolMode }); }} glowColor={glowColor} className="text-[10px] py-1 px-2 h-7 w-full" forceOpenUp />
           </div>
         </div>
         <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
           <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">Reasoning Effort</span>
           <div className="w-[140px] flex-shrink-0">
-            <CustomDropdown value={reasoningEffort} options={["fast", "balanced", "accurate"]} onChange={(v) => { setReasoningEffort(v); pushInferenceMode({ thinkingStyle, maxResponse, reasoningEffort: v, toolMode }); }} glowColor={glowColor} className="text-[10px] py-1 px-2 h-7 w-full" />
+            <CustomDropdown value={reasoningEffort} options={["fast", "balanced", "accurate"]} onChange={(v) => { setReasoningEffort(v); pushInferenceMode({ thinkingStyle, maxResponse, reasoningEffort: v, toolMode }); }} glowColor={glowColor} className="text-[10px] py-1 px-2 h-7 w-full" forceOpenUp />
           </div>
         </div>
         <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
           <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">Tool Mode</span>
           <div className="w-[140px] flex-shrink-0">
-            <CustomDropdown value={toolMode} options={["auto", "ask_first", "disabled"]} onChange={(v) => { setToolMode(v); pushInferenceMode({ thinkingStyle, maxResponse, reasoningEffort, toolMode: v }); }} glowColor={glowColor} className="text-[10px] py-1 px-2 h-7 w-full" />
+            <CustomDropdown value={toolMode} options={["auto", "ask_first", "disabled"]} onChange={(v) => { setToolMode(v); pushInferenceMode({ thinkingStyle, maxResponse, reasoningEffort, toolMode: v }); }} glowColor={glowColor} className="text-[10px] py-1 px-2 h-7 w-full" forceOpenUp />
           </div>
         </div>
       </div>

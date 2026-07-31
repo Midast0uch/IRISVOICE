@@ -11,6 +11,8 @@ import { ToggleField, SliderField, DropdownField, TextField, ColorField, Monitor
 import type { Card, FieldConfig, FieldValue } from "@/types/navigation"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
+import { useInferenceState } from "@/hooks/useInferenceState"
+import { ModelInferenceSection } from "@/components/ModelInferenceSection"
 import { IntegrationListPanel } from "@/components/integrations/IntegrationListPanel"
 import { CollapsibleSection } from "./CollapsibleSection"
 import { ColorSliderGroup } from "./ColorSliderGroup"
@@ -60,6 +62,17 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   const [audioInputDeviceMap, setAudioInputDeviceMap] = useState<Record<string, number>>({})
   const [audioOutputDeviceMap, setAudioOutputDeviceMap] = useState<Record<string, number>>({})
   const [wakeWords, setWakeWords] = useState<string[]>([])
+
+  // Inference routing state (shared with the dashboard's Model & Inference card)
+  const {
+    providers: infProviders,
+    role_bindings: infRoleBindings,
+    loading: infLoading,
+    sendRoleBinding: infSendRoleBinding,
+    provider_presets: infProviderPresets,
+    sendModelSelection: infSendModelSelection,
+    sendInferenceMode: infSendInferenceMode,
+  } = useInferenceState()
 
   // Brand color context for theme panel
   const {
@@ -262,6 +275,16 @@ export const SidePanel: React.FC<SidePanelProps> = ({
       // For models-card section, use available models for dropdowns
       if (card.id === 'models-card' && (field.id === 'reasoning_model' || field.id === 'tool_model')) {
         fieldOptions = availableModels.length > 0 ? availableModels : ['No models available']
+        fieldLoadOptions = undefined
+      }
+
+      // For models-card section, use real available providers (cerebras/cohere/...) for the
+      // model_provider dropdown so it stays in sync with the dashboard ModelInferenceSection
+      // + chat ModelSwitcher instead of the static ["local","api","vps"] default.
+      if (card.id === 'models-card' && field.id === 'model_provider') {
+        fieldOptions = infProviders.length > 0
+          ? infProviders.map((p: any) => ({ label: p.label, value: p.id }))
+          : ['No providers available']
         fieldLoadOptions = undefined
       }
 
@@ -778,6 +801,18 @@ export const SidePanel: React.FC<SidePanelProps> = ({
                   <IntegrationListPanel onBrowseMarketplace={onBrowseMarketplace} />
                 ) : card.id === 'theme-card' ? (
                   <ThemePanel />
+                ) : card.id === 'model-inference-card' ? (
+                  <ModelInferenceSection
+                    providers={infProviders}
+                    role_bindings={infRoleBindings}
+                    loading={infLoading}
+                    sendRoleBinding={infSendRoleBinding}
+                    glowColor={glowColor}
+                    provider_presets={infProviderPresets}
+                    sendModelSelection={infSendModelSelection}
+                    sendInferenceMode={infSendInferenceMode}
+                    inferenceValues={values}
+                  />
                 ) : card.fields.length === 0 ? (
                   /* Empty state handling (Requirement 5.7, 15.2) */
                   <div className="py-6 text-center">

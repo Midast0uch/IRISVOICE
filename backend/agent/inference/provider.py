@@ -112,6 +112,20 @@ PROVIDER_PRESETS: list[dict] = [
 ]
 
 
+def get_provider_default_endpoint(provider_id: Optional[str]) -> Optional[str]:
+    """Return the canonical default api_base_url for a provider preset id,
+    or None if the provider is unknown / local-only. This is the dynamic
+    resolution used when a provider is selected in set_model_selection and
+    when the router re-applies config on restart — the URL always follows
+    the provider id from the config, never a stale stored value."""
+    if not provider_id:
+        return None
+    for _p in PROVIDER_PRESETS:
+        if _p["id"] == provider_id:
+            return _p.get("api_base_url")
+    return None
+
+
 def register_builtin_encoder_providers() -> None:
     """Register the LFM2.5 encoder providers as non-chat, CPU-only providers
     (REQ-6 AC1/AC2/AC4). They are NOT bound to reasoning/tool_execution, so they

@@ -28,7 +28,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .keyring import get_secret
-from .provider import ProviderInstance, ProviderKind
+from .provider import ProviderInstance, ProviderKind, get_provider_default_endpoint
 from .registry import ProviderRegistry, get_provider_registry
 from .roles import RoleBindingTable, get_role_binding_table
 from .transport import (
@@ -217,7 +217,11 @@ class InferenceRouter:
                     label=legacy_provider,
                     kind=kind,
                     model=getattr(infer_cfg, "reasoning_model", None),
-                    api_base_url=getattr(infer_cfg, "api_base_url", "") or "",
+                    api_base_url=(
+                        get_provider_default_endpoint(legacy_provider)
+                        or getattr(infer_cfg, "api_base_url", "")
+                        or ""
+                    ),
                 )
                 self._registry.add(inst)
                 # Persist the legacy key into the secret store keyed by id so

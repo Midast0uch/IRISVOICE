@@ -1320,7 +1320,11 @@ class IRISGateway:
 
             # Apply model selection when models section is confirmed
             # CARD_TO_SECTION_ID maps 'models-card' -> 'model_selection'
-            elif section_id == "model_selection" and values:
+            # Both the wheelview models-card (model_selection) and the Dashboard
+            # Model & Inference card (model_inference) carry the SAME logical
+            # payload (provider + reasoning/tool models). Handle both so the
+            # Dashboard's selection is never silently dropped.
+            elif section_id in ("model_selection", "model_inference") and values:
                 try:
                     from .agent.agent_kernel import get_agent_kernel
 
@@ -1357,32 +1361,14 @@ class IRISGateway:
                     else:
                         _api_base_url = ""
 
-                    # Always pass the provider so the kernel knows which inference
-                    # backend to route to (Ollama / VPS / OpenAI).
-                    kernel.set_model_selection(
-                        reasoning_model=reasoning,
-                        tool_execution_model=tool_exec,
-                        model_provider=provider,
-                        api_base_url=_api_base_url,
-                    )
-
-                    # Apply role bindings AFTER set_model_selection so the
-                    # provider instance is registered in the router before we
-                    # bind roles to it.
-                    #
-                    # CRITICAL: bind roles to the PROVIDER INSTANCE ID
-                    # (`provider`, e.g. "cerebras" / "local"), NOT to the model
-                    # display name (`reasoning` / `tool_exec`, e.g. "gemma-4-31b").
-                    # The router only knows provider-instance IDs; binding a role
-                    # to a bare model name creates a dangling binding that
-                    # resolve() cannot find, collapsing both roles onto the
-                    # default and silently overriding the user's per-role picks.
-                    #
-                    # Preserve a deliberate Brain != Tool selection: if the
-                    # router already holds DISTINCT reasoning/tool_execution
-                    # bindings (set by the Brain/Tool dropdowns via
-                    # sendRoleBinding), do NOT clobber them with the single
-                    # `provider` from this confirm_card.
+                    # ── Canonical resolution ───────────────────────────────────
+                    # role_bindings (set by Brain/Tool dropdowns / ModelSwitcher /
+                    # wheelview provider change via set_role_binding) are the single
+                    # source of truth for WHICH provider instance serves each role.
+                    # The confirm_card's model_provider may be stale (frontend sync
+                    # lags the WS broadcast), so we resolve the EFFECTIVE provider +
+                    # models from the existing bindings and only use the card values
+                    # for roles that are not yet bound.
                     _existing = {}
                     try:
                         _rt = getattr(kernel, "_router", None)
@@ -1391,52 +1377,120 @@ class IRISGateway:
                                 _existing[_b.role] = _b.instance_id
                     except Exception:
                         _existing = {}
-                    _per_role_distinct = (
-                        _existing.get("reasoning")
-                        and _existing.get("tool_execution")
-                        and _existing["reasoning"] != _existing["tool_execution"]
-                    )
-                    if not _per_role_distinct and provider:
-                        # Single-provider selection (Use Same Model, or no
-                        # per-role override yet): bind BOTH roles to the
-                        # provider instance ID, carrying the chosen model as an
-                        # override so per-role models are still honoured.
-                        kernel.set_role_binding(
-                            "reasoning", provider, model_override=reasoning
+                    _effective_provider = _existing.get("reasoning") or provider
+                    # Derive the model names from the canonical binding's provider
+                    # instance (its registered model) — never from stale card values.
+                    _effective_reasoning = reasoning
+                    _effective_tool = tool_exec
+                    try:
+                        _rp = kernel._router.resolve("reasoning") if _existing.get("reasoning") else None
+                        _tp = kernel._router.resolve("tool_execution") if _existing.get("tool_execution") else None
+                        if _rp is not None:
+                            _effective_reasoning = (
+                                getattr(_rp, "model_override", None)
+                                or getattr(_rp, "model", None)
+                                or reasoning
+                            )
+                        if _tp is not None:
+                            _effective_tool = (
+                                getattr(_tp, "model_override", None)
+                                or getattr(_tp, "model", None)
+                                or tool_exec
+                            )
+                    except Exception:
+                        pass
+                    # Resolve the provider base URL so the router instance carries
+                    # the correct endpoint (not the previously configured one).
+                    if _effective_provider == "cerebras":
+                        _api_base_url = "https://api.cerebras.ai/v1"
+                    elif _effective_provider == "opencodego":
+                        _api_base_url = "https://opencode.ai/zen/go/v1"
+                    elif _effective_provider == "chutes":
+                        _api_base_url = "https://llm.chutes.ai/v1"
+                    elif _effective_provider == "cohere":
+                        _api_base_url = "https://api.cohere.ai/compatibility/v1"
+                    elif _effective_provider == "deepseek":
+                        _api_base_url = "https://api.deepseek.com"
+                    elif _effective_provider == "anthropic":
+                        _api_base_url = "https://api.anthropic.com/v1"
+                    elif _effective_provider == "lmstudio":
+                        _api_base_url = (
+                            values.get("lmstudio_endpoint", _DEFAULT_LMSTUDIO_URL)
+                            or _DEFAULT_LMSTUDIO_URL
                         )
+                    else:
+                        _api_base_url = ""
+
+                    # Register the provider + apply the EFFECTIVE (canonical) model
+                    # names. preserve_bindings=True: never rebind existing roles.
+                    kernel.set_model_selection(
+                        reasoning_model=_effective_reasoning,
+                        tool_execution_model=_effective_tool,
+                        model_provider=_effective_provider,
+                        api_base_url=_api_base_url,
+                        preserve_bindings=True,
+                    )
+
+                    # Bind roles ONLY for roles that are not already bound.
+                    _bound_any = False
+                    if not _existing.get("reasoning"):
                         kernel.set_role_binding(
-                            "tool_execution", provider, model_override=tool_exec
+                            "reasoning", _effective_provider, model_override=_effective_reasoning
+                        )
+                        _bound_any = True
+                    if not _existing.get("tool_execution"):
+                        kernel.set_role_binding(
+                            "tool_execution", _effective_provider, model_override=_effective_tool
+                        )
+                        _bound_any = True
+                    if _bound_any:
+                        self._logger.info(
+                            f"[Session: {session_id}] Bound unbound roles to "
+                            f"provider='{_effective_provider}' (reasoning={_effective_reasoning}, "
+                            f"tool={_effective_tool})",
+                            extra={"session_id": session_id, "client_id": client_id},
                         )
                     else:
                         self._logger.info(
-                            f"[Session: {session_id}] Preserving existing per-role "
+                            f"[Session: {session_id}] Preserving existing role "
                             f"bindings (reasoning={_existing.get('reasoning')}, "
-                            f"tool={_existing.get('tool_execution')}); model_selection "
-                            f"confirm_card will not override them.",
+                            f"tool={_existing.get('tool_execution')}) — card "
+                            f"provider='{provider}' did not override them.",
                             extra={"session_id": session_id, "client_id": client_id},
                         )
+                    # role_bindings are canonical — keep the kernel's provider
+                    # field in sync with the reasoning binding so context-window
+                    # resolution / scheduler labels agree with actual routing.
+                    try:
+                        kernel._model_provider = _effective_provider
+                    except Exception:
+                        pass
                     self._logger.info(
                         f"[Session: {session_id}] Model selection applied on confirm: "
-                        f"reasoning={reasoning}, tool={tool_exec}, provider={provider}",
+                        f"reasoning={_effective_reasoning}, tool={_effective_tool}, "
+                        f"provider={_effective_provider}",
                         extra={"session_id": session_id, "client_id": client_id},
                     )
+                    # Persist the EFFECTIVE (canonical) values back to session state
+                    # so the next confirm_card from any surface carries CURRENT
+                    # values — closing the stale-value propagation loop.
                     try:
                         _ssm = await self._state_manager._get_session_state_manager(
                             session_id
                         )
                         if _ssm:
                             _ssm.set_field_value(
-                                "model_selection", "model_provider", provider
+                                "model_selection", "model_provider", _effective_provider
                             )
-                            if reasoning:
+                            if _effective_reasoning:
                                 _ssm.set_field_value(
-                                    "model_selection", "reasoning_model", reasoning
+                                    "model_selection", "reasoning_model", _effective_reasoning
                                 )
-                            if tool_exec:
+                            if _effective_tool:
                                 _ssm.set_field_value(
                                     "model_selection",
                                     "tool_execution_model",
-                                    tool_exec,
+                                    _effective_tool,
                                 )
                     except Exception:
                         self._logger.warning(
@@ -4930,9 +4984,42 @@ class IRISGateway:
                     "openai api": "api",
                     "api": "api",
                 }
-                inference_mode = _mode_map.get(
-                    str(_raw_mode).lower().strip(), "lmstudio"
-                )
+                _raw = str(_raw_mode).lower().strip()
+                inference_mode = _mode_map.get(_raw, None)
+                # Resolve a provider INSTANCE id (e.g. "cerebras" / "cohere") to its
+                # kind so the right model source is probed. This is the root-cause fix
+                # for the wheelview showing wrong models: it sends instance ids, which
+                # the old code never recognized (falling through to "lmstudio").
+                _instance_provider = None
+                if inference_mode is None:
+                    try:
+                        from backend.agent.inference.registry import (
+                            get_provider_registry,
+                        )
+                        from backend.agent.inference.provider import ProviderKind
+
+                        _prov = get_provider_registry().get(_raw)
+                        if _prov is not None:
+                            _instance_provider = _prov
+                            if _prov.kind == ProviderKind.API:
+                                inference_mode = "api"
+                            elif _prov.kind == ProviderKind.LOCAL_OPENAI:
+                                inference_mode = "lmstudio"
+                            elif _prov.kind == ProviderKind.OLLAMA:
+                                inference_mode = "local"
+                            else:
+                                inference_mode = "local"
+                    except Exception:
+                        inference_mode = "lmstudio"
+                if inference_mode is None:
+                    inference_mode = "lmstudio"
+                # If an instance provider was resolved, prefer its stored credentials
+                # (keyring-backed) over the session-state fields used by the type path.
+                if _instance_provider is not None:
+                    if getattr(_instance_provider, "api_key", None):
+                        openai_api_key = _instance_provider.api_key
+                    if getattr(_instance_provider, "api_base_url", None):
+                        api_base_url = _instance_provider.api_base_url
                 vps_url = (
                     session_state.get_field_value("model_selection", "vps_url", "")
                     or ""
@@ -6047,12 +6134,24 @@ class IRISGateway:
                     from .iris_config import with_modify_config, RoutingMode
 
                     def _update_model_config(cfg):
-                        # Always write provider + model names
+                        # Explicit Dashboard selection — this is authoritative.
+                        # Write provider + model names, and keep role_bindings
+                        # consistent with the selected provider so the frontend's
+                        # /api/inference/state reflects the change immediately.
                         cfg.inference.provider = model_provider or ""
                         cfg.inference.reasoning_model = reasoning_model or ""
                         cfg.inference.tool_execution_model = (
                             tool_execution_model or ""
                         )
+                        if model_provider:
+                            _bindings = getattr(cfg.inference, "role_bindings", []) or []
+                            for _role in ("reasoning", "tool_execution"):
+                                _bindings = [b for b in _bindings if b.get("role") != _role]
+                            if reasoning_model:
+                                _bindings.append({"role": "reasoning", "instance_id": model_provider})
+                            if tool_execution_model:
+                                _bindings.append({"role": "tool_execution", "instance_id": model_provider})
+                            cfg.inference.role_bindings = _bindings
                         # Resolve api_base_url: frontend-sent > hardcoded preset > existing
                         _known_endpoints = {
                             "opencodego": "https://opencode.ai/zen/go/v1",
@@ -6106,6 +6205,22 @@ class IRISGateway:
                         "(provider=%s, model=%s)",
                         session_id, model_provider, reasoning_model,
                     )
+                    # Broadcast updated role_bindings so the frontend's
+                    # useInferenceState reflects the provider change immediately.
+                    try:
+                        _rb = getattr(cfg.inference, "role_bindings", []) or []
+                        await self._ws_manager.broadcast_to_session(
+                            session_id,
+                            {
+                                "type": "role_bindings_updated",
+                                "payload": {"role_bindings": _rb},
+                            },
+                        )
+                    except Exception as _be:
+                        self._logger.warning(
+                            "[Session: %s] Failed to broadcast role_bindings_updated: %s",
+                            session_id, _be,
+                        )
                 except Exception as _e2:
                     self._logger.error(
                         "[Session: %s] Failed to persist model config via IRISConfig: %s",
@@ -8383,6 +8498,35 @@ class IRISGateway:
 
             _cfg = _lc()
             _cfg.inference.role_bindings = snap["role_bindings"]
+            # Keep the legacy provider field consistent with the canonical
+            # role_bindings (reasoning role's instance) so the config file and
+            # /api/inference/state always agree with actual routing.
+            try:
+                _reasoning_provider = next(
+                    (
+                        b["instance_id"]
+                        for b in snap["role_bindings"]
+                        if b.get("role") == "reasoning" and b.get("instance_id")
+                    ),
+                    None,
+                )
+                if _reasoning_provider:
+                    _cfg.inference.provider = _reasoning_provider
+                    # Also sync the api_base_url dynamically from the canonical
+                    # provider registry so the config never carries a stale
+                    # endpoint (e.g. cohere's URL while provider=cerebras).
+                    try:
+                        from backend.agent.inference.provider import (
+                            get_provider_default_endpoint,
+                        )
+
+                        _ep = get_provider_default_endpoint(_reasoning_provider)
+                        if _ep:
+                            _cfg.inference.api_base_url = _ep
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             _sc(_cfg)
         except Exception as _pe:
             self._logger.warning(f"[SLICE5] role_bindings persist failed: {_pe}")

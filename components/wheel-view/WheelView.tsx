@@ -10,6 +10,7 @@ import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import type { Card, FieldValue } from "@/types/navigation"
 import { CARD_TO_SECTION_ID } from "@/data/navigation-constants"
+import { useInferenceState } from "@/hooks/useInferenceState"
 
 interface WheelViewProps {
   categoryId: string
@@ -52,6 +53,7 @@ export const WheelView: React.FC<WheelViewProps> = ({
     setBasePlateLightness,
     resetToThemeDefault
   } = useBrandColor()
+  const { role_bindings: infRoleBindings, sendRoleBinding } = useInferenceState()
 
   const glowColor = useMemo(() => validateGlowColor(rawGlowColor), [rawGlowColor])
   const cardStack = state.cardStack || []
@@ -102,6 +104,19 @@ export const WheelView: React.FC<WheelViewProps> = ({
     setTimeout(() => setIsAnimating(false), 500)
   }, [isAnimating, cardStack, selectSectionWs])
 
+  // Keep the models-card model_provider in sync with the active role binding so the
+  // wheelview reflects the provider selected in the dashboard/chat-switcher.
+  const brainBinding = infRoleBindings.find((r: any) => r.role === "reasoning");
+  useEffect(() => {
+    const active = brainBinding?.instance_id || "";
+    if (active) {
+      const current = state.cardValues['models-card']?.model_provider;
+      if (current !== active) {
+        updateCardValue('models-card', 'model_provider', active);
+      }
+    }
+  }, [brainBinding?.instance_id]);
+
   const handleValueChange = useCallback((fieldId: string, value: FieldValue) => {
     if (!activeCard) return
 
@@ -143,8 +158,15 @@ export const WheelView: React.FC<WheelViewProps> = ({
     // This is a READ-only operation and does not reinitialize any service.
     if (fieldId === "model_provider") {
       sendMessage("get_available_models", { model_provider: value })
+      // Root-cause fix: role_bindings are the canonical provider source. Rebinding
+      // both roles immediately makes the change authoritative and visible across all
+      // surfaces (wheelview ↔ dashboard ↔ chat-switcher), so no stale confirm_card
+      // value can override it later.
+      const pv = String(value)
+      sendRoleBinding("reasoning", pv)
+      sendRoleBinding("tool_execution", pv)
     }
-  }, [activeCard, updateCardValue, sendMessage, setTheme, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, resetToThemeDefault])
+  }, [activeCard, updateCardValue, sendMessage, sendRoleBinding, setTheme, setHue, setSaturation, setLightness, setBasePlateHue, setBasePlateSaturation, setBasePlateLightness, resetToThemeDefault])
 
   const handleConfirm = useCallback(() => {
     if (isAnimating) return

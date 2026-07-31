@@ -181,6 +181,15 @@ class CrawlPlanner:
                     None, self._call_llm, prompt
                 )
                 _candidate = self._parse(raw, query)
+                # Diagnostic: capture what the LLM actually returned so a
+                # "no usable sources" failure is diagnosable (empty response,
+                # malformed JSON, or filtered URLs).
+                logger.info(
+                    "[CrawlPlanner] LLM plan response (attempt %d/%d): urls=%d "
+                    "raw_head=%.300r",
+                    _attempt + 1, max_attempts, len(_candidate.urls or []),
+                    (raw or "")[:300],
+                )
                 if _candidate.urls:
                     return _candidate
                 # LLM responded but produced no URLs — retrying won't help.

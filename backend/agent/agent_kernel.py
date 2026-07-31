@@ -4342,6 +4342,23 @@ class AgentKernel:
             self._conversation_memory.add_message("user", text)
             logger.info(f"[AgentKernel] Processing text message: {text[:50]}...")
 
+            # A fresh user turn supersedes any prior soft-cancel (REQ-6
+            # client_replace). If the user navigated away mid-task and then
+            # returns to send a new message in the SAME conversation, the
+            # stale _cancel_requested flag would otherwise halt the DER loop
+            # before executing any step → "no usable sources found" with zero
+            # steps run.
+            try:
+                _cancel = getattr(self, "_cancel_requested", None)
+                if _cancel is not None and _cancel.is_set():
+                    _cancel.clear()
+                    logger.info(
+                        f"[AgentKernel] Cleared stale _cancel_requested for "
+                        f"conv={conversation_id} — new user turn supersedes prior soft-cancel"
+                    )
+            except Exception:
+                pass
+
             # Get conversation context
             context = self._conversation_memory.get_context()
         except Exception as e:
@@ -4670,7 +4687,8 @@ class AgentKernel:
 
         except Exception as _der_err:
             logger.warning(
-                f"[AgentKernel] DER path error (falling back to ReAct): {_der_err}"
+                f"[AgentKernel] DER path error (falling back to ReAct): {_der_err}",
+                exc_info=True,
             )
             # Also log to structured logger so error appears in irisvoice.log
             try:
@@ -6199,7 +6217,7 @@ Respond with a JSON object:
         return (
             f"[DER] {plan.strategy} — "
             f"{len(completed_items)}/{len(plan.steps)} steps completed.  "
-            f"error: no usable sources found for '{plan.title}'.  "
+            f"error: no usable sources found for '{getattr(plan, 'title', '') or getattr(plan, 'plan_title', '') or plan.original_task[:40]}'.  "
             + self._build_crawl_failure_explanation(plan)
         )
 
@@ -6265,7 +6283,10 @@ Respond with a JSON object:
                     for _c in _children:
                         _batch = get_batcher().offer(_c)
                         if _batch is not None:
-                            for _batch_item in _batch:
+                            # BatchGroup exposes its pending children via
+                            # `.children` — it is NOT iterable itself
+                            # ('BatchGroup' object is not iterable regression).
+                            for _batch_item in _batch.children:
                                 queue.add_item(_batch_item)
                     # REQ-3: debit measured tokens, not a flat child count.
                     _result_len = len(step_result) if step_result else 0
@@ -7622,7 +7643,10 @@ Respond with a JSON object:
                     for _c in _children:
                         _batch = get_batcher().offer(_c)
                         if _batch is not None:
-                            for _batch_item in _batch:
+                            # BatchGroup exposes its pending children via
+                            # `.children` — it is NOT iterable itself
+                            # ('BatchGroup' object is not iterable regression).
+                            for _batch_item in _batch.children:
                                 queue.add_item(_batch_item)
                     # REQ-3: debit measured tokens, not a flat child count.
                     _measured = max(200, len(step_result) // 4)
@@ -8619,6 +8643,7 @@ If any tools failed, address those issues in your response.
         model_provider: Optional[str] = None,
         api_base_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        preserve_bindings: bool = False,
     ) -> bool:
         """
         Set user-selected models for reasoning and tool execution.
@@ -8655,8 +8680,41 @@ If any tools failed, address those issues in your response.
             else:
                 self._selected_reasoning_model = reasoning_model
                 self._selected_tool_execution_model = tool_execution_model
-                if model_provider:
+                if model_provider and not preserve_bindings:
+                    # Explicit selection (Dashboard): the provider is authoritative.
+                    # For preserve_bindings (confirm_card), role_bindings are
+                    # canonical — the provider field is synced from them elsewhere.
                     self._model_provider = model_provider
+
+            # ── Resolve provider credentials EARLY ─────────────────────────
+            # Must happen BEFORE peer propagation / snapshot sync so secondary
+            # kernels (crawl_planner, session_iris_integration, …) inherit the
+            # CORRECT api_base_url + api_key. Previously these were assigned at
+            # the END of this method, AFTER peers/snapshot had copied the stale
+            # default (https://api.openai.com/v1) — so the crawl_planner sent the
+            # Cerebras key to OpenAI → 401.
+            if api_key:
+                self._api_key = api_key
+                try:
+                    from backend.agent.inference.keyring import set_secret
+
+                    set_secret(model_provider, api_key)
+                except Exception:
+                    pass
+            if api_base_url:
+                self._api_base_url = api_base_url.rstrip("/")
+            elif model_provider:
+                # Dynamic resolution from the canonical provider registry
+                # (PROVIDER_PRESETS): the URL follows the provider id from
+                # the config, so it stays correct even if the frontend did
+                # not send one explicitly.
+                from backend.agent.inference.provider import (
+                    get_provider_default_endpoint,
+                )
+
+                _ep = get_provider_default_endpoint(model_provider)
+                if _ep:
+                    self._api_base_url = _ep
 
             ctx_window = self.resolve_context_window()
             token_budget = self.get_effective_token_budget()
@@ -8706,6 +8764,42 @@ If any tools failed, address those issues in your response.
                         f"[AgentKernel] Propagated model config to peer session '{peer_id}'"
                     )
 
+            # Keep the module-level snapshot in sync so lazily-created kernels
+            # (and the 'default' inheritance source) pick up the new provider
+            # even if no peer kernel existed when this call fired. Without this,
+            # a provider configured in the Dashboard/Models card is persisted to
+            # cfg.inference but never reaches NEW conversations — they revert to
+            # the startup snapshot (e.g. cohere) instead of the selected provider.
+            if _model_config_snapshot is not None:
+                if model_provider:
+                    _model_config_snapshot["provider"] = model_provider
+                if reasoning_model is not None:
+                    _model_config_snapshot["reasoning_model"] = reasoning_model
+                if tool_execution_model is not None:
+                    _model_config_snapshot["tool_execution_model"] = tool_execution_model
+                if self._api_key:
+                    _model_config_snapshot["api_key"] = self._api_key
+                if self._api_base_url:
+                    _model_config_snapshot["api_base_url"] = self._api_base_url
+
+            # Ensure the 'default' peer kernel (the inheritance source for new
+            # conversations) reflects the selection. get_agent_kernel("default")
+            # creates it if absent; once created it inherits from a configured
+            # peer (this kernel), so it ends up with the selected provider.
+            try:
+                _default_kernel = get_agent_kernel("default")
+                if _default_kernel is not self:
+                    _default_kernel._selected_reasoning_model = reasoning_model
+                    _default_kernel._selected_tool_execution_model = tool_execution_model
+                    if model_provider:
+                        _default_kernel._model_provider = model_provider
+                    if self._api_key:
+                        _default_kernel._api_key = self._api_key
+                    if self._api_base_url:
+                        _default_kernel._api_base_url = self._api_base_url
+            except Exception as e:
+                logger.debug(f"[AgentKernel] Could not sync 'default' peer kernel: {e}")
+
             # Sync the router with the selection so InferenceRouter is always
             # consistent with the legacy field assignments above.
             if model_provider:
@@ -8718,6 +8812,16 @@ If any tools failed, address those issues in your response.
                 # and the UI can learn the key is already configured.
                 if api_key:
                     self._api_key = api_key
+                    # Persist the per-provider key to the keyring so it survives
+                    # restarts and _build_transport can retrieve it by cred_ref.
+                    # Without this, a key applied per provider was memory-only and
+                    # the keyring kept a stale/fake key → 401 after restart.
+                    try:
+                        from backend.agent.inference.keyring import set_secret
+
+                        set_secret(model_provider, api_key)
+                    except Exception:
+                        pass
                 if api_base_url:
                     self._api_base_url = api_base_url.rstrip("/")
                 # Resolve the effective key: freshly supplied key wins; else the
@@ -8754,15 +8858,33 @@ If any tools failed, address those issues in your response.
                 _r = getattr(self, "_router", None)
                 if _r is not None:
                     _r.add_provider(_inst)
-                    # Bind roles so resolve("reasoning") / resolve("tool_execution")
-                    # succeed at inference time.  Without this, the provider is
-                    # registered but no role points to it, causing generate()
-                    # to fail with "No provider bound" → "(Isee.)" fallback.
-                    _r.bind_role("reasoning", _inst.id, model_override=reasoning_model)
-                    if tool_execution_model and tool_execution_model != reasoning_model:
-                        _r.bind_role("tool_execution", _inst.id, model_override=tool_execution_model)
+                    if preserve_bindings:
+                        # confirm_card path: role_bindings (set by the Brain/Tool
+                        # dropdowns / chat ModelSwitcher via set_role_binding) are
+                        # canonical. Do NOT rebind them here — a stale provider
+                        # from the card must not clobber the user's selection.
+                        # Only ensure the provider is registered.
+                        logger.info(
+                            f"[AgentKernel] set_model_selection(preserve_bindings=True) "
+                            f"registered provider '{_inst_id}' without touching role bindings"
+                        )
                     else:
-                        _r.bind_role("tool_execution", _inst.id)
+                        # Explicit selection (Dashboard Models card): bind roles so
+                        # resolve("reasoning") / resolve("tool_execution") succeed.
+                        _r.bind_role("reasoning", _inst.id, model_override=reasoning_model)
+                        if tool_execution_model and tool_execution_model != reasoning_model:
+                            _r.bind_role("tool_execution", _inst.id, model_override=tool_execution_model)
+                        else:
+                            _r.bind_role("tool_execution", _inst.id)
+
+            # Emit updated context-window usage so the ContextPill reflects the
+            # newly-selected model's real window immediately on switch (not only
+            # after the next message). REQ-12 AC2: same event contract as the
+            # per-response emit in process_text_message.
+            try:
+                self._emit_context_usage()
+            except Exception:
+                pass
 
             return True
 

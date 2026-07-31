@@ -185,7 +185,15 @@ async def run_crawl_subprocess(
             async def _drain() -> None:
                 nonlocal result, error_msg
                 while True:
-                    line = await proc.stdout.readline()
+                    try:
+                        line = await proc.stdout.readline()
+                    except (ValueError, OSError) as _pe:
+                        # Windows ProactorEventLoop raises ValueError (carrying
+                        # the pipe's last buffer text) when the worker subprocess
+                        # dies abruptly — treat it as EOF and let proc.wait()
+                        # report the real exit code instead of a misleading error.
+                        logger.debug("[crawl_runner] stdout pipe closed while reading: %s", _pe)
+                        break
                     if not line:
                         break  # EOF — child ended
                     text = line.decode("utf-8", "replace").strip()
@@ -243,16 +251,85 @@ async def run_crawl_subprocess(
         finally:
             _safe_unlink(params_path)
 
-        if error_msg and result is None:
-            return CrawlResult(
-                query=query, pages=[], duration_ms=0, crawled_at=_now_iso(), error=error_msg
-            )
-        if result is None:
+        _usable_pages = result.pages if result is not None else None
+        if not _usable_pages:
+            # Worker subprocess failed (crash / chunking error / browser death)
+            # OR returned an empty result (all fetches failed). Last-resort
+            # fallback: fetch the planned URLs over plain HTTP and strip tags
+            # so the DER step still gets usable content.
+            _fb = await _plain_http_fallback(urls)
+            if _fb:
+                return CrawlResult(
+                    query=query,
+                    pages=_fb,
+                    duration_ms=0,
+                    crawled_at=_now_iso(),
+                    error=None,
+                    passages=[],
+                    dashboard_data={},
+                    cited_markdown=None,
+                    credibility_map=None,
+                    citation_index=None,
+                    har_entries=[],
+                    har_path=None,
+                )
             return CrawlResult(
                 query=query,
                 pages=[],
                 duration_ms=0,
                 crawled_at=_now_iso(),
-                error="crawl produced no result",
+                error=error_msg or "crawl produced no result",
             )
         return result
+
+
+async def _plain_http_fallback(urls: list) -> list:
+    """Fetch URLs over plain HTTP and strip HTML tags. Returns list of dicts
+    shaped like PageData (url/title/markdown/html/metadata/error). Empty if all
+    fetches fail. Used when the crawl4ai worker subprocess crashes — this path
+    has zero crawl4ai/browser dependency, so it cannot hit the chunking bug."""
+    import re as _re
+
+    import httpx as _httpx
+
+    pages: list = []
+
+    async def _one(url: str) -> dict:
+        try:
+            async with _httpx.AsyncClient(follow_redirects=True, timeout=30.0) as _hc:
+                _resp = await _hc.get(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                )
+            _html = _resp.text
+            _stripped = _re.sub(
+                r"<script[\s\S]*?</script>|<style[\s\S]*?</style>",
+                " ", _html, flags=_re.IGNORECASE,
+            )
+            _stripped = _re.sub(r"<[^>]+>", " ", _stripped)
+            _text = _re.sub(r"\s+", " ", _stripped).strip()
+            if not _text:
+                return None
+            _m = _re.search(r"<title[^>]*>([^<]+)</title>", _html, _re.IGNORECASE)
+            return {
+                "url": url,
+                "title": (_m.group(1).strip() if _m else url),
+                "markdown": _text,
+                "html": None,
+                "metadata": {},
+                "error": None,
+            }
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("[crawl_runner] plain-HTTP fallback fetch failed %s: %s", url, _e)
+            return None
+
+    _results = await asyncio.gather(*[_one(u) for u in urls], return_exceptions=True)
+    for _r in _results:
+        if isinstance(_r, dict) and _r.get("markdown"):
+            pages.append(PageData(**_clean_page(_r)))
+    if pages:
+        logger.info(
+            "[crawl_runner] plain-HTTP fallback produced %d pages (worker failed)",
+            len(pages),
+        )
+    return pages
