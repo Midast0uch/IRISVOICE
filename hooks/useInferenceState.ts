@@ -37,6 +37,7 @@ interface InferenceState {
   role_bindings: RoleBinding[];
   default_role: string;
   provider_presets: ProviderPreset[];
+  model_catalog?: Record<string, { id: string; name: string }[]>;
 }
 
 export function useInferenceState() {
@@ -46,6 +47,7 @@ export function useInferenceState() {
     role_bindings: [],
     default_role: 'reasoning',
     provider_presets: [],
+    model_catalog: {},
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +67,7 @@ export function useInferenceState() {
             role_bindings: data.role_bindings ?? [],
             default_role: data.default_role ?? 'reasoning',
             provider_presets: data.provider_presets ?? [],
+            model_catalog: data.model_catalog ?? {},
           });
           setLoading(false);
         }
@@ -97,17 +100,24 @@ export function useInferenceState() {
     return () => window.removeEventListener('iris:provider_added', handler as EventListener);
   }, []);
 
-  // Listen for role_bindings_updated — full snapshot
+  // Listen for role_bindings_updated — merge FIELD-WISE. Broadcast sites
+  // vary in which fields they include (e.g. a payload built before every
+  // emission site sent the full snapshot), so gating the WHOLE update on
+  // one field's presence (the old `if (snapshot.providers)` guard) silently
+  // dropped updates that had everything BUT `providers` — that was the
+  // ModelSwitcher desync bug. Apply each field that is actually present;
+  // never overwrite existing state with `undefined`.
   useEffect(() => {
     const handler = (e: Event) => {
-      const snapshot = (e as CustomEvent).detail as InferenceState;
-      if (snapshot && snapshot.providers) {
+      const snapshot = (e as CustomEvent).detail as Partial<InferenceState> | undefined;
+      if (snapshot) {
         setState((prev) => ({
           ...prev,
-          providers: snapshot.providers,
-          role_bindings: snapshot.role_bindings,
+          providers: snapshot.providers ?? prev.providers,
+          role_bindings: snapshot.role_bindings ?? prev.role_bindings,
           default_role: snapshot.default_role ?? prev.default_role,
           provider_presets: snapshot.provider_presets ?? prev.provider_presets,
+          model_catalog: snapshot.model_catalog ?? prev.model_catalog,
         }));
       }
       setLoading(false);
@@ -159,6 +169,7 @@ export function useInferenceState() {
     role_bindings: state.role_bindings,
     default_role: state.default_role,
     provider_presets: state.provider_presets,
+    model_catalog: state.model_catalog,
     loading,
     error,
     sendRoleBinding,

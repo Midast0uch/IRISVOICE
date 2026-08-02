@@ -10,6 +10,7 @@ from .provider import ProviderInstance, ProviderKind
 from .registry import ProviderRegistry
 from .roles import RoleBindingTable
 from .router import InferenceRouter
+from .snapshot import build_inference_snapshot
 from .transport import Transport
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "ProviderRegistry",
     "RoleBindingTable",
     "Transport",
+    "build_inference_snapshot",
 ]

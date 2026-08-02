@@ -1553,7 +1553,7 @@ async def api_inference_state():
     """
     try:
         from backend.agent import get_agent_kernel
-        from backend.agent.inference.provider import PROVIDER_PRESETS
+        from backend.agent.inference.snapshot import build_inference_snapshot
 
         # The UI configures the "session_iris" kernel over the WS; read that
         # same kernel so the registry/role bindings the user set are reflected.
@@ -1562,24 +1562,10 @@ async def api_inference_state():
         # session_id="session_iris" also maps to conversation_id="default").
         kernel = get_agent_kernel(conversation_id="default")
         router = getattr(kernel, "_router", None)
-        if router is None:
-            return {"providers": [], "role_bindings": [], "default_role": None,
-                    "provider_presets": PROVIDER_PRESETS}
-        snap = router.snapshot()
-        snap["provider_presets"] = PROVIDER_PRESETS
-        # Attach the local model manager's live status so the frontend knows
-        # when a locally-loaded GGUF is available and its load state.
-        try:
-            from backend.agent.local_model_manager import get_local_model_manager
-            mgr = get_local_model_manager()
-            snap["local_model_loaded"] = mgr.is_loaded()
-            snap["local_model_status"] = "loaded" if mgr.is_loaded() else None
-            snap["local_model_message"] = ""
-        except Exception:
-            snap["local_model_loaded"] = None
-            snap["local_model_status"] = None
-            snap["local_model_message"] = ""
-        return snap
+        # build_inference_snapshot(None) still returns the full key set
+        # (empty providers/role_bindings) so the REST endpoint and both WS
+        # broadcast sites always agree on shape, even with no router yet.
+        return build_inference_snapshot(router)
     except Exception as e:
         from fastapi.responses import JSONResponse
         import traceback

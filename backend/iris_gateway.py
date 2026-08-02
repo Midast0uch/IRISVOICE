@@ -5302,46 +5302,17 @@ class IRISGateway:
 
                 # Fallback: common models users load in LM Studio
                 if not available_models:
+                    from backend.agent.inference.provider_catalog import PROVIDER_MODEL_CATALOG
                     available_models = [
-                        {
-                            "id": "local-model",
-                            "name": "Currently Loaded Model",
-                            "source": "lmstudio",
-                        },
-                        {
-                            "id": "llama-3.2-3b-instruct",
-                            "name": "Llama 3.2 3B Instruct",
-                            "source": "lmstudio",
-                        },
-                        {
-                            "id": "llama-3.1-8b-instruct",
-                            "name": "Llama 3.1 8B Instruct",
-                            "source": "lmstudio",
-                        },
-                        {
-                            "id": "mistral-7b-instruct-v0.3",
-                            "name": "Mistral 7B Instruct",
-                            "source": "lmstudio",
-                        },
-                        {
-                            "id": "qwen2.5-7b-instruct",
-                            "name": "Qwen 2.5 7B Instruct",
-                            "source": "lmstudio",
-                        },
-                        {
-                            "id": "deepseek-r1-distill-qwen-7b",
-                            "name": "DeepSeek R1 7B",
-                            "source": "lmstudio",
-                        },
+                        {"id": m["id"], "name": m["name"], "source": "lmstudio"}
+                        for m in PROVIDER_MODEL_CATALOG.get("lmstudio", [])
                     ]
                     self._logger.info(
-                        f"[Session: {session_id}] LM Studio unreachable â€” showing fallback model list"
+                        f"[Session: {session_id}] LM Studio unreachable — showing fallback model list"
                     )
 
             elif inference_mode == "api":
                 # Query the user-configured API base URL for available models.
-                # Works with OpenAI, Groq, Together, OpenRouter, Mistral, or any
-                # OpenAI-compatible remote API.
                 models_url = f"{api_base_url.rstrip('/')}/models"
                 headers = {}
                 if openai_api_key:
@@ -5369,232 +5340,21 @@ class IRISGateway:
                         f"[Session: {session_id}] API models query failed ({api_base_url}): {api_err}"
                     )
 
-                # Fallback list â€” provider-aware based on api_base_url
+                # Fallback list — provider-aware based on api_base_url
                 if not available_models:
+                    from backend.agent.inference.provider_catalog import PROVIDER_MODEL_CATALOG
                     _base_lower = api_base_url.lower()
-                    if "cohere" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "command-a-plus-05-2026",
-                                "name": "Command A+ (latest)",
-                                "source": "cohere",
-                            },
-                            {
-                                "id": "command-a-03-2025",
-                                "name": "Command A",
-                                "source": "cohere",
-                            },
-                            {
-                                "id": "command-r-plus-08-2024",
-                                "name": "Command R+",
-                                "source": "cohere",
-                            },
-                            {
-                                "id": "command-r-08-2024",
-                                "name": "Command R",
-                                "source": "cohere",
-                            },
-                            {
-                                "id": "command-r7b-12-2024",
-                                "name": "Command R7B",
-                                "source": "cohere",
-                            },
-                        ]
-                    elif "groq" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "llama-3.3-70b-versatile",
-                                "name": "Llama 3.3 70B",
-                                "source": "groq",
-                            },
-                            {
-                                "id": "llama-3.1-8b-instant",
-                                "name": "Llama 3.1 8B",
-                                "source": "groq",
-                            },
-                            {
-                                "id": "mixtral-8x7b-32768",
-                                "name": "Mixtral 8x7B",
-                                "source": "groq",
-                            },
-                        ]
-                    elif "mistral" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "mistral-large-latest",
-                                "name": "Mistral Large",
-                                "source": "mistral",
-                            },
-                            {
-                                "id": "mistral-medium-latest",
-                                "name": "Mistral Medium",
-                                "source": "mistral",
-                            },
-                            {
-                                "id": "open-mixtral-8x7b",
-                                "name": "Mixtral 8x7B",
-                                "source": "mistral",
-                            },
-                        ]
-                    elif "together" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "meta-llama/Llama-3-70b-chat-hf",
-                                "name": "Llama 3 70B",
-                                "source": "together",
-                            },
-                            {
-                                "id": "meta-llama/Llama-3-8b-chat-hf",
-                                "name": "Llama 3 8B",
-                                "source": "together",
-                            },
-                        ]
-                    elif "openrouter" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "openai/gpt-4o",
-                                "name": "GPT-4o (via OpenRouter)",
-                                "source": "openrouter",
-                            },
-                            {
-                                "id": "anthropic/claude-3.5-sonnet",
-                                "name": "Claude 3.5 Sonnet",
-                                 "source": "openrouter",
-                             },
-                         ]
-                    elif "cerebras" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "gemma-4-31b",
-                                "name": "Gemma 4 31B",
-                                "source": "cerebras",
-                            },
-                        ]
-                    elif "chutes" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "deepseek-ai/DeepSeek-V3.2-TEE",
-                                "name": "DeepSeek V3.2",
-                                "source": "chutes",
-                            },
-                            {
-                                "id": "Qwen/Qwen3-32B-TEE",
-                                "name": "Qwen3 32B",
-                                "source": "chutes",
-                            },
-                            {
-                                "id": "google/gemma-4-31B-turbo-TEE",
-                                "name": "Gemma 4 31B",
-                                "source": "chutes",
-                            },
-                            {
-                                "id": "zai-org/GLM-5.1-TEE",
-                                "name": "GLM 5.1",
-                                "source": "chutes",
-                            },
-                            {
-                                "id": "moonshotai/Kimi-K2.6-TEE",
-                                "name": "Kimi K2.6",
-                                "source": "chutes",
-                            },
-                        ]
-                    elif "opencode" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "deepseek-v4-pro",
-                                "name": "DeepSeek V4 Pro",
-                                "source": "opencode",
-                            },
-                            {
-                                "id": "deepseek-v4-flash",
-                                "name": "DeepSeek V4 Flash",
-                                "source": "opencode",
-                            },
-                            {
-                                "id": "kimi-k2.6",
-                                "name": "Kimi K2.6",
-                                "source": "opencode",
-                            },
-                            {
-                                "id": "minimax-m2.7",
-                                "name": "MiniMax M2.7",
-                                "source": "opencode",
-                            },
-                            {
-                                "id": "glm-5.1",
-                                "name": "GLM 5.1",
-                                "source": "opencode",
-                            },
-                        ]
-                    elif "commandcode" in _base_lower or "command-code" in _base_lower:
-                        available_models = [
-                            {
-                                "id": "gpt-5.5",
-                                "name": "GPT-5.5",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "gpt-5.4",
-                                "name": "GPT-5.4",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "gpt-5.4-mini",
-                                "name": "GPT-5.4 Mini",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "gpt-5.3-codex",
-                                "name": "GPT-5.3 Codex",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "claude-sonnet-4-6",
-                                "name": "Claude Sonnet 4.6",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "claude-opus-4-7",
-                                "name": "Claude Opus 4.7",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "claude-haiku-4-5-20251001",
-                                "name": "Claude Haiku 4.5",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "moonshotai/Kimi-K2.6",
-                                "name": "Kimi K2.6",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "moonshotai/Kimi-K2.5",
-                                "name": "Kimi K2.5",
-                                "source": "commandcode",
-                            },
-                            {
-                                "id": "zai-org/GLM-5.1",
-                                "name": "GLM 5.1",
-                                "source": "commandcode",
-                            },
-                        ]
-                    else:
-                        # Default: OpenAI models
-                        available_models = [
-                            {"id": "gpt-4o", "name": "GPT-4o", "source": "openai"},
-                            {
-                                "id": "gpt-4-turbo",
-                                "name": "GPT-4 Turbo",
-                                "source": "openai",
-                            },
-                            {"id": "gpt-4", "name": "GPT-4", "source": "openai"},
-                            {
-                                "id": "gpt-3.5-turbo",
-                                "name": "GPT-3.5 Turbo",
-                                "source": "openai",
-                            },
-                        ]
+                    matched_provider = "openai"
+                    for p_key in PROVIDER_MODEL_CATALOG:
+                        if p_key in _base_lower or (p_key == "commandcode" and ("commandcode" in _base_lower or "command-code" in _base_lower)):
+                            matched_provider = p_key
+                            break
+                    
+                    catalog_models = PROVIDER_MODEL_CATALOG.get(matched_provider, PROVIDER_MODEL_CATALOG["openai"])
+                    available_models = [
+                        {"id": m["id"], "name": m["name"], "source": matched_provider}
+                        for m in catalog_models
+                    ]
 
             elif inference_mode == "vps":
                 # Try to query the VPS endpoint for models
@@ -6152,37 +5912,28 @@ class IRISGateway:
                             if tool_execution_model:
                                 _bindings.append({"role": "tool_execution", "instance_id": model_provider})
                             cfg.inference.role_bindings = _bindings
-                        # Resolve api_base_url: frontend-sent > hardcoded preset > existing
-                        _known_endpoints = {
-                            "opencodego": "https://opencode.ai/zen/go/v1",
-                            "cerebras": "https://api.cerebras.ai/v1",
-                            "chutes": "https://llm.chutes.ai/v1",
-                            "cohere": "https://api.cohere.ai/compatibility/v1",
-                            "deepseek": "https://api.deepseek.com",
-                            "anthropic": "https://api.anthropic.com/v1",
-                            "ollama": "http://localhost:11434/v1",
-                        }
+                        # Resolve api_base_url: frontend-sent > canonical preset endpoint > existing
                         if api_base_url:
                             cfg.inference.api_base_url = api_base_url
                             self._logger.info(
                                 "[Session: %s] Using frontend-sent api_base_url '%s'",
                                 session_id, api_base_url,
                             )
-                        elif model_provider in _known_endpoints:
-                            cfg.inference.api_base_url = _known_endpoints[
-                                model_provider
-                            ]
-                            self._logger.info(
-                                "[Session: %s] Using preset endpoint for '%s': %s",
-                                session_id, model_provider,
-                                _known_endpoints[model_provider],
-                            )
                         else:
-                            self._logger.info(
-                                "[Session: %s] No api_base_url for provider '%s', "
-                                "keeping existing config value'",
-                                session_id, model_provider,
-                            )
+                            from backend.agent.inference.provider import get_provider_default_endpoint
+                            preset_ep = get_provider_default_endpoint(model_provider)
+                            if preset_ep:
+                                cfg.inference.api_base_url = preset_ep
+                                self._logger.info(
+                                    "[Session: %s] Using preset endpoint for '%s': %s",
+                                    session_id, model_provider, preset_ep,
+                                )
+                            else:
+                                self._logger.info(
+                                    "[Session: %s] No api_base_url for provider '%s', "
+                                    "keeping existing config value'",
+                                    session_id, model_provider,
+                                )
                         # Only write api_key when the frontend sends one
                         if api_key:
                             cfg.inference.api_key = api_key
@@ -6205,15 +5956,25 @@ class IRISGateway:
                         "(provider=%s, model=%s)",
                         session_id, model_provider, reasoning_model,
                     )
-                    # Broadcast updated role_bindings so the frontend's
-                    # useInferenceState reflects the provider change immediately.
+                    # Broadcast the FULL inference snapshot (not just
+                    # role_bindings) so every useInferenceState() instance —
+                    # dashboard, ModelSwitcher, SidePanel, WheelView — gets
+                    # providers + model_catalog too. A payload missing
+                    # `providers` fails the frontend's guard and the whole
+                    # update is silently dropped (that was the ModelSwitcher
+                    # desync bug).
                     try:
-                        _rb = getattr(cfg.inference, "role_bindings", []) or []
+                        from backend.agent.inference.snapshot import (
+                            build_inference_snapshot,
+                        )
+
+                        _router = getattr(agent_kernel, "_router", None)
+                        _snap = build_inference_snapshot(_router)
                         await self._ws_manager.broadcast_to_session(
                             session_id,
                             {
                                 "type": "role_bindings_updated",
-                                "payload": {"role_bindings": _rb},
+                                "payload": _snap,
                             },
                         )
                     except Exception as _be:
@@ -8492,7 +8253,9 @@ class IRISGateway:
         _router = getattr(kernel, "_router", None)
         if _router is None:
             return
-        snap = _router.snapshot()
+        from backend.agent.inference.snapshot import build_inference_snapshot
+
+        snap = build_inference_snapshot(_router)
         try:
             from .iris_config import load_config as _lc, save_config as _sc
 
