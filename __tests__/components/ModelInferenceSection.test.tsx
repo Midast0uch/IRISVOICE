@@ -99,7 +99,9 @@ const defaultProps = {
   loading: false,
   sendRoleBinding: jest.fn(),
   glowColor: "#00c8ff",
-  provider_presets: [],
+  provider_presets: [
+    { id: "p1", label: "GPT-4o", kind: "openai", needs_key: true, api_base_url: "https://api.openai.com/v1" },
+  ],
   sendModelSelection: jest.fn(),
   sendInferenceMode: jest.fn(),
   inferenceValues: {},
@@ -133,14 +135,14 @@ describe("ModelInferenceSection — REQ-6 AC3 provider filter", () => {
 
   it("only renders the single chat provider option", () => {
     render(<ModelInferenceSection {...defaultProps} />);
-    // Scope to the Brain Model row specifically. The mocked CustomDropdown
+    // Scope to the Brain row specifically. The mocked CustomDropdown
     // is reused by four unrelated selectors (Thinking Style / Max Response /
     // Reasoning Effort / Tool Mode) that pass raw string arrays rather than
     // {label,value} objects — those legitimately produce
     // dropdown-option-undefined nodes in this mock and are out of scope for
     // "only the chat provider is offered as a Brain option". Querying the
     // whole document conflates them with the Brain selector under test.
-    const brainRow = screen.getByText("Brain Model").closest("div");
+    const brainRow = screen.getByText("Brain").closest("div");
     expect(brainRow).not.toBeNull();
     const brainOptions = within(brainRow as HTMLElement).getAllByTestId(
       /^dropdown-option-/,
