@@ -100,6 +100,13 @@ class AgentToolBridge:
         self._mcp_servers = {}
         self._initialized = False
 
+        # pin_42ddd255162d: conversation registry for render/show tools (prism
+        # card). Populated per session by the kernel; defaults to {} so DER
+        # execution paths never hit AttributeError (was: 'AgentToolBridge'
+        # object has no attribute '_active_conversation_id' when
+        # get_rendered_documents ran inside the DER loop).
+        self._active_conversation_id: Dict[str, str] = {}
+
         # Security and audit integration (from task 9)
         self._security_filter = security_filter
         self._audit_logger = audit_logger
@@ -1017,7 +1024,7 @@ class AgentToolBridge:
         # dispatch) sees the canonical name.  This replaces the old hardcoded
         # _TOOL_ALIASES dict and the scattered InternetGate / DesktopGate checks
         # with a single declarative capability check (Pillar A).
-        from backend.agent.tool_registry import resolve_tool, capability_allowed
+        from backend.agent.tool_registry import resolve_tool, capability_allowed, capability_denied_by
         spec = resolve_tool(tool_name)
         if spec is not None:
             tool_name = spec.name  # canonical name (web_search/google_search -> search)
@@ -1039,7 +1046,13 @@ class AgentToolBridge:
         # requires_internet / requires_desktop flags from the registry and the
         # real capability flags via injected providers (wired at startup).
         if spec is not None and not capability_allowed(spec):
-            if spec.requires_internet:
+            # REQ-16/T29: report the ACTUAL denying capability, not the first
+            # flag in declaration order. open_url now sets both requires_internet
+            # and requires_desktop; with the old presence-based check a
+            # desktop-denied call would wrongly report "Internet access is
+            # disabled". capability_denied_by() names the true blocker.
+            denied = capability_denied_by(spec)
+            if denied == "internet":
                 logger.warning(
                     "[InternetGate] Tool '%s' blocked — internet access disabled", tool_name
                 )
@@ -1050,7 +1063,7 @@ class AgentToolBridge:
                         f"Tool '{tool_name}' is unavailable."
                     ),
                 }
-            if spec.requires_desktop:
+            if denied == "desktop":
                 logger.warning(
                     "[DesktopGate] Tool '%s' blocked — desktop control disabled", tool_name
                 )
@@ -1246,6 +1259,19 @@ class AgentToolBridge:
                 )
                 return result
 
+            # ── In-app open_url (REQ-16/T27): navigation happens inside IRIS's
+            # browser surface, never the user's desktop browser. Mirrors the
+            # search interception above — routed here BEFORE the MCP dispatch
+            # so it never reaches BrowserServer.execute_tool -> webbrowser.open.
+            if tool_name == "open_url":
+                result = await self._execute_open_url(params, session_id)
+                self._record_tool_event(
+                    session_id, tool_name,
+                    "success" if result.get("success") else "failure", params, result,
+                    plan_title=plan_title,
+                )
+                return result
+
             if tool_name in mcp_tools:
                 server_name, mcp_tool_name = mcp_tools[tool_name]
                 result = await self.execute_mcp_tool(server_name, mcp_tool_name, params, session_id)
@@ -1298,8 +1324,16 @@ class AgentToolBridge:
                 except Exception:
                     pass
                 results = []
-                if self._memory_interface and hasattr(self._memory_interface, "episodic"):
-                    results = self._memory_interface.episodic.retrieve_similar(
+                _mi = getattr(self, "_memory_interface", None)
+                if _mi is None:
+                    try:
+                        from backend.memory import get_memory_interface
+
+                        _mi = get_memory_interface()
+                    except Exception:  # noqa: BLE001 — memory is optional
+                        _mi = None
+                if _mi and hasattr(_mi, "episodic"):
+                    results = _mi.episodic.retrieve_similar(
                         task=query, limit=_retrieval_limit, min_score=_retrieval_score
                     ) or []
                 return {"success": True, "results": results}
@@ -1730,13 +1764,47 @@ class AgentToolBridge:
         if not query:
             return {"success": False, "error": "crawler_query requires a 'query'"}
 
-        # REQ-29: register a background job so the result survives disconnects.
+        # REQ-29 + pin_517dfcbda150: same (session, query) = same job_id.
+        # A COMPLETED job for an identical query is REUSED (cached result) —
+        # re-gather must come from a REFINED query (new hash = new job), never
+        # a repeat crawl. A RUNNING job is awaited (parallel split children of
+        # the same parent share the query). An errored/cancelled job falls
+        # through to register() so a transient failure can be retried.
         job_id = f"crawl_{session_id}_{abs(hash(query)) % 10**8}"
         _registry = None
+        _cached: Optional[Dict] = None
         try:
             from backend.crawler.job_registry import get_job_registry
             _registry = get_job_registry()
-            await _registry.register(job_id, session_id, query)
+            _existing = await _registry.get(job_id)
+            if _existing is not None:
+                if _existing.status == "running":
+                    await _existing.wait(timeout=180)
+                    _existing = await _registry.get(job_id)
+                if (
+                    _existing is not None
+                    and _existing.status == "complete"
+                    and _existing.result
+                ):
+                    _cached = dict(_existing.result)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[crawler_query] job registry unavailable: %s", exc)
+        if _cached:
+            _cached.setdefault("cached", True)
+            _cached.setdefault("job_id", job_id)
+            # pin_42ddd255162d: the stored registry result is the clean tool
+            # dict, which lacks the `success` envelope the dispatcher reads.
+            # Re-emit success=True so a cached re-dispatch is not
+            # misclassified as a failed execution.
+            _cached["success"] = True
+            logger.info(
+                "[crawler_query] dedupe hit job=%s query=%r (cached, no re-crawl)",
+                job_id, query,
+            )
+            return _cached
+        try:
+            if _registry is not None:
+                await _registry.register(job_id, session_id, query)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[crawler_query] job registry unavailable: %s", exc)
 
@@ -1882,7 +1950,18 @@ class AgentToolBridge:
             except Exception:
                 pass  # never block the crawl on an event emit failure
 
+        # REQ-16 AC6-AC9: the browser panel listens for open_tab /
+        # crawler_started / crawler_page_fetched / crawler_complete. This
+        # handler below emits TASK_PROGRESS (chat-side), which is a DIFFERENT
+        # vocabulary — so an agent crawl used to update the chat while the
+        # browser panel stayed inert. Forward the panel's events too.
+        _ui_emit = _crawl_ui_emitter(session_id)
+
         def _on_progress(progress: CrawlProgress) -> None:
+            try:
+                _ui_emit(progress)
+            except Exception:
+                pass  # UI emit must never disturb the crawl
             ev = progress.event
             pl = progress.payload
             if ev == "CRAWLER_PAGE_FETCHED":
@@ -1939,12 +2018,25 @@ class AgentToolBridge:
         # ── REQ-9: structured log for card transition ──
         logger.info("Card transition", extra={"context": "card", "state": "processing_conversation", "session_id": session_id})
 
+        # pin_42ddd255162d: the fallback path can return pages WITH an
+        # informational error note (worker timed out; plain-HTTP fallback
+        # used). With usable pages present the crawl SUCCEEDED (content
+        # sufficiency at the tool boundary), so the note must not poison the
+        # result: carry it under `note:` and proceed to the success build.
+        _fallback_note = None
         if result.error:
-            logger.error("[crawler_query] crawl failed: %s", result.error)
-            if _registry is not None:
-                await _registry.fail(job_id, result.error)
-            return {"success": False, "error": result.error,
-                    "error_type": _crawler_error_type(result.error), "job_id": job_id}
+            _has_pages = bool((result.dashboard_data or {}).get("pages"))
+            if not _has_pages:
+                logger.error("[crawler_query] crawl failed: %s", result.error)
+                if _registry is not None:
+                    await _registry.fail(job_id, result.error)
+                return {"success": False, "error": result.error,
+                        "error_type": _crawler_error_type(result.error), "job_id": job_id}
+            _fallback_note = str(result.error)
+            logger.info(
+                "[crawler_query] fallback produced %d page(s) with worker note: %s",
+                len((result.dashboard_data or {}).get("pages")), result.error,
+            )
 
         crawl_result = result
         dashboard_data = result.dashboard_data or {}
@@ -1972,6 +2064,21 @@ class AgentToolBridge:
         _combined = "\n\n".join(_content_parts)
         if len(_combined) > _CONTENT_CAP:
             _combined = _combined[:_CONTENT_CAP] + "\n\n[...truncated...]"
+
+        # pin_517dfcbda150: honesty at the tool boundary — success means usable
+        # content. A crawl that fetched zero usable text returns an ERROR, so
+        # the DER verifier (content-sufficiency) never sees a hollow "success"
+        # and the step commits only when real content exists.
+        if not _combined:
+            _no_content = "crawler_query returned no usable content for query"
+            if _registry is not None:
+                await _registry.fail(job_id, _no_content)
+            return {
+                "success": False,
+                "error": _no_content,
+                "error_type": "empty_result",
+                "job_id": job_id,
+            }
 
         # REQ-29: store the completed result in the registry so a reconnecting
         # client can fetch it via GET /api/crawl/result/{job_id} (background).
@@ -2015,6 +2122,9 @@ class AgentToolBridge:
             "links": [pg["url"] for pg in pages if pg.get("url")],
             "trust": "untrusted",  # external tool result — route to reference zone
             "job_id": job_id,  # REQ-29: client can fetch result after reconnect
+            # pin_42ddd255162d: informational worker note (fallback path) — kept
+            # out of `error` so the DER verifier sees a clean success.
+            **({"note": _fallback_note} if _fallback_note else {}),
             # REQ-22: untrusted web scoring forwarded to pacman for persistence
             # in the 'reference' zone (credibility_map + citation_index).
             "credibility_map": getattr(crawl_result, "credibility_map", None),
@@ -2077,7 +2187,17 @@ class AgentToolBridge:
             from backend.agent.agent_kernel import get_agent_kernel
             from backend.agent.document_store import DocumentDataStore
 
-            conversation_id = self._active_conversation_id.get(session_id) or "default"
+            # Same resolution chain as the two sibling call sites (:2145,
+            # :2229). This one omitted the params lookup, so it ALWAYS resolved
+            # to "default": self._active_conversation_id is declared at :108,
+            # read in three places, and written in NONE — a permanently empty
+            # map. Callers that pass conversation_id explicitly now win here
+            # too, instead of silently addressing the "default" thread.
+            conversation_id = (
+                (params or {}).get("conversation_id")
+                or self._active_conversation_id.get(session_id)
+                or "default"
+            )
             kernel = get_agent_kernel(conversation_id, session_id)
             store = kernel._get_document_store() if kernel is not None else None
             if store is None:
@@ -2170,11 +2290,21 @@ class AgentToolBridge:
             # The crawl runs in a killable subprocess so a stalled fetch cannot
             # block the event loop (spec REQ-17 + DER _split_step). session_id tags
             # the crawl + its memory per-thread (REQ-32).
+            #
+            # on_progress IS REQUIRED FOR THE UI. Every orchestrator event flows
+            # through this callback (orchestrator._make_emitter._emit); omitting
+            # it silences the crawl completely. This call previously passed
+            # nothing, so an agent-driven search rendered its answer in chat
+            # while the browser panel never animated — the overlay
+            # (hooks/useBrowserNavOverlay.ts) listens for open_tab /
+            # crawler_started / crawler_page_fetched / crawler_complete and
+            # received none of them. REQ-16 AC6-AC9.
             orch = CrawlOrchestrator()
             crawl_result = await orch.research(
                 query=query,
                 mode="agent",
                 session_id=session_id,
+                on_progress=_crawl_ui_emitter(session_id),
             )
         except Exception as exc:
             logger.error("[web_search] crawl failed: %s", exc)
@@ -2209,6 +2339,86 @@ class AgentToolBridge:
             "trust": "untrusted",  # external tool result — route to reference zone
         }
 
+    async def _execute_open_url(self, params: Dict, session_id: str) -> Dict:
+        """Agent tool: open a URL inside IRIS's in-app browser surface.
+
+        REQ-16 (T27): replaces the old ``BrowserServer.open_url`` which called
+        ``webbrowser.open()`` and hijacked the user's REAL desktop browser.
+        Navigation is now fully in-app:
+          1. an ``open_tab`` WS message drives the existing dashboard browser
+             tab (iframe) — the user SEES the page load; zero dashboard
+             changes needed;
+          2. the single page is fetched headlessly (crash-isolated subprocess,
+             same engine as ``search``) and returned as markdown so the agent
+             can reason about it.
+        Gated by the internet-access flag (see the InternetGate block in
+        execute_tool). Never touches the desktop.
+        """
+        import uuid
+
+        url = (params.get("url") or "").strip()
+        if not url:
+            return {"success": False, "error": "open_url requires a 'url'"}
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        # 1) In-app surface: open a browser tab (best-effort — never fails the
+        #    tool, and a session with no live client simply skips the tab).
+        try:
+            from backend.ws_manager import get_websocket_manager
+
+            _ws = get_websocket_manager()
+            if _ws is not None and _ws.get_clients_for_session(session_id):
+                await _ws.broadcast_to_session(session_id, {
+                    "type": "open_tab",
+                    "tab_type": "browser",
+                    "id": uuid.uuid4().hex,
+                    "title": url,
+                    "url": url,
+                })
+        except Exception as exc:
+            logger.warning("[open_url] in-app tab broadcast failed: %s", exc)
+
+        # 2) Agent content: headless single-URL fetch (no LLM planning).
+        try:
+            from backend.crawler.orchestrator import CrawlOrchestrator
+
+            orch = CrawlOrchestrator()
+            crawl_result = await orch.fetch_url(url, session_id=session_id)
+        except Exception as exc:
+            logger.error("[open_url] fetch failed: %s", exc)
+            return {"success": False, "error": f"open_url failed: {exc}"}
+
+        if getattr(crawl_result, "error", None):
+            logger.warning("[open_url] fetch error (url=%r): %s", url, crawl_result.error)
+            return {
+                "success": False,
+                "error": crawl_result.error,
+                "error_type": _crawler_error_type(crawl_result.error),
+            }
+
+        _CONTENT_CAP = 8_000
+        _content_parts: List[str] = []
+        for _p in getattr(crawl_result, "pages", []):
+            if getattr(_p, "error", None):
+                continue
+            _md = getattr(_p, "markdown", "") or ""
+            if _md:
+                _content_parts.append(f"--- Source: {getattr(_p, 'url', '')} ---\n{_md}")
+        _combined = "\n\n".join(_content_parts)
+        if len(_combined) > _CONTENT_CAP:
+            _combined = _combined[:_CONTENT_CAP] + "\n\n[...truncated...]"
+
+        _sources = [getattr(_p, "url", "") for _p in getattr(crawl_result, "pages", []) if getattr(_p, "url", "")]
+
+        return {
+            "success": True,
+            "url": url,
+            "content": _combined,
+            "sources": _sources,
+            "trust": "untrusted",  # external page content — reference zone
+        }
+
     def get_status(self) -> Dict:
         """
         Get status of all connected services.
@@ -2234,6 +2444,78 @@ class AgentToolBridge:
 # Singleton
 _agent_tool_bridge: Optional[AgentToolBridge] = None
 
+
+
+def _crawl_ui_emitter(session_id: str):
+    """Forward orchestrator crawl events to the browser panel (REQ-16 AC6-AC9).
+
+    THE VOCABULARY HERE IS LOAD-BEARING. The overlay
+    (hooks/useBrowserNavOverlay.ts) listens for exactly these message types:
+    ``open_tab``, ``crawler_started``, ``crawler_page_fetched``,
+    ``crawler_complete``, ``crawler_error``. Anything else — including the
+    ``TASK_PROGRESS`` stream event the agent layer emits elsewhere — leaves
+    the panel inert.
+
+    Three ``research()`` call sites existed and only ONE spoke this vocabulary:
+      iris_gateway.py (mode="ws", user-initiated)  -> emitted all of it
+      _execute_crawler_query (mode="agent")        -> emitted TASK_PROGRESS only
+      _execute_web_search    (mode="agent")        -> emitted NOTHING
+    So the overlay animated only for user-initiated crawls and never for
+    agent-driven ones: an agent search rendered its answer in chat while the
+    browser panel stayed dead. This emitter is the shared piece the agent
+    paths were missing; it mirrors the gateway handler so both agree.
+
+    ``on_progress`` is called SYNCHRONOUSLY by the orchestrator, so sends are
+    scheduled with ensure_future rather than awaited. Every send is
+    best-effort: a UI emit must never fail or stall a crawl.
+    """
+    import asyncio as _asyncio
+    import uuid as _uuid
+
+    def _emit(progress) -> None:
+        ev = getattr(progress, "event", "")
+        pl = getattr(progress, "payload", {}) or {}
+        try:
+            from backend.ws_manager import get_websocket_manager
+
+            ws = get_websocket_manager()
+            if ws is None or not ws.get_clients_for_session(session_id):
+                return  # no live client — nothing to animate
+
+            def _send(msg: dict) -> None:
+                try:
+                    _asyncio.ensure_future(ws.broadcast_to_session(session_id, msg))
+                except Exception:
+                    pass  # never block the crawl on a UI emit
+
+            if ev == "CRAWLER_STARTED":
+                _send({"type": "crawler_started",
+                       "query": pl.get("query", ""),
+                       "url_count": pl.get("url_count", 0)})
+            elif ev == "CRAWLER_PAGE_FETCHED":
+                _send({"type": "crawler_page_fetched",
+                       "url": pl.get("url", ""),
+                       "page_number": pl.get("page_number", 0),
+                       "total": pl.get("total", 0),
+                       "host": pl.get("host", "")})
+            elif ev == "OPEN_TAB":
+                _send({"type": "open_tab",
+                       "tab_type": pl.get("tab_type", "browser"),
+                       "id": pl.get("id") or _uuid.uuid4().hex,
+                       "title": pl.get("title", ""),
+                       "url": pl.get("url", ""),
+                       "data": pl.get("data")})
+            elif ev == "CRAWLER_COMPLETE":
+                _send({"type": "crawler_complete",
+                       "page_count": pl.get("page_count", 0),
+                       "summary": pl.get("summary", "")})
+            elif ev == "CRAWLER_ERROR":
+                _send({"type": "crawler_error",
+                       "message": pl.get("message", "crawl error")})
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[crawl-ui] emit skipped (%s): %s", ev, exc)
+
+    return _emit
 
 
 def _crawler_error_type(error_str: str) -> str:

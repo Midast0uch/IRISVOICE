@@ -51,7 +51,16 @@ CEILING_INIT_TPM = _env_float("IRIS_CEILING_INIT_TPM", 60000.0)
 CEILING_MD = 0.5
 CEILING_AI_RPM = _env_float("IRIS_CEILING_AI_RPM", 2.0)
 CEILING_PROBE_S = _env_float("IRIS_CEILING_PROBE_S", 120.0)
-CEILING_MIN_RPM = _env_float("IRIS_CEILING_MIN_RPM", 3.0)
+# AIMD floor. This is NOT a per-caller budget: the quota is keyed on the
+# transport (_quota_id), so every reasoning-role call in the app shares it —
+# planning, tool decisions, synthesis, gap-filling, data extraction, topic
+# extraction. A single user question legitimately spends ~10+ calls, so a
+# floor of 3.0 could not fund even one task: after a few 429s the ceiling
+# halved to the floor and every subsequent crawl returned an empty plan,
+# surfacing as "no usable sources" — a quota problem wearing a bug's face.
+# 15 keeps meaningful back-off headroom below CEILING_INIT_RPM (30) while
+# still funding one complete task.
+CEILING_MIN_RPM = _env_float("IRIS_CEILING_MIN_RPM", 15.0)
 CEILING_MAX_RPM = _env_float("IRIS_CEILING_MAX_RPM", 600.0)
 PHASE_HARD_MAX_RPM = _env_float("IRIS_PHASE_HARD_MAX_RPM", 120.0)
 

@@ -637,6 +637,32 @@ class VoiceCommandHandler:
         _ensure_loaded() returns True immediately if already loaded.
         """
         def _do_parakeet_warm():
+            # HOLD OFF UNTIL THE SERVER IS SERVING.
+            # This is a daemon thread, so it does not block the event loop by
+            # ownership — but loading the model walks ~723 weight tensors in
+            # Python, and that contends for the GIL hard enough to starve the
+            # loop uvicorn needs in order to BIND. Measured on this host:
+            # 13:44:15 load start -> 13:50:48 loaded, with the port unbound the
+            # whole time; an earlier run took 14 minutes. The backend looked
+            # hung and was repeatedly killed mid-startup because of it.
+            # Sleeping first lets bind win the race; the warm-up still removes
+            # the cold-start cost long before anyone speaks.
+            #   IRIS_STT_WARM_DELAY_S=0  -> warm immediately (old behaviour)
+            #   IRIS_STT_WARM_DISABLE=1  -> skip pre-warm (load on first use)
+            try:
+                if os.environ.get("IRIS_STT_WARM_DISABLE", "").strip().lower() in ("1", "true", "yes"):
+                    logger.info("[VoiceCommand] Parakeet pre-warm disabled (IRIS_STT_WARM_DISABLE)")
+                    return
+                _delay = float(os.environ.get("IRIS_STT_WARM_DELAY_S", "25") or 0)
+                if _delay > 0:
+                    logger.info(
+                        "[VoiceCommand] Parakeet pre-warm deferred %.0fs so the "
+                        "server can bind first", _delay,
+                    )
+                    time.sleep(_delay)
+            except Exception:
+                pass  # a bad env value must never skip the warm-up entirely
+
             try:
                 if self._parakeet._ensure_loaded():
                     logger.info(

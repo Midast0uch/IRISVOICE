@@ -38,6 +38,61 @@ except Exception:
 base_dir = Path(__file__).parent.resolve()
 os.chdir(base_dir)
 
+# ── Optional: periodic all-thread stack dump for diagnosing silent hangs ─────
+# Off unless IRIS_FAULTHANDLER_DUMP is set to a positive number of seconds.
+# A wedged worker thread (e.g. a DER step blocked inside asyncio.run, or an
+# await that never returns) is otherwise INVISIBLE: the process stays alive,
+# the gateway keeps answering pings, and no log line is ever emitted. This
+# writes every thread's stack to faulthandler_dump.log on an interval so the
+# blocking frame can be identified instead of inferred.
+#   Usage:  set IRIS_FAULTHANDLER_DUMP=20  (dump every 20s)
+try:
+    _fh_every = float(os.environ.get("IRIS_FAULTHANDLER_DUMP", "0") or 0)
+    if _fh_every > 0:
+        import faulthandler as _faulthandler
+
+        _fh_path = base_dir / "faulthandler_dump.log"
+        _fh_file = open(_fh_path, "w", encoding="utf-8", errors="replace")
+        _faulthandler.dump_traceback_later(_fh_every, repeat=True, file=_fh_file)
+        print(f"   Faulthandler: dumping all thread stacks every {_fh_every:g}s -> {_fh_path}")
+except Exception as _fh_exc:  # never let a diagnostic block startup
+    print(f"   Faulthandler setup skipped: {_fh_exc}")
+
+# ── Never trust or write stale bytecode ──────────────────────────────────────
+# A prior incident had a running backend (PID 15768) executing OLD .pyc bytecode
+# from __pycache__ while the source on disk already carried a fix — the edit was
+# invisible at runtime. To make that structurally impossible:
+#   1. Disable bytecode writing for this process (no .pyc is ever produced).
+#   2. Export the env var so any subprocess/importlib cache is also disabled.
+#   3. Purge any pre-existing __pycache__ so stale .pyc from before this guard
+#      can never be served on the next launch (self-healing).
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+try:
+    import shutil as _shutil
+    _purged = 0
+    # SCOPED to the project's own Python. rglob from base_dir walked the WHOLE
+    # repo — node_modules, .next (which balloons to multi-GB on this machine)
+    # and models/ (18 GB of weights). That walk did not finish in 300s when
+    # measured, so the backend sat at ~24 MB RSS burning 7s of CPU and never
+    # reached uvicorn: it looked like a hang and was really a directory crawl.
+    # The guard's intent is unchanged — no IRIS .pyc is ever trusted or
+    # written — because every project module lives under these roots.
+    for _root in ("backend", "scripts"):
+        _dir = Path(base_dir) / _root
+        if not _dir.is_dir():
+            continue
+        for _cache in _dir.rglob("__pycache__"):
+            try:
+                _shutil.rmtree(_cache, ignore_errors=True)
+                _purged += 1
+            except Exception:
+                pass
+    if _purged:
+        print(f"   Purged {_purged} stale __pycache__ dir(s) — bytecode cache disabled")
+except Exception:
+    pass
+
 # Add project root to Python path BEFORE any imports
 sys.path.insert(0, str(base_dir))
 
@@ -108,12 +163,35 @@ except Exception as _exc:
 # Port cleanup: kill any existing process holding our port so we never
 # see "error while attempting to bind on address".
 # ---------------------------------------------------------------------------
+def _port_occupied(port: int) -> bool:
+    """Return True if any process is LISTENING on *port* (TCP)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True, text=True
+        )
+        for line in result.stdout.splitlines():
+            if f":{port} " in line and "LISTENING" in line:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _kill_port(port: int) -> None:
-    """Terminate any process listening on *port* (Windows + Unix)."""
+    """Terminate any process listening on *port* (Windows + Unix).
+
+    Kills the whole process tree (uvicorn + workers) and verifies the port is
+    actually freed, escalating to PowerShell if taskkill alone doesn't release
+    it. We deliberately do NOT fall back to a different port: the backend must
+    stay on the configured port (8090) so the frontend — which is hardcoded to
+    8090 — can reach it. Silently drifting to 8091 is exactly what left the orb
+    in a permanent "reconnecting" state (and produced the phantom inner glow).
+    """
     import subprocess
     try:
         if sys.platform == "win32":
-            # netstat -ano lists all TCP listeners; find our port, extract PID
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True
@@ -123,11 +201,18 @@ def _kill_port(port: int) -> None:
                     parts = line.split()
                     pid = int(parts[-1])
                     if pid and pid != os.getpid():
-                        subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                        # /T kills the process tree so uvicorn + child workers die.
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                                        capture_output=True)
+                        # taskkill can be flaky from some shells — verify and
+                        # escalate to PowerShell Stop-Process if still held.
+                        if _port_occupied(port):
+                            subprocess.run(
+                                ["powershell", "-Command",
+                                 f"Stop-Process -Id {pid} -Force -Confirm:$false"],
+                                capture_output=True)
                         print(f"   Killed stale process PID {pid} on port {port}")
         else:
-            # lsof -ti :<port> returns PID(s) listening on that port
             result = subprocess.run(
                 ["lsof", "-ti", f":{port}"],
                 capture_output=True, text=True
@@ -138,21 +223,20 @@ def _kill_port(port: int) -> None:
                     os.kill(pid, signal.SIGTERM)
                     print(f"   Killed stale process PID {pid} on port {port}")
     except Exception as exc:
-        # Non-fatal: if we can't kill the old process, uvicorn will fail with
-        # a clear bind error rather than silently misbehaving.
         print(f"   Warning: could not clear port {port}: {exc}")
 
 _kill_port(BACKEND_PORT)
 
-# After killing, verify port is free.  If still occupied, find the next free one.
-try:
-    from backend.utils.port_checker import resolve_ports as _resolve_ports
-    _resolved = _resolve_ports("0.0.0.0", {"backend": BACKEND_PORT})
-    if _resolved["backend"] != BACKEND_PORT:
-        print(f"   Port {BACKEND_PORT} still occupied after kill — falling back to {_resolved['backend']}")
-        BACKEND_PORT = _resolved["backend"]
-except Exception:
-    pass  # non-fatal: if port is really taken, uvicorn will fail with a clear error
+# Verify the configured port is actually free. We must NOT silently fall back
+# to another port (e.g. 8091): the frontend is hardcoded to 8090, so a drift
+# would leave the UI in a permanent "reconnecting" state. If the port is still
+# occupied after the kill above, fail loudly so the operator can free it:
+#   netstat -ano -p TCP | findstr :8090   -> note the PID -> taskkill /F /PID <pid>
+if _port_occupied(BACKEND_PORT):
+    print(f"   ERROR: port {BACKEND_PORT} is still occupied after kill attempt.")
+    print(f"   Free it manually, then restart the backend.")
+    print(f"     netstat -ano -p TCP | findstr :{BACKEND_PORT}")
+    sys.exit(1)
 
 # Global flag for graceful shutdown
 shutdown_flag = False

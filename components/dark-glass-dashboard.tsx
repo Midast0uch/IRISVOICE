@@ -22,6 +22,10 @@ import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { useInferenceState } from '@/hooks/useInferenceState';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import { MonitorTabContainer } from '@/components/dashboard/MonitorTabContainer';
+import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavigationOverlay';
+import { useBrowserNavOverlay } from '@/hooks/useBrowserNavOverlay';
+import { useViewProtocol } from '@/hooks/useViewProtocol';
+import { useActiveFrameSrc, useBrowserSurfaceSession } from '@/hooks/useActiveFrameSrc';
 import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
 import { IconRobot, IconTopologyStar3, IconBasketCog } from "@tabler/icons-react";
 import {
@@ -446,6 +450,7 @@ export function DarkGlassDashboard({
     provider_presets,
     sendModelSelection,
     sendInferenceMode,
+    model_catalog,
   } = useInferenceState();
 
   // Persist active tab so the app restores to the last used panel on reopen
@@ -462,11 +467,51 @@ export function DarkGlassDashboard({
   
   const [browserUrl, setBrowserUrl] = useState<string>('https://www.google.com');
   const [browserInput, setBrowserInput] = useState<string>('https://www.google.com');
+  // T12: panel-owned nav stack (bounded at 50). Never window.history.
+  const [browserHistory, setBrowserHistory] = useState<string[]>([]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // ── REQ-16 (T45/T46): browser-navigation overlay state machine. Consumes
+  //    iris:open_tab / iris:crawler_* events; transitions feed the REQ-18
+  //    trace (AC9) via iris:nav_overlay_state. Isolated in a hook for tests.
+  //    NOTE: the hook emits the trace itself on every transition — do NOT also
+  //    wire emitTrace into the overlay's onStateChange or each transition is
+  //    recorded twice.
+  const { status: navOverlay } = useBrowserNavOverlay()
+
+  // ── REQ-4 (T9): view protocol — parent side. The sandboxed content frame
+  //    speaks OUT via postMessage; BOTH checks (event.source === frame AND
+  //    fixed shape) run inside the hook. Validated view state is re-emitted as
+  //    `iris:view_state` so the overlay/panel consume it without ever reaching
+  //    INTO the frame. Degradation (REQ-4 AC5): no script => no events, never
+  //    throws.
+  const { sendScrollTo } = useViewProtocol(iframeRef)
 
   // Tab system — receives open_tab / close_tab WebSocket messages
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+
+  // REQ-1 AC2 (T5): the ACTIVE web tab's frame src. Agent-navigated pages
+  // replay the captured bytes (/api/browser/capture/{job_id}/{page_number})
+  // — never a second live fetch. User-typed URLs (no active tab) render
+  // through the fetch proxy (/api/browser/proxy?url=...) per REQ-2.
+  // The browser-surface endpoints require a token cookie; mint it before any
+  // frame loads or the first request races the cookie and is refused.
+  const surfaceReady = useBrowserSurfaceSession()
+  const resolvedFrameSrc = useActiveFrameSrc({ tabs, activeTabId, browserUrl })
+  const activeFrameSrc = surfaceReady ? resolvedFrameSrc : undefined
+
+  // Height of the browser panel's own chrome (tab bar + address bar) stacked
+  // above the viewport. The nav overlay needs this to centre its orb on the
+  // VIEWPORT rather than on the panel box, and to extend its top wash far
+  // enough that the chrome is lit as part of the same surface.
+  const browserChromeInset = useMemo(() => {
+    const active = tabs.find(t => t.id === activeTabId)
+    const tabBar = tabs.length > 0 ? 36 : 0
+    // The address bar renders only on the default web-tab branch.
+    const chromeless = active?.type === 'dashboard' || active?.type === 'code' || active?.type === 'html'
+    return tabBar + (chromeless ? 0 : 40)
+  }, [tabs, activeTabId]);
 
   const openTab = useCallback((msg: OpenTabMsg) => {
     setTabs(prev => {
@@ -631,11 +676,35 @@ export function DarkGlassDashboard({
       onOpenTab(e)
       if (activeSubApp !== 'browser') setActiveSubApp('browser')
     }
+    // REQ-1 AC2 (T5): when the crawler reports a page fetch, attach the
+    // capture provenance to the matching web tab so the iframe can replay
+    // /api/browser/capture/{job_id}/{page_number} instead of a second live
+    // fetch. Matches by URL (the crawler reports the page it actually read).
+    const onCrawlerPageFetched = (e: Event) => {
+      const d = (e as CustomEvent).detail
+      if (!d || typeof d !== 'object') return
+      const { url, page_number, job_id } = d as { url?: string; page_number?: number; job_id?: string }
+      if (!url || !job_id || typeof page_number !== 'number') return
+      setTabs(prev =>
+        prev.map(t =>
+          t.type === 'web' && t.url === url
+            ? {
+                ...t,
+                captureJobId: job_id,
+                capturePageNumber: page_number,
+                captureFetchedAt: new Date().toISOString(),
+              }
+            : t,
+        ),
+      )
+    }
     window.addEventListener('iris:open_tab', onOpenTabBrowser)
     window.addEventListener('iris:close_tab', onCloseTab)
+    window.addEventListener('iris:crawler_page_fetched', onCrawlerPageFetched)
     return () => {
       window.removeEventListener('iris:open_tab', onOpenTabBrowser)
       window.removeEventListener('iris:close_tab', onCloseTab)
+      window.removeEventListener('iris:crawler_page_fetched', onCrawlerPageFetched)
     }
   }, [openTab, closeTab, activeSubApp])
 
@@ -968,8 +1037,23 @@ export function DarkGlassDashboard({
 
   const handleBrowserNavigate = (url: string) => {
     const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    // T12: panel-owned nav history (REQ-2 AC1). The sandboxed frame cannot be
+    // reached into, so "back" is a panel-level stack, not window.history (the
+    // old call at :1395 navigated the APP, not the page).
+    setBrowserHistory(prev => [...prev.slice(-49), browserUrl]);
     setBrowserUrl(normalized);
     setBrowserInput(normalized);
+  };
+
+  const handleBrowserBack = () => {
+    setBrowserHistory(prev => {
+      if (prev.length === 0) return prev;
+      const next = [...prev];
+      const previous = next.pop()!;
+      setBrowserUrl(previous);
+      setBrowserInput(previous);
+      return next;
+    });
   };
 
   const handleBrowserInputSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1252,6 +1336,7 @@ export function DarkGlassDashboard({
                           sendModelSelection={sendModelSelection}
                           sendInferenceMode={sendInferenceMode}
                           inferenceValues={fieldValues?.inference_mode}
+                          model_catalog={model_catalog}
                         />
                       ) : (
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-1">
@@ -1269,7 +1354,28 @@ export function DarkGlassDashboard({
            </div>
          ) : activeSubApp === 'browser' ? (
          <div className="w-full h-full p-4 md:px-10">
-           <div className="w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
+           {/* `relative` is LOAD-BEARING: the nav overlay below is
+               `absolute inset-0` and must resolve against THIS card. Without
+               it the overlay escaped to the content column (which includes the
+               48px header) and drew a sharp-cornered rectangle inset by this
+               panel's own p-4/md:px-10 padding — a separate box floating over
+               the header instead of the card's own border coming alive. */}
+           <div className="relative w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
+
+             {/* REQ-16 (T46): particle-shutter navigation overlay. Traces THIS
+                 card's rounded-2xl border and washes inward from it, so the
+                 chrome and the viewport light as one surface. Absolutely
+                 positioned + pointer-events-none; never blocks the iframe or
+                 the "open externally" control. The hook emits the REQ-18 trace
+                 itself — no onStateChange wiring here (that double-recorded). */}
+             <BrowserNavigationOverlay
+               state={navOverlay.state}
+               subGoal={navOverlay.subGoal}
+               pagesDone={navOverlay.pagesDone}
+               pagesTotal={navOverlay.pagesTotal}
+               glowColor={glowColor}
+               chromeInset={browserChromeInset}
+             />
 
              {/* ── Tab bar ─────────────────────────────────────────────────── */}
              {tabs.length > 0 && (
@@ -1332,11 +1438,18 @@ export function DarkGlassDashboard({
                  )
                }
                if (activeTab?.type === 'html') {
+                 // NO allow-same-origin below. Paired with allow-scripts it lets
+                 // the frame reach parent.document and strip its own sandbox
+                 // attribute — the standard sandbox-escape combination. This
+                 // content is agent-AUTHORED, which is not the same as trusted:
+                 // the model writes it after reading crawled pages, so an
+                 // instruction injected into a crawled page can reach this HTML.
+                 // Treat it as untrusted like everything else downstream of the web.
                  return (
                    <iframe
                      srcDoc={activeTab.content ?? ''}
                      className="flex-1 w-full border-none bg-white"
-                     sandbox="allow-scripts allow-same-origin"
+                     sandbox="allow-scripts"
                    />
                  )
                }
@@ -1344,18 +1457,12 @@ export function DarkGlassDashboard({
                return (
                  <>
                    <div className="flex items-center gap-2 px-3 h-10 border-b border-white/5 bg-black/20">
-                     <button
-                       onClick={() => {
-                         try {
-                            if (iframeRef.current?.contentWindow) {
-                              window.history.back()
-      }
-                         } catch (e) {
-                           console.warn("Cross-origin navigation blocked", e)
-                         }
-                       }}
-                       className="p-1.5 hover:bg-white/5 rounded text-white/50 hover:text-white"
-                     >
+                      <button
+                        onClick={handleBrowserBack}
+                        disabled={browserHistory.length === 0}
+                        aria-label="Back"
+                        className="p-1.5 hover:bg-white/5 rounded text-white/50 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-white/50"
+                      >
                        <ArrowLeft size={14} />
                      </button>
                      <input
@@ -1364,6 +1471,19 @@ export function DarkGlassDashboard({
                        onKeyDown={handleBrowserInputSubmit}
                        className="flex-1 text-[11px] rounded px-3 h-7 bg-white/5 border border-white/5 outline-none font-mono text-white"
                      />
+                     {/* REQ-1 AC4: capture provenance in panel chrome. When the
+                         active tab replays captured bytes (not a live fetch),
+                         show the evidence: the original URL the agent read and
+                         the capture time. */}
+                     {activeTab?.type === 'web' && activeTab.captureJobId && (
+                       <span
+                         title={`Replaying captured page (job ${activeTab.captureJobId.slice(0, 8)}) — captured ${activeTab.captureFetchedAt ?? 'during crawl'}`}
+                         className="shrink-0 flex items-center gap-1 px-2 h-5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-300/80 border border-emerald-500/20"
+                       >
+                         <span className="w-1 h-1 rounded-full bg-emerald-400" />
+                         capture
+                       </span>
+                     )}
                      <button
                        onClick={() => window.open(activeTab?.url ?? browserUrl, '_blank')}
                        className="p-1.5"
@@ -1373,8 +1493,14 @@ export function DarkGlassDashboard({
                    </div>
                    <iframe
                      ref={iframeRef}
-                     src={activeTab?.url ?? browserUrl}
+                     src={activeFrameSrc}
                      className="flex-1 w-full border-none bg-white"
+                     // REQ-3 AC1/T8: opaque-origin sandbox — NO allow-same-origin
+                     // (the proxied/captured content must never read the app's
+                     // origin) and NO allow-top-navigation. allow-scripts lets
+                     // the injected view-agent speak OUT (REQ-4) but the frame
+                     // cannot reach the parent.
+                     sandbox="allow-scripts"
                    />
                  </>
                )
@@ -1413,3 +1539,4 @@ export function DarkGlassDashboard({
     </div>
   );
 }
+

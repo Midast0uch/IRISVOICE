@@ -33,7 +33,7 @@ import math
 import os
 from collections import OrderedDict
 from dataclasses import dataclass
-from threading import Lock
+from threading import Lock, Thread
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,63 @@ DEFAULT_OVERLAP_TOKENS = 64
 # AC3: hard bound on chunks per document. Beyond this the tail is dropped WITH a
 # log line — silent tail loss is the failure a user finds a year later.
 MAX_CHUNKS_PER_DOC = 32
+
+# ── Bounded backend loading (Defect 1) ────────────────────────────────────────
+# The neural backends import heavy native libraries (sentence-transformers ->
+# torch/torchvision/torchaudio/torchcodec, or llama_cpp). On a machine where a
+# native dependency can't fully resolve (e.g. torchcodec probing an
+# incompatible local FFmpeg build), the import can block the calling thread
+# for tens of minutes with no exception raised and no way to interrupt it from
+# pure Python. Any such load MUST therefore be (a) off the construction path
+# and (b) bounded by a timeout, never awaited unboundedly.
+DEFAULT_LOAD_TIMEOUT_S = 60.0
+
+
+def _load_timeout_s() -> float:
+    """Bound for a backend load attempt. Overridable via
+    IRIS_EMBEDDING_LOAD_TIMEOUT_S (default 60s)."""
+    raw = os.environ.get("IRIS_EMBEDDING_LOAD_TIMEOUT_S")
+    if not raw:
+        return DEFAULT_LOAD_TIMEOUT_S
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "[EmbeddingService] invalid IRIS_EMBEDDING_LOAD_TIMEOUT_S=%r; "
+            "using default %.0fs", raw, DEFAULT_LOAD_TIMEOUT_S,
+        )
+        return DEFAULT_LOAD_TIMEOUT_S
+
+
+def _run_bounded(fn, timeout_s: float, label: str):
+    """Run ``fn()`` on a daemon thread, bounded by ``timeout_s``.
+
+    A stuck native import can block its thread forever with no way to
+    interrupt it from Python. Using a DAEMON thread (rather than e.g. a bare
+    ``ThreadPoolExecutor``, whose worker threads are joined at interpreter
+    shutdown) means the process can still exit even if the load never
+    returns — we simply stop waiting after ``timeout_s`` and abandon the
+    thread rather than joining it.
+
+    Returns ``(result, timed_out)``. ``result`` is ``None`` on timeout or if
+    ``fn`` raised — exceptions are swallowed here because every current
+    caller (``_load_bge``, ``_load_gguf``, the ``is_available`` probe)
+    already treats "could not load" and "raised while loading" identically.
+    """
+    box: dict = {}
+
+    def _target():
+        try:
+            box["value"] = fn()
+        except Exception as exc:  # ImportError or any load-time failure
+            box["error"] = exc
+
+    t = Thread(target=_target, name=f"embedding-load-{label}", daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        return None, True
+    return box.get("value"), False
 
 
 class CrossSpaceComparisonError(ValueError):
@@ -248,6 +305,10 @@ class EmbeddingService:
     # Sentinel: True when sentence-transformers is confirmed unavailable.
     _neural_unavailable: bool = False
 
+    # Cache for is_available() — an import probe bounded by the same Defect 1
+    # timeout as backend loading; cached so a broken install only pays it once.
+    _is_available_cache: Optional[bool] = None
+
     def __new__(cls) -> "EmbeddingService":
         """Ensure singleton pattern."""
         if cls._instance is None:
@@ -269,10 +330,17 @@ class EmbeddingService:
         self._models: dict = {BACKEND_HASH: "hash"}
         self._gguf_path: Optional[str] = None
         self._backend_loaded = False
+        # Backends whose load has already been attempted (success, failure, or
+        # timeout) — a load is attempted AT MOST ONCE per backend per instance
+        # so a broken/slow backend cannot stall every subsequent call.
+        self._load_attempted: set = set()
 
         self._selected = self._resolve_selected_backend()
         self._backend = BACKEND_HASH
-        self._load_active_backend()
+        # Defect 1: do NOT load anything here. Construction must be cheap and
+        # synchronous even if the selected backend's native import is broken
+        # on this machine — loading happens lazily on first actual
+        # encode/embed use, via ``_load_active_backend`` (bounded, latched).
 
     # ── Backend selection (REQ-1 AC4) ────────────────────────────────────────
     def _resolve_selected_backend(self) -> str:
@@ -282,7 +350,7 @@ class EmbeddingService:
             cfg = get_config()
             vec = getattr(cfg, "embedding", None)
             b = getattr(vec, "backend", None) if vec else None
-            if b in (BACKEND_BGE, BACKEND_LFM):
+            if b in (BACKEND_BGE, BACKEND_LFM, BACKEND_HASH):
                 return b
         except Exception as exc:  # pragma: no cover - config optional at import
             logger.debug("[EmbeddingService] backend config read failed: %s", exc)
@@ -300,36 +368,59 @@ class EmbeddingService:
         return Chunker(window=self._window_for(backend))
 
     def _load_active_backend(self) -> None:
+        """Resolve + load the selected backend. LAZY: called on first actual
+        encode/embed use (see ``_encode_uncached`` / ``encode`` /
+        ``encode_with_meta``), never from ``__init__`` (Defect 1). Latched by
+        ``_backend_loaded`` — idempotent, thread-safe via ``_model_lock``."""
         if self._backend_loaded:
             return
-        self._backend_loaded = True
-        if self._ensure_backend(self._selected):
-            self._backend = self._selected
-            logger.info("[EmbeddingService] active backend = %s", self._backend)
-        else:
-            self._backend = BACKEND_HASH
-            logger.warning(
-                "[EmbeddingService] selected backend %r unavailable; "
-                "active backend = hash (dependency-free fallback)",
-                self._selected,
-            )
+        with self._model_lock:
+            if self._backend_loaded:
+                return
+            self._backend_loaded = True
+            if self._ensure_backend(self._selected):
+                self._backend = self._selected
+                logger.info("[EmbeddingService] active backend = %s", self._backend)
+            else:
+                self._backend = BACKEND_HASH
+                logger.warning(
+                    "[EmbeddingService] selected backend %r unavailable; "
+                    "active backend = hash (dependency-free fallback)",
+                    self._selected,
+                )
 
     def _ensure_backend(self, backend: str) -> bool:
-        """Ensure ``backend`` is loaded. Returns True if usable (model or hash)."""
+        """Ensure ``backend`` is loaded. Returns True if usable (model or hash).
+
+        A load is attempted AT MOST ONCE per backend per instance — a failed
+        OR timed-out load is latched in ``_load_attempted`` so a broken
+        backend does not re-attempt (and re-stall) on every call (Defect 1).
+        The attempt itself is bounded by ``_load_timeout_s()`` via
+        ``_run_bounded`` so a stuck native import cannot block the caller.
+        """
         if backend in self._models and self._models[backend] is not None:
             return True
-        if backend == BACKEND_BGE:
-            model = self._load_bge()
-            self._models[BACKEND_BGE] = model
-            return model is not None
-        if backend == BACKEND_LFM:
-            model = self._load_gguf()
-            self._models[BACKEND_LFM] = model
-            return model is not None
         if backend == BACKEND_HASH:
             self._models[BACKEND_HASH] = "hash"
             return True
-        return False
+        if backend not in (BACKEND_BGE, BACKEND_LFM):
+            return False
+        if backend in self._load_attempted:
+            return False
+        self._load_attempted.add(backend)
+        timeout_s = _load_timeout_s()
+        load_fn = self._load_bge if backend == BACKEND_BGE else self._load_gguf
+        model, timed_out = _run_bounded(load_fn, timeout_s, backend)
+        if timed_out:
+            logger.warning(
+                "[EmbeddingService] loading backend %r did not complete "
+                "within %.0fs (IRIS_EMBEDDING_LOAD_TIMEOUT_S); falling back "
+                "to hash",
+                backend, timeout_s,
+            )
+            model = None
+        self._models[backend] = model
+        return model is not None
 
     def _load_bge(self):
         try:
@@ -454,6 +545,7 @@ class EmbeddingService:
         )
 
     def _encode_uncached(self, text: str) -> Embedding:
+        self._load_active_backend()
         return self._encode_uncached_with(text, self._backend)
 
     def encode(self, text: str) -> List[float]:
@@ -461,6 +553,10 @@ class EmbeddingService:
 
         Unchanged signature. Returns the vector only; use ``encode_with_meta``
         for provenance. Never raises — empty input → zero vector.
+
+        Backend loading is lazy (Defect 1): the FIRST call to this method (or
+        ``encode_with_meta``) on a fresh instance triggers ``_load_active_backend``,
+        bounded by IRIS_EMBEDDING_LOAD_TIMEOUT_S. Construction itself never loads.
         """
         if not text or not text.strip():
             return [0.0] * self.EMBEDDING_DIM
@@ -478,6 +574,7 @@ class EmbeddingService:
     def encode_with_meta(self, text: str) -> Embedding:
         """Encode and return the full ``Embedding`` (vector + provenance)."""
         if not text or not text.strip():
+            self._load_active_backend()
             return Embedding(
                 vector=[0.0] * self.EMBEDDING_DIM,
                 backend=self._backend,
@@ -519,12 +616,36 @@ class EmbeddingService:
 
     @classmethod
     def is_available(cls) -> bool:
-        """True if sentence-transformers can be imported (legacy helper)."""
-        try:
-            import sentence_transformers  # noqa: F401
-            return True
-        except ImportError:
-            return False
+        """True if sentence-transformers can be imported (legacy helper).
+
+        Shares the Defect 1 hazard: importing sentence-transformers can block
+        the calling thread indefinitely on a machine with a broken native
+        dependency (e.g. torchcodec vs. local FFmpeg). Bounded the same way
+        as backend loading — an import that doesn't resolve within
+        IRIS_EMBEDDING_LOAD_TIMEOUT_S is reported unavailable rather than
+        blocking the caller. Cached at the class level so a broken install
+        only pays the timeout once per process.
+        """
+        if cls._is_available_cache is not None:
+            return cls._is_available_cache
+
+        def _try_import() -> bool:
+            try:
+                import sentence_transformers  # noqa: F401
+                return True
+            except ImportError:
+                return False
+
+        timeout_s = _load_timeout_s()
+        result, timed_out = _run_bounded(_try_import, timeout_s, "is_available")
+        if timed_out:
+            logger.warning(
+                "[EmbeddingService] is_available() import probe did not "
+                "complete within %.0fs; reporting unavailable", timeout_s,
+            )
+            result = False
+        cls._is_available_cache = bool(result)
+        return cls._is_available_cache
 
     @classmethod
     def get_instance(cls) -> "EmbeddingService":

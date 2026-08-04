@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 
 RERANK_THRESHOLD = float(__import__("os").environ.get("CRAWL_RERANK_THRESHOLD", "0.3"))
 
+# ── Cross-encoder refinement (OFF by default — see _cross_encoder_rerank) ──
+# The hybrid score (BM25 + embedding cosine + credibility) is a complete
+# ranking on its own. The cross-encoder only re-sorts it, at the cost of
+# loading a transformer in the request path, so it is opt-in.
+CROSS_ENCODER_ENABLED = (
+    __import__("os").environ.get("CRAWL_CROSS_ENCODER", "0").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+CROSS_ENCODER_MODEL = __import__("os").environ.get(
+    "CRAWL_CROSS_ENCODER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+)
+# Below this many candidates a reorder cannot repay a model load.
+CROSS_ENCODER_MIN_CANDIDATES = int(
+    __import__("os").environ.get("CRAWL_CROSS_ENCODER_MIN_CANDIDATES", "8")
+)
+
 
 # ---------------------------------------------------------------------------
 # BM25 (no deps)
@@ -131,18 +147,62 @@ def rerank_passages(passages: list[Passage], query: str, cred_map) -> list[Passa
 
 
 def _cross_encoder_rerank(passages: list[Passage], query: str) -> list[Passage]:
-    try:
+    """Optional refinement pass. Returns ``passages`` unchanged when skipped.
+
+    THIS IS A REFINEMENT, NOT A REQUIREMENT. By the time it is called, every
+    passage already carries a complete hybrid score: BM25 lexical + embedding
+    cosine + source-credibility weighting (see rerank_passages above). The
+    cross-encoder only re-sorts an ordering that already exists.
+
+    It is therefore OFF BY DEFAULT. Three things went wrong when it was on and
+    unconditional:
+
+    1. It loaded a transformer INSIDE THE REQUEST PATH. On this host
+       ``import sentence_transformers`` takes ~13 minutes (torchcodec 0.13
+       probes FFmpeg 4-7; the host has FFmpeg 8), and a live stack dump caught
+       a DER web-search step parked on exactly this line.
+    2. Its ``except Exception`` guard was UNREACHABLE. It was written for
+       "cross-encoder not installed", but a hang is not an exception, so the
+       intended graceful degrade could never run.
+    3. It ran for ANY candidate count. Re-sorting a handful of passages from
+       two pages cannot repay a model load.
+
+    Note ``_embed`` above already routes through ``EmbeddingService`` rather
+    than loading a standalone SentenceTransformer — this function is now
+    consistent with that discipline instead of bypassing it.
+
+    Enable with CRAWL_CROSS_ENCODER=1. When enabled the load is bounded and
+    logged via backend.utils.heavy_import, and a timeout degrades to the
+    hybrid order the caller already has.
+    """
+    if not CROSS_ENCODER_ENABLED:
+        return passages
+    if len(passages) < CROSS_ENCODER_MIN_CANDIDATES:
+        logger.debug(
+            "[rerank] %d passage(s) < %d — cross-encoder not worth a model load",
+            len(passages), CROSS_ENCODER_MIN_CANDIDATES,
+        )
+        return passages
+
+    from backend.utils.heavy_import import load_bounded
+
+    def _load():
         from sentence_transformers import CrossEncoder  # type: ignore
-    except Exception:
-        return passages  # no cross-encoder -> keep hybrid order
+
+        return CrossEncoder(CROSS_ENCODER_MODEL)
+
+    model = load_bounded(f"cross-encoder:{CROSS_ENCODER_MODEL}", _load)
+    if model is None:
+        # Bounded loader already logged why. Keep the hybrid order — exactly
+        # what the original (unreachable) fallback intended.
+        return passages
+
     try:
-        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        pairs = [(query, p.text) for p in passages]
-        scores = model.predict(pairs)
+        scores = model.predict([(query, p.text) for p in passages])
         for p, s in zip(passages, scores):
             # blend: keep credibility-aware hybrid but let cross-encoder rerank
             p.score = round(0.5 * p.score + 0.5 * float(s), 4)
         return passages
     except Exception as exc:
-        logger.warning("[rerank] cross-encoder unavailable: %s", exc)
+        logger.warning("[rerank] cross-encoder scoring failed: %s", exc)
         return passages

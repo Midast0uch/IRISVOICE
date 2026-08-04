@@ -93,12 +93,13 @@ class NarrationLog:
             },
         )
 
-        # Off the critical path: schedule the file write, don't await it.
-        try:
-            loop = asyncio.get_event_loop()
-            loop.run_in_executor(None, self._write, entry)
-        except Exception as exc:  # pragma: no cover - best effort
-            logger.debug("[narration] log schedule failed: %s", exc)
+        # Off the critical path: the write is a plain JSONL append (microseconds)
+        # wrapped in its own try/except. pin_517dfcbda150: previously this
+        # scheduled via asyncio.get_event_loop() — which raises RuntimeError
+        # ("no current event loop") from the DER executor thread, silently
+        # dropping EVERY narration observability entry. A sync append is
+        # thread-safe (single line, O_APPEND) and cannot fail the caller.
+        self._write(entry)
 
 # W5 (T35): speak heartbeat at most once per 25s while a long tool runs.
 _HEARTBEAT_INTERVAL_S = 25
@@ -109,6 +110,12 @@ _HEARTBEAT_INTERVAL_S = 25
 _TOOL_VERB = {
     "crawler_query": "reading",
     "web_search": "searching",
+    # specs/in-app-browser-surface: open_url routes the in-app browser panel.
+    # Without an entry here it fell through to "working on that" while the
+    # panel visibly showed a page loading — the spoken line and the visible
+    # surface disagreed about what was happening.
+    "open_url": "opening",
+    "search": "searching",
 }
 
 

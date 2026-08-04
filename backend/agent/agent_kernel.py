@@ -3079,13 +3079,97 @@ class AgentKernel:
         speak, show = parse_structured_response(response)
 
         if show is None:
-            # ── Plain-text response — return as-is ──────────────────────────
-            # The LLM did not produce structured JSON.  Return the full text
-            # so the frontend renders it in the normal chat bubble path
-            # (chat-view.tsx short-message branch) with TTS word highlighting.
-            # No DOCUMENT_RENDER is emitted — the frontend does NOT show the
-            # RichDocument prism card or the "MARKDOWN" format pill.
-            return response
+            # ── Plain-text response ──────────────────────────────────────────
+            # The LLM did not produce structured JSON.  Normally return the
+            # full text as-is so the frontend renders it in the normal chat
+            # bubble path (chat-view.tsx short-message branch) with TTS word
+            # highlighting — no DOCUMENT_RENDER, no prism card.
+            #
+            # pin (user decision 2026-07-31): when this turn gathered
+            # web/reference content and the response IS the synthesized
+            # markdown answer (substantial), auto-render it as a markdown
+            # prism card AND return the text — the agent's response accompanies
+            # the card instead of the card popping on every web-tool commit
+            # (the old capture-time deterministic render). The agent's explicit
+            # `show` choice above still wins when it renders deliberately; this
+            # fallback only covers the "forgot show" case. Marking
+            # _last_render_emitted suppresses the format-escalation QuestionCard
+            # (pin_9e97e21340e7) for this turn.
+            try:
+                if (
+                    self._pacman_zone_for_turn() == "reference"
+                    and len(response) >= 300
+                ):
+                    trust = "untrusted"
+                    import uuid as _uuid
+
+                    _doc_id = str(_uuid.uuid4())
+                    try:
+                        self._store_document_data(
+                            document_id=_doc_id,
+                            show={"format": "markdown", "content": response},
+                            trust=trust,
+                            turn_id=turn_id,
+                            conversation_id=conversation_id,
+                        )
+                    except Exception as _store_exc:  # noqa: BLE001
+                        logger.debug(
+                            "[AgentKernel] auto-render store failed: %s", _store_exc
+                        )
+                    # REQ-6 (specs/long-horizon-der-execution): inherit the
+                    # captured web evidence's source URLs + HAR path into the
+                    # final synthesized card instead of emitting empty
+                    # provenance. The pending web document (if any) holds the
+                    # crawl's saved URLs; union them so the answer's card is
+                    # verifiable.
+                    _render_sources: List[Dict[str, str]] = []
+                    _render_har: Optional[str] = None
+                    try:
+                        _pending = getattr(self, "_pending_web_doc_id", None)
+                        if _pending:
+                            _store = self._get_document_store()
+                            _row = _store.get(_pending) if _store is not None else None
+                            if _row:
+                                _render_sources = _row.get("sources") or []
+                                _render_har = _row.get("har_path")
+                    except Exception:  # noqa: BLE001 — provenance is best-effort
+                        pass
+                    try:
+                        from backend.agent.event_bus import (
+                            get_event_bus,
+                            IRISStreamEvent,
+                        )
+
+                        get_event_bus().emit(
+                            IRISStreamEvent.DOCUMENT_RENDER,
+                            data={
+                                "format": "markdown",
+                                "content": response[:12000],
+                                "alternatives": [],
+                                "trust": trust,
+                                "document_id": _doc_id,
+                                "turn_id": turn_id,
+                                "conversation_id": conversation_id,
+                                "sources": _render_sources,
+                                "har_path": _render_har,
+                            },
+                            turn_id=turn_id,
+                            conversation_id=conversation_id,
+                        )
+                        self._last_render_emitted = True
+                    except Exception as _emit_exc:  # noqa: BLE001
+                        logger.warning(
+                            "[AgentKernel] synthesized-answer auto-render failed: %s",
+                            _emit_exc,
+                        )
+            except Exception:  # noqa: BLE001 — auto-render must never block the response
+                pass
+            # UX contract (user 2026-07-31): the prism card IS the document — the
+            # text/speech response must SUPPORT it, not duplicate it. Return a
+            # short excerpt (first sentences, ~200 chars) so the bubble and the
+            # card show different, complementary content.
+            _support = self._supportive_text(response)
+            return _support if _support else response
 
         # ── Structured response — emit DOCUMENT_RENDER ────────────────────
         # Trust-routing W3: 'untrusted' when this turn touched external/web
@@ -3579,9 +3663,15 @@ class AgentKernel:
             return None
         # Track external/web results for the post-response escalation check.
         # If the agent's final response does not render this document (no `show`
-        # payload), _maybe_escalate_web_format() will ask the user which format
-        # they want via a QuestionCard (pin_9e97e21340e7).
-        if is_external:
+        # payload), _maybe_escalate_web_format() asks the user which format they
+        # want via a QuestionCard (pin_9e97e21340e7) — UNLESS the response was
+        # substantial synthesized markdown, which _process_structured_response
+        # auto-renders (see the show-is-None branch there).
+        # pin: the capture-time deterministic DOCUMENT_RENDER (old pin
+        # 517dfcbda150) was REMOVED by user decision — it popped a card on EVERY
+        # web-tool commit (every crawl mid-research), not just the final answer.
+        # The synthesized-answer auto-render lives at response time instead.
+        if is_external and tool_name in self._WEB_CONTENT_TOOLS:
             self._pending_web_doc_id = document_id
         return document_id
 
@@ -4287,6 +4377,10 @@ class AgentKernel:
         # Trust-routing W2: each new turn starts unmarked; the external flag is
         # set if a web/crawler tool runs during this turn.
         self.clear_turn_trust_flag()
+        # pin_517dfcbda150: the web-gather budget is per-task — it resets at the
+        # turn boundary so a new task may gather up to _MAX_CRAWLS_PER_TASK
+        # distinct (refined) queries again.
+        self._der_crawl_attempts = {}
 
         # Use provided session_id or fall back to instance session_id
         if session_id is None:
@@ -4560,15 +4654,34 @@ class AgentKernel:
                     except Exception as _md_exc:
                         loud_error(_md_exc, "mode_detector.detect")
 
-            _plan = self._plan_task(
-                text=_task_clean,
-                context=context,
-                is_mature=_is_mature,
-                task_class=_task_class,
-                context_package=_context_package,
-                mode=_mode_name,
-                session_id=session_id or self.session_id,
-            )
+            _plan = None
+            for _plan_attempt in range(3):
+                _plan = self._plan_task(
+                    text=_task_clean,
+                    context=context,
+                    is_mature=_is_mature,
+                    task_class=_task_class,
+                    context_package=_context_package,
+                    mode=_mode_name,
+                    session_id=session_id or self.session_id,
+                )
+                if _plan is not None:
+                    break
+                if _plan_attempt < 2:
+                    # Planner failure is almost always the provider quota: the
+                    # transport already burned its 3x30s retries, so the 60s
+                    # provider window has usually ROLLED by now — a short gap
+                    # and a fresh attempt lands in new quota. Without this, a
+                    # single saturated minute returned "[IRIS error] The planner
+                    # returned no valid plan" (observed live).
+                    logger.info(
+                        "[process_text_message] planner attempt %d failed — "
+                        "retrying after quota-window gap",
+                        _plan_attempt + 1,
+                    )
+                    import time as _time_mod
+
+                    _time_mod.sleep(5)
             if _plan is None:
                 # REQ-2: planner failure → return ERROR, no silent self-do
                 msg = "[IRIS error] The planner returned no valid plan."
@@ -4656,14 +4769,21 @@ class AgentKernel:
                         )
                         _bus.emit(
                             IRISStreamEvent.TASK_START,
-                            data={
-                                "task_id": task_id or _plan.original_task[:40],
-                                "description": _plan.original_task[:200],
-                                "plan_title": _plan.plan_title[:80] if _plan.plan_title else "",
-                                "mode": _mode_name,
-                                "steps": _steps,
-                                "total_steps": len(_plan.steps),
-                            },
+                            data=self._task_start_payload(
+                                task_id=task_id or _plan.original_task[:40],
+                                description=_plan.original_task[:200],
+                                plan_title=(
+                                    _plan.plan_title[:80] if _plan.plan_title else ""
+                                ),
+                                mode=_mode_name,
+                                steps=_steps,
+                                total_steps=len(_plan.steps),
+                                # REQ-14 (T23): initial plan announcement —
+                                # revisions re-emit through the same merge-by-id
+                                # channel with origin "sub_loop_split" (REQ-4/13)
+                                # or "user_steering" (REQ-15).
+                                origin="initial",
+                            ),
                             session_id=session_id or self.session_id,
                         )
                     except Exception:
@@ -5521,12 +5641,14 @@ Respond with a JSON object:
             bus = get_event_bus()
             bus.emit(
                 IRISStreamEvent.TASK_START,
-                data={
-                    "task_id": _turn_id or plan.original_task[:40],
-                    "description": plan.original_task[:200],
-                    "plan_title": plan.plan_title[:80] if plan.plan_title else "",
-                    "mode": initial_mode.value,
-                    "steps": [
+                data=self._task_start_payload(
+                    task_id=_turn_id or plan.original_task[:40],
+                    description=plan.original_task[:200],
+                    plan_title=(
+                        plan.plan_title[:80] if plan.plan_title else ""
+                    ),
+                    mode=initial_mode.value,
+                    steps=[
                         {
                             "id": it.step_id,
                             "description": it.description,
@@ -5535,8 +5657,11 @@ Respond with a JSON object:
                         }
                         for it in items
                     ],
-                    "total_steps": len(items),
-                },
+                    total_steps=len(items),
+                    # REQ-14 (T23): execution-start announcement — still the
+                    # INITIAL plan; revisions re-emit with a distinct origin.
+                    origin="initial",
+                ),
                 turn_id=_turn_id,
                 conversation_id=self.conversation_id,
                 session_id=_session,
@@ -5584,10 +5709,17 @@ Respond with a JSON object:
             except Exception:
                 return True
 
+        # ── REQ-15 (T25/T26): per-task steering state reset ─────────────
+        self._der_stop_requested = False
+        self._der_pause_requested = False
+        self._der_resume_requested = False
+
         while (
             not queue.is_complete()
             and not queue.hit_cycle_limit()
             and _tokens_used < _token_budget
+            # REQ-15 AC3: an explicit stop aborts at the next step boundary.
+            and not self._der_stop_requested
         ):
             # ── DISCONNECT CHECK: stop early if client is gone ──────────────
             if not _session_has_client():
@@ -5620,6 +5752,28 @@ Respond with a JSON object:
             item = queue.next_ready(_session)
             if item is None:
                 break  # dependency deadlock guard
+
+            # ── REQ-15 (T25/T26): consume mid-task steering at the NEXT step
+            # boundary (AC1 — never mid-step). A steering revision replaces
+            # the remaining plan (AC2); a stop aborts here (AC3); a pause
+            # suspends here until resume/stop (AC4).
+            _steer = self._der_check_steering(_session, plan, queue)
+            if _steer:
+                if _steer.get("stop"):
+                    break
+                if _steer.get("revised"):
+                    # The pulled item belongs to the dropped plan — re-pull
+                    # from the revised queue on the next iteration.
+                    continue
+                if _steer.get("pause"):
+                    _suspend = self._der_suspend_task(
+                        _session, plan, queue, _turn_id
+                    )
+                    if _suspend == "stop":
+                        break
+                    # resumed: the pulled item was never executed — re-pull
+                    # it from the (unchanged) queue.
+                    continue
 
             # ── C.1 LIVE CONTEXT REFRESH ────────────────────────────────────
             # Re-read Mycelium coordinate signals for the current sub-step.
@@ -5955,6 +6109,7 @@ Respond with a JSON object:
                 context_package,
                 queue,
                 verdict,
+                from_voice,
             )
 
             # ── Phase 4: concurrently execute any ADDITIONAL ready
@@ -6025,6 +6180,7 @@ Respond with a JSON object:
                         _session, _turn_id, _phase, is_mature,
                         _live_ctx, plan, context_package, queue,
                         ReviewVerdict.PASS,
+                        from_voice,
                     )
 
         # ── OUTCOME RECORDING (ordered per spec: clear → stats → episode)
@@ -6043,6 +6199,44 @@ Respond with a JSON object:
         else:
             outcome = "failure"
 
+        # ── REQ-15 AC3 (T25): an explicit stop persists the lifecycle as
+        # `cancelled` (REQ-9 LIFECYCLE_CANCELLED) and reports honestly —
+        # never a fabricated success or failure.
+        if getattr(self, "_der_stop_requested", False):
+            outcome = "cancelled"
+
+        # ── T6 (REQ-5 / D8): task lifecycle reaches its terminal state HERE,
+        # derived from the same honest queue state as the outcome label, and is
+        # persisted BEFORE the terminal task:done/task:fail event. completed /
+        # partial / failed are decided by execution state (queue terminals +
+        # verified fraction), never by physics convergence. A persistence
+        # failure is exposed honestly and does not silently claim durable
+        # completion.
+        try:
+            from backend.agent.der_execution_ledger import ExecutionLedger
+
+            _ledger = getattr(self, "_der_ledger", None)
+            if _ledger is None:
+                _ledger = ExecutionLedger(
+                    conversation_id=self.conversation_id or self.session_id or ""
+                )
+                self._der_ledger = _ledger
+            _task_id = self.conversation_id or self.session_id or "unknown"
+            _term = {
+                "success": "completed",
+                "partial": "partial",
+                "failure": "failed",
+                "cancelled": "cancelled",
+            }.get(outcome, "failed")
+            _t = _ledger.transition(_task_id, _term)
+            if not _ledger.persist():
+                logger.warning(
+                    "[DER] task lifecycle persistence FAILED (state=%s) — durable completion not claimed",
+                    _term,
+                )
+        except Exception as _lc_exc:  # noqa: BLE001 — lifecycle must never block the user response
+            logger.debug("[DER] task lifecycle write failed: %s", _lc_exc)
+
         # ── EventBus: emit task:done / task:fail ────────────────────────
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -6051,6 +6245,8 @@ Respond with a JSON object:
                 data={
                     "task_id": _turn_id or plan.original_task[:40],
                     "outcome": outcome,
+                    # REQ-15 AC3 (T25): a stop is explicit — the user sees it.
+                    "cancelled": outcome == "cancelled",
                     "steps_completed": len(completed_items),
                     "total_steps": len(plan.steps),
                     "failed_steps": [
@@ -6198,6 +6394,17 @@ Respond with a JSON object:
             _synthesis = self._der_synthesize_outcome(
                 plan, completed_items, queue, _session
             )
+            # REQ-18 AC2 (T31): correlate which synthesis path ran.
+            try:
+                from backend.agent.der_trace import get_der_trace
+
+                get_der_trace(self._der_trace_task_id()).record(
+                    "synthesis",
+                    path="failure" if _synthesis else "deterministic_failure",
+                    ran=bool(_synthesis),
+                )
+            except Exception:
+                pass
             if _synthesis:
                 return _synthesis
             # LLM synthesis unavailable (e.g. model rate-limited — the very
@@ -6208,7 +6415,34 @@ Respond with a JSON object:
             )
 
         if step_outputs:
-            return "\n".join(o for o in step_outputs if o)
+            # REQ-12 (AC1/AC2/AC3): synthesize the gathered evidence into a
+            # final answer instead of raw-concatenating step outputs. Consumes
+            # the same evidence the failure path consumes (plan.original_task
+            # + completed step descriptions/results) and wires the previously-
+            # dead _synthesize_response brain synthesis.
+            _synthesis = self._der_synthesize_success_outcome(
+                plan, completed_items, queue, _session
+            )
+            # REQ-18 AC2 (T31): correlate which synthesis path ran.
+            try:
+                from backend.agent.der_trace import get_der_trace
+
+                get_der_trace(self._der_trace_task_id()).record(
+                    "synthesis",
+                    path="success" if _synthesis else "deterministic_success",
+                    ran=bool(_synthesis),
+                )
+            except Exception:
+                pass
+            if _synthesis:
+                return _synthesis
+            # REQ-12 (AC4): synthesis unavailable (e.g. reasoning provider
+            # down) -> deterministic success summary mirroring
+            # _der_deterministic_failure_summary so the user is never left
+            # with raw concatenation (Part B symmetry).
+            return AgentKernel._der_deterministic_success_summary(
+                plan, completed_items, queue
+            )
         # ── Zero steps (or zero usable outputs) ──────────────────────────
         # The crawl plan produced no executable URLs (all blocked/filtered
         # by BOT_BLOCKED_DOMAINS, or the LLM couldn't generate any). Return
@@ -6223,6 +6457,339 @@ Respond with a JSON object:
 
     # ── Phase 1.4: failure handling + plan grafting ──────────────────────
 
+    @staticmethod
+    def _task_start_payload(
+        *,
+        task_id: str,
+        description: str,
+        plan_title: str,
+        mode: str,
+        steps: list,
+        total_steps: int,
+        origin: str,
+    ) -> dict:
+        """The ``task:start`` payload contract (REQ-14 / T23).
+
+        ONE construction point for every ``task:start`` emit so the
+        merge-by-id contract keys (useTaskProgress.ts:210-227 —
+        task_id / description / plan_title / mode / steps / total_steps)
+        stay identical across sites, plus ``origin`` distinguishing the
+        initial announcement from revisions: ``"initial"`` (both initial
+        emits), ``"sub_loop_split"`` (REQ-4/REQ-13 split), or
+        ``"user_steering"`` (REQ-15). REQ-18's trace reads ``origin`` to
+        attribute a revision.
+        """
+        return {
+            "task_id": task_id,
+            "description": description,
+            "plan_title": plan_title,
+            "mode": mode,
+            "steps": steps,
+            "total_steps": total_steps,
+            "origin": origin,
+        }
+
+    # ── REQ-15 (T25): mid-task steering channel ──────────────────────────
+
+    def _der_check_steering(self, _session, plan, queue) -> Optional[dict]:
+        """REQ-15 AC1/AC2/AC3/AC6 (T25): consume pending steering at the NEXT
+        step boundary — never mid-step.
+
+        Drains every record queued for the session since the last boundary
+        and applies, in order:
+          - stop   -> latch ``_der_stop_requested`` (AC3: the loop aborts
+                      here and persists `cancelled`);
+          - pause  -> latch ``_der_pause_requested`` (AC4: the loop
+                      suspends via ``_der_suspend_task``);
+          - resume -> latch ``_der_resume_requested`` (harmless when the
+                      task is not suspended; consumed and acked either way);
+          - steer  -> revise the remaining plan via REQ-14's revision channel
+                      (AC2); the LAST non-empty steering text wins.
+
+        AC6 (channel independence): stop/pause flags are latched BEFORE any
+        (potentially slow) revision is applied, and a stop suppresses the
+        revision entirely — a stop is never delayed behind steering work.
+
+        AC5 (acknowledgement): every consumed record emits ``steering:ack``
+        status="considered".
+
+        Returns ``None`` when nothing was queued, else a dict
+        ``{"stop", "pause", "resume": bool, "steer": str|None,
+        "revised": bool}``.
+        """
+        try:
+            from backend.agent.steering import get_steering_inbox
+        except Exception:
+            return None
+        records = get_steering_inbox().drain(_session)
+        if not records:
+            return None
+
+        stop = False
+        pause = False
+        resume = False
+        steer_text = None
+        for rec in records:
+            if rec.channel == "stop":
+                stop = True
+            elif rec.channel == "pause":
+                pause = True
+            elif rec.channel == "resume":
+                resume = True
+            elif rec.channel == "steer" and rec.text and rec.text.strip():
+                steer_text = rec.text.strip()  # last non-empty steering wins
+
+        # AC6: latch the control flags BEFORE applying any revision so a stop
+        # is never delayed behind a slow re-plan.
+        if stop:
+            self._der_stop_requested = True
+        if pause:
+            self._der_pause_requested = True
+        if resume:
+            self._der_resume_requested = True
+
+        revised = False
+        if steer_text is not None and not stop:
+            revised = self._der_apply_steering(steer_text, _session, plan, queue)
+
+        # AC5: every consumed record is acknowledged as "considered".
+        for rec in records:
+            self._emit_steering_ack(rec.channel, rec.message_id, "considered", _session)
+
+        # REQ-18 AC4 (T31): correlate every steering message received — channel,
+        # acknowledged status, and the step boundary at which it was applied.
+        try:
+            from backend.agent.der_trace import get_der_trace
+
+            _trace = get_der_trace(self._der_trace_task_id())
+            for rec in records:
+                _trace.record(
+                    "steering",
+                    channel=rec.channel,
+                    message_id=rec.message_id,
+                    ack="considered",
+                    boundary_step=getattr(queue, "_last_step_number", None),
+                )
+        except Exception:
+            pass
+
+        return {
+            "stop": stop,
+            "pause": pause,
+            "resume": resume,
+            "steer": steer_text,
+            "revised": revised,
+        }
+
+    def _der_apply_steering(self, text, _session, plan, queue) -> bool:
+        """REQ-15 AC2: revise the remaining plan via REQ-14's revision
+        channel without aborting the task.
+
+        Re-plans from the steering text (single-step fallback on failure),
+        REMOVES every not-yet-terminal queue item (they are REPLACED, not
+        failed — ``queue.failed_ids`` stays honest), appends the revised steps
+        as fresh items, and re-emits ``task:start`` with
+        ``origin="user_steering"`` carrying the revised step list (REQ-14 AC1
+        revision signal; REQ-18 AC3 origin).
+
+        Returns True when a revision was actually applied.
+        """
+        try:
+            from backend.agent.der_loop import QueueItem
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            _mode = queue.mode.value if getattr(queue, "mode", None) else "full"
+            _rev = self._plan_task(
+                text,
+                session_id=_session,
+                mode=_mode,
+            )
+            if _rev is None or not getattr(_rev, "steps", None):
+                logger.info(
+                    "[DER] Session %s steering produced no plan — keeping "
+                    "the current plan", _session,
+                )
+                return False
+
+            _done = (
+                set(queue.completed_ids)
+                | set(queue.vetoed_ids)
+                | set(queue.failed_ids)
+            )
+            # Replace remaining pending steps: remove them (not failures),
+            # then append the revised steps fresh.
+            queue.items[:] = [it for it in queue.items if it.step_id in _done]
+
+            _fresh: List["QueueItem"] = []
+            _base = len(queue.items) + 1
+            for _i, _s in enumerate(_rev.steps):
+                # Neutralize dependencies that point at dropped ids so the
+                # revised steps are immediately ready.
+                _deps = [
+                    d for d in (getattr(_s, "depends_on", None) or [])
+                    if d in _done
+                ]
+                _fresh.append(
+                    QueueItem(
+                        step_id=f"steer-{_base + _i}",
+                        step_number=_base + _i,
+                        description=_s.description,
+                        tool=getattr(_s, "tool", None),
+                        params=dict(getattr(_s, "params", None) or {}),
+                        depends_on=_deps,
+                        critical=getattr(_s, "critical", True),
+                        objective_anchor=(
+                            getattr(plan, "original_task", "") if plan else ""
+                        ),
+                    )
+                )
+            queue.items.extend(_fresh)
+
+            # REQ-14 revision signal with the user_steering origin.
+            get_event_bus().emit(
+                IRISStreamEvent.TASK_START,
+                data=self._task_start_payload(
+                    task_id=self.conversation_id or _session,
+                    description=text,
+                    plan_title=(
+                        (getattr(plan, "plan_title", "") or "")[:80]
+                        if plan else ""
+                    ),
+                    mode=_mode,
+                    steps=[
+                        {
+                            "id": it.step_id,
+                            "description": it.description,
+                            "status": "pending",
+                            "toolName": it.tool,
+                        }
+                        for it in _fresh
+                    ],
+                    total_steps=len(_fresh),
+                    origin="user_steering",
+                ),
+                turn_id=self.conversation_id or _session,
+                conversation_id=self.conversation_id,
+                session_id=_session,
+            )
+            # REQ-18 AC3 (T31): correlate the user-steering revision.
+            try:
+                from backend.agent.der_trace import get_der_trace
+
+                get_der_trace(self._der_trace_task_id()).record(
+                    "revision",
+                    origin="user_steering",
+                    boundary_step=getattr(queue, "_last_step_number", None),
+                )
+            except Exception:
+                pass
+            return True
+        except Exception as _steer_exc:
+            logger.debug("[DER] steering revision failed: %s", _steer_exc)
+            return False
+
+    def _emit_steering_ack(self, channel, message_id, status, _session) -> None:
+        """REQ-15 AC5 (T26): visible acknowledgement that a steering message
+        landed ("queued") or was considered at a step boundary ("considered").
+        Best-effort — never blocks or breaks the loop."""
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            get_event_bus().emit(
+                IRISStreamEvent.STEERING_ACK,
+                data={
+                    "channel": channel,
+                    "message_id": message_id,
+                    "status": status,
+                },
+                turn_id=self.conversation_id or _session,
+                conversation_id=self.conversation_id,
+                session_id=_session,
+            )
+        except Exception:
+            pass
+
+    def _der_suspend_task(self, _session, plan, queue, _turn_id) -> str:
+        """REQ-15 AC4 (T26): suspend execution at the next step boundary.
+
+        Persists the in-progress state (ledger lifecycle ``paused`` + a
+        ``task:paused`` event), then waits for a ``resume`` or ``stop``
+        record. Steer records arriving while suspended STAY queued and are
+        applied at the next boundary after resume — they are never dropped.
+        Idempotent resume: ``completed_ids``/``vetoed_ids``/``failed_ids``
+        ARE the persisted in-progress state; ``next_ready`` skips them, so
+        no completed side effect is duplicated on resume.
+
+        Returns "resume" or "stop". Runs on the DER worker thread — the
+        bounded poll (time.sleep) never blocks the event loop.
+        """
+        from backend.agent.der_execution_ledger import ExecutionLedger
+        from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+        from backend.agent.steering import get_steering_inbox
+        import time as _time
+
+        _task_id = self.conversation_id or _session
+        try:
+            _ledger = getattr(self, "_der_ledger", None)
+            if _ledger is None:
+                _ledger = ExecutionLedger(conversation_id=_task_id)
+                self._der_ledger = _ledger
+            _ledger.transition(_task_id, "paused")
+            _ledger.persist()
+        except Exception as _pe:
+            logger.debug("[DER] pause lifecycle persist failed: %s", _pe)
+
+        try:
+            get_event_bus().emit(
+                IRISStreamEvent.TASK_PAUSED,
+                data={"task_id": _task_id, "state": "paused"},
+                turn_id=_turn_id,
+                conversation_id=self.conversation_id,
+                session_id=_session,
+            )
+        except Exception:
+            pass  # EventBus optional — never block the loop
+
+        inbox = get_steering_inbox()
+        self._der_resume_requested = False
+        while not self._der_stop_requested:
+            if inbox.pending_channel(_session, "stop"):
+                for _rec in inbox.drain_channel(_session, "stop"):
+                    self._emit_steering_ack(
+                        _rec.channel, _rec.message_id, "considered", _session
+                    )
+                self._der_stop_requested = True
+                return "stop"
+            if inbox.pending_channel(_session, "resume"):
+                for _rec in inbox.drain_channel(_session, "resume"):
+                    self._emit_steering_ack(
+                        _rec.channel, _rec.message_id, "considered", _session
+                    )
+                self._der_resume_requested = True
+                try:
+                    _ledger = getattr(self, "_der_ledger", None)
+                    if _ledger is not None:
+                        _ledger.transition(_task_id, "running")
+                        _ledger.persist()
+                except Exception:
+                    pass
+                try:
+                    get_event_bus().emit(
+                        IRISStreamEvent.TASK_RESUMED,
+                        data={"task_id": _task_id, "state": "running"},
+                        turn_id=_turn_id,
+                        conversation_id=self.conversation_id,
+                        session_id=_session,
+                    )
+                except Exception:
+                    pass
+                return "resume"
+            try:
+                _time.sleep(0.2)  # poll — DER runs on a worker thread
+            except Exception:
+                break
+        return "stop"
+
     def _build_crawl_failure_explanation(self, plan: "CrawlPlan") -> str:
         """User-facing explanation when the crawl plan found no usable sources.
 
@@ -6231,6 +6798,22 @@ Respond with a JSON object:
         ``_plan_task`` surfaces via the structured-response speak field.
         """
         _query = getattr(plan, "title", "") or ""
+
+        # PREFER THE REASON THE PLANNER ACTUALLY RECORDED.
+        # CrawlPlanner._empty_plan writes a specific cause into `instructions`
+        # (e.g. "the provider rate window was already saturated (recent 429s)
+        # ... retry the search shortly") precisely so the failure is reported
+        # honestly. This function used to discard it and always emit the
+        # bot-blocked guess below — so a user hitting a 60-second rate limit
+        # was told to REPHRASE THEIR QUERY, which cannot help and sends them
+        # down the wrong path. Only fall back to the generic text when the
+        # planner did not say why.
+        _reason = (getattr(plan, "instructions", "") or "").strip()
+        if _reason and "LLM planning was skipped" in _reason:
+            return (
+                f"The agent could not search the web for {_query!r}. {_reason}"
+            )
+
         _msg = (
             f"The agent was unable to find accessible web sources for "
             f"{_query!r}. This can happen when all generated URLs belong to "
@@ -6271,7 +6854,85 @@ Respond with a JSON object:
         # graft path that assigns tools directly. Children carry tool=None and
         # resolve via the single resolver (explorer.propose) when executed, so
         # there is exactly ONE tool-assignment authority (F6 / System Invariant).
-        if item.critical and queue.graft_attempts < DER_MAX_GRAFTS:
+        # D4/REQ-4 (specs/long-horizon-der-execution): classify the failure
+        # BEFORE recursive fan-out at the FAILURE site too. The finalize site
+        # classifies, but this handler previously split on ANY critical
+        # failure — a rate-limited crawl (transient) or an empty URL list
+        # (empty/permanent) recursively spawned graft children that re-ran the
+        # same failing tool until the graft budget was exhausted (observed
+        # live: 23-minute websearch loop under a saturated provider window).
+        # Only a genuine semantic failure (tool produced content but
+        # verification judged it wrong) splits: the step_result then carries
+        # real content, not an error prefix. Mirror the finalize site: classify
+        # only when the result LOOKS like an error (classify_failure never
+        # returns semantic — it falls through to permanent), and broaden the
+        # error prefixes for failure-site shapes ("RateLimitedError(...)" /
+        # "ConnectionError(...)" do not start with "error").
+        _split_ok = True
+        try:
+            from backend.agent.der_execution_ledger import (
+                classify_failure,
+                ExecutionLedger,
+                OUTCOME_TRANSIENT,
+                OUTCOME_UNAVAILABLE,
+                OUTCOME_INVALID_ARGS,
+                OUTCOME_EMPTY,
+                OUTCOME_PERMANENT,
+            )
+
+            _res_text = (step_result or "").strip()
+            _res_low = _res_text.lower()
+            _tool_errored = (
+                not _res_text
+                or _res_low.startswith("error")
+                or _res_low.startswith("ratelimitederror")
+                or _res_low.startswith("connectionerror")
+                or _res_low.startswith("timeouterror")
+                or _res_low.startswith("[step error")
+                or _res_low.startswith("duplicate call")
+            )
+            if _tool_errored:
+                _fail_class = classify_failure(
+                    False,
+                    error=_res_text[:400],
+                    error_type=getattr(item, "error_type", None),
+                    result=step_result,
+                )
+                if _fail_class in (
+                    OUTCOME_TRANSIENT,
+                    OUTCOME_UNAVAILABLE,
+                    OUTCOME_INVALID_ARGS,
+                    OUTCOME_EMPTY,
+                    OUTCOME_PERMANENT,
+                ):
+                    _split_ok = False
+                    logger.info(
+                        "[DER] step %s failure classified=%s — recorded, NOT split (D4)",
+                        item.step_id, _fail_class,
+                    )
+                    try:
+                        _ledger = getattr(self, "_der_ledger", None)
+                        if _ledger is None:
+                            _ledger = ExecutionLedger(
+                                conversation_id=self.conversation_id or ""
+                            )
+                            self._der_ledger = _ledger
+                        _ledger.record_failure(
+                            task_id=self.conversation_id or self.session_id or "unknown",
+                            step_id=item.step_id,
+                            attempt_id=getattr(item, "attempt_id", "") or item.step_id,
+                            failure_class=_fail_class,
+                            input_summary=(item.description or "")[:200],
+                            tool=item.tool,
+                            error_type=getattr(item, "error_type", None),
+                            error_summary=_res_text[:300],
+                            recovered=False,
+                        )
+                    except Exception as _led_exc:  # noqa: BLE001
+                        logger.debug("[DER] failure-evidence record failed: %s", _led_exc)
+        except Exception:  # noqa: BLE001 — classification must never break recovery
+            _split_ok = True
+        if _split_ok and item.critical and queue.graft_attempts < DER_MAX_GRAFTS:
             try:
                 _cad = self._der_live_cad_state(_session)
                 _wu = getattr(self, "_der_work_units", 0)
@@ -6314,69 +6975,21 @@ Respond with a JSON object:
                     )
             except Exception as _graft_exc:
                 logger.warning("[DER] critical-failure split failed: %s", _graft_exc)
-        # ── REQ-10: escalate a STUCK critical step to the user ───────
-        # If the step was critical AND we have exhausted the recovery budget
-        # (grafts spent, or cycle limit reached with this step still unmet),
-        # the agent MUST NOT silently report partial completion. It escalates
-        # to the user with concrete alternative options so THEY decide:
-        # retry with a different tool, relax a constraint, supply missing
-        # input, or abort. This is the loop-closing seam — "persist and
-        # retry" is bounded; a real substantial blocker is handed back.
+        # ── REQ-5 (specs/long-horizon-der-execution): honest partial finalization ──
+        # When the recovery budget is exhausted, the task does NOT block on a
+        # TASK_BLOCKED card / ask_user QuestionCard (that escalation came from
+        # the deleted der-loop-integrity-display REQ-10; the long-horizon spec
+        # supersedes it: "IF budget ends before completion THEN emit remaining
+        # nodes and their last failure class"). The step is already marked
+        # failed, descendants already aborted, failure evidence already
+        # recorded — the DER loop's final summary carries the remaining nodes
+        # with their failure classes and the honest incomplete result.
         if item.critical and queue.graft_attempts >= DER_MAX_GRAFTS:
-            try:
-                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-
-                _opts = [
-                    "Retry the failed step with a different tool or approach",
-                    "Relax a constraint / change the success criterion",
-                    "Provide the missing input or credential the step needs",
-                    "Abort this step and continue with the rest of the task",
-                ]
-                _reason = (
-                    f"Critical step '{item.step_id}' "
-                    f"({item.description[:80]}) failed after "
-                    f"{queue.graft_attempts} recovery attempt(s). "
-                    f"Last error: {(step_result or '')[:200]}"
-                )
-                get_event_bus().emit(
-                    IRISStreamEvent.TASK_BLOCKED,
-                    data={
-                        "session_id": _session,
-                        "failed_step": item.step_id,
-                        "description": item.description or "",
-                        "graft_attempts": queue.graft_attempts,
-                        "reason": _reason,
-                        "options": _opts,
-                    },
-                    turn_id=_turn_id,
-                    session_id=_session,
-                )
-                # Surface the decision to the user via the ask_user tool so a
-                # QuestionCard appears with the concrete alternatives.
-                try:
-                    from backend.agent.tools.ask_user_tool import (
-                        get_ask_user_tool,
-                    )
-
-                    _tool = get_ask_user_tool()
-                    if _tool is not None:
-                        _tool.ask(
-                            text=_reason,
-                            options=_opts,
-                            allow_other=True,
-                            turn_id=_turn_id,
-                        )
-                except Exception as _ask_exc:
-                    logger.warning(
-                        "[DER] REQ-10 ask_user failed: %s", _ask_exc
-                    )
-                logger.info(
-                    "[DER] REQ-10 escalation: critical step %s blocked after "
-                    "%d grafts — escalated to user with %d options",
-                    item.step_id, queue.graft_attempts, len(_opts),
-                )
-            except Exception as _block_exc:
-                logger.warning("[DER] REQ-10 escalation failed: %s", _block_exc)
+            logger.info(
+                "[DER] REQ-5: critical step %s failed after %d grafts — "
+                "finalizing honestly with remaining nodes + failure class",
+                item.step_id, queue.graft_attempts,
+            )
         # M2 FIX: record non-critical failures to memory and signal Caducean
         # so drift detection accounts for them (otherwise Q never rises on
         # repeated non-critical failures and TOPO_VIOLATION never fires).
@@ -6402,7 +7015,12 @@ Respond with a JSON object:
             try:
                 from backend.gateway.iris_ffi import ffi_caducean_update
 
-                # action=1 -> COMPRESS (increments failure accumulator y)
+                # REQ-19 vocabulary: this "COMPRESS" (action=1) is the COMPRESS
+                # RECOMMENDATION — a physics action code that increments the
+                # failure accumulator y. It COMPACTS NOTHING. See the REQ-19
+                # canonical-vocabulary table in
+                # specs/long-horizon-der-execution/design.md (row 3) — it is
+                # NOT Node Condense, NOT DCP message pruning, NOT mcm_compress.
                 ffi_caducean_update(_session, 1, 1.0)
             except Exception:
                 pass
@@ -6417,6 +7035,13 @@ Respond with a JSON object:
 
     def _growth_width(self, u: float) -> int:
         """Map live |u| to a split width (MorphoHDL athlete rule).
+
+        REQ-19 vocabulary: this is STEP EXPANSION — the DER sub-loop split
+        operator (_growth_width -> _split_step). It is NOT Node Expansion
+        (scorer.expand, the mycelium coordinate-graph mechanism), NOT DER
+        "COMPRESS" (a physics recommendation code, int 1), NOT DCP message
+        pruning, and NOT mcm_compress (external build tooling). See the REQ-19
+        vocabulary table in specs/long-horizon-der-execution/design.md.
 
         Bands (reconciles D2.3 with the split decision):
           |u| < U_SPLIT (0.5)   -> unresolved/oscillating -> split WIDE (3)
@@ -6486,7 +7111,39 @@ Respond with a JSON object:
         if width < 1 or item.depth_layer >= MAX_DEPTH:
             return []  # refused -> step forced atomic
 
-        from backend.agent.der_loop import QueueItem
+        from backend.agent.der_loop import QueueItem, SubLoopFootprint
+
+        # REQ-21 (T41): the compressed footprint each child carries —
+        # Understanding (what has been attempted/gathered for this goal across
+        # ALL prior attempts, bounded — never a truncated sample), Awareness
+        # (the goal itself), Direction (remaining vs ruled-out), and a
+        # coordinate_ref into the ledger/memory for the full prior evidence.
+        # Bounded by construction: prior attempts are a deduplicated key set
+        # (not per-tool-call transcripts), so cost does NOT grow linearly with
+        # tool calls (AC2). Survives DCP pruning because it is durable
+        # structured data on the child QueueItem (AC3).
+        try:
+            _prior_keys = sorted(
+                set(getattr(self, "_der_crawl_attempts", {}).get(
+                    self.conversation_id or self.session_id or "", set()
+                ))
+            )
+            _prior_summary = (
+                f"{len(_prior_keys)} prior gather attempt(s) committed for "
+                f"this goal: {', '.join(_prior_keys[:5])}"
+                + ("…" if len(_prior_keys) > 5 else "")
+            )
+            _coordinate_ref = None
+            try:
+                _ledger = getattr(self, "_der_ledger", None)
+                if _ledger is not None:
+                    _coordinate_ref = getattr(_ledger, "conversation_id", None)
+            except Exception:
+                _coordinate_ref = None
+        except Exception:
+            _prior_summary = ""
+            _prior_keys = []
+            _coordinate_ref = None
 
         children: List["QueueItem"] = []
         for i in range(width):
@@ -6500,6 +7157,17 @@ Respond with a JSON object:
                 is_subloop=True,  # collapses back to parent as one COMPRESS
                 critical=item.critical,
                 independent=True,  # T6.8: subloop children are independent per REQ-18 AC1
+                # REQ-21 (T41): carry the compressed footprint on the child.
+                footprint=SubLoopFootprint(
+                    step_id=f"{item.step_id}_s{i}",
+                    parent_step_id=item.step_id,
+                    objective_anchor=item.objective_anchor,
+                    prior_summary=_prior_summary,
+                    remaining=item.description,
+                    ruled_out="",  # no path is closed until a child proves it
+                    coordinate_ref=_coordinate_ref,
+                    size_bytes=len(_prior_summary.encode("utf-8", "replace")),
+                ),
             )
             children.append(child)
         logger.info(
@@ -6538,10 +7206,12 @@ Respond with a JSON object:
         # Fallback: trajectory recorder's latest coordinate.
         try:
             from backend.agent.caducean_trajectory import (
-                CaduceanTrajectoryRecorder,
+                get_trajectory_recorder,
             )
 
-            rec = CaduceanTrajectoryRecorder()
+            # REQ-20: bind to the APPLICATION store via MemoryInterface, never
+            # to the BUILD-memory .mcm/coordinates.db fallback.
+            rec = get_trajectory_recorder(self._memory_interface)
             coord = rec.get_latest_coordinate(session_id) or {}
             return {
                 "x": float(coord.get("x", 0.0)),
@@ -6704,6 +7374,54 @@ Respond with a JSON object:
             logger.warning("[DER] outcome synthesis failed: %s", _e)
             return ""
 
+    def _der_synthesize_success_outcome(
+        self,
+        plan,
+        completed_items: list,
+        queue,
+        _session: str,
+    ) -> str:
+        """
+        REQ-12 (AC1/AC2/AC3): success-path synthesis.
+
+        Consumes the SAME evidence the failure path (``_der_synthesize_outcome``)
+        consumes — ``plan.original_task`` plus each completed step's description
+        and result — and routes it through the previously-dead
+        ``_synthesize_response`` brain synthesis (AC3 wiring), which handles the
+        InferenceRouter, LM Studio, and Ollama providers. Returns "" when
+        synthesis is unavailable so the caller falls back to the deterministic
+        success summary (AC4). Mirrors ``_der_synthesize_outcome``'s "" contract.
+        """
+        try:
+            _step_results = [
+                {
+                    "tool": getattr(ci, "tool", None),
+                    "action": getattr(ci, "description", ""),
+                    "result": getattr(ci, "result", "") or "",
+                    "success": True,
+                }
+                for ci in completed_items
+            ]
+            _task = TaskContext(
+                task_id=_session,
+                user_message=plan.original_task,
+                session_id=_session,
+                conversation_history=[],
+                plan={"original_task": getattr(plan, "original_task", "")},
+                step_results=_step_results,
+            )
+            _syn = self._synthesize_response(_task, _step_results)
+            if _syn and _syn.strip():
+                logger.info(
+                    "[DER] success synthesis ran (REQ-12 AC1) — steps=%d",
+                    len(completed_items),
+                )
+                return _syn.strip()
+            return ""
+        except Exception as _e:
+            logger.warning("[DER] success synthesis failed: %s", _e)
+            return ""
+
     @staticmethod
     def _der_deterministic_failure_summary(plan, completed_items: list, queue) -> str:
         """User-facing 'task incomplete' message that needs NO LLM call (Part B).
@@ -6741,6 +7459,35 @@ Respond with a JSON object:
                 "I couldn't complete that task — one or more steps failed. "
                 "Please try again or rephrase the request."
             )
+
+    @staticmethod
+    def _der_deterministic_success_summary(plan, completed_items: list, queue) -> str:
+        """User-facing 'task complete' message that needs NO LLM call (REQ-12 AC4).
+
+        Mirrors ``_der_deterministic_failure_summary``: when the brain synthesis
+        is unavailable (no reasoning model / providers down), this deterministic
+        summary guarantees the user gets a clear statement of what was completed
+        — never a silent raw concatenation of step outputs.
+        """
+        try:
+            _done_lines = []
+            for _ci in completed_items:
+                _res = (getattr(_ci, "result", "") or "")[:300]
+                _done_lines.append(
+                    f"- {getattr(_ci, 'description', '') or _ci}"
+                    + (f": {_res}" if _res else "")
+                )
+            _done_txt = "\n".join(_done_lines) or "(no step output)"
+            _done = len(completed_items)
+            _total = len(getattr(plan, "steps", []) or [])
+            return (
+                f"I've completed the task. {_done}/{_total} steps finished.\n"
+                f"{_done_txt}\n\n"
+                f"What would you like to do next?"
+            )
+        except Exception as _e:
+            logger.warning("[DER] deterministic success summary failed: %s", _e)
+            return "I've completed that task. What would you like to do next?"
 
     # ── Phase 2.2: context-aware query refinement ──────────────────────
 
@@ -6850,8 +7597,51 @@ Respond with a JSON object:
             return str(raw)
 
     @staticmethod
+    def _supportive_text(text: str, max_chars: int = 200) -> str:
+        """First-sentence excerpt for the supportive spoken/chat bubble.
+
+        The prism card carries the FULL synthesized document; the text/speech
+        response is a short complement (first 1-2 sentences, ~max_chars) so the
+        bubble and the card never duplicate each other (user contract
+        2026-07-31: text supports the rendered document). Strips markdown
+        decorations lightly. Returns '' when nothing usable remains.
+        """
+        _t = (text or "").strip()
+        if not _t:
+            return ""
+        # Light markdown strip for a clean spoken excerpt.
+        _t = re.sub(r"```[\s\S]*?```", " ", _t)
+        _t = re.sub(r"^#{1,6}\s*", "", _t, flags=re.MULTILINE)
+        _t = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", _t)  # images
+        _t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", _t)  # links -> label
+        _t = re.sub(r"[*_`>|]", " ", _t)
+        _t = re.sub(r"\s+", " ", _t).strip()
+        if not _t:
+            return ""
+        _parts = re.split(r"(?<=[.!?])\s+", _t)
+        _out = ""
+        for _p in _parts:
+            if _out and len(_out) + len(_p) > max_chars:
+                break
+            _out = (_out + " " + _p).strip()
+            if len(_out) >= max_chars * 0.7:
+                break
+        if not _out:
+            _out = _t[:max_chars]
+        if len(_out) > max_chars:
+            _out = _out[:max_chars].rstrip() + "…"
+        return _out
+
+    @staticmethod
     def _caducean_modulate_temperature(base: float, session_id: str) -> float:
         """Phase 5: modulate planning temperature by the live Caducean recommendation.
+
+        REQ-19 vocabulary: "COMPRESS"/"EXPAND"/"MAINTAIN" here are DER PHYSICS
+        RECOMMENDATION CODES (ints 1/0/2) returned by ffi_caducean_recommend.
+        They modulate temperature ONLY — they compact/expand NOTHING. Actual
+        compaction is DCP message pruning (dcp.py) and mycelium condense/expand
+        (scorer.py); Step Expansion is _growth_width->_split_step. See the
+        REQ-19 vocabulary table in specs/long-horizon-der-execution/design.md.
 
         - COMPRESS (rec==1) -> more deterministic (temperature halved)
         - EXPAND   (rec==0) -> more exploratory (temperature *1.2, capped at 0.6)
@@ -6934,6 +7724,17 @@ Respond with a JSON object:
             return f"[step {item.step_number} error: {_e}]"
 
     # ── ToolDecisionBox lazy factory ─────────────────────────────────────
+    # pin_517dfcbda150 — physics-driven web-gather sanction:
+    #   _MAX_CRAWLS_PER_TASK  hard budget of DISTINCT queries per task; the
+    #                         agent may gather more only by refining the query
+    #                         (new hash = new job). Same-query repeats resolve
+    #                         to the JobRegistry cache (tool_bridge dedupe).
+    #   _GATHER_MIN_AMP       phase-manager amplitude floor: when oscillators
+    #                         have collapsed (provider under load, amp relaxes
+    #                         toward 1 - load_fraction) new crawls are denied
+    #                         and web intent resolves to synthesis (REASON).
+    _MAX_CRAWLS_PER_TASK = 3
+    _GATHER_MIN_AMP = 0.35
 
     def _get_tool_box(self) -> ToolDecisionBox:
         """Return (caching) the ToolDecisionBox for this conversation.
@@ -6950,16 +7751,101 @@ Respond with a JSON object:
         # (REQ-4 AC6: memory as pre-filter, not fallback; SourceRegistry-like).
         def _mem_lookup(goal: str) -> Optional[Dict[str, Any]]:
             try:
-                mi = getattr(self, "_memory_interface", None)
-                if mi is None:
-                    return None
-                myc = getattr(mi, "_mycelium", None)
-                if myc is None:
-                    return None
                 from backend.agent.explorer import _pheromone_top1, _is_web_intent
 
+                # ── pin_517dfcbda150: physics-driven gather sanction ──
+                # pin_42ddd255162d: the gate runs BEFORE the memory checks —
+                # it needs no memory (conversation state + engine + scheduler
+                # oscillators). Behind the old `mi is None` early return it
+                # NEVER ran in the DER (whose kernel has no memory interface):
+                # web-intent step 1 resolved REASON (tool=null), its short
+                # result failed verification, the step split, and the children
+                # re-gathered the same URLs — the "keeps going back to
+                # searching" loop. The route + sanction below also give the
+                # FIRST web-intent resolution a hard crawler_query.
+                # Applies to ANY goal flavor (not just web-intent phrasing):
+                # synthesis steps like "summarize the findings" are NOT web
+                # intent by the classifier, yet must be prevented from
+                # re-gathering once the task has committed web content.
+                # Once ≥1 crawl ran this task:
+                #   (a) converged (|u| < U_SPLIT)      -> veto gather tools,
+                #   (b) new distinct query + budget hit -> veto (budget),
+                #   (c) provider under load (amp low)  -> veto (load).
+                # A first crawl is ALWAYS sanctioned (content must be gathered
+                # once); the phase scheduler's theta pacing handles 429 load.
+                try:
+                    from backend.agent.der_constants import U_SPLIT
+                except Exception:  # pragma: no cover - constant drift guard
+                    U_SPLIT = 0.5
+                # pin_42ddd255162d: key the gather-sanction state by the
+                # CONVERSATION, not the execution session — DER split children
+                # (SubLoopBatcher) run under the placeholder session
+                # "unknown", which made every child look like a fresh task and
+                # bypassed the converged/budget veto (u=0.00 yet children
+                # re-gathered in a 5-11ms recursion).
+                _g_session = (
+                    getattr(self, "conversation_id", "")
+                    or getattr(self, "session_id", "")
+                    or ""
+                )
+                # D2: stable action identity — deterministic digest, never
+                # builtin hash() (process-randomized). Same query -> same key
+                # across restarts and replay fixtures.
+                try:
+                    from backend.agent.der_execution_ledger import make_action_key
+                except Exception:  # pragma: no cover - import drift guard
+                    make_action_key = None
+                _qkey = (
+                    make_action_key(goal)
+                    if make_action_key is not None
+                    else goal.strip().lower()
+                )
+                _crawl_state = getattr(self, "_der_crawl_attempts", {})
+                _attempted = _crawl_state.get(_g_session, set())
+                logger.debug(
+                    "[DER] gather gate: session=%s attempted=%d qkey_in_attempted=%s",
+                    _g_session, len(_attempted), _qkey in _attempted,
+                )
+                # D1 (REQ-3): physics and scheduler state never AUTHORIZE here.
+                # u/xi convergence and phase-manager amplitude are removed from
+                # tool authorization — the scheduler paces calls; whether a
+                # required web action may run is decided by the execution
+                # policy below (fresh-query budget only). A converged oscillator
+                # means stable physics, NOT task completion, and a failed step's
+                # children must still be allowed to gather their sub-query.
+                # D6/REQ-9: the same-query repeat is allowed — the JobRegistry
+                # dedupe serves the cached crawl (no provider call is paid), so
+                # a repeat is a read observation, not a new side effect.
+                _is_web_goal = False
+                try:
+                    _is_web_goal = bool(_is_web_intent(goal))
+                except Exception:  # noqa: BLE001
+                    pass
+                _veto_reason: Optional[str] = None
+                if _is_web_goal:
+                    # Explicit resource bound (REQ-3 AC3): a FRESH distinct web
+                    # query beyond the per-task crawl budget is vetoed. Same-key
+                    # repeats skip the budget (cache-served, read-only).
+                    if _qkey not in _attempted and len(_attempted) >= self._MAX_CRAWLS_PER_TASK:
+                        _veto_reason = "budget_exhausted"
+                if _veto_reason:
+                    logger.info(
+                        "[DER] web gather vetoed for goal %r -> REASON "
+                        "(execution policy: %s)",
+                        goal, _veto_reason,
+                    )
+                    return {
+                        "tool": None,
+                        "veto": sorted(self._WEB_CONTENT_TOOLS),
+                        "rationale": _veto_reason,
+                    }
+
                 # Web-intent → crawler_query (capability-gated, not a silent fallback)
-                if _is_web_intent(goal):
+                if _is_web_goal:
+                    _crawl_state = dict(_crawl_state)
+                    _crawl_state[_g_session] = _attempted | {_qkey}
+                    self._der_crawl_attempts = _crawl_state
+
                     from backend.agent.tool_registry import resolve_tool, capability_allowed
                     spec = resolve_tool("crawler_query")
                     if spec and capability_allowed(spec):
@@ -6969,7 +7855,10 @@ Respond with a JSON object:
                             from backend.crawler.source_registry import get_source_registry
                             import asyncio as _asyncio
                             sr = get_source_registry()
-                            sr_result = _asyncio.run(sr.resolve(goal))
+                            # quick=True: no LLM topic-extraction on the gate's
+                            # hot path (per-step resolution would otherwise burn
+                            # a quota slot + up to 40s per call).
+                            sr_result = _asyncio.run(sr.resolve(goal, quick=True))
                             if sr_result.get("hit") and sr_result.get("sources"):
                                 known_urls = [
                                     s["url"] for s in sr_result["sources"]
@@ -6984,6 +7873,44 @@ Respond with a JSON object:
                             "params": params,
                             "rationale": "web-intent (memory pre-filter)",
                         }
+
+                # REQ-3 AC4 / REQ-5 (specs/long-horizon-der-execution): once the
+                # task has committed web evidence (>=1 crawl), steer SYNTHESIS
+                # goals toward READING the gathered documents instead of
+                # re-gathering. Advisory only — _apply_pre_filter keeps the
+                # suggested tool alongside generic utilities, so the LLM still
+                # chooses; if the read tool is unavailable the pre-filter falls
+                # back to the full list. This cuts the observed 4-gather waste
+                # (crawler_query x2 + search x2) and the 429 storm it caused.
+                # NOTE: no resolve_tool/capability_allowed here — that call in
+                # the hot path slowed every gate evaluation by seconds.
+                try:
+                    _SYNTH_TRIGGERS = (
+                        "synthes", "summar", "analy", "evaluat", "compar",
+                        "recommend", "conclud", "final", "write up", "explain",
+                    )
+                    if _attempted and not _is_web_goal and any(
+                        t in goal.lower() for t in _SYNTH_TRIGGERS
+                    ):
+                        logger.info(
+                            "[DER] evidence-committed synthesis goal %r -> steer %s",
+                            goal[:60], "get_rendered_documents",
+                        )
+                        return {
+                            "tool": "get_rendered_documents",
+                            "rationale": "evidence committed; synthesize from gathered docs",
+                        }
+                except Exception:  # noqa: BLE001 — steering is advisory
+                    pass
+
+                # Memory pre-filter (REQ-4 AC6) — mycelium consulted only
+                # after the physics gate, which needs no memory.
+                mi = getattr(self, "_memory_interface", None)
+                if mi is None:
+                    return None
+                myc = getattr(mi, "_mycelium", None)
+                if myc is None:
+                    return None
 
                 # Pheromone top-1 prediction (deterministic backstop)
                 _session = getattr(self, "session_id", "") or ""
@@ -7067,6 +7994,35 @@ Respond with a JSON object:
                         "[DER] box resolved tool=%r for step %d (source=%s)",
                         item.tool, item.step_number, _decision.source,
                     )
+                    # pin_517dfcbda150: re-emit TOOL_CALL with the RESOLVED
+                    # tool name. The loop's earlier emit (before execution)
+                    # carries the planner's guess or "direct"; the frontend's
+                    # useTaskProgress takes the LAST tool:call per step, so
+                    # the card now shows "WebCrawl" instead of "Tool".
+                    try:
+                        from backend.agent.event_bus import (
+                            get_event_bus,
+                            IRISStreamEvent,
+                        )
+
+                        get_event_bus().emit(
+                            IRISStreamEvent.TOOL_CALL,
+                            data={
+                                "task_id": _turn_id or item.step_id,
+                                "tool_name": item.tool or "direct",
+                                "description": (
+                                    item.description
+                                    or item.objective_anchor
+                                    or ""
+                                )[:200],
+                                "params": item.params or {},
+                                "step_number": item.step_number,
+                            },
+                            turn_id=_turn_id,
+                            conversation_id=self.conversation_id,
+                        )
+                    except Exception:
+                        pass  # never block execution on an emit failure
                 # REASON: item.tool stays None → falls to _run_step_direct below
 
             # ── Phase 2: dispatch (TOOL) or direct (REASON) ──────────────
@@ -7082,6 +8038,14 @@ Respond with a JSON object:
             if item.tool and self._tool_bridge is not None:
                 # Trust-routing W2: mark external for web/crawler tools
                 self.mark_external_tool(item.tool)
+                # pin_42ddd255162d: render tools need the conversation registry
+                # on the bridge; DER paths never received it.
+                try:
+                    self._tool_bridge._active_conversation_id[_session] = (
+                        self.conversation_id or ""
+                    )
+                except Exception:
+                    pass
                 try:
                     _dr = self._get_tool_box().dispatch(
                         Decision(
@@ -7093,6 +8057,25 @@ Respond with a JSON object:
                         conversation_id=self.conversation_id,
                         turn_id=_turn_id,
                     )
+                    # pin_42ddd255162d: dispatch-time gather sanction — the
+                    # resolution-time record (in _mem_lookup) was unreliable
+                    # (attempted=0 on every gate read), so the per-task crawl
+                    # budget never engaged. The dispatch runs for EVERY crawl
+                    # (real or dedupe-hit), so record the query hash here:
+                    # guaranteed bookkeeping for the budget/veto.
+                    if item.tool in self._WEB_CONTENT_TOOLS and self.conversation_id:
+                        try:
+                            from backend.agent.der_execution_ledger import make_action_key
+
+                            _cs = dict(getattr(self, "_der_crawl_attempts", {}))
+                            # D2: same stable action key as the gather gate.
+                            _gq = make_action_key(item.description or item.tool)
+                            _cs[self.conversation_id] = _cs.get(
+                                self.conversation_id, set()
+                            ) | {_gq}
+                            self._der_crawl_attempts = _cs
+                        except Exception:
+                            pass
                 except RuntimeError as _rte:
                     # asyncio.run() inside box may fail if an event loop is
                     # already running in this thread — executor fallback
@@ -7189,6 +8172,14 @@ Respond with a JSON object:
         step_success = True
         try:
             if item.tool and self._tool_bridge is not None:
+                # pin_42ddd255162d: render tools need the conversation
+                # registry on the bridge; DER paths never received it.
+                try:
+                    self._tool_bridge._active_conversation_id[_session] = (
+                        self.conversation_id or ""
+                    )
+                except Exception:
+                    pass
                 self.mark_external_tool(item.tool)
                 raw = await self._tool_bridge.execute_tool(
                     tool_name=item.tool,
@@ -7199,6 +8190,34 @@ Respond with a JSON object:
                 step_result = self._format_tool_result(raw) if raw is not None else ""
                 if isinstance(raw, dict) and raw.get("success") is False:
                     step_success = False
+                # REQ-18 AC5 (T31): correlate every browser navigation with its
+                # target surface (in-app for the T27-routed tools) + job_id/HAR.
+                if item.tool in ("open_url", "search", "web_search"):
+                    try:
+                        from backend.agent.der_trace import get_der_trace
+
+                        _nav = raw if isinstance(raw, dict) else {}
+                        # T13 (REQ-18 AC5): discriminator — a job_id means the
+                        # page was crawled and is served from the CAPTURE
+                        # REPLAY endpoint; without one the panel must fall back
+                        # to the live PROXY. Both paths surface=in-app; the
+                        # discriminator is what separates replay evidence from
+                        # live fetch.
+                        _via = "replay" if _nav.get("job_id") else "proxy"
+                        get_der_trace(self._der_trace_task_id()).record(
+                            "navigation",
+                            tool=item.tool,
+                            surface="in-app",
+                            via=_via,
+                            url=(
+                                _nav.get("url") or _nav.get("query")
+                                or (item.params or {}).get("url", "")
+                            ),
+                            job_id=_nav.get("job_id"),
+                            har_path=_nav.get("har_path"),
+                        )
+                    except Exception:
+                        pass
                 if item.tool and raw is not None:
                     try:
                         self._capture_tool_result(
@@ -7254,12 +8273,32 @@ Respond with a JSON object:
     # SemanticVerifier instance — lazy-init so import at module level is safe.
     _VERIFIER: Optional["SemanticVerifier"] = None
     _STUB_RE = re.compile(r"\[step\s+\d+\s+completed\]", re.IGNORECASE)
+    # pin_517dfcbda150: web/crawl steps verify by CONTENT SUFFICIENCY — the
+    # tool itself already proved it fetched real content (zero pages returns
+    # an error at the tool boundary in tool_bridge). Assertion matching against
+    # crawl output is meaningless under the hash/substring fallback while the
+    # Encoder-350M is absent, and false FAILED verdicts drove the step-1
+    # re-crawl loop (verify_failed -> split -> children re-crawl same query).
+    _WEB_CONTENT_TOOLS = frozenset(
+        {"crawler_query", "web_search", "search", "google_search", "exa_search"}
+    )
+    # pin_42ddd255162d: display/render tools complete by SUCCESS, not by content
+    # volume — a rendered-card confirmation is a legit completion, never a
+    # candidate for a verify-failure split (which is what made the task card
+    # say "rendering documents" while the backend re-searched).
+    _TRUSTED_RESULT_TOOLS = frozenset({"get_rendered_documents"})
 
     def _get_verifier(self):
         if self._VERIFIER is None:
             from backend.agent.verifier import SemanticVerifier as _SV
             AgentKernel._VERIFIER = _SV()
         return self._VERIFIER
+
+    def _der_trace_task_id(self) -> str:
+        """Stable per-task key for the REQ-18 trace — mirrors the ledger's
+        task_id (conversation_id or session_id), so the trace and the ledger
+        correlate on the same task."""
+        return self.conversation_id or self.session_id or "unknown"
 
     def _verified_fraction(self, expected: Optional[str], result: str) -> float:
         """DER Phase 0 (D0.6): fraction of checkable assertions from expected_output
@@ -7269,26 +8308,104 @@ Respond with a JSON object:
         entailment scoring with stub guard + substring fallback.
         """
         frac, _scorer = self._get_verifier().verified_fraction(expected, result)
+        # REQ-18 AC1 (T31): correlate the scorer tag + score into the per-task
+        # trace. Off the critical path; a trace failure never affects the verdict.
+        # The verified_label is attached by the caller (it is only known after
+        # the full _verify_step_result classification completes).
+        try:
+            from backend.agent.der_trace import get_der_trace
+
+            get_der_trace(self._der_trace_task_id()).record(
+                "verify",
+                scorer_tag=_scorer,
+                score=round(float(frac), 4),
+            )
+        except Exception:
+            pass
         return frac
 
     def _verify_step_result(
-        self, goal: str, expected: Optional[str], result: str
+        self,
+        goal: str,
+        expected: Optional[str],
+        result: str,
+        tool: Optional[str] = None,
+        success: bool = False,
     ) -> str:
         """DER Phase 0 (D0.1): classify a step result.
         Returns VERIFIED | UNVERIFIED | FAILED.
-        A stub pattern with no real output is ALWAYS FAILED (no silent success)."""
+        A stub pattern with no real output is ALWAYS FAILED (no silent success).
+
+        pin_517dfcbda150: when ``tool`` is a web/crawl tool, the verdict is
+        CONTENT SUFFICIENCY — the tool already proved it fetched pages (a
+        zero-page crawl returns an error from tool_bridge), so a non-empty,
+        non-error result VERIFIEDs. This terminates the crawl step as soon as
+        real content exists and prevents pointless re-crawl splits.
+        """
+        if tool in self._TRUSTED_RESULT_TOOLS:
+            # pin_42ddd255162d: display/render tools complete by SUCCESS, and
+            # this check runs FIRST — the formatted result of the render tool
+            # can be an empty/JSON-less string even on success (its dict has no
+            # extractable content key), and the old position (after the
+            # empty-result check) turned every successful render into a
+            # verify-FAILED → split → children re-gathered the SAME urls while
+            # the card said "rendering documents". A trusted tool that ran
+            # returns "VERIFIED" unconditionally — its contract never returns
+            # errors on the read-only render path.
+            return "VERIFIED"
         if not result:
             return "FAILED"
         # Strip the marker; if nothing substantial remains, it was a bare stub -> FAILED.
         _without_marker = self._STUB_RE.sub("", result).strip()
         if not _without_marker:
             return "FAILED"
+        if tool and tool in self._WEB_CONTENT_TOOLS:
+            _low = _without_marker.lower()
+            # pin_42ddd255162d: CONTENT SUFFICIENCY must not scan real page
+            # text for failure words — web pages legitimately contain "failed
+            # to"/"no usable" mid-text, and the crawl fallback result may
+            # carry an informational worker-timeout note alongside real pages.
+            # The tool contract already guarantees the error case (zero usable
+            # pages -> tool returns an error payload), so the verdict rests on
+            # SUBSTANCE: long non-error content VERIFIEDs; only explicit
+            # error-prefixed payloads and short error stubs FAIL.
+            # pin_42ddd255162d: a successfully dispatched crawl (success=True)
+            # VERIFIEDs regardless of volume — the observed failure mode was a
+            # 2-page plain-HTTP fallback result (~60 chars) that failed the old
+            # 80-char threshold → verify FAILED → split → children re-gathered
+            # the SAME urls, each costing a 30s LLM resolution + 429 retries.
+            if success and not _low.startswith("error"):
+                return "VERIFIED"
+            if len(_without_marker) >= 80 and not _low.startswith("error"):
+                return "VERIFIED"
+            if _low.startswith("error") or "no usable" in _low or "failed to" in _low:
+                return "FAILED"
+            # Short, non-error text: weak but honest — commits as UNVERIFIED,
+            # never triggers a re-gather split.
+            return "UNVERIFIED"
+        if tool in self._TRUSTED_RESULT_TOOLS:
+            # pin_42ddd255162d: display/render tools complete by SUCCESS — a
+            # rendered-card confirmation is a legit completion. The expected
+            # assertion text (e.g. "a rendered document card") never matches
+            # the short confirmation string, so the assertion path FAILED the
+            # step and split it — spawning children that re-gathered web pages
+            # while the card said "rendering documents".
+            return "VERIFIED" if _without_marker else "FAILED"
         _frac = self._verified_fraction(expected, result)
+        _expected_text = (expected or "").strip()
+        if not _expected_text:
+            # pin_42ddd255162d: no explicit expectation (REASON/synthesis and
+            # render steps) — the assertion fraction is meaningless; the verdict
+            # rests on SUBSTANCE: a substantial result VERIFIEDs, short text
+            # commits honestly as UNVERIFIED. Only an explicit error/stub FAILs.
+            return "VERIFIED" if len(_without_marker) >= 80 else "UNVERIFIED"
         if _frac >= 0.8:
             return "VERIFIED"
         if _frac >= 0.3:
             return "UNVERIFIED"
-        return "FAILED"
+        # Explicit expectation, low match: a SUBSTANTIAL result is still a real
+        # answer — commit honestly as UNVERIFIED; only weak stubs FAIL.
+        return "UNVERIFIED" if len(_without_marker) >= 200 else "FAILED"
 
     # ── REQ-1 AC2/AC3/AC4: per-step edge scoring ────────────────────────────
     def _der_score_step_outcome(
@@ -7410,12 +8527,17 @@ Respond with a JSON object:
         context_package,
         queue,
         verdict,
+        from_voice: bool = False,
     ) -> int:
         """
         Phase 4: full post-processing for one completed DER step.
         Faithful extraction of the inline finalize block from _execute_plan_der
         so both the serial path and concurrently-executed parallel_safe steps
         share identical post-processing. Returns the updated _tokens_used.
+
+        ``from_voice`` (pin_517dfcbda150): threaded from the turn entry so the
+        multi-session coupling wiring inside this method can classify the
+        session domain ("voice" vs "der") instead of raising NameError.
         """
         step_outputs.append(step_result)
 
@@ -7610,9 +8732,31 @@ Respond with a JSON object:
         # DER Phase 0 (D0.1): verify the result. A stub pattern with no real output
         # is FAILED -> step_success forced False so it cannot be marked complete as a
         # success (no silent success edge). This is the honest-signal fix.
-        _verified = self._verify_step_result(item.description, item.expected_output, step_result)
+        # pin_517dfcbda150: pass the resolved tool so web/crawl steps verify by
+        # content sufficiency instead of assertion matching.
+        _verified = self._verify_step_result(
+            item.description, item.expected_output, step_result,
+            tool=getattr(item, "tool", None),
+            success=step_success,
+        )
         if _verified == "FAILED":
             step_success = False
+
+        # REQ-18 AC1 (T31): the verified LABEL for this step is only known here
+        # (after full classification). Attach it to the verify trace entries
+        # recorded by _verified_fraction above, then add the label record.
+        try:
+            from backend.agent.der_trace import get_der_trace
+
+            get_der_trace(self._der_trace_task_id()).record(
+                "verify_label",
+                verified_label=_verified,
+                step_id=getattr(item, "step_id", ""),
+                step_number=getattr(item, "step_number", 0),
+                tool=getattr(item, "tool", None),
+            )
+        except Exception:
+            pass
 
         # ── Phase 2 (D2.1): unified recovery — verification FAILED uses the
         # SAME _split_step operator as the physics trigger. No separate graft
@@ -7633,30 +8777,181 @@ Respond with a JSON object:
         # which never enters the split branch — still has a bound, honestly
         # falsy value instead of leaving the name unbound.
         _children = []
-        if not step_success and not item.is_subloop:
+        # REQ-13 (fold forward, not back): only a FAILED verification may enter
+        # the split gate. A weak (UNVERIFIED) graded score after evidence
+        # gathering folds forward to an honest low-confidence answer instead of
+        # spawning another round of gathering the same evidence (AC1). The
+        # guard is EXPLICIT, not incidental: an execution-layer `success=False`
+        # envelope that still carried content (REQ-1 informational-fallback
+        # edge) would otherwise reach _split_step untouched by the D4 taxonomy
+        # below (non-errored content skips classification). The D4/REQ-4
+        # classes remain the ONLY no-split path for classified
+        # transport/provider failures (AC2); _split_step stays reachable for
+        # genuine unclassified semantic failure (AC3).
+        if not step_success and not item.is_subloop and _verified == "FAILED":
+            # D4/REQ-4 (specs/long-horizon-der-execution): classify the failure
+            # BEFORE recursive fan-out. Transport/provider/envelope failures
+            # (timeout, rate-limit, unavailable tool, bad args, empty result,
+            # auth) are recorded as failure evidence and must NOT split the
+            # task into children — the old `not step_success -> split` rule
+            # turned a single transient error into a recursive fan-out. Only a
+            # genuine semantic failure (tool produced content but verification
+            # judged it wrong) splits: the step_result then carries real
+            # content, not an error prefix.
+            _split_ok = True
             try:
-                _cad_split = self._der_live_cad_state(_session)
-                _wu = getattr(self, "_der_work_units", 0)
-                _children = self._split_step(item, "verify_failed", _cad_split, _wu)
-                if _children:
-                    # T6.8: route subloop children through the batcher.
-                    for _c in _children:
-                        _batch = get_batcher().offer(_c)
-                        if _batch is not None:
-                            # BatchGroup exposes its pending children via
-                            # `.children` — it is NOT iterable itself
-                            # ('BatchGroup' object is not iterable regression).
-                            for _batch_item in _batch.children:
-                                queue.add_item(_batch_item)
+                from backend.agent.der_execution_ledger import (
+                    classify_failure,
+                    ExecutionLedger,
+                    OUTCOME_TRANSIENT,
+                    OUTCOME_UNAVAILABLE,
+                    OUTCOME_INVALID_ARGS,
+                    OUTCOME_EMPTY,
+                    OUTCOME_PERMANENT,
+                )
+
+                _res_text = (step_result or "").strip()
+                _res_low = _res_text.lower()
+                _tool_errored = (
+                    not _res_text
+                    or _res_low.startswith("error")
+                    or _res_low.startswith("[step error")
+                    or _res_low.startswith("duplicate call")
+                )
+                if _tool_errored:
+                    _fail_class = classify_failure(
+                        False,
+                        error=_res_text[:400],
+                        error_type=getattr(item, "error_type", None),
+                        result=step_result,
+                    )
+                    if _fail_class in (
+                        OUTCOME_TRANSIENT,
+                        OUTCOME_UNAVAILABLE,
+                        OUTCOME_INVALID_ARGS,
+                        OUTCOME_EMPTY,
+                        OUTCOME_PERMANENT,
+                    ):
+                        _split_ok = False
+                        logger.info(
+                            "[DER] step %s failure classified=%s — recorded, NOT split (D4)",
+                            item.step_id, _fail_class,
+                        )
+                        try:
+                            _ledger = getattr(self, "_der_ledger", None)
+                            if _ledger is None:
+                                _ledger = ExecutionLedger(conversation_id=self.conversation_id or "")
+                                self._der_ledger = _ledger
+                            _ledger.record_failure(
+                                task_id=self.conversation_id or self.session_id or "unknown",
+                                step_id=item.step_id,
+                                attempt_id=getattr(item, "attempt_id", "") or item.step_id,
+                                failure_class=_fail_class,
+                                input_summary=(item.description or "")[:200],
+                                tool=item.tool,
+                                error_type=getattr(item, "error_type", None),
+                                error_summary=_res_text[:300],
+                                recovered=False,
+                            )
+                        except Exception as _led_exc:  # noqa: BLE001
+                            logger.debug("[DER] failure-evidence record failed: %s", _led_exc)
+            except Exception:  # noqa: BLE001 — classification must never break recovery
+                _split_ok = True
+            if _split_ok:
+                try:
+                    _cad_split = self._der_live_cad_state(_session)
+                    _wu = getattr(self, "_der_work_units", 0)
+                    _children = self._split_step(item, "verify_failed", _cad_split, _wu)
                     # REQ-3: debit measured tokens, not a flat child count.
-                    _measured = max(200, len(step_result) // 4)
+                    # _measured must be bound for the debit even when no child was
+                    # created (empty split) — a NameError here was silently swallowed
+                    # by the broad except, disabling the work-unit debit entirely
+                    # (NORTHSTAR defect-shape #1).
+                    _measured = 0
+                    if _children:
+                        # T6.8: route subloop children through the batcher.
+                        for _c in _children:
+                            _batch = get_batcher().offer(_c)
+                            if _batch is not None:
+                                # BatchGroup exposes its pending children via
+                                # `.children` — it is NOT iterable itself
+                                # ('BatchGroup' object is not iterable regression).
+                                for _batch_item in _batch.children:
+                                    queue.add_item(_batch_item)
+                        # REQ-3: debit measured tokens, not a flat child count.
+                        _measured = max(200, len(step_result) // 4)
+                        # REQ-14 (AC1/AC5, T23): a sub-loop split REVISES the
+                        # plan mid-task — re-emit task:start through the SAME
+                        # merge-by-id channel (useTaskProgress.ts:210-227) with
+                        # the revision origin so the frontend refreshes
+                        # description/tool for new steps without clobbering live
+                        # status, and REQ-18's trace can attribute the origin.
+                        # The payload keeps the contract keys unchanged
+                        # (task_id/description/plan_title/mode/steps/total_steps)
+                        # plus `origin`.
+                        try:
+                            from backend.agent.event_bus import (
+                                get_event_bus,
+                                IRISStreamEvent,
+                            )
+
+                            _rev_mode = (
+                                queue.mode.value
+                                if getattr(queue, "mode", None)
+                                else str(_phase)
+                            )
+                            get_event_bus().emit(
+                                IRISStreamEvent.TASK_START,
+                                data=self._task_start_payload(
+                                    task_id=_turn_id
+                                    or getattr(plan, "original_task", "")[:40],
+                                    description=getattr(
+                                        plan, "original_task", ""
+                                    )[:200],
+                                    plan_title=(
+                                        (getattr(plan, "plan_title", "") or "")[:80]
+                                    ),
+                                    mode=_rev_mode,
+                                    steps=[
+                                        {
+                                            "id": it.step_id,
+                                            "description": it.description,
+                                            "status": "pending",
+                                            "toolName": it.tool,
+                                        }
+                                        for it in queue.items
+                                    ],
+                                    total_steps=len(queue.items),
+                                    origin="sub_loop_split",
+                                ),
+                                turn_id=_turn_id,
+                                conversation_id=self.conversation_id,
+                                session_id=_session,
+                            )
+                            # REQ-18 AC3 (T31): correlate the sub-loop-split
+                            # revision (REQ-4/REQ-13).
+                            try:
+                                from backend.agent.der_trace import get_der_trace
+
+                                get_der_trace(self._der_trace_task_id()).record(
+                                    "revision",
+                                    origin="sub_loop_split",
+                                    children=len(_children),
+                                    boundary_step=getattr(
+                                        queue, "_last_step_number", None
+                                    ),
+                                )
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass  # EventBus is optional — never break recovery
                     self._der_work_units = debit_work_units(_wu, _measured)
                     logger.info(
                         "[DER] verify_failed -> split into %d sub-loops (work_units=%d)",
                         len(_children), self._der_work_units,
                     )
-            except Exception as _split_exc:
-                logger.warning("[DER] split-on-failure failed: %s", _split_exc)
+                except Exception as _split_exc:
+                    logger.warning("[DER] split-on-failure failed: %s", _split_exc)
 
         # ── Phase 3 (D3.3 G5): honest commit ledger ──
         # REQ-1: a commit is recorded for EVERY executed action with its true label
@@ -7666,11 +8961,13 @@ Respond with a JSON object:
         # prompt.
         try:
             from backend.agent.caducean_trajectory import (
-                CaduceanTrajectoryRecorder,
+                get_trajectory_recorder,
             )
 
             _cad = self._der_live_cad_state(_session)
-            CaduceanTrajectoryRecorder().record_commit(
+            # REQ-20: DER commits land in the APPLICATION store (memory_interface
+            # episodic db), not the BUILD-memory .mcm/coordinates.db.
+            get_trajectory_recorder(self._memory_interface).record_commit(
                 session_id=_session,
                 step_id=item.step_id,
                 commit_hash="",
@@ -7692,6 +8989,42 @@ Respond with a JSON object:
             logger.debug("[DER] per-step edge scoring failed: %s", _score_exc)
 
         queue.mark_complete(item.step_id)
+
+        # ── T6/T8/T10 (specs/long-horizon-der-execution REQ-5/REQ-9) ──────
+        # D8: persistence gates terminal state. Close the execution-attempt in
+        # the ledger and persist BEFORE emitting the terminal task:learning
+        # event. A persistence failure is exposed honestly (warning) and the
+        # event still fires — but the durable record is flagged, never silently
+        # claimed.
+        try:
+            from backend.agent.der_execution_ledger import ExecutionLedger
+
+            _ledger = getattr(self, "_der_ledger", None)
+            if _ledger is None:
+                _ledger = ExecutionLedger(
+                    conversation_id=self.conversation_id or self.session_id or ""
+                )
+                self._der_ledger = _ledger
+            _att = _ledger.open_attempt(
+                task_id=self.conversation_id or self.session_id or "unknown",
+                step_id=item.step_id,
+                parent_step_id=getattr(item, "parent_step_id", None),
+                action_key=(item.description or item.tool or "")[:80],
+                tool=item.tool,
+            )
+            _ledger.close_attempt(
+                _att,
+                outcome=_verified if _verified in ("VERIFIED", "UNVERIFIED", "FAILED") else "permanent",
+                verified_label=_verified,
+                error_type=getattr(item, "error_type", None),
+            )
+            if not _ledger.persist():
+                logger.warning(
+                    "[DER] attempt persistence FAILED for step %s — durable completion not claimed",
+                    item.step_id,
+                )
+        except Exception as _att_exc:  # noqa: BLE001 — ledger must never block the step
+            logger.debug("[DER] attempt-ledger write failed: %s", _att_exc)
 
         # ── REQ-8: honest learning signal (task:learning) ───────────────
         # Emited (never injected into a prompt) so the frontend can show the real
@@ -7734,6 +9067,16 @@ Respond with a JSON object:
                 "[DER] resolve_dependent_params failed: %s", _dep_exc
             )
 
+        # pin_42ddd255162d: physics reads bound BEFORE the try below — the
+        # broad swallowing try starts with imports + the trajectory recorder,
+        # and ANY early exception (recorder creation, FFI import/call) used to
+        # skip the binding; later reads of _u/_xi (trajectory record, coupling,
+        # the REQ-7 narration hook) then raised UnboundLocalError — the defect
+        # class of CADUCEAN_ARCHITECTURE.md §10 rule 7. Narration was 100%
+        # mute, logging "physics-event narration skipped".
+        _u = 0.0
+        _xi = 0.0
+
         # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
         try:
             from backend.gateway.iris_ffi import (
@@ -7757,6 +9100,16 @@ Respond with a JSON object:
                 _action = 1
             elif not step_success:
                 _action = 2
+            # pin_42ddd255162d: bind physics reads BEFORE any FFI call. The
+            # block below sits inside a broad swallowing try; if
+            # ffi_caducean_update/ffi_calculate_eml throws, the flow jumps to
+            # the except and later reads of _u/_xi (trajectory record, coupling,
+            # the REQ-7 narration hook) would raise UnboundLocalError — the
+            # exact defect class of CADUCEAN_ARCHITECTURE.md §10 rule 7: a name
+            # read before assignment disables a whole feature (narration was
+            # 100% mute, logging "physics-event narration skipped").
+            _u = 0.0
+            _xi = 0.0
             _eml_score, _ex, _ey = ffi_calculate_eml(_session)
             # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
             # Note: the v2 baseline divisor is 2.3418 per the field theory
@@ -7774,11 +9127,12 @@ Respond with a JSON object:
                 ffi_caducean_get_state,
             )
 
+            _u = 0.0
+            _xi = 0.0
             _rec = ffi_caducean_recommend(_session)
             _state_snapshot = ffi_caducean_get_state(_session)
             _xi = _state_snapshot.get("xi", 0.0)
             _u = _state_snapshot.get("u", 0.0)
-
             # ── REQ-10 / REQ-11: multi-session coupling (feature-flagged, off
             # the critical path). Register the session once with its domain
             # windings, push live (ξ, u) into the registry, and apply coupling.
@@ -7987,6 +9341,7 @@ Respond with a JSON object:
                             IRISStreamEvent.TASK_PROGRESS,
                             data={
                                 "add_step": True,
+                                "step_id": _next_item.step_id,  # pin_517dfcbda150: unique id so split/sub-loop children each append
                                 "step_number": _next_item.step_number,
                                 "description": _next_item.description[:200],
                                 "tool_name": _next_item.tool,
@@ -8038,6 +9393,11 @@ Respond with a JSON object:
                 IRISStreamEvent.TASK_PROGRESS,
                 data={
                     "step_done": True,
+                    # pin_517dfcbda150: carry the unique step id so the frontend
+                    # can check off BOTH plan steps (ids like r1/step_1) and
+                    # DER-discovered steps (der-N / explorer_N) — previously it
+                    # only matched der-N, so plan steps never visually completed.
+                    "step_id": item.step_id,
                     "step_number": item.step_number,
                     "description": item.description[:200],
                     "success": step_success,
@@ -8082,9 +9442,13 @@ Respond with a JSON object:
                 _has_struct = bool(_children) or bool(
                     getattr(item, "is_subloop", False)
                 )
-                asyncio.get_event_loop().run_in_executor(
-                    None,
-                    _nlog._write,
+                # pin_42ddd255162d: direct sync write — the DER runs in a
+                # thread where get_event_loop() raises RuntimeError, so the
+                # old run_in_executor path threw on EVERY finalize and the
+                # narration log was silently empty. _write is a small JSONL
+                # append (microseconds); a sync call from the worker thread is
+                # correct and the caller's try/except keeps it non-blocking.
+                _nlog._write(
                     {
                         "ts": time.time(),
                         "conversation_id": self.conversation_id,
@@ -8482,7 +9846,7 @@ If any tools failed, address those issues in your response.
                     import requests as _req
 
                     _r = _req.post(
-                        "http://localhost:11434/api/chat",
+                        f"{self._ollama_endpoint}/api/chat",
                         json={
                             "model": _sel_synth,
                             "messages": [{"role": "user", "content": synthesis_prompt}],
@@ -8500,25 +9864,20 @@ If any tools failed, address those issues in your response.
                         f"[AgentKernel] Ollama synthesis failed: {_ollama_synth_err}"
                     )
 
-            # Template-based fallback (no model available)
+            # No model available for synthesis. Return "" instead of a generic
+            # template so the REQ-12 success path falls through to the DER-shaped
+            # deterministic summary (_der_deterministic_success_summary) that
+            # mirrors _der_deterministic_failure_summary — never a silent raw
+            # concatenation of step outputs (REQ-12 AC4).
             logger.warning(
-                "[AgentKernel] No model for synthesis — using template response"
+                "[AgentKernel] No model for synthesis — returning empty "
+                "(caller falls back to deterministic summary)"
             )
-            return self._generate_response(
-                task.user_message,
-                task.plan,
-                execution_results,
-                task.conversation_history,
-            )
+            return ""
 
         except Exception as e:
             logger.error(f"[AgentKernel] Error in brain synthesis: {e}")
-            return self._generate_response(
-                task.user_message,
-                task.plan,
-                execution_results,
-                task.conversation_history,
-            )
+            return ""
 
     def get_status(self) -> Dict[str, Any]:
         """
