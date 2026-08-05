@@ -1341,10 +1341,27 @@ export function DarkGlassDashboard({
   const renderHeader = () => (
     <div className="relative flex h-12 items-center justify-between pl-4 pr-4 border-b shrink-0 z-30" style={{ borderColor: 'rgba(255,255,255,0.05)', backgroundColor: 'transparent' }}>
       {/* Live web-search pill — centred in the header, between the sub-app
-          title and the notification button. Absolutely positioned so it is
-          centred on the HEADER, not on whatever space the two flex groups
-          happen to leave, and so it can never push them around as the query
-          text changes width. pointer-events-none: it is status, not a control. */}
+          title and the notification button.
+
+          The pill lives inside a BAND with equal left/right insets rather than
+          being centred with left-1/2. Equal insets keep it centred on the
+          header exactly as before, but now it physically cannot reach the
+          title or the buttons: a long query truncates instead of growing over
+          them. The previous max-w-[52%] did not hold, because the text span is
+          a flex child and a flex child will not shrink below its content
+          width without min-w-0 — so the pill pushed past its own max-width and
+          spilled across the whole header.
+          pointer-events-none: this is status, not a control. */}
+      {/* Insets are INLINE, not Tailwind arbitrary values: left-[124px] /
+          right-[124px] did not take effect here, so the band sized itself to
+          its content (measured 717px inside a 704px header) and max-w-full on
+          the pill had nothing real to resolve against. Inline styles always
+          apply, and left+right together are what give the band a definite
+          width for the pill to truncate within. */}
+      <div
+        className="absolute inset-y-0 z-10 flex items-center justify-center pointer-events-none"
+        style={{ left: 124, right: 124 }}
+      >
       <AnimatePresence>
         {(crawler.active || crawler.error) && (
           <motion.div
@@ -1352,7 +1369,7 @@ export function DarkGlassDashboard({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.96 }}
             transition={{ type: 'spring', stiffness: 320, damping: 26, mass: 0.7 }}
-            className="absolute left-1/2 -translate-x-1/2 z-10 pointer-events-none flex items-center gap-2 px-3 py-1 rounded-full max-w-[52%]"
+            className="flex items-center gap-2 px-3 py-1 rounded-full max-w-full min-w-0"
             style={{
               color: crawler.error ? '#f87171' : glowColor,
               border: `1px solid ${crawler.error ? 'rgba(248,113,113,0.35)' : `${glowColor}33`}`,
@@ -1370,7 +1387,10 @@ export function DarkGlassDashboard({
             ) : (
               <Loader size={11} className="animate-spin shrink-0" />
             )}
-            <span className="text-[10px] font-bold tracking-[0.14em] uppercase truncate">
+            {/* min-w-0 is what actually makes `truncate` work: without it a
+                flex child refuses to shrink below its content width, so a long
+                query widened the pill instead of ellipsising. */}
+            <span className="text-[10px] font-bold tracking-[0.14em] uppercase truncate min-w-0">
               {crawler.error
                 ? crawler.error
                 : crawler.query
@@ -1388,6 +1408,7 @@ export function DarkGlassDashboard({
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
 
       <div className="flex items-center gap-3 flex-1">
         {(activeSubApp === 'browser' || activeSubApp === 'marketplace' || activeSubApp === 'models' || activeSubApp === 'inference_console') && isSidebarHidden && (

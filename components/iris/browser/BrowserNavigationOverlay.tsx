@@ -294,10 +294,24 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
     let path = makeRoundedPath(0, 0, RADIUS)
 
     const measure = () => {
-      const rect = root.getBoundingClientRect()
+      // LAYOUT box, not getBoundingClientRect().
+      //
+      // The wing renders this panel under rotateY(-15deg)/rotateX(2deg) with
+      // perspective:800px, and getBoundingClientRect() returns the PROJECTED
+      // box — already foreshortened. The canvas sits INSIDE that same
+      // transformed subtree, so sizing it from the projected width applies the
+      // foreshortening twice: the canvas came out narrower than the card it is
+      // supposed to trace (measured: 605px canvas inside a 679px card), and
+      // the whole overlay sat visibly offset from the browser. Flat views were
+      // unaffected because there the projected box equals the layout box —
+      // which is exactly why this looked like "it depends on which view".
+      //
+      // offsetWidth/offsetHeight are pre-transform, so the canvas always
+      // matches the element it overlays and the CSS transform does the
+      // perspective exactly once.
       const dpr = window.devicePixelRatio || 1
-      W = Math.max(1, rect.width)
-      H = Math.max(1, rect.height)
+      W = Math.max(1, root.offsetWidth)
+      H = Math.max(1, root.offsetHeight)
       canvas.width = Math.round(W * dpr)
       canvas.height = Math.round(H * dpr)
       canvas.style.width = `${W}px`
@@ -504,9 +518,26 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefersReducedMotion, state === "idle", startLoop])
 
+  const showOrb = state === "loading" || state === "dispersing"
+
+  // NOTE on centring the orb: plain `left-1/2` is correct and needs NO
+  // perspective compensation. The overlay root is `absolute inset-0` on the
+  // card, so 50% of the root IS the card's centre, and the shared CSS
+  // transform projects orb and card together. An earlier revision added a
+  // measured per-frame nudge here after observing the orb sitting 45px left of
+  // the border canvas — but that gap was the canvas being sized from the
+  // PROJECTED box (see `measure` above), not a perspective error in the orb.
+  // The nudge therefore centred the orb on a too-small canvas and pushed it
+  // 36px off the real centre. Fixing the measurement removed the symptom; do
+  // not reintroduce a correction here without first checking that the canvas
+  // box equals the card's layout box.
+
+  // EVERY HOOK MUST BE ABOVE THIS LINE. The idle early-return is conditional,
+  // so a hook placed after it is skipped on idle renders and React throws
+  // "Rendered more hooks than during the previous render" the moment the
+  // overlay wakes up. (tsc does not catch this — it is a runtime rule.)
   if (state === "idle") return null
 
-  const showOrb = state === "loading" || state === "dispersing"
   // Only show the counter once a page has actually landed — "0/5" while the
   // crawl is still starting reads as a stall.
   const counter = pagesDone > 0 && pagesTotal > 0 ? `${pagesDone}/${pagesTotal}` : ""
