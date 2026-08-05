@@ -32,7 +32,7 @@ import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
   LayoutDashboard, ShoppingBag, Menu, User, ArrowLeft, RotateCcw, Home, ArrowRight as ArrowRightIcon, ExternalLink, History, AlertCircle, Code, FileCode, Plus as PlusIcon,
-  Network as NetworkIcon
+  Network as NetworkIcon, Loader, AlertTriangle
 } from 'lucide-react';
 
 interface DarkGlassDashboardProps {
@@ -459,6 +459,17 @@ export function DarkGlassDashboard({
     return localStorage.getItem('iris_active_tab_v1') || 'voice'
   });
   const [activeSubApp, setActiveSubApp] = useState<string | null>(null);
+  // Live web-search status, rendered as a pill in the CENTRE of the header
+  // (between the sub-app title and the notification button). Owned here rather
+  // than in dashboard-wing because the header lives here — the wing could only
+  // render a band ABOVE the header, which is what it used to do.
+  const [crawler, setCrawler] = useState<{
+    active: boolean
+    query: string
+    pagesDone: number
+    pagesTotal: number
+    error: string | null
+  }>({ active: false, query: '', pagesDone: 0, pagesTotal: 0, error: null });
   const [isRailExpanded, setIsRailExpanded] = useState(true);
   const [isSidebarHidden, setIsSidebarHidden] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['input', 'model_inference', 'tools', 'power', 'theme', 'analytics']));
@@ -499,7 +510,52 @@ export function DarkGlassDashboard({
   // frame loads or the first request races the cookie and is refused.
   const surfaceReady = useBrowserSurfaceSession()
   const resolvedFrameSrc = useActiveFrameSrc({ tabs, activeTabId, browserUrl })
-  const activeFrameSrc = surfaceReady ? resolvedFrameSrc : undefined
+  const resolvedFrameSrcGated = surfaceReady ? resolvedFrameSrc : undefined
+
+  // ── Browser panel: reload + honest failure reporting ───────────────────
+  // The content frame is sandboxed to an opaque origin, so the panel cannot
+  // read what happened inside it — a refused fetch just renders as a raw
+  // error page ("Internal Server Error"), which tells the user nothing and
+  // in the most common case is actively misleading: the real cause is simply
+  // that web mode is off. The proxy endpoint IS same-origin (next.config
+  // rewrites /api/* to the backend), so we can probe it directly, read the
+  // status + X-Proxy-Error header, and say what is actually wrong.
+  const [browserReloadKey, setBrowserReloadKey] = useState(0)
+  const [browserIssue, setBrowserIssue] = useState<null | { kind: 'web_off' | 'offline' | 'error'; detail: string }>(null)
+
+  const activeFrameSrc = resolvedFrameSrcGated
+    ? `${resolvedFrameSrcGated}${resolvedFrameSrcGated.includes('?') ? '&' : '?'}_r=${browserReloadKey}`
+    : undefined
+
+  useEffect(() => {
+    if (!resolvedFrameSrcGated) { setBrowserIssue(null); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(resolvedFrameSrcGated, { method: 'GET', credentials: 'same-origin' })
+        if (cancelled) return
+        if (res.ok) { setBrowserIssue(null); return }
+        const reason = res.headers.get('X-Proxy-Error') || ''
+        if (res.status === 403 || /internet access is disabled/i.test(reason)) {
+          setBrowserIssue({ kind: 'web_off', detail: reason || 'Internet access is disabled' })
+        } else {
+          setBrowserIssue({ kind: 'error', detail: reason || `${res.status} ${res.statusText}` })
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setBrowserIssue({ kind: 'offline', detail: 'The backend is not reachable.' })
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [resolvedFrameSrcGated, browserReloadKey])
+
+  // Reload: re-probe and re-mount the frame. This is what the user presses
+  // after flipping web mode on — the connection is established on retry.
+  const handleBrowserReload = useCallback(() => {
+    setBrowserIssue(null)
+    setBrowserReloadKey(k => k + 1)
+  }, [])
 
   // Height of the browser panel's own chrome (tab bar + address bar) stacked
   // above the viewport. The nav overlay needs this to centre its orb on the
@@ -534,6 +590,40 @@ export function DarkGlassDashboard({
     })
     setActiveTabId(msg.id)
   }, [])
+
+  // ── REQ-1 AC1/AC2: navigate the panel to each page the agent reads ───────
+  // Tab already declared captureJobId/capturePageNumber ("Set from
+  // crawler_page_fetched") but NOTHING ever set them, and the crawl's only
+  // open_tab is a `dashboard` summary tab with no url — so useActiveFrameSrc
+  // saw no web tab, never changed the iframe src, and the panel sat on its
+  // start page for the whole crawl while the overlay animated over it.
+  //
+  // Each fetched page becomes a WEB tab carrying its capture provenance, so
+  // the frame loads /api/browser/capture/{job_id}/{page_number} — the exact
+  // bytes the agent read, not a second live fetch.
+  useEffect(() => {
+    const onPageFetched = (e: Event) => {
+      const d = (e as CustomEvent<{
+        url?: string; page_number?: number; total?: number
+        title?: string; job_id?: string
+      }>).detail ?? {}
+      if (!d.url || !d.job_id || d.page_number == null) return  // no capture to show
+      openTab({
+        id: `crawl-${d.job_id}-${d.page_number}`,
+        tab_type: 'web',
+        title: d.title || d.url,
+        url: d.url,
+      } as OpenTabMsg)
+      setTabs(prev => prev.map(t =>
+        t.id === `crawl-${d.job_id}-${d.page_number}`
+          ? { ...t, captureJobId: d.job_id, capturePageNumber: d.page_number,
+              captureFetchedAt: new Date().toISOString() }
+          : t,
+      ))
+    }
+    window.addEventListener('iris:crawler_page_fetched', onPageFetched)
+    return () => window.removeEventListener('iris:crawler_page_fetched', onPageFetched)
+  }, [openTab])
 
   const closeTab = useCallback((tabId: string) => {
     setTabs(prev => {
@@ -887,6 +977,72 @@ export function DarkGlassDashboard({
     return () => window.removeEventListener('iris:card_action', handler as EventListener);
   }, [handleSubAppChange, spotlightState, onRequestSpotlight, sendMessage]);
 
+  // ── Web search: surface the browser AT THE START of the crawl ─────────────
+  // The panel used to reach the browser only when the crawl's OPEN_TAB
+  // arrived — and that is emitted once, at the very END of research(), as a
+  // `dashboard` summary tab. So for the whole search the user sat on whatever
+  // sub-app was open, and the browser appeared just as the work finished.
+  // crawler_started is the first event of the run, so switching on it puts the
+  // frame up before the pages land in it.
+  //
+  // handleSubAppChange (not setActiveSubApp) so the sidebar collapses exactly
+  // as it does when the browser is opened by hand.
+  useEffect(() => {
+    const onStarted = (e: Event) => {
+      const d = (e as CustomEvent<{ query?: string; url_count?: number }>).detail ?? {}
+      setCrawler({
+        active: true,
+        query: d.query ?? '',
+        pagesDone: 0,
+        pagesTotal: d.url_count ?? 0,
+        error: null,
+      })
+      handleSubAppChange('browser')
+    }
+    const onPage = (e: Event) => {
+      const d = (e as CustomEvent<{ page_number?: number; total?: number }>).detail ?? {}
+      setCrawler(prev => ({
+        ...prev,
+        // A page can arrive without a preceding `started` (reconnect, or a
+        // cached job replaying); treat it as proof a crawl is running.
+        active: true,
+        pagesDone: d.page_number ?? prev.pagesDone + 1,
+        pagesTotal: d.total ?? prev.pagesTotal,
+      }))
+    }
+    const onComplete = () => setCrawler(prev => ({ ...prev, active: false }))
+    const onError = (e: Event) => {
+      const d = (e as CustomEvent<{ message?: string }>).detail ?? {}
+      setCrawler(prev => ({
+        ...prev,
+        active: false,
+        error: d.message ?? 'Web search failed',
+      }))
+    }
+    window.addEventListener('iris:crawler_started', onStarted)
+    window.addEventListener('iris:crawler_page_fetched', onPage)
+    window.addEventListener('iris:crawler_complete', onComplete)
+    window.addEventListener('iris:crawler_error', onError)
+    return () => {
+      window.removeEventListener('iris:crawler_started', onStarted)
+      window.removeEventListener('iris:crawler_page_fetched', onPage)
+      window.removeEventListener('iris:crawler_complete', onComplete)
+      window.removeEventListener('iris:crawler_error', onError)
+    }
+  }, [handleSubAppChange])
+
+  // Clear a finished search's pill so a stale error does not sit in the header
+  // forever. Only the settled states time out — an active crawl never does.
+  useEffect(() => {
+    if (crawler.active) return
+    if (!crawler.error && crawler.pagesDone === 0) return
+    const t = setTimeout(
+      () => setCrawler({ active: false, query: '', pagesDone: 0, pagesTotal: 0, error: null }),
+      crawler.error ? 6000 : 2500,
+    )
+    return () => clearTimeout(t)
+  }, [crawler.active, crawler.error, crawler.pagesDone])
+
   // Navigate to a sub-app when initialSubApp is set from outside (e.g., Browse button in WheelView)
   useEffect(() => {
     if (initialSubApp) {
@@ -1183,7 +1339,56 @@ export function DarkGlassDashboard({
   );
 
   const renderHeader = () => (
-    <div className="flex h-12 items-center justify-between pl-4 pr-4 border-b shrink-0 z-30" style={{ borderColor: 'rgba(255,255,255,0.05)', backgroundColor: 'transparent' }}>
+    <div className="relative flex h-12 items-center justify-between pl-4 pr-4 border-b shrink-0 z-30" style={{ borderColor: 'rgba(255,255,255,0.05)', backgroundColor: 'transparent' }}>
+      {/* Live web-search pill — centred in the header, between the sub-app
+          title and the notification button. Absolutely positioned so it is
+          centred on the HEADER, not on whatever space the two flex groups
+          happen to leave, and so it can never push them around as the query
+          text changes width. pointer-events-none: it is status, not a control. */}
+      <AnimatePresence>
+        {(crawler.active || crawler.error) && (
+          <motion.div
+            initial={{ opacity: 0, y: -6, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.96 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 26, mass: 0.7 }}
+            className="absolute left-1/2 -translate-x-1/2 z-10 pointer-events-none flex items-center gap-2 px-3 py-1 rounded-full max-w-[52%]"
+            style={{
+              color: crawler.error ? '#f87171' : glowColor,
+              border: `1px solid ${crawler.error ? 'rgba(248,113,113,0.35)' : `${glowColor}33`}`,
+              background: crawler.error
+                ? 'linear-gradient(180deg, rgba(248,113,113,0.12) 0%, rgba(248,113,113,0.05) 100%)'
+                : `linear-gradient(180deg, ${glowColor}1a 0%, ${glowColor}08 100%)`,
+              boxShadow: crawler.error
+                ? '0 0 12px rgba(248,113,113,0.15), inset 0 1px 0 rgba(255,255,255,0.05)'
+                : `0 0 12px ${glowColor}22, inset 0 1px 0 rgba(255,255,255,0.06)`,
+              backdropFilter: 'blur(8px)',
+            }}
+          >
+            {crawler.error ? (
+              <AlertTriangle size={11} className="shrink-0" />
+            ) : (
+              <Loader size={11} className="animate-spin shrink-0" />
+            )}
+            <span className="text-[10px] font-bold tracking-[0.14em] uppercase truncate">
+              {crawler.error
+                ? crawler.error
+                : crawler.query
+                  ? `Searching · ${crawler.query}`
+                  : 'Searching'}
+            </span>
+            {!crawler.error && crawler.pagesTotal > 0 && (
+              <span
+                className="text-[10px] font-mono tabular-nums shrink-0 pl-1.5 ml-0.5"
+                style={{ opacity: 0.65, borderLeft: `1px solid ${glowColor}2e` }}
+              >
+                {crawler.pagesDone}/{crawler.pagesTotal}
+              </span>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="flex items-center gap-3 flex-1">
         {(activeSubApp === 'browser' || activeSubApp === 'marketplace' || activeSubApp === 'models' || activeSubApp === 'inference_console') && isSidebarHidden && (
           <button
@@ -1485,23 +1690,69 @@ export function DarkGlassDashboard({
                        </span>
                      )}
                      <button
+                       onClick={handleBrowserReload}
+                       title="Reload"
+                       className="p-1.5 hover:bg-white/5 rounded text-white/50 hover:text-white transition-colors"
+                     >
+                       <RotateCcw size={14} />
+                     </button>
+                     <button
                        onClick={() => window.open(activeTab?.url ?? browserUrl, '_blank')}
                        className="p-1.5"
                      >
                        <ExternalLink size={14} className="text-white/50" />
                      </button>
                    </div>
-                   <iframe
-                     ref={iframeRef}
-                     src={activeFrameSrc}
-                     className="flex-1 w-full border-none bg-white"
-                     // REQ-3 AC1/T8: opaque-origin sandbox — NO allow-same-origin
-                     // (the proxied/captured content must never read the app's
-                     // origin) and NO allow-top-navigation. allow-scripts lets
-                     // the injected view-agent speak OUT (REQ-4) but the frame
-                     // cannot reach the parent.
-                     sandbox="allow-scripts"
-                   />
+                   {browserIssue ? (
+                     /* Say WHAT is wrong instead of letting a refused fetch
+                        render as a raw "Internal Server Error". The frame is
+                        opaque-origin so it cannot report this itself — the
+                        status comes from probing the same-origin proxy route. */
+                     <div className="flex-1 w-full flex flex-col items-center justify-center gap-3 px-6 text-center">
+                       <Globe size={26} className="text-white/25" />
+                       {browserIssue.kind === 'web_off' ? (
+                         <>
+                           <div className="text-[13px] text-white/80 font-medium">Web access is turned off</div>
+                           <div className="text-[11px] text-white/45 max-w-sm leading-relaxed">
+                             Turn on the web toggle in the chat view, then press Reload to connect.
+                           </div>
+                         </>
+                       ) : browserIssue.kind === 'offline' ? (
+                         <>
+                           <div className="text-[13px] text-white/80 font-medium">Backend not reachable</div>
+                           <div className="text-[11px] text-white/45 max-w-sm leading-relaxed">
+                             The IRIS backend isn&apos;t responding yet. It can take a moment to start — press Reload to retry.
+                           </div>
+                         </>
+                       ) : (
+                         <>
+                           <div className="text-[13px] text-white/80 font-medium">Couldn&apos;t load this page</div>
+                           <div className="text-[11px] text-white/45 max-w-sm leading-relaxed font-mono break-all">
+                             {browserIssue.detail}
+                           </div>
+                         </>
+                       )}
+                       <button
+                         onClick={handleBrowserReload}
+                         className="mt-1 flex items-center gap-1.5 px-3 h-7 rounded text-[11px] border transition-colors"
+                         style={{ borderColor: `${glowColor}33`, color: glowColor }}
+                       >
+                         <RotateCcw size={12} /> Reload
+                       </button>
+                     </div>
+                   ) : (
+                     <iframe
+                       ref={iframeRef}
+                       src={activeFrameSrc}
+                       className="flex-1 w-full border-none bg-white"
+                       // REQ-3 AC1/T8: opaque-origin sandbox — NO allow-same-origin
+                       // (the proxied/captured content must never read the app's
+                       // origin) and NO allow-top-navigation. allow-scripts lets
+                       // the injected view-agent speak OUT (REQ-4) but the frame
+                       // cannot reach the parent.
+                       sandbox="allow-scripts"
+                     />
+                   )}
                  </>
                )
              })()}

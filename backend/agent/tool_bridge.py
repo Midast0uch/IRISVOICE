@@ -1449,26 +1449,74 @@ class AgentToolBridge:
         ``screenshot_blob`` (optional PNG bytes) is attached to the event row
         in the SQLite system_events store when the tool captured the screen.
         """
+        # THIS IS OBSERVABILITY. It must never sit on the critical path of the
+        # thing it observes. The docstring above always CLAIMED fire-and-forget;
+        # it was called synchronously and blocked. A live stack dump caught the
+        # DER thread parked here across consecutive samples, inside
+        # ffi_ingest_event -> SQLite, right after a web search returned — so a
+        # completed crawl looked like a hung one, and the crawl's own UI events
+        # never got to surface. Two things were wrong and both are fixed here:
+        #   1. It serialised the ENTIRE result. For a crawl that is every
+        #      fetched page's body — megabytes of JSON pushed through FFI into
+        #      SQLite, scaling with how well the search worked.
+        #   2. It ran inline. Now it runs on a daemon thread, so a slow audit
+        #      write cannot stall the tool that already finished.
         try:
             import json
+            import threading as _threading
+
             from backend.gateway.iris_ffi import ffi_ingest_event
+
+            def _summarize(value, _depth: int = 0):
+                """Keep the SHAPE of the result, drop the bulk.
+
+                An audit row needs to answer "what happened", not carry the
+                payload. Long strings become a length marker so a 2 MB page
+                body costs ~40 bytes and the record stays diagnosable.
+                """
+                _CAP = 512
+                if isinstance(value, str):
+                    return value if len(value) <= _CAP else f"{value[:_CAP]}…<{len(value)} chars>"
+                if isinstance(value, dict):
+                    if _depth >= 3:
+                        return f"<dict:{len(value)} keys>"
+                    return {k: _summarize(v, _depth + 1) for k, v in list(value.items())[:40]}
+                if isinstance(value, (list, tuple)):
+                    if _depth >= 3:
+                        return f"<list:{len(value)}>"
+                    out = [_summarize(v, _depth + 1) for v in value[:20]]
+                    if len(value) > 20:
+                        out.append(f"…<{len(value)} items total>")
+                    return out
+                if isinstance(value, (bytes, bytearray)):
+                    return f"<bytes:{len(value)}>"
+                return value
 
             payload = json.dumps({
                 "tool": tool_name,
-                "params": params,
-                "result": result,
+                "params": _summarize(params),
+                "result": _summarize(result),
                 "plan_title": plan_title,
             })
-            ffi_ingest_event(
-                session_id=session_id,
-                domain="SYSTEM",
-                event_type="tool_execution",
-                actor="agent_tool_bridge",
-                outcome=outcome,
-                summary=f"Tool {tool_name} executed: {outcome}",
-                payload_json=payload,
-                screenshot_blob=screenshot_blob,
-            )
+
+            def _ingest() -> None:
+                try:
+                    ffi_ingest_event(
+                        session_id=session_id,
+                        domain="SYSTEM",
+                        event_type="tool_execution",
+                        actor="agent_tool_bridge",
+                        outcome=outcome,
+                        summary=f"Tool {tool_name} executed: {outcome}",
+                        payload_json=payload,
+                        screenshot_blob=screenshot_blob,
+                    )
+                except Exception as _exc:  # noqa: BLE001
+                    logger.debug("[tool-event] ingest failed for %s: %s", tool_name, _exc)
+
+            _threading.Thread(
+                target=_ingest, daemon=True, name=f"tool-event-{tool_name}",
+            ).start()
         except Exception:
             pass  # Never block tool execution on recording failure
 
@@ -2160,7 +2208,7 @@ class AgentToolBridge:
             documents = store.list_for_conversation(
                 conversation_id, metadata_only=False
             )
-            self._logger.info(
+            logger.info(
                 "[ToolBridge] GET RENDERED DOCS conv=%s returned=%d",
                 conversation_id,
                 len(documents),
@@ -2171,7 +2219,7 @@ class AgentToolBridge:
                 "documents": documents,
             }
         except Exception as exc:
-            self._logger.warning(
+            logger.warning(
                 "[ToolBridge] get_rendered_documents failed: %s", exc
             )
             return {"success": False, "error": str(exc), "documents": []}
@@ -2207,7 +2255,7 @@ class AgentToolBridge:
                     "conversations": [],
                 }
             conversations = store.list_conversations()
-            self._logger.info(
+            logger.info(
                 "[ToolBridge] LIST CONVERSATIONS active=%s returned=%d",
                 conversation_id,
                 len(conversations),
@@ -2218,7 +2266,7 @@ class AgentToolBridge:
                 "conversations": conversations,
             }
         except Exception as exc:
-            self._logger.warning(
+            logger.warning(
                 "[ToolBridge] list_conversations failed: %s", exc
             )
             return {"success": False, "error": str(exc), "conversations": []}
@@ -2253,7 +2301,7 @@ class AgentToolBridge:
                     "success": False,
                     "error": "no resolvable documents to combine",
                 }
-            self._logger.info(
+            logger.info(
                 "[ToolBridge] COMBINE DOCS conv=%s ids=%s -> %s",
                 conversation_id,
                 document_ids,
@@ -2261,7 +2309,7 @@ class AgentToolBridge:
             )
             return {"success": True, **combined}
         except Exception as exc:
-            self._logger.warning("[ToolBridge] combine_documents failed: %s", exc)
+            logger.warning("[ToolBridge] combine_documents failed: %s", exc)
             return {"success": False, "error": str(exc)}
 
     async def _execute_web_search(self, params: Dict, session_id: str) -> Dict:
@@ -2472,6 +2520,8 @@ def _crawl_ui_emitter(session_id: str):
     import asyncio as _asyncio
     import uuid as _uuid
 
+    _diag = {"logged": False}
+
     def _emit(progress) -> None:
         ev = getattr(progress, "event", "")
         pl = getattr(progress, "payload", {}) or {}
@@ -2479,8 +2529,36 @@ def _crawl_ui_emitter(session_id: str):
             from backend.ws_manager import get_websocket_manager
 
             ws = get_websocket_manager()
+            # Say WHY nothing animates instead of returning in silence. The
+            # session key the tool bridge receives must match the key clients
+            # are registered under; a mismatch drops every UI event with no
+            # trace, which is indistinguishable from "the crawl did nothing".
+            if not _diag["logged"]:
+                _diag["logged"] = True
+                try:
+                    _known = list(getattr(ws, "_session_clients", {}) or {}) if ws else []
+                except Exception:
+                    _known = []
+                logger.info(
+                    "[crawl-ui] first event %s for session=%r clients=%d known_sessions=%s",
+                    ev, session_id,
+                    len(ws.get_clients_for_session(session_id)) if ws else -1,
+                    _known[:6],
+                )
             if ws is None or not ws.get_clients_for_session(session_id):
                 return  # no live client — nothing to animate
+
+            # Log EVERY crawler event, not just the first. The first-event-only
+            # diagnostic could confirm that the channel worked at all but could
+            # not answer "did page events actually fire, and did they carry the
+            # fields the panel needs" — which is precisely the question that
+            # matters when the overlay animates but the URL never changes.
+            if ev.startswith("CRAWLER") or ev == "OPEN_TAB":
+                logger.info(
+                    "[crawl-ui] %s page=%s/%s job_id=%r url=%s",
+                    ev, pl.get("page_number", "-"), pl.get("total", "-"),
+                    pl.get("job_id", ""), str(pl.get("url", ""))[:80],
+                )
 
             def _send(msg: dict) -> None:
                 try:
@@ -2493,11 +2571,24 @@ def _crawl_ui_emitter(session_id: str):
                        "query": pl.get("query", ""),
                        "url_count": pl.get("url_count", 0)})
             elif ev == "CRAWLER_PAGE_FETCHED":
+                # job_id and title are REQUIRED, not decorative. The panel
+                # builds /api/browser/capture/{job_id}/{page_number} from them,
+                # and dark-glass-dashboard's listener bails on the first line
+                # (`if (!d.url || !d.job_id || d.page_number == null) return`)
+                # when job_id is absent — so dropping it here meant no web tab
+                # was ever created and the panel URL never changed, while the
+                # overlay animated normally because crawler_started needs
+                # nothing extra. The orchestrator has always put job_id in the
+                # payload (see _page_emitter) and the frontend has always read
+                # it; only this forwarder in the middle omitted it. A seam bug:
+                # both ends were correct and independently verified.
                 _send({"type": "crawler_page_fetched",
                        "url": pl.get("url", ""),
                        "page_number": pl.get("page_number", 0),
                        "total": pl.get("total", 0),
-                       "host": pl.get("host", "")})
+                       "host": pl.get("host", ""),
+                       "job_id": pl.get("job_id", ""),
+                       "title": pl.get("title", "")})
             elif ev == "OPEN_TAB":
                 _send({"type": "open_tab",
                        "tab_type": pl.get("tab_type", "browser"),

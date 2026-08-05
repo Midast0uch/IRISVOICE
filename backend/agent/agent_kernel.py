@@ -3494,21 +3494,43 @@ class AgentKernel:
 
 
 
+        # OFF THE CRITICAL PATH. This is a durability/audit write, not part of
+        # producing the answer — but it ran INLINE on the DER thread after every
+        # tool result. A live stack dump caught the thread parked in
+        # ffi_immortus_chain_append -> SQLite right after a web search returned,
+        # so a finished crawl looked hung and its UI events never surfaced.
+        # `canonical_text` carries the full rendered document (for a crawl, the
+        # page content), so the cost scales with how much the search found.
+        #
+        # NOTE this is the SECOND such write on the same path — tool_bridge's
+        # _record_tool_event had the identical problem and was moved off-thread
+        # first; fixing it simply revealed this one underneath. If a third
+        # appears, the pattern (not the instance) is what needs addressing.
         try:
+            import threading as _threading
+
             from backend.gateway.iris_ffi import ffi_immortus_chain_append
 
-            ffi_immortus_chain_append(
-                thread_id=conversation_id,
-                result=canonical_text,
-                coords_from=coords_from,
-                coords_to=canonical.get("format", "document"),
-                nbl_outcome="document_render",
-                insight=canonical.get("format", "document"),
-                file_path=document_id,
-                landmark_id="",
-            )
+            def _append_chain() -> None:
+                try:
+                    ffi_immortus_chain_append(
+                        thread_id=conversation_id,
+                        result=canonical_text,
+                        coords_from=coords_from,
+                        coords_to=canonical.get("format", "document"),
+                        nbl_outcome="document_render",
+                        insight=canonical.get("format", "document"),
+                        file_path=document_id,
+                        landmark_id="",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[AgentKernel] document_data Immortus store failed: %s", exc)
+
+            _threading.Thread(
+                target=_append_chain, daemon=True, name="immortus-chain-append",
+            ).start()
         except Exception as exc:
-            logger.warning("[AgentKernel] document_data Immortus store failed: %s", exc)
+            logger.warning("[AgentKernel] document_data Immortus dispatch failed: %s", exc)
 
     def update_document(self, document_id, content, fmt=None, trust=None, turn_id=None, conversation_id=None, alternatives=None):
         """Phase 4 (chat-card-redesign): revise an already-rendered document.
@@ -5703,6 +5725,24 @@ Respond with a JSON object:
                 # must keep running (their output is returned synchronously).
                 if isinstance(_session, str) and (
                     _session.startswith("immortus:") or _session.startswith("conv_")
+                ):
+                    return True
+                # The prefix list above is a NAMING check, and it silently
+                # stopped matching: chat.py mints thread ids as "conv-1"
+                # (hyphen) while this only ever accepted "conv_" (underscore).
+                # Every REST search therefore hit the disconnect branch and the
+                # DER loop broke before executing step 1 — surfacing to the user
+                # as "no usable sources found", a network failure that never
+                # happened. e2e was ~536 ms with no crawl in the log.
+                #
+                # Test the STRUCTURE instead of the spelling. chat.py:308 passes
+                # session_id=thread_id=conversation_id, whereas the WS handler
+                # passes the client id as session_id and the thread id as
+                # conversation_id (see the comment above), so the two are equal
+                # only on the REST path. That holds regardless of how ids are
+                # spelled, so renaming them cannot silently re-break this.
+                if isinstance(_session, str) and _session == getattr(
+                    self, "conversation_id", None
                 ):
                     return True
                 return len(ws.get_clients_for_session(_session)) > 0
@@ -9088,6 +9128,7 @@ Respond with a JSON object:
                 format_coords,
                 get_trajectory_recorder,
             )
+            from backend.utils.durability_queue import submit as durability_submit
 
             # REQ-5/REQ-6: capture the coordinate BEFORE this step for
             # coords_from in the Immortus chain append (below).
@@ -9258,7 +9299,22 @@ Respond with a JSON object:
                 _state_snapshot.get("xi", 0.0),
                 _state_snapshot.get("u", 0.0),
             )
-            ffi_immortus_chain_append(
+            # OFF THE CRITICAL PATH — the THIRD inline durability write found
+            # on this path (after tool_bridge._record_tool_event and
+            # _store_document_data). Per the note left on the second one, the
+            # PATTERN is fixed here rather than the instance.
+            #
+            # Not a thread-per-write like the other two: this is a CHAIN
+            # (coords_from -> coords_to), so two appends racing would land
+            # reversed and corrupt the trajectory. The durability queue has a
+            # single consumer, so submission order is the write order.
+            #
+            # Every argument is bound to a VALUE here, not to `item` — the
+            # write runs later and the step object must not be read from a
+            # different thread after the loop has moved on.
+            durability_submit(
+                f"immortus-chain:step_{item.step_number}",
+                ffi_immortus_chain_append,
                 thread_id=_session,
                 result="success" if step_success else "failure",
                 coords_from=_coords_from,

@@ -1569,6 +1569,36 @@ export function useIRISWebSocket(
     return false
   }, [])
 
+  // ── Capability re-declaration on every (re)connect ───────────────────────
+  // The backend's internet-access flag is PROCESS state: it defaults to OFF and
+  // a backend restart silently resets it. Nothing on the client changes when
+  // that happens, so no new set_web_mode is ever generated — the send queue
+  // cannot help either, because it only replays messages produced WHILE
+  // disconnected. Observed directly: the toggle read aria-pressed="true" /
+  // "Web mode ON" while the backend refused every search as disabled.
+  //
+  // This lives on the SOCKET, not in the component that owns the toggle. The
+  // app is a widget whose panels mount and unmount constantly, so a resync in
+  // chat-view only runs when chat happens to be mounted — exactly the fragility
+  // that produced the desync. Connection lifecycle is the one trigger that is
+  // always present, and localStorage is the one piece of state that survives an
+  // unmount. Idempotent: re-declaring the same value is harmless, so this can
+  // fire on every reconnect without coordination.
+  //
+  // Keyed on connectionState rather than the raw socket so any transport that
+  // reports "connected" (browser WS today, the Tauri client path) is covered.
+  useEffect(() => {
+    if (!isConnected) return
+    let webMode = false
+    try {
+      webMode = localStorage.getItem('iris-web-mode') === 'true'
+    } catch {
+      // Storage unavailable — fall through with false, which matches BOTH the
+      // UI default and the backend default, so the two still agree.
+    }
+    sendMessage('set_web_mode', { enabled: webMode })
+  }, [isConnected, sendMessage])
+
   // Action methods
   const selectCategory = useCallback((category: string) => {
     sendMessage("select_category", { category })

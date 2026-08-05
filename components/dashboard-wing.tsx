@@ -90,50 +90,10 @@ export function DashboardWing({
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  // Crawler (web search) live progress — consumed from iris:crawler_* events
-  // dispatched by useIRISWebSocket. Previously dashboard-wing never listened
-  // to these, so a web search produced no progress UI and the user only saw a
-  // silent tab open with the raw query.
-  const [crawler, setCrawler] = useState<{
-    active: boolean
-    query: string
-    pagesDone: number
-    pagesTotal: number
-    error: string | null
-  }>({ active: false, query: "", pagesDone: 0, pagesTotal: 0, error: null })
-
-  useEffect(() => {
-    const onStarted = (e: Event) => {
-      const d = (e as CustomEvent<{ query: string; url_count: number }>).detail
-      setCrawler({
-        active: true,
-        query: d?.query ?? "",
-        pagesDone: 0,
-        pagesTotal: d?.url_count ?? 0,
-        error: null,
-      })
-    }
-    const onPage = (e: Event) => {
-      const d = (e as CustomEvent<{ page_number: number; total: number }>).detail
-      setCrawler((prev) => ({
-        ...prev,
-        pagesDone: d?.page_number ?? prev.pagesDone + 1,
-        pagesTotal: d?.total ?? prev.pagesTotal,
-      }))
-    }
-    const onError = (e: Event) => {
-      const d = (e as CustomEvent<{ message: string }>).detail
-      setCrawler((prev) => ({ ...prev, error: d?.message ?? "Web search failed", active: false }))
-    }
-    window.addEventListener("iris:crawler_started", onStarted as EventListener)
-    window.addEventListener("iris:crawler_page_fetched", onPage as EventListener)
-    window.addEventListener("iris:crawler_error", onError as EventListener)
-    return () => {
-      window.removeEventListener("iris:crawler_started", onStarted as EventListener)
-      window.removeEventListener("iris:crawler_page_fetched", onPage as EventListener)
-      window.removeEventListener("iris:crawler_error", onError as EventListener)
-    }
-  }, [])
+  // Crawler (web search) live progress is owned by DarkGlassDashboard and
+  // rendered as a pill in the CENTRE of its header. It used to live here as a
+  // full-width band stacked ABOVE the header, which is the only place this
+  // component can put it — the header itself belongs to the dashboard.
 
   // Window width for responsive both-open layout
   const [windowWidth, setWindowWidth] = useState(1280);
@@ -404,32 +364,6 @@ export function DashboardWing({
 
             {/* Dashboard Content - Fully delegated to DarkGlassDashboard */}
             <div className="flex-1 overflow-hidden relative z-10 flex flex-col">
-              {/* Live web-search (crawler) progress banner — visible while a
-                  crawl runs so the user sees real-time "agent is searching"
-                  feedback instead of a silent tab. */}
-              {crawler.active && (
-                <div
-                  className="flex items-center gap-3 px-4 py-2 border-b flex-shrink-0 text-[11px] font-mono uppercase tracking-wider"
-                  style={{ borderColor: `${glowColor}22`, color: glowColor, background: `${glowColor}0a` }}
-                >
-                  <Loader size={13} className="animate-spin" />
-                  <span className="truncate">Searching: {crawler.query}</span>
-                  {crawler.pagesTotal > 0 && (
-                    <span className="ml-auto opacity-70">
-                      {crawler.pagesDone}/{crawler.pagesTotal} pages
-                    </span>
-                  )}
-                </div>
-              )}
-              {crawler.error && (
-                <div
-                  className="flex items-center gap-3 px-4 py-2 border-b flex-shrink-0 text-[11px] font-mono uppercase tracking-wider"
-                  style={{ borderColor: 'rgba(239,68,68,0.3)', color: '#ef4444', background: 'rgba(239,68,68,0.08)' }}
-                >
-                  <AlertTriangle size={13} />
-                  <span className="truncate">{crawler.error}</span>
-                </div>
-              )}
               {/* Mobile header with back button */}
               {isRemoteView && onOpenChat && (
                 <div className="flex items-center gap-3 px-4 py-3 border-b flex-shrink-0" style={{ borderColor: `${glowColor}15` }}>

@@ -38,7 +38,7 @@
  * All animation is off the critical path, rAF-driven, useReducedMotion-aware.
  */
 
-import React, { useEffect, useRef, useCallback } from "react"
+import React, { useEffect, useRef, useCallback, useState } from "react"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { OrbCanvas } from "@/components/iris/orb/OrbCanvas"
 
@@ -50,8 +50,15 @@ const SHELLS = [
 ]
 const PULSE_DURATION = 4200
 
-/** OrbCanvas renders a hard 120px canvas — this MUST track it (was 140, wrong). */
-const ORB_SIZE = 120
+/**
+ * Overlay orb size. OrbCanvas now takes this as a prop, so this single number
+ * drives the canvas, the particle radii and the CSS box together.
+ *
+ * Smaller than the main orb's 120: here it sits INSIDE the page frame with the
+ * border comet running around it, and at 120 it dominated the viewport and
+ * read as the subject rather than as a progress indicator.
+ */
+const ORB_SIZE = 76
 
 /** Panel border radius. MUST equal the mount container's rounded-2xl (1rem). */
 const RADIUS = 16
@@ -218,6 +225,8 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
   // continuous while its speed varies.
   const phaseRef = useRef<number>(0)
   const lapMsRef = useRef<number>(LAP_DEFAULT_MS)
+  // React-visible mirror of lapMsRef, consumed only by the orb (see below).
+  const [orbPeriodMs, setOrbPeriodMs] = useState<number>(LAP_DEFAULT_MS)
   const shutterRef = useRef<number>(0)
   const lastFrameRef = useRef<number>(0)
   const lastFetchRef = useRef<number>(0)
@@ -244,6 +253,10 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
         const median = sorted[Math.floor(sorted.length / 2)]
         // Geared down from the raw page cadence — see LAP_PER_PAGE.
         lapMsRef.current = Math.min(Math.max(median * LAP_PER_PAGE, LAP_MIN_MS), LAP_MAX_MS)
+        // Mirror into state purely so the ORB (a React child) re-renders with
+        // the new cadence. The canvas ring keeps reading the ref every frame —
+        // it must not depend on React's render clock.
+        setOrbPeriodMs(lapMsRef.current)
       }
     }
     lastFetchRef.current = now
@@ -534,6 +547,14 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
             animationMode={state === "dispersing" ? "C" : null}
             animActive={state === "dispersing"}
             glowScale={1}
+            size={ORB_SIZE}
+            // Same cadence as the border comet: the ring completes one lap of
+            // the card in lapMs, so the outer shell completes one revolution
+            // in lapMs too. The default 28 s made the orb drift while the
+            // border raced, reading as two unrelated animations. lapMs is the
+            // live crawl-derived value, and OrbCanvas integrates phase, so it
+            // can move without snapping the particles.
+            orbitPeriodMs={orbPeriodMs}
           />
 
           {/* Dispersion ring — the orb reaching out to touch the page.
